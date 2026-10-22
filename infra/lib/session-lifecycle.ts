@@ -20,7 +20,7 @@ import {
   aws_stepfunctions as sfn,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
 import { packagedFunction } from "./control-plane.js";
 import { EC2_WORKER_AMI_PARAMETER } from "./ec2-workers.js";
 import type { AgentXNaming } from "./naming.js";
@@ -77,7 +77,8 @@ export class SessionLifecycle extends Construct {
 
     // Named environments (Task 14): workers hold no provider keys or Bedrock access and call models through the
     // proxy, whose URL is one more setting. Launching a worker without it fails; the legacy function is unchanged.
-    const settingNames: string[] = [...Object.values(WORKER_SETTING_PARAMETERS), ...(naming.env === undefined ? [] : [MODEL_PROXY_URL_PARAMETER])];
+    // The stage 2 boot hash (Task 10) is one more named-environment setting, beside the worker image it checks; the legacy function never reads it.
+    const settingNames: string[] = [...Object.values(WORKER_SETTING_PARAMETERS), ...(naming.env === undefined ? [] : [MODEL_PROXY_URL_PARAMETER, BOOT_STAGE2_SHA256_PARAMETER])];
     const settingParameterArns = settingNames.map((name) =>
       `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}${name}`);
     this.steps = packagedFunction(this, "Steps", "packages/broker/src/aws/session-steps.ts", {
@@ -86,7 +87,11 @@ export class SessionLifecycle extends Construct {
       INVOKE_SIGNING_KEY_ARN: props.invokeSigningKey.keyArn,
       WORKER_LOG_GROUP_NAME: naming.ec2.workerLogGroupName,
       ...(naming.env === undefined ? {} : { MODEL_PROXY_REQUIRED: "true" }),
-    }, Duration.seconds(30), [[resolve(process.cwd(), "packages/worker/ec2/boot.sh"), "boot.sh"]]);
+    }, Duration.seconds(30), [
+      [resolve(process.cwd(), "packages/worker/ec2/boot.sh"), "boot.sh"],
+      // The legacy deployment's single-file boot (ruling R58), rendered when no model proxy is required.
+      [resolve(process.cwd(), "packages/worker/ec2/boot-legacy.sh"), "boot-legacy.sh"],
+    ]);
     // The org of a workspace whose record names none: the machine time its compute used is counted against it.
     if (naming.env !== undefined) this.steps.addEnvironment("AGENTX_ENV", naming.env);
     // In the private subnets with the session manager's group: the only way to reach a worker's /ping.

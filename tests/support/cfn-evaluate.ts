@@ -12,7 +12,15 @@ export interface CfnContext {
 
 const PSEUDO: Record<string, string> = { "AWS::Partition": "aws", "AWS::Region": "us-east-1", "AWS::AccountId": "123456789012", "AWS::URLSuffix": "amazonaws.com" };
 
+/** What `Ref: AWS::NoValue` evaluates to; an object property holding it is dropped, as CloudFormation drops it. */
+const NO_VALUE = Symbol("AWS::NoValue");
+
 export function evaluate(value: unknown, context: CfnContext): unknown {
+  const result = evaluateValue(value, context);
+  return result === NO_VALUE ? undefined : result;
+}
+
+function evaluateValue(value: unknown, context: CfnContext): unknown {
   if (Array.isArray(value)) return value.map((entry) => evaluate(entry, context));
   if (value === null || typeof value !== "object") return value;
   const entries = Object.entries(value as Record<string, unknown>);
@@ -21,6 +29,7 @@ export function evaluate(value: unknown, context: CfnContext): unknown {
     switch (name) {
       case "Ref": {
         const key = String(argument);
+        if (key === "AWS::NoValue") return NO_VALUE;
         const found = context.parameters[key] ?? context.pseudo?.[key] ?? PSEUDO[key];
         if (found === undefined) throw new Error(`no value for Ref ${key}`);
         return found;
@@ -50,12 +59,12 @@ export function evaluate(value: unknown, context: CfnContext): unknown {
       case "Fn::Or": return (argument as unknown[]).some((entry) => evaluate(entry, context) === true);
       case "Fn::If": {
         const [condition, yes, no] = argument as [string, unknown, unknown];
-        return evaluate(evaluateCondition(condition, context) ? yes : no, context);
+        return evaluateValue(evaluateCondition(condition, context) ? yes : no, context);
       }
       default: break;
     }
   }
-  return Object.fromEntries(entries.map(([key, entry]) => [key, evaluate(entry, context)]));
+  return Object.fromEntries(entries.map(([key, entry]) => [key, evaluateValue(entry, context)]).filter(([, entry]) => entry !== NO_VALUE));
 }
 
 export function evaluateCondition(name: string, context: CfnContext): boolean {

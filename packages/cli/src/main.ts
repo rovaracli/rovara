@@ -16,8 +16,10 @@ import {
   EnvironmentNameSchema,
   WorkspaceDeploymentModeSchema,
   MODEL_PROVIDERS,
+  OrgRoleSchema,
   agentXError,
   type ProjectDefinition,
+  type ProjectRole,
 } from "@agentx/contracts";
 import { DEFAULT_DIRECT_MODELS } from "@agentx/model-runtime/config";
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
@@ -28,7 +30,7 @@ import { Command, Option } from "commander";
 import { authorizeCredential, expectedAccountEmail, secretsManagerAuthorizeSecrets, type AuthorizeSecrets } from "./admin/authorize.js";
 import { fetchStaffRecords, staffExportTransport, staffJustification, staffOrgId } from "./admin/audit.js";
 import { budgetText, parseBudgetUsd, setOrgBudget } from "./admin/budget.js";
-import { githubOwnerText, setOrgGithubOwner } from "./admin/github-owner.js";
+import { decideEgress, decisionText, listPendingEgress, parseOwnerArgument, pendingText } from "./admin/egress.js";
 import { listCredentials, registerCredential } from "./admin/credential.js";
 import { requestRuntimeInstallChallenge, submitRuntimeInstallProposal } from "./admin/runtime-installation.js";
 import { cliRuntimeBinding, registerProject } from "./admin/register.js";
@@ -42,14 +44,17 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
-import { createDeveloperProject, createProjectText, developerLogout, fetchDeveloperProjects, logoutText, whoamiText } from "./developer/commands.js";
+import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import {
   assertNewFile, auditLogQuery, auditLogText, auditPageUrl, developerExportTransport, exportAuditFile, exportRange, fetchAuditRecords, jsonSafe, verifyAuditExport,
   type AuditLogFlags, type AuditRuntime,
 } from "./developer/audit.js";
+import { projectAddMember, projectAddMemberText, projectMembers, projectMembersText, projectRemoveMember, projectRemoveMemberText } from "./developer/project-members.js";
+import { orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
-import { developerLogin } from "./developer/login.js";
+import { LOOPBACK_HOSTS, developerLogin } from "./developer/login.js";
+import { INVITE_QUESTION, INVITE_QUESTION_NO_BROWSER, askYesByDefault, fetchCurrentOrg, fetchInviteSummary, inviteConfirmationLine, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "./developer/invite-link.js";
 import { fetchDeveloperWorkspaces, type DeveloperWorkspacesResult } from "./developer/workspaces.js";
 import { runWorkspacesCommand } from "./workspaces-ui/index.js";
 import { listAdminWorkspaces } from "./admin/workspaces.js";
@@ -64,7 +69,11 @@ import { DEFAULT_CLASSIFIER_MODEL, DEFAULT_ORCHESTRATOR_MODEL, DEFAULT_WORKER_MO
 import { runInit, type InitCliDependencies, type InitOptions } from "./init/commands.js";
 import { cliCommandLine, currentCliInvocation, type CliInvocation } from "./init/cli-command.js";
 import { StoppedByOperator, isCtrlCAtPrompt } from "./stopped.js";
-import type { FinishFlags, SecretFlags } from "./init/context.js";
+import { runGithubOauthSet, type GithubOauthServices } from "./github/oauth.js";
+import { githubConnect, githubConnectText, githubDisconnect, githubDisconnectText, githubList, githubListText } from "./developer/github.js";
+import { secretsManagerInitSecrets, type FinishFlags, type SecretFlags } from "./init/context.js";
+import { githubRestApi } from "./init/github-app.js";
+import { processPrompter } from "./init/prompts.js";
 import { INIT_STEP_IDS, type InitStepId } from "./init/install-state.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -144,6 +153,10 @@ export interface CliDependencies {
   config?: Partial<ConfigServices>;
   /** `agentx doctor` overrides, for tests: never touch AWS or a vendor. */
   doctor?: { store?: ParameterStore; services?: (settings: EnvironmentSettings) => DoctorServices };
+  /** `agentx github oauth set` overrides, for tests: never touch AWS or GitHub. */
+  githubOauth?: Partial<GithubOauthServices>;
+  /** `agentx github connect` polling, for tests. */
+  githubConnect?: { pollMs?: number; waitMs?: number };
   /** `agentx upgrade` overrides, for tests: never touch AWS or GitHub. */
   upgrade?: Partial<UpgradeDependencies>;
   /** `agentx destroy` overrides, for tests: never touch AWS. */
@@ -156,6 +169,8 @@ export interface CliDependencies {
     isInteractive?: () => boolean;
     port?: number;
   };
+  /** `agentx login` overrides, for tests: never open a browser. */
+  login?: { openBrowser?: (url: string) => Promise<void> };
   /** `chatgpt connect` overrides, for tests: another port, no browser, and no terminal check. */
   chatgpt?: { port?: number; openBrowser?: (url: string) => Promise<void>; isInteractive?: () => boolean };
   /** `agentx audit` overrides, for tests: no waiting between export polls, fixed request IDs, and no browser. */
@@ -313,11 +328,35 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument("[url]", "your AgentX URL, for developer sign-in")
     .option("--admin", "sign in as an administrator with the admin identity provider (the default when no URL is given)", false)
     .option("--no-browser", "developer sign-in: print the sign-in link instead of opening a browser")
+    .option("--invite <link>", "join an organization with an invite link (or its code, with the URL): shows what you are joining and asks before opening the browser")
+    .option("--yes", "with --invite: open the browser without asking", false)
     .option("--callback-port <port>", "fixed loopback callback port registered with the OIDC client", parsePort, DEFAULT_CALLBACK_PORT)
-    .action(async (url: string | undefined, options: { admin: boolean; browser: boolean; callbackPort: number }, command: Command) => {
+    .action(async (explicitUrl: string | undefined, options: { admin: boolean; browser: boolean; invite?: string; yes: boolean; callbackPort: number }, command: Command) => {
       const globals = globalOptions(command);
-      if (url !== undefined && options.admin) {
-        throw agentXError("CONFIG_INVALID", "use either agentx login <url> (developer sign-in) or agentx login --admin, not both");
+      if ((explicitUrl !== undefined || options.invite !== undefined) && options.admin) {
+        throw agentXError("CONFIG_INVALID", options.invite !== undefined ? "use either agentx login --invite <link> (joining an organization) or agentx login --admin, not both" : "use either agentx login <url> (developer sign-in) or agentx login --admin, not both");
+      }
+      // An invite link names the cell to sign in to (an explicit URL wins), and the person is told what they are joining before a browser opens (ruling R19).
+      let url = explicitUrl;
+      let invite: string | undefined;
+      if (options.invite !== undefined) {
+        const parsed = parseInviteLink(options.invite);
+        invite = parsed.token;
+        const chosen = explicitUrl ?? await resolveInviteCell(parsed, services.fetchImplementation);
+        let base: URL;
+        try {
+          base = new URL(chosen);
+        } catch {
+          throw agentXError("CONFIG_INVALID", `${chosen} is not a URL; pass your Rovara URL, for example https://abc123.execute-api.us-west-2.amazonaws.com`);
+        }
+        if (base.protocol !== "https:" && !(globals.allowLoopback && base.protocol === "http:" && LOOPBACK_HOSTS.has(base.hostname))) {
+          throw agentXError("CONFIG_INVALID", "your Rovara URL must use https; plain http is allowed only for 127.0.0.1, localhost or ::1 with --allow-loopback");
+        }
+        const cell = base.origin + base.pathname.replace(/\/+$/, "");
+        const summary = await fetchInviteSummary(cell, invite, services.fetchImplementation);
+        services.stderr.write(`${inviteConfirmationLine(summary, cell)}\n`);
+        if (!options.yes && !await inviteConfirmer()(options.browser ? INVITE_QUESTION : INVITE_QUESTION_NO_BROWSER)) throw agentXError("CONFIRMATION_DECLINED", "you chose not to join; nothing changed");
+        url = cell;
       }
       if (url !== undefined) {
         const result = await developerLogin({
@@ -328,10 +367,24 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
           tokenStore: services.tokenStore,
           fetch: services.fetchImplementation,
           write: (line) => { services.stderr.write(`${line}\n`); },
+          ...(dependencies.login?.openBrowser === undefined ? {} : { openBrowser: dependencies.login.openBrowser }),
+          ...(invite === undefined ? {} : { invite }),
           ...(command.getOptionValueSource("callbackPort") === "cli" ? { callbackPort: options.callbackPort } : {}),
         });
+        // What happened to the invite. The sign-in itself succeeded and its session is kept, but a join that did not happen is a failure:
+        // the exact words for why go out as the error (exit 1, and ok: false with the code under --json).
+        if (invite !== undefined && result.inviteError !== undefined) {
+          const org = result.inviteError === "ALREADY_IN_ORG" ? await fetchCurrentOrg(developerSession(), result.env) : undefined;
+          throw agentXError(result.inviteError, inviteOutcomeText(result.inviteError, org));
+        }
+        const joined = invite === undefined ? undefined : { outcome: "joined", message: inviteOutcomeText("joined", await fetchCurrentOrg(developerSession(), result.env)) };
         const projects = await fetchDeveloperProjects(developerSession(), result.env);
-        services.stdout.write(globals.json ? formatSuccess({ env: projects.env, url: projects.url, ...projects.projects }, true) : whoamiText(projects));
+        if (globals.json) {
+          services.stdout.write(formatSuccess({ env: projects.env, url: projects.url, ...projects.projects, ...(joined === undefined ? {} : { invite: joined }) }, true));
+        } else {
+          if (joined !== undefined) services.stdout.write(`${joined.message}\n`);
+          services.stdout.write(whoamiText({ ...projects, identities: await fetchLinkedIdentities(developerSession(), result.env) }));
+        }
         return;
       }
       // A bare login (or --admin) is today's admin login, unchanged.
@@ -373,7 +426,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (_options: unknown, command: Command) => {
       const globals = globalOptions(command);
       const result = await fetchDeveloperProjects(developerSession(), developerEnv(command));
-      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.projects }, true) : whoamiText(result));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.projects }, true) : whoamiText({ ...result, identities: await fetchLinkedIdentities(developerSession(), developerEnv(command)) }));
     });
 
   program
@@ -511,10 +564,153 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess({ url }, true) : `${options.browser ? "Opening" : "Open"} the audit log page: ${url}\nSign in there with the account you use for your organization.\n`);
     });
 
+  // Plan 2, Task 4: the people in your organization.
+  const org = program.command("org").description("the people in your organization");
+  org
+    .command("members")
+    .description("list the members of your organization, with their roles")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await orgMembers(developerSession(), developerEnv(command));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, members: result.members }, true) : orgMembersText(result));
+    });
+  org
+    .command("role")
+    .description("change a member's role (owners only)")
+    .argument("<email-or-id>", "the member's email or developer ID, from agentx org members")
+    .argument("<role>", "owner, admin or member")
+    .action(async (who: string, role: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const parsed = OrgRoleSchema.safeParse(role);
+      if (!parsed.success) throw agentXError("CONFIG_INVALID", "the role must be owner, admin or member");
+      const result = await orgSetRole(developerSession(), developerEnv(command), who, parsed.data);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, role: result.role }, true) : orgRoleText(result));
+    });
+  org
+    .command("remove")
+    .description("remove a member from your organization: their sessions end and their running tasks stop after their current step")
+    .argument("<email-or-id>", "the member's email or developer ID, from agentx org members")
+    .action(async (who: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await orgRemove(developerSession(), developerEnv(command), who);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, message: result.message }, true) : orgRemoveText(result));
+    });
+  org
+    .command("leave")
+    .description("leave your organization; as its only member this closes it and releases its GitHub connection")
+    .option("--yes", "leave without asking", false)
+    .action(async (options: { yes: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const env = developerEnv(command);
+      const confirm = changeConfirmer(options.yes);
+      const { question } = await orgLeaveQuestion(developerSession(), env);
+      if (!await confirm(question)) throw agentXError("CONFIRMATION_DECLINED", "you did not leave the organization; nothing changed");
+      const result = await orgLeave(developerSession(), env);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, orgClosed: result.orgClosed, message: result.message }, true) : orgLeaveText(result));
+    });
+
+  const githubCommand = program.command("github").description("the GitHub App of a Rovara Cloud install");
+  githubCommand
+    .command("oauth")
+    .description("the GitHub App's OAuth client, which the per-organization install flow uses")
+    .command("set")
+    .description("store the GitHub App's client id and client secret on a Rovara Cloud install (operator role); prints what to change in the App's settings")
+    .requiredOption("--client-id <id>", "the GitHub App's Client ID (General, About, Client ID)")
+    .option("--client-secret-stdin", "read the client secret from standard input instead of asking for it", false)
+    .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
+    .action(async (options: { clientId: string; clientSecretStdin: boolean; region?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const overrides = dependencies.githubOauth ?? {};
+      const awsConfig = options.region === undefined ? {} : { region: options.region };
+      const result = await runGithubOauthSet({
+        store: overrides.store ?? parameterStore(options.region),
+        secrets: overrides.secrets ?? secretsManagerInitSecrets(new SecretsManagerClient(awsConfig)),
+        github: overrides.github ?? githubRestApi(services.fetchImplementation),
+        prompter: overrides.prompter ?? processPrompter(services.stderr),
+        processEnv: overrides.processEnv ?? process.env,
+        write: overrides.write ?? ((line) => { services.stderr.write(`${line}\n`); }),
+        now: overrides.now ?? Date.now,
+        readStdin: overrides.readStdin ?? (async () => { const chunks: Buffer[] = []; for await (const chunk of dependencies.stdin ?? process.stdin) chunks.push(Buffer.from(chunk as Uint8Array)); return Buffer.concat(chunks).toString("utf8"); }),
+      }, globals.env, { clientId: options.clientId, clientSecretStdin: options.clientSecretStdin });
+      services.stdout.write(globals.json ? formatSuccess(result, true) : `GitHub App client id and secret saved for ${result.env}.\n`);
+    });
+
+  githubCommand
+    .command("connect")
+    .description("connect your organization's GitHub account to Rovara (owners and admins, Rovara Cloud): opens GitHub's install page and waits until it is done")
+    .option("--no-browser", "print the install link instead of opening a browser")
+    .action(async (options: { browser: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubConnect(developerSession(), developerEnv(command), {
+        write: (line) => { services.stderr.write(`${line}\n`); },
+        ...(options.browser ? { openBrowser: dependencies.login?.openBrowser ?? openSystemBrowser } : {}),
+        ...(dependencies.githubConnect ?? {}),
+      });
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, status: result.status, account: result.account, installationId: result.installationId }, true) : githubConnectText(result));
+    });
+
+  githubCommand
+    .command("list")
+    .description("the GitHub accounts connected to your organization, and any request still waiting for a GitHub admin")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubList(developerSession(), developerEnv(command));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, installations: result.installations, waiting: result.waiting }, true) : githubListText(result));
+    });
+  githubCommand
+    .command("disconnect")
+    .description("stop using a connected GitHub account (owners and admins). Its repositories stop working in Rovara; uninstall the app in GitHub's settings to remove its access there too")
+    .argument("<account>", "the GitHub account's login, as agentx github list shows it")
+    .action(async (account: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await githubDisconnect(developerSession(), developerEnv(command), account);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, installationId: result.installationId, accountLogin: result.accountLogin, message: result.message }, true) : githubDisconnectText(result));
+    });
+
   registerSigninCommands(program, {
     ...(dependencies.signin === undefined ? {} : { overrides: dependencies.signin }),
     parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
   });
+  // Plan 2, Task 8: a person removes a sign-in method they did not add, or no longer wants, with their own sign-in (the other `signin`
+  // commands are the operator's).
+  const signinCommand = program.commands.find((candidate) => candidate.name() === "signin");
+  if (signinCommand === undefined) throw new Error("the signin command is registered by registerSigninCommands");
+  /** The fresh sign-in `signin unlink` and `signin link` run when the server asks for one: today's developer login, then the request again. */
+  const freshSignInFor = (command: Command, browser: boolean): FreshSignIn => async ({ url, exclude, reason }) => {
+    services.stderr.write(`This needs a fresh sign-in (${reason}). Signing in again now.\n`);
+    await developerLogin({
+      url, allowLoopback: globalOptions(command).allowLoopback, browser, home, tokenStore: services.tokenStore, fetch: services.fetchImplementation,
+      write: (line) => { services.stderr.write(`${line}\n`); },
+      ...(dependencies.login?.openBrowser === undefined ? {} : { openBrowser: dependencies.login.openBrowser }),
+      ...(exclude === undefined ? {} : { excludeMethod: exclude }),
+      fresh: true,
+    });
+  };
+  signinCommand
+    .command("unlink")
+    .description("remove a sign-in method (cloud or github) from your own Rovara account; sessions signed in that way end. Needs a sign-in from the last 10 minutes with another method")
+    .argument("<method>", "cloud or github")
+    .option("--no-browser", "if a fresh sign-in is needed, print the sign-in link instead of opening a browser")
+    .action(async (method: string, options: { browser: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await unlinkSignInMethod(developerSession(), developerEnv(command), method, freshSignInFor(command, options.browser));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, removed: result.provider, identities: result.identities }, true) : unlinkText(result));
+    });
+  signinCommand
+    .command("link")
+    .description("add a sign-in method (cloud or github) you removed earlier back to your own Rovara account. Needs a sign-in from the last 10 minutes")
+    .argument("<method>", "cloud or github")
+    .option("--no-browser", "print the sign-in link instead of opening a browser")
+    .action(async (method: string, options: { browser: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await linkSignInMethod(developerSession(), developerEnv(command), method, freshSignInFor(command, options.browser));
+      if (globals.json) {
+        services.stdout.write(formatSuccess({ env: result.env, url: result.url, provider: result.provider, authorizeUrl: result.authorizeUrl }, true));
+        return;
+      }
+      services.stdout.write(linkText(result, options.browser));
+      if (options.browser) await (dependencies.login?.openBrowser ?? openSystemBrowser)(result.authorizeUrl).catch(() => undefined);
+    });
   registerConfigCommands(program, {
     ...(dependencies.config === undefined ? {} : { overrides: dependencies.config }), parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
     stdin: dependencies.stdin ?? process.stdin,
@@ -626,6 +822,15 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await submitRuntimeInstallProposal({ controlPlaneUrl: settings.controlPlaneUrl, accessToken: session.accessToken, proposalFile: options.proposalFile }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
     });
+
+  /** The question before an invite's browser opens: (Y/n), so a plain Enter joins. It needs a terminal, or --yes. */
+  const inviteConfirmer = (): ((question: string) => Promise<boolean>) => {
+    if (dependencies.confirm !== undefined) return (question) => dependencies.confirm!(question);
+    const stdin: NodeJS.ReadableStream & { isTTY?: boolean } = dependencies.stdin ?? process.stdin;
+    if (stdin.isTTY !== true) throw agentXError("CONFIRMATION_UNAVAILABLE", "this needs a yes before the browser opens: run the command in a terminal to answer, or pass --yes; nothing changed");
+    const output = new NodeWritable({ write(chunk: Buffer | string, _encoding, done) { services.stderr.write(chunk.toString()); done(); } });
+    return (question) => askYesByDefault(question, { input: stdin, output, signals: process });
+  };
 
   // Spec 025 E17 (Q6): a person typing the command is the confirmation; --yes answers for them.
   // Without --yes the prompt needs a terminal, checked before anything is planned.
@@ -741,20 +946,43 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess(result, true) : budgetText(result.budget));
     });
 
-  const adminOrg = admin.command("org").description("organizations on Rovara Cloud");
-  adminOrg
-    .command("github-owner")
-    .description("the one GitHub account or organization whose repositories an organization's owners and admins may create projects for")
-    .command("set")
-    .description("set an organization's allowed GitHub owner (Rovara Cloud operators only)")
-    .option("--org <org-id>", "the organization's ID")
-    .option("--owner <login>", "the GitHub account or organization login, such as acme-corp")
-    .action(async (options: { org?: string; owner?: string }, command: Command) => {
+  const adminEgress = admin.command("egress").description("domains projects ask to reach; on Rovara Cloud a new one is served only after Rovara staff approve it");
+  adminEgress
+    .command("pending")
+    .description("list the domains waiting for approval, from every organization (Rovara Cloud operators only)")
+    .action(async (_options: unknown, command: Command) => {
       const globals = globalOptions(command);
-      if (options.org === undefined || options.owner === undefined) throw agentXError("CONFIG_INVALID", "name the organization and the GitHub owner: --org <org-id> --owner <login>");
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
-      const result = await setOrgGithubOwner({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, orgId: options.org, githubOwner: options.owner }, services.fetchImplementation);
-      services.stdout.write(globals.json ? formatSuccess(result, true) : githubOwnerText(result.org));
+      const result = await listPendingEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : pendingText(result));
+    });
+  adminEgress
+    .command("approve")
+    .description("approve a pending domain: it joins the DNS allowlist of the cell")
+    .argument("<org>", "the organization's ID")
+    .argument("<owner>", "project:<name> or model-source:<id>, as `agentx admin egress pending` prints it")
+    .argument("<domain>", "the domain")
+    .action(async (org: string, owner: string, domain: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const parsedOwner = parseOwnerArgument(owner);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await decideEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, decision: "approve", orgId: org, owner: parsedOwner, domain }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : decisionText(result));
+    });
+  adminEgress
+    .command("reject")
+    .description("reject a pending domain; the project's maintainers are told why")
+    .argument("<org>", "the organization's ID")
+    .argument("<owner>", "project:<name> or model-source:<id>, as `agentx admin egress pending` prints it")
+    .argument("<domain>", "the domain")
+    .option("--reason <text>", "why, 1 to 200 characters; shown to the project's maintainers")
+    .action(async (org: string, owner: string, domain: string, options: { reason?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const parsedOwner = parseOwnerArgument(owner);
+      if (options.reason === undefined || options.reason.trim() === "") throw agentXError("CONFIG_INVALID", "say why with --reason <text>");
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await decideEgress({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, decision: "reject", orgId: org, owner: parsedOwner, domain, reason: options.reason }, services.fetchImplementation);
+      services.stdout.write(globals.json ? formatSuccess(result, true) : decisionText(result));
     });
 
   const adminSlack = admin.command("slack").description("bind Slack channels to this project for the hosted orchestrator");
@@ -1116,22 +1344,133 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   projectCommand
     .command("create")
     .description("create a project from a GitHub repository, on Rovara Cloud (an owner or admin of your organization)")
-    .option("--repository <owner/name>", "the GitHub repository, which must be under your organization's connected GitHub owner")
+    .option("--repository <owner/name>", "the GitHub repository, which your organization's GitHub connection must reach (agentx github connect)")
     .option("--name <name>", "the project's name (default: the repository's)")
+    .option("--description <text>", "what the project is, up to 280 characters")
     .option("--setup-command <command>", "the setup command, or \"\" for none")
     .option("--test-command <command>", "the test command, or \"\" for none")
-    .action(async (options: { repository?: string; name?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
+    .action(async (options: { repository?: string; name?: string; description?: string; setupCommand?: string; testCommand?: string }, command: Command) => {
       const globals = globalOptions(command);
       if (options.repository === undefined) throw agentXError("CONFIG_INVALID", "name the repository: --repository <owner/name>");
       const result = await createDeveloperProject(developerSession(), developerEnv(command), {
+        requestId: randomUUID(),
         repository: options.repository,
         ...(options.name === undefined ? {} : { name: options.name }),
+        ...(options.description === undefined ? {} : { description: options.description }),
         ...(options.setupCommand === undefined ? {} : { setupCommand: options.setupCommand }),
         ...(options.testCommand === undefined ? {} : { testCommand: options.testCommand }),
       });
       services.stdout.write(globals.json
         ? formatSuccess({ env: result.env, url: result.url, duplicate: result.created.duplicate, project: result.created.project.definition }, true)
         : createProjectText(result));
+    });
+
+  // Plan 2, Task 17: a project's settings, with the signed-in developer's own sign-in. A maintainer changes them; anyone with access reads them.
+  projectCommand
+    .command("show")
+    .description("show a project's settings: commands, devcontainer, repositories and allowed domains, on Rovara Cloud")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await showDeveloperProject(developerSession(), developerEnv(command), name);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : projectShowText(result.project));
+    });
+  // Plan 2, Task 20: a maintainer archives a project (asking first) and restores it.
+  projectCommand
+    .command("archive")
+    .description("archive a project (a maintainer of the project): no new tasks can start in it; running work keeps going. Asks first")
+    .argument("<name>", "the project's name")
+    .option("--yes", "archive without asking", false)
+    .action(async (name: string, options: { yes: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const confirm = changeConfirmer(options.yes);
+      if (!await confirm(archiveProjectQuestion(name))) throw agentXError("CONFIRMATION_DECLINED", `you did not archive ${name}; nothing changed`);
+      const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "archive", randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : archiveProjectText(result));
+    });
+  projectCommand
+    .command("restore")
+    .description("restore an archived project (a maintainer of the project)")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : restoreProjectText(result));
+    });
+  // Plan 2, Task 21: the people in a project and their roles. Anyone who can see the project lists them; a maintainer changes them.
+  projectCommand
+    .command("members")
+    .description("list the people in a project: each person's role (maintainer, contributor or viewer) and who added them")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectMembers(developerSession(), developerEnv(command), name);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, members: result.members }, true) : projectMembersText({ ...result, project: name }));
+    });
+  projectCommand
+    .command("add-member")
+    .description("give someone in your organization a role in a project, or change it (a maintainer of the project)")
+    .argument("<name>", "the project's name")
+    .argument("<email-or-id>", "the person's email or developer ID, from agentx org members")
+    .addOption(new Option("--role <role>", "what they may do: maintainer (manage the project and its people), contributor (start tasks) or viewer (look only)").choices(["maintainer", "contributor", "viewer"]).makeOptionMandatory())
+    .action(async (name: string, who: string, options: { role: ProjectRole }, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectAddMember(developerSession(), developerEnv(command), name, who, options.role);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, member: { developerId: result.member.developerId, role: result.role } }, true) : projectAddMemberText(result));
+    });
+  projectCommand
+    .command("remove-member")
+    .description("take away someone's role in a project (a maintainer of the project); org owners and admins keep maintaining every project")
+    .argument("<name>", "the project's name")
+    .argument("<email-or-id>", "the person's email or developer ID, from agentx project members")
+    .action(async (name: string, who: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await projectRemoveMember(developerSession(), developerEnv(command), name, who);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, developerId: result.member.developerId, removed: result.removed }, true) : projectRemoveMemberText(result));
+    });
+  const collect = (value: string, previous: string[]) => [...previous, value];
+  projectCommand
+    .command("settings")
+    .description("change a project's settings, on Rovara Cloud (a maintainer of the project); only the settings you give change")
+    .argument("<name>", "the project's name")
+    .option("--setup-command <command>", "a setup command; give it again for each one, in order (replaces the project's setup commands)", collect, [] as string[])
+    .option("--clear-setup-commands", "remove every setup command")
+    .option("--test-command <command>", "a test command; give it again for each one, in order (replaces the project's test commands)", collect, [] as string[])
+    .option("--clear-test-commands", "remove every test command")
+    .option("--allow-domain <domain>", "a website the project's machines may reach, such as artifacts.acme.dev or *.acme.dev; give it again for each (replaces the project's list)", collect, [] as string[])
+    .option("--clear-allowed-domains", "remove every allowed domain")
+    .option("--description <text>", "the project's description, or \"\" for none")
+    .option("--add-repository <owner/name>", "add a repository of your connected GitHub account; give it again for each", collect, [] as string[])
+    .option("--remove-repository <name>", "remove a repository, by its name or owner/name; give it again for each", collect, [] as string[])
+    .option("--devcontainer-repository <name>", "the repository whose devcontainer the project's commands run in")
+    .option("--devcontainer-config <path>", "the devcontainer's configuration file in that repository (default .devcontainer/devcontainer.json)")
+    .option("--remove-devcontainer", "run the project's commands without a devcontainer")
+    .action(async (name: string, options: {
+      setupCommand: string[]; clearSetupCommands?: boolean; testCommand: string[]; clearTestCommands?: boolean; allowDomain: string[]; clearAllowedDomains?: boolean;
+      description?: string; addRepository: string[]; removeRepository: string[]; devcontainerRepository?: string; devcontainerConfig?: string; removeDevcontainer?: boolean;
+    }, command: Command) => {
+      const globals = globalOptions(command);
+      const conflicts: Array<[boolean, string]> = [
+        [options.clearSetupCommands === true && options.setupCommand.length > 0, "--setup-command and --clear-setup-commands"],
+        [options.clearTestCommands === true && options.testCommand.length > 0, "--test-command and --clear-test-commands"],
+        [options.clearAllowedDomains === true && options.allowDomain.length > 0, "--allow-domain and --clear-allowed-domains"],
+        [options.removeDevcontainer === true && (options.devcontainerRepository !== undefined || options.devcontainerConfig !== undefined), "--remove-devcontainer and the devcontainer options"],
+      ];
+      const conflict = conflicts.find(([clash]) => clash);
+      if (conflict !== undefined) throw agentXError("CONFIG_INVALID", `choose one: ${conflict[1]} contradict each other`);
+      if (options.devcontainerConfig !== undefined && options.devcontainerRepository === undefined) throw agentXError("CONFIG_INVALID", "--devcontainer-config needs --devcontainer-repository");
+      const result = await changeDeveloperProjectSettings(developerSession(), developerEnv(command), name, {
+        ...(options.clearSetupCommands === true ? { setupCommands: [] } : options.setupCommand.length > 0 ? { setupCommands: options.setupCommand } : {}),
+        ...(options.clearTestCommands === true ? { testCommands: [] } : options.testCommand.length > 0 ? { testCommands: options.testCommand } : {}),
+        ...(options.clearAllowedDomains === true ? { allowedDomains: [] } : options.allowDomain.length > 0 ? { allowedDomains: options.allowDomain } : {}),
+        ...(options.description === undefined ? {} : { description: options.description }),
+        ...(options.addRepository.length > 0 ? { addRepositories: options.addRepository } : {}),
+        ...(options.removeRepository.length > 0 ? { removeRepositories: options.removeRepository } : {}),
+        ...(options.removeDevcontainer === true ? { devcontainer: null }
+          : options.devcontainerRepository === undefined ? {}
+            : { devcontainer: { repository: options.devcontainerRepository, ...(options.devcontainerConfig === undefined ? {} : { configPath: options.devcontainerConfig }) } }),
+      }, randomUUID());
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : projectSettingsText(result));
     });
 
   const envCommand = program.command("env").description("AgentX environments in this AWS account and region");
@@ -1320,6 +1659,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--slack-signing-secret-file <path>", "file holding the Slack signing secret")
     .option("--slack-signing-secret-env <NAME>", "environment variable holding the Slack signing secret")
     .option("--worker-image <digest-ref>", "worker image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
+    .option("--boot-stage2-sha256 <hex>", "with --worker-image: the SHA-256 of packages/worker/ec2/boot-stage2.sh in the release source that image was built from (a release supplies its own)")
     .option("--slack-image <digest-ref>", "Slack service image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
     .option("--admin-email <email>", "Cognito: your email, for the AgentX admin user")
     .option("--repository <owner/name>", "the first project's repository")
@@ -1593,7 +1933,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   githubAppId?: string; githubInstallationId?: string; githubPrivateKeyFile?: string; githubPrivateKeyEnv?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore"; slackInstall?: "installed" | "approval";
   slackBotTokenFile?: string; slackBotTokenEnv?: string; slackSigningSecretFile?: string; slackSigningSecretEnv?: string;
-  workerImage?: string; slackImage?: string;
+  workerImage?: string; slackImage?: string; bootStage2Sha256?: string;
   rovaraCloud?: boolean; googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
   githubSignInClientId?: string; githubSignInClientSecretArn?: string;
   /** --signin: which developer sign-in methods agentx init's developer-signin step enables. */
@@ -1646,7 +1986,7 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
     budget: options.budget, budgetScope: options.budgetScope, auditLock: options.auditLock,
     githubAccount: options.githubAccount, githubAccountType: options.githubAccountType, githubAppName: options.githubAppName,
     slackAppName: options.slackAppName, slackAppPostedMessages: options.slackAppPostedMessages,
-    workerImage: options.workerImage, slackImage: options.slackImage,
+    workerImage: options.workerImage, slackImage: options.slackImage, bootStage2Sha256: options.bootStage2Sha256,
     rovaraCloud: options.rovaraCloud, googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn, cloudDomainPrefix: options.cloudDomainPrefix,
     githubSignInClientId: options.githubSignInClientId, githubSignInClientSecretArn: options.githubSignInClientSecretArn,
   });

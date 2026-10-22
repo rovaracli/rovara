@@ -8,6 +8,8 @@ import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } fr
 import { githubWorkflowPullRequestKey, type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type GitHubPullRequestFeedback } from "../github-app.js";
 import { isConditional } from "./broker-shared.js";
+import type { InstallationCreatedPayload } from "../org/github-install-requests.js";
+import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { feedbackReopenedMeasure, type FeedbackReviewMeasure } from "../developer/feedback-review-measures.js";
 
 const DELIVERY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -153,7 +155,8 @@ export interface ReconcileTaskPullRequestFeedbackInput {
   expectedHeadSha?: string;
   loadTask(taskId: string): Promise<{ project: string; startingRevision: number; orgId?: OrgId | undefined; closedAt?: string; workflow?: WorkflowSnapshot } | undefined>;
   repositoryUrl(project: string, revision: number, repositoryId: string, orgId?: OrgId): Promise<string | undefined>;
-  getCurrentFeedback(repositoryUrl: string, number: number): Promise<GitHubPullRequestFeedback>;
+  /** `orgId` is the task's org: the GitHub token that reads the pull request is minted for it (Plan 2, Task 15). */
+  getCurrentFeedback(repositoryUrl: string, number: number, orgId: OrgId | undefined): Promise<GitHubPullRequestFeedback>;
   /** Writes exact payload bytes to immutable content-addressed storage; never overwrites an artifact. */
   persistBundle(bundle: WorkflowFeedbackBundle, bytes: string, sha256: string): Promise<string>;
   /**
@@ -164,7 +167,7 @@ export interface ReconcileTaskPullRequestFeedbackInput {
   /** The head AgentX last pushed to a pull request (its pull request record), when it has one. */
   recordedHead?(workspaceId: string, repositoryId: string, number: number): Promise<string | undefined>;
   /** A commit's parents, as GitHub says. */
-  commitParents?(repositoryUrl: string, commit: string): Promise<string[]>;
+  commitParents?(repositoryUrl: string, commit: string, orgId: OrgId | undefined): Promise<string[]>;
   /**
    * The comments a completed review was given (each one's ID, edit time and body digest), read from its immutable
    * bundles; undefined when they cannot be read.
@@ -242,7 +245,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       if (!index || index.taskId !== linked.taskId || index.repositoryId !== pr.repositoryId
         || index.url !== pr.url || index.candidateDigest !== pr.candidateDigest
         || pr.url !== `https://github.com/${fullName}/pull/${pr.number}`) throw new GithubWebhookRefusal("linked task PR scope mismatch");
-      const feedback = await input.getCurrentFeedback(url, pr.number);
+      const feedback = await input.getCurrentFeedback(url, pr.number, task.orgId);
       if (feedback.pullRequest.number !== pr.number || feedback.pullRequest.url !== pr.url
         || feedback.comments.some(comment => !comment.url.startsWith(`${pr.url}#`))) throw new GithubWebhookRefusal("current GitHub feedback scope mismatch");
       if (input.observationMode === "merge" && (feedback.comments.length !== 0 || feedback.threads.length !== 0)) {
@@ -283,7 +286,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       && pushed.feedback.pullRequest.headCommit !== input.expectedHeadSha) {
       const shown = pushed.feedback.pullRequest.headCommit;
       const behind = shown === pushed.pr.headSha
-        || (input.commitParents !== undefined && (await input.commitParents(pushed.url, input.expectedHeadSha).catch(() => [] as string[])).includes(shown));
+        || (input.commitParents !== undefined && (await input.commitParents(pushed.url, input.expectedHeadSha, task.orgId).catch(() => [] as string[])).includes(shown));
       if (behind) throw new GithubWebhookRetryableError("GitHub has not caught up with the pull request's head yet");
     }
     // The same lag, with no push event to hint at it: any event (a comment, a review, an edit) read just after AgentX
@@ -297,7 +300,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       for (const read of reads) {
         const shown = read.feedback.pullRequest.headCommit;
         if (read.feedback.pullRequest.state !== "open" || read.pr.headSha === undefined || shown === read.pr.headSha) continue;
-        const parents = await input.commitParents(read.url, read.pr.headSha).catch(() => [] as string[]);
+        const parents = await input.commitParents(read.url, read.pr.headSha, task.orgId).catch(() => [] as string[]);
         if (parents.length === 1 && parents[0] === shown) throw new GithubWebhookRetryableError("GitHub has not caught up with the pull request's head yet");
       }
     }
@@ -328,7 +331,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
         || fixTree === undefined || fixTree !== feedback.pullRequest.headTreeSha || head === pr.headSha || !/^[a-f0-9]{40}$/.test(head)) return false;
       if (await input.recordedHead?.(linked.workspaceId, pr.repositoryId, pr.number) === head) return true;
       try {
-        return input.commitParents !== undefined && JSON.stringify(await input.commitParents(url, head)) === JSON.stringify([pr.headSha]);
+        return input.commitParents !== undefined && JSON.stringify(await input.commitParents(url, head, task.orgId)) === JSON.stringify([pr.headSha]);
       } catch {
         return false;
       }
@@ -504,7 +507,7 @@ export async function verifyTaskPullRequestFeedbackCurrent(input: Pick<Reconcile
     const fullName = (() => { const parsed = parseGitHubRepository(url); return `${parsed.owner}/${parsed.name}`; })();
     const index = await findLinkedGithubWorkflowPullRequest({ ...input, repositoryFullName: fullName, number: pr.number });
     if (!index || index.taskId !== linked.taskId || index.repositoryId !== pr.repositoryId || index.url !== pr.url || index.candidateDigest !== approval.candidateDigest) return false;
-    const feedback = await input.getCurrentFeedback(url, pr.number);
+    const feedback = await input.getCurrentFeedback(url, pr.number, task.orgId);
     if (feedback.pullRequest.state !== "open" || feedback.pullRequest.headCommit !== pr.headSha
       || feedback.pullRequest.headTreeSha !== workflow.candidate.repositories.find(repo => repo.repositoryId === pr.repositoryId)?.treeSha
       || feedback.pullRequest.url !== pr.url || feedback.comments.some(comment => !comment.url.startsWith(`${pr.url}#`))) return false;
@@ -806,6 +809,85 @@ export async function processGithubWebhookDelivery(input: {
   }
 }
 
+/** The part of an `installation` webhook Task 14 reads. `requester` is an object or null (absent counts as null). */
+const InstallationCreatedSchema = z.object({
+  action: z.literal("created"),
+  installation: z.object({
+    id: z.number().int().positive(),
+    created_at: z.union([z.string().min(1).max(64), z.number().positive()]),
+    account: z.object({ login: z.string().min(1).max(100), id: z.number().int().positive(), type: z.string().min(1).max(40) }).passthrough(),
+  }).passthrough(),
+  requester: z.object({ id: z.number().int().positive(), login: z.string().min(1).max(100) }).passthrough().nullish(),
+  sender: z.object({ id: z.number().int().positive(), login: z.string().min(1).max(100) }).passthrough(),
+}).passthrough();
+
+/** The parts of the other `installation` actions and of `installation_repositories` that Task 15 reads. */
+const InstallationLifecycleSchema = z.object({
+  action: z.string().min(1).max(64),
+  installation: z.object({
+    id: z.number().int().positive(), repository_selection: z.enum(["all", "selected"]).optional(),
+    updated_at: z.union([z.string().max(64), z.number()]).nullish(), suspended_at: z.union([z.string().max(64), z.number()]).nullish(),
+  }).passthrough(),
+  repository_selection: z.enum(["all", "selected"]).optional(),
+}).passthrough();
+
+/**
+ * An `installation` event (Plan 2, Tasks 14 and 15) or `installation_repositories` event: verified like any delivery. `created` goes to the
+ * install-request flow; the other actions to the lifecycle handler. Both do their own deduplication of the delivery id. They have no repository
+ * to authorize, so they are not reserved or recovered like a pull request event.
+ */
+async function handleInstallationEvent(
+  input: { rawBody: string; headers: Record<string, string | undefined>; secret: string },
+  handlers: { created?: (deliveryId: string, payload: InstallationCreatedPayload) => Promise<unknown>; lifecycle?: (deliveryId: string, event: InstallationLifecycleEvent) => Promise<unknown> },
+): Promise<{ status: "ACCEPTED"; deliveryId: string; lifecycle?: true }> {
+  if (Buffer.byteLength(input.rawBody, "utf8") > 1_048_576) throw new GithubWebhookRefusal("GitHub webhook payload exceeds the size limit");
+  const headers = Object.fromEntries(Object.entries(input.headers).map(([key, value]) => [key.toLowerCase(), value]));
+  if (!verifyGithubWebhookSignature(input.rawBody, headers["x-hub-signature-256"], input.secret)) throw new GithubWebhookRefusal(GITHUB_WEBHOOK_SIGNATURE_INVALID);
+  const deliveryId = headers["x-github-delivery"];
+  if (deliveryId === undefined || !DELIVERY_ID.test(deliveryId)) throw new GithubWebhookRefusal("GitHub webhook delivery ID is invalid");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(input.rawBody) as unknown;
+  } catch {
+    throw new GithubWebhookRefusal("GitHub webhook JSON body is invalid");
+  }
+  const githubEvent = headers["x-github-event"];
+  const action = raw !== null && typeof raw === "object" && "action" in raw ? raw.action : undefined;
+  if (githubEvent === "installation_repositories" || (githubEvent === "installation" && action !== "created")) {
+    // Task 15: GitHub's own changes to an installation. An action Rovara does not follow (new permissions accepted, ...) is accepted and ignored.
+    const lifecycle = handlers.lifecycle;
+    const change = InstallationLifecycleSchema.safeParse(raw);
+    if (lifecycle === undefined || !change.success) throw new GithubWebhookRefusal("GitHub webhook event payload is unsupported or incomplete");
+    const installationId = change.data.installation.id;
+    // When GitHub says the installation last changed: `updated_at`, and for a suspension the moment it was suspended if that is later. It
+    // orders deliveries; a payload with neither is applied in the order it arrives.
+    const stamps = [change.data.installation.updated_at, change.data.action === "suspend" ? change.data.installation.suspended_at : undefined]
+      .flatMap((value) => {
+        const time = typeof value === "number" ? (value < 1e12 ? value * 1000 : value) : typeof value === "string" ? Date.parse(value) : Number.NaN;
+        return Number.isFinite(time) ? [time] : [];
+      });
+    const eventAt = stamps.length === 0 ? undefined : Math.max(...stamps);
+    const at = eventAt === undefined ? {} : { eventAt };
+    if (githubEvent === "installation_repositories") {
+      const repositorySelection = change.data.repository_selection ?? change.data.installation.repository_selection;
+      if (repositorySelection !== undefined) await lifecycle(deliveryId, { kind: "repositories", installationId, repositorySelection, ...at });
+    } else if (change.data.action === "deleted" || change.data.action === "suspend" || change.data.action === "unsuspend") {
+      await lifecycle(deliveryId, { kind: "installation", action: change.data.action, installationId, ...at });
+    }
+    return { status: "ACCEPTED", deliveryId, lifecycle: true };
+  }
+  const parsed = InstallationCreatedSchema.safeParse(raw);
+  const bind = handlers.created;
+  if (!parsed.success || bind === undefined) throw new GithubWebhookRefusal("GitHub webhook event payload is unsupported or incomplete");
+  const { installation, requester, sender } = parsed.data;
+  await bind(deliveryId, {
+    installation: { id: installation.id, created_at: installation.created_at, account: { login: installation.account.login, id: installation.account.id, type: installation.account.type } },
+    requester: requester === undefined || requester === null ? null : { id: requester.id, login: requester.login },
+    sender: { id: sender.id, login: sender.login },
+  });
+  return { status: "ACCEPTED", deliveryId };
+}
+
 /** Shared endpoint path: verify, durably reserve, claim, process, then record the outcome. */
 export async function handleGithubWebhook(input: {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -815,8 +897,19 @@ export async function handleGithubWebhook(input: {
   secret: string;
   authorizeRepository: ReceiveGithubWebhookInput["authorizeRepository"];
   process(event: ReceivedGithubWebhook["event"], deliveryId: string): Promise<void>;
+  /** Plan 2, Task 14: where an `installation.created` delivery goes, before anything else. Absent, the event is unsupported as before. */
+  installationCreated?: (deliveryId: string, payload: InstallationCreatedPayload) => Promise<unknown>;
+  /** Plan 2, Task 15: where the other `installation` actions and `installation_repositories` go. Absent, they are unsupported as before. */
+  installationLifecycle?: (deliveryId: string, event: InstallationLifecycleEvent) => Promise<unknown>;
   now(): string;
-}): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS"; deliveryId: string }> {
+}): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS"; deliveryId: string; lifecycle?: true }> {
+  if ((input.installationCreated !== undefined || input.installationLifecycle !== undefined)
+    && Object.entries(input.headers).some(([key, value]) => key.toLowerCase() === "x-github-event" && (value === "installation" || value === "installation_repositories"))) {
+    return handleInstallationEvent(input, {
+      ...(input.installationCreated === undefined ? {} : { created: input.installationCreated }),
+      ...(input.installationLifecycle === undefined ? {} : { lifecycle: input.installationLifecycle }),
+    });
+  }
   const received = await receiveGithubWebhook({
     rawBody: input.rawBody,
     headers: input.headers,

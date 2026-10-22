@@ -24,7 +24,8 @@ function dockerfileSources(path: string): string[] {
   return readFileSync(path, "utf8")
     .split("\n")
     .filter((line) => line.startsWith("COPY ") && !line.includes("--from="))
-    .flatMap((line) => line.trim().split(/\s+/).slice(1, -1));
+    // COPY's own flags (--chown, --chmod) are not sources.
+    .flatMap((line) => line.trim().split(/\s+/).slice(1, -1).filter((word) => !word.startsWith("--")));
 }
 
 describe("shared release helpers", () => {

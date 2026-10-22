@@ -631,7 +631,7 @@ describe("AWS control-plane handlers", () => {
       title: "Publish demo",
       // A thread publication carries its Slack attribution into the pull request.
       body: `Requested in Slack thread https://slack.com/archives/${channelId}/p1758240000000100 by U0123456789.`,
-    });
+    }, { system: "private-install" });
 
     const editRequestId = randomUUID();
     const editEvent = {
@@ -663,6 +663,7 @@ describe("AWS control-plane handlers", () => {
       "https://github.com/example/demo.git",
       3,
       { title: "Updated review title" },
+      { system: "private-install" },
     );
     const duplicateEdit = await handler(editEvent);
     expect(JSON.parse(duplicateEdit.body)).toMatchObject({ duplicate: true });

@@ -40,3 +40,17 @@ export function parseCommandLine(line: string, cwd: string, timeoutSeconds: numb
   return { cwd, executable, args, timeoutSeconds };
 }
 
+const SHELL_SAFE_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+/** POSIX single-quote escaping: a quote inside the word closes the quotes, is written inside double quotes, and reopens them. */
+function quoteWord(word: string): string {
+  return SHELL_SAFE_WORD.test(word) ? word : `'${word.split("'").join(`'"'"'`)}'`;
+}
+
+/**
+ * A command as one line, quoting a word only where it needs it, so `parseCommandLine` reads it back to the same executable and
+ * arguments (it joins adjacent quoted pieces into one word, as a POSIX shell does).
+ */
+export function formatCommandLine(command: ProjectCommand): string {
+  return [command.executable, ...command.args].map(quoteWord).join(" ");
+}

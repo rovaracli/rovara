@@ -26,6 +26,14 @@ export function projectRevisionKey(orgId: OrgId, name: string, revision: number)
 /** The sort-key prefix of a project's revisions, for a query on `projectPk`. */
 export const PROJECT_REVISION_SK_PREFIX = "REV#";
 
+/**
+ * A project's record beside its revisions: status (active or archived), description, who created it and the setup check. Absent on a
+ * project registered before Plan 2, which reads as active, created by "unknown".
+ */
+export function projectMetaKey(orgId: OrgId, name: string): OrgKey {
+  return { pk: projectPk(orgId, name), sk: "META" };
+}
+
 export function projectSelectionKey(orgId: OrgId, name: string): OrgKey {
   return { pk: projectPk(orgId, name), sk: "SELECTION" };
 }

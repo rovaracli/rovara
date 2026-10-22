@@ -32,6 +32,7 @@ import { GetFunctionConfigurationCommand, LambdaClient } from "@aws-sdk/client-l
 import { build as bundle } from "esbuild";
 import { CDK_CONSTRUCT_IDS, cdkAppArguments } from "../packages/cli/src/deploy/cdk-engine.js";
 import { environmentStackName } from "../packages/contracts/src/environments.js";
+import { BOOT_STAGE2_SHA256_PATTERN } from "../packages/contracts/src/session.js";
 import {
   Runner,
   assertDigestImage,
@@ -60,6 +61,8 @@ export type StackParameters = Record<StackKind, Readonly<Record<string, string>>
 export interface BuiltArtifacts {
   revision: string;
   outputDir: string;
+  /** The SHA-256 of packages/worker/ec2/boot-stage2.sh in the source tree the worker image is built from (see `bootStage2Sha256`). */
+  bootStage2Sha256: string;
 }
 
 export type StepOutputName = "sha256Hex" | "sha256Base64" | "s3Key" | "s3ObjectVersion" | "imageUri";
@@ -68,7 +71,11 @@ export interface StepRef {
   fromStep: string;
   output: StepOutputName;
 }
-export type ParameterSpec = { key: string; usePreviousValue: true } | { key: string; value: StepRef };
+/** A value known when the plan is made. */
+export interface LiteralValue {
+  literal: string;
+}
+export type ParameterSpec = { key: string; usePreviousValue: true } | { key: string; value: StepRef | LiteralValue };
 
 export interface ChangeExpectation {
   action: "Add" | "Modify";
@@ -130,7 +137,7 @@ export type DeployStep =
   | { id: string; kind: "execute-change-set"; stack: string; createdBy: string }
   | { id: string; kind: "verify-lambda-code"; stack: string; logicalId: string; expectedSha256Base64: StepRef }
   | { id: string; kind: "verify-stack-resources"; stack: string; createdBy: string; logicalIdPrefix: string; expectedStatus: string }
-  | { id: string; kind: "verify-stack-parameter"; stack: string; key: string; expected: StepRef };
+  | { id: string; kind: "verify-stack-parameter"; stack: string; key: string; expected: StepRef | LiteralValue };
 
 const LAMBDAS = {
   broker: { logicalId: "BrokerE1355FD6", entry: "packages/broker/src/aws/broker.ts" },
@@ -139,6 +146,10 @@ const LAMBDAS = {
 const QUALIFICATION = { logicalIdPrefix: "E2eQualificationTransport", construct: CDK_CONSTRUCT_IDS["control-plane"], context: { "agentx:e2eQualificationTransport": "enabled" } } as const;
 const WORKER_IMAGE_PARAMETER = "WorkerImageUri";
 const EXECUTOR_IMAGE_PARAMETER = "ExecutorImageUri";
+const BOOT_STAGE2_PARAMETER = "BootStage2Sha256";
+/** The hash setting of boot stage 2 (Task 10): a CloudFormation parameter and its SSM setting, beside WorkerImageUri, in named environments' runtime stack. */
+const BOOT_STAGE2_SETTING = { logicalIdPrefix: "WorkerBootStage2Sha256Parameter", construct: CDK_CONSTRUCT_IDS.runtime } as const;
+const BOOT_STAGE2_SCRIPT = new URL("../packages/worker/ec2/boot-stage2.sh", import.meta.url);
 const EXECUTOR_SETTING = { logicalIdPrefix: "WorkerExecutorImageParameter", construct: CDK_CONSTRUCT_IDS.runtime } as const;
 
 /**
@@ -152,6 +163,14 @@ export function executorRepositoryUri(workerRepositoryUri: string): string {
     throw new Error(`cannot derive the executor repository from ${workerRepositoryUri}: its name has no "worker" to replace; create the executor repository beside it and push the image by hand`);
   }
   return `${workerRepositoryUri.slice(0, slash + 1)}${name.slice(0, name.lastIndexOf("worker"))}executor${name.slice(name.lastIndexOf("worker") + "worker".length)}`;
+}
+
+/**
+ * The SHA-256 of `packages/worker/ec2/boot-stage2.sh` in this source tree. The worker image copies that file in (environments/base/Dockerfile) and is
+ * built from this same tree, which `main` requires to be clean, so this is the hash of the stage 2 the pushed image carries.
+ */
+export function bootStage2Sha256(): string {
+  return createHash("sha256").update(readFileSync(BOOT_STAGE2_SCRIPT)).digest("hex");
 }
 
 export function loadAllowlist(): string[] {
@@ -225,8 +244,35 @@ export function planTestDeploy(
     if (current === undefined) throw new Error(`the runtime stack has no ${WORKER_IMAGE_PARAMETER} parameter to take the ECR repository from`);
     assertDigestImage(current);
     const repositoryUri = current.slice(0, current.indexOf("@"));
-    steps.push({ id: "push-worker-image", kind: "ecr-push", image: "worker", repositoryUri, revision });
     const image: StepRef = { fromStep: "push-worker-image", output: "imageUri" };
+    // The hash is written in the same change set as the image, from the boot-stage2.sh the image was built from: a worker boots stage 2 from its
+    // image and refuses it unless the launch's hash matches, so the two may only change together.
+    if (!BOOT_STAGE2_SHA256_PATTERN.test(input.artifacts.bootStage2Sha256)) throw new Error("the boot stage 2 hash must be the 64 lower-case hex digits of packages/worker/ec2/boot-stage2.sh");
+    const bootStage2: LiteralValue = { literal: input.artifacts.bootStage2Sha256 };
+    const hashed = input.previous.runtime[BOOT_STAGE2_PARAMETER] !== undefined;
+    const otherKeys = Object.keys(input.previous.runtime).filter((key) => key !== WORKER_IMAGE_PARAMETER && key !== BOOT_STAGE2_PARAMETER).sort();
+    steps.push({ id: "push-worker-image", kind: "ecr-push", image: "worker", repositoryUri, revision });
+    if (!hashed) {
+      // A runtime stack deployed before the boot split has neither the parameter nor its SSM setting. The first change set adds both, lifted
+      // from a synth of the runtime stack, as "none" (what the setting means before any image carries a stage 2) and changes nothing else.
+      // The hash is never written on its own: the next change set writes it with the image.
+      steps.push(
+        {
+          id: "change-set-boot-stage2-setting",
+          kind: "create-change-set",
+          stack: stacks.runtime,
+          stackKind: "runtime",
+          changeSetPrefix: `test-deploy-boot-hash-${revision.slice(0, 12)}`,
+          template: { source: "lift-resources", logicalIdPrefix: BOOT_STAGE2_SETTING.logicalIdPrefix, parameterNames: [BOOT_STAGE2_PARAMETER], construct: BOOT_STAGE2_SETTING.construct, cdkContext: {}, identityMode },
+          parameters: [
+            { key: BOOT_STAGE2_PARAMETER, value: { literal: "none" } },
+            ...[...otherKeys, WORKER_IMAGE_PARAMETER].sort().map((key): ParameterSpec => ({ key, usePreviousValue: true })),
+          ],
+          expect: { action: "Add", logicalIdPrefixes: [BOOT_STAGE2_SETTING.logicalIdPrefix] },
+        },
+        { id: "execute-boot-stage2-setting", kind: "execute-change-set", stack: stacks.runtime, createdBy: "change-set-boot-stage2-setting" },
+      );
+    }
     steps.push(
       {
         id: "change-set-runtime",
@@ -235,11 +281,16 @@ export function planTestDeploy(
         stackKind: "runtime",
         changeSetPrefix: `test-deploy-runtime-${revision.slice(0, 12)}`,
         template: { source: "previous" },
-        parameters: usePrevious("runtime").map((parameter) => (parameter.key === WORKER_IMAGE_PARAMETER ? { key: parameter.key, value: image } : parameter)),
-        expect: { action: "Modify", logicalIdPrefixes: ["WorkerImageParameter"], allowedAttributes: ["Properties.Value"] },
+        parameters: [
+          { key: BOOT_STAGE2_PARAMETER, value: bootStage2 },
+          ...otherKeys.map((key): ParameterSpec => ({ key, usePreviousValue: true })),
+          { key: WORKER_IMAGE_PARAMETER, value: image },
+        ],
+        expect: { action: "Modify", logicalIdPrefixes: ["WorkerImageParameter", BOOT_STAGE2_SETTING.logicalIdPrefix], allowedAttributes: ["Properties.Value"] },
       },
       { id: "execute-runtime", kind: "execute-change-set", stack: stacks.runtime, createdBy: "change-set-runtime" },
       { id: "verify-runtime-image", kind: "verify-stack-parameter", stack: stacks.runtime, key: WORKER_IMAGE_PARAMETER, expected: image },
+      { id: "verify-runtime-boot-stage2", kind: "verify-stack-parameter", stack: stacks.runtime, key: BOOT_STAGE2_PARAMETER, expected: bootStage2 },
     );
   }
 
@@ -253,7 +304,8 @@ export function planTestDeploy(
     // A runtime stack deployed before the web/API runtime has neither the parameter nor its SSM setting: the first change set adds
     // both, lifted from a synth of the runtime stack, and changes nothing else. Afterwards it changes only the parameter's value.
     const exists = input.previous.runtime[EXECUTOR_IMAGE_PARAMETER] !== undefined;
-    const previousKeys = Object.keys(input.previous.runtime).filter((key) => key !== EXECUTOR_IMAGE_PARAMETER);
+    // A parameter a change set leaves out reverts to its default, so the hash the worker-image unit writes (or adds) is named here too.
+    const previousKeys = [...new Set([...Object.keys(input.previous.runtime), ...(units.includes("worker-image") ? [BOOT_STAGE2_PARAMETER] : [])])].filter((key) => key !== EXECUTOR_IMAGE_PARAMETER);
     steps.push(
       {
         id: "change-set-executor",
@@ -608,8 +660,8 @@ export function parseTestDeployArgs(argv: readonly string[]): TestDeployArgs {
   return { env, profile, region: values.get("--region") ?? DEFAULT_REGION, apply: flags.has("--apply"), only };
 }
 
-function describeRef(ref: StepRef): string {
-  return `<${ref.fromStep}.${ref.output}>`;
+function describeRef(ref: StepRef | LiteralValue): string {
+  return "literal" in ref ? ref.literal : `<${ref.fromStep}.${ref.output}>`;
 }
 
 export function formatPlan(steps: readonly DeployStep[]): string {
@@ -658,7 +710,8 @@ const SETTLED_STACK_STATUSES: ReadonlySet<string> = new Set(["CREATE_COMPLETE", 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const sha256 = (data: Buffer) => createHash("sha256").update(data);
 
-function outputOf(context: ApplyContext, ref: StepRef): string {
+function outputOf(context: ApplyContext, ref: StepRef | LiteralValue): string {
+  if ("literal" in ref) return ref.literal;
   const value = context.outputs.get(ref.fromStep)?.[ref.output];
   if (value === undefined) throw new Error(`step ${ref.fromStep} did not produce ${ref.output}`);
   return value;
@@ -926,7 +979,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   };
   // The identity stack exists only for a Cognito environment; the engine's synth context differs for an own-OIDC one.
   const identityMode = stackExists(runner, args.region, environmentStackName(args.env, "identity")) ? "cognito" : "oidc";
-  const steps = planTestDeploy({ env: args.env, only: args.only, artifacts: { revision, outputDir: join(tmpdir(), `test-deploy-${revision.slice(0, 12)}`) }, previous, identityMode });
+  const steps = planTestDeploy({ env: args.env, only: args.only, artifacts: { revision, outputDir: join(tmpdir(), `test-deploy-${revision.slice(0, 12)}`), bootStage2Sha256: bootStage2Sha256() }, previous, identityMode });
   console.log(`TEST deploy plan for ${args.env} (${args.region}), revision ${revision}\n${formatPlan(steps)}`);
   if (!args.apply) {
     console.log("\nDry run: nothing was changed. Add --apply to run this plan.");

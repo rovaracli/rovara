@@ -210,6 +210,25 @@ export class ControlPlaneStack extends Stack {
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
     if (naming.env !== undefined) broker.addEnvironment("CONNECTOR_SECRET_PREFIX", naming.connectorSecretPrefix);
+    // Plan 2, Task 19 (cloud installs): the broker keeps the DNS firewall's "ProjectAllowList" equal to the approved egress domains. The list lives
+    // in the foundation stack; its id arrives the way the VPC's does, as a foundation output the deploy passes on as this parameter. The broker may
+    // update and read that one list and nothing else in Route 53 Resolver, and no other role here has these actions.
+    let projectAllowListArn: string | undefined;
+    if (props?.cloud === true && naming.env !== undefined) {
+      const projectAllowListId = new CfnParameter(this, "ProjectAllowListId", { type: "String", description: "The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains" }).valueAsString;
+      broker.addEnvironment("AGENT_PROJECT_ALLOW_LIST_ID", projectAllowListId);
+      projectAllowListArn = this.formatArn({ service: "route53resolver", resource: "firewall-domain-list", resourceName: projectAllowListId });
+      // A policy of its own, not the broker's default one: that policy is already near the size where CDK moves statements into a managed
+      // policy, which the service role has no permission to create (tests/contract/access-stack.test.ts). The role's inline policies together
+      // stay far under IAM's 10,240-character limit.
+      new iam.Policy(this, "BrokerProjectAllowListPolicy", {
+        roles: [broker.role!],
+        statements: [new iam.PolicyStatement({
+          actions: ["route53resolver:UpdateFirewallDomains", "route53resolver:GetFirewallDomainList"],
+          resources: [projectAllowListArn],
+        })],
+      });
+    }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
     // exist only once the eval stack is deployed, and until then a run is refused as not installed.
@@ -238,6 +257,8 @@ export class ControlPlaneStack extends Stack {
         GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
         // The install's single org (ruling R3) derives from the environment name.
         AGENTX_ENV: naming.env,
+        // Plan 2, Task 15: on the hosted cloud the job reads a task's code only while the task's org still holds the GitHub installation.
+        ...(props?.cloud === true ? { AGENTX_CLOUD: "true" } : {}),
       }, Duration.seconds(150), [], 1024);
       // The State table, one action at a time, each on the partitions it needs (the sort key cannot be narrowed here):
       // reads of the task record, its evidence pointer, the job rows and the project revision the task started from; the
@@ -249,6 +270,15 @@ export class ControlPlaneStack extends Stack {
         resources: [state.tableArn],
         conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVTASK#*", "PLAN_EVIDENCE", "ORG#*#PROJECT#*"] } },
       }));
+      // The hosted cloud only: the org's GitHub installation binding, read (never written) before each token the job mints.
+      if (props?.cloud === true) {
+        planEvidence.addToRolePolicy(new iam.PolicyStatement({
+          sid: "ReadGithubInstallationBinding",
+          actions: ["dynamodb:GetItem"],
+          resources: [state.tableArn],
+          conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["GITHUB_INSTALLATION#*"] } },
+        }));
+      }
       planEvidence.addToRolePolicy(new iam.PolicyStatement({
         sid: "PutEvidencePointer",
         actions: ["dynamodb:PutItem"],
@@ -749,6 +779,17 @@ export class ControlPlaneStack extends Stack {
       target: `integrations/${integration.ref}`,
       authorizationType: "NONE",
     });
+    // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post. No JWT: the broker checks the connect state against
+    // GitHub, and the confirmation by cookie and Origin. A named environment only (the legacy deployment has no developer sign-in);
+    // the stage throttles them like the other public routes (DeveloperSignIn applies `throttledRoutes`).
+    const githubInstallRoutes = naming.env === undefined ? [] : [
+      new apigwv2.CfnRoute(this, "GithubInstallCallbackRoute", {
+        apiId: api.ref, routeKey: "GET /v1/github/install/callback", target: `integrations/${integration.ref}`, authorizationType: "NONE",
+      }),
+      new apigwv2.CfnRoute(this, "GithubInstallConfirmRoute", {
+        apiId: api.ref, routeKey: "POST /v1/github/install/confirm", target: `integrations/${integration.ref}`, authorizationType: "NONE",
+      }),
+    ];
     // Confused-deputy guard: only this account's own EventBridge schedules may assume the recovery roles.
     // Scheduler sets aws:SourceArn to the schedule group's ARN, not the schedule's; these schedules use the default group.
     const schedulerPrincipal = new iam.ServicePrincipal("scheduler.amazonaws.com", { conditions: {
@@ -772,6 +813,34 @@ export class ControlPlaneStack extends Stack {
         retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
       },
     });
+    // Plan 2, Task 14 Step 6: one reminder to a requester whose GitHub admin has not approved after 2 days. Deleting this schedule (and the
+    // handler's branch) removes the feature and nothing else; the 7 day expiry stays either way. Hourly is the finest it needs.
+    new scheduler.CfnSchedule(this, "GithubInstallRequestReminderSchedule", {
+      flexibleTimeWindow: { mode: "OFF" },
+      scheduleExpression: "rate(1 hour)",
+      state: "ENABLED",
+      target: {
+        arn: broker.functionArn,
+        roleArn: githubRecoveryRole.roleArn,
+        input: JSON.stringify({ kind: "github-install-request-reminders" }),
+        retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+      },
+    });
+    // Plan 2, Task 19: the firewall list follows the approved egress domains. A change syncs at once; this run is the retry for one that could not,
+    // and the one-off backfill of requests for domains stored before approvals existed. It does nothing while the sync marker is clean.
+    if (projectAllowListArn !== undefined) {
+      new scheduler.CfnSchedule(this, "EgressDomainsSyncSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(5 minutes)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.egress-domains-sync" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
+    }
     new scheduler.CfnSchedule(this, "WorkflowMergeRecoverySchedule", {
       flexibleTimeWindow: { mode: "OFF" },
       scheduleExpression: "rate(1 minute)",
@@ -850,7 +919,7 @@ export class ControlPlaneStack extends Stack {
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
     if (naming.env !== undefined && signInParameters !== undefined) {
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
-        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state,
+        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: githubInstallRoutes,
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
@@ -1166,6 +1235,14 @@ export class ControlPlaneStack extends Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }).addAlarmAction(notifyOperator);
+    // Plan 2, Task 14: a failed owners' notice after an approved GitHub request binds (the item stays for the hourly sweep, which retries it).
+    // The broker logs it as a JSON line; this filter turns it into a metric an alarm can watch.
+    broker.logGroup.addMetricFilter("GithubInstallRequestNoticeFailedMetric", {
+      filterPattern: logs.FilterPattern.stringValue("$.event", "=", "github.install_request_notice_failed"),
+      metricNamespace: naming.metricsNamespace,
+      metricName: "GithubInstallRequestNoticeFailed",
+      metricValue: "1",
+    });
 
     new CfnOutput(this, "ApiEndpoint", { value: api.attrApiEndpoint });
     new CfnOutput(this, "StateTableName", { value: state.tableName });

@@ -6,6 +6,7 @@ import { fakeGitHubApi, memoryInitSecrets, TEST_PRIVATE_KEY } from "../support/i
 const SECRET_ID = githubAppSecretName("staging");
 const URL = "https://cp.example.test/v1/github/webhooks";
 const HAND_SET = "hand-set-webhook-secret-".padEnd(40, "h");
+const valueOf = (secrets: { values: Map<string, string> }) => secrets.values.get(SECRET_ID)!;
 const BASE = { appId: "123", slug: "agentx-acme-staging", account: "acme", privateKey: TEST_PRIVATE_KEY };
 
 describe("ensureGithubWebhook", () => {
@@ -13,7 +14,7 @@ describe("ensureGithubWebhook", () => {
     const stored = { ...BASE, webhookSecret: HAND_SET };
     const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify(stored) });
     const api = fakeGitHubApi({ hookUrl: "https://old.example.test/hook" });
-    const outcome = await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretId: SECRET_ID, webhookUrl: URL });
+    const outcome = await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
     expect(outcome.status).toBe("configured");
     // No rotation: the stored secret is untouched, and GitHub is given that same secret.
     expect(JSON.parse(secrets.values.get(SECRET_ID)!)).toEqual(stored);
@@ -23,7 +24,7 @@ describe("ensureGithubWebhook", () => {
   it("reports unchanged, but still gives GitHub the stored secret, when the secret and the hook look right", async () => {
     const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify({ ...BASE, webhookSecret: HAND_SET }) });
     const api = fakeGitHubApi({ hookUrl: URL });
-    const outcome = await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretId: SECRET_ID, webhookUrl: URL });
+    const outcome = await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
     expect(outcome).toMatchObject({ status: "unchanged", missingEvents: [] });
     // GitHub masks its copy of the secret, so a hook whose secret differs can only be repaired by sending the stored one again.
     expect(api.hookWrites).toEqual([{ url: URL, secret: HAND_SET }]);
@@ -33,7 +34,7 @@ describe("ensureGithubWebhook", () => {
     const stored = { ...BASE, futureKey: { nested: true } };
     const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify(stored) });
     const api = fakeGitHubApi({ hookUrl: URL });
-    const outcome = await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretId: SECRET_ID, webhookUrl: URL });
+    const outcome = await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
     expect(outcome.status).toBe("configured");
     const after = JSON.parse(secrets.values.get(SECRET_ID)!) as Record<string, unknown>;
     expect(after).toMatchObject(stored);
@@ -42,10 +43,31 @@ describe("ensureGithubWebhook", () => {
     expect(api.hookWrites).toEqual([{ url: URL, secret: after.webhookSecret }]);
   });
 
+  it("works from the value it is given and never reads the secret back", async () => {
+    // The ledger's first-save bug: a read right after the first save can miss it. The caller hands over what it just wrote.
+    const written = { ...BASE, clientId: "Iv23liCLIENTidValue", webhookSecret: HAND_SET };
+    const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify({ ...BASE, stale: true }) });
+    let reads = 0;
+    const get = secrets.get.bind(secrets);
+    secrets.get = async (name) => { reads += 1; return get(name); };
+    const api = fakeGitHubApi({ hookUrl: URL });
+    await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretValue: JSON.stringify(written), secretId: SECRET_ID, webhookUrl: URL });
+    expect(reads).toBe(0);
+    expect(api.hookWrites).toEqual([{ url: URL, secret: HAND_SET }]);
+    // A secret it has to add is merged into the value it was given, so the fields of the first save survive.
+    const without = { ...BASE, clientId: "Iv23liCLIENTidValue" };
+    await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretValue: JSON.stringify(without), secretId: SECRET_ID, webhookUrl: URL });
+    expect(reads).toBe(0);
+    const after = JSON.parse(secrets.values.get(SECRET_ID)!) as Record<string, unknown>;
+    expect(after).toMatchObject(without);
+    expect(after.webhookSecret).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(secrets.values.get(SECRET_ID)!)).not.toHaveProperty("stale");
+  });
+
   it("replaces a webhook secret that is too short to be used", async () => {
     const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify({ ...BASE, webhookSecret: "short" }) });
     const api = fakeGitHubApi();
-    await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretId: SECRET_ID, webhookUrl: URL });
+    await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
     expect((JSON.parse(secrets.values.get(SECRET_ID)!) as { webhookSecret: string }).webhookSecret).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -57,19 +79,19 @@ describe("ensureGithubWebhook", () => {
     const api = fakeGitHubApi();
     const setHookConfig = api.setHookConfig.bind(api);
     api.setHookConfig = async (jwt, hook) => { order.push("github"); await setHookConfig(jwt, hook); };
-    await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretId: SECRET_ID, webhookUrl: URL });
+    await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
     expect(order).toEqual(["store", "github"]);
   });
 
   it("reports missing events with the settings page", async () => {
     const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify({ ...BASE, webhookSecret: HAND_SET }) });
     const outcome = await ensureGithubWebhook({
-      appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL, events: ["pull_request", "issue_comment"] }), secrets, secretId: SECRET_ID, webhookUrl: URL,
+      appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL, events: ["pull_request", "issue_comment"] }), secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL,
     });
     expect(outcome.missingEvents).toEqual(["pull_request_review", "pull_request_review_comment"]);
     expect(outcome.settingsUrl).toBe("https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions");
     expect(missingEventsLine(outcome)).toBe(`GitHub webhook: tick these events on ${outcome.settingsUrl}: pull_request_review, pull_request_review_comment`);
-    const user = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL, ownerType: "User" }), secrets, secretId: SECRET_ID, webhookUrl: URL });
+    const user = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL, ownerType: "User" }), secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
     expect(user.settingsUrl).toBe("https://github.com/settings/apps/agentx-acme-staging/permissions");
     expect(missingEventsLine(user)).toBeUndefined();
   });
@@ -77,27 +99,27 @@ describe("ensureGithubWebhook", () => {
   it("asks for Active to be turned on when the hook URL was empty or different, on the App's general settings page", async () => {
     const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify({ ...BASE, webhookSecret: HAND_SET }) });
     for (const hookUrl of [undefined, "https://old.example.test/hook"]) {
-      const outcome = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi(hookUrl === undefined ? {} : { hookUrl }), secrets, secretId: SECRET_ID, webhookUrl: URL });
+      const outcome = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi(hookUrl === undefined ? {} : { hookUrl }), secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
       expect(activeHintLine(outcome)).toBe("GitHub webhook: turn on Active at https://github.com/organizations/acme/settings/apps/agentx-acme-staging if it is off");
       expect(activeHintLine(outcome)).not.toContain(HAND_SET);
     }
-    const user = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ ownerType: "User" }), secrets, secretId: SECRET_ID, webhookUrl: URL });
+    const user = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ ownerType: "User" }), secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
     expect(activeHintLine(user)).toBe("GitHub webhook: turn on Active at https://github.com/settings/apps/agentx-acme-staging if it is off");
   });
 
   it("does not ask about Active when the hook already pointed at the control plane", async () => {
     const kept = memoryInitSecrets({ [SECRET_ID]: JSON.stringify({ ...BASE, webhookSecret: HAND_SET }) });
-    expect(activeHintLine(await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL }), secrets: kept, secretId: SECRET_ID, webhookUrl: URL }))).toBeUndefined();
+    expect(activeHintLine(await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL }), secrets: kept, secretValue: valueOf(kept), secretId: SECRET_ID, webhookUrl: URL }))).toBeUndefined();
     // A new secret alone changes nothing about whether the hook was ever active.
     const fresh = memoryInitSecrets({ [SECRET_ID]: JSON.stringify(BASE) });
-    expect(activeHintLine(await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL }), secrets: fresh, secretId: SECRET_ID, webhookUrl: URL }))).toBeUndefined();
+    expect(activeHintLine(await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL }), secrets: fresh, secretValue: valueOf(fresh), secretId: SECRET_ID, webhookUrl: URL }))).toBeUndefined();
   });
 
   it("does not echo a failed write of the App secret", async () => {
     const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify(BASE) });
     let written = "";
     secrets.put = async (_name, value) => { written = value; throw Object.assign(new Error(`access denied for ${value}`), { name: "AccessDeniedException" }); };
-    const failure = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi(), secrets, secretId: SECRET_ID, webhookUrl: URL }).catch((error: unknown) => error);
+    const failure = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi(), secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL }).catch((error: unknown) => error);
     const generated = (JSON.parse(written) as { webhookSecret: string }).webhookSecret;
     expect(String(failure)).toContain(`could not store the webhook secret in ${SECRET_ID} (AccessDeniedException)`);
     expect(String(failure)).not.toContain(generated);
@@ -112,7 +134,7 @@ describe("ensureGithubWebhook", () => {
 
   it("refuses a secret that is not JSON without echoing it", async () => {
     const secrets = memoryInitSecrets({ [SECRET_ID]: "not-json-private-text" });
-    const failure = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi(), secrets, secretId: SECRET_ID, webhookUrl: URL }).catch((error: unknown) => error);
+    const failure = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi(), secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL }).catch((error: unknown) => error);
     expect(String(failure)).toContain(SECRET_ID);
     expect(String(failure)).not.toContain("private-text");
   });
@@ -121,7 +143,7 @@ describe("ensureGithubWebhook", () => {
     const secrets = memoryInitSecrets({ [SECRET_ID]: JSON.stringify({ ...BASE, webhookSecret: HAND_SET }) });
     const api = fakeGitHubApi();
     api.setHookConfig = async () => { throw new Error("GitHub webhook update failed with HTTP 422"); };
-    const failure = await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretId: SECRET_ID, webhookUrl: URL }).catch((error: unknown) => error);
+    const failure = await ensureGithubWebhook({ appJwt: "jwt", api, secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL }).catch((error: unknown) => error);
     expect(String(failure)).not.toContain(HAND_SET);
   });
 });

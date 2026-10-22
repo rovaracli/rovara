@@ -4,6 +4,7 @@
 import { agentXError } from "@agentx/contracts";
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { SESv2Client } from "@aws-sdk/client-sesv2";
 import { STSClient } from "@aws-sdk/client-sts";
 import type { Command } from "commander";
 import { stsCallerIdentity } from "../environments/adopt.js";
@@ -85,6 +86,7 @@ export function registerSigninCommands(program: Command, context: SigninCommandC
       store: overrides.store ?? context.parameterStore(region),
       secrets: overrides.secrets ?? secretsManagerInitSecrets(new SecretsManagerClient(config)),
       cloudFormation: overrides.cloudFormation ?? new CloudFormationClient(config),
+      ses: overrides.ses ?? new SESv2Client(config),
       identity: overrides.identity ?? stsCallerIdentity(new STSClient(config)),
       fetch: overrides.fetch ?? context.fetch,
       slackApi: overrides.slackApi ?? slackWebApi(context.fetch),
@@ -138,20 +140,24 @@ export function registerSigninCommands(program: Command, context: SigninCommandC
     });
   signin
     .command("cloud")
-    .description("turn GitHub and Google sign-in on, change or off on a Rovara Cloud install; shows the change and asks first")
+    .description("turn GitHub and Google sign-in on, change or off, and choose the sender of sign-in code emails, on a Rovara Cloud install; shows the change and asks first")
     .option("--github-client-id <id>", "the GitHub OAuth app's client id (with --github-client-secret-arn)")
     .option("--github-client-secret-arn <arn>", "the Secrets Manager secret holding the GitHub OAuth client secret as {\"clientSecret\": ...}; its name must start with agentx/<env>/")
     .option("--google-client-id <id>", "the Google OAuth client id (with --google-client-secret-arn)")
     .option("--google-client-secret-arn <arn>", "the Secrets Manager secret holding the Google client secret as {\"clientSecret\": ...}; its name must start with agentx/<env>/")
+    .option("--email-from <sender>", "send sign-in codes from this Amazon SES sender, \"Name <address>\" or an address; its domain must be verified in SES in the environment's region")
+    .option("--no-email-from", "send sign-in codes from Amazon Cognito's default sender again")
     .option("--no-github", "turn GitHub sign-in off")
     .option("--no-google", "turn Google sign-in off")
     .option(regionOption, regionHelp)
     .option("--yes", "apply without asking; the change is still printed", false)
-    .action(async (options: { githubClientId?: string; githubClientSecretArn?: string; googleClientId?: string; googleClientSecretArn?: string; github: boolean; google: boolean; region?: string; yes: boolean }, command: Command) => {
+    .action(async (options: { githubClientId?: string; githubClientSecretArn?: string; googleClientId?: string; googleClientSecretArn?: string; emailFrom?: string | false; github: boolean; google: boolean; region?: string; yes: boolean }, command: Command) => {
       const globals = globalOptions(command);
       const flags = definedEntries<CloudSignInFlags>({
         githubClientId: options.githubClientId, githubClientSecretArn: options.githubClientSecretArn,
         googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn,
+        // With both --email-from and --no-email-from declared, commander sets false for the negated one.
+        emailFrom: typeof options.emailFrom === "string" ? options.emailFrom : undefined, noEmailFrom: options.emailFrom === false ? true : undefined,
         // commander names a lone --no-<x> option <x>, true unless the flag was given.
         noGithub: options.github ? undefined : true, noGoogle: options.google ? undefined : true,
       });

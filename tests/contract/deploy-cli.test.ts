@@ -18,6 +18,8 @@ import { assertReleaseCoversRegion, releaseRegionProblem } from "../../packages/
 import type { TemplatesEngineClients } from "../../packages/cli/src/deploy/templates-engine.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { writeEnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
+import type { IAMClient } from "@aws-sdk/client-iam";
+import { passRolePolicyDocument } from "../../packages/cli/src/init/pass-role.js";
 import { allStackOutputs } from "../support/init-fakes.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
 
@@ -124,6 +126,8 @@ function answersJson(overrides: Record<string, unknown> = {}): Record<string, un
     images: {
       worker: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/agentx/worker@sha256:${"a".repeat(64)}`,
       slack: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/agentx/slack@sha256:${"b".repeat(64)}`,
+      // A hand-supplied worker image brings the hash of the stage 2 boot script it carries (Task 10).
+      bootStage2Sha256: "5a".repeat(32),
     },
     ...overrides,
   };
@@ -189,11 +193,19 @@ function safeDeployDeps(overrides: DeployCliDependencies = {}): DeployCliDepende
     stackOutputs: () => unexpectedAwsCall(),
     // An install now looks up the control plane's audit lock profile too: by default no stack exists yet.
     stackParameters: async () => undefined,
+    iam: { send: () => unexpectedAwsCall() },
     templatesClients: {
       cloudFormation: { send: () => unexpectedAwsCall() } as unknown as TemplatesEngineClients["cloudFormation"],
       s3: { send: () => unexpectedAwsCall() } as unknown as TemplatesEngineClients["s3"],
     },
     ...overrides,
+  };
+}
+
+/** An IAM client whose CDK deploy role already carries the PassRole policy (init/pass-role.ts): the cdk engine reads it and writes nothing. */
+function passRolePresentIam(): Pick<IAMClient, "send"> {
+  return {
+    send: async () => ({ PolicyDocument: encodeURIComponent(JSON.stringify(passRolePolicyDocument({ partition: "aws", account: ACCOUNT }))) }),
   };
 }
 
@@ -668,7 +680,7 @@ describe("agentx deploy", () => {
 
     const code = await executeCli(
       ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
-      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner }) },
+      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam() }) },
     );
 
     expect(code).toBe(0);
@@ -693,7 +705,7 @@ describe("agentx deploy", () => {
 
     const code = await executeCli(
       ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
-      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner }) },
+      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam() }) },
     );
 
     expect(code).toBe(0);
@@ -732,7 +744,7 @@ describe("agentx deploy", () => {
 
     const code = await executeCli(
       ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
-      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner }) },
+      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam() }) },
     );
 
     expect(code).toBe(0);
@@ -1101,7 +1113,7 @@ describe("agentx deploy --mode upgrade keeps the deployed budget", () => {
     await writeFile(answersFile, JSON.stringify({
       env: ENV, region: REGION, account: ACCOUNT, models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" }, identity: { mode: "cognito" },
       github: { appId: "123", privateKeySecretArn: `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:agentx/staging/github-app-AbCdEf` },
-      images: { worker: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/w@sha256:${"b".repeat(64)}`, slack: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/s@sha256:${"c".repeat(64)}` },
+      images: { worker: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/w@sha256:${"b".repeat(64)}`, slack: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/s@sha256:${"c".repeat(64)}`, bootStage2Sha256: "5a".repeat(32) },
     }));
     const reads: string[] = [];
     const signingKey = "k".repeat(43);

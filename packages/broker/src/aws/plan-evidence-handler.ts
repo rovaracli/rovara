@@ -9,6 +9,8 @@ import { DeleteCommand, DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/l
 import { isConditional } from "./broker-shared.js";
 import { getItem } from "./cancellation.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
+import type { GitHubTokenScope } from "../github-app.js";
+import { installationBindingCheck } from "../org/github-connection.js";
 import { requiredEnvironment } from "./lambda.js";
 import { requireProject } from "./project-records.js";
 import { loadWorkflowDocument, readObjectText } from "../developer/plan-artifacts.js";
@@ -18,7 +20,7 @@ import {
   type PlanEvidenceEvent, type PlanEvidenceJob,
 } from "../developer/plan-evidence-jobs.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import type { OrgId, PlanDocument } from "@agentx/contracts";
+import { agentXError, type OrgId, type PlanDocument } from "@agentx/contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 
 /** All cited code must be read inside this; the Lambda's own timeout (150 s) leaves room to attach and clean up. */
@@ -38,7 +40,9 @@ export interface PlanEvidenceRunDependencies {
   bucketName: string;
   /** The org of a task that names none of its own: the install's single org. */
   orgId: OrgId;
-  github: { getFileAtCommit: (url: string, path: string, commit: string, options: { untilLine?: number; timeoutMs?: number }) => Promise<string | undefined> };
+  /** Rovara Cloud (AGENTX_CLOUD): the provider checks the org's GitHub connection before every token. */
+  cloud?: boolean;
+  github: { getFileAtCommit: (url: string, path: string, commit: string, scope: GitHubTokenScope, options: { untilLine?: number; timeoutMs?: number }) => Promise<string | undefined> };
   now: () => number;
   /** Operational log line (no model text); defaults to one JSON line on the console. */
   log?: (entry: Record<string, unknown>) => void;
@@ -132,15 +136,34 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
   let plan: PlanDocument | undefined;
   try {
     plan = await loadPlan();
-    const project = await requireProject(deps, orgOf(deps.orgId, task as unknown as Record<string, unknown>), task.project, task.startingRevision);
+    const orgId = orgOf(deps.orgId, task as unknown as Record<string, unknown>);
+    const project = await requireProject(deps, orgId, task.project, task.startingRevision);
+    // The task's org: on a cloud install the code is read only while that org's GitHub connection holds the installation.
+    const scope: GitHubTokenScope = deps.cloud === true ? { orgId } : { system: "private-install" };
     const deadline = deps.now() + RESOLVE_DEADLINE_MS;
+    // Repositories (by URL) whose installation the org's GitHub connection no longer holds: no later read of them will succeed, so they
+    // are not tried again. Other repositories, on installations still connected, are read as before.
+    const notConnected = new Set<string>();
     const bundle = await resolvePlanEvidence(plan, {
       ...planEvidenceSources(project, task),
-      readFile: (url, path, commit, options) => deps.github.getFileAtCommit(url, path, commit, { ...options, timeoutMs: Math.max(1, Math.min(READ_TIMEOUT_MAX_MS, deadline - deps.now())) }),
+      readFile: async (url, path, commit, options) => {
+        if (notConnected.has(url)) throw agentXError("GITHUB_NOT_CONNECTED", "the organization's GitHub connection no longer reaches this repository");
+        try {
+          return await deps.github.getFileAtCommit(url, path, commit, scope, { ...options, timeoutMs: Math.max(1, Math.min(READ_TIMEOUT_MAX_MS, deadline - deps.now())) });
+        } catch (error) {
+          if ((error as { code?: unknown }).code === "GITHUB_NOT_CONNECTED") notConnected.add(url);
+          throw error;
+        }
+      },
       deadlineMs: RESOLVE_DEADLINE_MS,
       now: deps.now,
     });
-    if (bundle.excerpts.some((excerpt) => excerpt.status === "unavailable") && attempt < PLAN_EVIDENCE_MAX_ATTEMPTS) {
+    // Retrying cannot help a repository the org has disconnected: its places stay `unavailable` and the excerpts read are kept. A place on a
+    // repository that is still connected and could not be read this time keeps the normal retry.
+    if (notConnected.size > 0) log({ event: "plan_evidence.github_not_connected", taskId, artifactId, attempt, repositories: notConnected.size });
+    const repositories = planEvidenceSources(project, task).repositories;
+    const disconnected = (path: string) => repositories.some((repository) => notConnected.has(repository.url) && path.startsWith(`${repository.path}/`));
+    if (bundle.excerpts.some((excerpt) => excerpt.status === "unavailable" && !disconnected(excerpt.path)) && attempt < PLAN_EVIDENCE_MAX_ATTEMPTS) {
       await reschedule(deps.now() + RETRY_MINUTES[attempt - 1]! * MS_PER_MINUTE);
       log({ event: "plan_evidence.retry", taskId, artifactId, attempt, reason: "unavailable" });
       return "retry";
@@ -166,13 +189,17 @@ let production: PlanEvidenceRunDependencies | undefined;
 function productionDependencies(): PlanEvidenceRunDependencies {
   if (production !== undefined) return production;
   const awsClientConfiguration = process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION };
+  const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration), { marshallOptions: { removeUndefinedValues: true } });
+  const tableName = requiredEnvironment("STATE_TABLE_NAME");
+  const cloud = process.env.AGENTX_CLOUD === "true";
   production = {
-    documentClient: DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration), { marshallOptions: { removeUndefinedValues: true } }),
+    documentClient,
     s3: new S3Client(awsClientConfiguration),
-    tableName: requiredEnvironment("STATE_TABLE_NAME"),
+    tableName,
     bucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
     orgId: installOrgIdFromEnvironment(),
-    github: createGitHubAppCredentials(new SecretsManagerClient(awsClientConfiguration)).provider,
+    ...(cloud ? { cloud } : {}),
+    github: createGitHubAppCredentials(new SecretsManagerClient(awsClientConfiguration), cloud ? { requireInstallationBound: installationBindingCheck({ documentClient, tableName }) } : undefined).provider,
     now: Date.now,
   };
   return production;

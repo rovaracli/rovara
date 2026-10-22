@@ -9,10 +9,12 @@ import type { SlackApi } from "../init/slack-app.js";
 import { applySignInChange, type ApplySignInInput, type SignInChoice } from "./apply.js";
 import { agentXConfigurationUrl, apiBase, checkDeveloperSignIn, type SignInCheck } from "./check.js";
 import { enableOidcSignIn, enableSlackSignIn, type SigninFlags, type SigninSecretFlags } from "./collect.js";
-import { describeSignIn, readSignInSettings, readSlackTeamId, type DeveloperSignInSettings } from "./settings.js";
+import { describeCloudSignIn, describeSignIn, readSignInSettings, readSlackTeamId, type DeveloperSignInSettings } from "./settings.js";
 
 export interface SigninServices {
   store: ParameterStore; secrets: InitSecrets; cloudFormation: { send(command: unknown): Promise<unknown> }; identity: CallerIdentity;
+  /** Amazon SES (SESv2), which `signin cloud --email-from` asks about the sending domain; absent in services that never use it. */
+  ses?: { send(command: unknown): Promise<unknown> };
   fetch: typeof fetch; slackApi: SlackApi; prompter: Prompter; processEnv: NodeJS.ProcessEnv; write: (line: string) => void; now: () => number;
   sleep?: (ms: number) => Promise<void>; pollMs?: number;
 }
@@ -51,8 +53,15 @@ export async function runSigninShow(services: SigninServices, env: string): Prom
     const response = await services.fetch(agentXConfigurationUrl(settings), { signal: AbortSignal.timeout(10_000) });
     if (response.ok) offered = offeredMethods(await response.json());
   } catch { /* shown as unknown */ }
-  const lines = [...describeSignIn(stored), `Slack team: ${teamId ?? "not recorded"}`, `The control plane offers: ${offered}`, `Developers sign in with: npx ${CLI_PACKAGE_NAME} login ${apiBase(settings)}`];
-  return { lines, data: { settings: stored ?? null, slackTeamId: teamId ?? null, offered } };
+  const cloud = settings.cloud === true;
+  const lines = [...describeSignIn(stored), ...(cloud ? describeCloudSignIn(settings.cloudSignIn) : []), `Slack team: ${teamId ?? "not recorded"}`, `The control plane offers: ${offered}`, `Developers sign in with: npx ${CLI_PACKAGE_NAME} login ${apiBase(settings)}`];
+  const signIn = settings.cloudSignIn;
+  const cloudData = cloud ? { cloudSignIn: {
+    github: signIn?.githubClientId === undefined ? null : { clientId: signIn.githubClientId },
+    google: signIn?.googleClientId === undefined ? null : { clientId: signIn.googleClientId },
+    emailFrom: signIn?.emailFrom ?? null,
+  } } : {};
+  return { lines, data: { settings: stored ?? null, slackTeamId: teamId ?? null, offered, ...cloudData } };
 }
 
 export async function runSigninEnable(services: SigninServices, env: string, method: "slack" | "oidc", flags: SigninFlags, secretFlags: SigninSecretFlags, yes: boolean): Promise<{ changed: boolean }> {

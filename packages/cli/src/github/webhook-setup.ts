@@ -14,7 +14,9 @@ export interface EnsureGithubWebhookInput {
   /** The App's own JWT. */
   appJwt: string;
   api: GitHubApi;
-  secrets: Pick<InitSecrets, "get" | "put">;
+  secrets: Pick<InitSecrets, "put">;
+  /** The App secret's value the caller has: the one it just wrote or read. Never read back here: a read right after the first save can miss it. */
+  secretValue: string;
   /** The App secret's name or ARN. */
   secretId: string;
   webhookUrl: string;
@@ -50,9 +52,9 @@ function secretObject(raw: string | undefined, secretId: string): Record<string,
 }
 
 export async function ensureGithubWebhook(input: EnsureGithubWebhookInput): Promise<GithubWebhookOutcome> {
-  const { appJwt, api, secrets, secretId, webhookUrl } = input;
-  // Raw JSON, merged: keys this code does not know (the private key, the App's id) stay as they are.
-  const stored = secretObject(await secrets.get(secretId), secretId);
+  const { appJwt, api, secrets, secretValue, secretId, webhookUrl } = input;
+  // Raw JSON, merged: keys this code does not know (the private key, the App's id, its OAuth client) stay as they are.
+  const stored = secretObject(secretValue, secretId);
   const existing = storedWebhookSecret(stored);
   const secret = existing ?? randomBytes(32).toString("hex");
   // Stored before GitHub is told, so the broker never gets a signed delivery it cannot verify.

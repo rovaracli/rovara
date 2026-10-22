@@ -6,7 +6,7 @@
 // validation: both import the same regex or schema object, so a region, account, identity, models,
 // images or alert-email answer is refused (or accepted) identically wherever it is checked.
 import { z } from "zod";
-import { agentXError, MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN, type KeyedModelProvider } from "@agentx/contracts";
+import { agentXError, BOOT_STAGE2_SHA256_PATTERN, MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN, type KeyedModelProvider } from "@agentx/contracts";
 
 /** Shared with `runInitExport`'s own `--region`/`--account` validation, so both commands refuse the
  * same malformed values the same way. */
@@ -41,7 +41,10 @@ export const CloudSignInAnswersSchema = z.object({
   /** Sign up and sign in with GitHub (Task 22): the GitHub OAuth app's client id and the secret holding its client secret. Optional, and together. */
   githubClientId: z.string().min(1).max(256).optional(),
   githubClientSecretArn: z.string().max(SECRET_ARN_MAX_LENGTH).regex(SECRET_ARN_PATTERN).optional(),
-}).strict();
+  /** Sign-in codes from a branded Amazon SES sender (Task 7): `Name <address>` or an address, and the ARN of the verified SES identity (the domain) that sends it. Optional, and together. */
+  emailFrom: z.string().min(3).max(320).optional(),
+  emailSourceArn: z.string().max(2048).regex(/^arn:aws[a-z-]*:ses:[a-z0-9-]+:\d{12}:identity\/\S+$/).optional(),
+}).strict().refine((answers) => (answers.emailFrom === undefined) === (answers.emailSourceArn === undefined), { message: "emailFrom and emailSourceArn go together", path: ["emailFrom"] });
 export type CloudSignInAnswers = z.infer<typeof CloudSignInAnswersSchema>;
 
 /** Said wherever the prebuilt-templates engine would be used for a cloud environment (R45): the release's templates are synthesized without the cloud switch. */
@@ -69,7 +72,30 @@ export function providerSecretArn(models: ModelsAnswers, provider: KeyedModelPro
 }
 export type ModelsAnswers = z.infer<typeof ModelsAnswersSchema>;
 
-export const ImagesAnswersSchema = z.object({ worker: z.string().min(1).optional(), slack: z.string().min(1).optional() }).strict();
+/** Task 10: stage 2 of the EC2 boot ships in the worker image, and the control plane checks it against the SHA-256 of
+ * `packages/worker/ec2/boot-stage2.sh` in the release source that image was built from. A release carries that hash; an image given
+ * by hand (testing only) has to bring its own, so the image and the hash can only differ when someone typed one of them wrong. */
+export const BOOT_STAGE2_SHA256_PROBLEM = "--boot-stage2-sha256 must be 64 lower-case hex digits (the SHA-256 of packages/worker/ec2/boot-stage2.sh in the release source the worker image was built from)";
+export const WORKER_IMAGE_NEEDS_BOOT_HASH = "--worker-image needs --boot-stage2-sha256, the SHA-256 of packages/worker/ec2/boot-stage2.sh in the release source that image was built from: the image carries stage 2 of the worker's boot and is checked against it";
+export const BOOT_HASH_NEEDS_WORKER_IMAGE = "--boot-stage2-sha256 goes with --worker-image: a release supplies its own hash";
+
+/** What is wrong with the worker image override and its boot hash, or undefined when they go together (or neither is given). */
+export function bootStage2ImagesProblem(images: { worker?: string | undefined; bootStage2Sha256?: string | undefined } | undefined): string | undefined {
+  if (images === undefined) return undefined;
+  if (images.bootStage2Sha256 !== undefined && !BOOT_STAGE2_SHA256_PATTERN.test(images.bootStage2Sha256)) return BOOT_STAGE2_SHA256_PROBLEM;
+  if (images.worker !== undefined && images.bootStage2Sha256 === undefined) return WORKER_IMAGE_NEEDS_BOOT_HASH;
+  if (images.worker === undefined && images.bootStage2Sha256 !== undefined) return BOOT_HASH_NEEDS_WORKER_IMAGE;
+  return undefined;
+}
+
+export const ImagesAnswersSchema = z.object({
+  worker: z.string().min(1).optional(),
+  slack: z.string().min(1).optional(),
+  bootStage2Sha256: z.string().regex(BOOT_STAGE2_SHA256_PATTERN, BOOT_STAGE2_SHA256_PROBLEM).optional(),
+}).strict().superRefine((images, context) => {
+  const problem = bootStage2ImagesProblem(images);
+  if (problem !== undefined) context.addIssue({ code: "custom", path: ["bootStage2Sha256"], message: problem });
+});
 
 /** The one email check an alert-by-email answer goes through, whether it is being parsed back out of
  * install answers already stored in SSM or validated fresh at the `agentx init` prompt: both call

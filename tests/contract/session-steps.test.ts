@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -8,6 +8,9 @@ import { createSessionStepsHandler, pingWorker, type SessionStepsDependencies } 
 import { ec2WorkerBootScript } from "../../packages/contracts/src/session.js";
 
 const bootScript = readFileSync(new URL("../../packages/worker/ec2/boot.sh", import.meta.url), "utf8");
+// Task 10: the legacy deployment boots with today's single-file script; a named environment boots stage 1 and reads stage 2 from its worker image.
+const legacyBootScript = readFileSync(new URL("../../packages/worker/ec2/boot-legacy.sh", import.meta.url), "utf8");
+const stage2Sha256 = "5c".repeat(32);
 const workspaceId = randomUUID();
 
 function setup(ping: SessionStepsDependencies["ping"] = async () => ({ status: "Healthy" }), overrides: Partial<SessionStepsDependencies> = {}, settings: (base: Awaited<ReturnType<SessionStepsDependencies["workerSettings"]>>) => Awaited<ReturnType<SessionStepsDependencies["workerSettings"]>> = (base) => base) {
@@ -33,7 +36,7 @@ function setup(ping: SessionStepsDependencies["ping"] = async () => ({ status: "
     }),
     // Full length, as KMS returns a P-256 public key, so the user data size check is realistic.
     invokePublicKey: async () => `MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE${"A".repeat(88)}`,
-    bootScript: () => bootScript,
+    bootScript: (variant) => (variant === "legacy" ? legacyBootScript : bootScript),
     controlPlaneUrl: "https://abc.execute-api.us-east-1.amazonaws.com",
     logGroupName: "/agentx/production/worker",
     ping: pingSpy,
@@ -74,7 +77,7 @@ describe("session steps", () => {
       anthropicSecretArn: "arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/production/anthropic-AbCdEf",
       openaiSecretArn: "arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/production/openai-AbCdEf",
       logGroupName: "/agentx/production/worker",
-    }, bootScript));
+    }, legacyBootScript));
     expect(userData).toContain("export AGENTX_ANTHROPIC_SECRET_ARN='arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/production/anthropic-AbCdEf'");
     expect(userData).toContain("export AGENTX_OPENAI_SECRET_ARN='arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/production/openai-AbCdEf'");
   });
@@ -84,8 +87,8 @@ describe("session steps", () => {
     const proxyUrl = "http://internal-agentx-staging-proxy-123456.us-east-1.elb.amazonaws.com:4000";
     const launch = (handler: ReturnType<typeof setup>["handler"]) => handler({ action: "launchConfiguration", workspaceId, generation: 1, volumeId: "vol-0123456789abcdef0", expectNewVolume: true }) as Promise<{ userData: string }>;
     // What a named environment's SSM holds: no provider secret ARNs, and the proxy's URL when it is published.
-    const named = (modelProxyUrl?: string) => ({ workerImage, modelProvider, modelId, promptCacheRetention }: Parameters<Parameters<typeof setup>[2] & {}>[0]) =>
-      ({ workerImage, modelProvider, modelId, promptCacheRetention, ...(modelProxyUrl === undefined ? {} : { modelProxyUrl }) });
+    const named = (modelProxyUrl?: string, bootStage2Sha256: string | null = stage2Sha256) => ({ workerImage, modelProvider, modelId, promptCacheRetention }: Parameters<Parameters<typeof setup>[2] & {}>[0]) =>
+      ({ workerImage, modelProvider, modelId, promptCacheRetention, ...(modelProxyUrl === undefined ? {} : { modelProxyUrl }), ...(bootStage2Sha256 === null ? {} : { bootStage2Sha256 }) });
 
     it("puts AGENTX_MODEL_PROXY_URL in the user data and no secret ARN", async () => {
       const { handler } = setup(undefined, { modelProxyRequired: true }, named(proxyUrl));
@@ -105,6 +108,48 @@ describe("session steps", () => {
     it("refuses to launch a worker without the proxy URL when the environment requires one, naming the missing setting", async () => {
       const { handler } = setup(undefined, { modelProxyRequired: true }, named());
       await expect(launch(handler)).rejects.toThrow(/model proxy URL.*missing/i);
+    });
+
+    // Task 10: stage 2 of the boot ships in the worker image; the hash that checks it is the setting that travels with the image.
+    it("boots a named environment from boot.sh with the stage 2 hash it read beside the worker image", async () => {
+      const { handler } = setup(undefined, { modelProxyRequired: true }, named(proxyUrl));
+      const userData = gunzipSync(Buffer.from((await launch(handler)).userData, "base64")).toString("utf8");
+      expect(userData).toContain(`export AGENTX_BOOT_STAGE2_SHA256='${stage2Sha256}'`);
+      expect(userData).toContain("run_stage2");
+      expect(userData).not.toContain("<<'LAUNCHER'");
+      expect(userData).toBe(ec2WorkerBootScript({
+        workspaceId, generation: 1, volumeId: "vol-0123456789abcdef0", expectNewVolume: true,
+        workerImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-production@sha256:${"a".repeat(64)}`,
+        invokePublicKey: `MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE${"A".repeat(88)}`,
+        controlPlaneUrl: "https://abc.execute-api.us-east-1.amazonaws.com", modelProvider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6",
+        promptCacheRetention: "long", modelProxyUrl: proxyUrl, environmentKind: "named", bootStage2Sha256: stage2Sha256, logGroupName: "/agentx/production/worker",
+      }, bootScript));
+    });
+
+    it("refuses a named launch with no stage 2 hash, saying to upgrade", async () => {
+      const { handler } = setup(undefined, { modelProxyRequired: true }, named(proxyUrl, null));
+      const error = await launch(handler).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+      expect((error as Error).message).toBe("RUNTIME_UNAVAILABLE: this control plane has no boot hash for its worker image; run agentx upgrade");
+    });
+
+    it("boots the legacy deployment from boot-legacy.sh, whose hash is boot.sh's at the branch base, with no stage 2 hash", async () => {
+      const seen: string[] = [];
+      const { handler } = setup(undefined, { bootScript: (variant) => { seen.push(variant); return variant === "legacy" ? legacyBootScript : bootScript; } });
+      const userData = gunzipSync(Buffer.from((await launch(handler)).userData, "base64")).toString("utf8");
+      expect(seen).toEqual(["legacy"]);
+      expect(userData).not.toContain("AGENTX_BOOT_STAGE2_SHA256");
+      expect(userData).not.toContain("run_stage2");
+      // The script after the exports is boot-legacy.sh without its shebang line, exactly.
+      expect(userData.endsWith(`\n${legacyBootScript.replace(/^#!.*\n/, "")}`)).toBe(true);
+      expect(createHash("sha256").update(legacyBootScript).digest("hex")).toBe("b54a0b0b0dabf8b19afc5737425392bfb37fe684a8bd68b06dd94f38570cefe2");
+    });
+
+    it("hands a named launch the named script", async () => {
+      const seen: string[] = [];
+      const { handler } = setup(undefined, { modelProxyRequired: true, bootScript: (variant) => { seen.push(variant); return bootScript; } }, named(proxyUrl));
+      await launch(handler);
+      expect(seen).toEqual(["named"]);
     });
 
     it("launches without a proxy when none is required (legacy)", async () => {

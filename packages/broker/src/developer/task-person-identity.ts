@@ -41,7 +41,7 @@ export interface TaskPersonIdentityDependencies {
   /** Current channels bound to the target project. */
   projectChannelIds(project: string): Promise<readonly string[]>;
   /** Existing project policy and grants, evaluated against only the supplied fresh membership. */
-  targetProjectAccess(subject: ProjectAccessSubject, project: string, freshMemberOf: readonly string[]): Promise<void>;
+  targetProjectAccess(subject: ProjectAccessSubject, project: string, freshMemberOf: readonly string[]): Promise<void | "viewer">;
   /** Exact caller already authenticated by the enclosing route. Never supplied by system-created callers. */
   trustedCaller?: Pick<DeveloperCaller, "developerId" | "amr" | "name" | "slackUserId">;
 }
@@ -163,7 +163,7 @@ async function persistIdentity(
   }
 }
 
-type Qualification = { eligible: true; channelMember: boolean; name: string } | { eligible: false; channelMember: boolean };
+type Qualification = { eligible: true; channelMember: boolean; name: string; projectViewer?: true } | { eligible: false; channelMember: boolean };
 
 async function qualifyCurrent(
   deps: TaskPersonIdentityDependencies,
@@ -196,15 +196,17 @@ async function qualifyCurrent(
     || (task.share !== undefined && task.share.teamId !== deps.slackTeamId)
     || new Set(memberOf).size !== memberOf.length || memberOf.some((channelId) => !requested.has(channelId))) return unavailable();
   const channelMember = task.share === undefined || memberOf.includes(task.share.channelId);
+  let access: void | "viewer";
   try {
-    await deps.targetProjectAccess(subject, task.project, memberOf);
+    access = await deps.targetProjectAccess(subject, task.project, memberOf);
   } catch (error) {
     if (error instanceof Error && (error as Error & { code?: string }).code === "PROJECT_ACCESS_DENIED") {
       return { eligible: false, channelMember };
     }
     return unavailable();
   }
-  return { eligible: true, channelMember, name: safeName(parsed.data.user.name, parsed.data.user.id) };
+  // A project viewer is eligible to see the task but takes no part in it (Plan 2, Task 21): the proof says so, and the role is capped.
+  return { eligible: true, channelMember, name: safeName(parsed.data.user.name, parsed.data.user.id), ...(access === "viewer" ? { projectViewer: true as const } : {}) };
 }
 
 async function qualify(
@@ -328,7 +330,7 @@ export async function checkTaskPersonIdentity(
   deps: TaskPersonIdentityDependencies,
   task: DeveloperTaskRecord,
   developerId: string,
-): Promise<{ subject: ProjectAccessSubject; identity: TaskPersonIdentity; eligible: boolean; channelMember: boolean }> {
+): Promise<{ subject: ProjectAccessSubject; identity: TaskPersonIdentity; eligible: boolean; channelMember: boolean; projectViewer?: true }> {
   if (!HEX64.test(developerId)) return refuse();
   const stored = await currentTask(deps, task.taskId);
   if (stored.project !== task.project || stored.developerId !== task.developerId || stored.provider !== task.provider || stored.slackUserId !== task.slackUserId) return refuse();
@@ -364,7 +366,7 @@ export async function checkTaskPersonIdentity(
   if (status === "ineligible") return { subject, identity, eligible: false, channelMember: false };
   const proof = await qualifyCurrent(deps, stored, subject);
   return proof.eligible
-    ? { subject, identity: { ...identity, name: proof.name }, eligible: true, channelMember: proof.channelMember }
+    ? { subject, identity: { ...identity, name: proof.name }, eligible: true, channelMember: proof.channelMember, ...(proof.projectViewer === true ? { projectViewer: true as const } : {}) }
     : { subject, identity, eligible: false, channelMember: proof.channelMember };
 }
 

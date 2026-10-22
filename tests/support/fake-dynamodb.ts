@@ -202,10 +202,18 @@ export class FakeDynamoDb {
       }
       case "QueryCommand":
         return this.queryPage(input);
+      case "ScanCommand":
+        return this.scanPage(input);
       case "PutCommand":
       case "UpdateCommand":
       case "DeleteCommand":
         this.commit([toAction(command.constructor.name.replace("Command", "") as WriteAction["kind"], input)], "ConditionalCheckFailedException");
+        // ReturnValues "ALL_NEW" on an update hands back the item as written, as DynamoDB does.
+        if (command.constructor.name === "UpdateCommand" && input.ReturnValues === "ALL_NEW") {
+          const key = input.Key as { pk: string; sk: string };
+          const written = this.get(key.pk, key.sk);
+          return { Attributes: written === undefined ? undefined : this.readClone(written) };
+        }
         return {};
       case "TransactWriteCommand": {
         const entries = input.TransactItems as Array<Record<string, Record<string, unknown>>>;
@@ -246,6 +254,25 @@ export class FakeDynamoDb {
     if (limit === undefined || evaluated.length <= limit || last === undefined) return { Items: items };
     const indexKeys = input.IndexName === undefined ? [] : this.indexAttributes(input);
     return { Items: items, LastEvaluatedKey: Object.fromEntries(["pk", "sk", ...indexKeys].map((name) => [name, last[name]])) };
+  }
+
+  /**
+   * A whole-table read in the table's own order, as the one-off egress backfill sends it: `FilterExpression` is applied after the page is read,
+   * `ExclusiveStartKey` resumes after that key, and `Limit` stops the read early with a `LastEvaluatedKey`. A projection is ignored (whole items come back).
+   */
+  private scanPage(input: Record<string, unknown>): { Items: Item[]; LastEvaluatedKey?: Record<string, unknown> } {
+    const limit = input.Limit as number | undefined;
+    const all = this.find(() => true);
+    const start = input.ExclusiveStartKey as { pk?: unknown; sk?: unknown } | undefined;
+    const from = start === undefined ? 0 : all.findIndex((item) => item.pk === start.pk && item.sk === start.sk) + 1;
+    const rest = all.slice(from);
+    const page = limit === undefined ? rest : rest.slice(0, limit);
+    const filter = input.FilterExpression as string | undefined;
+    const names = (input.ExpressionAttributeNames ?? {}) as Names;
+    const values = (input.ExpressionAttributeValues ?? {}) as Values;
+    const items = (filter === undefined ? page : page.filter((item) => evaluateCondition(filter, item, names, values))).map((item) => this.readClone(item));
+    const last = page.at(-1);
+    return limit === undefined || rest.length <= limit || last === undefined ? { Items: items } : { Items: items, LastEvaluatedKey: { pk: last.pk, sk: last.sk } };
   }
 
   /** The key attributes an index query names: the partition attribute, and the sort attribute of a range. */
@@ -650,6 +677,16 @@ class Parser {
       this.expect(")");
       const exists = item?.[path] !== undefined;
       return token === "attribute_exists" ? exists : !exists;
+    }
+    if (token === "begins_with") {
+      this.next();
+      this.expect("(");
+      const path = this.path();
+      this.expect(",");
+      const operand = this.operand(item ?? {});
+      this.expect(")");
+      const value = this.pathValue(item, path);
+      return typeof value === "string" && typeof operand === "string" && value.startsWith(operand);
     }
     if (token === "contains") {
       this.next();

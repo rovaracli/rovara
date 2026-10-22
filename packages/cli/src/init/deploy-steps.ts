@@ -119,6 +119,7 @@ export function deployStep(input: { id: DeployStepId; title: string; after?: (co
         // An environment that already exists keeps its audit lock profile, and a move down is refused (the same guard agentx deploy runs).
         ...(readParameters === undefined ? {} : { deployedParameters: readParameters }),
         ...(deployment.declaredParameters === undefined ? {} : { declaredParameters: deployment.declaredParameters }),
+        ...(deployment.ensurePassRole === undefined ? {} : { ensurePassRole: deployment.ensurePassRole }),
         onEvent: (event) => context.write(progressLine(event)),
         now: context.now,
       });

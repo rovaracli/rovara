@@ -191,7 +191,7 @@ export function allStackOutputs(env = "staging"): Record<string, StackOutputs> {
   const name = (part: Parameters<typeof environmentStackName>[1]) => environmentStackName(env, part);
   return {
     [name("access")]: { ArtifactBucketName: `agentx-${env}-access-artifactbucket-abc`, CloudFormationRoleArn: `arn:aws:iam::123456789012:role/agentx-${env}-cloudformation`, OperatorRoleArn: `arn:aws:iam::123456789012:role/agentx-${env}-operator`, PullThroughPrefix: `agentx-${env}` },
-    [name("foundation")]: { VpcId: "vpc-0123456789abcdef0", PrivateSubnetIds: "subnet-1,subnet-2", SessionManagerSecurityGroupId: "sg-0123456789abcdef0", WorkspaceKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/k", Ec2WorkerInstanceRoleArn: `arn:aws:iam::123456789012:role/agentx/${env}/worker`, Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0", Ec2WorkerSubnets: "us-east-1a=subnet-1,us-east-1b=subnet-2", Ec2WorkerSecurityGroupId: "sg-0fedcba9876543210", ...foundationParameterDefaults() },
+    [name("foundation")]: { VpcId: "vpc-0123456789abcdef0", PrivateSubnetIds: "subnet-1,subnet-2", SessionManagerSecurityGroupId: "sg-0123456789abcdef0", WorkspaceKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/k", Ec2WorkerInstanceRoleArn: `arn:aws:iam::123456789012:role/agentx/${env}/worker`, Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0", Ec2WorkerSubnets: "us-east-1a=subnet-1,us-east-1b=subnet-2", Ec2WorkerSecurityGroupId: "sg-0fedcba9876543210", ProjectAllowListId: "rslvr-fdl-0123456789abcdef", ...foundationParameterDefaults() },
     [name("identity")]: { Issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc", Audience: "client123", ClientId: "client123", UserPoolId: "us-east-1_abc" },
     [name("control-plane")]: {
       ApiEndpoint: "https://abc123.execute-api.us-east-1.amazonaws.com",
@@ -311,7 +311,7 @@ export const TEST_PRIVATE_KEY = TEST_KEYS.privateKey.trim();
 export const TEST_PUBLIC_KEY = TEST_KEYS.publicKey;
 
 /** A GitHub that converts any code into an app owned by `owner`, installs it after `installAfterPolls` polls, and reports repository counts in turn. Installation tokens expire at `tokenExpiresAt` (default T0 plus one hour). */
-export function fakeGitHubApi(input: { owner?: string; ownerType?: string; installAfterPolls?: number; repositoryCounts?: number[]; installationId?: number; tokenExpiresAt?: number; hookUrl?: string; events?: string[]; webhookSecret?: string; deliveries?: Array<{ deliveredAt: string; status: string; statusCode: number }> } = {}): GitHubApi & { conversions: string[]; polls: () => number; tokens: () => number; hookWrites: Array<{ url: string; secret: string }> } {
+export function fakeGitHubApi(input: { owner?: string; ownerType?: string; installAfterPolls?: number; repositoryCounts?: number[]; installationId?: number; tokenExpiresAt?: number; hookUrl?: string; events?: string[]; webhookSecret?: string; clientId?: string; clientSecret?: string; deliveries?: Array<{ deliveredAt: string; status: string; statusCode: number }> } = {}): GitHubApi & { conversions: string[]; polls: () => number; tokens: () => number; hookWrites: Array<{ url: string; secret: string }> } {
   const conversions: string[] = [];
   const hookWrites: Array<{ url: string; secret: string }> = [];
   let hook: { url?: string; contentType?: string; insecureSsl?: string } = input.hookUrl === undefined ? {} : { url: input.hookUrl, contentType: "json", insecureSsl: "0" };
@@ -324,7 +324,7 @@ export function fakeGitHubApi(input: { owner?: string; ownerType?: string; insta
     hookWrites,
     polls: () => polls,
     tokens: () => tokens,
-    async convertManifest(code) { conversions.push(code); return { id: 424242, slug: "agentx-acme-staging", pem: TEST_PRIVATE_KEY, owner, ...(input.webhookSecret === undefined ? {} : { webhook_secret: input.webhookSecret }) }; },
+    async convertManifest(code) { conversions.push(code); return { id: 424242, slug: "agentx-acme-staging", pem: TEST_PRIVATE_KEY, owner, ...(input.webhookSecret === undefined ? {} : { webhook_secret: input.webhookSecret }), ...(input.clientId === undefined ? {} : { client_id: input.clientId }), ...(input.clientSecret === undefined ? {} : { client_secret: input.clientSecret }) }; },
     async getApp() { return { slug: "agentx-acme-staging", owner, events: input.events ?? ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"] }; },
     async getHookConfig() { return hook; },
     // By default one delivery an hour before T0 that GitHub's endpoint accepted.

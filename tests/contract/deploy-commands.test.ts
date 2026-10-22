@@ -280,3 +280,24 @@ describe("the hosted Rovara cloud (R45)", () => {
     expect(DeployAnswersSchema.safeParse({ ...answers, cloud: true, cloudSignIn: { githubClientSecretArn: githubSecretArn } }).success).toBe(false);
   });
 });
+
+// Task 10: a hand-supplied worker image carries the SHA-256 of the stage 2 boot script it was built with, or the deploy refuses it.
+describe("the answers file's worker image (Task 10)", () => {
+  const base = {
+    env: "staging", region: "us-east-1", account: "123456789012",
+    models: { orchestrator: "a", classifier: "b", worker: "c" }, identity: { mode: "cognito" },
+    github: { appId: "1", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:x-AbCdEf" },
+  };
+  const worker = `123456789012.dkr.ecr.us-east-1.amazonaws.com/w@sha256:${"d".repeat(64)}`;
+
+  it("takes images.bootStage2Sha256 with images.worker, and refuses the worker image without it", () => {
+    expect(DeployAnswersSchema.safeParse({ ...base, images: { worker, bootStage2Sha256: "ab".repeat(32) } }).success).toBe(true);
+    const refused = DeployAnswersSchema.safeParse({ ...base, images: { worker } });
+    expect(refused.success).toBe(false);
+    expect(JSON.stringify(refused.error?.issues)).toContain("--worker-image needs --boot-stage2-sha256");
+    // The slack image alone needs none, and a hash alone has no image to describe.
+    expect(DeployAnswersSchema.safeParse({ ...base, images: { slack: worker } }).success).toBe(true);
+    expect(DeployAnswersSchema.safeParse({ ...base, images: { bootStage2Sha256: "ab".repeat(32) } }).success).toBe(false);
+    for (const bad of ["AB".repeat(32), "ab".repeat(31), "none", ""]) expect(DeployAnswersSchema.safeParse({ ...base, images: { worker, bootStage2Sha256: bad } }).success, bad).toBe(false);
+  });
+});

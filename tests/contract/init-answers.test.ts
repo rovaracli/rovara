@@ -190,6 +190,16 @@ describe("init questions", () => {
       .rejects.toThrow("--worker-image must be referenced by digest (repository@sha256:...)");
   });
 
+  // Task 10: the worker image and the hash of the boot script it carries are written together.
+  it("records --boot-stage2-sha256 with --worker-image, and refuses the image without it or the hash alone", async () => {
+    const workerImage = `123456789012.dkr.ecr.us-east-1.amazonaws.com/w@sha256:${"d".repeat(64)}`;
+    const { answers } = await collectWithFlags({ ...base, flags: { ...everyFlag, workerImage, bootStage2Sha256: "5a".repeat(32) } });
+    expect(answers.images).toEqual({ worker: workerImage, bootStage2Sha256: "5a".repeat(32) });
+    await expect(collectWithFlags({ ...base, flags: { ...everyFlag, workerImage } })).rejects.toThrow("--worker-image needs --boot-stage2-sha256");
+    await expect(collectWithFlags({ ...base, flags: { ...everyFlag, bootStage2Sha256: "5a".repeat(32) } })).rejects.toThrow("--boot-stage2-sha256 goes with --worker-image");
+    await expect(collectWithFlags({ ...base, flags: { ...everyFlag, workerImage, bootStage2Sha256: "XYZ" } })).rejects.toThrow("--boot-stage2-sha256 must be 64 lower-case hex digits");
+  });
+
   it("with --yes and no GitHub account, names the flag", async () => {
     await expect(collectInitAnswers({ ...base, flags: withExplicitUndefined(everyFlag, "githubAccount"), prompter: unattendedPrompter() }))
       .rejects.toThrow("with --yes, pass --github-account");

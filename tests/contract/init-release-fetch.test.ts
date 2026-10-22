@@ -335,6 +335,18 @@ describe("sourceRelease (issue 152)", () => {
     expect(regions).toEqual(["us-east-1", "us-west-2"]);
   });
 
+  it("carries the published release's stage 2 boot hash (Task 10), and none when the release has none", async () => {
+    const urls = releaseAssetUrls("1.4.0");
+    const hash = "5a".repeat(32);
+    const withHash = await sourceRelease({ runner: tagged, source: "/src", fetch: github({ [urls.manifest]: published({ bootStage2Sha256: hash }) }) });
+    expect(withHash.release.manifest.bootStage2Sha256).toBe(hash);
+    const without = await sourceRelease({ runner: tagged, source: "/src", fetch: github({ [urls.manifest]: published() }) });
+    expect(without.release.manifest).not.toHaveProperty("bootStage2Sha256");
+    // A release.json from another commit supplies nothing, the hash included.
+    const other = await sourceRelease({ runner: tagged, source: "/src", fetch: github({ [urls.manifest]: published({ gitCommit: "f".repeat(40), bootStage2Sha256: hash }) }), missingReleaseJson: "allow" });
+    expect(other.release.manifest).not.toHaveProperty("bootStage2Sha256");
+  });
+
   it("reads release.json for the image a flag does not give", async () => {
     const urls = releaseAssetUrls("1.4.0");
     const fetched = github({ [urls.manifest]: published() });

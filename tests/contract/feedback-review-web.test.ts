@@ -402,7 +402,7 @@ describe("broker-backed feedback review data", () => {
     const workspace = harness.db.get(`WORKSPACE#${task.workspaceId}`, "META") as Record<string, unknown>;
     harness.db.set({ ...workspace, status: "READY", activeOperationId: undefined });
     const deps = { documentClient: harness.db, tableName: "state", actions: harness.actions,
-      orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [],
+      orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [],
       refreshTaskFeedback: async () => undefined, now: () => Date.parse(now) };
     return { harness, taskId, deps, workflow, bundleDigest: bundles[0]!.digest, bundleDigests: bundles.map(bundle => bundle.digest), reviewDigest, githubRead };
   }
@@ -979,7 +979,7 @@ describe("broker-backed feedback review data", () => {
     fixture.harness.db.set({ ...task, workflow: { ...task.workflow, revision: Number(task.workflow.revision) + 1 } });
     await expect(fixture.harness.callback(task.workspaceId, String(operation.id), "feedback-approval", invocation.payload?.workflowFeedbackApproval))
       .rejects.toThrow(/feedback approval|GitHub PR feedback changed|no longer current/i);
-    expect(fixture.githubRead).toHaveBeenCalledWith("https://github.com/example/demo.git", 42);
+    expect(fixture.githubRead).toHaveBeenCalledWith("https://github.com/example/demo.git", 42, { system: "private-install" });
   });
 
   it("authorizes the exact freshly eligible co-owner at worker start while retaining the creator-bound approval", async () => {

@@ -1,7 +1,7 @@
 // Spec 061 (slice 1.1, task 5): the PlanEvidence job reads a stored plan's cited code in the background, with retries.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { WorkflowSnapshot } from "@agentx/contracts";
+import { agentXError, type WorkflowSnapshot } from "@agentx/contracts";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { runPlanEvidenceJob, type PlanEvidenceRunDependencies } from "../../packages/broker/src/aws/plan-evidence-handler.js";
 import { PLAN_EVIDENCE_EVENT_SOURCE, planEvidenceDueKey } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
@@ -58,7 +58,7 @@ describe("the PlanEvidence job", () => {
     const getFileAtCommit = vi.fn<GetFile>(async () => FILE);
     const outcome = await runPlanEvidenceJob(jobDeps(harness, getFileAtCommit), { taskId, artifactId: artifact.id });
     expect(outcome).toBe("attached");
-    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { untilLine: 3, timeoutMs: 30_000 });
+    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { system: "private-install" }, { untilLine: 3, timeoutMs: 30_000 });
     expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ claimId: "1", status: "ok", commit: "e".repeat(40), lines: ["two", "three"] })]);
     expect(pointerOf(harness, taskId, artifact.id)!.objectKey).toMatch(new RegExp(`^private/${taskRecord(harness, taskId).ownerKey}/.+/plan-documents/${artifact.id}\\.evidence\\.[0-9a-f]{64}\\.json$`));
     expect(rows(harness)).toEqual([]);
@@ -66,7 +66,7 @@ describe("the PlanEvidence job", () => {
     expect(taskRecord(harness, taskId).workflow.artifacts.at(-1)).toEqual(artifact);
     // The page shows the code.
     const view = await getTaskDocumentView(
-      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
       { orgId: TEST_ORG, developerId: taskRecord(harness, taskId).developerId } as never, taskId);
     expect(view.documents[0]).toMatchObject({ evidence: { excerpts: [{ status: "ok", lines: ["two", "three"] }] } });
   });
@@ -99,6 +99,68 @@ describe("the PlanEvidence job", () => {
       expect.objectContaining({ claimId: "2", status: "not_found", commit: "e".repeat(40) }),
     ]);
     expect(rows(harness)).toEqual([]);
+  });
+
+  it("stops at once when the task's org no longer holds the GitHub installation: a bundle of unavailable places, the row deleted, no retry scheduled", async () => {
+    const harness = await jobBroker();
+    const { taskId, artifact } = await plannedTask(harness, ["repo/demo/src/charge.ts", "repo/demo/src/other.ts"]);
+    const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
+    const reads: string[] = [];
+    const getFile: GetFile = async (_url, path) => { reads.push(path); throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect"); };
+    expect(await runPlanEvidenceJob(jobDeps(harness, getFile, time.now), { taskId, artifactId: artifact.id })).toBe("attached");
+    expect(rows(harness)).toEqual([]);
+    expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ status: "unavailable" }), expect.objectContaining({ status: "unavailable" })]);
+    expect(reads.length).toBeGreaterThan(0);
+  });
+
+  /** A two-repository project: demo (cited first, whose installation is gone) and web (still connected), with a base commit for each. */
+  async function twoRepositoryTask(paths: string[]) {
+    const harness = await jobBroker();
+    const planned = await plannedTask(harness, paths);
+    const revisionKey = projectRevisionKey(TEST_ORG, "payments", 1);
+    const revision = harness.db.get(revisionKey.pk, revisionKey.sk) as { definition: { repositories: Array<Record<string, unknown>> } };
+    harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [...revision.definition.repositories, { name: "web", url: "https://github.com/example/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }] } });
+    harness.db.set({ ...taskRecord(harness, planned.taskId), preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] });
+    return { harness, ...planned };
+  }
+  const NOT_CONNECTED = () => agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect");
+
+  it("keeps the excerpts already read and the repositories on other connected installations: only the failing repository's places are unavailable, and no retry follows", async () => {
+    // Four demo places fill the reader's four slots and fail at once; the web places are read only after a demo read has been refused,
+    // so a job that closed every repository on the first refusal would leave them unavailable.
+    const { harness, taskId, artifact } = await twoRepositoryTask(["repo/demo/src/a.ts", "repo/demo/src/b.ts", "repo/demo/src/c.ts", "repo/demo/src/d.ts", "repo/web/src/page.ts", "repo/web/src/second.ts"]);
+    const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
+    const reads: string[] = [];
+    let demoRefused = false;
+    const getFile: GetFile = async (url, path) => {
+      reads.push(`${url}#${path}`);
+      if (url.endsWith("/demo.git")) { await Promise.resolve(); demoRefused = true; throw NOT_CONNECTED(); }
+      expect(demoRefused, "a web read starts only after a demo read was refused").toBe(true);
+      return FILE;
+    };
+    expect(await runPlanEvidenceJob(jobDeps(harness, getFile, time.now), { taskId, artifactId: artifact.id })).toBe("attached");
+    expect(rows(harness)).toEqual([]);
+    expect(bundleOf(harness, taskId, artifact.id).excerpts.map((excerpt) => [excerpt.path, excerpt.status])).toEqual([
+      ["repo/demo/src/a.ts", "unavailable"], ["repo/demo/src/b.ts", "unavailable"], ["repo/demo/src/c.ts", "unavailable"], ["repo/demo/src/d.ts", "unavailable"],
+      ["repo/web/src/page.ts", "ok"], ["repo/web/src/second.ts", "ok"],
+    ]);
+    expect(reads.filter((read) => read.includes("/web.git"))).toHaveLength(2);
+  });
+
+  it("still retries a passing fault on a repository that is connected, while the disconnected one is not tried again", async () => {
+    const { harness, taskId, artifact } = await twoRepositoryTask(["repo/demo/src/a.ts", "repo/web/src/page.ts"]);
+    const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
+    const getFile: GetFile = async (url) => { if (url.endsWith("/demo.git")) throw NOT_CONNECTED(); throw new Error("GitHub is down"); };
+    expect(await runPlanEvidenceJob(jobDeps(harness, getFile, time.now), { taskId, artifactId: artifact.id })).toBe("retry");
+    expect(rows(harness)[0]).toMatchObject({ attempts: 1, nextAttemptAt: time.state.t + MINUTE });
+    expect(pointerOf(harness, taskId, artifact.id)).toBeUndefined();
+    // The retry reads web again; with it healthy the job attaches web's lines and leaves demo's place unavailable, with no further run.
+    time.state.t = rows(harness)[0]!.nextAttemptAt;
+    const reads: string[] = [];
+    const healthy: GetFile = async (url, path) => { reads.push(url); if (url.endsWith("/demo.git")) throw NOT_CONNECTED(); expect(path).toBe("src/page.ts"); return FILE; };
+    expect(await runPlanEvidenceJob(jobDeps(harness, healthy, time.now), { taskId, artifactId: artifact.id })).toBe("attached");
+    expect(rows(harness)).toEqual([]);
+    expect(bundleOf(harness, taskId, artifact.id).excerpts.map((excerpt) => excerpt.status)).toEqual(["unavailable", "ok"]);
   });
 
   it("counts a thrown error as an attempt", async () => {
@@ -214,7 +276,7 @@ describe("the PlanEvidence job", () => {
     const { taskId, artifact } = await plannedTask(harness, paths);
     const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
     const timeouts: number[] = [];
-    await runPlanEvidenceJob(jobDeps(harness, async (_url, _path, _commit, options) => {
+    await runPlanEvidenceJob(jobDeps(harness, async (_url, _path, _commit, _scope, options) => {
       timeouts.push(options.timeoutMs ?? -1);
       // The first read takes 100 seconds, so the rest have 20 seconds left.
       if (timeouts.length === 1) time.state.t += 100_000;
@@ -267,14 +329,14 @@ describe("a deployment with no PlanEvidence function", () => {
     const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: { getFileAtCommit } } });
     const { taskId, artifact } = await plannedTask(harness);
     expect(rows(harness)).toEqual([]);
-    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { untilLine: 3 });
+    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { system: "private-install" }, { untilLine: 3 });
     expect(taskRecord(harness, taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
     expect(taskRecord(harness, taskId).workflow.artifacts.at(-1)).toEqual(artifact);
     expect(artifact).not.toHaveProperty("evidence");
     expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ claimId: "1", status: "ok", lines: ["two", "three"] })]);
     // The page reads it as it reads a job's bundle.
     const view = await getTaskDocumentView(
-      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.now() },
+      { orgId: TEST_ORG, documentClient: harness.db, tableName: "state", actions: harness.actions, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
       { orgId: TEST_ORG, developerId: taskRecord(harness, taskId).developerId } as never, taskId);
     expect(view.documents[0]).toMatchObject({ evidence: { excerpts: [{ status: "ok", lines: ["two", "three"] }] } });
   });

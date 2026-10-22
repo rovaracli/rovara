@@ -58,7 +58,7 @@ export async function loginWithPkce(options: LoginOptions): Promise<StoredTokens
     authorize.searchParams.set("code_challenge", pkce.challenge);
     authorize.searchParams.set("code_challenge_method", "S256");
     await (options.openBrowser ?? openSystemBrowser)(authorize.toString());
-    const code = await callback.code;
+    const { code } = await callback.code;
 
     const tokenResponse = await fetchImplementation(discovery.token_endpoint, {
       method: "POST",
@@ -114,6 +114,12 @@ export const ADMIN_LISTENER_MESSAGES: CallbackListenerMessages = {
   noAnswer: "OIDC callback state or code is invalid",
 };
 
+/** What an authorization-code redirect brought back: the code, and, when the sign-in carried an invite that was not used, why (the value is checked by the caller). */
+export interface CallbackResult {
+  code: string;
+  inviteError?: string;
+}
+
 /**
  * The loopback listener for an authorization-code redirect, on 127.0.0.1 only. A callback with the
  * right state and an `error` rejects at once with the server's reason. A callback with any other
@@ -126,12 +132,12 @@ export async function createCallbackListener(
   messages: CallbackListenerMessages = ADMIN_LISTENER_MESSAGES,
 ): Promise<{
   redirectUri: string;
-  code: Promise<string>;
+  code: Promise<CallbackResult>;
   close: () => void;
 }> {
-  let resolveCode!: (code: string) => void;
+  let resolveCode!: (result: CallbackResult) => void;
   let rejectCode!: (error: Error) => void;
-  const code = new Promise<string>((resolve, reject) => {
+  const code = new Promise<CallbackResult>((resolve, reject) => {
     resolveCode = resolve;
     rejectCode = reject;
   });
@@ -168,7 +174,8 @@ export async function createCallbackListener(
       return;
     }
     response.writeHead(200, { "content-type": "text/plain" }).end("AgentX authentication complete. You can close this window.");
-    resolveCode(authorizationCode);
+    const inviteError = url.searchParams.get("inviteError");
+    resolveCode({ code: authorizationCode, ...(inviteError === null ? {} : { inviteError }) });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

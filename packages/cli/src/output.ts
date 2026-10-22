@@ -44,6 +44,8 @@ export function formatError(error: unknown, json: boolean): FormattedError {
 }
 
 export function exitCodeForError(code: AgentXErrorCode): number {
+  // A join that did not happen (the sign-in itself worked): plain failure.
+  if (code === "ALREADY_IN_ORG" || code === "INVITE_INVALID" || code === "INVITE_WRONG_EMAIL") return 1;
   if (code === "CONFIG_INVALID" || code === "PROJECT_REVISION_MISMATCH") return 2;
   if (code === "AUTH_REQUIRED") return 3;
   if (code === "FORBIDDEN" || code === "NOT_FOUND" || code === "CALLBACK_FORBIDDEN") return 4;

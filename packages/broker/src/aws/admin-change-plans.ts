@@ -358,6 +358,7 @@ const planGrant: Planner = async (deps, identity, input) => {
   const current = await projectGrant(deps.actions, orgId, input.project, resolved.developerId);
   if (current?.role === "developer") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} already has a grant for ${input.project}; there is nothing to change`);
   if (current?.role === "administrator") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} already administers ${input.project}; there is nothing to change`);
+  if (current?.role === "viewer") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} is a viewer of ${input.project}; change their role with agentx project add-member, so there is nothing to change here`);
   const project = input.project;
   return {
     effect: `Grant ${describeDeveloper(resolved)}${notSignedIn(resolved, true)} access to project ${project}. They have no grant today. They can then hand tasks to ${project} from their AI tool.`,
@@ -380,7 +381,7 @@ const planRevoke: Planner = async (deps, identity, input) => {
   const orgId = requireOrgId(identity.orgId);
   const current = await projectGrant(deps.actions, orgId, input.project, resolved.developerId);
   // An administrator row is never a grant: revoking never removes an administrator.
-  if (current?.role !== "developer") throw agentXError("NOT_FOUND", `${describeDeveloper(resolved)} has no grant for ${input.project}, so there is nothing to revoke`);
+  if (current?.role !== "developer" && current?.role !== "viewer") throw agentXError("NOT_FOUND", `${describeDeveloper(resolved)} has no grant for ${input.project}, so there is nothing to revoke`);
   const project = input.project;
   const channelMembersMayUse = developerTaskPolicy(latest.definition).channelMembersMayUse;
   const channels = channelMembersMayUse ? ` If they are a member of one of ${project}'s Slack channels, they keep access through it.` : "";

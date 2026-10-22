@@ -10,6 +10,7 @@ import type { DeveloperIdentityDependencies, HttpResult } from "../../packages/b
 import { createDeveloperIdentityHandler } from "../../packages/broker/src/developer/server.js";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { duplicateMerger } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { unlockTrial } from "../../packages/broker/src/org/trial.js";
 import type { PublicSigningJwk, TokenSigner } from "../../packages/broker/src/developer/tokens.js";
@@ -209,7 +210,7 @@ export function fakeSlack(options: { users: FakeSlackUser[]; channels?: Record<s
   };
 }
 
-export interface FakeOidcUser { sub: string; name?: string; email?: string; email_verified?: boolean; groups?: string[] }
+export interface FakeOidcUser { sub: string; name?: string; email?: string; email_verified?: boolean; groups?: string[]; /** The ID token's `auth_time` claim (epoch seconds): when the provider last authenticated the person. Absent: the token carries none. */ auth_time?: number }
 
 /** A company OIDC provider with discovery, a token endpoint (client_secret_basic) and keys. */
 export function fakeOidc(options: { users: FakeOidcUser[]; clientSecret?: string; now?: () => number }) {
@@ -351,11 +352,18 @@ export function identityHarness(options: {
   state?: FakeDynamoDb;
   /** false: the install has no single org for a Slack or company sign-in to join. */
   singleOrg?: boolean;
+  /**
+   * true: the sign-in table and the State table are one fake (their keys never collide), and a sign-in heals a duplicate member
+   * (mergeDuplicateMember writes both tables in one transaction, which two separate fakes cannot show whole).
+   */
+  sharedTable?: boolean;
+  /** Plan 2, Task 8: the notice of a newly linked sign-in method. Absent: the sign-in has no notice dependencies, as an install with no SES sender. */
+  notice?: DeveloperIdentityDependencies["notice"];
 } = {}) {
   let clock = T0;
   const now = () => clock;
-  const db = new FakeDynamoDb();
   const state = options.state ?? new FakeDynamoDb();
+  const db = options.sharedTable === true ? state : new FakeDynamoDb();
   const orgs = new OrgStore({ documentClient: state, tableName: "state", now });
   const slack = fakeSlack({ users: options.slackUsers ?? [], now, ...(options.channels ? { channels: options.channels } : {}), ...(options.channelInfo ? { channelInfo: options.channelInfo } : {}) });
   const oidc = fakeOidc({ users: options.oidcUsers ?? [], now });
@@ -380,6 +388,7 @@ export function identityHarness(options: {
     ...(cloudProvider === undefined ? {} : { cloud: cloudProvider }),
     ...(githubProvider === undefined ? {} : { github: githubProvider }),
   };
+  const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now });
   const deps: DeveloperIdentityDependencies = {
     config: {
       env: "staging", issuer: ISSUER,
@@ -388,8 +397,10 @@ export function identityHarness(options: {
       ...(options.cloud === undefined ? {} : { cloud: { displayName: options.cloud.displayName ?? "Rovara" } }),
       ...(options.github === undefined ? {} : { github: { displayName: "GitHub" } }),
     },
-    store: new DeveloperSignInStore({ documentClient: db, tableName: "signin", now }),
+    store,
+    ...(options.sharedTable === true ? duplicateMerger({ documentClient: state, tableName: "state", signInStore: store, now }) : {}),
     orgs,
+    ...(options.notice === undefined ? {} : { notice: options.notice }),
     ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
     ...(options.github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient: state, tableName: "state", now }, input) }),
     signer,

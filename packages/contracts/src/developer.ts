@@ -1,7 +1,9 @@
 // Spec 025 phase 25a: the developer sign-in's shared names and wire shapes. The CLI parses server
 // responses with the non-strict schemas here, so a newer control plane can add fields.
 import { z } from "zod";
+import { ProjectRoleSchema } from "./app-projects.js";
 import { EnvironmentNameSchema } from "./environments.js";
+export { normalizeEmail } from "./email.js";
 import { looseCopy } from "./loose.js";
 import { OrgRoleSchema } from "./org.js";
 import { DeveloperTaskPolicySchema } from "./project.js";
@@ -15,6 +17,11 @@ export const DEVELOPER_ACCESS_TOKEN_SECONDS = 3600;
 export const DEVELOPER_SESSION_SECONDS = 7 * 24 * 3600;
 export const DEVELOPER_CODE_SECONDS = 300;
 export const DEVELOPER_AUTH_REQUEST_SECONDS = 600;
+/**
+ * Plan 2, Task 8b: how long a sign-in counts as fresh for changing the account's sign-in methods (removing one, adding one back): ten
+ * minutes from the interactive sign-in itself. A refresh renewal never extends it.
+ */
+export const FRESH_SIGN_IN_SECONDS = 600;
 export const SLACK_OIDC_ISSUER = "https://slack.com";
 
 export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc", "cloud", "github"]);
@@ -81,6 +88,40 @@ export const DeveloperSummarySchema = z.object({
 export type DeveloperSummary = z.infer<typeof DeveloperSummarySchema>;
 
 /**
+ * One sign-in method linked to a developer (`GET /v1/app/me`). It names the method and what the person recognises it by, never the
+ * provider's issuer or subject.
+ */
+export const LinkedIdentitySchema = z.object({
+  provider: DeveloperSignInMethodSchema,
+  email: z.string().optional(),
+  login: z.string().optional(),
+  linkedAt: z.string(),
+  lastSignInAt: z.string(),
+});
+export type LinkedIdentity = z.infer<typeof LinkedIdentitySchema>;
+
+/** `GET /v1/app/me`: who the signed-in developer is, their org, and every sign-in method linked to them. */
+export const AppMeResponseSchema = z.object({
+  developer: z.object({
+    id: z.string().regex(/^[a-f0-9]{64}$/),
+    name: z.string().min(1).max(200),
+    email: z.string().optional(),
+    orgRole: OrgRoleSchema,
+  }),
+  org: z.object({ orgId: z.string(), name: z.string(), plan: z.string() }),
+  identities: z.array(LinkedIdentitySchema),
+});
+export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
+
+/** `DELETE /v1/app/me/identities/{provider}`: the sign-in methods still linked after one was removed (Plan 2, Task 8). */
+export const UnlinkIdentityAppResponseSchema = z.object({ identities: z.array(LinkedIdentitySchema) });
+export type UnlinkIdentityAppResponse = z.infer<typeof UnlinkIdentityAppResponseSchema>;
+
+/** `POST /v1/app/me/identities/{provider}`: the sign-in link that adds a method the person removed earlier back to their account (Plan 2, Task 8b). */
+export const StartIdentityLinkAppResponseSchema = z.object({ authorizeUrl: z.string().url().max(2048) });
+export type StartIdentityLinkAppResponse = z.infer<typeof StartIdentityLinkAppResponseSchema>;
+
+/**
  * F6: a non-strict copy of `DeveloperTaskPolicySchema` (`project.ts`), used only to parse a
  * project's task policy inside this response. A strict schema embedded here would make an old MCP
  * server fail the whole `projects()` response (`whoami`, `agentx_list_projects`) as soon as a
@@ -96,6 +137,11 @@ export const DeveloperProjectSchema = z.object({
   channels: z.array(z.object({ channelId: SlackChannelIdSchema, name: z.string().optional(), isPrivate: z.boolean().optional() })),
   // Absent from a 1.0 control plane.
   tasks: DeveloperProjectTaskPolicySchema.optional(),
+  // Plan 2, Task 21: the caller's role in the project, where it comes from, and who added them (absent for the operator console's grants).
+  // Absent from an older control plane.
+  role: ProjectRoleSchema.optional(),
+  roleSource: z.enum(["grant", "org_role", "channel"]).optional(),
+  addedBy: z.object({ developerId: z.string(), name: z.string() }).optional(),
 });
 export type DeveloperProject = z.infer<typeof DeveloperProjectSchema>;
 
@@ -369,6 +415,32 @@ export type SlackAuthCheckResponse = { ok: true; teamId: string } | { ok: false;
 export const EndDeveloperSessionsRequestSchema = z.object({ kind: z.literal("end-developer-sessions"), developerId: z.string().regex(/^[a-f0-9]{64}$/), at: z.string().datetime() }).strict();
 export type EndDeveloperSessionsRequest = z.infer<typeof EndDeveloperSessionsRequestSchema>;
 export type EndDeveloperSessionsResponse = { ok: true } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
+
+/** The sign-in methods a person may unlink from their account (Plan 2, Task 8): the two that cloud installs link by verified email. */
+export const UnlinkableSignInMethodSchema = z.enum(["cloud", "github"]);
+export type UnlinkableSignInMethod = z.infer<typeof UnlinkableSignInMethodSchema>;
+/** The id of a sign-in session (a UUID), which the broker names from the verified token. */
+const SessionIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+/**
+ * Plan 2, Task 8 and 8b: unlinks one sign-in method from the caller's own developer, through DeveloperIdentity (the broker may not write
+ * the sign-in table). `developerId` and `sessionId` are the caller's verified token's, never body values of the public route. The session
+ * is what proves the person signed in freshly with a method that is not the one being removed.
+ */
+export const UnlinkIdentityRequestSchema = z.object({ kind: z.literal("unlink-identity"), developerId: z.string().regex(/^[a-f0-9]{64}$/), sessionId: SessionIdSchema, provider: UnlinkableSignInMethodSchema }).strict();
+export type UnlinkIdentityRequest = z.infer<typeof UnlinkIdentityRequestSchema>;
+/**
+ * `refused` carries the person's words (the store's fixed refusal text); `reauth` is a refusal that a fresh sign-in would fix (its words
+ * say which); `not_found` is a method that is not linked.
+ */
+export type UnlinkIdentityResponse = { ok: true } | { ok: false; error: "refused" | "reauth"; message: string } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
+
+/**
+ * Plan 2, Task 8b: starts adding a sign-in method the person removed earlier back to their own account. It is made under a fresh session
+ * of the caller, which must be fresh again when the person finishes at the provider. The result is the sign-in link to open.
+ */
+export const StartIdentityLinkRequestSchema = z.object({ kind: z.literal("start-identity-link"), developerId: z.string().regex(/^[a-f0-9]{64}$/), sessionId: SessionIdSchema, provider: UnlinkableSignInMethodSchema }).strict();
+export type StartIdentityLinkRequest = z.infer<typeof StartIdentityLinkRequestSchema>;
+export type StartIdentityLinkResponse = { ok: true; authorizeUrl: string } | { ok: false; error: "refused" | "reauth"; message: string } | { ok: false; error: "invalid_request" | "unavailable" };
 
 /** Spec 025 E12 (Q8): a public channel of the environment's team, by its name. */
 export const ChannelByNameRequestSchema = z.object({ kind: z.literal("channel-by-name"), name: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/) }).strict();

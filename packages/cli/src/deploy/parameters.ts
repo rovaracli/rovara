@@ -6,7 +6,7 @@ import { CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETER
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
 
-import { providerSecretArn, type AuditLockProfileAnswer, type CloudSignInAnswers, type ModelsAnswers } from "./answer-schemas.js";
+import { bootStage2ImagesProblem, providerSecretArn, type AuditLockProfileAnswer, type CloudSignInAnswers, type ModelsAnswers } from "./answer-schemas.js";
 
 export type StackOutputs = Record<string, string>;
 
@@ -41,7 +41,9 @@ export interface InstallAnswers {
   operatorPrincipalArn?: string;
   /** Testing only, until the first published release exists: a private-ECR image digest used as-is
    * instead of mapping the release's public image through the pull-through cache. */
-  images?: { worker?: string; slack?: string };
+  images?: { worker?: string; slack?: string;
+    /** The SHA-256 of boot-stage2.sh in the source `worker` was built from: required with `worker`, which no release vouches for. */
+    bootStage2Sha256?: string };
   /** the control plane's SlackAppPostedMessages (spec 014 FR-012); template default accept */
   slackAppPostedMessages?: "accept" | "ignore";
   /** Spec 025 R7: the stored developer sign-in; deployEnvironment reads it from SSM when absent. */
@@ -176,6 +178,23 @@ function executorImageParameter(answers: InstallAnswers, outputs: Partial<Record
   return { ExecutorImageUri: privateImageUri(executor, imageTarget(answers, required(outputs, "access", "PullThroughPrefix", answers.env))) };
 }
 
+/**
+ * The SHA-256 of the stage 2 boot script the worker image carries, written to the same runtime stack deploy as `WorkerImageUri` so the
+ * control plane reads the two together (Task 10). A hand-supplied worker image brings its own hash (refused without one); otherwise it is
+ * the release's, recorded when the release was built from the same source as its image. A release from before the split records none, and
+ * the runtime stack's default ("none") stands: the control plane then refuses to launch a worker and says to upgrade.
+ */
+function bootStage2Parameter(answers: InstallAnswers): { BootStage2Sha256?: string } {
+  const images = answers.images;
+  if (images?.worker !== undefined) {
+    const problem = bootStage2ImagesProblem(images);
+    if (problem !== undefined) throw new Error(problem);
+    return { BootStage2Sha256: images.bootStage2Sha256 as string };
+  }
+  const fromRelease = answers.release.bootStage2Sha256;
+  return fromRelease === undefined ? {} : { BootStage2Sha256: fromRelease };
+}
+
 /** The Slack execution role is granted pull access only to the same-account, same-region ECR repo selected for this image. */
 function ecrRepositoryName(uri: string, answers: Pick<InstallAnswers, "account" | "region" | "partition">): string {
   const suffix = ECR_HOST_SUFFIX[answers.partition ?? "aws"];
@@ -247,6 +266,9 @@ function cloudSignInParameters(signIn: CloudSignInAnswers | undefined): Record<s
     // GitHub sign-in (Task 22): the template turns it on only when both are non-empty.
     ...(signIn?.githubClientId === undefined ? {} : { GitHubClientId: signIn.githubClientId }),
     ...(signIn?.githubClientSecretArn === undefined ? {} : { GitHubClientSecretArn: signIn.githubClientSecretArn }),
+    // Sign-in codes from a branded Amazon SES sender (Task 7): the template sends with SES only when both are non-empty.
+    ...(signIn?.emailFrom === undefined ? {} : { CloudSignInEmailFrom: signIn.emailFrom }),
+    ...(signIn?.emailSourceArn === undefined ? {} : { CloudSignInEmailSourceArn: signIn.emailSourceArn }),
   };
 }
 
@@ -303,6 +325,8 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
         ...Object.fromEntries([...CONTROL_PLANE_FOUNDATION_PARAMETERS, ...MODEL_PROXY_FOUNDATION_PARAMETERS, ...CLOUD_PROJECT_FOUNDATION_PARAMETERS].map((name) => [name, required(outputs, "foundation", name, answers.env)])),
         ...(answers.slackAppPostedMessages === undefined ? {} : { SlackAppPostedMessages: answers.slackAppPostedMessages }),
         ...(answers.cloud === true ? cloudSignInParameters(answers.cloudSignIn) : {}),
+        // Plan 2, Task 19: the hosted cloud's foundation has the DNS firewall, and the broker keeps its project list current.
+        ...(answers.cloud === true ? { ProjectAllowListId: required(outputs, "foundation", "ProjectAllowListId", answers.env) } : {}),
         ...(answers.budget === undefined ? {} : { BudgetMonthlyUsd: String(answers.budget.monthlyUsd), BudgetScope: answers.budget.scope }),
         ...(answers.auditLock === undefined ? {} : { AuditLockProfile: answers.auditLock }),
         // F24: only when a stored sign-in choice is actually given; the template's own defaults
@@ -316,6 +340,7 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
       return {
         ...base,
         WorkerImageUri: resolvedImage(answers, "worker", outputs),
+        ...bootStage2Parameter(answers),
         // The worker role reads exactly its image's repository (task 25): the runtime stack attaches that policy to the role.
         Ec2WorkerInstanceRoleArn: required(outputs, "foundation", "Ec2WorkerInstanceRoleArn", answers.env),
         ...executorImageParameter(answers, outputs),

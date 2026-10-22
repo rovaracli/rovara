@@ -3,7 +3,7 @@
 // written only by deployEnvironment once the Slack stack exists; these two let a stopped init
 // resume before that, from any machine with access to the account.
 import { z } from "zod";
-import { agentXError, AGENTX_NAME_PATTERN, EnvironmentNameSchema, environmentSettingsPrefix, ImageDigest } from "@agentx/contracts";
+import { agentXError, AGENTX_NAME_PATTERN, BOOT_STAGE2_SHA256_PATTERN, EnvironmentNameSchema, environmentSettingsPrefix, ImageDigest } from "@agentx/contracts";
 import { AlertEmailSchema, ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CloudSignInAnswersSchema, GITHUB_LOGIN_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "../deploy/answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
@@ -58,7 +58,7 @@ export const InitAnswersSchema = z.object({
   models: ModelsAnswersSchema,
   permissionsBoundaryArn: z.string().regex(/^arn:aws[a-z-]*:iam::\d{12}:policy\/.+$/).optional(),
   operatorPrincipalArn: z.string().regex(/^arn:aws[a-z-]*:(iam|sts)::\d{12}:.+$/).optional(),
-  images: z.object({ worker: ImageDigest.optional(), slack: ImageDigest.optional() }).strict().optional(),
+  images: z.object({ worker: ImageDigest.optional(), slack: ImageDigest.optional(), bootStage2Sha256: z.string().regex(BOOT_STAGE2_SHA256_PATTERN).optional() }).strict().optional(),
   alert: AlertAnswersSchema,
   budget: BudgetAnswersSchema.optional(),
   /** The audit ledger's lock profile (Task 5b); absent in answers saved before it, which then deploy with the template's default. */

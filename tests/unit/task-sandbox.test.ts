@@ -1,7 +1,7 @@
 // Ruling R56: on an EC2 worker, task-controlled code never runs in the worker's own process, network or user. It runs
 // in a sandbox container with no Docker socket, no host network, no capabilities and only the workspace mounted.
 import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -9,6 +9,7 @@ import {
   TaskSandbox,
   assertLocalTaskExecutionAllowed,
   removeLeftoverTaskSandboxes,
+  sandboxCpuLimit,
   taskSandboxRunArgs,
   taskShellFromEnvironment,
   taskShellSelection,
@@ -55,6 +56,24 @@ describe("the task sandbox's docker run arguments (R56)", () => {
     expect(TASK_SANDBOX_NETWORK).toBe("agentx-task");
   });
 
+  it("cap the sandbox's processes, so a fork bomb cannot starve the instance the worker shares", () => {
+    expect(args[args.indexOf("--pids-limit") + 1]).toBe("4096");
+  });
+
+  it("leave the worker one CPU: all but one of the host's, and no limit at all on a one-CPU host (the daemon refuses a limit above the host's CPUs)", () => {
+    const cpus = (hostCpus: number) => {
+      const given = taskSandboxRunArgs({ name: "n", taskId: TASK, image: IMAGE, rootPath: "/mnt/workspace", maskedPaths: [], hostCpus });
+      return given.includes("--cpus") ? given[given.indexOf("--cpus") + 1] : undefined;
+    };
+    expect(cpus(1)).toBeUndefined();
+    expect(cpus(2)).toBe("1");
+    expect(cpus(8)).toBe("7");
+    expect([sandboxCpuLimit(1), sandboxCpuLimit(2), sandboxCpuLimit(8), sandboxCpuLimit(0)]).toEqual([undefined, "1", "7", undefined]);
+    // Without a count, this machine's own is used, and the limit is always below it.
+    const own = taskSandboxRunArgs({ name: "n", taskId: TASK, image: IMAGE, rootPath: "/mnt/workspace", maskedPaths: [] });
+    if (own.includes("--cpus")) expect(Number(own[own.indexOf("--cpus") + 1])).toBeLessThan(availableParallelism());
+  });
+
   it("mount only the workspace, and never the Docker socket, the host network or privileges", () => {
     const joined = args.join(" ");
     expect(args.filter((arg) => arg === "--volume")).toHaveLength(1);
@@ -63,7 +82,7 @@ describe("the task sandbox's docker run arguments (R56)", () => {
     expect(joined).not.toContain("/var/run");
     expect(args).not.toContain("--privileged");
     expect(args).not.toContain("host");
-    expect(joined).not.toMatch(/--network[ =]host|--net[ =]host|--pid|--ipc|--userns|--uts|--device|--cap-add|--volumes-from|--add-host/);
+    expect(joined).not.toMatch(/--network[ =]host|--net[ =]host|--pid(?!s-limit)|--ipc|--userns|--uts|--device|--cap-add|--volumes-from|--add-host/);
   });
 
   it("label the container with the task and start the image's own init with nothing to run", () => {

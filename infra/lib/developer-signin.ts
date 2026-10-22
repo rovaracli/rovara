@@ -1,6 +1,6 @@
 // Spec 025 phase 25a: the control plane as the developers' sign-in server. Named environments only
 // (R3): the legacy deployment must not change.
-import { ArnFormat, CfnOutput, CfnParameter, Duration, RemovalPolicy, Stack, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
+import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
 import { packagedFunction } from "./control-plane.js";
@@ -8,6 +8,8 @@ import { CloudIdentity } from "./cloud-identity.js";
 
 const SIGN_IN_ROUTE_KEY = "ANY /v1/auth/{proxy+}";
 const DEV_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
+/** The hosted app's routes (`GET /v1/app/me`): authorizer-free like the dev routes, the broker verifies the developer token itself. */
+const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
 
 export interface DeveloperSignInParameters {
@@ -53,6 +55,8 @@ export interface DeveloperSignInProps {
   parameters: DeveloperSignInParameters;
   /** The API's default stage, which throttles the public /v1/auth routes. */
   stage: apigwv2.CfnStage;
+  /** Further public routes of the same API the stage throttles like the /v1/auth, /v1/dev and /v1/app ones (the GitHub install routes). */
+  throttledRoutes?: apigwv2.CfnRoute[];
   /** The TurnRecords table (control-plane.ts), so the broker may write AI-tool audit records.
    * The concrete Table (as with slackSecret above): dynamodb.ITable's tableStreamArn is an
    * optional string, but Table's getter returns string | undefined, which this repo's
@@ -128,23 +132,79 @@ export class DeveloperSignIn extends Construct {
         // Empty unless the GitHub OAuth app is configured (GitHubClientId); the function then reads its secret by id.
         DEVELOPER_GITHUB_CLIENT_ID: cloud.githubClientId.valueAsString,
         DEVELOPER_GITHUB_SECRET_ID: cloud.githubClientSecretArn.valueAsString,
+        // Plan 2, Task 8: the email that tells an account a new sign-in method was linked to it goes out from the cloud sign-in's SES sender.
+        // All three are empty unless both CloudSignInEmailFrom and CloudSignInEmailSourceArn are set (no sender: no notice). SES identities are
+        // regional, so the function sends in the region of the sender's identity ARN (arn:aws:ses:<region>:...). The ":::" keeps Fn::Select in range
+        // even for the empty default, so nothing depends on how CloudFormation orders the evaluation of Fn::If's branches.
+        DEVELOPER_NOTICE_EMAIL_FROM: Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, cloud.emailFrom.valueAsString, "")),
+        DEVELOPER_NOTICE_EMAIL_REGION: Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, Fn.select(3, Fn.split(":", Fn.join("", [cloud.emailSourceArn.valueAsString, ":::"]))), "")),
+        ROVARA_WEB_ORIGIN: cloud.webOrigin.valueAsString,
       }),
     }, Duration.seconds(15));
-    // Exactly what DeveloperSignInStore sends: GetItem, PutItem, UpdateItem, and TransactWriteItems
+    // What DeveloperSignInStore sends on every sign-in: GetItem, PutItem, UpdateItem, and TransactWriteItems
     // made of Put and Update items (IAM authorizes each item as PutItem or UpdateItem).
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [table.tableArn],
+    }));
+    // Plan 2, Task 8: unlinking a sign-in method (unlinkIdentity, the `unlink-identity` invoke). It lists the developer's own IDENTITY# items
+    // (Query on `DEVELOPER#<id>`) and, in one transaction, deletes the one it removes (a transaction's Delete is authorized as DeleteItem; the
+    // same transaction's Put and Update are the table-wide grants above). Both stay inside the developer partitions; nothing else is deleted
+    // or listed, and the broker gets neither (its sign-in table policy stays reads and the developer-partition Query).
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:DeleteItem"], resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
+    }));
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:Query"], resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
     }));
     // Orgs and membership (OrgStore): the bare org partition (the org record and its member rows), the developer's org
     // pointer, the verified-email pointers that link one person's cloud sign-ins, the invites a sign-in accepts, and the
     // claim a GitHub account holds on its one free trial (unlockTrial, run when someone signs in with GitHub; cloud installs
     // only); never an org-scoped row. Its transactions are made of Put and Update items, which IAM authorizes as
     // PutItem and UpdateItem. The `?` matches one character each, the 20 of an org ID.
+    const orgPattern = "org_????????????????????";
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#org_????????????????????", "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*", ...(cloud === undefined ? [] : ["TRIAL_GITHUB#*"])] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`, "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*", ...(cloud === undefined ? [] : ["TRIAL_GITHUB#*"])] } },
+    }));
+    // Healing a duplicate member (mergeDuplicateMember) touches exactly these further keys, each with only the action it uses.
+    // A member's project grants (`ORG#<id>#MEMBER#<developer>`): copied to the survivor (PutItem), listed (Query), then removed (DeleteItem).
+    // The org's budget settings (`ORG#<id>#SETTINGS`): read, and written back with the duplicate's override moved (GetItem, PutItem).
+    // A race org (the leftover of two sign-ins of one person at once) is checked and closed: its whole partition and its project
+    // catalog are listed (Query); the closing itself is an Update on the org record, already covered above, never a delete of it.
+    // The duplicate's member row, in the bare org partition, and the developer's org pointer are deleted (DeleteItem). IAM leading keys
+    // cannot tell the member row from the org record in that partition, so the DeleteItem grant reaches both; the code deletes only the
+    // member row. A transaction's Delete is authorized as DeleteItem. No `ORG#*` wildcard, no scan, no other org-scoped row.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:PutItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`] } },
+    }));
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#SETTINGS`] } },
+    }));
+    // Accepting an invite checks, in the same transaction, that the org is not closed or closing (a ConditionCheck on the org record, which
+    // IAM authorizes as ConditionCheckItem). That action on that one key; the function never reads or writes anything else through it.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:ConditionCheckItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`] } },
+    }));
+    // A removed member's ban on a single-org install (`ORG#<id>#BAN`): read by a sign-in that would join the install's org (GetItem) and
+    // cleared when an invite is accepted (DeleteItem, below). The function never writes a ban; only the broker's removal does.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#BAN`] } },
+    }));
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:Query"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`, `ORG#${orgPattern}`, `ORG#${orgPattern}#PROJECT_CATALOG`] } },
+    }));
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:DeleteItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`, `ORG#${orgPattern}`, `ORG#${orgPattern}#BAN`, "DEVELOPER_ORG#*"] } },
     }));
     tokenKey.grant(fn, "kms:Sign", "kms:GetPublicKey");
     tokenKey.addToResourcePolicy(new iam.PolicyStatement({
@@ -172,6 +232,25 @@ export class DeveloperSignIn extends Construct {
       });
       githubSecretRead.attachToRole(fn.role!);
       (githubSecretRead.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.githubEnabled;
+      // The notice of a newly linked sign-in method (Plan 2, Task 8): ses:SendEmail on the sender's SES identity and nothing else (the Simple
+      // content of SESv2 SendEmail needs no ses:SendRawEmail, and no configuration set is used), and only when that sender is configured:
+      // an empty ARN is not a valid resource, so the policy itself is conditional, as with the GitHub secret above.
+      const noticeSend = new iam.Policy(this, "IdentityNoticeSend", {
+        statements: [new iam.PolicyStatement({ actions: ["ses:SendEmail"], resources: [cloud.emailSourceArn.valueAsString] })],
+      });
+      noticeSend.attachToRole(fn.role!);
+      (noticeSend.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.emailFromSes;
+      // Plan 2, Task 14: the broker emails an org's owners when a GitHub organization is connected because its GitHub admin approved a request
+      // (sendGithubConnectedNotice). The same sender, so the same grant: ses:SendEmail on the sender's SES identity and nothing else, in a policy
+      // of its own that exists only under the same condition, and the same two settings (the sender and the region of its identity ARN).
+      // Both are empty with no sender, and the broker then sends nothing.
+      const brokerNoticeSend = new iam.Policy(this, "BrokerGithubConnectedNoticeSend", {
+        statements: [new iam.PolicyStatement({ actions: ["ses:SendEmail"], resources: [cloud.emailSourceArn.valueAsString] })],
+      });
+      brokerNoticeSend.attachToRole(props.broker.role!);
+      (brokerNoticeSend.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = cloud.emailFromSes;
+      props.broker.addEnvironment("DEVELOPER_NOTICE_EMAIL_FROM", Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, cloud.emailFrom.valueAsString, "")));
+      props.broker.addEnvironment("DEVELOPER_NOTICE_EMAIL_REGION", Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, Fn.select(3, Fn.split(":", Fn.join("", [cloud.emailSourceArn.valueAsString, ":::"]))), "")));
     }
 
     const integration = new apigwv2.CfnIntegration(this, "Integration", {
@@ -191,6 +270,9 @@ export class DeveloperSignIn extends Construct {
     const devRoute = new apigwv2.CfnRoute(this, "DevRoute", {
       apiId: props.api.ref, routeKey: DEV_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
     });
+    const appRoute = new apigwv2.CfnRoute(this, "AppRoute", {
+      apiId: props.api.ref, routeKey: APP_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
+    });
     // The review page uses its own opaque, revocable session cookie and owner checks in the broker.
     const feedbackReviewRoute = new apigwv2.CfnRoute(this, "FeedbackReviewRoute", {
       apiId: props.api.ref, routeKey: FEEDBACK_REVIEW_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
@@ -198,11 +280,17 @@ export class DeveloperSignIn extends Construct {
     // Public routes are stage-capped: bursts of 50, 20 requests a second on average,
     // across all callers. A developer signs in a few times a week, so this only bites a flood.
     const throttle = { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 };
-    props.stage.routeSettings = { [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle };
+    const throttledRoutes = props.throttledRoutes ?? [];
+    props.stage.routeSettings = {
+      [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle,
+      ...Object.fromEntries(throttledRoutes.map((route) => [route.routeKey, throttle])),
+    };
     // Route settings must name routes that already exist.
     props.stage.addDependency(authRoute);
     props.stage.addDependency(devRoute);
+    props.stage.addDependency(appRoute);
     props.stage.addDependency(feedbackReviewRoute);
+    for (const route of throttledRoutes) props.stage.addDependency(route);
 
     const broker = props.broker;
     broker.addEnvironment("DEVELOPER_TOKEN_ISSUER", issuer);
@@ -224,11 +312,20 @@ export class DeveloperSignIn extends Construct {
       broker.addEnvironment("DEVELOPER_GITHUB_CLIENT_ID", cloud.githubClientId.valueAsString);
     }
     fn.grantInvoke(broker);
-    // Spec 025 25e: EMAIL# is the email index resolveDeveloper reads to name a developer by email.
+    // Spec 025 25e: EMAIL# is the email index resolveDeveloper reads to name a developer by email. Plan 2, Task 13: SIGNIN_IDENTITY# is
+    // the forward link "which developer is this sign-in" (DeveloperSignInStore.developerForIdentity), which the GitHub connect callback
+    // reads to check that the GitHub user is the developer who started the connect. Read only.
     broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem"],
       resources: [table.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*"] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SESSION#*", "DEVELOPER#*", "EMAIL#*", "SIGNIN_IDENTITY#*"] } },
+    }));
+    // GET /v1/app/me lists a developer's linked identities (DeveloperSignInStore.identitiesOf): a Query on the developer's own
+    // partition, which holds one IDENTITY# row per linked sign-in beside the developer record.
+    broker.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:Query"],
+      resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
     }));
     // The workflow E2E terminal authority transaction also condition-checks the original creator
     // record. Keep that cross-table fence to developer identity rows only.

@@ -254,6 +254,18 @@ export const WORKER_SETTING_PARAMETERS = {
 export const MODEL_PROXY_URL_PARAMETER = "model-proxy-url";
 
 /**
+ * The setting, under the same SSM prefix, where a named environment publishes the SHA-256 of `packages/worker/ec2/boot-stage2.sh` in the release
+ * source its worker image was built from (Task 10). Stage 2 of the boot ships in that image, so this is the hash that checks it: the runtime stack
+ * writes it with `worker-image` in one deploy, and the Steps function reads the two together. "none" or absent means a release before the split.
+ */
+export const BOOT_STAGE2_SHA256_PARAMETER = "worker-boot-stage2-sha256";
+
+/** The variable boot.sh reads that hash from (`bootStage2Sha256` of the boot configuration). */
+export const AGENTX_BOOT_STAGE2_SHA256 = "AGENTX_BOOT_STAGE2_SHA256";
+/** What a SHA-256 setting looks like: 64 lower-case hex digits. */
+export const BOOT_STAGE2_SHA256_PATTERN = /^[a-f0-9]{64}$/;
+
+/**
  * Foundation outputs the control plane takes as stack parameters of the same name, for the EC2
  * session lifecycle. Parameters rather than cross-stack exports, so the manually deployed foundation
  * never has to change for them. The release and `agentx deploy` both pass them.
@@ -402,12 +414,23 @@ export const Ec2WorkerBootConfigSchema = z
     modelProxyUrl: z.string().url().max(512).regex(/^https?:\/\//).regex(SHELL_SAFE, "model proxy URL has unsafe characters").optional(),
     /** AGENTX_ENVIRONMENT_KIND: set for a named environment's worker, whose launcher keeps it off the host network and away from the metadata service. Absent for the legacy deployment. */
     environmentKind: z.literal("named").optional(),
+    /**
+     * AGENTX_BOOT_STAGE2_SHA256: the SHA-256 of the stage 2 boot script (`boot-stage2.sh`) that the worker image carries at /opt/agentx/boot/stage2.sh.
+     * boot.sh reads it out of the image it pulled by digest and runs it only if its hash is this. Required for a named environment, whose boot is
+     * two stages; absent for the legacy deployment, whose single-file boot has no stage 2.
+     */
+    bootStage2Sha256: z.string().regex(BOOT_STAGE2_SHA256_PATTERN, "boot stage 2 hash must be 64 lower-case hex digits").optional(),
     /** PI_CACHE_RETENTION */
     promptCacheRetention: z.enum(["short", "long"]),
     /** AGENTX_LOG_GROUP: the CloudWatch Logs group the worker container writes to. */
     logGroupName: z.string().regex(/^[A-Za-z0-9._/-]{1,512}$/, "invalid log group name"),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    if (config.environmentKind === "named" && config.bootStage2Sha256 === undefined) {
+      context.addIssue({ code: "custom", path: ["bootStage2Sha256"], message: "a named environment's worker boots stage 2 from its image, so bootStage2Sha256 is required" });
+    }
+  });
 
 /**
  * The script cloud-init runs on a worker: a validated configuration block, then the boot script.
@@ -434,6 +457,7 @@ export function ec2WorkerBootScript(config: Ec2WorkerBootConfig, bootScript: str
   if (parsed.openaiSecretArn) variables.push([KEYED_MODEL_PROVIDERS.openai.secretArnVariable, parsed.openaiSecretArn]);
   if (parsed.modelProxyUrl) variables.push(["AGENTX_MODEL_PROXY_URL", parsed.modelProxyUrl]);
   if (parsed.environmentKind) variables.push(["AGENTX_ENVIRONMENT_KIND", parsed.environmentKind]);
+  if (parsed.bootStage2Sha256) variables.push([AGENTX_BOOT_STAGE2_SHA256, parsed.bootStage2Sha256]);
   if (parsed.executorImage) variables.push(["EXECUTOR_IMAGE", parsed.executorImage]);
   if (parsed.e2eQualification) {
     variables.push(

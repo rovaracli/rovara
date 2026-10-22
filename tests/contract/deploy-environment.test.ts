@@ -154,6 +154,8 @@ function scriptedOutputs(): Record<string, StackOutputs> {
       WorkspaceKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/k",
       Ec2WorkerInstanceRoleArn: "arn:aws:iam::123456789012:role/agentx/staging/worker",
       Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0", Ec2WorkerSubnets: "us-east-1a=subnet-1,us-east-1b=subnet-2", Ec2WorkerSecurityGroupId: "sg-0fedcba9876543210",
+      // The hosted cloud's foundation only (the DNS firewall's project allow list); a plain install's control plane ignores it.
+      ProjectAllowListId: "rslvr-fdl-0123456789abcdef",
     },
     [stackName("identity")]: {
       Issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc",
@@ -1014,6 +1016,8 @@ describe("the hosted Rovara cloud switch is stored and survives every deploy (R4
     expect(controlPlane).toContain(`${stackName("control-plane")}:GoogleClientId=google-id.apps.example`);
     expect(controlPlane).toContain(`${stackName("control-plane")}:GoogleClientSecretArn=${SIGN_IN.googleClientSecretArn}`);
     expect(controlPlane).toContain(`${stackName("control-plane")}:CloudIdentityDomainPrefix=rovara-acme`);
+    // Plan 2, Task 19: the foundation's DNS firewall project list reaches the control plane's broker.
+    expect(controlPlane).toContain(`${stackName("control-plane")}:ProjectAllowListId=rslvr-fdl-0123456789abcdef`);
     expect(controlPlane).toContain(`${stackName("control-plane")}:GitHubClientId=Iv1.githubapp`);
     expect(controlPlane).toContain(`${stackName("control-plane")}:GitHubClientSecretArn=${SIGN_IN.githubClientSecretArn}`);
     expect(runner.calls.every((args) => args.includes("agentxCloud=true"))).toBe(true);
@@ -1025,8 +1029,11 @@ describe("the hosted Rovara cloud switch is stored and survives every deploy (R4
     await deployEnvironment({ mode: "install", engine: "cdk", answers: { ...baseAnswers(), cloud: true }, release: fakeRelease(), deployer: cdk(runner, true), store, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
     expect(runner.calls.find((args) => args[3] === "AgentXControlPlane")!.join(" ")).not.toMatch(/Google|GitHubClient|CloudIdentityDomainPrefix/);
     const plain = new MemoryParameterStore();
-    await deployEnvironment({ mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: cdk(cdkRunner(), false), store: plain, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
+    const plainRunner = cdkRunner();
+    await deployEnvironment({ mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: cdk(plainRunner, false), store: plain, secrets: memorySecrets(), holder: HOLDER, declaredParameters: () => new Set() });
     expect(await readEnvironmentSettings(plain, ENV)).not.toHaveProperty("cloud");
+    // A plain install's control plane declares no such parameter, so none is passed.
+    expect(plainRunner.calls.find((args) => args[3] === "AgentXControlPlane")!.join(" ")).not.toContain("ProjectAllowListId");
   });
 
   it("an upgrade built from the stored settings keeps agentxCloud=true and the sign-in parameters", async () => {

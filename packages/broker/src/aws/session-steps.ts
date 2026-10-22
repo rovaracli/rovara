@@ -5,7 +5,7 @@ import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, ec2WorkerUserData } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, agentXError, ec2WorkerUserData } from "@agentx/contracts";
 import { requiredEnvironment } from "./lambda.js";
 import { SessionManager, computeMeteringFromEnvironment } from "./sessions.js";
 
@@ -41,6 +41,11 @@ export type SessionStep = z.infer<typeof SessionStepSchema>;
 /** What a worker runs with besides its own workspace: set by each release in SSM. */
 export interface WorkerSettings {
   workerImage: string;
+  /**
+   * The SHA-256 of the stage 2 boot script the worker image carries, set by the same deploy that set `workerImage` (Task 10). Read only
+   * in a named environment; absent from the SSM setting means a release before the boot split.
+   */
+  bootStage2Sha256?: string;
   /** The browser executor image, once a release carries one; workers boot without EXECUTOR_IMAGE until then. */
   executorImage?: string;
   modelProvider: string;
@@ -64,7 +69,11 @@ export interface SessionStepsDependencies {
   modelProxyRequired?: boolean;
   /** The invoke signing key's public key as base64 DER, as KMS GetPublicKey returns it. */
   invokePublicKey: () => Promise<string>;
-  bootScript: () => string;
+  /**
+   * The boot script to render: "named" is boot.sh, stage 1 of a two-stage boot whose stage 2 ships in the worker image; "legacy" is the
+   * production deployment's single-file boot, boot-legacy.sh (ruling R58).
+   */
+  bootScript: (variant: "named" | "legacy") => string;
   controlPlaneUrl: string;
   logGroupName: string;
   /** GET on the worker's /ping; resolves to what it reported, rejects when unreachable. */
@@ -125,12 +134,17 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
         if (dependencies.modelProxyRequired && !settings.modelProxyUrl) {
           throw new Error(`The model proxy URL is missing: this environment's workers have no provider keys or Bedrock access, and the SSM parameter ${MODEL_PROXY_URL_PARAMETER} is not set. Deploy the control plane's model proxy first.`);
         }
+        // A named environment's stage 2 comes out of its worker image and is checked against the hash set beside that image.
+        if (dependencies.modelProxyRequired && !settings.bootStage2Sha256) {
+          throw agentXError("RUNTIME_UNAVAILABLE", "this control plane has no boot hash for its worker image; run agentx upgrade");
+        }
         const userData = ec2WorkerUserData({
           workspaceId: step.workspaceId,
           generation: step.generation,
           volumeId: step.volumeId,
           expectNewVolume: step.expectNewVolume,
           workerImage: settings.workerImage,
+          ...(dependencies.modelProxyRequired && settings.bootStage2Sha256 ? { bootStage2Sha256: settings.bootStage2Sha256 } : {}),
           ...(settings.executorImage ? { executorImage: settings.executorImage } : {}),
           invokePublicKey,
           controlPlaneUrl: dependencies.controlPlaneUrl,
@@ -145,7 +159,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           // A named environment is the one that requires a model proxy; the legacy deployment's launch says nothing.
           ...(dependencies.modelProxyRequired ? { environmentKind: "named" as const } : {}),
           logGroupName: dependencies.logGroupName,
-        }, dependencies.bootScript());
+        }, dependencies.bootScript(dependencies.modelProxyRequired ? "named" : "legacy"));
         // Already base64 gzip, the form RunInstances takes (#229).
         return { userData };
       }
@@ -207,7 +221,11 @@ export const handler = createSessionStepsHandler({
   }),
   async workerSettings() {
     const prefix = requiredEnvironment("WORKER_SETTINGS_PREFIX");
-    const names = Object.fromEntries(Object.entries({ ...WORKER_SETTING_PARAMETERS, ...(modelProxyRequired ? { modelProxyUrl: MODEL_PROXY_URL_PARAMETER } : {}) }).map(([key, name]) => [key, `${prefix}${name}`])) as Record<keyof typeof WORKER_SETTING_PARAMETERS | "modelProxyUrl", string>;
+    // The proxy URL and the stage 2 hash are named environments' settings, and only their functions may read them (see modelProxyRequired).
+    const names = Object.fromEntries(Object.entries({
+      ...WORKER_SETTING_PARAMETERS,
+      ...(modelProxyRequired ? { modelProxyUrl: MODEL_PROXY_URL_PARAMETER, bootStage2Sha256: BOOT_STAGE2_SHA256_PARAMETER } : {}),
+    }).map(([key, name]) => [key, `${prefix}${name}`])) as Record<keyof typeof WORKER_SETTING_PARAMETERS | "modelProxyUrl" | "bootStage2Sha256", string>;
     const response = await ssm.send(new GetParametersCommand({ Names: Object.values(names) }));
     const values = new Map((response.Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
     const setting = (key: keyof typeof WORKER_SETTING_PARAMETERS) => {
@@ -218,11 +236,11 @@ export const handler = createSessionStepsHandler({
     const promptCacheRetention = setting("promptCacheRetention");
     if (promptCacheRetention !== "short" && promptCacheRetention !== "long") throw new Error("worker prompt cache retention must be short or long");
     // Absent from SSM (a release before the setting existed) or "none" both mean not configured.
-    const optional = (key: "openRouterSecretArn" | "openRouterProviders" | "anthropicSecretArn" | "openaiSecretArn" | "modelProxyUrl" | "executorImage") => {
+    const optional = (key: "openRouterSecretArn" | "openRouterProviders" | "anthropicSecretArn" | "openaiSecretArn" | "modelProxyUrl" | "bootStage2Sha256" | "executorImage") => {
       const value = values.get(names[key]);
       return value && value !== "none" ? { [key]: value } : {};
     };
-    return { ...optional("openRouterSecretArn"), ...optional("openRouterProviders"), ...optional("anthropicSecretArn"), ...optional("openaiSecretArn"), ...optional("modelProxyUrl"), ...optional("executorImage"), workerImage: setting("workerImage"), modelProvider: setting("modelProvider"), modelId: setting("modelId"), promptCacheRetention };
+    return { ...optional("openRouterSecretArn"), ...optional("openRouterProviders"), ...optional("anthropicSecretArn"), ...optional("openaiSecretArn"), ...optional("modelProxyUrl"), ...optional("bootStage2Sha256"), ...optional("executorImage"), workerImage: setting("workerImage"), modelProvider: setting("modelProvider"), modelId: setting("modelId"), promptCacheRetention };
   },
   invokePublicKey() {
     // The key never changes, so one read per container.
@@ -230,8 +248,8 @@ export const handler = createSessionStepsHandler({
       .then((response) => Buffer.from(response.PublicKey ?? new Uint8Array()).toString("base64"));
     return publicKey;
   },
-  // Bundled beside the handler from packages/worker/ec2/boot.sh.
-  bootScript: () => readFileSync(join(process.env.LAMBDA_TASK_ROOT ?? ".", "boot.sh"), "utf8"),
+  // Bundled beside the handler from packages/worker/ec2/: boot.sh (stage 1) for a named environment, boot-legacy.sh for the legacy deployment.
+  bootScript: (variant) => readFileSync(join(process.env.LAMBDA_TASK_ROOT ?? ".", variant === "legacy" ? "boot-legacy.sh" : "boot.sh"), "utf8"),
   controlPlaneUrl: process.env.CONTROL_PLANE_URL ?? "",
   logGroupName: process.env.WORKER_LOG_GROUP_NAME ?? "",
   ping: (url) => pingWorker(url),

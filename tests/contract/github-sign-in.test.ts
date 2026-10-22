@@ -88,13 +88,12 @@ describe("a GitHub sign-in links by a verified email, exactly like the cloud met
   const maya: FakeOidcUser = { sub: "maya-cloud-1", name: "Maya Chen", email: "maya@example.com", email_verified: true };
   const mayaGithub = (verified: boolean, primary = true): FakeGithubUser => ({ id: 99, login: "maya", name: "Maya C.", emails: [{ email: "maya@example.com", primary, verified }] });
 
-  it("puts the same verified email, via cloud then via GitHub, in one org, and unlocks that org's trial", async () => {
+  it("puts the same verified email, via cloud then via GitHub, in one org as one developer, and unlocks that org's trial", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [maya], github: { users: [mayaGithub(true)] } });
     const first = await signedIn(h, "cloud", maya.sub);
     expect(h.state.get(orgMetaKey(first.org as never))!.trialUnlockedAt).toBeUndefined();
     const second = await signedIn(h, "github", "99");
-    expect(second).toMatchObject({ org: first.org, org_role: "owner", amr: "github" });
-    expect(second.sub).not.toBe(first.sub);
+    expect(second).toMatchObject({ org: first.org, org_role: "owner", amr: "github", sub: first.sub });
     expect(orgMetas(h.state)).toHaveLength(1);
     expect(h.state.get(orgMetaKey(first.org as never))).toMatchObject({ trialGithubUserId: "99" });
   });
@@ -123,7 +122,7 @@ describe("a GitHub sign-in links by a verified email, exactly like the cloud met
     const owner = await signedIn(h, "cloud", maya.sub);
     const { token } = await h.orgs.createInvite({ orgId: owner.org as never, createdBy: owner.sub as string, role: "member", email: "eve@example.com" });
     const refused = await h.signIn("github", "101", { query: { invite: token } });
-    expect(refused.searchParams.get("inviteError")).toBe("INVITE_INVALID");
+    expect(refused.searchParams.get("inviteError")).toBe("INVITE_WRONG_EMAIL");
     const own = claimsOf((await h.exchange(refused.searchParams.get("code")!)).body.access_token);
     expect(own).toMatchObject({ org_role: "owner" });
     expect(own.org).not.toBe(owner.org);
@@ -263,12 +262,12 @@ describe("githubSignInProvider (unit)", () => {
 
   it("returns issuer https://github.com, the numeric id as subject and githubUserId, and the primary verified email", async () => {
     const result = await complete(route({ id: 12345, login: "ada", name: "Ada" }, [{ email: "other@example.com", primary: false, verified: true }, { email: "Ada@Example.com", primary: true, verified: true }]));
-    expect(result).toEqual({ ok: true, identity: { method: "github", issuer: GITHUB_ISSUER, subject: "12345", displayName: "Ada", email: "Ada@Example.com", emailVerified: true, githubUserId: "12345" } });
+    expect(result).toEqual({ ok: true, identity: { method: "github", issuer: GITHUB_ISSUER, subject: "12345", displayName: "Ada", email: "Ada@Example.com", emailVerified: true, githubUserId: "12345", login: "ada" } });
   });
 
   it("has no email, and emailVerified unset, when the primary email is unverified", async () => {
     const result = await complete(route({ id: 1, login: "ada", name: null }, [{ email: "a@example.com", primary: true, verified: false }, { email: "b@example.com", primary: false, verified: true }]));
-    expect(result).toEqual({ ok: true, identity: { method: "github", issuer: GITHUB_ISSUER, subject: "1", displayName: "ada", githubUserId: "1" } });
+    expect(result).toEqual({ ok: true, identity: { method: "github", issuer: GITHUB_ISSUER, subject: "1", displayName: "ada", githubUserId: "1", login: "ada" } });
   });
 
   it("refuses a user answer with no numeric id", async () => {

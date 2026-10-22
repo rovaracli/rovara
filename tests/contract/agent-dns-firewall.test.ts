@@ -22,19 +22,22 @@ const resourcesOf = (template: Template, type: string): Array<[string, Resource]
 const firewallTypes = (template: Template): string[] =>
   Object.values(template.toJSON().Resources as Record<string, Resource>).map((resource) => resource.Type).filter((type) => type.startsWith("AWS::Route53Resolver::"));
 
-function ruleGroup(template: Template): { allow: Rule; block: Rule; allowDomains: string[]; blockDomains: string[] } {
+const domainListOf = (template: Template, rule: Rule): [string, Resource] => {
+  const list = resourcesOf(template, "AWS::Route53Resolver::FirewallDomainList").find(([id]) => JSON.stringify(rule.FirewallDomainListId).includes(id));
+  expect(list).toBeDefined();
+  return list!;
+};
+
+function ruleGroup(template: Template): { allow: Rule; project: Rule; block: Rule; allowDomains: string[]; blockDomains: string[] } {
   const groups = resourcesOf(template, "AWS::Route53Resolver::FirewallRuleGroup");
   expect(groups).toHaveLength(1);
   const rules = groups[0]![1].Properties.FirewallRules as Rule[];
-  expect(rules).toHaveLength(2);
+  expect(rules.map((rule) => rule.Priority).sort()).toStrictEqual([100, 150, 200]);
   const allow = rules.find((rule) => rule.Priority === 100)!;
+  const project = rules.find((rule) => rule.Priority === 150)!;
   const block = rules.find((rule) => rule.Priority === 200)!;
-  const domainsOf = (rule: Rule): string[] => {
-    const list = resourcesOf(template, "AWS::Route53Resolver::FirewallDomainList").find(([id]) => JSON.stringify(rule.FirewallDomainListId).includes(id));
-    expect(list).toBeDefined();
-    return list![1].Properties.Domains as string[];
-  };
-  return { allow, block, allowDomains: domainsOf(allow), blockDomains: domainsOf(block) };
+  const domainsOf = (rule: Rule): string[] => domainListOf(template, rule)[1].Properties.Domains as string[];
+  return { allow, project, block, allowDomains: domainsOf(allow), blockDomains: domainsOf(block) };
 }
 
 describe("agent DNS firewall (cloud installs)", () => {
@@ -126,7 +129,7 @@ describe("agent DNS firewall (cloud installs)", () => {
       ...resourcesOf(longest, "AWS::Route53Resolver::FirewallRuleGroupAssociation"),
       ...resourcesOf(longest, "AWS::Route53Resolver::ResolverQueryLoggingConfig"),
     ].map(([, resource]) => resource.Properties.Name as string);
-    expect(names).toHaveLength(5);
+    expect(names).toHaveLength(6);
     for (const name of names) {
       expect(name.length).toBeLessThanOrEqual(64);
       expect(name).toMatch(/^(?!^[0-9]+$)[a-zA-Z0-9\-_ ']+$/);
@@ -146,6 +149,28 @@ describe("agent DNS firewall (cloud installs)", () => {
       ResolverQueryLogConfigId: { "Fn::GetAtt": [configs[0]![0], "Id"] },
       ResourceId: { Ref: resourcesOf(template, "AWS::EC2::VPC")[0]![0] },
     });
+  });
+
+  it("serves the approved extra domains from a second ALLOW list at priority 150, between the defaults (100) and BLOCK (200), that CloudFormation never resets", () => {
+    const { allow, project, block } = ruleGroup(template);
+    expect(project).toMatchObject({ Action: "ALLOW", Priority: 150, FirewallDomainRedirectionAction: "TRUST_REDIRECTION_DOMAIN" });
+    expect(project).not.toHaveProperty("BlockResponse");
+    expect(project.Priority).toBeGreaterThan(allow.Priority);
+    expect(project.Priority).toBeLessThan(block.Priority);
+    const [listId, list] = domainListOf(template, project);
+    // No Domains property at all: the broker owns the contents (UpdateFirewallDomains), and an update of this template cannot reset them.
+    expect(list.Properties).not.toHaveProperty("Domains");
+    expect(list.Properties).not.toHaveProperty("DomainFileUrl");
+    expect(list.Properties.Name).toBe("agentx-staging-project-allow");
+    expect(listId).not.toBe(domainListOf(template, allow)[0]);
+    // The BLOCK rule is untouched.
+    expect(block.FirewallDomainRedirectionAction).toBeUndefined();
+  });
+
+  it("outputs the project list's id for the control plane", () => {
+    const [listId] = domainListOf(template, ruleGroup(template).project);
+    const outputs = template.toJSON().Outputs as Record<string, { Value: unknown }>;
+    expect(outputs.ProjectAllowListId).toStrictEqual({ Value: { "Fn::GetAtt": [listId, "Id"] } });
   });
 
   it("does not turn on fail-open, so a Resolver firewall fault fails closed", () => {
@@ -170,8 +195,84 @@ describe("agent DNS firewall (cloud installs)", () => {
 
   it("creates no firewall resources without agentxCloud, in a named or legacy environment", () => {
     expect(firewallTypes(foundation({ agentxEnv: "staging" }))).toStrictEqual([]);
+    expect(Object.keys((foundation({ agentxEnv: "staging" }).toJSON().Outputs ?? {}) as object)).not.toContain("ProjectAllowListId");
     expect(firewallTypes(foundation({}))).toStrictEqual([]);
     expect(firewallTypes(foundation({ agentxCloud: true }))).toStrictEqual([]);
     expect(firewallTypes(foundation({ agentxEnv: "staging", agentxEgressAllowDomains: "artifactory.acme.dev" }))).toStrictEqual([]);
+  });
+});
+
+
+// Plan 2, Task 19: the control plane learns the project list's id from the foundation (the same way it learns the VPC, the subnets and the worker
+// security group: a foundation stack output the deploy passes on as a control plane parameter) and lets the broker update that one list.
+type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown };
+type Schedule = { Properties: { ScheduleExpression: string; State: string; Target: { Arn: unknown; RoleArn: unknown; Input: string } } };
+
+function controlPlane(context: Record<string, unknown>): Template {
+  const app = buildAgentXApp(context);
+  const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+  return Template.fromStack(stack!);
+}
+
+const statementsOf = (template: Template): Array<[string, Statement]> =>
+  [...resourcesOf(template, "AWS::IAM::Policy"), ...resourcesOf(template, "AWS::IAM::ManagedPolicy")]
+    .flatMap(([id, resource]) => ((resource.Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement): [string, Statement] => [id, statement]));
+const actionsOf = (statement: Statement): string[] => (Array.isArray(statement.Action) ? statement.Action : [statement.Action]);
+const resolverStatements = (template: Template) => statementsOf(template).filter(([, statement]) => actionsOf(statement).some((action) => action.startsWith("route53resolver:")));
+const brokerEnvironment = (template: Template): Record<string, unknown> => {
+  const broker = resourcesOf(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("Broker") && !id.includes("ServiceRole"))!;
+  return (broker[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+};
+
+describe("the project allow list in the control plane (cloud installs)", () => {
+  const template = controlPlane({ agentxEnv: "staging", agentxCloud: true });
+
+  it("takes the list's id as a parameter, which the broker receives", () => {
+    const parameters = template.toJSON().Parameters as Record<string, { Type: string; Default?: unknown }>;
+    expect(parameters.ProjectAllowListId).toMatchObject({ Type: "String" });
+    expect(parameters.ProjectAllowListId).not.toHaveProperty("Default");
+    expect(brokerEnvironment(template).AGENT_PROJECT_ALLOW_LIST_ID).toStrictEqual({ Ref: "ProjectAllowListId" });
+  });
+
+  it("lets only the broker update and read that one list: exact actions, the list's ARN, no wildcard, and no other role", () => {
+    const found = resolverStatements(template);
+    expect(found).toHaveLength(1);
+    const [policyId, statement] = found[0]!;
+    expect(actionsOf(statement).sort()).toStrictEqual(["route53resolver:GetFirewallDomainList", "route53resolver:UpdateFirewallDomains"]);
+    expect(statement.Effect).toBe("Allow");
+    // arn:<partition>:route53resolver:<region>:<account>:firewall-domain-list/<the parameter>, and nothing wider.
+    const resource = JSON.stringify(statement.Resource);
+    expect(resource).toContain("firewall-domain-list/");
+    expect(resource).toContain('{"Ref":"ProjectAllowListId"}');
+    expect(typeof statement.Resource).toBe("object");
+    expect(Array.isArray(statement.Resource)).toBe(false);
+    expect(resource).not.toContain("*");
+    const policy = resourcesOf(template, "AWS::IAM::Policy").find(([id]) => id === policyId)![1];
+    const roles = policy.Properties.Roles as Array<{ Ref: string }>;
+    expect(roles).toHaveLength(1);
+    const brokerRole = resourcesOf(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("Broker") && !id.includes("ServiceRole"))![1].Properties.Role as { "Fn::GetAtt": [string, string] };
+    expect(roles[0]!.Ref).toBe(brokerRole["Fn::GetAtt"][0]);
+  });
+
+  it("runs the broker's egress-domains-sync every 5 minutes, through the same role as the other recovery schedules", () => {
+    const schedules = resourcesOf(template, "AWS::Scheduler::Schedule") as unknown as Array<[string, Schedule]>;
+    const sync = schedules.filter(([id]) => id.startsWith("EgressDomainsSyncSchedule"));
+    expect(sync).toHaveLength(1);
+    const [, schedule] = sync[0]!;
+    expect(schedule.Properties).toMatchObject({ ScheduleExpression: "rate(5 minutes)", State: "ENABLED" });
+    expect(JSON.parse(schedule.Properties.Target.Input)).toStrictEqual({ source: "agentx.egress-domains-sync" });
+    const recovery = schedules.find(([id]) => id.startsWith("GithubWebhookRecoverySchedule"))![1];
+    expect(schedule.Properties.Target.Arn).toStrictEqual(recovery.Properties.Target.Arn);
+    expect(schedule.Properties.Target.RoleArn).toStrictEqual(recovery.Properties.Target.RoleArn);
+  });
+
+  it("has none of it without agentxCloud, in a named or legacy environment", () => {
+    for (const context of [{ agentxEnv: "staging" }, {}, { agentxCloud: true }]) {
+      const plain = controlPlane(context);
+      expect(Object.keys(plain.toJSON().Parameters as object)).not.toContain("ProjectAllowListId");
+      expect(brokerEnvironment(plain)).not.toHaveProperty("AGENT_PROJECT_ALLOW_LIST_ID");
+      expect(resolverStatements(plain)).toStrictEqual([]);
+      expect(resourcesOf(plain, "AWS::Scheduler::Schedule").map(([id]) => id).filter((id) => id.startsWith("EgressDomainsSync"))).toStrictEqual([]);
+    }
   });
 });

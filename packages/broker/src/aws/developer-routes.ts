@@ -9,8 +9,11 @@ import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXNameSchema,
   CHANNEL_MEMBERS_MAX_CHANNELS,
+  DEFAULT_AGENT_ALLOW_DOMAINS,
+  DEFAULT_DEVCONTAINER_CONFIG_PATH,
   DEVELOPER_TOKEN_AUDIENCE,
   DEVELOPER_WORKSPACES_PER_PROJECT,
+  StoredProjectDefinitionSchema,
   WORKSPACE_PROJECT_INDEX,
   WorkspaceInstanceSchema,
   TaskPersonProofResponseSchema,
@@ -21,11 +24,24 @@ import {
   PROJECT_REVISION_SK_PREFIX,
   SLACK_BINDING_SK_PREFIX,
   developerTaskPolicy,
+  formatCommandLine,
   memberGrantsPk,
+  orgProjectCatalogPk,
+  projectAllows,
   workspaceProjectIndexValue,
   projectPk,
   slackBindingPk,
   workspaceRecordFields,
+  type AppMeResponse,
+  type AppProjectDetail,
+  type AppProjectSummary,
+  type AppProjectsResponse,
+  type ProjectMember,
+  type ProjectMemberChangeResponse,
+  type ProjectMemberRemoveResponse,
+  type ProjectMembersResponse,
+  type ProjectRole,
+  type ProjectSetupStatus,
   type ChannelByNameRequest,
   type ChannelByNameResponse,
   type ChannelInfoRequest,
@@ -39,11 +55,20 @@ import {
   type DeveloperWorkspacesResponse,
   type EndDeveloperSessionsRequest,
   type EndDeveloperSessionsResponse,
+  type UnlinkIdentityRequest,
+  type UnlinkIdentityResponse,
+  type StartIdentityLinkRequest,
+  type StartIdentityLinkResponse,
+  StartIdentityLinkAppResponseSchema,
+  type StartIdentityLinkAppResponse,
+  UnlinkableSignInMethodSchema,
+  type LinkedIdentity,
   type OrgId,
-  type OrgRecord,
   type OrgRole,
   OrgIdSchema,
   OrgRoleSchema,
+  PutProjectMemberBodySchema,
+  RemoveProjectMemberBodySchema,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
   type SlackChannelBinding,
@@ -57,9 +82,14 @@ import {
   type TaskPeopleDisplayReadResponse,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
+import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
+import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
+import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
+import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../org/invite-url.js";
-import { parseCreateProjectBody, requireAllowedGithubOwner, type CreateProjectInput } from "../org/cloud-projects.js";
+import { parseCreateProjectBody, type CreateProjectInput } from "../org/cloud-projects.js";
 import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, type OrgBudgetSettings } from "../org/budget.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import type { OrgStore } from "../org/store.js";
@@ -69,7 +99,7 @@ import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
 import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPersonWithId, type ProjectAccessSubject, type TaskPersonIdentityDependencies } from "../developer/task-person-identity.js";
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
-import { META, endedByAdmin, methodSince, startedBeforeMethodOn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
+import { DeveloperSignInStore, META, endedByAdmin, endedByUnlink, methodSince, startedBeforeMethodOn, type DeveloperMarks, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { DeveloperTaskActions } from "./developer-task-actions.js";
@@ -112,6 +142,10 @@ export interface DeveloperApiConfiguration {
   slackAuthCheck?: () => Promise<SlackAuthCheckResponse>;
   /** Spec 025 E9: an admin ends a developer's sign-in sessions, through DeveloperIdentity (the broker only reads the sign-in table). */
   endDeveloperSessions?: (request: EndDeveloperSessionsRequest) => Promise<EndDeveloperSessionsResponse>;
+  /** Plan 2, Task 8: a person unlinks one of their own sign-in methods, through DeveloperIdentity (the broker only reads the sign-in table). */
+  unlinkIdentity?: (request: UnlinkIdentityRequest) => Promise<UnlinkIdentityResponse>;
+  /** Plan 2, Task 8b: a person starts adding a sign-in method they removed earlier back, through DeveloperIdentity (it owns the sign-in table's writes). */
+  startIdentityLink?: (request: StartIdentityLinkRequest) => Promise<StartIdentityLinkResponse>;
   /** Spec 025 E12: a public channel by its name, through DeveloperIdentity. */
   channelByName?: (request: ChannelByNameRequest) => Promise<ChannelByNameResponse>;
   /** Verifies the Authorization header's developer access token (D17; verify-token.ts) and returns its claims. */
@@ -132,23 +166,57 @@ export interface DeveloperRouteDependencies {
   workflowE2EPresentation?: DeveloperTaskRouteDependencies["workflowE2EPresentation"];
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
   registeredRepositoryIdentity?: DeveloperTaskRouteDependencies["registeredRepositoryIdentity"];
+  /** Plan 2, Task 15: the check that an org's GitHub connection still reaches a project's repositories (cloud installs). */
+  requireRepositoriesConnected?: DeveloperTaskRouteDependencies["requireRepositoriesConnected"];
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
-  orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite">;
+  orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
+  /**
+   * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
+   * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
+   */
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void> };
   /** The model proxy, for budgets (ruling R28). Absent without one: budgets are not set up, and task starts are not checked against them. */
   modelAccess?: ModelAccess;
   /** A cloud install (ruling R42): trial lock and machine-time allowance apply to its orgs. */
   cloud?: boolean;
   /**
-   * Ruling R55: registers a project in the caller's org and grants the caller access, through the broker's registration. The route has
-   * already checked the install, the caller's role and the repository's owner against the org's allowed GitHub owner.
+   * Plan 2, Task 16: creates a project in the caller's org from a repository the org's GitHub connection reaches, through the broker's
+   * registration, and grants the caller access; a replay of the same request answers the same project with `duplicate: true`. The route
+   * has already checked the install, the caller's role and the body.
    */
-  createProject?: (caller: DeveloperCaller, input: CreateProjectInput, org: Pick<OrgRecord, "githubOwner">) => Promise<{ duplicate: boolean }>;
+  createProject?: (caller: DeveloperCaller, input: CreateProjectInput) => Promise<{ duplicate: boolean }>;
   /** The Audit Ledger's reader and export client (Task 12). Absent on an install with no ledger: the audit routes then answer NOT_FOUND. */
   auditLedger?: AuditExportClientDeps;
   /** The Audit Ledger's outbox: what a route's audited action adds its pending item through. Absent on a legacy install, where nothing is recorded. */
   audit?: AuditRuntime;
+  /**
+   * Plan 2, Task 17: what `PUT /v1/app/projects/{name}/settings` needs from the broker: registering a revision, and (for an added repository)
+   * GitHub's view of it. Without it the route answers NOT_FOUND.
+   */
+  projectSettings?: Pick<ProjectSettingsDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected">;
+  /**
+   * Plan 2, Task 18: pushes the approved domains to the cell's DNS firewall (Task 19's `syncCellAllowList`). Without it an approved change
+   * waits for the scheduled sync, and the caller is told it will apply within 5 minutes.
+   */
+  egressSync?: EgressDomainsDependencies["sync"];
+  /**
+   * Plan 2, Task 21: who has which role in a project (the agents platform reads people through this). Built from the route dependencies
+   * (`projectMembersOf`) when absent.
+   */
+  projectMembers?: ProjectMembers;
+  /** Plan 2, Task 13: starts connecting GitHub to the caller's org (the broker's `startGithubConnect`). Without it the route answers NOT_FOUND. */
+  githubConnect?: {
+    start(caller: DeveloperCaller): Promise<{ installUrl: string; expiresAt: string; orgName?: string; ownerName?: string }>;
+    /** Plan 2, Task 14: the org's requests to a GitHub admin (any member), and the cancelling of one that is waiting. */
+    listRequests(caller: DeveloperCaller): Promise<{ requests: unknown[] }>;
+    cancelRequest(caller: DeveloperCaller, githubUserId: string): Promise<{ githubUserId: string; status: "cancelled" }>;
+    /** Plan 2, Task 15: the org's installations (any member), disconnecting one (owner or admin), and the repositories one reaches. */
+    listInstallations(caller: DeveloperCaller): Promise<{ installations: unknown[] }>;
+    disconnect(caller: DeveloperCaller, installationId: number): Promise<{ installationId: number; accountLogin: string; message: string }>;
+    listRepositories(caller: DeveloperCaller, installationId: number): Promise<{ repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }> }>;
+  };
 }
 
 /** A route's answer with a status other than 200; the broker's handler writes the status and the body. */
@@ -156,7 +224,8 @@ export class StatusReply {
   constructor(readonly statusCode: number, readonly body: object) {}
 }
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
-export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId };
+export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId; orgRole: OrgRole };
+export { effectiveProjectRole, requireNewWorkAllowed };
 export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole }
 
 /** What the broker needs from a Lambda invoke; `@aws-sdk/client-lambda`'s InvokeCommand output fits. */
@@ -181,7 +250,7 @@ type IdentityRefusal = typeof SLACK_UNAVAILABLE | { ok: false; error: "invalid_r
  */
 async function identityInvoke<T>(
   invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>,
-  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | ChannelByNameRequest,
+  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest,
   readReply: (reply: Record<string, unknown>) => T | undefined,
   event: string,
 ): Promise<T | IdentityRefusal> {
@@ -335,6 +404,43 @@ export function endDeveloperSessionsThroughLambda(invoke: (payload: Uint8Array) 
   };
 }
 
+/** The words a refusal of the sign-in function carries to the person: short, and nothing the function did not write for them. */
+const refusalMessageOf = (reply: Record<string, unknown>): string | undefined =>
+  typeof reply.message === "string" && reply.message.length > 0 && reply.message.length <= 200 ? reply.message : undefined;
+
+/**
+ * Plan 2, Task 8 and 8b: unlinks a sign-in method through DeveloperIdentity. A refusal (the only way in, or the first sign-in), a sign-in
+ * that is not fresh enough or is the method being removed (`reauth`), and a method that is not linked are answers, passed on in the
+ * person's words; every other failure is unavailable.
+ */
+export function unlinkIdentityThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: UnlinkIdentityRequest) => Promise<UnlinkIdentityResponse> {
+  return async (request) => {
+    const answer = await identityInvoke(invoke, request, (reply): UnlinkIdentityResponse | undefined => {
+      if (reply.ok === true) return { ok: true };
+      if (reply.ok === false && reply.error === "not_found") return { ok: false, error: "not_found" };
+      const message = refusalMessageOf(reply);
+      if (reply.ok === false && (reply.error === "refused" || reply.error === "reauth") && message !== undefined) return { ok: false, error: reply.error, message };
+      return undefined;
+    }, "developer.unlink_identity");
+    if (answer.ok || answer.error === "not_found" || answer.error === "refused" || answer.error === "reauth" || answer.error === "invalid_request") return answer;
+    return { ok: false, error: "unavailable" };
+  };
+}
+
+/** Plan 2, Task 8b: starts adding a removed sign-in method back through DeveloperIdentity; its answer is the sign-in link, or why not. */
+export function startIdentityLinkThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: StartIdentityLinkRequest) => Promise<StartIdentityLinkResponse> {
+  return async (request) => {
+    const answer = await identityInvoke(invoke, request, (reply): StartIdentityLinkResponse | undefined => {
+      if (reply.ok === true && typeof reply.authorizeUrl === "string" && StartIdentityLinkAppResponseSchema.safeParse({ authorizeUrl: reply.authorizeUrl }).success) return { ok: true, authorizeUrl: reply.authorizeUrl };
+      const message = refusalMessageOf(reply);
+      if (reply.ok === false && (reply.error === "refused" || reply.error === "reauth") && message !== undefined) return { ok: false, error: reply.error, message };
+      return undefined;
+    }, "developer.start_identity_link");
+    if (answer.ok || answer.error === "refused" || answer.error === "reauth" || answer.error === "invalid_request") return answer;
+    return { ok: false, error: "unavailable" };
+  };
+}
+
 /** E12 (Q8): a public channel by name through DeveloperIdentity; fails closed as slack_unavailable. */
 export function channelByNameThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: ChannelByNameRequest) => Promise<ChannelByNameResponse> {
   return (request) => identityInvoke(invoke, request, (reply) => {
@@ -422,7 +528,7 @@ export async function authenticateDeveloper(deps: DeveloperRouteDependencies, cl
 
 /** A session's identity; `orgId` is present when a token named the org it was issued for, which must still be the developer's. */
 async function authenticateSession(deps: DeveloperRouteDependencies, token: { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId?: OrgId }): Promise<DeveloperCaller> {
-  const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "slackUserId">>(deps, `SESSION#${token.sessionId}`);
+  const session = await getSignIn<Pick<SessionRecord, "developerId" | "amr" | "endsAt" | "revokedAt" | "startedAt" | "slackUserId" | "identityKey">>(deps, `SESSION#${token.sessionId}`);
   if (session === undefined || session.developerId !== token.developerId || session.revokedAt !== undefined || session.endsAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
@@ -432,11 +538,15 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {
     throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : token.amr === "github" ? "GitHub sign-in" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
   }
-  const developer = await getSignIn<Pick<DeveloperRecord, "displayName" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt">>(deps, `DEVELOPER#${token.developerId}`);
+  const developer = await getSignIn<Pick<DeveloperRecord, "displayName" | "slackUserId" | "email" | "revoked" | "sessionsEndedAt"> & DeveloperMarks>(deps, `DEVELOPER#${token.developerId}`);
   if (developer === undefined || developer.revoked) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   if (endedByAdmin(session.startedAt, developer.sessionsEndedAt)) {
     // E9: D16's per-request check ends the session at once; the token endpoint revokes it at its next refresh.
     throw agentXError("AUTH_REQUIRED", "an AgentX admin ended your sign-in; run agentx login <url> again");
+  }
+  // Plan 2, Task 8: the person removed this session's sign-in method from their account (the others' sessions go on).
+  if (endedByUnlink(session, developer)) {
+    throw agentXError("AUTH_REQUIRED", "this sign-in method was removed from your account; run agentx login <url> again");
   }
   // The org is the developer's membership now: a person removed from the org, or moved to another, is refused even
   // while their token is still valid. The role is the current one, so a demotion applies at once.
@@ -585,22 +695,33 @@ const describeChannel = (channelId: string, names: Map<string, { name: string; i
 };
 
 /**
- * FR-013: only `developer` rows are grants. A developer ID is built like an admin owner key, so an
- * admin's `administrator` rows can sit under the same key when both sign in through one IdP.
+ * FR-013: a grant is a row that gives a project role: `developer` (a maintainer or contributor) or, since Plan 2, Task 21, `viewer`. An
+ * admin's `administrator` rows are the operator's and give none (a developer ID is built like an admin owner key, so they can sit under the
+ * same key when both sign in through one IdP). Each row is returned whole: its role and who made it are read from it.
  */
-async function grantsOf(deps: DeveloperRouteDependencies, caller: ProjectAccessCaller): Promise<string[]> {
-  return (await queryAll<{ projectName: string; role?: string }>(deps, memberGrantsPk(caller.orgId, caller.developerId), MEMBER_GRANT_SK_PREFIX))
-    .filter((membership) => membership.role === "developer")
-    .map((membership) => membership.projectName);
+async function grantRowsOf(deps: DeveloperRouteDependencies, caller: ProjectAccessCaller): Promise<Array<{ projectName: string; grant: GrantRow }>> {
+  const rows = await queryAll<GrantRow & { projectName?: string }>(deps, memberGrantsPk(caller.orgId, caller.developerId), MEMBER_GRANT_SK_PREFIX);
+  return rows.flatMap((row) => (typeof row.projectName === "string" && grantRoleOf(row) !== undefined ? [{ projectName: row.projectName, grant: row }] : []));
 }
+type GrantRow = { role?: unknown; projectRole?: unknown; grantedBy?: unknown };
 
 /** The install's Slack team's channel bindings inside one org. */
 async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId): Promise<SlackChannelBinding[]> {
   return deps.developer.slackTeamId === undefined ? [] : queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX);
 }
 
+/** A developer's name for display: their sign-in record's, else "Unknown". */
+async function nameOf(deps: DeveloperRouteDependencies, developerId: string): Promise<string> {
+  return (await signInStoreOf(deps).getDeveloper(developerId))?.displayName ?? "Unknown";
+}
+
 async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<DeveloperProjectsResponse> {
-  const grants = await grantsOf(deps, caller);
+  const grantRows = await grantRowsOf(deps, caller);
+  const grantOf = new Map(grantRows.map((row) => [row.projectName, row.grant]));
+  // An org owner or admin reaches every project of their org (Task 11, I4), so each one in the org's catalog is theirs to list.
+  const orgMaintainer = caller.orgRole === "owner" || caller.orgRole === "admin";
+  const catalogNames = orgMaintainer ? (await queryAll<{ name?: unknown }>(deps, orgProjectCatalogPk(caller.orgId), "PROJECT#")).flatMap((entry) => (typeof entry.name === "string" ? [entry.name] : [])) : [];
+  const grants = [...new Set([...grantRows.map((row) => row.projectName), ...catalogNames])];
   const bindings = await bindingsOf(deps, caller.orgId);
   const policies = await projectsWithPolicy(deps, caller.orgId, [...grants, ...bindings.map((binding) => binding.projectName)]);
   const access = await resolveDeveloperAccess({
@@ -614,10 +735,30 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
   const listed = [...access.projects].filter(([name]) => policies.has(name));
   // Like checkProjectAccess: a caller with no Slack link is never shown channel names.
   const names = caller.slackUserId === undefined ? new Map<string, { name: string; isPrivate: boolean }>() : await channelNames(deps, listed.flatMap(([, entry]) => entry.channels));
+  // Who added the caller, for the projects a grant of a person gave them (Task 21): one name lookup per person.
+  // A person who has since been merged into another is named as the one they became (the grant keeps the id it was made under).
+  const merge = projectMembersDepsOf(deps);
+  const adders = new Map<string, { id: string; name: string }>();
+  for (const [name] of listed) {
+    const by = orgMaintainer ? undefined : grantedByOf(grantOf.get(name));
+    if (by !== undefined && "developerId" in by) adders.set(by.developerId, { id: by.developerId, name: "Unknown" });
+  }
+  await mapLimit([...adders.keys()], REVISION_READS_AT_ONCE, async (id) => {
+    const survivor = await survivorOf(merge, id);
+    adders.set(id, { id: survivor, name: await nameOf(deps, survivor) });
+  });
   const projects: DeveloperProjectsResponse["projects"] = [];
   for (const [name, entry] of listed) {
     const known = policies.get(name)!;
-    projects.push({ name, latestRevision: known.revision, access: entry.access, channels: entry.channels.map((channelId) => describeChannel(channelId, names)), tasks: known.policy });
+    const grant = grantOf.get(name);
+    const role = effectiveProjectRole(caller, grant, entry.access === "channel");
+    const source = orgMaintainer ? "org_role" as const : grant !== undefined ? "grant" as const : "channel" as const;
+    const by = source === "grant" ? grantedByOf(grant) : undefined;
+    projects.push({
+      name, latestRevision: known.revision, access: entry.access, channels: entry.channels.map((channelId) => describeChannel(channelId, names)), tasks: known.policy,
+      ...(role === undefined ? {} : { role, roleSource: source }),
+      ...(by === undefined || !("developerId" in by) ? {} : { addedBy: { developerId: adders.get(by.developerId)?.id ?? by.developerId, name: adders.get(by.developerId)?.name ?? "Unknown" } }),
+    });
   }
   return {
     developer: {
@@ -628,6 +769,347 @@ async function listProjects(deps: DeveloperRouteDependencies, caller: DeveloperC
     projects,
     notices: access.slackUnavailable ? ["slack_unavailable"] : [],
   };
+}
+
+type StoredProject = z.infer<typeof StoredProjectDefinitionSchema>;
+
+/** A project's latest revision as stored, with who registered it and when; undefined when it has none or the revision no longer parses. */
+async function latestProjectRecord(deps: DeveloperRouteDependencies, orgId: OrgId, project: string): Promise<{ definition: StoredProject; registeredBy: string; registeredAt: string } | undefined> {
+  const response = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName,
+    KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+    ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":prefix": PROJECT_REVISION_SK_PREFIX },
+    ScanIndexForward: false,
+    Limit: 1,
+    ConsistentRead: true,
+  })) as { Items?: Array<{ definition?: unknown; registeredBy?: unknown; registeredAt?: unknown }> };
+  const item = response.Items?.[0];
+  if (item === undefined) return undefined;
+  const definition = StoredProjectDefinitionSchema.safeParse(item.definition);
+  if (!definition.success) {
+    logDeveloperEvent({ event: "developer.project_unreadable", project, reason: definition.error.issues[0]?.message ?? "invalid" });
+    return undefined;
+  }
+  return { definition: definition.data, registeredBy: typeof item.registeredBy === "string" ? item.registeredBy : "unknown", registeredAt: typeof item.registeredAt === "string" ? item.registeredAt : "" };
+}
+
+/** GitHub's spelling of a repository, `owner/name`, from its URL; the repository's own name when the URL is no GitHub path. */
+function repositoryFullName(repository: { name: string; url: string }): string {
+  try {
+    const parts = new URL(repository.url).pathname.replace(/\.git$/, "").split("/").filter(Boolean);
+    if (parts.length === 2) return parts.join("/");
+  } catch { /* fall through to the name */ }
+  return repository.name;
+}
+
+/** The setup status, derived on every read from the project's META and the check's workspace (Plan 2, Task 22 writes `setupCheck`). */
+async function setupStateOf(deps: DeveloperRouteDependencies, meta: ProjectMetaItem | undefined, latestRevision: number): Promise<AppProjectSummary["setup"]> {
+  const check = meta?.setupCheck;
+  if (check === undefined) return { status: "unchecked" };
+  const checked = { checkedRevision: check.revision, checkedAt: check.startedAt };
+  if (check.revision < latestRevision) return { status: "outdated", ...checked };
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `WORKSPACE#${check.workspaceId}`, sk: "META" }, ConsistentRead: true })) as { Item?: { status?: string } };
+  const workspace = response.Item?.status;
+  if (workspace === undefined) return { status: "unchecked" };
+  const status: ProjectSetupStatus = workspace === "PREPARING" ? "checking" : workspace === "PREPARATION_FAILED" ? "failed" : "ready";
+  return { status, ...checked };
+}
+
+async function appProjectSummary(
+  deps: DeveloperRouteDependencies,
+  name: string,
+  role: ProjectRole,
+  record: NonNullable<Awaited<ReturnType<typeof latestProjectRecord>>>,
+  meta: ProjectMetaItem | undefined,
+): Promise<AppProjectSummary> {
+  const { definition } = record;
+  return {
+    name,
+    ...(meta?.description === undefined ? {} : { description: meta.description }),
+    status: meta?.status ?? "active",
+    latestRevision: definition.revision,
+    repositories: definition.repositories.map((repository) => ({ fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
+    myRole: role,
+    setup: await setupStateOf(deps, meta, definition.revision),
+  };
+}
+
+/**
+ * The projects the caller may see in the app and their role in each. Org owners and admins see every project in the org's own
+ * catalog, as maintainers. Anyone else sees what a grant or channel access gives, as listProjects resolves it: contributors. Every
+ * read is keyed by `caller.orgId`, so another org's project of the same name is never reached. With `only`, just that name.
+ */
+async function visibleProjectRoles(deps: DeveloperRouteDependencies, caller: DeveloperCaller, only?: string): Promise<Map<string, ProjectRole>> {
+  const roles = new Map<string, ProjectRole>();
+  if (caller.orgRole === "owner" || caller.orgRole === "admin") {
+    const names = only !== undefined ? [only]
+      : (await queryAll<{ name?: unknown }>(deps, orgProjectCatalogPk(caller.orgId), "PROJECT#")).flatMap((entry) => (typeof entry.name === "string" ? [entry.name] : []));
+    for (const name of names) roles.set(name, effectiveProjectRole(caller, undefined, false)!);
+    return roles;
+  }
+  const grantRows = (await grantRowsOf(deps, caller)).filter((row) => only === undefined || row.projectName === only);
+  const grantOf = new Map(grantRows.map((row) => [row.projectName, row.grant]));
+  const grants = grantRows.map((row) => row.projectName);
+  const bindings = (await bindingsOf(deps, caller.orgId)).filter((binding) => only === undefined || binding.projectName === only);
+  const policies = await projectsWithPolicy(deps, caller.orgId, [...grants, ...bindings.map((binding) => binding.projectName)]);
+  const access = await resolveDeveloperAccess({
+    grants, bindings,
+    ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
+    channelMembersMayUse: (project) => policies.get(project)?.policy.channelMembersMayUse === true,
+    channelMembers: safeChannelMembers(deps),
+  });
+  for (const [name, entry] of access.projects) {
+    const role = effectiveProjectRole(caller, grantOf.get(name), entry.access === "channel");
+    if (role !== undefined && policies.has(name)) roles.set(name, role);
+  }
+  return roles;
+}
+
+/** `GET /v1/app/projects`: the caller's projects, sorted by name. Archived ones only with `?include=archived`. */
+async function listAppProjects(deps: DeveloperRouteDependencies, caller: DeveloperCaller, includeArchived: boolean): Promise<AppProjectsResponse> {
+  const roles = await visibleProjectRoles(deps, caller);
+  const names = [...roles.keys()].sort();
+  const built = await mapLimit(names, REVISION_READS_AT_ONCE, async (name) => {
+    const [record, meta] = await Promise.all([latestProjectRecord(deps, caller.orgId, name), readProjectMeta(deps, caller.orgId, name)]);
+    // A catalog entry with no readable revision is not a project the app can show.
+    if (record === undefined || (meta?.status === "archived" && !includeArchived)) return undefined;
+    return appProjectSummary(deps, name, roles.get(name)!, record, meta);
+  });
+  return { projects: built.filter((project): project is AppProjectSummary => project !== undefined) };
+}
+
+const PROJECT_NOT_FOUND_IN_APP = "project not found";
+
+const ArchiveBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+
+/** What archiving and restoring write and flip: the project's META, and its egress item through the same firewall sync as a settings save. */
+function archiveDepsOf(deps: DeveloperRouteDependencies): ProjectArchiveDependencies {
+  return { documentClient: deps.documentClient, tableName: deps.tableName, egress: egressDepsOf(deps), now: () => new Date(deps.now()) };
+}
+
+/** Where egress items are kept and how a change reaches the firewall (Plan 2, Task 18). */
+function egressDepsOf(deps: DeveloperRouteDependencies): EgressDomainsDependencies {
+  return { documentClient: deps.documentClient, tableName: deps.tableName, cloud: deps.cloud === true, now: () => new Date(deps.now()), sync: deps.egressSync ?? (async () => ({ ok: false })) };
+}
+
+/** `GET /v1/app/projects/{name}`: no access, no such project and another org's project all answer the same 404 PROJECT_NOT_FOUND. */
+async function getAppProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<AppProjectDetail> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  const role = (await visibleProjectRoles(deps, caller, name)).get(name);
+  if (role === undefined) throw notFound();
+  const [record, meta] = await Promise.all([latestProjectRecord(deps, caller.orgId, name), readProjectMeta(deps, caller.orgId, name)]);
+  if (record === undefined) throw notFound();
+  const { definition } = record;
+  const createdBy = meta?.createdBy ?? "unknown";
+  const creator = createdBy === "unknown" ? undefined : await signInStoreOf(deps).getDeveloper(createdBy);
+  const egress = await readEgressDomains(deps, caller.orgId, { kind: "project", project: name });
+  return {
+    ...await appProjectSummary(deps, name, role, record, meta),
+    settings: {
+      setupCommands: definition.setup.map(formatCommandLine),
+      testCommands: definition.readiness.map(formatCommandLine),
+      devcontainer: definition.devcontainer === undefined ? null
+        : { repository: definition.devcontainer.repository, configPath: definition.devcontainer.configPath ?? DEFAULT_DEVCONTAINER_CONFIG_PATH },
+      // A domain every project has is approved. Any other is as its egress item says; one the item does not list was never asked for (a
+      // project that stored it before approvals existed), so on cloud it serves nothing and reads as pending until the next save asks.
+      allowedDomains: (definition.network?.allowedDomains ?? []).map((domain) => {
+        if (DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain)) return { domain, status: "approved" as const };
+        const entry = egress?.domains.find((candidate) => candidate.domain === domain);
+        if (entry === undefined) return { domain, status: deps.cloud === true ? "pending" as const : "approved" as const };
+        return { domain, status: entry.status, ...(entry.status === "rejected" && entry.reason !== undefined ? { reason: entry.reason } : {}) };
+      }),
+    },
+    createdAt: meta?.createdAt ?? record.registeredAt,
+    createdBy: { developerId: createdBy, name: creator?.displayName ?? "Unknown" },
+  };
+}
+
+/**
+ * `POST /v1/app/projects/{name}/archive` and `.../restore` (Plan 2, Task 20): a maintainer of the project (an org owner or admin, or the
+ * project's own maintainer) archives it or brings it back, and the answer is the project as the app now shows it. No access is a 404 and a
+ * role without `archive` a 403. Repeating either call on a project already in that state answers 200 and changes nothing (it does run the
+ * firewall step again, which finishes a call that stopped half-way). The request id is stored: a replay of it applies nothing, even after the
+ * opposite action. `warnings` says when the firewall could not be told at once. Archiving refuses only new work; it stops nothing that is running.
+ */
+async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown, change: "archive" | "restore"): Promise<{ project: AppProjectDetail; warnings: string[] }> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  const role = (await visibleProjectRoles(deps, caller, name)).get(name);
+  if (role === undefined) throw notFound();
+  if (!projectAllows(role, "archive")) throw agentXError("FORBIDDEN", "only a project maintainer can archive or restore a project");
+  const parsed = ArchiveBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  if (await latestProjectRecord(deps, caller.orgId, name) === undefined) throw notFound();
+  const { warnings, replayed } = await applyArchiveRequest(archiveDepsOf(deps), caller.orgId, name, change, parsed.data.requestId, { developerId: caller.developerId });
+  if (!replayed) logDeveloperEvent({ event: change === "archive" ? "developer.project_archived" : "developer.project_restored", orgId: caller.orgId, project: name });
+  return { project: await getAppProject(deps, caller, name), warnings };
+}
+
+/**
+ * What reads and writes a project's people: the table, a developer's sign-in record (for `mergedInto`), and the two ways a Slack channel
+ * gives access (a project the person reaches, and whether one project's channel gives it to them). Slack failing closes the channel route
+ * only; the person's grants and org role still answer.
+ */
+function projectMembersDepsOf(deps: DeveloperRouteDependencies): ProjectMembersDependencies {
+  const store = signInStoreOf(deps);
+  const slackUserOf = async (developerId: string) => (await store.getDeveloper(developerId))?.slackUserId;
+  return {
+    documentClient: deps.documentClient,
+    tableName: deps.tableName,
+    developerRecord: (developerId) => store.getDeveloper(developerId),
+    channelAccess: async (orgId, project, developerId) => {
+      const slackUserId = await slackUserOf(developerId);
+      if (slackUserId === undefined) return false;
+      const known = (await projectsWithPolicy(deps, orgId, [project])).get(project);
+      if (known === undefined || !known.policy.channelMembersMayUse) return false;
+      const bindings = (await bindingsOf(deps, orgId)).filter((binding) => binding.projectName === project);
+      if (bindings.length === 0) return false;
+      const access = await resolveDeveloperAccess({ grants: [], bindings, slackUserId, channelMembersMayUse: () => true, channelMembers: safeChannelMembers(deps) });
+      return access.projects.get(project)?.access === "channel";
+    },
+    channelProjects: async (orgId, developerId) => {
+      const slackUserId = await slackUserOf(developerId);
+      if (slackUserId === undefined) return [];
+      const bindings = await bindingsOf(deps, orgId);
+      const policies = await projectsWithPolicy(deps, orgId, bindings.map((binding) => binding.projectName));
+      const access = await resolveDeveloperAccess({
+        grants: [], bindings, slackUserId, channelMembersMayUse: (project) => policies.get(project)?.policy.channelMembersMayUse === true, channelMembers: safeChannelMembers(deps),
+      });
+      return [...access.projects].filter(([name, entry]) => entry.access === "channel" && policies.has(name)).map(([name]) => name);
+    },
+  };
+}
+
+/** Who has which role in a project (Plan 2, Task 21): the injected `projectMembers` when there is one, else built from these dependencies. */
+export function projectMembersOf(deps: DeveloperRouteDependencies): ProjectMembers {
+  return deps.projectMembers ?? createProjectMembers(projectMembersDepsOf(deps));
+}
+
+/** The caller's role in a project named in a route's path, or the same 404 PROJECT_NOT_FOUND as no access and no such project (never 403). */
+async function projectRoleForRoute(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  const role = (await visibleProjectRoles(deps, caller, name)).get(name);
+  if (role === undefined || await latestDefinition(deps, caller.orgId, name) === undefined) throw notFound();
+  return { name, role };
+}
+
+const ROLE_ORDER: Record<ProjectRole, number> = { maintainer: 0, contributor: 1, viewer: 2 };
+
+/**
+ * `GET /v1/app/projects/{name}/members`: everyone with a role in the project and where it comes from, for anyone who can see the project.
+ * Org owners and admins are listed as maintainers by their org role (`org_role`), once, whatever grants they also hold.
+ */
+async function getProjectMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<ProjectMembersResponse> {
+  const { name } = await projectRoleForRoute(deps, caller, rawName);
+  const merge = projectMembersDepsOf(deps);
+  // Who added a person is shown as the developer they have since been merged into, if any.
+  const rows = (await listProjectMembers(merge, caller.orgId, name)).map(async (row) => (row.grantedBy !== undefined && "developerId" in row.grantedBy
+    ? { ...row, grantedBy: { developerId: await survivorOf(merge, row.grantedBy.developerId) } } : row));
+  return buildProjectMembersResponse(deps, await Promise.all(rows));
+}
+
+async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, rows: Awaited<ReturnType<typeof listProjectMembers>>): Promise<ProjectMembersResponse> {
+  const store = signInStoreOf(deps);
+  const cards = new Map<string, { name: string; email?: string }>();
+  const ids = [...new Set(rows.flatMap((row) => [row.developerId, ...(row.grantedBy !== undefined && "developerId" in row.grantedBy ? [row.grantedBy.developerId] : [])]))];
+  await mapLimit(ids, REVISION_READS_AT_ONCE, async (id) => {
+    const [record, identities] = await Promise.all([store.getDeveloper(id), store.identitiesOf(id)]);
+    const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
+    cards.set(id, { name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }) });
+  });
+  const members: ProjectMember[] = rows.map((row) => {
+    const card = cards.get(row.developerId)!;
+    const by = row.grantedBy;
+    return {
+      developerId: row.developerId, name: card.name, ...(card.email === undefined ? {} : { email: card.email }), role: row.role, source: row.source,
+      // The operator console's grants have no person to name.
+      ...(row.source !== "grant" || by === undefined || !("developerId" in by) ? {} : { grantedBy: { developerId: by.developerId, name: cards.get(by.developerId)?.name ?? "Unknown" } }),
+    };
+  });
+  members.sort((left, right) => ROLE_ORDER[left.role] - ROLE_ORDER[right.role] || left.name.localeCompare(right.name) || left.developerId.localeCompare(right.developerId));
+  return { members };
+}
+
+const MANAGE_MEMBERS_MESSAGE = "only a project maintainer can change who is in a project";
+
+/**
+ * `PUT /v1/app/projects/{name}/members/{developerId}`: a maintainer of the project (or an org owner or admin) gives a member of the org a role
+ * in it. A contributor or viewer is refused (403), so nobody can grant themselves or another a higher role. The person must be in the caller's
+ * org; an owner or admin takes no role. A replay of the request id answers the stored outcome.
+ */
+async function putProjectMember(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, developerId: string, body: unknown): Promise<ProjectMemberChangeResponse> {
+  const { name, role } = await projectRoleForRoute(deps, caller, rawName);
+  if (!projectAllows(role, "manage_members")) throw agentXError("FORBIDDEN", MANAGE_MEMBERS_MESSAGE);
+  const parsed = PutProjectMemberBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const member = await setProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()) }, caller.orgId, name, {
+    requestId: parsed.data.requestId, developerId, role: parsed.data.role, actor: { developerId: caller.developerId },
+  });
+  logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role });
+  return { member };
+}
+
+/** `DELETE /v1/app/projects/{name}/members/{developerId}`: the same people may take a person's grant away. `removed` is false when they had none. */
+async function deleteProjectMember(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, developerId: string, body: unknown): Promise<ProjectMemberRemoveResponse> {
+  const { name, role } = await projectRoleForRoute(deps, caller, rawName);
+  if (!projectAllows(role, "manage_members")) throw agentXError("FORBIDDEN", MANAGE_MEMBERS_MESSAGE);
+  const parsed = RemoveProjectMemberBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const removed = await removeProjectMember({ ...projectMembersDepsOf(deps), now: () => new Date(deps.now()) }, caller.orgId, name, {
+    requestId: parsed.data.requestId, developerId, actor: { developerId: caller.developerId },
+  });
+  logDeveloperEvent({ event: "developer.project_member_removed", orgId: caller.orgId, project: name, removed: String(removed.removed) });
+  return removed;
+}
+
+/**
+ * `GET /v1/app/github/repositories?installation=<id>` (Plan 2, Task 15): the repositories one of the org's installations reaches, each marked with
+ * the project of the caller's that already uses it. An installation that is not the org's answers NOT_FOUND, as a missing one does.
+ */
+async function listGithubRepositories(deps: DeveloperRouteDependencies, caller: DeveloperCaller, installation: string | null): Promise<{ repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string; project?: string }> }> {
+  if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+  if (installation === null || !/^[1-9][0-9]{0,14}$/.test(installation)) throw agentXError("CONFIG_INVALID", "installation: give the installation's id, from agentx github list");
+  const { repositories } = await deps.githubConnect.listRepositories(caller, Number(installation));
+  // Only the caller's own visible projects are named: another project's name is not theirs to learn.
+  const roles = await visibleProjectRoles(deps, caller);
+  const projectOf = new Map<string, string>();
+  for (const name of [...roles.keys()].sort()) {
+    const record = await latestProjectRecord(deps, caller.orgId, name);
+    for (const repository of record?.definition.repositories ?? []) {
+      const key = repositoryFullName(repository).toLowerCase();
+      if (!projectOf.has(key)) projectOf.set(key, name);
+    }
+  }
+  return { repositories: repositories.map((repository) => {
+    const project = projectOf.get(repository.fullName.toLowerCase());
+    return { ...repository, ...(project === undefined ? {} : { project }) };
+  }) };
+}
+
+/** `PUT /v1/app/projects/{name}/settings` (Plan 2, Task 17): a maintainer's change to the project's settings, as a new revision. */
+async function putProjectSettings(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<{ project: AppProjectDetail; warnings: string[] }> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  if (deps.projectSettings === undefined) throw agentXError("NOT_FOUND", "project settings are not set up in this deployment");
+  return updateProjectSettings({
+    documentClient: deps.documentClient,
+    tableName: deps.tableName,
+    cloud: deps.cloud === true,
+    egress: egressDepsOf(deps),
+    ...deps.projectSettings,
+    effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
+    readProject: (who, project) => getAppProject(deps, who, project),
+  }, caller, name, body);
 }
 
 /**
@@ -642,14 +1124,18 @@ export async function checkProjectAccess(
   caller: ProjectAccessCaller,
   project: string,
   membership?: { freshMemberOf: readonly string[] },
-): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[] }> {
+): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[]; role: ProjectRole }> {
   // A name that is not a project name is never echoed back: it could be long or carry markup.
   if (!AgentXNameSchema.safeParse(project).success) throw agentXError("PROJECT_NOT_FOUND", "that is not a valid AgentX project name");
   const known = (await projectsWithPolicy(deps, caller.orgId, [project])).get(project);
   if (known === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
-  const grants = (await grantsOf(deps, caller)).filter((name) => name === project);
+  const grant = (await grantRowsOf(deps, caller)).find((row) => row.projectName === project)?.grant;
   const bindings = (await bindingsOf(deps, caller.orgId)).filter((binding) => binding.projectName === project);
-  const projectMemberships = grants.map((projectName) => ({ projectName, role: "developer" }));
+  // An org owner or admin counts as granted on every project in their org, with no grant (Plan 2, Task 11, I4). A project of another org
+  // is never reached: `known` and every row read above are this org's.
+  const orgMaintainer = caller.orgRole === "owner" || caller.orgRole === "admin";
+  // Any grant counts as granted here, a viewer's too: what the role may do is decided by the effective role, below and at the places new work starts.
+  const projectMemberships = grant !== undefined || orgMaintainer ? [{ projectName: project, role: "developer" }] : [];
   const evaluate = (freshMemberOf?: readonly string[]) => evaluateProjectAuthority({
     project,
     revision: { revision: known.revision, definition: { developerTasks: known.policy } },
@@ -681,7 +1167,11 @@ export async function checkProjectAccess(
       : [...(await channelNames(deps, result.visibleChannelIds)).values()].filter((channel) => !channel.isPrivate).map((channel) => channel.name).sort();
     throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, visible));
   }
-  return { revision: result.revision, policy: result.policy, access: result.access, channelIds: result.channelIds };
+  // This function never refuses an archived project or a viewer: those refusals are requireNewWorkAllowed's, at the places new work
+  // starts, because the E2E rechecks of a running task's creator also come through here.
+  const role = effectiveProjectRole(caller, grant, result.access === "channel");
+  if (role === undefined) throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, []));
+  return { revision: result.revision, policy: result.policy, access: result.access, channelIds: result.channelIds, role };
 }
 
 /**
@@ -782,6 +1272,7 @@ export function developerTaskRouteDependencies(
           ...(subject.slackUserId === undefined ? {} : { slackUserId: subject.slackUserId }),
         });
         if (result.kind === "allowed") return;
+        if (result.kind === "denied" && result.reason === "project-viewer") return "viewer";
         if (result.kind === "unavailable" || result.kind === "needs-membership") {
           throw agentXError("SLACK_UNAVAILABLE", "task person identity proof is unavailable");
         }
@@ -807,6 +1298,7 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
+    ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
     checkTaskPerson: async (task, developerId, admission) => {
@@ -929,11 +1421,56 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   const caller = await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
-  if (request.method === "POST" && url.pathname === "/v1/dev/projects") return createProject(deps, caller, jsonBody(request));
+  if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
+  const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
+  const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
+  if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettings(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  const projectMembersRoute = /^\/v1\/app\/projects\/([^/]+)\/members(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
+  if (projectMembersRoute !== null) {
+    if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);
+    if (request.method === "PUT" && projectMembersRoute[2] !== undefined) return putProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
+    if (request.method === "DELETE" && projectMembersRoute[2] !== undefined) return deleteProjectMember(deps, caller, projectMembersRoute[1]!, projectMembersRoute[2], jsonBody(request));
+  }
+  const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
+  if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
+  if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.start(caller);
+  }
+  if (request.method === "GET" && url.pathname === "/v1/app/github/requests") {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.listRequests(caller);
+  }
+  if (request.method === "GET" && url.pathname === "/v1/app/github/installations") {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.listInstallations(caller);
+  }
+  const githubInstallationRoute = /^\/v1\/app\/github\/installations\/([1-9][0-9]{0,14})$/.exec(url.pathname);
+  if (request.method === "DELETE" && githubInstallationRoute !== null) {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.disconnect(caller, Number(githubInstallationRoute[1]));
+  }
+  if (request.method === "GET" && url.pathname === "/v1/app/github/repositories") return listGithubRepositories(deps, caller, url.searchParams.get("installation"));
+  const githubRequestRoute = /^\/v1\/app\/github\/requests\/([0-9]{1,20})$/.exec(url.pathname);
+  if (request.method === "DELETE" && githubRequestRoute !== null) {
+    if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
+    return deps.githubConnect.cancelRequest(caller, githubRequestRoute[1]!);
+  }
+  if (request.method === "POST" && (url.pathname === "/v1/app/projects" || url.pathname === "/v1/dev/projects")) return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
-  if (request.method === "GET" && url.pathname === "/v1/dev/org") return getOrganization(deps, caller);
-  if (request.method === "POST" && url.pathname === "/v1/dev/org/invites") return createOrganizationInvite(deps, caller, jsonBody(request));
+  if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
+  if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
+  if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
+  if (request.method === "POST" && url.pathname === "/v1/app/org/leave") return leaveOrganization(deps, caller, jsonBody(request));
+  const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
+  if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
+  if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
+  const memberRoute = /^\/v1\/app\/org\/members\/([a-f0-9]{64})(\/role)?$/.exec(url.pathname);
+  if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) return changeMemberRole(deps, caller, memberRoute[1]!, jsonBody(request));
+  if (memberRoute !== null && request.method === "DELETE" && memberRoute[2] === undefined) return removeOrganizationMember(deps, caller, memberRoute[1]!);
   if (request.method === "GET" && url.pathname === "/v1/dev/budget") return getBudget(deps, caller);
   if (request.method === "PUT" && url.pathname === "/v1/dev/org/budget") return putOrganizationBudget(deps, caller, jsonBody(request));
   if (url.pathname === "/v1/dev/tasks" || url.pathname.startsWith("/v1/dev/tasks/")) {
@@ -953,19 +1490,69 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
 }
 
 /**
- * Ruling R55: an owner or admin of a cloud org creates a project from a repository under the org's allowed GitHub owner, which only an
- * operator sets. Any other install registers projects through an administrator.
+ * `POST /v1/app/projects` (and its alias `POST /v1/dev/projects`): an owner or admin of a cloud org creates a project from a repository its
+ * own GitHub connection reaches. Order: the install, the role, the body; then (the broker, in this order) a replay of the request, whether the
+ * connection reaches the repository, GitHub's description of it, the registration as a new name, and the record of the request. Any other
+ * install registers projects through an administrator.
  */
 async function createProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<StatusReply> {
   if (deps.cloud !== true) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run agentx project add");
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can create a project; ask your organization's owner");
-  if (deps.orgs === undefined || deps.createProject === undefined) throw agentXError("NOT_FOUND", "project creation is not set up in this deployment");
-  const input = parseCreateProjectBody(body);
+  if (deps.createProject === undefined) throw agentXError("NOT_FOUND", "project creation is not set up in this deployment");
+  const created = await deps.createProject(caller, parseCreateProjectBody(body));
+  return new StatusReply(created.duplicate ? 200 : 201, created);
+}
+
+/** `GET /v1/app/me`: the caller, their org, and every sign-in method linked to them. Never the providers' issuers or subjects. */
+async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<AppMeResponse> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
   const org = await deps.orgs.getOrg(caller.orgId);
   if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");
-  requireAllowedGithubOwner(org, input.owner);
-  const created = await deps.createProject(caller, input, org);
-  return new StatusReply(created.duplicate ? 200 : 201, created);
+  const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
+  return {
+    developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole },
+    org: { orgId: org.orgId, name: org.name, plan: org.plan },
+    identities: await store.identitiesOf(caller.developerId),
+  };
+}
+
+/**
+ * `DELETE /v1/app/me/identities/{provider}`: removes one of the caller's own sign-in methods. The developer is the verified token's
+ * (`caller.developerId`), never anything the request carries. Its sessions end, the others' go on; the answer lists what is left.
+ */
+async function unlinkAppIdentity(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string): Promise<{ identities: LinkedIdentity[] }> {
+  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to remove: cloud or github");
+  if (deps.developer.unlinkIdentity === undefined) throw agentXError("NOT_FOUND", "removing a sign-in method is not set up in this deployment");
+  const answer = await deps.developer.unlinkIdentity({ kind: "unlink-identity", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data });
+  if (!answer.ok) {
+    // Removing a method needs a fresh sign-in with another method (Plan 2, Task 8b); the message says which is missing.
+    if (answer.error === "reauth") throw agentXError("REAUTH_REQUIRED", answer.message);
+    if (answer.error === "refused") throw agentXError("CONFIG_INVALID", answer.message);
+    if (answer.error === "not_found") throw agentXError("NOT_FOUND", "that sign-in method is not linked to your account");
+    throw agentXError("RUNTIME_UNAVAILABLE", "removing the sign-in method did not complete; try again");
+  }
+  logDeveloperEvent({ event: "developer.identity_unlinked", provider: method.data });
+  return { identities: await signInStoreOf(deps).identitiesOf(caller.developerId) };
+}
+
+/**
+ * `POST /v1/app/me/identities/{provider}`: starts adding a sign-in method the caller removed earlier back to their own account. The
+ * developer and the session are the verified token's (`caller`), never anything the request carries; the session must be fresh. The answer
+ * is the sign-in link to open, which links the identity back only to this developer.
+ */
+async function startAppIdentityLink(deps: DeveloperRouteDependencies, caller: DeveloperCaller, provider: string): Promise<StartIdentityLinkAppResponse> {
+  const method = UnlinkableSignInMethodSchema.safeParse(provider);
+  if (!method.success) throw agentXError("CONFIG_INVALID", "name the sign-in method to add back: cloud or github");
+  if (deps.developer.startIdentityLink === undefined) throw agentXError("NOT_FOUND", "adding a sign-in method back is not set up in this deployment");
+  const answer = await deps.developer.startIdentityLink({ kind: "start-identity-link", developerId: caller.developerId, sessionId: caller.sessionId, provider: method.data });
+  if (!answer.ok) {
+    if (answer.error === "reauth") throw agentXError("REAUTH_REQUIRED", answer.message);
+    if (answer.error === "refused") throw agentXError("CONFIG_INVALID", answer.message);
+    throw agentXError("RUNTIME_UNAVAILABLE", "adding the sign-in method back did not start; try again");
+  }
+  logDeveloperEvent({ event: "developer.identity_link_started", provider: method.data });
+  return { authorizeUrl: answer.authorizeUrl };
 }
 
 /** The caller's own org and their role in it. */
@@ -999,7 +1586,121 @@ async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller
   if (role === "admin" && caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can invite an admin; an admin can invite members");
   const { token } = await deps.orgs.createInvite({ orgId: caller.orgId, createdBy: caller.developerId, role, requestId, ...(email === undefined ? {} : { email }) });
   logDeveloperEvent({ event: "developer.org_invite_created", orgId: caller.orgId, role, targeted: String(email !== undefined) });
-  return { inviteUrl: inviteUrl(deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN, token) };
+  // A cloud install shares the web app's link, with the token in the fragment so a static host never receives it. A private install's
+  // link points at its own cell, which reads the token server-side, so it keeps the query.
+  return { inviteUrl: deps.cloud === true
+    ? inviteUrl(`${deps.developer.webOrigin ?? DEFAULT_ROVARA_WEB_ORIGIN}/join`, token, "fragment")
+    : inviteUrl(`${deps.developer.issuer}/join`, token, "query") };
+}
+
+const signInStoreOf = (deps: DeveloperRouteDependencies) => new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
+
+const bodyError = (error: z.ZodError) => {
+  const issue = error.issues[0];
+  // Field names only: the values are the caller's.
+  return agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+};
+
+/** `GET /v1/app/org/members`: any member may list the org's people. Names, emails and sign-in methods come from the sign-in table. */
+async function listOrganizationMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<{ members: Array<{ developerId: string; name: string; email?: string; role: OrgRole; joinedAt: string; identities: DeveloperSignInMethod[] }> }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  const store = signInStoreOf(deps);
+  const members = await deps.orgs.listMembers(caller.orgId);
+  const listed = await mapLimit(members, REVISION_READS_AT_ONCE, async (member) => {
+    const [record, identities] = await Promise.all([store.getDeveloper(member.developerId), store.identitiesOf(member.developerId)]);
+    const email = record?.email ?? identities.find((identity) => identity.email !== undefined)?.email;
+    // A person from before sign-in methods were linked has no IDENTITY rows: their record's own provider is the method they signed in with.
+    const methods = identities.length > 0 ? identities.map((identity) => identity.provider) : record === undefined ? [] : [record.provider];
+    return {
+      developerId: member.developerId, name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }), role: member.role, joinedAt: member.joinedAt,
+      identities: [...new Set(methods)],
+    };
+  });
+  return { members: listed.sort((left, right) => left.joinedAt.localeCompare(right.joinedAt) || left.developerId.localeCompare(right.developerId)) };
+}
+
+const ChangeRoleBodySchema = z.object({ requestId: z.string().uuid(), role: OrgRoleSchema }).strict();
+
+/** `PUT /v1/app/org/members/{developerId}/role`: owners only. Demoting the last owner is LAST_OWNER (409). */
+async function changeMemberRole(deps: DeveloperRouteDependencies, caller: DeveloperCaller, developerId: string, body: unknown): Promise<{ developerId: string; role: OrgRole }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
+  const parsed = ChangeRoleBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role });
+  logDeveloperEvent({ event: "developer.org_role_changed", orgId: caller.orgId, role: parsed.data.role });
+  return { developerId, role: parsed.data.role };
+}
+
+/**
+ * Ends a removed person's sign-in sessions through DeveloperIdentity. They are already refused (the membership is gone), so a failure
+ * here is logged and never fails the removal.
+ */
+async function endSessionsAfterRemoval(deps: DeveloperRouteDependencies, developerId: string): Promise<void> {
+  if (deps.developer.endDeveloperSessions === undefined) return;
+  try {
+    const answer = await deps.developer.endDeveloperSessions({ kind: "end-developer-sessions", developerId, at: new Date(deps.now()).toISOString() });
+    if (!answer.ok && answer.error !== "not_found") logDeveloperEvent({ event: "developer.org_removal_sessions_not_ended", reason: answer.error });
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.org_removal_sessions_not_ended", reason: errorName(error) });
+  }
+}
+
+/** Every address that may hold a person's `ORG_EMAIL#` pointer: their developer record's and each linked identity's. */
+async function emailsOf(store: DeveloperSignInStore, developerId: string): Promise<string[]> {
+  const [record, identities] = await Promise.all([store.getDeveloper(developerId), store.identitiesOf(developerId)]);
+  return [...new Set([record?.email, ...identities.map((identity) => identity.email)].filter((email): email is string => typeof email === "string"))];
+}
+
+const STOPS_AFTER_STEP = (name: string) => `${name}'s running tasks will stop after their current step. None of them will open a pull request.`;
+
+/**
+ * `DELETE /v1/app/org/members/{developerId}`. Owners may remove anyone but the last owner, admins members only; nobody removes themselves
+ * (leaving has its own route). Their sessions end, and ruling R60 stops their running tasks at the next dispatch. A private install
+ * bans the person from signing back in to its one org until an invite clears it; a cloud install lets them start a new org.
+ */
+async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller: DeveloperCaller, developerId: string): Promise<{ removed: { developerId: string; name: string }; message: string }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can remove people from the organization");
+  if (developerId === caller.developerId) throw agentXError("FORBIDDEN", "use agentx org leave to leave");
+  const target = (await deps.orgs.listMembers(caller.orgId)).find((member) => member.developerId === developerId);
+  if (target === undefined) throw agentXError("NOT_FOUND", "that person is not a member of the organization");
+  if (caller.orgRole === "admin" && target.role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");
+  const store = signInStoreOf(deps);
+  const [record, emails] = await Promise.all([store.getDeveloper(developerId), emailsOf(store, developerId)]);
+  await deps.orgs.removeMember({ orgId: caller.orgId, developerId, emails, ban: deps.cloud !== true, expectedRole: target.role });
+  await endSessionsAfterRemoval(deps, developerId);
+  const name = record?.displayName ?? "That person";
+  logDeveloperEvent({ event: "developer.org_member_removed", orgId: caller.orgId, role: target.role, banned: String(deps.cloud !== true) });
+  return { removed: { developerId, name }, message: STOPS_AFTER_STEP(name) };
+}
+
+const LeaveBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+
+/**
+ * `POST /v1/app/org/leave`. Members and admins leave. An owner leaves when another owner exists; an owner who is the only member
+ * closes the org (its GitHub connection and Slack workspace are released, its projects archived). Otherwise LAST_OWNER (409).
+ */
+async function leaveOrganization(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ left: true; orgClosed: boolean; message: string }> {
+  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  const parsed = LeaveBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const store = signInStoreOf(deps);
+  const emails = await emailsOf(store, caller.developerId);
+  const sole = caller.orgRole === "owner" && (await deps.orgs.listMembers(caller.orgId)).every((member) => member.developerId === caller.developerId);
+  // Ruling (Task 4, Minor 6): closing is for cloud orgs. A private install's only org is never closed: a closed org would take every
+  // later sign-in with no owner. Its sole owner promotes someone else first.
+  if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", "You are the only owner. Make someone else an owner first.");
+  if (sole) {
+    await deps.orgs.closeOrg(caller.orgId, {
+      archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)), emails,
+    });
+  } else {
+    await deps.orgs.removeMember({ orgId: caller.orgId, developerId: caller.developerId, emails, ban: false });
+  }
+  await endSessionsAfterRemoval(deps, caller.developerId);
+  logDeveloperEvent({ event: "developer.org_left", orgId: caller.orgId, role: caller.orgRole, closed: String(sole) });
+  return { left: true, orgClosed: sole, message: sole ? "You left and the organization is closed." : STOPS_AFTER_STEP(caller.name) };
 }
 
 function budgetDependencies(deps: DeveloperRouteDependencies): BudgetDependencies {

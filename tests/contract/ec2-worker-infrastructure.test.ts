@@ -240,6 +240,18 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
       Value: { Ref: "WorkerImageUri" },
     });
   });
+  // Task 10: stage 2 of the boot ships in the worker image, and its hash is a setting beside the image, written by the same runtime stack.
+  it("publishes the stage 2 boot hash beside the worker image, readable by only this environment's Steps function, and nowhere in the legacy deployment", () => {
+    const declared = (runtime.toJSON() as { Parameters: Record<string, { Type: string; Default: string; AllowedPattern: string }> }).Parameters.BootStage2Sha256;
+    expect(declared).toMatchObject({ Type: "String", Default: "none" });
+    const pattern = new RegExp(declared!.AllowedPattern, "u");
+    expect(pattern.test("none")).toBe(true);
+    expect(pattern.test("ab".repeat(32))).toBe(true);
+    for (const bad of ["AB".repeat(32), "ab".repeat(31), "latest", ""]) expect(pattern.test(bad), bad).toBe(false);
+    runtime.hasResourceProperties("AWS::SSM::Parameter", { Name: "/agentx/staging/worker-boot-stage2-sha256", Type: "String", Value: { Ref: "BootStage2Sha256" } });
+    expect(JSON.stringify(controlPlane.toJSON())).toContain("/agentx/staging/worker-boot-stage2-sha256");
+    for (const template of legacy) expect(JSON.stringify(template.toJSON())).not.toMatch(/BootStage2|boot-stage2/u);
+  });
 });
 
 // Task 14: the model proxy alone holds provider keys and Bedrock access. Workers and the orchestrator reach models

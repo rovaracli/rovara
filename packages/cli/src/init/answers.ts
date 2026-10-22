@@ -3,7 +3,7 @@ import { DEFAULT_BEDROCK_MODELS, DEFAULT_DIRECT_MODELS, PROVIDER_KEY_MIN_LENGTH,
 // commander default never silently skips a question. An alert webhook carries its integration
 // key, so it is a secret: it is never a flag value and never stored in the answers.
 import { agentXError, ImageDigest, KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, keyedProviderSecretName, type KeyedModelProvider, type ModelProvider } from "@agentx/contracts";
-import { CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, defaultAuditLockProfile, DIRECT_PROVIDERS, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
+import { CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, defaultAuditLockProfile, DIRECT_PROVIDERS, bootStage2ImagesProblem, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
 import type { BundleAnswers } from "../deploy/export-bundle.js";
 import { SecretAlreadyExistsError } from "../deploy/signing-key.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
@@ -74,6 +74,8 @@ export interface InitFlags {
   githubAccount?: string; githubAccountType?: "organization" | "user"; githubAppName?: string;
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore";
   workerImage?: string; slackImage?: string;
+  /** --boot-stage2-sha256: with --worker-image, the SHA-256 of the boot-stage2.sh in the source that image was built from. */
+  bootStage2Sha256?: string;
   /** --rovara-cloud: install the hosted Rovara cloud (R45); it needs the cdk engine. The next three are its sign-in settings (R46). */
   rovaraCloud?: boolean;
   googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
@@ -164,6 +166,9 @@ export async function collectInitAnswers(input: {
   if (input.adminEmail !== undefined && emailProblem(input.adminEmail) !== undefined) throw agentXError("CONFIG_INVALID", `--admin-email ${input.adminEmail} is not an email address`);
   const workerImage = digestFlag(flags.workerImage, "--worker-image");
   const slackImage = digestFlag(flags.slackImage, "--slack-image");
+  const bootStage2Sha256 = flags.bootStage2Sha256;
+  const bootProblem = bootStage2ImagesProblem({ worker: workerImage, bootStage2Sha256 });
+  if (bootProblem !== undefined) throw agentXError("CONFIG_INVALID", bootProblem);
   const recommended = estimateMonthlyCost({ orchestrator: DEFAULT_ORCHESTRATOR_MODEL, classifier: DEFAULT_CLASSIFIER_MODEL, worker: DEFAULT_WORKER_MODEL });
   const fields = settingsFields({
     env: input.env, flags, fixed: input.fixed !== undefined, budgetWhy: budgetWhy(recommended),
@@ -267,7 +272,10 @@ export async function collectInitAnswers(input: {
     ...(platform.operatorPrincipalArn === undefined ? {} : { operatorPrincipalArn: platform.operatorPrincipalArn }),
     ...(workerImage === undefined && slackImage === undefined
       ? {}
-      : { images: { ...(workerImage === undefined ? {} : { worker: workerImage }), ...(slackImage === undefined ? {} : { slack: slackImage }) } }),
+      : { images: {
+        ...(workerImage === undefined ? {} : { worker: workerImage }), ...(slackImage === undefined ? {} : { slack: slackImage }),
+        ...(bootStage2Sha256 === undefined ? {} : { bootStage2Sha256 }),
+      } }),
     alert,
     ...(budget === undefined ? {} : { budget }),
     auditLock,
@@ -497,6 +505,7 @@ const RESUME_CHECKS: Array<{ flag: string; key: keyof InitFlags; kind?: ResumeCh
   { flag: "--slack-app-name", key: "slackAppName", stored: (a) => a.slack.appName },
   { flag: "--slack-app-posted-messages", key: "slackAppPostedMessages", stored: (a) => a.slack.appPostedMessages },
   { flag: "--worker-image", key: "workerImage", stored: (a) => a.images?.worker },
+  { flag: "--boot-stage2-sha256", key: "bootStage2Sha256", stored: (a) => a.images?.bootStage2Sha256 },
   { flag: "--slack-image", key: "slackImage", stored: (a) => a.images?.slack },
   { flag: "--google-client-id", key: "googleClientId", stored: (a) => a.cloudSignIn?.googleClientId },
   { flag: "--google-client-secret-arn", key: "googleClientSecretArn", stored: (a) => a.cloudSignIn?.googleClientSecretArn },

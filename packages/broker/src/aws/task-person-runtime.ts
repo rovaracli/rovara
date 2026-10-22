@@ -163,6 +163,7 @@ function identityDependencies(input: {
         input.onProjectAuthority(result.witness);
         return;
       }
+      if (result.kind === "denied" && result.reason === "project-viewer") return "viewer";
       if (result.kind === "denied" && result.reason === "project-access") throw refused();
       if (result.kind === "not-found") throw agentXError("PROJECT_NOT_FOUND", "task person project was not found");
       if (result.kind === "denied" && result.reason === "tasks-disabled") throw agentXError("PROJECT_TASKS_DISABLED", "task person project tasks are disabled");

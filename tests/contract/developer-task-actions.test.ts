@@ -156,7 +156,7 @@ describe("acceptPullRequest attribution and draft (FR-023, R14)", () => {
       repository: "demo", repositoryUrl: "https://github.com/example/demo.git", headBranch: record.publication.headBranch, baseBranch: "main",
       commit: "d".repeat(40), title: "Fix", body: record.publication.body,
     });
-    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ title: "Fix", body: record.publication.body, draft: true }));
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ title: "Fix", body: record.publication.body, draft: true }), { system: "private-install" });
   });
 });
 

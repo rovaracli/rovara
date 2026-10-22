@@ -1,6 +1,5 @@
-// Ruling R55: an owner or admin of a cloud org creates a project from a repository. The shared GitHub App sees many repositories,
-// so the repository's owner must be the org's operator-set GitHub owner, and the project is built here, from the repository alone,
-// the way `agentx project add` builds it. A later plan replaces the owner check with a per-org GitHub App installation.
+// Plan 2, Task 16: an owner or admin of a cloud org creates a project from a repository the org's own GitHub connection reaches (the
+// route checks that), and the project is built here, from the repository alone, the way `agentx project add` builds it.
 import {
   AgentXNameSchema,
   DEFAULT_ORCHESTRATOR_INSTRUCTIONS,
@@ -8,11 +7,11 @@ import {
   ProjectDefinitionSchema,
   SETUP_TIMEOUT,
   TEST_TIMEOUT,
+  AgentXError,
   agentXError,
   agentxRepositoryName,
   parseCommandLine,
   type Ec2RuntimeBinding,
-  type OrgRecord,
   type ProjectCommand,
   type ProjectDefinition,
 } from "@agentx/contracts";
@@ -54,22 +53,29 @@ export function cloudProjectDefaultsFromEnvironment(env: Record<string, string |
 const COMMAND_MAX_LENGTH = 500;
 const REPOSITORY = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]{1,100})$/;
 
+const DESCRIPTION_MAX_LENGTH = 280;
+
 const CreateProjectBodySchema = z.object({
+  requestId: z.string().uuid(),
   repository: z.string().regex(REPOSITORY, "must be owner/name").refine((value) => !/\/(\.{1,2}|\.git)$/.test(value), "must be owner/name"),
   name: AgentXNameSchema.optional(),
+  description: z.string().max(DESCRIPTION_MAX_LENGTH).optional(),
   setupCommand: z.string().max(COMMAND_MAX_LENGTH).optional(),
   testCommand: z.string().max(COMMAND_MAX_LENGTH).optional(),
 }).strict();
 
 export interface CreateProjectInput {
+  /** The request's id: a replay of it answers the project it made. */
+  requestId: string;
   owner: string;
   repositoryName: string;
   name?: string;
+  description?: string;
   setupCommand?: string;
   testCommand?: string;
 }
 
-/** The body of POST /v1/dev/projects; a refusal names the field and what is wrong with it, never the value. */
+/** The body of POST /v1/app/projects (and its alias POST /v1/dev/projects); a refusal names the field and what is wrong with it, never the value. */
 export function parseCreateProjectBody(body: unknown): CreateProjectInput {
   const parsed = CreateProjectBodySchema.safeParse(body);
   if (!parsed.success) {
@@ -77,27 +83,43 @@ export function parseCreateProjectBody(body: unknown): CreateProjectInput {
     throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
   const [, owner, repositoryName] = REPOSITORY.exec(parsed.data.repository) as unknown as [string, string, string];
+  // A command that cannot be run is refused here, before GitHub is asked anything.
+  for (const [field, line, timeout] of [["setupCommand", parsed.data.setupCommand, SETUP_TIMEOUT], ["testCommand", parsed.data.testCommand, TEST_TIMEOUT]] as const) {
+    if (line === undefined || line.trim() === "") continue;
+    try {
+      parseCommandLine(line, "repo/check", timeout);
+    } catch (error) {
+      if (error instanceof AgentXError) throw agentXError("CONFIG_INVALID", `${field}: ${error.message.replace(/^[A-Z_]+: /, "")}`);
+      throw error;
+    }
+  }
   return {
+    requestId: parsed.data.requestId,
     owner,
     repositoryName: repositoryName.endsWith(".git") ? repositoryName.slice(0, -4) : repositoryName,
     ...(parsed.data.name === undefined ? {} : { name: parsed.data.name }),
+    ...(parsed.data.description === undefined ? {} : { description: parsed.data.description }),
     ...(parsed.data.setupCommand === undefined ? {} : { setupCommand: parsed.data.setupCommand }),
     ...(parsed.data.testCommand === undefined ? {} : { testCommand: parsed.data.testCommand }),
   };
 }
 
 /**
- * The one place that says which repositories an org may create projects for (ruling R55): those under the org's allowed GitHub
- * owner, compared without regard to case. An org with none cannot create projects. Swap this function when each org has its own
- * GitHub App installation.
+ * The repository entry `agentx project add` builds for a repository, from what the GitHub App says about it; settings use it for an added one.
+ * `connection` is what the org's GitHub connection answered (the installation and GitHub's id of the repository): the entry pins them, so a
+ * repository that moves to another installation must be connected again on purpose.
  */
-export function requireAllowedGithubOwner(org: Pick<OrgRecord, "githubOwner">, repositoryOwner: string): void {
-  if (org.githubOwner === undefined) {
-    throw agentXError("FORBIDDEN", "your organization has no GitHub organization connected yet; ask Rovara support to connect your GitHub organization");
-  }
-  if (org.githubOwner.toLowerCase() !== repositoryOwner.toLowerCase()) {
-    throw agentXError("FORBIDDEN", `your organization can create projects only for repositories under ${org.githubOwner}; ask Rovara support to connect another GitHub organization`);
-  }
+export function cloudRepositoryEntry(input: {
+  repositoryName: string;
+  repository: { fullName: string; defaultBranch: string };
+  githubCredentialRef: string;
+  connection?: { installationId: number; githubRepositoryId: number };
+}): ProjectDefinition["repositories"][number] {
+  const name = agentxRepositoryName(input.repositoryName);
+  return {
+    name, url: `https://github.com/${input.repository.fullName}.git`, path: `repo/${name}`, defaultBranch: input.repository.defaultBranch, credentialRef: input.githubCredentialRef,
+    ...(input.connection === undefined ? {} : { installationId: input.connection.installationId, githubRepositoryId: input.connection.githubRepositoryId }),
+  };
 }
 
 /** The project definition `agentx project add` builds for a repository, from what the GitHub App says about it. */
@@ -105,6 +127,7 @@ export function cloudProjectDefinition(input: {
   input: CreateProjectInput;
   repository: { fullName: string; defaultBranch: string };
   githubCredentialRef: string;
+  connection: { installationId: number; githubRepositoryId: number };
 }): ProjectDefinition {
   const repoName = agentxRepositoryName(input.input.repositoryName);
   const path = `repo/${repoName}`;
@@ -112,7 +135,7 @@ export function cloudProjectDefinition(input: {
   return ProjectDefinitionSchema.parse({
     name: input.input.name ?? repoName,
     revision: 1,
-    repositories: [{ name: repoName, url: `https://github.com/${input.repository.fullName}.git`, path, defaultBranch: input.repository.defaultBranch, credentialRef: input.githubCredentialRef }],
+    repositories: [cloudRepositoryEntry({ repositoryName: input.input.repositoryName, repository: input.repository, githubCredentialRef: input.githubCredentialRef, connection: input.connection })],
     setup: typed(input.input.setupCommand, SETUP_TIMEOUT),
     readiness: typed(input.input.testCommand, TEST_TIMEOUT),
     orchestratorInstructions: DEFAULT_ORCHESTRATOR_INSTRUCTIONS,

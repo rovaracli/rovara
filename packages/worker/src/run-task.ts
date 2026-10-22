@@ -11,11 +11,17 @@ import {
   devcontainerBashOperations,
   devcontainerPaths,
   ensureDevcontainer,
+  installFileOpsHelper,
   preparedDevcontainerTarget,
   workspaceRelativeCdTarget,
   type DevcontainerCli,
   type DevcontainerPaths,
+  type DevcontainerUpResult,
 } from "./devcontainer.js";
+import { devcontainerMounts } from "./devcontainer-file-paths.js";
+import type { FileOpsTarget } from "./file-ops-exec.js";
+import { sweepFileOps } from "./sandbox-file-tools.js";
+import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 import { EventBatcher, redactCredentials, type EventBatchSink } from "./events.js";
 import { ToolLoopGuard } from "./tool-loop-guard.js";
 import {
@@ -94,6 +100,8 @@ export interface TaskInvocationDependencies {
    * always the sandbox on EC2.
    */
   taskShell?: TaskShellSelection;
+  /** The Docker CLI the file tools and the devcontainer's helper install use (R56); tests supply a fake. Default: the sandbox selection's, or the host's. */
+  docker?: DockerCli;
 }
 
 export async function runTaskInvocation(
@@ -144,54 +152,6 @@ async function runTask(
       throw agentXError("CONFIG_INVALID", "the approved work breakdown does not match the prepared repository or digest");
     }
   }
-  if (invocation.payload.workflowMode === "FEEDBACK_REVIEW") {
-    const binding = invocation.payload.workflowFeedbackReview!;
-    if (dependencies.feedbackBundleReader === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot read the task's approved feedback bundles");
-    const root = await realpath(resolve(dependencies.rootPath));
-    const stop = new AbortController();
-    const unregister = dependencies.cancellationController?.register(invocation.operationId, { abort: async () => stop.abort() });
-    const events = new EventBatcher(dependencies.eventSink);
-    try {
-      await events.append("progress", { message: "AgentX is reviewing the latest feedback on the linked pull requests." });
-      const collected = await dependencies.feedbackBundleReader(binding);
-      // Publication moved HEAD to a new commit with the reviewed tree, so the code is identified by that tree (and the
-      // pinned base stays an ancestor), not by the commit the candidate digest was made from. Only repositories that
-      // have a pull request bundle are checked, and only those are readable by the critic.
-      const bundledIds = new Set(collected.bundles.map(({ ref }) => ref.repositoryId));
-      const repositoryInputs = candidateInputs(manifest, root, invocation.payload.workflowBase).filter(input => bundledIds.has(input.repositoryId));
-      const candidateRepositories = repositoryInputs.length === 0 ? [] : await readCandidateRepositories(repositoryInputs);
-      const unchanged = collected.bundles.every(({ ref }) => {
-        const identity = candidateRepositories.find(repository => repository.repositoryId === ref.repositoryId);
-        return identity !== undefined && ref.headTreeSha !== undefined && identity.treeSha === ref.headTreeSha
-          && ref.candidateDigest === binding.candidateDigest;
-      });
-      if (!unchanged) throw agentXError("OPERATION_INTERRUPTED", "the candidate changed before PR feedback review");
-      const execution = await runWorkflowFeedbackReview({
-        operationId: invocation.operationId, taskId: binding.taskId, workflowRevision: binding.workflowRevision,
-        taskRequirements: collected.taskRequirements, candidateDigest: binding.candidateDigest,
-        rootPath: dependencies.rootPath, model: dependencies.model, candidate: candidateRepositories,
-        repositories: repositoryInputs, bundles: collected.bundles, artifactSink: dependencies.artifactSink,
-        ...(collected.taskChecks === undefined ? {} : { taskChecks: collected.taskChecks }),
-        ...(dependencies.timeouts?.feedbackReviewMs === undefined ? {} : { timeoutMs: dependencies.timeouts.feedbackReviewMs }),
-        ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }), signal: stop.signal,
-        onProgress: message => { void events.append("progress", { message }).catch(() => undefined); },
-      });
-      const workflowFeedbackReviewResult = {
-        taskId: binding.taskId, workflowRevision: binding.workflowRevision, candidateDigest: binding.candidateDigest,
-        outputDigest: execution.outputDigest, artifactName: execution.artifactName, status: execution.report.status,
-      };
-      await events.append("result", { status: "SUCCEEDED", workflowMode: "FEEDBACK_REVIEW", workflowFeedbackReviewResult });
-      await events.flush();
-      return { conversationId: invocation.payload.conversationId, reopened: false, workflowMode: "FEEDBACK_REVIEW", workflowFeedbackReviewResult };
-    } catch (error) {
-      await events.append("error", { message: redactText(error instanceof Error ? error.message : "feedback review failed") }).catch(() => undefined);
-      await events.flush().catch(() => undefined);
-      throw error;
-    } finally {
-      unregister?.();
-    }
-  }
-
   // The agent's shell runs in the project's devcontainer (#121), started first: on a resumed
   // instance its containers are stopped.
   const canonicalRoot = await realpath(resolve(dependencies.rootPath));
@@ -199,9 +159,11 @@ async function runTask(
   let bashOperations: BashOperations | undefined;
   let containerPaths: DevcontainerPaths | undefined;
   let devcontainerCli: DevcontainerCli | undefined;
+  let startedDevcontainer: DevcontainerUpResult | undefined;
   if (devcontainer !== undefined) {
     devcontainerCli = dependencies.devcontainerCli ?? createDevcontainerCli();
     const started = await ensureDevcontainer(devcontainerCli, devcontainer);
+    startedDevcontainer = started;
     bashOperations = devcontainerBashOperations(devcontainerCli, devcontainer);
     containerPaths = devcontainerPaths(devcontainer, started);
   }
@@ -221,6 +183,82 @@ async function runTask(
       localShell = true;
     }
   }
+  // R56: the agent's file tools run in the same container as its shell, never in the worker (sandbox-file-tools.ts), for every
+  // Pi session of this task: the main ones, the feedback review and the critic and security reviews.
+  const fileToolsDocker = dependencies.docker ?? (dependencies.taskShell?.kind === "sandbox" ? dependencies.taskShell.docker : undefined) ?? createDockerCli();
+  let fileTools: FileOpsTarget | undefined;
+  let fileToolsNote: string | undefined;
+  if (sandbox !== undefined) {
+    fileTools = sandbox.fileOpsTarget();
+  } else if (devcontainer !== undefined && startedDevcontainer !== undefined) {
+    const installed = await installFileOpsHelper(fileToolsDocker, {
+      containerId: startedDevcontainer.containerId, user: startedDevcontainer.remoteUser, workspaceFolder: startedDevcontainer.remoteWorkspaceFolder,
+    });
+    if ("target" in installed) {
+      fileTools = { ...installed.target, mounts: await devcontainerMounts(fileToolsDocker, startedDevcontainer.containerId, canonicalRoot, containerPaths) };
+    } else {
+      // The devcontainer cannot run the bundled Node (a musl image, say): the tools keep the boundary in a sandbox of their own.
+      const fileSandbox = taskSandboxFor(dependencies.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: invocation.operationId });
+      if (fileSandbox !== undefined) {
+        sandboxes.push(fileSandbox);
+        await fileSandbox.start();
+        fileTools = { ...fileSandbox.fileOpsTarget(), ...(containerPaths === undefined ? {} : { paths: containerPaths }) };
+        fileToolsNote = "Rovara's file tools run in a separate sandbox for this devcontainer, so they may not be able to change files your devcontainer's user created.";
+      }
+    }
+  }
+  const candidateSweep = fileTools === undefined ? undefined : async (directory: string): Promise<void> => { await sweepFileOps(fileTools, canonicalRoot, directory); };
+
+  if (invocation.payload.workflowMode === "FEEDBACK_REVIEW") {
+    const binding = invocation.payload.workflowFeedbackReview!;
+    if (dependencies.feedbackBundleReader === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot read the task's approved feedback bundles");
+    const root = canonicalRoot;
+    const stop = new AbortController();
+    const unregister = dependencies.cancellationController?.register(invocation.operationId, { abort: async () => stop.abort() });
+    const events = new EventBatcher(dependencies.eventSink);
+    try {
+      await events.append("progress", { message: "AgentX is reviewing the latest feedback on the linked pull requests." });
+      if (fileToolsNote !== undefined) await events.append("progress", { message: fileToolsNote });
+      const collected = await dependencies.feedbackBundleReader(binding);
+      // Publication moved HEAD to a new commit with the reviewed tree, so the code is identified by that tree (and the
+      // pinned base stays an ancestor), not by the commit the candidate digest was made from. Only repositories that
+      // have a pull request bundle are checked, and only those are readable by the critic.
+      const bundledIds = new Set(collected.bundles.map(({ ref }) => ref.repositoryId));
+      const repositoryInputs = candidateInputs(manifest, root, invocation.payload.workflowBase, candidateSweep).filter(input => bundledIds.has(input.repositoryId));
+      const candidateRepositories = repositoryInputs.length === 0 ? [] : await readCandidateRepositories(repositoryInputs);
+      const unchanged = collected.bundles.every(({ ref }) => {
+        const identity = candidateRepositories.find(repository => repository.repositoryId === ref.repositoryId);
+        return identity !== undefined && ref.headTreeSha !== undefined && identity.treeSha === ref.headTreeSha
+          && ref.candidateDigest === binding.candidateDigest;
+      });
+      if (!unchanged) throw agentXError("OPERATION_INTERRUPTED", "the candidate changed before PR feedback review");
+      const execution = await runWorkflowFeedbackReview({
+        operationId: invocation.operationId, taskId: binding.taskId, workflowRevision: binding.workflowRevision,
+        taskRequirements: collected.taskRequirements, candidateDigest: binding.candidateDigest,
+        rootPath: dependencies.rootPath, model: dependencies.model, candidate: candidateRepositories,
+        repositories: repositoryInputs, bundles: collected.bundles, artifactSink: dependencies.artifactSink,
+        ...(collected.taskChecks === undefined ? {} : { taskChecks: collected.taskChecks }),
+        ...(dependencies.timeouts?.feedbackReviewMs === undefined ? {} : { timeoutMs: dependencies.timeouts.feedbackReviewMs }),
+        ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }), signal: stop.signal,
+        ...(fileTools === undefined ? {} : { fileTools }),
+        onProgress: message => { void events.append("progress", { message }).catch(() => undefined); },
+      });
+      const workflowFeedbackReviewResult = {
+        taskId: binding.taskId, workflowRevision: binding.workflowRevision, candidateDigest: binding.candidateDigest,
+        outputDigest: execution.outputDigest, artifactName: execution.artifactName, status: execution.report.status,
+      };
+      await events.append("result", { status: "SUCCEEDED", workflowMode: "FEEDBACK_REVIEW", workflowFeedbackReviewResult });
+      await events.flush();
+      return { conversationId: invocation.payload.conversationId, reopened: false, workflowMode: "FEEDBACK_REVIEW", workflowFeedbackReviewResult };
+    } catch (error) {
+      await events.append("error", { message: redactText(error instanceof Error ? error.message : "feedback review failed") }).catch(() => undefined);
+      await events.flush().catch(() => undefined);
+      throw error;
+    } finally {
+      unregister?.();
+    }
+  }
+
   // Spec 051 Ruling L: the check history as it was before the agent ran. The agent can write to .agentx, so every
   // round plans from this snapshot, and the final round's outcomes are merged over it.
   const checkHistory = await readCheckHistory(canonicalRoot, manifest);
@@ -235,7 +273,7 @@ async function runTask(
     const readiness = invocation.payload.readiness ?? [];
     if (readiness.length === 0) throw agentXError("CONFIG_INVALID", "verification retry requires at least one selected project check");
     const events = new EventBatcher(dependencies.eventSink);
-    const repositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase);
+    const repositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
     const candidateBefore = await readCandidateRepositories(repositories);
     const recorder = new CommandRecorder({ fingerprint: (signal) => recorderFingerprint(repositories.map((repository) => ({ name: repository.repositoryId, directory: repository.directory })), signal) });
     const plan = planChecks(readiness, recorder, checkHistory);
@@ -339,6 +377,7 @@ async function runTask(
   if (invocation.payload.modelSelectionDiagnostic !== undefined) {
     onDiagnostic(invocation.payload.modelSelectionDiagnostic);
   }
+  if (fileToolsNote !== undefined) onDiagnostic(fileToolsNote);
   for (const message of modelChangeDiagnostics(registered, dependencies.model)) onDiagnostic(message);
 
   // D-16 (#290): files an earlier task left while AgentX ran the original code (its worker stopped mid-check) go back
@@ -397,16 +436,16 @@ async function runTask(
       // for a review-only task, which still needs the code the round finished on.
       if (invocation.payload.workflowMode === "IMPLEMENT") {
         try {
-          reportedChecksCandidate = await readCandidateRepositories(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase));
+          reportedChecksCandidate = await readCandidateRepositories(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep));
         } catch { /* missing identity leaves the check result unbound and the workflow blocked */ }
       }
     },
     ...(invocation.payload.workflowMode !== "IMPLEMENT" ? {} : {
       prepareCandidate: async () => {
         candidateCheckDrift = false;
-        await commitCandidateWorktree(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase));
+        await commitCandidateWorktree(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep));
       },
-      candidateIdentity: async () => JSON.stringify(await readCandidateRepositories(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase))),
+      candidateIdentity: async () => JSON.stringify(await readCandidateRepositories(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep))),
       onCandidateDrift: () => { candidateCheckDrift = true; reportedChecksCandidate = undefined; },
     }),
     // I-3: an earlier settle's report is stale once the agent has a regression to fix.
@@ -430,6 +469,7 @@ async function runTask(
         extensionFactories: planning || reviewing ? [] : [verification],
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
+        ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
       },
       dependencies.piAdapter,
     );
@@ -440,6 +480,7 @@ async function runTask(
         extensionFactories: planning || reviewing ? [] : [verification],
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
+        ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
       },
       dependencies.piAdapter,
     );
@@ -643,7 +684,7 @@ async function runTask(
         await promptAndSettle(invocation.payload.prompt);
       } else {
         const graph = workflowDependencies.graph;
-        const repositoryInputs = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase);
+        const repositoryInputs = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
         const initialRepositories = await readCandidateRepositories(repositoryInputs);
         if (initialRepositories.length !== 1 || initialRepositories[0]?.repositoryId !== graph.items[0]?.repository) {
           throw agentXError("CONFIG_INVALID", "the approved work breakdown no longer matches the one prepared repository");
@@ -747,7 +788,7 @@ async function runTask(
         await events.append("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN" };
       } else if (reviewing) {
-        const repositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase);
+        const repositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
         const beforeReview = createCandidateManifest(await readCandidateRepositories(repositories));
         let reports = await runWorkflowReviews({
           operationId: invocation.operationId,
@@ -762,6 +803,7 @@ async function runTask(
           ...(dependencies.timeouts?.reviewMs === undefined ? {} : { timeoutMs: dependencies.timeouts.reviewMs }),
           signal: verificationStop.signal,
           ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }),
+          ...(fileTools === undefined ? {} : { fileTools }),
           onProgress: (message) => { void events.append("progress", { message }).catch(() => undefined); },
           onUsage: async ({ role, stats, model, outcome }) => {
             const usage = createTaskUsageTelemetry(stats, { ...model, ...(dependencies.model.cacheRetention === undefined ? {} : { cacheRetention: dependencies.model.cacheRetention }) }, outcome);
@@ -807,7 +849,7 @@ async function runTask(
       if (warning !== undefined) await events.append("progress", { message: warning });
       outcome = "SUCCEEDED";
       const checks = compactCheckReport(finalChecks());
-      const workflowRepositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase);
+      const workflowRepositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
       const workflowCandidateRepositories = invocation.payload.workflowMode === "IMPLEMENT"
         ? await readCandidateRepositories(workflowRepositories)
         : undefined;
@@ -1139,11 +1181,17 @@ function candidateInputs(
   manifest: PreparationManifest,
   root: string,
   base?: ReadonlyArray<{ repositoryId: string; baseCommitSha: string }>,
+  sweep?: (directory: string) => Promise<void>,
 ): CandidateRepositoryInput[] {
   return manifest.repositories.map((repository) => {
     const baseCommitSha = base?.find((entry) => entry.repositoryId === repository.name)?.baseCommitSha
       ?? (/^[a-f0-9]{40}$/.test(repository.resolvedCommit ?? "") ? repository.resolvedCommit : undefined);
-    return { repositoryId: repository.name, directory: resolve(root, repository.path), ...(baseCommitSha === undefined ? {} : { baseCommitSha }) };
+    const directory = resolve(root, repository.path);
+    return {
+      repositoryId: repository.name, directory,
+      ...(baseCommitSha === undefined ? {} : { baseCommitSha }),
+      ...(sweep === undefined ? {} : { sweep: () => sweep(directory) }),
+    };
   });
 }
 

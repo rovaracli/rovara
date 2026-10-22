@@ -105,7 +105,7 @@ describe("workspace preparation coordination", () => {
         credentialRef: "payments-readwrite",
         repositoryUrl: "https://git.example.test/payments.git",
         access: "clone",
-      }),
+      }, { system: "private-install" }),
     ).resolves.toEqual({ token: "resolved-payments-readwrite" });
     await expect(
       grants.exchange(grant, {
@@ -114,7 +114,7 @@ describe("workspace preparation coordination", () => {
         credentialRef: "payments-readwrite",
         repositoryUrl: "https://git.example.test/payments.git",
         access: "clone",
-      }),
+      }, { system: "private-install" }),
     ).rejects.toThrow(/does not cover/i);
     await expect(
       grants.exchange(grant, {
@@ -123,7 +123,7 @@ describe("workspace preparation coordination", () => {
         credentialRef: "payments-readwrite",
         repositoryUrl: "https://git.example.test/another-repository.git",
         access: "clone",
-      }),
+      }, { system: "private-install" }),
     ).rejects.toThrow(/does not cover/i);
     await expect(
       grants.exchange(grant, {
@@ -132,7 +132,7 @@ describe("workspace preparation coordination", () => {
         credentialRef: "payments-readwrite",
         repositoryUrl: "https://git.example.test/payments.git",
         access: "push",
-      }),
+      }, { system: "private-install" }),
     ).rejects.toThrow(/does not cover/i);
 
     const ready = await coordinator.recordResult({

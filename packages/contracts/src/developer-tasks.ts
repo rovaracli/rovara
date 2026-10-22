@@ -285,6 +285,9 @@ export const DeveloperTaskViewSchema = z.object({
   }).optional(),
   e2ePresentation: z.object({ shared: E2ESharedViewSchema, slackBlocks: z.array(z.unknown()).max(16), pageHtml: z.string().max(65_536), mcp: z.object({ scope: z.string().max(2_000), view: E2ESharedViewSchema }).strict() }).strict().optional(),
   failure: DeveloperTaskFailureSchema.optional(),
+  /** Ruling R60: set when the task's creator was removed from the org; the task has ended (status CANCELLED) and `outcomeReason` says why. */
+  outcome: z.literal("creator_removed").optional(),
+  outcomeReason: z.string().max(1000).optional(),
   startingRevision: z.number().int().positive(),
   client: z.string(),
   shared: z.boolean(),

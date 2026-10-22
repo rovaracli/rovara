@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Change } from "@aws-sdk/client-cloudformation";
 import { describe, expect, it } from "vitest";
 import {
   assertOnlyExpectedChanges,
+  bootStage2Sha256,
   executeChangeSetAndWait,
   firstFailureReason,
   executorRepositoryUri,
@@ -30,7 +32,9 @@ const CONTROL_PLANE = "agentx-agentxlivetest123-control-plane";
 const RUNTIME = "agentx-agentxlivetest123-runtime";
 const OLD_IMAGE = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"a".repeat(64)}`;
 
-const artifacts: BuiltArtifacts = { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab" };
+const NEW_STAGE2_HASH = "b".repeat(64);
+const OLD_STAGE2_HASH = "c".repeat(64);
+const artifacts: BuiltArtifacts = { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab", bootStage2Sha256: NEW_STAGE2_HASH };
 const previous: StackParameters = {
   "control-plane": { OidcIssuer: "https://issuer.example", CallbackSigningKey: "****", AdminValues: "admin" },
   runtime: { ModelId: "model", ModelProvider: "provider", WorkerImageUri: OLD_IMAGE },
@@ -102,29 +106,86 @@ describe("planTestDeploy", () => {
     });
   });
 
-  it("plans a worker-image deploy as ECR push then a runtime change set that changes only WorkerImageUri", () => {
-    const steps = plan(["worker-image"]);
-    expect(kinds(steps)).toEqual(["ecr-push", "create-change-set", "execute-change-set", "verify-stack-parameter"]);
+  it("plans a worker-image deploy as ECR push then one runtime change set that writes WorkerImageUri and BootStage2Sha256 together", () => {
+    // The runtime stack already has the hash setting, as it does after the first worker-image deploy.
+    const withHash: StackParameters = { ...previous, runtime: { ...previous.runtime, BootStage2Sha256: OLD_STAGE2_HASH } };
+    const steps = planTestDeploy({ env: ENV, only: ["worker-image"], artifacts, previous: withHash });
+    expect(kinds(steps)).toEqual(["ecr-push", "create-change-set", "execute-change-set", "verify-stack-parameter", "verify-stack-parameter"]);
     const push = steps[0] as Extract<DeployStep, { kind: "ecr-push" }>;
     // The repository comes from the image the stack runs today, never from a new or production one.
     expect(push.repositoryUri).toBe("123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker");
     const changeSet = steps[1] as Extract<DeployStep, { kind: "create-change-set" }>;
     expect(changeSet.stack).toBe(RUNTIME);
     expect(changeSet.template).toEqual({ source: "previous" });
+    // The new hash is the one of the boot-stage2.sh the pushed image is built from, even when the stack holds an older one.
     expect(changeSet.parameters).toEqual([
+      { key: "BootStage2Sha256", value: { literal: NEW_STAGE2_HASH } },
       { key: "ModelId", usePreviousValue: true },
       { key: "ModelProvider", usePreviousValue: true },
       { key: "WorkerImageUri", value: { fromStep: push.id, output: "imageUri" } },
     ]);
-    expect(changeSet.expect).toMatchObject({ action: "Modify", logicalIdPrefixes: ["WorkerImageParameter"] });
+    expect(changeSet.expect).toEqual({ action: "Modify", logicalIdPrefixes: ["WorkerImageParameter", "WorkerBootStage2Sha256Parameter"], allowedAttributes: ["Properties.Value"] });
     expect(steps[3]).toMatchObject({ key: "WorkerImageUri", expected: { fromStep: push.id, output: "imageUri" } });
+    expect(steps[4]).toMatchObject({ stack: RUNTIME, key: "BootStage2Sha256", expected: { literal: NEW_STAGE2_HASH } });
+  });
+
+  it("adds the BootStage2Sha256 setting the first time (inert), then writes it with the image in one change set", () => {
+    // The default `previous` runtime stack predates the hash: it has neither the parameter nor its SSM setting.
+    const steps = plan(["worker-image"]);
+    expect(kinds(steps)).toEqual([
+      "ecr-push", "create-change-set", "execute-change-set", "create-change-set", "execute-change-set", "verify-stack-parameter", "verify-stack-parameter",
+    ]);
+    const push = steps[0] as Extract<DeployStep, { kind: "ecr-push" }>;
+    const lift = steps[1] as Extract<DeployStep, { kind: "create-change-set" }>;
+    expect(lift.template).toEqual({
+      source: "lift-resources",
+      logicalIdPrefix: "WorkerBootStage2Sha256Parameter",
+      parameterNames: ["BootStage2Sha256"],
+      construct: "AgentXProductionRuntime",
+      cdkContext: {},
+      identityMode: "cognito",
+    });
+    expect(lift.expect).toEqual({ action: "Add", logicalIdPrefixes: ["WorkerBootStage2Sha256Parameter"] });
+    // The lift adds the setting as "none": no worker is told a hash for an image that is not yet written.
+    expect(lift.parameters).toContainEqual({ key: "BootStage2Sha256", value: { literal: "none" } });
+    expect(lift.parameters).toContainEqual({ key: "WorkerImageUri", usePreviousValue: true });
+    const write = steps[3] as Extract<DeployStep, { kind: "create-change-set" }>;
+    expect(write.template).toEqual({ source: "previous" });
+    expect(write.parameters).toEqual([
+      { key: "BootStage2Sha256", value: { literal: NEW_STAGE2_HASH } },
+      { key: "ModelId", usePreviousValue: true },
+      { key: "ModelProvider", usePreviousValue: true },
+      { key: "WorkerImageUri", value: { fromStep: push.id, output: "imageUri" } },
+    ]);
+    expect(write.expect).toMatchObject({ action: "Modify", logicalIdPrefixes: ["WorkerImageParameter", "WorkerBootStage2Sha256Parameter"] });
+    expect(new Set([lift.changeSetPrefix, write.changeSetPrefix]).size).toBe(2);
+    expect(steps[6]).toMatchObject({ key: "BootStage2Sha256", expected: { literal: NEW_STAGE2_HASH } });
+  });
+
+  it("never writes a hash that is not 64 lower-case hex digits with the image", () => {
+    for (const hash of ["none", "B".repeat(64), "b".repeat(63), ""]) {
+      expect(() => planTestDeploy({ env: ENV, only: ["worker-image"], artifacts: { ...artifacts, bootStage2Sha256: hash }, previous })).toThrow(/boot stage 2 hash/);
+    }
+  });
+
+  it("takes the hash from the boot-stage2.sh in the source tree the image is built from", () => {
+    expect(bootStage2Sha256()).toBe(createHash("sha256").update(readFileSync(new URL("../../packages/worker/ec2/boot-stage2.sh", import.meta.url))).digest("hex"));
+  });
+
+  it("states in the printed plan that the image and the hash are written together", () => {
+    const text = formatPlan(plan(["worker-image"]));
+    expect(text).toContain(`BootStage2Sha256=${NEW_STAGE2_HASH}`);
+    expect(text).toContain("WorkerImageUri=<push-worker-image.imageUri>");
   });
 
   it("publishes the image before it changes the Broker, as the release pipeline does", () => {
-    const stacks = plan(["broker", "worker-image"])
+    const stacks = planTestDeploy({ env: ENV, only: ["broker", "worker-image"], artifacts, previous: { ...previous, runtime: { ...previous.runtime, BootStage2Sha256: OLD_STAGE2_HASH } } })
       .filter((step) => step.kind === "create-change-set")
       .map((step) => step.kind === "create-change-set" && step.stack);
     expect(stacks).toEqual([RUNTIME, CONTROL_PLANE]);
+    // The first time, the inert hash setting is added to the runtime stack too, before the image and before the Broker.
+    const first = plan(["broker", "worker-image"]).filter((step) => step.kind === "create-change-set").map((step) => step.kind === "create-change-set" && step.stack);
+    expect(first).toEqual([RUNTIME, RUNTIME, CONTROL_PLANE]);
   });
 
   it("never touches a stack other than the control-plane and runtime stacks for the env", () => {
@@ -132,7 +193,7 @@ describe("planTestDeploy", () => {
     const stacks = new Set(steps.flatMap((step) => ("stack" in step ? [step.stack] : [])));
     expect(stacks).toEqual(new Set([CONTROL_PLANE, RUNTIME]));
     // The access stack is only read, for its artifact bucket: no step changes it, and the only mention is the upload's bucket source.
-    expect(JSON.stringify(steps).replaceAll('"bucketFromStack":"access"', "")).not.toMatch(/foundation|identity|slack|access/);
+    expect(JSON.stringify(steps).replaceAll('"bucketFromStack":"access"', "").replaceAll('"identityMode":"cognito"', "")).not.toMatch(/foundation|identity|slack|access/);
   });
 
   it("refuses an env that is not an allowlisted TEST installation", () => {
@@ -194,12 +255,21 @@ describe("planTestDeploy", () => {
   });
 
   it("pushes both images and changes the runtime stack once for each when asked for both, worker first", () => {
-    const steps = plan(["executor-image", "worker-image"]);
-    expect(kinds(steps)).toEqual(["ecr-push", "create-change-set", "execute-change-set", "verify-stack-parameter", "ecr-push", "create-change-set", "execute-change-set", "verify-stack-parameter"]);
+    const withHash: StackParameters = { ...previous, runtime: { ...previous.runtime, BootStage2Sha256: OLD_STAGE2_HASH } };
+    const steps = planTestDeploy({ env: ENV, only: ["executor-image", "worker-image"], artifacts, previous: withHash });
+    expect(kinds(steps)).toEqual(["ecr-push", "create-change-set", "execute-change-set", "verify-stack-parameter", "verify-stack-parameter", "ecr-push", "create-change-set", "execute-change-set", "verify-stack-parameter"]);
     expect(steps.filter((step) => step.kind === "ecr-push").map((step) => step.kind === "ecr-push" && step.image)).toEqual(["worker", "executor"]);
     const prefixes = steps.filter((step) => step.kind === "create-change-set").map((step) => step.kind === "create-change-set" && step.changeSetPrefix);
     expect(new Set(prefixes).size).toBe(2);
     expect(new Set(steps.flatMap((step) => ("stack" in step ? [step.stack] : [])))).toEqual(new Set([RUNTIME]));
+  });
+
+  it("keeps the hash the worker-image unit just wrote when the executor change set follows it, even the first time", () => {
+    // CloudFormation resets a parameter the change set leaves out to its default ("none"), so the executor one must name it.
+    const steps = plan(["worker-image", "executor-image"]);
+    const executor = steps.filter((step) => step.kind === "create-change-set").pop() as Extract<DeployStep, { kind: "create-change-set" }>;
+    expect(executor.changeSetPrefix).toContain("executor");
+    expect(executor.parameters).toContainEqual({ key: "BootStage2Sha256", usePreviousValue: true });
   });
 
   it("derives the executor repository from the worker's, and refuses a worker repository it cannot map", () => {

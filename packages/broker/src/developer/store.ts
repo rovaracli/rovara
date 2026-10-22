@@ -2,18 +2,85 @@
 // The DeveloperSignIn table (spec 025 FR-005, FR-008). Codes and refresh tokens are stored only as
 // SHA-256 hashes. Every expiry is checked here; the table's TTL only cleans up afterwards.
 import { randomUUID } from "node:crypto";
-import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  agentXError,
+  normalizeEmail,
   DEVELOPER_AUTH_REQUEST_SECONDS,
   DEVELOPER_CODE_SECONDS,
   DEVELOPER_SESSION_SECONDS,
+  FRESH_SIGN_IN_SECONDS,
   type DeveloperSignInMethod,
+  type LinkedIdentity,
 } from "@agentx/contracts";
+import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
 
-export interface AuthRequestRecord { id: string; clientRedirectUri: string; clientState: string; codeChallenge: string; nonce: string; method?: DeveloperSignInMethod; consumedAt?: string; expiresAt: number; browserReturnTo?: string; inviteToken?: string }
-export interface DeveloperRecord { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string }
-export interface SessionRecord { sessionId: string; developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; startedAt: string; endsAt: number; reviewExpiresAt?: number; lastRefreshAt?: string; revokedAt?: string; revokedReason?: string }
+export interface AuthRequestRecord { id: string; clientRedirectUri: string; clientState: string; codeChallenge: string; nonce: string; method?: DeveloperSignInMethod; consumedAt?: string; expiresAt: number; browserReturnTo?: string;
+  /** SHA-256 of the invite token in base64url. The raw token is never stored. */
+  inviteTokenHash?: string;
+  /** "join": the browser join page's sign-in (Plan 2, Task 5); its completion stores a JOIN_RESULT instead of issuing a session or code. */
+  purpose?: "join";
+  /**
+   * Plan 2, Task 8b: set on the request that adds a removed sign-in method back. `linkDeveloperId` is the only developer it may link to,
+   * `linkSessionId` the fresh session of theirs that started it (checked again when the person finishes) and `linkMethod` the one method
+   * it is for. Its completion links the identity back and stores nothing else: no session, no code.
+   */
+  linkDeveloperId?: string; linkSessionId?: string; linkMethod?: DeveloperSignInMethod;
+  /** Plan 2, Task 8b: the CLI's fresh sign-in (for changing sign-in methods); the provider is asked to have the person sign in again where it can. */
+  fresh?: boolean }
+/** How a join ended (Plan 2, Task 5). Only "joined" used the invite. */
+export type JoinOutcome = "joined" | "ALREADY_IN_ORG" | "INVITE_WRONG_EMAIL" | "INVITE_INVALID";
+/**
+ * The facts the join "done" page shows, kept ten minutes under `JOIN_RESULT#<authRequestId>`. `orgName` is the org joined (or the invited
+ * one); `codeChallenge` is the join request's PKCE challenge, which the browser's cookie must satisfy to read the page. No token, no email.
+ */
+export interface JoinResultRecord {
+  outcome: JoinOutcome; orgName: string; role: "admin" | "member"; currentOrgName?: string; invitedOrgName: string; maskedEmail?: string;
+  inviterName: string; codeChallenge: string; expiresAt: number;
+}
+export const JOIN_RESULT_SECONDS = 600;
+/**
+ * Plan 2, Task 8: the marks an unlink (and a later relink) leaves on a developer's record, one attribute per identity or method
+ * (see `endedByUnlink`). They are written by the store, never by a profile, and read from the item as stored.
+ */
+export type DeveloperMarks = {
+  [attribute: `sessionsEndedByIdentity#${string}`]: string | undefined;
+  [attribute: `identityUnlinked#${string}`]: string | undefined;
+  [attribute: `sessionsEndedByMethod#${string}`]: string | undefined;
+};
+export interface DeveloperRecord extends DeveloperMarks { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
+  /** Plan 2, Task 3: the developer this one was merged into (a duplicate member of the same person); its sign-in identity is linked there. */
+  mergedInto?: string; mergedAt?: string }
+/** One item of a TransactWriteItems request, for a transaction that also writes another table. */
+export type SignInTransactItem = NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>[number];
+/**
+ * One sign-in identity's link to a developer (Plan 2, Task 2). `identityKey` is `ownerKeyForSubject(issuer, subject)`. The forward item
+ * (`SIGNIN_IDENTITY#<identityKey>`) answers "which developer is this sign-in"; the reverse item (`DEVELOPER#<developerId>` /
+ * `IDENTITY#<identityKey>`) lists a developer's identities. Both carry these fields and are written in one transaction.
+ * `unlinkedFrom` and `unlinkedAt` are set when the person unlinked the identity from that developer.
+ */
+export interface IdentityLinkRecord {
+  developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; email?: string; login?: string;
+  linkedAt: string; lastSignInAt: string; unlinkedFrom?: string; unlinkedAt?: string;
+  /** Plan 2, Task 8b: set when the person added the identity back: who (the developer, under their fresh session), when, and the method that session signed in with. */
+  relinkedBy?: string; relinkedAt?: string; relinkedWith?: DeveloperSignInMethod;
+}
+/**
+ * `authTime` (Plan 2, Task 8b) is when the person signed in interactively (at the provider), as an ISO time. A refresh renews the session
+ * and never changes it. A session from before it was recorded has none, and is never fresh.
+ */
+export interface SessionRecord { sessionId: string; developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; startedAt: string; endsAt: number; reviewExpiresAt?: number; lastRefreshAt?: string; revokedAt?: string; revokedReason?: string }
+
+/**
+ * Plan 2, Task 8b: whether the person signed in interactively within the last `FRESH_SIGN_IN_SECONDS` (inclusive). A session with no
+ * readable `authTime` is not fresh.
+ */
+export function isFreshSignIn(session: Pick<SessionRecord, "authTime">, nowMs: number): boolean {
+  if (session.authTime === undefined) return false;
+  const signedIn = Date.parse(session.authTime);
+  return Number.isFinite(signedIn) && nowMs - signedIn <= FRESH_SIGN_IN_SECONDS * 1000;
+}
 
 /** A method's enabled-since cutoff from its environment variable, epoch seconds; "0", empty or unreadable means none. */
 export function methodSince(text: string | undefined): number | undefined {
@@ -47,16 +114,59 @@ export type RefreshLookup =
  * stale-lock race between two local processes does not sign the person out. */
 export const REFRESH_REUSE_GRACE_SECONDS = 60;
 
-interface CodeRecord { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; codeChallenge: string; redirectUri: string; expiresAt: number; usedAt?: string }
+interface CodeRecord { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; codeChallenge: string; redirectUri: string; expiresAt: number; usedAt?: string }
 interface RefreshRecord { sessionId: string; expiresAt: number; usedAt?: string; graceUsedAt?: string }
 interface CancellationReason { Code?: string }
 
 export const META = "META";
 
-/** E8: the email index's key, the SHA-256 of the trimmed, lowercased email, so no email is stored as a key. */
+/** E8: the email index's key, the SHA-256 of the normalized email (normalizeEmail, the same as the org email pointer), so no email is stored as a key. */
 export function emailIndexKey(email: string): { pk: string; sk: "META" } {
-  return { pk: `EMAIL#${sha256Hex(email.trim().toLowerCase())}`, sk: META };
+  return { pk: `EMAIL#${sha256Hex(normalizeEmail(email).email)}`, sk: META };
 }
+export function signInIdentityKey(identityKey: string): { pk: string; sk: "META" } {
+  return { pk: `SIGNIN_IDENTITY#${identityKey}`, sk: META };
+}
+/** The reverse item: one row per identity linked to a developer, in the developer's own partition. */
+export function developerIdentityKey(developerId: string, identityKey: string): { pk: string; sk: string } {
+  return { pk: `DEVELOPER#${developerId}`, sk: `IDENTITY#${identityKey}` };
+}
+/** A link reads as no link once it was unlinked, unless the identity then re-linked to its own developer (its own key). */
+const isActiveLink = (link: Pick<IdentityLinkRecord, "developerId" | "unlinkedFrom">, identityKey: string): boolean =>
+  link.unlinkedFrom === undefined || link.developerId === identityKey;
+/**
+ * Plan 2, Task 8: unlinking a sign-in method ends that method's sessions without touching the person's others. The sessions are not
+ * listed (the table has no index of them); the unlink marks the developer's record instead, and every session check reads the marks.
+ * A session that recorded its identity is ended for as long as `identityUnlinked#<identityKey>` is present, whenever it started: an
+ * unlinked identity can never be active for this developer again, and a session created from a link read just before the unlink
+ * (a sign-in that was already running) starts after the mark yet must not live. Linking the identity again removes that mark and
+ * leaves `sessionsEndedByIdentity#<identityKey>` as the link time, so sessions from before the link stay ended and later ones live.
+ * A session from before sessions recorded their identity is ended by method (`sessionsEndedByMethod#<provider>`), by start time. The
+ * marks are separate attributes, so one unlink is one atomic update beside the unlink itself, and no new kind of access to the table.
+ */
+export const identitySessionsEndedAttribute = (identityKey: string): `sessionsEndedByIdentity#${string}` => `sessionsEndedByIdentity#${identityKey}`;
+export const identityUnlinkedAttribute = (identityKey: string): `identityUnlinked#${string}` => `identityUnlinked#${identityKey}`;
+export const methodSessionsEndedAttribute = (provider: DeveloperSignInMethod): `sessionsEndedByMethod#${string}` => `sessionsEndedByMethod#${provider}`;
+/** Whether the person unlinked this session's sign-in method after the session started (or, for its identity, at all since). `developer` is the developer record as stored. */
+export function endedByUnlink(session: Pick<SessionRecord, "startedAt" | "amr" | "identityKey">, developer: DeveloperMarks): boolean {
+  if (session.identityKey !== undefined) {
+    if (typeof developer[identityUnlinkedAttribute(session.identityKey)] === "string") return true;
+    const relinked = developer[identitySessionsEndedAttribute(session.identityKey)];
+    return typeof relinked === "string" && endedByAdmin(session.startedAt, relinked);
+  }
+  const mark = developer[methodSessionsEndedAttribute(session.amr)];
+  return typeof mark === "string" && endedByAdmin(session.startedAt, mark);
+}
+/** Refusals of an unlink, in the person's words. */
+export const UNLINK_ONLY_IDENTITY = "this is your only way to sign in, so it can't be removed";
+export const UNLINK_FIRST_IDENTITY = "this is the sign-in your account was created with, so it can't be removed";
+/** Plan 2, Task 8b: changing the sign-in methods needs a fresh sign-in (REAUTH_REQUIRED), with a method that is not the one being removed. */
+export const REAUTH_TO_CHANGE_METHODS = "to change your sign-in methods, sign in again first with a method you are keeping, then try again";
+export const REAUTH_SAME_METHOD = "you are signed in with the method you are removing; sign in again with a different method first, then try again";
+/** Refusals of adding a removed sign-in method back, in the person's words. */
+export const RELINK_NOT_REMOVED = "that sign-in was not removed from your account, so it cannot be added back here";
+export const RELINK_OWN_ACCOUNT = "that sign-in has since started its own account, so it cannot be added back to this one";
+export const RELINK_ALREADY = "that sign-in is already part of your account";
 const conditionFailed = (error: unknown) =>
   error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
 
@@ -66,6 +176,20 @@ const conditionFailed = (error: unknown) =>
 function cancellationReasons(error: unknown): CancellationReason[] | undefined {
   const reasons = (error as { CancellationReasons?: unknown } | null)?.CancellationReasons;
   return Array.isArray(reasons) ? (reasons as CancellationReason[]) : undefined;
+}
+
+/**
+ * Why `link` cannot be added back to `developerId` (Plan 2, Task 8b), or undefined when it is that developer's tombstone: unlinked from
+ * them and still pointing at them, so nobody has linked it anywhere since.
+ */
+function relinkRefusal(link: IdentityLinkRecord | undefined, identityKey: string, developerId: string, provider: DeveloperSignInMethod): string | undefined {
+  if (link === undefined || link.provider !== provider) return RELINK_NOT_REMOVED;
+  if (isActiveLink(link, identityKey)) {
+    if (link.developerId === developerId && link.unlinkedFrom === undefined) return RELINK_ALREADY;
+    // Signed in on its own after it was removed: it is its own developer now, and a developer is never merged into another here.
+    return link.developerId === identityKey && link.unlinkedFrom === developerId ? RELINK_OWN_ACCOUNT : RELINK_NOT_REMOVED;
+  }
+  return link.unlinkedFrom === developerId && link.developerId === developerId ? undefined : RELINK_NOT_REMOVED;
 }
 
 export class DeveloperSignInStore {
@@ -87,6 +211,15 @@ export class DeveloperSignInStore {
     const record: AuthRequestRecord = { ...input, id: randomToken(""), expiresAt: this.seconds() + DEVELOPER_AUTH_REQUEST_SECONDS };
     await this.put({ pk: `AUTHREQ#${record.id}`, sk: META, entityType: "AUTH_REQUEST", ...record }, "attribute_not_exists(pk)");
     return record;
+  }
+
+  async putJoinResult(id: string, result: Omit<JoinResultRecord, "expiresAt">): Promise<void> {
+    await this.put({ pk: `JOIN_RESULT#${id}`, sk: META, entityType: "JOIN_RESULT", ...result, expiresAt: this.seconds() + JOIN_RESULT_SECONDS }, "attribute_not_exists(pk)");
+  }
+
+  async getJoinResult(id: string): Promise<JoinResultRecord | undefined> {
+    const item = await this.get<JoinResultRecord>(`JOIN_RESULT#${id}`);
+    return item === undefined || item.expiresAt <= this.seconds() ? undefined : strip(item);
   }
 
   async getAuthRequest(id: string): Promise<AuthRequestRecord | undefined> {
@@ -179,14 +312,325 @@ export class DeveloperSignInStore {
     return item === undefined ? undefined : strip(item);
   }
 
-  async issueCode(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; codeChallenge: string; redirectUri: string }): Promise<string> {
+  /** The identity's link item as stored, whether or not it still counts as a link (see `isActiveLink`). */
+  async getIdentityLink(identityKey: string): Promise<IdentityLinkRecord | undefined> {
+    const item = await this.get<IdentityLinkRecord>(signInIdentityKey(identityKey).pk);
+    return item === undefined ? undefined : strip(item);
+  }
+
+  /**
+   * The developer this sign-in identity belongs to. An unlinked identity has none. With no link item at all it is its own developer
+   * when a `DEVELOPER#<identityKey>` record exists for the same issuer and subject, so a developer from before identity links is
+   * recognised before their next sign-in writes the link. Sign-in itself reads `getIdentityLink`, not this fallback.
+   */
+  async developerForIdentity(identityKey: string): Promise<string | undefined> {
+    const link = await this.getIdentityLink(identityKey);
+    if (link !== undefined) return isActiveLink(link, identityKey) ? link.developerId : undefined;
+    const record = await this.getDeveloper(identityKey);
+    return record !== undefined && ownerKeyForSubject(record.issuer, record.subject) === identityKey ? identityKey : undefined;
+  }
+
+  /**
+   * Links a sign-in identity to a developer, both items in one transaction. Whoever writes first wins: when another sign-in linked the
+   * identity to a different developer in the meantime, that developer is returned and nothing is written. `created` is true only when this
+   * call wrote a new link item (an identity unlinked earlier and now linked to its own developer again counts). Linking an unlinked
+   * identity to anyone but its own developer is refused: only the identity's own sign-in may start a new developer for it.
+   */
+  async linkIdentity(input: { identityKey: string; developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; email?: string; login?: string }): Promise<{ developerId: string; created: boolean }> {
+    const { identityKey, developerId } = input;
+    const own = developerId === identityKey;
+    const current = await this.getIdentityLink(identityKey);
+    const settled = this.settledLink(current, identityKey, developerId, own);
+    if (settled !== undefined) return settled;
+    const at = this.iso();
+    const link: IdentityLinkRecord = {
+      developerId, provider: input.provider, issuer: input.issuer, subject: input.subject,
+      ...(input.email === undefined ? {} : { email: input.email }),
+      ...(input.login === undefined ? {} : { login: input.login }),
+      linkedAt: at, lastSignInAt: at,
+      // An unlinked item that the identity re-links to itself keeps its unlinkedFrom and unlinkedAt (they record why it left).
+      ...(current?.unlinkedFrom === undefined ? {} : { unlinkedFrom: current.unlinkedFrom }),
+      ...(current?.unlinkedAt === undefined ? {} : { unlinkedAt: current.unlinkedAt }),
+    };
+    const body = { entityType: "IDENTITY_LINK", ...link };
+    // An identity that was unlinked from this developer and now links to it again stops being ended by that unlink: the mark that ended
+    // every session of the identity goes in the same transaction, and sessions from before the link stay ended by its time.
+    const marked = current === undefined ? undefined : await this.getDeveloper(developerId);
+    const clearsUnlink = marked !== undefined && marked[identityUnlinkedAttribute(identityKey)] !== undefined;
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          ...(clearsUnlink ? [{ Update: {
+            TableName: this.input.tableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #ended = :at REMOVE #unlinked",
+            ConditionExpression: "attribute_exists(pk)",
+            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey) },
+            ExpressionAttributeValues: { ":at": at },
+          } }] : []),
+          { Put: {
+            TableName: this.input.tableName, Item: { ...signInIdentityKey(identityKey), ...body },
+            // Writes when nothing is linked, or (for the identity's own developer) over an item that was unlinked.
+            ConditionExpression: `attribute_not_exists(pk) OR (developerId = :d AND attribute_not_exists(unlinkedFrom))${own ? " OR attribute_exists(unlinkedFrom)" : ""}`,
+            ExpressionAttributeValues: { ":d": developerId },
+          } },
+          { Put: { TableName: this.input.tableName, Item: { ...developerIdentityKey(developerId, identityKey), ...body } } },
+        ],
+      }));
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+      // Another sign-in linked this identity first: read what it wrote.
+      const winner = this.settledLink(await this.getIdentityLink(identityKey), identityKey, developerId, own);
+      if (winner === undefined) throw error;
+      return winner;
+    }
+    return { developerId, created: true };
+  }
+
+  /** What an existing link item settles for a `linkIdentity(developerId)` call: an answer, or undefined when the item can be (over)written. */
+  private settledLink(current: IdentityLinkRecord | undefined, identityKey: string, developerId: string, own: boolean): { developerId: string; created: false } | undefined {
+    if (current === undefined) return undefined;
+    if (isActiveLink(current, identityKey)) return { developerId: current.developerId, created: false };
+    if (own) return undefined;
+    throw agentXError("AUTH_REQUIRED", "this sign-in was unlinked from that account and can only start its own; run agentx login again");
+  }
+
+  /**
+   * The sign-in table's items for merging a duplicate developer into `survivorId` (Plan 2, Task 3), for a caller whose one transaction also
+   * writes the State table: the duplicate's identity is linked to the survivor, and the duplicate's record says where it went and when
+   * and ends its sessions as of that moment, so no session outlives the merge.
+   * `link` is the identity's link item when it has one. A duplicate that signed in after identity links has a link to itself, which is
+   * moved to the survivor (both items, conditional on still being its own and never unlinked); with no link item one is written.
+   */
+  mergeItems(input: { duplicate: DeveloperRecord; duplicateIdentityKey: string; survivorId: string; at: string; link?: IdentityLinkRecord; email?: string; login?: string }): SignInTransactItem[] {
+    const { duplicate, duplicateIdentityKey: identityKey, survivorId, at, link } = input;
+    const TableName = this.input.tableName;
+    const email = input.email ?? link?.email ?? duplicate.email;
+    const login = input.login ?? link?.login;
+    const body = {
+      entityType: "IDENTITY_LINK", developerId: survivorId, provider: duplicate.provider, issuer: duplicate.issuer, subject: duplicate.subject,
+      ...(email === undefined ? {} : { email }),
+      ...(login === undefined ? {} : { login }),
+      linkedAt: link?.linkedAt ?? at, lastSignInAt: at,
+    };
+    const items: SignInTransactItem[] = link === undefined
+      ? [{ Put: { TableName, Item: { ...signInIdentityKey(identityKey), ...body }, ConditionExpression: "attribute_not_exists(pk)" } }]
+      : [
+        { Update: {
+          TableName, Key: signInIdentityKey(identityKey), UpdateExpression: "SET developerId = :survivor, lastSignInAt = :at",
+          ConditionExpression: "developerId = :duplicate AND attribute_not_exists(unlinkedFrom)", ExpressionAttributeValues: { ":survivor": survivorId, ":at": at, ":duplicate": duplicate.developerId },
+        } },
+        // The old reverse item stays but no longer lists under the duplicate.
+        { Update: {
+          TableName, Key: developerIdentityKey(duplicate.developerId, identityKey), UpdateExpression: "SET developerId = :survivor",
+          ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":survivor": survivorId },
+        } },
+      ];
+    return [
+      ...items,
+      { Put: { TableName, Item: { ...developerIdentityKey(survivorId, identityKey), ...body } } },
+      { Update: {
+        TableName, Key: { pk: `DEVELOPER#${duplicate.developerId}`, sk: META }, UpdateExpression: "SET mergedInto = :survivor, mergedAt = :at, sessionsEndedAt = :at",
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedInto) AND (attribute_not_exists(sessionsEndedAt) OR sessionsEndedAt <= :at)",
+        ExpressionAttributeValues: { ":survivor": survivorId, ":at": at },
+      } },
+    ];
+  }
+
+  /**
+   * Whether the identity is still linked to this developer. A link that was unlinked, or moved to another developer, is not. An identity
+   * with no link item (a developer from before identity links) is its own developer's.
+   */
+  async identityBelongsTo(identityKey: string, developerId: string): Promise<boolean> {
+    const link = await this.getIdentityLink(identityKey);
+    return link === undefined || (isActiveLink(link, identityKey) && link.developerId === developerId);
+  }
+
+  /** Every reverse item in the developer's partition, as stored (some may be unlinked or moved), following LastEvaluatedKey through each page. */
+  private async identityItems(developerId: string): Promise<Array<IdentityLinkRecord & { sk: string }>> {
+    const links: Array<IdentityLinkRecord & { sk: string }> = [];
+    let start: Record<string, unknown> | undefined;
+    do {
+      const response = await this.input.documentClient.send(new QueryCommand({
+        TableName: this.input.tableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: { ":pk": `DEVELOPER#${developerId}`, ":prefix": "IDENTITY#" },
+        ConsistentRead: true,
+        ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+      })) as { Items?: Array<IdentityLinkRecord & { sk: string }>; LastEvaluatedKey?: Record<string, unknown> };
+      links.push(...(response.Items ?? []));
+      start = response.LastEvaluatedKey;
+    } while (start !== undefined);
+    return links;
+  }
+
+  /** The identities linked to a developer, oldest link first, as stored. */
+  private async activeIdentityItems(developerId: string): Promise<Array<IdentityLinkRecord & { sk: string }>> {
+    return (await this.identityItems(developerId))
+      .filter((link) => link.developerId === developerId && isActiveLink(link, link.sk.slice("IDENTITY#".length)))
+      .sort((left, right) => left.linkedAt.localeCompare(right.linkedAt) || left.sk.localeCompare(right.sk));
+  }
+
+  /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
+  async identitiesOf(developerId: string): Promise<LinkedIdentity[]> {
+    return (await this.activeIdentityItems(developerId)).map((link) => ({
+      provider: link.provider,
+      ...(link.email === undefined ? {} : { email: link.email }),
+      ...(link.login === undefined ? {} : { login: link.login }),
+      linkedAt: link.linkedAt, lastSignInAt: link.lastSignInAt,
+    }));
+  }
+
+  /**
+   * Removes a sign-in method from a developer (Plan 2, Task 8). It must leave the developer another active identity, and never the one the
+   * account was created with (the identity whose key is the developer's). Per identity of that method, one transaction: the reverse item is
+   * deleted, the forward item keeps its fields and gains `unlinkedFrom` and `unlinkedAt` (rule 2 never relinks it: its next sign-in starts
+   * its own developer), and the developer's record is marked so that identity's sessions end (see `endedByUnlink`), the others' not.
+   * Only the caller's own developer is ever touched. It needs a fresh sign-in (`freshSessionFor`), with a method that is not the one removed.
+   * Returns the (first) identity key removed.
+   */
+  async unlinkIdentity(input: { developerId: string; sessionId: string; provider: DeveloperSignInMethod; now?: number }): Promise<{ identityKey: string }> {
+    const { developerId, provider } = input;
+    const active = await this.activeIdentityItems(developerId);
+    const targets = active.filter((link) => link.provider === provider);
+    if (targets.length === 0) throw agentXError("NOT_FOUND", "that sign-in method is not linked to your account");
+    if (active.length - targets.length < 1) throw agentXError("CONFIG_INVALID", UNLINK_ONLY_IDENTITY);
+    const keys = targets.map((link) => link.sk.slice("IDENTITY#".length));
+    if (keys.includes(developerId)) throw agentXError("CONFIG_INVALID", UNLINK_FIRST_IDENTITY);
+    // Only a removal that could go through asks for a fresh sign-in: the session must have signed in within ten minutes, with a method that stays.
+    await this.freshSessionFor({ developerId, sessionId: input.sessionId, removing: provider });
+    const at = new Date(input.now ?? this.input.now()).toISOString();
+    const TableName = this.input.tableName;
+    const merged = new Map<string, string | undefined>();
+    for (const key of keys) merged.set(key, key === developerId ? undefined : (await this.getDeveloper(key))?.mergedInto);
+    for (const [index, link] of targets.entries()) {
+      const identityKey = keys[index]!;
+      const mergedAway = (key: string): boolean => merged.get(key) === developerId;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the reverse item's keys
+      const { pk: _pk, sk: _sk, entityType: _type, ...fields } = link as typeof link & { pk: string; entityType?: string };
+      try {
+        await this.input.documentClient.send(new TransactWriteCommand({
+          TransactItems: [
+            { Delete: {
+              TableName, Key: developerIdentityKey(developerId, identityKey),
+              ConditionExpression: "attribute_exists(pk) AND developerId = :d AND attribute_not_exists(unlinkedFrom)", ExpressionAttributeValues: { ":d": developerId },
+            } },
+            { Put: {
+              TableName, Item: { ...fields, ...signInIdentityKey(identityKey), entityType: "IDENTITY_LINK", unlinkedFrom: developerId, unlinkedAt: at },
+              ConditionExpression: "attribute_exists(pk) AND developerId = :d AND attribute_not_exists(unlinkedFrom)", ExpressionAttributeValues: { ":d": developerId },
+            } },
+            { Update: {
+              TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #identity = :at, #unlinked = :at, #method = :at",
+              ConditionExpression: "attribute_exists(pk)",
+              ExpressionAttributeNames: { "#identity": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey), "#method": methodSessionsEndedAttribute(link.provider) },
+              ExpressionAttributeValues: { ":at": at },
+            } },
+            // An identity merged in by rule 1b is keyed to the developer that was merged away. Unlinked, it starts that developer again
+            // (rule 3), so the record stops saying the developer went into the survivor.
+            ...(mergedAway(identityKey) ? [{ Update: {
+              TableName, Key: { pk: `DEVELOPER#${identityKey}`, sk: META }, UpdateExpression: "REMOVE mergedInto, mergedAt",
+              ConditionExpression: "mergedInto = :d", ExpressionAttributeValues: { ":d": developerId },
+            } }] : []),
+          ],
+        }));
+      } catch (error) {
+        if (!conditionFailed(error)) throw error;
+        throw agentXError("CONFIG_INVALID", "your sign-in methods changed while this ran; check them with agentx whoami and try again");
+      }
+    }
+    return { identityKey: keys[0]! };
+  }
+
+  /**
+   * Plan 2, Task 8b: the session `sessionId` of `developerId`, when it proves a fresh sign-in for changing that developer's sign-in
+   * methods; otherwise REAUTH_REQUIRED with what to do. Fresh means: the session is the developer's and still live (not revoked, expired,
+   * ended by an admin or by an unlink, the developer not revoked), the person signed in interactively within `FRESH_SIGN_IN_SECONDS`
+   * (a refresh renewal does not count: `authTime` never changes), and, when a method is being removed, the session was not made with it.
+   */
+  async freshSessionFor(input: { developerId: string; sessionId: string; removing?: DeveloperSignInMethod }): Promise<SessionRecord> {
+    const session = await this.getSession(input.sessionId);
+    const developer = session === undefined || session.developerId !== input.developerId ? undefined : await this.getDeveloper(input.developerId);
+    if (session === undefined || developer === undefined || session.revokedAt !== undefined || session.endsAt <= this.seconds() || developer.revoked
+      || endedByAdmin(session.startedAt, developer.sessionsEndedAt) || endedByUnlink(session, developer)) {
+      throw agentXError("REAUTH_REQUIRED", REAUTH_TO_CHANGE_METHODS);
+    }
+    if (input.removing !== undefined && session.amr === input.removing) throw agentXError("REAUTH_REQUIRED", REAUTH_SAME_METHOD);
+    if (!isFreshSignIn(session, this.input.now())) throw agentXError("REAUTH_REQUIRED", REAUTH_TO_CHANGE_METHODS);
+    return session;
+  }
+
+  /**
+   * Plan 2, Task 8b: adds a sign-in identity back to the developer it was unlinked from, in one transaction: the link item replaces its
+   * tombstone (no `unlinkedFrom`; `relinkedBy`, `relinkedAt` and `relinkedWith` say who and when), the reverse item is written, and the
+   * developer's record loses the unlink mark and keeps `sessionsEndedByIdentity#<identityKey>` as the link time, so the identity's sessions
+   * from before stay ended. The caller has checked that `developerId` has a fresh session (`freshSessionFor`). Only a tombstone that
+   * names this developer is relinked: an identity that was never removed, was removed from another developer, or has since started its own
+   * account is refused, and nothing is written. Never goes through `linkIdentity`, whose rule for an unlinked identity stays as it was.
+   */
+  async relinkIdentity(input: { identityKey: string; developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; email?: string; login?: string; by: { method: DeveloperSignInMethod } }): Promise<{ developerId: string }> {
+    const { identityKey, developerId } = input;
+    const refusal = relinkRefusal(await this.getIdentityLink(identityKey), identityKey, developerId, input.provider);
+    if (refusal !== undefined) throw agentXError("CONFIG_INVALID", refusal);
+    const at = this.iso();
+    const body = {
+      entityType: "IDENTITY_LINK", developerId, provider: input.provider, issuer: input.issuer, subject: input.subject,
+      ...(input.email === undefined ? {} : { email: input.email }),
+      ...(input.login === undefined ? {} : { login: input.login }),
+      linkedAt: at, lastSignInAt: at, relinkedBy: developerId, relinkedAt: at, relinkedWith: input.by.method,
+    };
+    const TableName = this.input.tableName;
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          { Update: {
+            TableName, Key: { pk: `DEVELOPER#${developerId}`, sk: META }, UpdateExpression: "SET #ended = :at REMOVE #unlinked",
+            ConditionExpression: "attribute_exists(pk)",
+            ExpressionAttributeNames: { "#ended": identitySessionsEndedAttribute(identityKey), "#unlinked": identityUnlinkedAttribute(identityKey) },
+            ExpressionAttributeValues: { ":at": at },
+          } },
+          { Put: {
+            TableName, Item: { ...signInIdentityKey(identityKey), ...body },
+            ConditionExpression: "developerId = :d AND unlinkedFrom = :d", ExpressionAttributeValues: { ":d": developerId },
+          } },
+          { Put: { TableName, Item: { ...developerIdentityKey(developerId, identityKey), ...body } } },
+        ],
+      }));
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+      // Something moved between the read and the write: say what, when the identity's link now shows it.
+      const now = relinkRefusal(await this.getIdentityLink(identityKey), identityKey, developerId, input.provider);
+      throw agentXError("CONFIG_INVALID", now ?? "your sign-in methods changed while this ran; check them with agentx whoami and try again");
+    }
+    return { developerId };
+  }
+
+  /** Records a sign-in on the identity's link, on both items. Nothing happens for an identity with no active link. */
+  async touchIdentity(identityKey: string): Promise<void> {
+    const link = await this.getIdentityLink(identityKey);
+    if (link === undefined || !isActiveLink(link, identityKey)) return;
+    const at = this.iso();
+    const update = (key: { pk: string; sk: string }) => ({ Update: {
+      TableName: this.input.tableName, Key: key, UpdateExpression: "SET lastSignInAt = :at",
+      ConditionExpression: "attribute_exists(pk) AND developerId = :d", ExpressionAttributeValues: { ":at": at, ":d": link.developerId },
+    } });
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({
+        TransactItems: [update(signInIdentityKey(identityKey)), update(developerIdentityKey(link.developerId, identityKey))],
+      }));
+    } catch (error) {
+      // Unlinked, or relinked elsewhere, between the read and the write: the time of that sign-in is not worth a failed sign-in.
+      if (!conditionFailed(error)) throw error;
+    }
+  }
+
+  /** `authTime`: when the person signed in at the provider, if the provider says it was before this answer (its `auth_time`); else now. */
+  async issueCode(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; codeChallenge: string; redirectUri: string }): Promise<string> {
     const code = randomToken("agxc_");
-    const record: CodeRecord = { ...input, expiresAt: this.seconds() + DEVELOPER_CODE_SECONDS };
+    // The code is issued the moment the provider has answered, so this is when the person signed in interactively (unless the provider says earlier).
+    const record: CodeRecord = { ...input, authTime: input.authTime ?? this.iso(), expiresAt: this.seconds() + DEVELOPER_CODE_SECONDS };
     await this.put({ pk: `CODE#${sha256Hex(code)}`, sk: META, entityType: "AUTH_CODE", ...record }, "attribute_not_exists(pk)");
     return code;
   }
 
-  async redeemCode(input: { code: string; verifier: string; redirectUri: string }): Promise<{ developerId: string; amr: DeveloperSignInMethod; slackUserId?: string } | undefined> {
+  async redeemCode(input: { code: string; verifier: string; redirectUri: string }): Promise<{ developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string } | undefined> {
     const pk = `CODE#${sha256Hex(input.code)}`;
     try {
       // Burned first, whatever the verifier: a code is tried once.
@@ -203,11 +647,11 @@ export class DeveloperSignInStore {
     }
     const record = await this.get<CodeRecord>(pk);
     if (record === undefined || record.redirectUri !== input.redirectUri || !pkceChallengeMatches(input.verifier, record.codeChallenge)) return undefined;
-    return { developerId: record.developerId, amr: record.amr, ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }) };
+    return { developerId: record.developerId, amr: record.amr, ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }), ...(record.identityKey === undefined ? {} : { identityKey: record.identityKey }), ...(record.authTime === undefined ? {} : { authTime: record.authTime }) };
   }
 
-  /** `endsAt` (epoch seconds) is for a browser review sign-in, which has its own fixed length; every other session lasts DEVELOPER_SESSION_SECONDS. The stored record's clean-up time follows `endsAt`. */
-  async createSession(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; reviewExpiresAt?: number; endsAt?: number }): Promise<{ session: SessionRecord; refreshToken: string }> {
+  /** `authTime` is when the person signed in interactively (the code's, for the CLI); a refresh keeps it. `endsAt` (epoch seconds) is for a browser review sign-in, which has its own fixed length; every other session lasts DEVELOPER_SESSION_SECONDS. The stored record's clean-up time follows `endsAt`. */
+  async createSession(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; reviewExpiresAt?: number; endsAt?: number }): Promise<{ session: SessionRecord; refreshToken: string }> {
     const session: SessionRecord = { endsAt: this.seconds() + DEVELOPER_SESSION_SECONDS, ...input, sessionId: randomUUID(), startedAt: this.iso() };
     const refreshToken = randomToken("agxr_");
     await this.input.documentClient.send(new TransactWriteCommand({

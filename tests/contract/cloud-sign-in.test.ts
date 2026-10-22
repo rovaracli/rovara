@@ -1,4 +1,4 @@
-// Task 6: the `cloud` sign-in method, with an org created on first sign-in (rules 1 to 5 of resolveOrgOnSignIn).
+// Task 6: the `cloud` sign-in method, with an org created on first sign-in (rules 1 to 4 of resolveOrgOnSignIn).
 import { describe, expect, it } from "vitest";
 import { agentXError, developerOrgKey, orgEmailKey, orgInviteKey, orgMetaKey, singleOrgIdForEnv } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
@@ -6,6 +6,7 @@ import { developerIdentityConfigFromEnvironment, singleOrgIdFor } from "../../pa
 import { oidcSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import { membershipOrgResolver, orgResolverFromEnvironment } from "../../packages/broker/src/org/resolve.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
+import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { adminCall, adminIssuer, createAdminBroker } from "../support/admin-broker.js";
 import { OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_ISSUER, httpEvent, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
@@ -55,13 +56,13 @@ describe("a cloud sign-in creates an org on first sign-in", () => {
       .toMatchObject({ cloud: null });
   });
 
-  it("puts two sign-in routes of one person (same verified email) in the same org", async () => {
+  it("puts two sign-in routes of one person (same verified email) in one developer: the same member of the same org", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [maya, { ...maya, sub: "maya-cloud-2", name: "M. Chen" }] });
     const first = claimsOf((await exchangedAfterSignIn(h, "cloud", maya.sub)).access_token);
     const second = claimsOf((await exchangedAfterSignIn(h, "cloud", "maya-cloud-2")).access_token);
-    expect(second).toMatchObject({ org: first.org, org_role: "owner" });
-    expect(second.sub).not.toBe(first.sub);
+    expect(second).toMatchObject({ org: first.org, org_role: "owner", sub: first.sub });
     expect(orgMetas(h.state)).toHaveLength(1);
+    expect(h.state.find((item) => String(item.sk).startsWith("MEMBER#"))).toHaveLength(1);
     // The email pointer still names the first route.
     expect(h.state.get(orgEmailKey("maya@example.com"))).toMatchObject({ developerId: mayaId });
   });
@@ -99,7 +100,7 @@ describe("resolveOrgOnSignIn", () => {
     const state = new FakeDynamoDb();
     return { state, orgs: new OrgStore({ documentClient: state, tableName: "state", now }) };
   };
-  const cloudInput = (developerId: string, extra: { email?: string; emailVerified?: boolean; inviteToken?: string } = {}) =>
+  const cloudInput = (developerId: string, extra: { email?: string; emailVerified?: boolean; inviteTokenHash?: string } = {}) =>
     ({ method: "cloud" as const, developerId, displayName: "Maya", emailVerified: true, ...extra });
   const inviteAccepted = (state: FakeDynamoDb, token: string) => state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt !== undefined;
 
@@ -108,30 +109,12 @@ describe("resolveOrgOnSignIn", () => {
     const own = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
     const other = await orgs.createOrgWithOwner({ name: "B", developerId: dev("b") });
     const { token } = await orgs.createInvite({ orgId: other, createdBy: dev("b"), role: "member" });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("a"), { inviteToken: token }))).toEqual({ orgId: own, role: "owner", inviteError: "ALREADY_IN_ORG" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("a"), { inviteTokenHash: inviteTokenHash(token) }))).toEqual({ orgId: own, role: "owner", inviteError: "ALREADY_IN_ORG" });
     expect(inviteAccepted(state, token)).toBe(false);
     expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("a")))).toEqual({ orgId: own, role: "owner" });
   });
 
-  it("rule 2: a verified email linked to another developer joins that developer's org with the same role", async () => {
-    const { orgs } = setup();
-    const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "Maya@Example.com" });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { email: "maya@example.com" }))).toEqual({ orgId: org, role: "owner" });
-    expect(await orgs.orgForDeveloper(dev("c"))).toEqual({ orgId: org, role: "owner" });
-  });
-
-  it("rule 2: a member's second route is a member, and an invite there reports ALREADY_IN_ORG", async () => {
-    const { state, orgs } = setup();
-    const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
-    await orgs.addMember({ orgId: org, developerId: dev("b"), role: "member", email: "bea@example.com" });
-    const elsewhere = await orgs.createOrgWithOwner({ name: "B", developerId: dev("d") });
-    const { token } = await orgs.createInvite({ orgId: elsewhere, createdBy: dev("d"), role: "member" });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { email: "bea@example.com", inviteToken: token })))
-      .toEqual({ orgId: org, role: "member", inviteError: "ALREADY_IN_ORG" });
-    expect(inviteAccepted(state, token)).toBe(false);
-  });
-
-  it("rule 2 needs a cloud sign-in and a verified email", async () => {
+  it("rule 3: an unverified email gets an org of its own, and a Slack sign-in follows no email pointer (identities.ts links by email now)", async () => {
     const { orgs } = setup();
     const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
     const unverified = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { email: "maya@example.com", emailVerified: false }));
@@ -144,19 +127,62 @@ describe("resolveOrgOnSignIn", () => {
     expect(slack.orgId).not.toBe(single);
   });
 
-  it("rule 3: accepts an invite, whatever the method, and indexes the email only for cloud", async () => {
+  it("rule 3: the loser of a two-route first sign-in race ends with its own second org, the email pointer kept by the first, and a log line to heal it by", async () => {
+    const { state, orgs } = setup();
+    const first = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
+    const logs: Array<Record<string, unknown>> = [];
+    const result = await resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, cloudInput(dev("c"), { email: "maya@example.com" }));
+    expect(result.role).toBe("owner");
+    expect(result.orgId).not.toBe(first);
+    expect(await orgs.orgForDeveloper(dev("c"))).toEqual(result);
+    expect(state.get(orgEmailKey("maya@example.com"))).toMatchObject({ developerId: dev("a"), orgId: first });
+    expect(logs).toEqual([{ event: "signin.email_pointer_conflict", developerId: dev("c") }]);
+    // The next sign-in is an ordinary existing member: no retry, no log.
+    logs.length = 0;
+    expect(await resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, cloudInput(dev("c"), { email: "maya@example.com" }))).toEqual(result);
+    expect(logs).toEqual([]);
+  });
+
+  it("rule 2: an invite written for kate@provider.dev is not satisfied by a verified address that only folds to it (U+212A KELVIN SIGN)", async () => {
+    const { state, orgs } = setup();
+    const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
+    const { token } = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member", email: "kate@provider.dev" });
+    const result = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("k"), { email: "\u212Aate@provider.dev", inviteTokenHash: inviteTokenHash(token) }));
+    expect(result).toMatchObject({ role: "owner", inviteError: "INVITE_WRONG_EMAIL" });
+    expect(result.orgId).not.toBe(org);
+    expect(inviteAccepted(state, token)).toBe(false);
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { email: "Kate@Provider.dev", inviteTokenHash: inviteTokenHash(token) }))).toEqual({ orgId: org, role: "member" });
+  });
+
+  it("rule 2: an invite accepted while the email pointer is another developer's still joins, and the pointer stays", async () => {
+    const { state, orgs } = setup();
+    await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
+    const org = await orgs.createOrgWithOwner({ name: "B", developerId: dev("b") });
+    const { token } = await orgs.createInvite({ orgId: org, createdBy: dev("b"), role: "member" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { email: "maya@example.com", inviteTokenHash: inviteTokenHash(token) }))).toEqual({ orgId: org, role: "member" });
+    expect(state.get(orgEmailKey("maya@example.com"))).toMatchObject({ developerId: dev("a") });
+  });
+
+  it("rule 3: a non-ASCII address is never indexed", async () => {
+    const { state, orgs } = setup();
+    const result = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("k"), { email: "\u212Aate@provider.dev" }));
+    expect(result.role).toBe("owner");
+    expect(state.find((item) => item.entityType === "ORG_EMAIL")).toHaveLength(0);
+  });
+
+  it("rule 2: accepts an invite, whatever the method, and indexes the email only for cloud", async () => {
     const { state, orgs } = setup();
     const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
     const cloud = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "admin" });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("b"), { email: "bea@example.com", inviteToken: cloud.token }))).toEqual({ orgId: org, role: "admin" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("b"), { email: "bea@example.com", inviteTokenHash: inviteTokenHash(cloud.token) }))).toEqual({ orgId: org, role: "admin" });
     expect(state.get(orgEmailKey("bea@example.com"))).toMatchObject({ developerId: dev("b"), orgId: org });
     const slack = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member" });
-    expect(await resolveOrgOnSignIn({ orgs }, { method: "slack", developerId: dev("c"), displayName: "Cy", email: "cy@example.com", emailVerified: true, inviteToken: slack.token }))
+    expect(await resolveOrgOnSignIn({ orgs }, { method: "slack", developerId: dev("c"), displayName: "Cy", email: "cy@example.com", emailVerified: true, inviteTokenHash: inviteTokenHash(slack.token) }))
       .toEqual({ orgId: org, role: "member" });
     expect(state.get(orgEmailKey("cy@example.com"))).toBeUndefined();
   });
 
-  it("rule 3 (ruling R7): an invite written for an email is refused to another email, to an unverified one and to none, and stays usable", async () => {
+  it("rule 2 (ruling R7): an invite written for an email is refused to another email, to an unverified one and to none, and stays usable", async () => {
     const { state, orgs } = setup();
     const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
     const { token } = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member", email: "Bea@Example.com" });
@@ -165,30 +191,30 @@ describe("resolveOrgOnSignIn", () => {
       [dev("c"), { email: "bea@example.com", emailVerified: false }],
       [dev("d"), {}],
     ] as const) {
-      const result = await resolveOrgOnSignIn({ orgs }, cloudInput(developerId, { ...extra, inviteToken: token }));
-      // Falls through to rule 4: an org of their own.
-      expect(result).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
+      const result = await resolveOrgOnSignIn({ orgs }, cloudInput(developerId, { ...extra, inviteTokenHash: inviteTokenHash(token) }));
+      // Falls through to rule 3: an org of their own.
+      expect(result).toMatchObject({ role: "owner", inviteError: "INVITE_WRONG_EMAIL" });
       expect(result.orgId).not.toBe(org);
       expect(inviteAccepted(state, token)).toBe(false);
     }
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { email: "BEA@example.com", inviteToken: token }))).toEqual({ orgId: org, role: "member" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { email: "BEA@example.com", inviteTokenHash: inviteTokenHash(token) }))).toEqual({ orgId: org, role: "member" });
     expect(inviteAccepted(state, token)).toBe(true);
   });
 
-  it("rule 3: an unknown, used or expired invite is INVITE_INVALID and falls through", async () => {
+  it("rule 2: an unknown, used or expired invite is INVITE_INVALID and falls through", async () => {
     const { orgs } = setup();
     const org = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a") });
-    const unknown = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("b"), { inviteToken: "no-such-token" }));
+    const unknown = await resolveOrgOnSignIn({ orgs }, cloudInput(dev("b"), { inviteTokenHash: inviteTokenHash("no-such-token") }));
     expect(unknown).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
     const { token } = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member" });
-    await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { inviteToken: token }));
-    expect(await resolveOrgOnSignIn({ orgs, singleOrgId: TEST_ORG }, { method: "oidc", developerId: dev("d"), displayName: "Di", emailVerified: false, inviteToken: token }))
+    await resolveOrgOnSignIn({ orgs }, cloudInput(dev("c"), { inviteTokenHash: inviteTokenHash(token) }));
+    expect(await resolveOrgOnSignIn({ orgs, singleOrgId: TEST_ORG }, { method: "oidc", developerId: dev("d"), displayName: "Di", emailVerified: false, inviteTokenHash: inviteTokenHash(token) }))
       .toEqual({ orgId: TEST_ORG, role: "member", inviteError: "INVITE_INVALID" });
     const expired = await orgs.createInvite({ orgId: org, createdBy: dev("a"), role: "member", ttlSeconds: -1 });
-    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { inviteToken: expired.token }))).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
+    expect(await resolveOrgOnSignIn({ orgs }, cloudInput(dev("e"), { inviteTokenHash: inviteTokenHash(expired.token) }))).toMatchObject({ role: "owner", inviteError: "INVITE_INVALID" });
   });
 
-  it("rule 4: creates an org named for the person, with them as owner and their verified email indexed", async () => {
+  it("rule 3: creates an org named for the person, with them as owner and their verified email indexed", async () => {
     const { state, orgs } = setup();
     const result = await resolveOrgOnSignIn({ orgs }, { method: "cloud", developerId: dev("a"), displayName: "Maya Chen", email: "Maya@Example.com", emailVerified: true });
     expect(result.role).toBe("owner");
@@ -199,7 +225,7 @@ describe("resolveOrgOnSignIn", () => {
     expect(state.find((item) => item.entityType === "ORG_EMAIL")).toHaveLength(1);
   });
 
-  it("rule 4: two concurrent first sign-ins of one person end in one org", async () => {
+  it("rule 3: two concurrent first sign-ins of one person end in one org", async () => {
     const { orgs } = setup();
     const results = await Promise.all([
       resolveOrgOnSignIn({ orgs }, cloudInput(dev("a"), { email: "maya@example.com" })),
@@ -211,14 +237,7 @@ describe("resolveOrgOnSignIn", () => {
     expect(await orgs.orgForDeveloper(dev("a"))).toMatchObject({ orgId: settled[0]!.orgId });
   });
 
-  it("rule 4: two routes of one person signing in at once end in one org", async () => {
-    const { state, orgs } = setup();
-    const both = await Promise.all([dev("a"), dev("b")].map((developerId) => resolveOrgOnSignIn({ orgs }, cloudInput(developerId, { email: "maya@example.com" }))));
-    expect(both[0]!.orgId).toBe(both[1]!.orgId);
-    expect(orgMetas(state)).toHaveLength(1);
-  });
-
-  it("rule 5: a Slack or company sign-in joins the single org as a member, and refuses with CONFIG_INVALID without one", async () => {
+  it("rule 4: a Slack or company sign-in joins the single org as a member, and refuses with CONFIG_INVALID without one", async () => {
     const { orgs } = setup();
     const input = { method: "oidc" as const, developerId: dev("a"), displayName: "Maya", emailVerified: true };
     expect(await resolveOrgOnSignIn({ orgs, singleOrgId: TEST_ORG, singleOrgName: "staging" }, input)).toEqual({ orgId: TEST_ORG, role: "member" });

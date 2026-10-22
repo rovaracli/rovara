@@ -42,3 +42,10 @@ export const UPGRADE_AWS_ACTIONS: readonly string[] = [
   "secretsmanager:GetSecretValue", "secretsmanager:CreateSecret", "secretsmanager:PutSecretValue", "secretsmanager:TagResource",
   ...DOCTOR_AWS_ACTIONS,
 ];
+
+/** agentx github oauth set (Plan 2, Task 12): reads the environment's settings, then the GitHub App secret, and writes it back with the
+ * App's OAuth client. All of it is the operator role's existing access to agentx/<env>/*; nothing new is granted. */
+export const GITHUB_OAUTH_AWS_ACTIONS: readonly string[] = [
+  "ssm:GetParameter",
+  "secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue",
+];

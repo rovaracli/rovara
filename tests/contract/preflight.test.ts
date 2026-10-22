@@ -33,6 +33,26 @@ describe("EC2 worker preflight (#87)", () => {
     expect(evaluateEc2Preflight(healthy).filter((check) => check.level !== "pass")).toEqual([]);
   });
 
+  describe("boot stage 2 hash (named environments)", () => {
+    const named = { ...healthy, namedEnvironment: true, bootStage2Sha256: "f".repeat(64) } as Ec2PreflightFacts;
+    const found = (facts: Ec2PreflightFacts) => evaluateEc2Preflight(facts).find((check) => check.name === "boot stage 2 hash");
+
+    it("passes a named environment whose worker image comes with a 64-hex hash", () => {
+      expect(found(named)).toMatchObject({ level: "pass" });
+    });
+
+    it.each([undefined, "none", "F".repeat(64), "f".repeat(63), ""])("fails a named environment whose hash is %j, and points at agentx upgrade", (value) => {
+      const facts = { ...named, bootStage2Sha256: value } as Ec2PreflightFacts;
+      if (value === undefined) delete facts.bootStage2Sha256;
+      expect(found(facts)).toMatchObject({ level: "fail" });
+      expect(found(facts)?.detail).toContain("agentx upgrade");
+    });
+
+    it("does not check the legacy (production) deployment, which boots from one script", () => {
+      expect(found(healthy)).toBeUndefined();
+    });
+  });
+
   it("does not require the optional browser executor image setting, which a runtime stack from before the web/API runtime lacks", () => {
     const facts = { ...healthy, workerSettings: { ...healthy.workerSettings, executorImage: undefined } } as Ec2PreflightFacts;
     expect(levelOf(facts, "worker settings")).toBe("pass");

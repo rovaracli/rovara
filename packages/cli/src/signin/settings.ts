@@ -2,6 +2,7 @@
 // settings. No secret value is ever stored here, only the company client secret's name.
 import { z } from "zod";
 import { EnvironmentNameSchema, SlackTeamIdSchema, agentXError, environmentSettingsPrefix } from "@agentx/contracts";
+import type { CloudSignInAnswers } from "../deploy/answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
 export const DeveloperSignInSettingsSchema = z.object({
@@ -122,5 +123,17 @@ export function describeSignIn(settings: DeveloperSignInSettings | undefined): s
   return [
     `Slack sign-in: ${settings?.slack === true ? "on" : "off"}`,
     oidc === undefined ? "Company sign-in: off" : `Company sign-in: on (${oidc.displayName}, ${oidc.issuer}, client ${oidc.clientId}${requirement})`,
+  ];
+}
+
+/** Who sends the sign-in code email: the Amazon SES sender, or Cognito's built-in one. */
+export const describeEmailSender = (emailFrom: string | undefined): string => (emailFrom === undefined ? "Amazon Cognito default sender" : `${emailFrom} (Amazon SES)`);
+
+/** What `signin show` says about a Rovara Cloud install's sign-in: the client id of each method (never a secret) and the email sender. */
+export function describeCloudSignIn(signIn: CloudSignInAnswers | undefined): string[] {
+  return [
+    signIn?.githubClientId === undefined ? "GitHub sign-in: off" : `GitHub sign-in: on (client ${signIn.githubClientId})`,
+    signIn?.googleClientId === undefined ? "Google sign-in: off" : `Google sign-in: on (client ${signIn.googleClientId})`,
+    `Sign-in email: ${describeEmailSender(signIn?.emailFrom)}`,
   ];
 }

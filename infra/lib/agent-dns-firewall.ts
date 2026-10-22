@@ -1,51 +1,15 @@
 import { RemovalPolicy, aws_logs as logs, aws_route53resolver as resolver } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { DEFAULT_AGENT_ALLOW_DOMAINS } from "@agentx/contracts";
 
-/**
- * The websites the machines in a cloud install may resolve by default: AWS, GitHub, package
- * registries, OS package mirrors, Docker registries, the AI providers, and Slack and the connector
- * hosts. Everything else gets NXDOMAIN. A wildcard entry matches subdomains only, not the bare domain.
- */
-export const DEFAULT_AGENT_ALLOW_DOMAINS: readonly string[] = [
-  // AWS services
-  "*.amazonaws.com", "*.aws",
-  // The VPC's own names: a machine's hostname (ip-10-42-....<region>.compute.internal, or ec2.internal in
-  // us-east-1) and reverse lookups inside the VPC's 10.42.0.0/16 range. These are private zones, never
-  // delegated to the internet, so allowing them opens no exfiltration path; build tools and test servers
-  // that resolve their own hostname otherwise fail.
-  "*.compute.internal", "*.ec2.internal", "*.42.10.in-addr.arpa",
-  // GitHub (the model proxy image comes from ghcr.io, whose blobs come from *.githubusercontent.com)
-  "github.com", "*.github.com", "*.githubusercontent.com", "ghcr.io", "*.ghcr.io",
-  // Package registries: npm and Yarn, Python, Rust, Go, Java, Ruby
-  "registry.npmjs.org", "registry.yarnpkg.com",
-  "pypi.org", "files.pythonhosted.org",
-  "crates.io", "*.crates.io",
-  "proxy.golang.org", "sum.golang.org",
-  "repo.maven.apache.org", "repo1.maven.org",
-  "rubygems.org", "*.rubygems.org",
-  // OS package mirrors: Debian, Ubuntu, Alpine
-  "deb.debian.org", "security.debian.org",
-  "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com",
-  "dl-cdn.alpinelinux.org",
-  // Docker images
-  "registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", "production.cloudfront.docker.com",
-  // Docker Hub's layer storage for anonymous and Personal-plan pulls (Docker's allowlist page; found live on staging).
-  // The exact bucket host only: a *.r2.cloudflarestorage.com wildcard would allow uploads to anyone's bucket.
-  "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
-  // Dev container base images and the toolchains their common features download (ruling R40)
-  "mcr.microsoft.com", "*.data.mcr.microsoft.com", "nodejs.org",
-  // AI providers (model proxy, ChatGPT plans)
-  "api.anthropic.com", "api.openai.com", "chatgpt.com", "auth.openai.com", "openrouter.ai",
-  // Slack and connectors
-  "slack.com", "*.slack.com", "api.linear.app", "mcp.linear.app", "*.atlassian.net", "app.asana.com",
-];
+export { DEFAULT_AGENT_ALLOW_DOMAINS };
 
 /** The CDK context key holding extra allowed domains, comma separated (for example an internal package registry). */
 export const EGRESS_ALLOW_DOMAINS_CONTEXT_KEY = "agentxEgressAllowDomains";
 
 /**
  * The priority of the rule group's association with the VPC. This is a different scale from the rule
- * priorities inside the group (100 and 200). Resolver rejects 100 and 9900 as reserved: "[RSLVR-02017]
+ * priorities inside the group (100, 150 and 200). Resolver rejects 100 and 9900 as reserved: "[RSLVR-02017]
  * The priority value you provided is reserved. Provide a number between "100" and "9900"", with both
  * bounds exclusive, so a valid association priority is 101..9899.
  */
@@ -83,8 +47,16 @@ export interface AgentDnsFirewallProps {
 
 /**
  * A Route 53 Resolver DNS Firewall for the install VPC, so agent machines resolve only an allowlist of
- * websites. Rule group, in order: priority 100 ALLOW the domain list, priority 200 BLOCK `*` with
- * NXDOMAIN. Every query is logged to /agentx/<env>/dns-firewall (30 days).
+ * websites. Rule group, in order: priority 100 ALLOW the default domain list, priority 150 ALLOW the
+ * project list, priority 200 BLOCK `*` with NXDOMAIN. Every query is logged to
+ * /agentx/<env>/dns-firewall (30 days).
+ *
+ * The project list holds the domains Rovara staff approved for projects (and, in Plan 3, model
+ * sources): one cell-wide union, which the broker keeps equal to the approved egress items with
+ * UpdateFirewallDomains (packages/broker/src/aws/egress-domains-sync.ts). It is declared with no
+ * `domains` property on purpose: the template never owns its contents, so a stack update cannot
+ * reset them to empty. Scoping each workspace to its own project's additions needs the per-project
+ * egress proxy, which comes after launch.
  *
  * It governs the whole VPC, not only the workers: the model proxy, the ModelAccessFunction and the
  * Slack orchestrator resolve through it too, so a host any of them needs must be on the allowlist.
@@ -100,6 +72,8 @@ export class AgentDnsFirewall extends Construct {
   /** The query log group; Task 18 builds a metric filter on it. */
   readonly logGroup: logs.LogGroup;
   readonly ruleGroup: resolver.CfnFirewallRuleGroup;
+  /** The id of the project list (rule priority 150), for the control plane's broker. */
+  readonly projectAllowListId: string;
   readonly allowDomains: readonly string[];
 
   constructor(scope: Construct, id: string, props: AgentDnsFirewallProps) {
@@ -110,6 +84,11 @@ export class AgentDnsFirewall extends Construct {
       name: `agentx-${props.env}-allow`,
       domains: [...this.allowDomains],
     });
+    // No `domains`: the broker owns the contents (see above).
+    const projectAllowList = new resolver.CfnFirewallDomainList(this, "ProjectAllowList", {
+      name: `agentx-${props.env}-project-allow`,
+    });
+    this.projectAllowListId = projectAllowList.attrId;
     const blockList = new resolver.CfnFirewallDomainList(this, "BlockAllList", {
       name: `agentx-${props.env}-block-all`,
       domains: ["*"],
@@ -120,6 +99,8 @@ export class AgentDnsFirewall extends Construct {
         // An allowed name may CNAME to a CDN name not on the list (auth.docker.io -> *.cdn.cloudflare.net, found live
         // on staging); trust the chain only for names this rule already allowed. Everything else still meets BLOCK.
         { action: "ALLOW", priority: 100, firewallDomainListId: allowList.attrId, firewallDomainRedirectionAction: "TRUST_REDIRECTION_DOMAIN" },
+        // The same trust for the names staff approved (ruling R59): an approved name may CNAME to a CDN name that is not on any list.
+        { action: "ALLOW", priority: 150, firewallDomainListId: projectAllowList.attrId, firewallDomainRedirectionAction: "TRUST_REDIRECTION_DOMAIN" },
         { action: "BLOCK", blockResponse: "NXDOMAIN", priority: 200, firewallDomainListId: blockList.attrId },
       ],
     });

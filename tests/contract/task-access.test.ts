@@ -51,6 +51,25 @@ describe("resolveTaskAccess", () => {
     expect((await refusal(resolveTaskAccess(fixture.deps, SAM, fixture.taskId, "comment"))).code).toBe("TASK_NOT_FOUND");
   });
 
+  it("a project viewer in the share channel can read the task but not comment, suggest, ask or take ownership (Plan 2, Task 21)", async () => {
+    const fixture = pageTask();
+    fixture.addVersion("plan", pagePlan());
+    fixture.deps.checkAccess = async () => ({ revision: 1, policy: {} as never, access: "granted", channelIds: [], role: "viewer" });
+    await expect(resolveTaskAccess(fixture.deps, SAM, fixture.taskId)).resolves.toMatchObject({ role: "viewer" });
+    await expect(resolveTaskAccess(fixture.deps, SAM, fixture.taskId, "read")).resolves.toMatchObject({ role: "viewer" });
+    await expect(resolveTaskAccess(fixture.deps, SAM, fixture.taskId, "peopleRead")).resolves.toMatchObject({ role: "viewer" });
+    for (const action of ["comment", "suggest", "ask", "takeOwnership", "peopleManage", "decide"] as const) {
+      expect((await refusal(resolveTaskAccess(fixture.deps, SAM, fixture.taskId, action))).code, action).toBe("TASK_NOT_FOUND");
+    }
+    const view = await getTaskDocumentView(fixture.deps, SAM, fixture.taskId);
+    expect(view.access).toEqual({ role: "viewer", canComment: false, canSuggest: false, canDecide: false, canAsk: false });
+    // A contributor and a maintainer in the channel keep commenter rights.
+    for (const role of ["contributor", "maintainer"] as const) {
+      fixture.deps.checkAccess = async () => ({ revision: 1, policy: {} as never, access: "granted", channelIds: [], role });
+      await expect(resolveTaskAccess(fixture.deps, SAM, fixture.taskId, "comment")).resolves.toMatchObject({ role: "commenter" });
+    }
+  });
+
   it("a reader outside the channel on this Slack workspace is told whom to ask", async () => {
     const fixture = pageTask();
     const denied = await refusal(resolveTaskAccess(fixture.deps, OMAR, fixture.taskId));
@@ -78,7 +97,7 @@ describe("resolveTaskAccess", () => {
     expect(TASK_ACTION_ROLES).toEqual({
       read: ["owner", "commenter", "viewer"], peopleRead: ["owner", "commenter", "viewer"],
       comment: ["owner", "commenter"], ask: ["owner", "commenter"], suggest: ["commenter"],
-      decide: ["owner"], retry: ["owner"], publish: ["owner"], feedback: ["owner"], close: ["owner"], control: ["owner"], peopleManage: ["owner"],
+      decide: ["owner"], retry: ["owner"], publish: ["owner"], feedback: ["owner"], close: ["owner"], control: ["owner"], work: ["owner"], peopleManage: ["owner"],
       takeOwnership: ["owner", "commenter", "viewer"],
     });
     expect(["read", "comment", "suggest", "ask"].every((action) => can("commenter", action as never))).toBe(true);

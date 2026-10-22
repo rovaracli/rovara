@@ -1,5 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { agentXError } from "@agentx/contracts";
+import type { GitHubTokenScope } from "./github-app.js";
 
 interface RepositoryGrantClaims {
   version: 3;
@@ -34,6 +35,7 @@ export class RepositoryGrantService {
       reference: string,
       repositoryUrl: string,
       access: RepositoryAccess,
+      scope: GitHubTokenScope,
     ) => Promise<RepositoryCredential>,
   ) {
     if (signingKey.byteLength < 32) throw new Error("repository grant signing key must be at least 32 bytes");
@@ -70,6 +72,8 @@ export class RepositoryGrantService {
       repositoryUrl: string;
       access: RepositoryAccess;
     },
+    /** Whose work the token is for (Plan 2, Task 15): the workspace's org, so an org that disconnected GitHub mints nothing. */
+    scope: GitHubTokenScope,
   ): Promise<RepositoryCredential> {
     const claims = this.verify(grant);
     if (
@@ -84,7 +88,7 @@ export class RepositoryGrantService {
     ) {
       throw agentXError("FORBIDDEN", "repository credential grant does not cover this request");
     }
-    return this.resolveCredential(request.credentialRef, request.repositoryUrl, request.access);
+    return this.resolveCredential(request.credentialRef, request.repositoryUrl, request.access, scope);
   }
 
   inspect(grant: string): Omit<RepositoryGrantClaims, "nonce"> {

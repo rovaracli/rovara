@@ -483,7 +483,7 @@ describe("task-wide current PR feedback reconciliation", () => {
   });
   it("keeps delayed events idempotent after every linked PR is observed merged", async () => {
     const f = await fixture();
-    const getCurrentFeedback = (url: string, number: number) => f.input.getCurrentFeedback(url, number);
+    const getCurrentFeedback = (url: string, number: number) => f.input.getCurrentFeedback(url, number, undefined);
     const input = { ...f.input, getCurrentFeedback: async (url: string, number: number) => ({ ...(await getCurrentFeedback(url, number)), pullRequest: { ...(await getCurrentFeedback(url, number)).pullRequest, state: "merged" as const } }) };
     expect(await f.module.reconcileTaskPullRequestFeedback(input)).toBe(true);
     expect(f.workflow().stage).toBe("MERGED");
@@ -548,7 +548,7 @@ describe("task-wide current PR feedback reconciliation", () => {
         if (typeof input.Key !== "string" || typeof input.Body !== "string") throw new Error("invalid artifact command");
         expect(input.IfNoneMatch).toBe("*"); stored.set(input.Key, input.Body); return {};
       } },
-      githubPullRequests: { getPullRequestFeedback: (url: string, number: number) => f.input.getCurrentFeedback(url, number) },
+      githubPullRequests: { getPullRequestFeedback: (url: string, number: number) => f.input.getCurrentFeedback(url, number, undefined) },
     };
     await broker.processGithubWorkflowEvent(dependencies as never, { kind: "PR_COMMENT", action: "edited", installationId: 7, repositoryId: 9,
       fullName: "acme/api", number: 1, comment: { id: 999, source: "review", body: "stale webhook body", truncated: false, url: "https://github.com/acme/api/pull/1#pullrequestreview-999", author: "reviewer" } }, "delivery-1");

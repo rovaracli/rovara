@@ -265,6 +265,8 @@ export async function sourceRelease(input: {
   const manifest: ReleaseManifest = {
     schemaVersion: 1, version, gitCommit, environmentPlaceholder: "qqenv-placeholderqq", templates: [], packages: [],
     images: published?.images ?? {},
+    // Task 10: the stage 2 boot hash of the release this image set belongs to; a release.json from another commit supplies none.
+    ...(published?.bootStage2Sha256 === undefined ? {} : { bootStage2Sha256: published.bootStage2Sha256 }),
   };
   const from = `release ${version} was built from --source ${source}`;
   return {
