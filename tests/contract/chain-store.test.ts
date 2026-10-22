@@ -126,16 +126,16 @@ function setup(options: { audit?: boolean } = {}) {
       createdBy: extra.by ?? ALICE,
     });
   /** The draft as validation would pin it. */
-  const pinnedOf = async (chainId: string, orgId: OrgId = ORG_A): Promise<PinnedChainDefinition> => {
+  const pinnedOf = async (chainId: string, orgId: OrgId = ORG_A): Promise<{ pinned: PinnedChainDefinition; guardrailsRevision: number }> => {
     const draft = (await chains.getDraft(orgId, chainId))!;
     const result = await validateChainForPublish(agentDeps, caller(ALICE, orgId), orgId, draft.definition);
     expect(result.problems).toEqual([]);
-    return result.pinned;
+    return { pinned: result.pinned, guardrailsRevision: result.guardrailsRevision };
   };
   const publishInput = async (chainId: string, orgId: OrgId = ORG_A) => {
     const chain = (await chains.get(orgId, chainId))!;
-    const pinned = await pinnedOf(chainId, orgId);
-    return { orgId, chainId, expectedDraftRevision: chain.draftRevision, pinned, digest: chainDigest(pinned), by: ALICE };
+    const { pinned, guardrailsRevision } = await pinnedOf(chainId, orgId);
+    return { orgId, chainId, expectedDraftRevision: chain.draftRevision, pinned, digest: chainDigest(pinned), guardrailsRevision, by: ALICE };
   };
   const publish = async (chainId: string, orgId: OrgId = ORG_A) => chains.publish(await publishInput(chainId, orgId));
   const edit = async (chainId: string, definition: ChainDefinitionInput = TWO_STEPS, name = "x") => {
@@ -476,14 +476,14 @@ describe("publish, versions and rollback", () => {
     // Hand-built, as a caller that skipped (or ignored) the validation would: every agent pinned to a number.
     const checked = await validateChainForPublish(ctx.agentDeps, caller(ALICE), ORG_A, draft.definition);
     expect(checked.problems.length).toBeGreaterThan(0);
-    const input = { orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned: checked.pinned, digest: chainDigest(checked.pinned), by: ALICE };
+    const input = { orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned: checked.pinned, digest: chainDigest(checked.pinned), guardrailsRevision: checked.guardrailsRevision, by: ALICE };
     expect(await code(ctx.chains.publish(input))).toEqual({ code: "CONFIG_INVALID", message: `${checked.problems[0]!.path}: ${checked.problems[0]!.message}` });
     expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
     expect(ctx.events(ORG_A, chain.chainId)).toHaveLength(1);
     // Other graph problems are refused the same way: an edge to nowhere, a step nothing reaches.
     const dangling = await ctx.create("Dangling", { definition: { start: "a", steps: [{ kind: "agent", id: "a", name: "A", agent: { agentId: "ticket-triage", version: "current" }, next: { kind: "go", to: "nowhere" } }] } });
     const danglingChecked = await validateChainForPublish(ctx.agentDeps, caller(ALICE), ORG_A, (await ctx.chains.getDraft(ORG_A, dangling.chainId))!.definition);
-    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: dangling.chainId, expectedDraftRevision: 1, pinned: danglingChecked.pinned, digest: chainDigest(danglingChecked.pinned), by: ALICE }))).toEqual({
+    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: dangling.chainId, expectedDraftRevision: 1, pinned: danglingChecked.pinned, digest: chainDigest(danglingChecked.pinned), guardrailsRevision: danglingChecked.guardrailsRevision, by: ALICE }))).toEqual({
       code: "CONFIG_INVALID", message: "steps.0.next.to: no step is called nowhere",
     });
   });
@@ -585,7 +585,7 @@ describe("publish checks the agents again, inside the transaction", () => {
     const chain = await ctx.create("Ghost", { definition: definitionWith(agent.agentId, 9) });
     const draft = (await ctx.chains.getDraft(ORG_A, chain.chainId))!;
     const pinned = draft.definition as unknown as PinnedChainDefinition;
-    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), by: ALICE }))).toEqual({
+    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), guardrailsRevision: 0, by: ALICE }))).toEqual({
       code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being published. Publish again.",
     });
   });
@@ -597,7 +597,7 @@ describe("publish checks the agents again, inside the transaction", () => {
       const chain = await ctx.create(`Hand ${String(version)} ${String(Math.random())}`, { definition });
       const draft = (await ctx.chains.getDraft(ORG_A, chain.chainId))!;
       const pinned = { ...draft.definition, steps: draft.definition.steps.map((step) => (step.kind === "agent" ? { ...step, agent: { ...step.agent, version } } : step)) };
-      return code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), by: ALICE }));
+      return code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), guardrailsRevision: 0, by: ALICE }));
     };
     const current = definitionWith("code-reviewer", "current");
     const named = definitionWith("code-reviewer", 2);
@@ -619,9 +619,33 @@ describe("publish checks the agents again, inside the transaction", () => {
     const chain = await ctx.create("Twice", { definition: { start: "a", steps: [step("a", "b"), step("b", undefined)] } });
     const draft = (await ctx.chains.getDraft(ORG_A, chain.chainId))!;
     const pinned = { ...draft.definition, steps: draft.definition.steps.map((entry, index) => (entry.kind === "agent" ? { ...entry, agent: { ...entry.agent, version: index + 1 } } : entry)) };
-    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), by: ALICE }))).toEqual({
+    expect(await code(ctx.chains.publish({ orgId: ORG_A, chainId: chain.chainId, expectedDraftRevision: 1, pinned, digest: chainDigest(pinned), guardrailsRevision: 0, by: ALICE }))).toEqual({
       code: "CONFIG_INVALID", message: "pinned: one agent's \"current\" cannot be two versions",
     });
+  });
+
+  it("conditions every publish on the guardrails the validation read, custom agents only included", async () => {
+    const ctx = setup();
+    const { agent } = await ctx.customAgent("Helper");
+    const chain = await ctx.create("On helper", { definition: definitionWith(agent.agentId, "current") });
+    const input = await ctx.publishInput(chain.chainId);
+    expect(input.guardrailsRevision).toBe(0);
+    // An admin changes the guardrails between the validation and the write: the chain was checked against the old ones.
+    ctx.hooks.push(async () => { await ctx.agents.putGuardrails({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [{ provider: "openai", modelId: "gpt-x" }] }, expectedRevision: 0, by: DAN }); });
+    expect(await code(ctx.chains.publish(input))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being published. Publish again." });
+    expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
+    // Validated again, it publishes, at the revision it read now.
+    const again = await ctx.publishInput(chain.chainId);
+    expect(again.guardrailsRevision).toBe(1);
+    await expect(ctx.chains.publish(again)).resolves.toMatchObject({ version: 1 });
+  });
+
+  it("refuses a publish whose guardrails revision is not the one in force, before the transaction", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Reviewing");
+    const input = await ctx.publishInput(chain.chainId);
+    expect(await code(ctx.chains.publish({ ...input, guardrailsRevision: 5 }))).toEqual({ code: "CHAIN_REVISION_CONFLICT", message: "An agent this chain uses changed while it was being published. Publish again." });
+    expect(await ctx.chains.listVersions(ORG_A, chain.chainId)).toEqual([]);
   });
 
   it("publishes a chain that uses one agent in many steps (one check per agent, not per step)", async () => {

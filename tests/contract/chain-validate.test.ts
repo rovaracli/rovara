@@ -9,6 +9,7 @@ import {
   formatChainProblem,
   validateChainForPublish,
 } from "../../packages/broker/src/chains/validate.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
@@ -308,6 +309,20 @@ describe("validateChainForPublish", () => {
     const { validate } = setup();
     const result = await validate({ start: "nope", steps: [agent("a", undefined)] });
     expect(text(result.problems)).toEqual(["start: no step is called nope"]);
+  });
+
+  it("reports a built-in the org turned off as a problem of its step, and returns the revision of the guardrails it read", async () => {
+    const { validate, store } = setup();
+    expect((await validate(INVESTIGATE_THEN_FIX)).guardrailsRevision).toBe(0);
+    const off = await store.putGuardrails({ orgId: ORG_A, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["code-reviewer", "rovara-code"] }, expectedRevision: 0, by: ALICE });
+    const result = await validate(INVESTIGATE_THEN_FIX);
+    expect(result.guardrailsRevision).toBe(off.revision);
+    expect(text(result.problems)).toEqual([
+      "steps.2.agent: Rovara Code is turned off in your company. Ask an admin to turn it on.",
+      "steps.3.agent: Code reviewer is turned off in your company. Ask an admin to turn it on.",
+    ]);
+    // Nothing else is said about those steps, and the others are pinned as before.
+    expect(result.pinned.steps[0]).toMatchObject({ agent: { agentId: "root-cause-analyst", version: currentBuiltinVersion("root-cause-analyst") } });
   });
 
   describe("custom agents", () => {
