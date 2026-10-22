@@ -653,6 +653,18 @@ describe("a crash after the claim, and the sweep that finishes it", () => {
     expect(w.vendor.state.vendorCalls).toHaveLength(1);
   });
 
+  it("does not take a ledger entry that is not a success for a call that ran", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.vendor.state.neverFinishes = true;
+    await w.approve(BOB, id).catch(() => undefined);
+    w.vendor.ledger.set(deriveWriteRequestId(id as never), { requestId: deriveWriteRequestId(id as never), status: "IN_PROGRESS", text: "", truncated: false, replayed: false });
+    w.db.set({ pk: `DEVTASK#${TASK}`, sk: "AGENT_RUN", orgId: ORG_A, state: "CANCELLED" });
+    w.clock.now += 6 * MINUTE;
+    await w.sweep();
+    expect(await w.record(id)).toMatchObject({ status: "APPROVED_FAILED", failure: "The task ended before this was approved, so Rovara didn't run it." });
+  });
+
   it("still re-checks a first attempt, whatever the ledger holds", async () => {
     const w = world();
     const id = await w.waiting(1);
