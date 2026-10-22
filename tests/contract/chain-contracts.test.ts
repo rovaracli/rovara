@@ -235,6 +235,28 @@ describe("a chain design", () => {
     expect(step({ next: undefined })).toBe(false);
   });
 
+  it("refuses line and paragraph separators, private-use and unassigned characters in one-line text and in instructions", () => {
+    const edit = (index: number, patch: Record<string, unknown>) => {
+      const d = design();
+      Object.assign(d.steps[index], patch);
+      return ChainDefinitionSchema.safeParse(d).success;
+    };
+    // U+2028 and U+2029 break a line in many renderers; U+E000 is private use; U+0378 is unassigned.
+    for (const bad of ["a\u2028b", "a\u2029b", "a\ue000b", "a\u0378b"]) {
+      expect(edit(2, { name: bad }), `agent name ${JSON.stringify(bad)}`).toBe(false);
+      expect(edit(1, { name: bad }), `gate name ${JSON.stringify(bad)}`).toBe(false);
+      expect(edit(1, { prompt: bad }), `gate prompt ${JSON.stringify(bad)}`).toBe(false);
+      expect(edit(2, { instructions: bad }), `instructions ${JSON.stringify(bad)}`).toBe(false);
+    }
+    const choice = design();
+    choice.steps[0].next.choices[0].description = "a\u2028b";
+    expect(ChainDefinitionSchema.safeParse(choice).success).toBe(false);
+    expect(StepResultSchema.safeParse({ report: "r", links: [{ label: "a\u2028b", url: "https://example.com/x" }] }).success).toBe(false);
+    // Ordinary text, accents, CJK and emoji still pass, and so do line breaks and tabs in instructions.
+    expect(edit(2, { name: "Chercher la cause \u00e9tape \u4e2d\u6587 \u{1F600}" })).toBe(true);
+    expect(edit(2, { instructions: "One.\r\nTwo.\n\tThree \u00e9 \u4e2d" })).toBe(true);
+  });
+
   it("refuses control and invisible characters in what a person reads, and allows line breaks only in instructions", () => {
     const edit = (index: number, patch: Record<string, unknown>) => {
       const d = design();
