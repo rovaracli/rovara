@@ -43,6 +43,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
+import { checkDeveloperProject, projectCheckText } from "./developer/project-check.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import { projectAddMember, projectAddMemberText, projectMembers, projectMembersText, projectRemoveMember, projectRemoveMemberText } from "./developer/project-members.js";
@@ -115,6 +116,8 @@ export interface CliDependencies {
    */
   cliInvocation?: CliInvocation;
   fetchImplementation?: typeof fetch;
+  /** Waits between polls (`agentx project check`), for tests. Defaults to a timer. */
+  sleep?: (ms: number) => Promise<void>;
   tokenStore?: TokenStore;
   stdout?: TextWriter;
   stderr?: TextWriter;
@@ -225,6 +228,7 @@ export const DEFAULT_CALLBACK_PORT = 8765;
 export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const services = {
     fetchImplementation: dependencies.fetchImplementation ?? fetch,
+    sleep: dependencies.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); })),
     tokenStore: dependencies.tokenStore ?? new SystemCredentialTokenStore(),
     stdout: dependencies.stdout ?? process.stdout,
     stderr: dependencies.stderr ?? process.stderr,
@@ -1280,6 +1284,17 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const globals = globalOptions(command);
       const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : restoreProjectText(result));
+    });
+  // Plan 2, Task 22: a maintainer has the project's setup and test commands run on a fresh workspace, and waits for the answer.
+  projectCommand
+    .command("check")
+    .description("run a project's setup and test commands on a fresh workspace and wait for the result (a maintainer of the project); a failure exits non-zero and names the step")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await checkDeveloperProject(developerSession(), developerEnv(command), name, { sleep: services.sleep });
+      const text = projectCheckText(result.project);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : text);
     });
   // Plan 2, Task 21: the people in a project and their roles. Anyone who can see the project lists them; a maintainer changes them.
   projectCommand

@@ -60,6 +60,15 @@ export type AppProjectDetail = z.infer<typeof AppProjectDetailSchema>;
 export const ProjectArchiveResponseSchema = z.object({ project: AppProjectDetailSchema, warnings: z.array(z.string()) });
 export type ProjectArchiveResponse = z.infer<typeof ProjectArchiveResponseSchema>;
 
+/**
+ * `POST /v1/app/projects/{name}/setup-check` (Plan 2, Task 22): a maintainer asks for the project's setup and test commands to run on a fresh workspace.
+ * The answer is the project as the app now shows it (its `setup.status` is `checking`, or whatever a replayed request's check has become).
+ */
+export const ProjectSetupCheckBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+export type ProjectSetupCheckBody = z.infer<typeof ProjectSetupCheckBodySchema>;
+export const ProjectSetupCheckResponseSchema = z.object({ project: AppProjectDetailSchema });
+export type ProjectSetupCheckResponse = z.infer<typeof ProjectSetupCheckResponseSchema>;
+
 /** Where a person's role in a project comes from: a grant on the project, or their org role (an owner or admin maintains every project). */
 export const ProjectMemberSourceSchema = z.enum(["grant", "org_role"]);
 export type ProjectMemberSource = z.infer<typeof ProjectMemberSourceSchema>;
