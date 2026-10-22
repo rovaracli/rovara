@@ -926,14 +926,11 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   // confirmUrl), and `GET /v1/app/approvals/{id}` mints the same ticket for the person who may decide it. Both use the page's own context.
   if (dependencies.decide !== undefined) {
     const context = () => decideRequestContext(dependencies, routeDependencies);
-    routeDependencies.requireDecide = async (request, approvalId) => {
+    // The guard reads the approval from the request's own path, which is how the route found it.
+    routeDependencies.requireDecide = async (request) => {
       const decide = context();
       if (decide === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
-      return requireDecideSession(decide, { method: request.method, path: request.path, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }) }).then((authority) => {
-        // The path named this approval; the guard was asked about the same one.
-        if (authority.approvalId !== approvalId) throw agentXError("NOT_FOUND", "route not found");
-        return authority;
-      });
+      return requireDecideSession(decide, { method: request.method, path: request.path, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }) });
     };
     routeDependencies.mintConfirmUrl = (caller, approvalId) => {
       const decide = context();

@@ -466,6 +466,31 @@ describe("a refused decision does not consume the session (M-d)", () => {
   });
 });
 
+describe("the apr kind's own decision", () => {
+  it("replays the stored outcome when the same session repeats the decision (a post that was retried), and runs the call once", async () => {
+    const w = world();
+    const id = await w.waitingWrite();
+    const proof = { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: "2026-10-22T08:59:00.000Z", sessionRef: "b".repeat(64) };
+    const target = { orgId: ORG_A, developerId: BOB, approvalId: id };
+    expect((await w.kind.decide(target, "approve", proof)).message).toContain("Approved");
+    expect((await w.kind.decide(target, "approve", proof)).message).toContain("Approved");
+    expect(w.vendor.runs).toBe(1);
+    // Another session is another request: it finds the approval closed.
+    await expect(w.kind.decide(target, "approve", { ...proof, sessionRef: "c".repeat(64) })).rejects.toMatchObject({ code: "APPROVAL_CLOSED" });
+  });
+
+  it("decides only with the page's fresh sign-in proof: any other proof is refused and nothing is decided", async () => {
+    const w = world();
+    const id = await w.waitingWrite();
+    const target = { orgId: ORG_A, developerId: BOB, approvalId: id };
+    for (const proof of [{ kind: "none" as const }, { kind: "button" as const, via: "slack" as const }]) {
+      await expect(w.kind.decide(target, "approve", proof)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    }
+    expect(w.vendor.runs).toBe(0);
+    expect(await w.record(id)).toMatchObject({ status: "PENDING" });
+  });
+});
+
 describe("the decide route and the guard behind it", () => {
   const guardFor = (w: World) => async (request: { method: string; path: string; headers: Record<string, string | undefined>; body?: string }) =>
     requireDecideSession(w.context(), request);
@@ -676,9 +701,10 @@ describe("through the broker: a token is sent to the page, and the page decides"
     const listed = await b.dev(B_DANA, "GET", "/v1/app/approvals");
     expect((listed.body.approvals as Array<{ confirmUrl: string }>).map((entry) => entry.confirmUrl)).toEqual([`${BROKER_CELL}/v1/app/approve/${id}`]);
     expect(b.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toHaveLength(tickets);
-    // Someone who can see it but not decide it gets the bare link and no ticket (a maintainer is asked about the request, not the admin rule).
+    // Someone who can see it but not decide it (here the person who asked for it) gets the bare link and no ticket.
     const other = await b.dev(B_MAX, "GET", `/v1/app/approvals/${id}`);
-    if (other.status === 200) expect((other.body.approval as { confirmUrl: string }).confirmUrl).toBe(`${BROKER_CELL}/v1/app/approve/${id}`);
+    expect(other.status).toBe(200);
+    expect((other.body.approval as { confirmUrl: string }).confirmUrl).toBe(`${BROKER_CELL}/v1/app/approve/${id}`);
     for (let index = 0; index < 5; index += 1) await b.dev(B_DANA, "GET", `/v1/app/approvals/${id}`);
     const limited = await b.dev(B_DANA, "GET", `/v1/app/approvals/${id}`);
     expect(limited.status).toBe(200);
