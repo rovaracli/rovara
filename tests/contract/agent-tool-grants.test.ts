@@ -1682,5 +1682,89 @@ describe("write approvals through the agent routes", () => {
     expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
     expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
   });
+
+  // ---- wiring fix round 3 (N2)
+
+  /** Changes the access the project approved a Linear tool for, on its registered revision. */
+  const setAccess = (w: Awaited<ReturnType<typeof world>>, tool: string, access: "read" | "write") => {
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const record = w.db.get(key) as { definition: { integrations: { connectors: Array<{ name: string; tools: Array<{ name: string; access: string }> }> } } };
+    const connectors = record.definition.integrations.connectors.map((entry) => (entry.name === "linear" ? { ...entry, tools: entry.tools.map((approved) => (approved.name === tool ? { ...approved, access } : approved)) } : entry));
+    w.db.set({ ...record, definition: { ...record.definition, integrations: { ...record.definition.integrations, connectors } } });
+  };
+
+  it("never sends a read-approved, write-named tool under a request id that holds another call's record: a conflict, then one approved send in all (P2)", async () => {
+    const { w, run, approve } = await approvalWorld();
+    setAccess(w, "save_comment", "read");
+    const requestId = randomUUID();
+    // An earlier ordinary write leaves a ledger record under the id.
+    const made = await w.linearCall(run.capability, "save_issue", { title: "Found a bug" }, { requestId });
+    expect(made.body.result).toMatchObject({ status: "SUCCEEDED" });
+    const comments = () => w.linear.calls.filter((entry) => entry.name === "save_comment");
+    // Control: with a fresh id the same call is held (its name says it writes, and the project approved it only for reading).
+    const held = await w.linearCall(run.capability, "save_comment", COMMENT);
+    expect(held.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    // The reused id is another call: refused as a conflict, and nothing is sent.
+    const reused = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(reused.status).toBeGreaterThanOrEqual(400);
+    expect(errorOf(reused).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(comments()).toEqual([]);
+    expect((await approve(String(held.body.approvalId))).status).toBe("APPROVED_DONE");
+    expect(comments()).toHaveLength(1);
+  });
+
+  it("answers a reused request id on another tool as a conflict and sends nothing (P1)", async () => {
+    const { w, run } = await approvalWorld();
+    const requestId = randomUUID();
+    expect((await w.linearCall(run.capability, "save_comment", COMMENT, { requestId })).body.result).toMatchObject({ status: "SUCCEEDED" });
+    setPolicy(w, [{ tool: "get_issue", connector: "linear", outcome: "ask", reason: "reads of issues are looked at" }]);
+    const sent = w.linear.calls.length;
+    const reused = await w.linearCall(run.capability, "get_issue", { id: "CHA-1" }, { requestId });
+    expect(reused.status).toBeGreaterThanOrEqual(400);
+    expect(errorOf(reused).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(w.linear.calls.length).toBe(sent);
+  });
+
+  it("answers a repeat of an ordinary record from the record, not by sending, whatever the tool's access", async () => {
+    const { w, run } = await approvalWorld();
+    setAccess(w, "save_comment", "read");
+    // The gate lets this read-approved, write-named call run (as it would for an install whose gate says so): it is claimed in the ledger because its class is not a read.
+    w.configure((base) => ({ ...base, gate: async (input) => { await input.classify(); return { decision: "run" }; } }));
+    const requestId = randomUUID();
+    const first = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(first.body.result).toMatchObject({ status: "SUCCEEDED", replayed: false });
+    const sent = w.linear.calls.filter((entry) => entry.name === "save_comment").length;
+    const again = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(again.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(sent);
+  });
+
+  it("never both runs and holds a read-approved call that races a hold with the same request id", async () => {
+    const { w, run } = await approvalWorld();
+    setAccess(w, "save_comment", "read");
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    // The first call is held (the broker's own gate) but is slow to reach it; the second, the same id, is let through by a gate that runs it.
+    w.configure((base) => ({
+      ...base,
+      gate: async (input) => {
+        await input.classify();
+        if (first) { first = false; await slow; return base.gate(input); }
+        return { decision: "run" };
+      },
+    }));
+    const requestId = randomUUID();
+    const a = w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    await vi.waitFor(() => expect(first).toBe(false));
+    const b = await w.linearCall(run.capability, "save_comment", COMMENT, { requestId });
+    expect(b.body.result).toMatchObject({ status: "SUCCEEDED" });
+    release();
+    const resolved = await a;
+    expect(resolved.body.result).toMatchObject({ status: "SUCCEEDED", replayed: true });
+    expect(resolved.body.approvalId).toBeUndefined();
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
+  });
 });
 
