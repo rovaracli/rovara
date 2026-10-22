@@ -1403,6 +1403,19 @@ describe("write approvals through the agent routes", () => {
     expect(saves()).toHaveLength(1);
   });
 
+  it("makes no approval when the step's operation ended after the route's check and before the gate (Task 22 review, M2)", async () => {
+    const { w, run } = await approvalWorld();
+    w.configure((base) => ({ ...base, gate: async (input) => {
+      const key = { pk: `WORKSPACE#${run.workspaceId}`, sk: `OPERATION#${run.operationId}` };
+      w.db.set({ ...w.db.get(key.pk, key.sk)!, status: "SUCCEEDED" });
+      return base.gate(input);
+    } }));
+    const reply = await w.linearCall(run.capability, "save_issue", CHANGE);
+    expect(reply.status).toBeGreaterThanOrEqual(400);
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.db.find((item) => item.entityType === "OPEN_APPROVAL")).toEqual([]);
+  });
+
   it("runs a safe call at once and never holds a read", async () => {
     const { w, run, seen } = await approvalWorld();
     const read = await w.linearCall(run.capability, "get_issue", { id: "CHA-1" });

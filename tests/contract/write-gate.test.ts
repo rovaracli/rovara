@@ -1859,5 +1859,23 @@ describe("the wiring fix round", () => {
     expect(w.db.find((item) => item.entityType === "APPROVAL")).toHaveLength(before);
     expect(w.db.find((item) => item.entityType === "OPEN_APPROVAL")).toHaveLength(before);
   });
+
+  it("makes no approval for an operation that has already ended, and one for an operation that still runs (Task 22 review, M2)", async () => {
+    const w = world();
+    const operationKey = { pk: "WORKSPACE#ws", sk: `OPERATION#${OPERATION}` };
+    const guard = () => ({ ConditionCheck: { TableName: "state", Key: operationKey, ConditionExpression: "#status = :running", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":running": "RUNNING" } } });
+    w.db.set({ ...operationKey, entityType: "OPERATION", status: "SUCCEEDED" });
+    expect(await decideWrite(w.deps, w.input({ operationGuard: guard() }))).toMatchObject({ outcome: "refuse" });
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.db.find((item) => item.entityType === "OPEN_APPROVAL")).toEqual([]);
+    expect(w.db.find((item) => String(item.pk).startsWith("ORG#") && String(item.pk).includes("STEP_APPROVALS#"))).toEqual([]);
+    w.db.set({ ...operationKey, entityType: "OPERATION", status: "RUNNING" });
+    expect((await decideWrite(w.deps, w.input({ operationGuard: guard() }))).outcome).toBe("wait");
+    // With a request id claimed in the same transaction, the guard still decides and the claim is not left behind.
+    w.db.set({ ...operationKey, entityType: "OPERATION", status: "SUCCEEDED" });
+    const claim = (approvalId: string) => ({ Put: { TableName: "state", Item: { pk: "WORKSPACE#ws", sk: `CONNECTOR#linear#${REQ(8)}`, approvalId }, ConditionExpression: "attribute_not_exists(pk)" } });
+    expect(await decideWrite(w.deps, w.input({ call: { scope: "eng", schemaHash: SCHEMA, arguments: { id: "ENG-12", stateId: "s9" } }, claimRequest: claim, operationGuard: guard() }))).toMatchObject({ outcome: "refuse" });
+    expect(w.db.get("WORKSPACE#ws", `CONNECTOR#linear#${REQ(8)}`)).toBeUndefined();
+  });
 });
 

@@ -10,8 +10,8 @@ import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import {
-  advanceAgentRun, cancelAgentRun, onAgentStepFinished, onTaskEnded, onWriteDecided, prepareSlackReport, registerTaskEndHandler, registerTaskPauseHandler,
-  type TaskEndEvent, type TaskPauseEvent,
+  advanceAgentRun, cancelAgentRun, driveAgentRun, giveUpAgentRun, onAgentStepFinished, onApprovalGaveUp, onTaskEnded, onWriteDecided, prepareSlackReport, registerTaskEndHandler,
+  registerTaskPauseHandler, type TaskEndEvent, type TaskPauseEvent,
 } from "../../packages/broker/src/agents/run-engine.js";
 import {
   approvalTaskEventKey, createStepApproval, createWriteApprovalRecord, decideApproval, expireApprovals, getAnyApproval, registerWriteApprovalDriver,
@@ -21,7 +21,7 @@ import { writeApproversFor } from "../../packages/broker/src/agents/write-gate.j
 import { readGuardrailsWithRevision } from "../../packages/broker/src/agents/guardrails.js";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks.js";
 import { AgentRunStateSchema, SHORTENED_MARKER, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError, orgScoped } from "@agentx/contracts";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
@@ -1598,7 +1598,8 @@ describe("the end handlers' unit contract", () => {
     unregister.push(registerTaskEndHandler(async () => { told += 1; await new Promise((resolve) => setTimeout(resolve, 20)); }));
     const results = await Promise.all([onTaskEnded(endDeps(t), taskOf(t, taskId), "closed"), onTaskEnded(endDeps(t), taskOf(t, taskId), "closed")]);
     expect(told).toBe(1);
-    expect([...results].sort()).toEqual(["already_ended", "called"]);
+    // The call that meets the other's unfinished telling is told so (Task 22 review, I4), not that the end is over.
+    expect([...results].sort()).toEqual(["called", "in_progress"]);
   });
 
   it("takes a failed handler up at once on the next call", async () => {
@@ -1846,5 +1847,448 @@ describe("the run's budgets and the end of a step the broker never heard from", 
     expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
     expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(key));
     expect(events).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Fix round 1 of the Task 22 review (C1, C2, I1 to I4, M1 to M4, M7). Each probe of the review (P1 to P6) is a test here.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("Task 22 review: the Slack report can never ping (C2) and flattens bare domains (M4)", () => {
+  const options = (extra: Partial<Parameters<typeof prepareSlackReport>[1]> = {}) => ({ orgId: TEST_ORG, taskUrl: TASK_LINK, reportLinkDomains: [], extraCommandWords: [], ...extra });
+
+  it("P1: strips a broadcast written with fullwidth brackets, which the folding turns into a live <!channel>", () => {
+    expect(prepareSlackReport("Done ＜!channel＞ now", options())).toEqual({ kind: "text", text: "Done now" });
+    for (const form of ["＜!here＞", "＜!everyone＞", "＜!subteam^S1＞", "＜!subteam^S1|@oncall＞", "＜@U123＞", "＜@W456|alice＞", "＜#C789|general＞"]) {
+      const result = prepareSlackReport(`before ${form} after`, options());
+      expect(result.kind).toBe("text");
+      expect(result.text, form).not.toMatch(/<[!@#]/u);
+      expect(result.text, form).not.toContain("<!");
+    }
+  });
+
+  it("strips a form the other characters of which are look-alikes or invisible", () => {
+    for (const form of ["<!chan​nel>", "<!he­re>", "<！channel>", "＜!channel＞"]) {
+      expect(prepareSlackReport(`x ${form} y`, options()).text, form).not.toMatch(/<!/u);
+    }
+  });
+
+  it("escapes every < > & that is left, so the text holds no Slack control sequence at all", () => {
+    expect(prepareSlackReport("if a < b && c > d then <b>bold</b>", options())).toEqual({ kind: "text", text: "if a &lt; b &amp;&amp; c &gt; d then &lt;b&gt;bold&lt;/b&gt;" });
+    // An unknown <!…> form (a date, say) keeps its label and nothing else.
+    expect(prepareSlackReport("at <!date^1700000000^{date}|today> ok", options()).text).toBe("at today ok");
+  });
+
+  it("keeps a link to the task and to an allowed host, escaping only what is not the link itself", () => {
+    const own = `see <${TASK_LINK}|the task> & <https://docs.acme.example/a?x=1&y=2|the doc>`;
+    expect(prepareSlackReport(own, options({ reportLinkDomains: ["acme.example"] }))).toEqual({
+      kind: "text", text: `see <${TASK_LINK}|the task> &amp; <https://docs.acme.example/a?x=1&amp;y=2|the doc>`,
+    });
+    // A `<` hidden in an allowed link's address or label never survives as a control character.
+    const sneaky = prepareSlackReport("<https://docs.acme.example/x<!channel>|<!here>>", options({ reportLinkDomains: ["acme.example"] }));
+    expect(sneaky.text).not.toMatch(/<!/u);
+  });
+
+  it("M4: turns a bare domain, a www host and a mailto link into plain text with the host", () => {
+    const result = prepareSlackReport("see evil.example/login and www.evil.example and evil.com for more", options());
+    expect(result.kind).toBe("text");
+    expect(result.text).not.toContain("evil.example/login");
+    expect(result.text).not.toContain("www.");
+    expect(result.text).toContain("link (evil.example)");
+    expect(result.text).toContain("link (evil.com)");
+    const mail = prepareSlackReport("write to mailto:boss@evil.example or <mailto:boss@evil.example|the boss>", options());
+    expect(mail.text).not.toContain("mailto:");
+    expect(mail.text).toContain("(evil.example)");
+  });
+
+  it("M4: leaves versions, file names and the org's own bare domain alone", () => {
+    expect(prepareSlackReport("v1.2.3 changed README.md, index.ts and package.json; node.js 22.1 was used", options()).text).toBe("v1.2.3 changed README.md, index.ts and package.json; node.js 22.1 was used");
+    expect(prepareSlackReport("docs at acme.example/runbook", options({ reportLinkDomains: ["acme.example"] })).text).toBe("docs at acme.example/runbook");
+  });
+});
+
+describe("Task 22 review: cancelling stops the run (C1)", () => {
+  async function runningWithWrite() {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    return { t, run, first, deps, write };
+  }
+  const cancelRoute = (t: World, taskId: string) => t.call(MAYA, "POST", `/v1/dev/tasks/${taskId}/cancel`, {});
+  /** The intent a cancel leaves on the run, written the way the cancel's own transaction writes it. */
+  const recordIntent = (t: World, taskId: string) => t.db.send(new UpdateCommand({
+    TableName: "state", Key: { pk: `DEVTASK#${taskId}`, sk: "AGENT_RUN" }, UpdateExpression: "SET cancelRequestedAt = :at, revision = revision + :one",
+    ExpressionAttributeValues: { ":at": new Date().toISOString(), ":one": 1 },
+  }));
+
+  it("P2: a step that was asked to stop and still finishes successfully ends the run CANCELLED, and the next step is never dispatched", async () => {
+    const t = await setup();
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    expect((await cancelRoute(t, run.taskId)).status).toBe(200);
+    expect(t.stepOps(run.workspaceId)[0]).toMatchObject({ status: "CANCEL_REQUESTED" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", cancelRequestedAt: expect.any(String) as string });
+    await t.finishStep(run, first.id, "Found it.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", steps: [{ id: "investigate", status: "failed" }, { id: "report", status: "pending" }] });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(events).toEqual([expect.objectContaining({ taskId: run.taskId, outcome: "cancelled" })]);
+    // The cancel operation succeeding afterwards changes nothing.
+    await t.finish(run.workspaceId, t.operations(run.workspaceId).find((operation) => operation.kind === "cancel")!.id, "SUCCEEDED");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(events).toHaveLength(1);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+  });
+
+  it("a step that was asked to stop and fails, or runs out of budget, ends the run CANCELLED too", async () => {
+    const t = await setup();
+    const failed = await t.start("root-cause-analyst");
+    await failed.finishPrepare();
+    await cancelRoute(t, failed.taskId);
+    await t.finish(failed.workspaceId, t.stepOps(failed.workspaceId)[0]!.id, "FAILED", { error: "the model gave up" });
+    expect(t.runItem(failed.taskId)).toMatchObject({ state: "CANCELLED" });
+    const broke = await t.start("root-cause-analyst");
+    await broke.finishPrepare();
+    await cancelRoute(t, broke.taskId);
+    await t.finish(broke.workspaceId, t.stepOps(broke.workspaceId)[0]!.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(t.runItem(broke.taskId)).toMatchObject({ state: "CANCELLED" });
+  });
+
+  it("P3: a step cancelled while a write approval is pending ends the run CANCELLED with the approval expired, and approving it later dispatches no continuation", async () => {
+    const { t, run, first, deps, write } = await runningWithWrite();
+    const events = endHandler();
+    await cancelRoute(t, run.taskId);
+    await t.finishStep(run, first.id, "Provisional report.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect((await getAnyApproval(deps, TEST_ORG, write.approvalId as never))!.status).toBe("EXPIRED");
+    await approve(deps, write.approvalId).catch(() => undefined);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(events).toEqual([expect.objectContaining({ outcome: "cancelled" })]);
+  });
+
+  it("a decision that reaches a waiting run after its cancel was recorded ends the run instead of continuing the step", async () => {
+    const { t, run, first, deps, write } = await runningWithWrite();
+    await t.finishStep(run, first.id, "Waiting.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    await recordIntent(t, run.taskId);
+    await approve(deps, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    // The same for a step approval: a cancel recorded while the run waits for a person.
+    const agentId = await t.agentOf(WITH_GATE);
+    const gated = await t.start(agentId);
+    await gated.finishPrepare();
+    await t.finishStep(gated, t.stepOps(gated.workspaceId)[0]!.id, "The draft.");
+    await recordIntent(t, gated.taskId);
+    const [approvalId] = t.runItem(gated.taskId)!.steps[1]!.approvalIds;
+    await approve(deps, approvalId!);
+    expect(t.runItem(gated.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(t.stepOps(gated.workspaceId)).toHaveLength(1);
+  });
+
+  it("a run that is between steps when its cancel is recorded dispatches nothing", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    await recordIntent(t, run.taskId);
+    // The step's result reaches the engine only through the sweep's row (the callback's own drive is lost).
+    t.db.set({ ...t.db.get(`WORKSPACE#${run.workspaceId}`, `OPERATION#${first.id}`)!, status: "SUCCEEDED", result: { agentStepResult: { report: "Found it.", outcome: "SUCCEEDED" } } });
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
+    t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
+});
+
+describe("Task 22 review: closing a task ends a run that waits (I1)", () => {
+  async function waitingOnWrite() {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    await t.finishStep(run, first.id, "Waiting.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    return { t, run, first, deps, write };
+  }
+
+  it("P4: closing the task cancels the run, expires its approvals and tells the end handlers once; approving afterwards dispatches nothing", async () => {
+    const { t, run, deps, write } = await waitingOnWrite();
+    const events = endHandler();
+    const closed = await t.call(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/close`, {});
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const closeOperation = t.operations(run.workspaceId).find((operation) => operation.kind === "close")!;
+    await t.finish(run.workspaceId, closeOperation.id, "SUCCEEDED", { result: { safeToClose: true, repositories: [] } });
+    expect(t.meta(run.taskId)).toHaveProperty("closedAt");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "The task was closed." });
+    expect((await getAnyApproval(deps, TEST_ORG, write.approvalId as never))!.status).toBe("EXPIRED");
+    expect(events).toEqual([expect.objectContaining({ taskId: run.taskId, outcome: "cancelled" })]);
+    await approve(deps, write.approvalId).catch(() => undefined);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(events).toHaveLength(1);
+  });
+
+  it("a write decided after the task was closed (by a path that told the engine nothing) ends the run instead of continuing the step", async () => {
+    const { t, run, deps, write } = await waitingOnWrite();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET closedAt = :now", ExpressionAttributeValues: { ":now": new Date().toISOString() } }));
+    await approve(deps, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "The task was closed." });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
+
+  it("the sweep ends a waiting run whose task was closed, without anyone deciding anything", async () => {
+    const { t, run, deps, write } = await waitingOnWrite();
+    const events = endHandler();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET closedAt = :now", ExpressionAttributeValues: { ":now": new Date().toISOString() } }));
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
+    t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED", endReason: "The task was closed." });
+    expect((await getAnyApproval(deps, TEST_ORG, write.approvalId as never))!.status).toBe("EXPIRED");
+    expect(events).toHaveLength(1);
+  });
+});
+
+describe("Task 22 review: a plain task's end by the reaper or a stuck cancel blocks its keys and tells the handlers (I2)", () => {
+  async function plainTurn(t: World) {
+    const started = await t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the bug", client: "test-client" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const { workspaceId } = t.meta(taskId);
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((operation) => operation.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    const turn = t.stepOps(workspaceId)[0]!;
+    await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": t.invocationOf(turn.id).callbackCapability } });
+    return { taskId, workspaceId, turn, key: t.access!.mintedKeys().at(-1)! };
+  }
+  const rowsOf = (t: World, taskId: string) => t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId);
+
+  it("lost compute (the reaper's failActiveOperation)", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const plain = await plainTurn(t);
+    const { failActiveOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failActiveOperation(t.db, "state", plain.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost");
+    expect(t.access!.blockKey).not.toHaveBeenCalled();
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(plain.key));
+    expect(events).toEqual([expect.objectContaining({ taskId: plain.taskId, outcome: "failed" })]);
+    expect(rowsOf(t, plain.taskId)).toEqual([]);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toHaveLength(1);
+  });
+
+  it("an operation the dispatcher could not deliver (failOutboxOperation)", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const plain = await plainTurn(t);
+    const outbox = t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === plain.turn.id)[0]!;
+    const { failOutboxOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failOutboxOperation(t.db, "state", outbox as never, "RUNTIME_UNAVAILABLE: the worker could not be reached");
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(plain.key));
+    expect(events).toEqual([expect.objectContaining({ taskId: plain.taskId, outcome: "failed" })]);
+  });
+
+  it("a cancel that never finished (the stuck-cancel sweep)", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const plain = await plainTurn(t);
+    await t.call(MAYA, "POST", `/v1/dev/tasks/${plain.taskId}/cancel`, {});
+    const { sweepStuckCancels } = await import("../../packages/broker/src/aws/stuck-cancels.js");
+    const swept = await sweepStuckCancels({ client: t.db, tableName: "state" }, [{ workspaceId: plain.workspaceId, compute: "gone" }], new Date(Date.now() + 31 * 60_000));
+    expect(swept.ended).toEqual([plain.turn.id]);
+    expect(t.access!.blockKey).not.toHaveBeenCalledWith(keyIdOf(plain.key));
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.access!.blockKey).toHaveBeenCalledWith(keyIdOf(plain.key));
+    expect(events).toEqual([expect.objectContaining({ taskId: plain.taskId, outcome: "failed" })]);
+  });
+
+  it("leaves an agent-step run to its engine: no second row, and the end is told once", async () => {
+    const t = await setup({ proxy: true });
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const { failActiveOperation } = await import("../../packages/broker/src/aws/outbox-failure.js");
+    await failActiveOperation(t.db, "state", run.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost");
+    expect(rowsOf(t, run.taskId).map((row) => row.sk)).toEqual([`${run.taskId}#agent`]);
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(events).toHaveLength(1);
+  });
+});
+
+describe("Task 22 review: a late handler_gave_up never fails a run that moved on (I3)", () => {
+  async function waitingOnWrite() {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    await t.finishStep(run, first.id, "Waiting.");
+    return { t, run, first, deps, write };
+  }
+
+  it("P6: after the approval was decided and the step continued, the hook changes nothing", async () => {
+    const { t, run, deps, write } = await waitingOnWrite();
+    await approve(deps, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING" });
+    const continuation = t.stepOps(run.workspaceId)[1]!;
+    await onApprovalGaveUp(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId as never))!);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING" });
+    expect(t.stepOps(run.workspaceId)[1]).toMatchObject({ id: continuation.id, status: expect.not.stringMatching(/^CANCEL/u) as string });
+    expect(t.operations(run.workspaceId).filter((operation) => operation.kind === "cancel")).toEqual([]);
+  });
+
+  it("still fails a run that really waits on the approval, with the reason the owner reads", async () => {
+    const { t, run, deps, write } = await waitingOnWrite();
+    await onApprovalGaveUp(deps, (await getAnyApproval(deps, TEST_ORG, write.approvalId as never))!);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.runItem(run.taskId)!.endReason).toContain("couldn't continue this run");
+  });
+
+  it("an approval of a step the run is not waiting on changes nothing", async () => {
+    const { t, run, deps, write } = await waitingOnWrite();
+    const other = await askWrite(t, deps, { taskId: run.taskId, stepId: "report", operationId: t.stepOps(run.workspaceId)[0]!.id, summary: "comment on LIN-13" });
+    await onApprovalGaveUp(deps, other);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    void write;
+  });
+
+  it("ending a run whose step is still running asks the worker to stop that step (giveUpAgentRun, the engine's own ends)", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    await giveUpAgentRun(t.routeDeps(), run.taskId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.stepOps(run.workspaceId)[0]).toMatchObject({ id: first.id, status: "CANCEL_REQUESTED" });
+    expect(t.operations(run.workspaceId).filter((operation) => operation.kind === "cancel")).toHaveLength(1);
+  });
+
+  it("a run that ends because its step ended asks for no stop", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: "the model gave up" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+    expect(t.operations(run.workspaceId).filter((operation) => operation.kind === "cancel")).toEqual([]);
+  });
+});
+
+describe("Task 22 review: the end is finished by whoever is left when a call stops (I4)", () => {
+  it("keeps the dispatch row while another call holds the end's lease, and tells the handlers once when it is free", async () => {
+    const clock = { now: Date.now() };
+    const t = await setup();
+    const events = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    // Another call (its process about to die) holds the lease on the end.
+    t.db.set({ pk: `DEVTASK#${run.taskId}`, sk: "TASK_END", entityType: "TASK_END", orgId: TEST_ORG, outcome: "cancelled", at: new Date().toISOString(), handlersTold: 0, done: false, leaseUntil: clock.now + 60_000 });
+    const deps = t.routeDeps(clock);
+    expect(await cancelAgentRun(deps, run.taskId)).toBe(true);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "CANCELLED" });
+    expect(events).toEqual([]);
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0];
+    expect(row).toBeDefined();
+    expect(Date.parse(String(row!.nextAttemptAt))).toBeGreaterThan(clock.now + 30_000);
+    // The lease runs out; the row's next look finishes the end.
+    clock.now += 61_000;
+    expect(await driveAgentRun(deps, run.taskId)).toBe("DONE");
+    expect(events).toEqual([expect.objectContaining({ taskId: run.taskId, outcome: "cancelled" })]);
+    expect(t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)).toEqual([]);
+    expect(t.db.get(`DEVTASK#${run.taskId}`, "TASK_END")).toMatchObject({ done: true });
+  });
+});
+
+describe("Task 22 review: one gate for every dispatch (M1), the step's pending counter (M2), the branch (M3) and a resumed step (M7)", () => {
+  async function waitingOnWrite() {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    return { t, run, first, deps, write };
+  }
+
+  it("M1: a continuation checks the creator and the recipe like every other dispatch", async () => {
+    const { t, run, first, deps, write } = await waitingOnWrite();
+    await t.finishStep(run, first.id, "Waiting.");
+    const requireCreator = vi.fn(async () => undefined);
+    const requireRecipeAllowed = vi.fn(async () => undefined);
+    const spied = { ...deps, agentRuns: { ...deps.agentRuns!, requireCreator, requireRecipeAllowed } } as ApprovalDependencies;
+    await approve(spied, write.approvalId);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    expect(requireCreator).toHaveBeenCalled();
+    expect(requireRecipeAllowed).toHaveBeenCalled();
+  });
+
+  it("M1: a continuation whose recipe is refused ends the run with the refusal's words and dispatches nothing", async () => {
+    const { t, run, first, deps, write } = await waitingOnWrite();
+    await t.finishStep(run, first.id, "Waiting.");
+    const refusing = { ...deps, agentRuns: { ...deps.agentRuns!, requireRecipeAllowed: async () => { throw agentXError("MODEL_NOT_ALLOWED", "the model is no longer allowed here"); } } } as ApprovalDependencies;
+    await approve(refusing, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED", endReason: "the model is no longer allowed here" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
+
+  it("M2: a step whose approval counter says one is still pending waits, even if no approval record is found", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    t.db.set({ pk: orgScoped(TEST_ORG, `STEP_APPROVALS#${run.taskId}`), sk: "investigate", pending: 1 });
+    await t.finishStep(run, first.id, "Report.");
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL", steps: [{ id: "investigate", status: "waiting" }, { id: "report", status: "pending" }] });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    // The counter reaching zero lets the sweep take the step on.
+    t.db.set({ pk: orgScoped(TEST_ORG, `STEP_APPROVALS#${run.taskId}`), sk: "investigate", pending: 0 });
+    const row = t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === run.taskId)[0]!;
+    t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    expect(t.stepOps(run.workspaceId)[1]).toMatchObject({ programStepId: "report" });
+  });
+
+  it("M3: the branch the last step chose is kept while it waits, and used when its outcomes are not handed back again", async () => {
+    const t = await setup();
+    const contract = { branches: [{ id: "fix", description: "A fix is needed" }, { id: "close", description: "Nothing to do" }] };
+    const run = await startWithContract(t, contract);
+    await run.finishPrepare();
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "Looked.");
+    const last = t.stepOps(run.workspaceId)[1]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "report", operationId: last.id, summary: "comment on LIN-12" });
+    // The step has already been handed outcomes four times: a fifth is not made.
+    const item = t.db.get(`DEVTASK#${run.taskId}`, "AGENT_RUN") as Record<string, unknown> & { steps: Array<{ id: string; operationIds: string[] }> };
+    t.db.set({ ...item, steps: item.steps.map((step) => (step.id === "report" ? { ...step, operationIds: ["a", "b", "c", "d", last.id].map((id) => (id.length === 1 ? randomUUID() : id)) } : step)) });
+    await t.finishStep(run, last.id, "Needs a fix.", { branch: "fix", reason: "the retry is gone" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL" });
+    await approve(deps, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "COMPLETE", branch: "fix" });
+  });
+
+  it("M7: a step run again after a budget pause is told what came of the writes it asked for the first time", async () => {
+    const { t, run, first, deps, write } = await waitingOnWrite();
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "SET budgetPause = :pause", ExpressionAttributeValues: { ":pause": { scope: { kind: "task", taskId: run.taskId }, at: new Date().toISOString() } } }));
+    await t.finish(run.workspaceId, first.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET" });
+    await approve(deps, write.approvalId);
+    await t.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `DEVTASK#${run.taskId}`, sk: "META" }, UpdateExpression: "REMOVE budgetPause" }));
+    await advanceAgentRun(deps, run.taskId);
+    const rerun = t.stepOps(run.workspaceId)[1]!;
+    expect(rerun).toMatchObject({ programStepId: "investigate" });
+    expect(t.invocationOf(rerun.id).payload.agentStep!.inputs).toContain("Outcomes of the actions that needed approval:\nApproved and done: comment on LIN-12");
+    // It is told once: the rerun's own end moves the run on without another continuation.
+    await t.finishStep(run, rerun.id, "Done after the comment.");
+    expect(t.stepOps(run.workspaceId)).toHaveLength(3);
+    expect(t.stepOps(run.workspaceId)[2]).toMatchObject({ programStepId: "report" });
   });
 });

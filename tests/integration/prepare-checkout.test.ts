@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import type { ProjectDefinition } from "@agentx/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { allowGitFileTransportForTests } from "../../packages/worker/src/git.js";
-import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
+import { prepareWorkspace, verifyCheckedOutHeads } from "../../packages/worker/src/prepare.js";
 
 const run = promisify(execFile);
 const git = (directory: string, ...args: string[]) => run("git", ["-C", directory, "-c", "user.name=Test", "-c", "user.email=test@example.test", ...args]).then((result) => result.stdout.trim());
@@ -93,5 +93,39 @@ describe("preparing a workspace for a run that looks at a pull request", () => {
     });
     expect(await git(join(root, "repo", "demo"), "rev-parse", "HEAD")).toBe(source.main);
     expect(manifest.repositories[0]!.checkedOut).toBeUndefined();
+  });
+  it("M5: fetches the recorded commit by its sha when the pull request's ref has moved on since, and reviews exactly that commit", async () => {
+    const source = await repositoryWithPullRequest();
+    // The author pushed again: the pull request's ref names a newer commit, and the recorded one is still in the repository.
+    await git(source.directory, "config", "uploadpack.allowAnySHA1InWant", "true");
+    await git(source.directory, "checkout", "--quiet", "feature");
+    await writeFile(join(source.directory, "later.txt"), "pushed later\n");
+    await git(source.directory, "add", ".");
+    await git(source.directory, "commit", "--quiet", "-m", "later");
+    const later = await git(source.directory, "rev-parse", "HEAD");
+    await git(source.directory, "update-ref", "refs/pull/12/head", later);
+    await git(source.directory, "checkout", "--quiet", "main");
+    const root = await mkdtemp(join(tmpdir(), "agentx-pr-workspace-"));
+    const manifest = await prepareWorkspace({
+      rootPath: root, project: project(), materializer: materializer(source.directory), pullRequestRemote: () => pathToFileURL(source.directory).href,
+      checkout: [{ repository: "demo", pullRequest: 12, headSha: source.head }],
+    });
+    expect(await git(join(root, "repo", "demo"), "rev-parse", "HEAD")).toBe(source.head);
+    expect(manifest.repositories[0]).toMatchObject({ checkedOut: { pullRequest: 12, headSha: source.head } });
+  });
+
+  it("M5: a step checks the workspace's HEAD against the commit its payload names before it runs", async () => {
+    const source = await repositoryWithPullRequest();
+    const root = await mkdtemp(join(tmpdir(), "agentx-pr-workspace-"));
+    const checkout = [{ repository: "demo", pullRequest: 12, headSha: source.head }];
+    const manifest = await prepareWorkspace({
+      rootPath: root, project: project(), materializer: materializer(source.directory), pullRequestRemote: () => pathToFileURL(source.directory).href, checkout,
+    });
+    await expect(verifyCheckedOutHeads(root, manifest, checkout)).resolves.toBeUndefined();
+    await expect(verifyCheckedOutHeads(root, manifest, [])).resolves.toBeUndefined();
+    // The workspace was moved off the commit (or never held it): the step does not run.
+    await git(join(root, "repo", "demo"), "checkout", "--quiet", "--detach", source.main);
+    await expect(verifyCheckedOutHeads(root, manifest, checkout)).rejects.toThrow("pull request 12");
+    await expect(verifyCheckedOutHeads(root, manifest, [{ repository: "other", pullRequest: 3, headSha: source.head }])).rejects.toThrow("pull request 3");
   });
 });
