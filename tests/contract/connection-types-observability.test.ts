@@ -1,9 +1,11 @@
 // Plan 4 Task 11: the six new connection types (Sentry, Datadog, CloudWatch, Grafana, Vercel, PagerDuty) on Plan 3's org registry.
 // They are read-only, their secrets are write-only like Plan 3's, and each type's check comes from its own connector task through
 // the store's `checks` seam. The Secrets Manager and STS fake enforces the role's policies, so org isolation is proven, not assumed.
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CredentialUnavailable } from "@agentx/gateway";
 import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
+import { mcpEndpointGuard, type McpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { OrgConnectionStore, connectionActorIds, readConnection, readConnectionSecret } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { routeConnectionRequest } from "../../packages/broker/src/connections/routes.js";
@@ -384,7 +386,7 @@ describe("the per-org registry and the new types (Review Focus 6)", () => {
     expect(JSON.stringify(grafana)).not.toContain(secretFor(GRAFANA)!.serviceAccountToken);
     expect((await registry.provider(CON_A, { pin: { host: "grafana.acme.dev", required: true } }).issue({}, "read")).token).toBe(secretFor(GRAFANA)!.serviceAccountToken);
     await expect(registry.provider(CON_A, { pin: { host: "grafana.other.dev", required: true } }).issue({}, "read")).rejects.toBeInstanceOf(CredentialUnavailable);
-    expect((await registry.registration("con_dddddddddddddddddddd"))?.host).toBeUndefined();
+    expect((await registry.registration("con_dddddddddddddddddddd"))?.host).toBe("api.datadoghq.eu");
   });
 
   it("refuses write access on these read-only connections", async () => {
@@ -430,7 +432,7 @@ describe("checking the new connections", () => {
     await store.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
     expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "3 projects" });
     expect(check).toHaveBeenCalledTimes(1);
-    expect(check).toHaveBeenCalledWith({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY) });
+    expect(check).toHaveBeenCalledWith({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), fetch: expect.any(Function) });
     expect((await store.get(ORG_A, CON_A))?.lastCheck).toMatchObject({ ok: true });
     expect(JSON.stringify(await store.get(ORG_A, CON_A))).not.toContain("sentry-user-1");
     expect([...await connectionActorIds(deps, ORG_A, "sentry")]).toEqual(["sentry-user-1"]);
@@ -447,7 +449,7 @@ describe("checking the new connections", () => {
     expect(sentry).not.toHaveBeenCalled();
     await store.put({ orgId: ORG_A, connection: { ...CLOUDWATCH, connectionId: "con_cccccccccccccccccccc" }, by: ALICE });
     expect(await store.check(ORG_A, "con_cccccccccccccccccccc")).toEqual({ ok: true, message: "role assumed" });
-    expect(cloudwatch).toHaveBeenCalledWith({ orgId: ORG_A, connection: { ...CLOUDWATCH, connectionId: "con_cccccccccccccccccccc" }, secret: undefined });
+    expect(cloudwatch).toHaveBeenCalledWith({ orgId: ORG_A, connection: { ...CLOUDWATCH, connectionId: "con_cccccccccccccccccccc" }, secret: undefined, fetch: expect.any(Function) });
   });
 
   it("reads the secret by the version its own save wrote, so a check never uses a save that lost", async () => {
@@ -480,6 +482,7 @@ describe("checking the new connections", () => {
     let allowed = true;
     const store = storeOf(deps, {
       checkEndpoint: async (url) => { order.push(`endpoint:${url}`); if (!allowed) throw new Error("that address is not allowed"); },
+      endpointGuard: async () => fetch,
       checks: { grafana },
     });
     await store.put({ orgId: ORG_A, connection: GRAFANA, secret: secretFor(GRAFANA), by: ALICE });
@@ -508,6 +511,7 @@ describe("checking the new connections", () => {
     let lookup = false;
     const store = storeOf(deps, {
       checkEndpoint: async () => { if (lookup) throw Object.assign(new Error("lookup failed"), { code: "RUNTIME_UNAVAILABLE" }); },
+      endpointGuard: async () => fetch,
       checks: { grafana },
     });
     await store.put({ orgId: ORG_A, connection: GRAFANA, secret: secretFor(GRAFANA), by: ALICE });
@@ -592,5 +596,258 @@ describe("the connection routes and the new types", () => {
     expect(await failure(call("PUT", `/v1/app/connections/${CON_A}`, { requestId: REQUEST_ID, connection: SENTRY, secret: secretFor(SENTRY) }, adminB))).toMatchObject({ code: "NOT_FOUND" });
     expect(await failure(call("DELETE", `/v1/app/connections/${CON_A}`, { requestId: "33333333-3333-4333-8333-333333333333" }, adminB))).toMatchObject({ code: "NOT_FOUND" });
     expect(await store.get(ORG_A, CON_A)).toBeDefined();
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Task 11 fix round 1 (review I1, M1, M3, M7): a check is given a fetch it cannot misuse; a token is issued only to its vendor's host; a check's
+// message is capped and cleaned before it is recorded or answered.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+const PUBLIC = "52.1.2.3";
+const GRAFANA_HEALTH = "https://grafana.acme.dev/api/health";
+const MCP: OrgConnection = { connectionId: CON_A, type: "mcp", label: "Docs", access: "read", endpoint: "https://mcp.acme.dev/mcp", vendor: "Docs" };
+
+/** A node `request` stand-in that records what it was asked and answers with `status`, so no test reaches a network. */
+function recordingRequest(status = 200, headers: Record<string, string> = {}) {
+  const calls: Array<{ url: URL; options: { lookup: (host: string, options: object, callback: (...args: unknown[]) => void) => void; agent: unknown } }> = [];
+  const request = vi.fn((url: URL, options: never, callback?: (response: unknown) => void) => {
+    calls.push({ url, options });
+    return {
+      on: () => undefined,
+      destroy: () => undefined,
+      end: () => { const response = Object.assign(new PassThrough(), { statusCode: status, headers, statusMessage: "" }); response.end("{}"); callback?.(response); },
+    } as never;
+  });
+  return { request, calls };
+}
+
+const lookupAnswer = (lookup: (host: string, options: object, callback: (...args: unknown[]) => void) => void) =>
+  new Promise<unknown[]>((resolve) => lookup("grafana.acme.dev", { all: true }, (...args) => resolve(args)));
+
+describe("a check's fetch (review I1, M7)", () => {
+  /** Runs a Grafana check that calls each of `urls` with its fetch, and answers what each call did. */
+  async function grafanaCalls(guard: McpEndpointGuard, urls: string[], options: { init?: RequestInit } = {}) {
+    const { deps } = setup();
+    const outcomes: string[] = [];
+    const grafana = vi.fn(async ({ fetch: pinned }: { fetch: typeof fetch }) => {
+      for (const url of urls) outcomes.push(await pinned(url, options.init).then((response) => `status ${String(response.status)}`, (error: Error) => error.message));
+      return { ok: true };
+    });
+    const store = storeOf(deps, { endpointGuard: guard, checks: { grafana } });
+    await store.put({ orgId: ORG_A, connection: GRAFANA, secret: secretFor(GRAFANA), by: ALICE });
+    const result = await store.check(ORG_A, CON_A);
+    return { result, outcomes, grafana, store };
+  }
+
+  it("connects Grafana's check only to the addresses checked for this very request, asking DNS once", async () => {
+    const { request, calls } = recordingRequest();
+    const resolveHost = vi.fn(async () => [PUBLIC]);
+    const { result, outcomes } = await grafanaCalls(mcpEndpointGuard({ resolveHost, request }), [GRAFANA_HEALTH]);
+    expect(result).toEqual({ ok: true });
+    expect(outcomes).toEqual(["status 200"]);
+    expect(resolveHost).toHaveBeenCalledWith("grafana.acme.dev");
+    expect(calls).toHaveLength(1);
+    // The connection is made with a lookup that answers only the checked address and never asks DNS, on a connection of its own.
+    expect(await lookupAnswer(calls[0]!.options.lookup)).toEqual([null, [{ address: PUBLIC, family: 4 }]]);
+    expect(calls[0]!.options.agent).toBe(false);
+    expect(calls[0]!.url.href).toBe(GRAFANA_HEALTH);
+  });
+
+  it("refuses a redirect from Grafana, which could lead to a private address", async () => {
+    const { request, calls } = recordingRequest(302, { location: "http://169.254.169.254/latest/meta-data/" });
+    const { outcomes } = await grafanaCalls(mcpEndpointGuard({ resolveHost: async () => [PUBLIC], request }), [GRAFANA_HEALTH]);
+    expect(outcomes).toEqual(["fetch failed: a redirect was refused"]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses any request to another origin, an address, another scheme or another port, making none", async () => {
+    const { request, calls } = recordingRequest();
+    const urls = ["https://evil.example/", "https://169.254.169.254/", "https://[::1]/", "http://grafana.acme.dev/api/health", "https://grafana.acme.dev:8443/api/health", "https://grafana.acme.dev.evil.example/"];
+    const { outcomes } = await grafanaCalls(mcpEndpointGuard({ resolveHost: async () => [PUBLIC], request }), urls);
+    expect(outcomes).toEqual(urls.map(() => "a request to anywhere but the checked endpoint was refused"));
+    expect(calls).toEqual([]);
+  });
+
+  it("gives the guard the connection's own address, and answers a refused address as a failed check without running the type's check", async () => {
+    const { deps } = setup();
+    const seen: string[] = [];
+    let refuse = false;
+    const grafana = vi.fn(async () => ({ ok: true }));
+    const store = storeOf(deps, {
+      endpointGuard: async (endpoint) => { seen.push(endpoint.href); if (refuse) throw Object.assign(new Error("that address is not allowed"), { code: "CONFIG_INVALID" }); return fetch; },
+      checks: { grafana },
+    });
+    await store.put({ orgId: ORG_A, connection: GRAFANA, secret: secretFor(GRAFANA), by: ALICE });
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true });
+    expect(seen).toEqual(["https://grafana.acme.dev/"]);
+    refuse = true;
+    grafana.mockClear();
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: false, message: "that address is not allowed" });
+    expect(grafana).not.toHaveBeenCalled();
+    expect((await store.get(ORG_A, CON_A))?.lastCheck).toMatchObject({ ok: false });
+  });
+
+  it("answers a guard whose address lookup failed as retryable, records nothing and runs no check", async () => {
+    const { deps } = setup();
+    const grafana = vi.fn(async () => ({ ok: true }));
+    let down = false;
+    const store = storeOf(deps, {
+      endpointGuard: async () => { if (down) throw Object.assign(new Error("lookup failed"), { code: "RUNTIME_UNAVAILABLE" }); return fetch; },
+      checks: { grafana },
+    });
+    await store.put({ orgId: ORG_A, connection: GRAFANA, secret: secretFor(GRAFANA), by: ALICE });
+    down = true;
+    expect((await failure(store.check(ORG_A, CON_A)))?.code).toBe("RUNTIME_UNAVAILABLE");
+    expect(grafana).not.toHaveBeenCalled();
+    expect((await store.get(ORG_A, CON_A))?.lastCheck).toBeUndefined();
+  });
+
+  it("pins the MCP check's tool listing to the checked addresses too, and refuses an MCP endpoint the guard refuses", async () => {
+    const { deps } = setup();
+    const pinned = (async () => new Response("{}")) as typeof fetch;
+    const seen: Array<{ endpoint: string; fetchImplementation: unknown }> = [];
+    const listMcpTools = vi.fn(async (input: { endpoint: URL; fetchImplementation?: unknown }) => { seen.push({ endpoint: input.endpoint.href, fetchImplementation: input.fetchImplementation }); return [{ name: "a" }]; });
+    let refuse = false;
+    const store = storeOf(deps, {
+      endpointGuard: async () => { if (refuse) throw new Error("that address is not allowed"); return pinned; },
+      fetch: (async () => { throw new Error("the unpinned fetch was used"); }) as typeof fetch,
+      listMcpTools: listMcpTools as never,
+    });
+    await store.put({ orgId: ORG_A, connection: MCP, secret: { apiKey: "mcp-secret-0123456789" }, by: ALICE });
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "1 tool" });
+    expect(seen).toEqual([{ endpoint: "https://mcp.acme.dev/mcp", fetchImplementation: pinned }]);
+    refuse = true;
+    listMcpTools.mockClear();
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: false, message: "that address is not allowed" });
+    expect(listMcpTools).not.toHaveBeenCalled();
+  });
+
+  const OWN: Array<[string, OrgConnection, string]> = [
+    ["Sentry (us)", SENTRY, "https://us.sentry.io/api/0/organizations/acme/"],
+    ["Sentry (de)", { ...SENTRY, region: "de" }, "https://de.sentry.io/api/0/organizations/acme/"],
+    ["Datadog", DATADOG, "https://api.datadoghq.eu/api/v1/validate"],
+    ["Datadog (gov)", { ...DATADOG, site: "ddog-gov.com" }, "https://api.ddog-gov.com/api/v1/validate"],
+    ["PagerDuty (us)", { ...PAGERDUTY, region: "us" }, "https://api.pagerduty.com/abilities"],
+    ["PagerDuty (eu)", PAGERDUTY, "https://api.eu.pagerduty.com/abilities"],
+    ["Vercel", VERCEL, "https://api.vercel.com/v2/user"],
+  ];
+
+  it.each(OWN)("holds %s's check to its vendor's origin, follows no redirect and refuses anywhere else", async (_name, connection, own) => {
+    const { deps } = setup();
+    const base = vi.fn(async () => new Response("{}"));
+    const outcomes: string[] = [];
+    const origin = new URL(own).origin;
+    const elsewhere = [
+      "https://evil.example/", `${origin.replace("https://", "https://x.")}/`, `${origin}.evil.example/`, `${origin.replace("https:", "http:")}/`, `${origin}:8443/`,
+      "https://169.254.169.254/", "https://api.vercel.com.evil.example/", "https://sentry.io/",
+    ].filter((url) => new URL(url).origin !== origin);
+    const check = vi.fn(async ({ fetch: held }: { fetch: typeof fetch }) => {
+      outcomes.push((await held(own, { redirect: "follow", headers: { authorization: "x" } })).status === 200 ? "own ok" : "own failed");
+      outcomes.push((await held(new URL(own))).status === 200 ? "url ok" : "url failed");
+      for (const url of elsewhere) outcomes.push(await held(url).then(() => "reached", (error: Error) => error.message));
+      outcomes.push(await held(new Request(own.replace(origin, "https://evil.example"))).then(() => "reached", (error: Error) => error.message));
+      return { ok: true };
+    });
+    const store = storeOf(deps, { fetch: base as never, checks: { [connection.type]: check } as never });
+    await store.put({ orgId: ORG_A, connection, secret: secretFor(connection), by: ALICE });
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true });
+    expect(outcomes).toEqual(["own ok", "url ok", ...elsewhere.map(() => "a request to anywhere but the vendor's address was refused"), "a request to anywhere but the vendor's address was refused"]);
+    // Two calls got through, each told never to follow a redirect, whatever the caller asked for.
+    expect(base).toHaveBeenCalledTimes(2);
+    expect(base.mock.calls.map((call) => (call as unknown as [unknown, RequestInit])[1].redirect)).toEqual(["error", "error"]);
+  });
+
+  it("gives CloudWatch's check a fetch that reaches nowhere, since it speaks to AWS through its own client", async () => {
+    const { deps } = setup();
+    const base = vi.fn(async () => new Response("{}"));
+    let outcome = "";
+    const store = storeOf(deps, { fetch: base as never, checks: { cloudwatch: async ({ fetch: held }) => { outcome = await held("https://monitoring.us-east-1.amazonaws.com/").then(() => "reached", (error: Error) => error.message); return { ok: true }; } } });
+    await store.put({ orgId: ORG_A, connection: CLOUDWATCH, by: ALICE });
+    await store.check(ORG_A, CON_A);
+    expect(outcome).toMatch(/refused/u);
+    expect(base).not.toHaveBeenCalled();
+  });
+
+  it("builds a Grafana check's fetch from mcpEndpointGuard when none is injected, so no check runs on an unpinned fetch", async () => {
+    const { deps } = setup();
+    const grafana = vi.fn(async () => ({ ok: true }));
+    // No guard injected: the store's own is the real one, which resolves the host itself. The name below does not exist, so the check cannot run.
+    const store = storeOf(deps, { checks: { grafana } });
+    await store.put({ orgId: ORG_A, connection: { ...GRAFANA, baseUrl: "https://never-resolves.example.invalid" }, secret: secretFor(GRAFANA), by: ALICE });
+    const outcome = await store.check(ORG_A, CON_A).then((answer) => answer, (error: { code?: string }) => ({ code: error.code }));
+    expect(grafana).not.toHaveBeenCalled();
+    expect(outcome).toSatisfy((value: unknown) => (value as { code?: string }).code === "RUNTIME_UNAVAILABLE" || (value as { ok?: boolean }).ok === false);
+  });
+});
+
+describe("a token goes only to its vendor's host (review M1)", () => {
+  const HOSTS: Array<[string, OrgConnection, string]> = [
+    ["Sentry us", SENTRY, "us.sentry.io"],
+    ["Sentry de", { ...SENTRY, region: "de" }, "de.sentry.io"],
+    ["Datadog", DATADOG, "api.datadoghq.eu"],
+    ["Datadog us3", { ...DATADOG, site: "us3.datadoghq.com" }, "api.us3.datadoghq.com"],
+    ["PagerDuty us", { ...PAGERDUTY, region: "us" }, "api.pagerduty.com"],
+    ["PagerDuty eu", PAGERDUTY, "api.eu.pagerduty.com"],
+    ["Vercel", VERCEL, "api.vercel.com"],
+  ];
+
+  it.each(HOSTS)("pins %s to %s: its registration names it, and a token is issued for that host only", async (_name, connection, host) => {
+    const { deps } = setup();
+    await storeOf(deps).put({ orgId: ORG_A, connection, secret: secretFor(connection), by: ALICE });
+    const registry = orgCredentialRegistry(deps, ORG_A);
+    expect((await registry.registration(CON_A))?.host).toBe(host);
+    const issued = await registry.provider(CON_A, { pin: { host, required: true } }).issue({}, "read");
+    expect(issued.token).toBe(connectionSecretToken(connection.type as "sentry", secretFor(connection) as never));
+    for (const other of HOSTS.map((entry) => entry[2]).filter((entry) => entry !== host).concat("evil.example")) {
+      await expect(registry.provider(CON_A, { pin: { host: other, required: true } }).issue({}, "read"), other).rejects.toBeInstanceOf(CredentialUnavailable);
+      // A connector that does not insist on a pin is still held to the host the record names.
+      await expect(registry.provider(CON_A, { pin: { host: other, required: false } }).issue({}, "read"), other).rejects.toBeInstanceOf(CredentialUnavailable);
+    }
+  });
+
+  it("derives the host from the region or site the connection names, and names none for CloudWatch, whose connector assumes a role", async () => {
+    const { vendorHostOf } = await import("../../packages/broker/src/connections/vendor-hosts.js");
+    expect(vendorHostOf(SENTRY)).toBe("us.sentry.io");
+    expect(vendorHostOf({ ...DATADOG, site: "ap2.datadoghq.com" })).toBe("api.ap2.datadoghq.com");
+    expect(vendorHostOf(CLOUDWATCH)).toBeUndefined();
+    expect(vendorHostOf(GRAFANA)).toBeUndefined();
+    for (const site of DATADOG_SITES) expect(vendorHostOf({ ...DATADOG, site })).toBe(`api.${site}`);
+  });
+});
+
+describe("a check's message (review M3)", () => {
+  it("caps a message at 300 characters and strips control characters, in the answer and in what is recorded", async () => {
+    const { deps } = setup();
+    const long = `${"x".repeat(400)}`;
+    const store = storeOf(deps, { checks: { sentry: async () => ({ ok: false, message: `bad\u0000 token\u001b[31m ${long}\u202e\u200b\n\tend` }) } });
+    await store.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
+    const answer = await store.check(ORG_A, CON_A);
+    expect(answer.ok).toBe(false);
+    expect(answer.message!.length).toBeLessThanOrEqual(300);
+    expect(answer.message).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(answer.message!.startsWith("bad token[31m xxx")).toBe(true);
+  });
+
+  it("leaves a short clean message alone, drops a message that is nothing but control characters, and counts code points not units", async () => {
+    const { deps } = setup();
+    let message: string | undefined = "3 projects";
+    const store = storeOf(deps, { checks: { sentry: async () => ({ ok: true, ...(message === undefined ? {} : { message }) }) } });
+    await store.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true, message: "3 projects" });
+    message = "\u0000\u0007\u202e";
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: true });
+    message = "\u{1F600}".repeat(300);
+    expect(Array.from((await store.check(ORG_A, CON_A)).message!)).toHaveLength(300);
+    message = "\u{1F600}".repeat(301);
+    expect(Array.from((await store.check(ORG_A, CON_A)).message!)).toHaveLength(300);
+  });
+});
+
+describe("which connectors go through the endpoint guard (review I1, hand-off to Task 16)", () => {
+  it("names the connection types whose address a person typed, which Grafana's runtime connector must go through the guard as MCP's does", async () => {
+    const { HOST_TYPED_CONNECTOR_TYPES } = await import("../../packages/broker/src/aws/connector-presets.js");
+    expect([...HOST_TYPED_CONNECTOR_TYPES]).toEqual(["mcp", "grafana"]);
   });
 });
