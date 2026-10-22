@@ -5,7 +5,7 @@
 // The broker is the real one, with a fake Linear MCP server and a fake GitHub MCP connection behind it. No test reaches a real vendor.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { connectMcp, type McpConnection } from "@agentx/gateway";
+import { CatalogCache, connectMcp, type McpConnection } from "@agentx/gateway";
 import { EMPTY_RECIPE, type ResolvedRecipe, type ToolGrant } from "../../packages/contracts/src/agent-recipe.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
 import { validateRecipeForOrg } from "../../packages/broker/src/agents/guardrails.js";
@@ -21,6 +21,9 @@ import {
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { githubConnectorType } from "../../packages/broker/src/aws/connector-types.js";
 import { linearConnectorType } from "../../packages/broker/src/aws/linear-connector-type.js";
+import { callConnector, connectorCatalogKey, discoverConnector, type ScopeDiscovery } from "../../packages/broker/src/aws/connector-routes.js";
+import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
+import type { OrgId, WorkspaceInstance } from "../../packages/contracts/src/index.js";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, orgRemovedKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import type { ConnectorCatalog, PresentedTool } from "../../packages/contracts/src/connectors.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
@@ -76,6 +79,10 @@ describe("resolveToolGrants", () => {
 
   it("a read_write grant exposes save_issue too", () => {
     expect(names(resolveToolGrants({ grants: [grant({ type: "linear" }, "read_write")], connectors: [linearConnector], catalogs: [linearCatalog] }))).toEqual(["linear.get_issue:read", "linear.save_issue:write"]);
+  });
+
+  it("a step that allows no connector tool exposes none", () => {
+    expect(resolveToolGrants({ grants: [grant({ type: "linear" }, "read_write")], stepTools: [], connectors: [linearConnector], catalogs: [linearCatalog] })).toEqual([]);
   });
 
   it("a step's tools narrow what the grant allows, over the upstream names", () => {
@@ -200,7 +207,8 @@ describe("stepToolPatterns", () => {
   const step = (tools?: string[]) => ({ id: "s", name: "S", kind: "agent" as const, workspace: "read" as const, settings: { instructions: [], ...(tools === undefined ? {} : { tools }) } });
   it("takes the step's connector tool patterns and leaves out the workspace tools (Pi names)", () => {
     expect(stepToolPatterns(step(["get_*", "read", "grep"]))).toEqual(["get_*"]);
-    expect(stepToolPatterns(step(["read", "grep"]))).toBeUndefined();
+    // A list that holds only workspace tools is still an allow-list: it narrows to no connector tool.
+    expect(stepToolPatterns(step(["read", "grep"]))).toEqual([]);
     expect(stepToolPatterns(step())).toBeUndefined();
     expect(stepToolPatterns(undefined)).toBeUndefined();
     // Only an agent step narrows connector tools.
@@ -689,6 +697,18 @@ describe("GET /v1/internal/agent-tools", () => {
     expect(await names(narrowed.capability)).toEqual(["get_issue"]);
   });
 
+  it("a step whose tools are only workspace tools exposes no connector tool, and cannot call one", async () => {
+    const w = await world();
+    const run = await w.startRun({
+      tools: [grant({ type: "linear" }, "read_write")],
+      steps: [{ id: "triage", name: "Triage", kind: "agent", workspace: "read", settings: { instructions: [], tools: ["read"] } }],
+    });
+    expect((await w.tools(run.capability)).body.catalogs).toEqual([]);
+    const refused = await w.callTool(run.capability, { requestId: randomUUID(), connector: "linear", scope: "charterarc", tool: "get_issue", schemaHash: "a".repeat(64), arguments: { id: "CHA-1" } });
+    expect(errorOf(refused).code).toBe("AGENT_TOOL_NOT_GRANTED");
+    expect(w.linear.calls).toEqual([]);
+  });
+
   it("serves nothing for a recipe with no grants, and nothing for a connector the project lacks", async () => {
     const w = await world();
     const none = await w.startRun({ tools: [] });
@@ -1001,9 +1021,9 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const w = await world();
       const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
       const refused = await w.linearCall(run.capability, "save_issue", { id: "CHA-1", title: "Rename it" });
-      expect(refused.status).toBe(503);
+      expect(refused.status).toBe(403);
       expect(errorOf(refused)).toEqual({
-        code: "RUNTIME_UNAVAILABLE",
+        code: "FORBIDDEN",
         message: "Changes that need a person's approval aren't available in this release yet, so this call was not sent. Nothing was changed.",
       });
       expect(w.linear.calls).toEqual([]);
@@ -1046,7 +1066,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const own = await w.githubCall(run.capability, "issue_write", { method: "update", issue_number: 7, title: "A worse bug" });
       expect(own.status, JSON.stringify(own.body)).toBe(200);
       const foreign = await w.githubCall(run.capability, "issue_write", { method: "update", issue_number: 8, title: "Rename it" });
-      expect(foreign.status).toBe(503);
+      expect(foreign.status).toBe(403);
     });
 
     it("records what a create made, so the same run may change it, and nothing else", async () => {
@@ -1058,7 +1078,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const own = await w.linearCall(run.capability, "save_issue", { id: "CHA-2", title: "Found a worse bug" });
       expect(own.status, JSON.stringify(own.body)).toBe(200);
       const foreign = await w.linearCall(run.capability, "save_issue", { id: "CHA-1", title: "Rename it" });
-      expect(foreign.status).toBe(503);
+      expect(foreign.status).toBe(403);
       expect(w.db.find((item) => item.entityType === "AGENT_ITEM").map((item) => item.sk)).toEqual(["linear##CHA-2"]);
     });
   });
@@ -1134,7 +1154,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
       w.configure((base) => ({ ...base, labelListers: () => ({ linear: async () => new Map([[UUID, "automerge"], ["rovara", "rovara"]]) }) }));
       const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
       const created = await w.linearCall(run.capability, "save_issue", { title: "x", addLabels: [UUID] });
-      expect(created.status).toBe(503);
+      expect(created.status).toBe(403);
       expect(w.linear.calls).toEqual([]);
     });
   });
@@ -1208,7 +1228,7 @@ describe("GitHub through the agent routes", () => {
     const w = await world({ workflowFiles: { ".github/workflows/triage.yml": workflow("issue_comment", "./scripts/triage.sh"), "scripts/triage.sh": "echo triage" } });
     const run = await w.startRun({ tools: [grant({ type: "github" }, "read_write")] });
     const reply = await w.githubCall(run.capability, "add_issue_comment", { issue_number: 3, body: "hello" });
-    expect(reply.status).toBe(503);
+    expect(reply.status).toBe(403);
     expect(w.githubCalls).toEqual([]);
   });
 
@@ -1246,5 +1266,65 @@ describe("GitHub through the agent routes", () => {
     const permissions = w.tokens.mock.calls.map((entry) => JSON.stringify(entry[1]));
     expect(permissions).toContain(JSON.stringify({ issues: "read", metadata: "read" }));
     expect(permissions.some((entry) => entry.includes("\"write\""))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The catalog cache is per org
+// ---------------------------------------------------------------------------------------------
+
+describe("the catalog cache", () => {
+  const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
+  const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
+  const fake = (served: { description: string }) => {
+    const connect = (async () => ({
+      tools: [{ name: "get_issue", description: served.description, inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } }],
+      call: async () => ({ content: [{ type: "text" as const, text: "{}" }] }),
+      close: async () => undefined,
+    })) as unknown as Parameters<typeof discoverConnector>[0]["connector"]["connect"];
+    const connector: ResolvedConnector = {
+      name: "linear", type: "linear", label: "Linear issues", vendor: "Linear", scopeNoun: "team", scopes: [{ alias: "team", scope: {} }],
+      policy: { tools: [{ name: "get_issue", access: "read" }] }, approvals: [{ name: "get_issue" }], attribution: true, ledger: { prefix: "LINEAR", entityType: "LINEAR" },
+      configured: async () => true,
+      definition: async () => ({
+        label: "Linear", endpoint: new URL("https://mcp.linear.test/mcp"), permissionsHint: "x",
+        credentials: { issue: async () => ({ token: "t", bindings: {} }) }, binder: { properties: [], bind: () => ({}) }, guards: [],
+      }),
+      ...(connect === undefined ? {} : { connect }),
+    };
+    return connector;
+  };
+  const workspace = { projectName: "web" } as WorkspaceInstance;
+  const context = (orgId: OrgId) => ({ orgId, workspaceId: "ws", ownerKey: "owner", settingsRevision: 1 });
+
+  it("keeps org A's discovery from org B: the same project, revision, connector and alias in two orgs are two entries", async () => {
+    const catalogs = new CatalogCache<ScopeDiscovery>({ ttlMs: 600_000, maxEntries: 16 });
+    const forB = await discoverConnector({ connector: fake({ description: "B's private tool" }), workspace, context: context(ORG_B), catalogs });
+    const forA = await discoverConnector({ connector: fake({ description: "A's tool" }), workspace, context: context(ORG_A), catalogs });
+    expect(forB.tools[0]!.description).toContain("B's private tool");
+    expect(forA.tools[0]!.description).toContain("A's tool");
+    expect(forA.tools[0]!.description).not.toContain("B's");
+    // And each is served from its own entry afterwards, even when the vendor now says something else.
+    const againA = await discoverConnector({ connector: fake({ description: "changed" }), workspace, context: context(ORG_A), catalogs });
+    expect(againA.tools[0]!.description).toContain("A's tool");
+    const againB = await discoverConnector({ connector: fake({ description: "changed" }), workspace, context: context(ORG_B), catalogs });
+    expect(againB.tools[0]!.description).toContain("B's private tool");
+  });
+
+  it("drops only the calling org's entry when a call finds its schema changed", async () => {
+    const catalogs = new CatalogCache<ScopeDiscovery>({ ttlMs: 600_000, maxEntries: 16 });
+    for (const orgId of [ORG_A, ORG_B]) await discoverConnector({ connector: fake({ description: orgId }), workspace, context: context(orgId), catalogs });
+    const stale = await callConnector({
+      connector: fake({ description: ORG_A }), workspace, context: context(ORG_A), catalogs,
+      request: { requestId: randomUUID(), scope: "team", tool: "get_issue", schemaHash: "e".repeat(64), arguments: { id: "1" } },
+      ledger: { claim: async () => true, get: async () => undefined, finish: async () => undefined },
+    });
+    expect(stale).toMatchObject({ status: "FAILED", reason: "schema_changed" });
+    expect(catalogs.get(connectorCatalogKey(ORG_A, "web", 1, "linear", "team"))).toBeUndefined();
+    expect(catalogs.get(connectorCatalogKey(ORG_B, "web", 1, "linear", "team"))).toBeDefined();
+  });
+
+  it("puts the org in the key", () => {
+    expect(connectorCatalogKey(ORG_A, "web", 1, "linear", "team")).not.toBe(connectorCatalogKey(ORG_B, "web", 1, "linear", "team"));
   });
 });

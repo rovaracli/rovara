@@ -138,6 +138,52 @@ describe("mcpEndpointGuard", () => {
   });
 });
 
+describe("the guard's fetch holds every request to the checked endpoint", () => {
+  const guarded = async (request: unknown) => mcpEndpointGuard({ resolveHost: async () => [PUBLIC], request: request as never })(ENDPOINT);
+
+  it("sends a request to the endpoint's own origin, on any path", async () => {
+    const request = vi.fn(() => { throw new Error("stop before any network"); });
+    await expect((await guarded(request))("https://mcp.acme.dev/other/path", { method: "POST", body: "{}" })).rejects.toThrow("stop before any network");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["an IP literal", "https://127.0.0.1/mcp"], ["an IP literal in IPv6", "https://[::1]/mcp"], ["plain http", "http://mcp.acme.dev/mcp"],
+    ["another host", "https://other.acme.dev/mcp"], ["another port", "https://mcp.acme.dev:8443/mcp"], ["a host that only starts like it", "https://mcp.acme.dev.evil.test/mcp"],
+  ])("refuses %s and never opens a connection", async (_label, url) => {
+    const request = vi.fn();
+    await expect((await guarded(request))(url, { method: "POST", body: "{}" })).rejects.toThrow(/endpoint/u);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("refuses a local server by IP literal even when the pin is to a public address (the probe from the review)", async () => {
+    const hits: string[] = [];
+    const server = createServer((request, response) => { hits.push(String(request.url)); response.end("reached"); });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as { port: number }).port;
+    try {
+      await expect((await guarded(undefined))(`http://127.0.0.1:${port}/`)).rejects.toThrow(/endpoint/u);
+      expect(hits).toEqual([]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe("the headers a pinned fetch forwards", () => {
+  it("drops host, connection and transfer-encoding, and keeps the rest", async () => {
+    const seen: Array<Record<string, string>> = [];
+    const request = vi.fn((_url: URL, options: Record<string, unknown>) => { seen.push(options.headers as Record<string, string>); throw new Error("stop before any network"); });
+    const fetchPinned = pinnedFetch([PUBLIC], { request: request as never });
+    await expect(fetchPinned("https://mcp.acme.dev/mcp", {
+      method: "POST", body: "{}", headers: { Host: "evil.internal", Connection: "keep-alive", "Transfer-Encoding": "chunked", "X-Keep": "1", Authorization: "Bearer t" },
+    })).rejects.toThrow();
+    expect(Object.keys(seen[0]!).sort()).toEqual(["authorization", "content-length", "x-keep"]);
+  });
+});
+
 describe("guardedConnect", () => {
   const input = (endpoint = ENDPOINT) => ({ endpoint, token: "t", tools: ["a"], signal: new AbortController().signal }) as Parameters<typeof connectMcp>[0];
 
