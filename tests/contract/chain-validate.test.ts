@@ -75,7 +75,7 @@ function setup() {
   }
   db.set({ ...orgMemberKey(ORG_B, STRANGER), entityType: "ORG_MEMBER", orgId: ORG_B, developerId: STRANGER, role: "member", joinedAt: "2026-10-01T00:00:00.000Z" });
 
-  const create = (name: string, overlay: RecipeOverlay = SCRATCH, extra: { owner?: string; orgId?: OrgId; extends?: "rovara-code" } = {}) =>
+  const create = (name: string, overlay: RecipeOverlay = SCRATCH, extra: { owner?: string; orgId?: OrgId; extends?: AgentId } = {}) =>
     store.create({ orgId: extra.orgId ?? ORG_A, name, owner: { kind: "member", developerId: extra.owner ?? ALICE }, overlay, createdBy: extra.owner ?? ALICE, ...(extra.extends === undefined ? {} : { extends: extra.extends }) });
   const publish = async (agentId: AgentId, orgId: OrgId = ORG_A) => {
     const agent = (await store.get(orgId, agentId))!;
@@ -210,17 +210,18 @@ describe("chainGraphProblems", () => {
     });
 
     it("names a step ON the cycle, not one that is only downstream of it", () => {
-      // a -> b -> c -> b (unbounded), c -> d -> $end. d is left over by Kahn's algorithm but is not on a cycle.
+      // a -> b -> c -> b (unbounded), c -> d -> $end. d is left over by Kahn's algorithm but is not on a cycle, and it has the lowest index of the three.
       const def = design(
         "a",
         agent("a", "b"),
+        agent("d", undefined),
         agent("b", "c"),
         { ...agent("c", "b"), next: { kind: "branch", choices: [{ id: "back", description: "back", to: "b" }, { id: "on", description: "on", to: "d" }] } },
-        agent("d", undefined),
       );
       const problems = chainGraphProblems(def);
       expect(problems).toHaveLength(1);
       expect(problems[0]!.message).toMatch(/^(b|c) is in a loop/);
+      expect(problems[0]!.path).toMatch(/^steps\.[23]$/);
     });
 
     it("does not call two bounded edges in a row a loop and ignores edges to $end", () => {
@@ -381,6 +382,16 @@ describe("validateChainForPublish", () => {
       expect(result.problems).toHaveLength(1);
       expect(result.problems[0]!.path).toBe("steps.0.agent");
       expect(result.problems[0]!.message).toMatch(/^You can view Helper; use needs /);
+    });
+
+    it("reports a base the agent builds on being archived, as Plan 3 words it", async () => {
+      const ctx = setup();
+      const base = await ctx.create("Base");
+      await ctx.publish(base.agentId);
+      const child = await ctx.create("Child", { instructions: "x" }, { extends: base.agentId });
+      await ctx.publish(child.agentId);
+      await ctx.store.archive(ORG_A, base.agentId, ALICE);
+      expect(text((await ctx.validate(onAgent(child.agentId))).problems)).toEqual(["steps.0.agent: Child builds on Base, which is archived. Ask Child's owner to pick another base."]);
     });
 
     it("prefixes the org's guardrail problems with steps.<i>.agent.", async () => {
