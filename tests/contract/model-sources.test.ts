@@ -1244,6 +1244,18 @@ describe("removals that did not finish (I5)", () => {
     expect(s.doc()!.removing).toEqual([]);
   });
 
+  it("holds at 50 owed removals: a 51st waits until some are finished", async () => {
+    const s = await setup({ cloud: false });
+    const id = await s.add(DANA, anthropic());
+    s.access.removeSource.mockRejectedValue(unavailable());
+    const owed = Array.from({ length: 50 }, (_, index) => ({ sourceId: `src_${String(index).padStart(20, "0")}`, kind: "anthropic" }));
+    s.db.set({ ...s.doc()!, removing: owed });
+    const refused = await s.write(DANA, "DELETE", `/v1/app/org/model-sources/${id}`);
+    expect([refused.status, errorOf(refused).code, errorOf(refused).message]).toEqual([503, "RUNTIME_UNAVAILABLE", "earlier removals haven't finished; try again in a few minutes"]);
+    expect(s.doc()!.sources).toHaveLength(1);
+    expect(s.doc()!.removing).toHaveLength(50);
+  });
+
   it("keeps a failing cleanup from failing the read or the write that tried it", async () => {
     const { s } = await unfinishedRemoval();
     s.access.removeSource.mockRejectedValue(unavailable());
@@ -1329,9 +1341,13 @@ describe("the sweeper", () => {
     // The add that registered it commits its record.
     const source = { sourceId: STRAY, kind: "anthropic", label: "Late", models: [{ catalog: sonnet }] } as never;
     await s.store().save({ orgId: TEST_ORG, source, mode: "create", keyStored: true, by: DANA.developerId });
+    const seen = { pk: "MODEL_SOURCES_SWEEP", sk: `ORPHAN#${TEST_ORG}#${STRAY}` };
+    expect(s.db.get(seen)).toBeDefined();
     clock.t = T0 + minutes(11);
     s.access.removeSource.mockClear();
     await sweep();
+    // A record names it now, so the sighting is forgotten: it cannot count towards removing the source later.
+    expect(s.db.get(seen)).toBeUndefined();
     clock.t = T0 + minutes(25);
     await sweep();
     expect(s.access.removeSource).not.toHaveBeenCalled();
@@ -1352,9 +1368,12 @@ describe("the sweeper", () => {
     const first = await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => clock.t, store: s.store(), access: s.access, egress: s.egressDeps() }, { budgetMs: 1_500 });
     expect(first.complete).toBe(false);
     expect(s.access.removeSource).toHaveBeenCalledTimes(1);
+    // It says where it stopped: after the org it finished.
+    expect(s.db.get("MODEL_SOURCES_SWEEP", "CURSOR")).toMatchObject({ cursor: TEST_ORG });
     const second = await sweepModelSources({ documentClient: s.db, tableName: "state", now: () => clock.t, store: s.store(), access: s.access, egress: s.egressDeps() }, { budgetMs: 1_500 });
     expect(s.access.removeSource).toHaveBeenCalledTimes(2);
     expect(second.complete).toBe(true);
+    expect(s.db.get("MODEL_SOURCES_SWEEP", "CURSOR")).toBeUndefined();
     expect(s.doc()!.removing).toEqual([]);
     expect(s.doc(ORG_B)!.removing).toEqual([]);
   });

@@ -446,8 +446,10 @@ describe("listSources", () => {
     proxy.credentials.set(`${ORG}.src_stopped0123456789abc`, { credential_name: `${ORG}.src_stopped0123456789abc`, credential_values: {}, credential_info: {} });
     proxy.credentials.set("unrelated-credential", { credential_name: "unrelated-credential", credential_values: {}, credential_info: {} });
     proxy.models.push({ id: "own", model_name: "us.anthropic.claude-sonnet-4-6", litellm_params: {}, model_info: {} });
+    // A source with no key at all (Bedrock) is known by its models alone.
+    await client(proxy).upsertSource({ orgId: ORG, source: bedrockSource(false, "src_bedrock0123456789abc") });
     const listed = await client(proxy).listSources();
-    expect(listed.map((entry) => `${entry.orgId}/${entry.sourceId}`).sort()).toEqual([`${ORG}/${SRC}`, `${ORG}/src_stopped0123456789abc`, `${OTHER_ORG}/${SRC_TWO}`].sort());
+    expect(listed.map((entry) => `${entry.orgId}/${entry.sourceId}`).sort()).toEqual([`${ORG}/${SRC}`, `${ORG}/src_stopped0123456789abc`, `${OTHER_ORG}/${SRC_TWO}`, `${ORG}/src_bedrock0123456789abc`].sort());
   });
 
   it("is a request of its own for the handler and the invoker, and the handler refuses an argument", async () => {
