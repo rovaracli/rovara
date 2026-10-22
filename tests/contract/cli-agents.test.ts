@@ -182,7 +182,7 @@ describe("agentx agents publish, rollback, update-base, adopt, share, archive, a
 });
 
 describe("agentx agents run", () => {
-  const task = { taskId: "44444444-4444-4444-8444-444444444444", title: "Triage", project: "payments", status: "QUEUED", startingRevision: 3, client: "Rovara CLI", shared: false, createdAt: "2026-10-22T09:00:00.000Z", updatedAt: "2026-10-22T09:00:00.000Z", events: [] };
+  const task = { taskId: "44444444-4444-4444-8444-444444444444", title: "Triage", project: "payments", status: "RUNNING", startingRevision: 3, client: "Rovara CLI", shared: false, createdAt: "2026-10-22T09:00:00.000Z", updatedAt: "2026-10-22T09:00:00.000Z", events: [] };
 
   it("--draft sends version \"draft\" and prints the task it started", async () => {
     const h = await agentsCli({ [`POST /v1/app/agents/${AGT}/runs`]: Response.json({ task }, { status: 202 }) });
@@ -193,7 +193,8 @@ describe("agentx agents run", () => {
 
   it("--version sends that version; without either it sends none", async () => {
     const h = await agentsCli({ [`POST /v1/app/agents/${AGT}/runs`]: Response.json({ task }, { status: 202 }) });
-    expect(await h.run(["agents", "run", AGT, "--project", "payments", "--input", "go", "--version", "2"])).toBe(0);
+    // The program's own --version is not taken for the run's, wherever the program's options stand.
+    expect(await h.run(["--env", "staging", "agents", "run", AGT, "--project", "payments", "--input", "go", "--version", "2"])).toBe(0);
     expect(await h.run(["agents", "run", AGT, "--project", "payments", "--input", "go"])).toBe(0);
     expect((h.calls[0]!.body as Record<string, unknown>).version).toBe(2);
     expect(h.calls[1]!.body).not.toHaveProperty("version");
@@ -327,7 +328,8 @@ describe("agentx approvals (R66: the CLI never decides)", () => {
     };
     walk(createCliProgram(), []);
     expect(names).toContain("approvals open");
-    expect(names.filter((name) => /\b(approve|decline|deny|decide|reject|accept)\b/.test(name))).toEqual([]);
+    // The operator's review of egress domains (an admin sign-in, not a person's agent approval) predates the agent platform and stays.
+    expect(names.filter((name) => /\b(approve|decline|deny|decide|reject|accept)\b/.test(name))).toEqual(["admin egress approve", "admin egress reject"]);
     expect(names.filter((name) => name.startsWith("approvals ")).sort()).toEqual(["approvals list", "approvals open", "approvals show"]);
     expect(names.filter((name) => name.startsWith("project connectors comment-triggers ")).sort()).toEqual(["project connectors comment-triggers opt-out", "project connectors comment-triggers show"]);
   });

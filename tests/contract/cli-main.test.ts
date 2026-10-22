@@ -5,9 +5,9 @@ describe("AgentX executable command surface", () => {
   it("exposes administration and developer sign-in; developer tasks come from AI tools", () => {
     const program = createCliProgram();
 
-    expect(program.commands.map((command) => command.name())).toEqual(["login", "logout", "whoami", "workspaces", "chatgpt", "audit", "org", "connections", "github", "signin", "config", "loop", "doctor", "upgrade", "destroy", "admin", "project", "channel", "connector", "alerts", "env", "deploy", "init", "mcp"]);
+    expect(program.commands.map((command) => command.name())).toEqual(["login", "logout", "whoami", "workspaces", "chatgpt", "audit", "org", "connections", "agents", "skills", "approvals", "github", "signin", "config", "loop", "doctor", "upgrade", "destroy", "admin", "project", "channel", "connector", "alerts", "env", "deploy", "init", "mcp"]);
 
-    expect(subcommands(program, "org")).toEqual(["members", "role", "remove", "leave", "comment-triggers"]);
+    expect(subcommands(program, "org")).toEqual(["members", "role", "remove", "leave", "comment-triggers", "guardrails", "sources"]);
     // Plan 3, Task 14b: the opt-outs of the comment rule are listed here and set on the confirmation page; no command sets one.
     expect(program.commands.find((command) => command.name() === "org")?.commands.find((command) => command.name() === "comment-triggers")?.commands.map((command) => command.name())).toEqual(["list"]);
     expect(subcommands(program, "connections")).toEqual(["list", "add", "remove", "check"]);
@@ -32,7 +32,7 @@ describe("AgentX executable command surface", () => {
     expect(subcommands(program, "audit")).toEqual(["log", "export", "verify", "open"]);
     expect(subcommands(admin, "audit")).toEqual(["log", "export"]);
     expect(subcommands(program, "mcp")).toEqual(["install"]);
-    expect(subcommands(program, "project")).toEqual(["add", "create", "show", "archive", "restore", "members", "add-member", "remove-member", "settings"]);
+    expect(subcommands(program, "project")).toEqual(["add", "create", "show", "archive", "restore", "members", "add-member", "remove-member", "settings", "agents", "connectors", "ai"]);
     expect(subcommands(program, "channel")).toEqual(["add"]);
     expect(subcommands(program, "connector")).toEqual(["add"]);
     expect(subcommands(program, "alerts")).toEqual(["test"]);

@@ -13,7 +13,7 @@ const APR = "apr_bbbbbbbbbbbbbbbbbbbb";
 const CELL = "https://abc123.execute-api.us-west-2.amazonaws.com";
 const CONFIRM = `${CELL}/v1/app/approve/${APR}`;
 const view: DeveloperTaskView = {
-  taskId: TASK, title: "Triage", project: "payments", status: "QUEUED", startingRevision: 7, client: "Claude Code", shared: false,
+  taskId: TASK, title: "Triage", project: "payments", status: "RUNNING", startingRevision: 7, client: "Claude Code", shared: false,
   createdAt: "2026-10-22T09:00:00.000Z", updatedAt: "2026-10-22T09:00:00.000Z", events: [],
 };
 const structured = (result: unknown) => (result as { structuredContent?: Record<string, unknown> }).structuredContent ?? {};
