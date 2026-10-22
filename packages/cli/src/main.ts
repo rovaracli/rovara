@@ -42,7 +42,7 @@ import { askToApply, exportChanges, runCliChange } from "./admin/changes.js";
 import { batchResultsOutput, evalBatchShowText, evalBatchStartText, fetchEvalBatchResults, showEvalBatch, startEvalBatch, stopEvalBatch } from "./admin/eval-batch.js";
 import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel } from "./admin/eval.js";
 import { exportTurns, parseSince } from "./admin/turns.js";
-import { loginWithPkce, openSystemBrowser, tokenStoreKey } from "./auth.js";
+import { loginWithPkce, openSystemBrowser, sanitizeServerText, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
@@ -73,7 +73,8 @@ import { runGithubOauthSet, type GithubOauthServices } from "./github/oauth.js";
 import { githubConnect, githubConnectText, githubDisconnect, githubDisconnectText, githubList, githubListText } from "./developer/github.js";
 import { secretsManagerInitSecrets, type FinishFlags, type SecretFlags } from "./init/context.js";
 import { githubRestApi } from "./init/github-app.js";
-import { processPrompter } from "./init/prompts.js";
+import { processPrompter, readHidden } from "./init/prompts.js";
+import { cleanConnectionSecret, connectionsAdd, connectionsAddText, connectionsCheck, connectionsCheckText, connectionsList, connectionsListText, connectionsRemove, connectionsRemoveText, parseConnectionAdd } from "./developer/connections.js";
 import { INIT_STEP_IDS, type InitStepId } from "./init/install-state.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -607,6 +608,59 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       if (!await confirm(question)) throw agentXError("CONFIRMATION_DECLINED", "you did not leave the organization; nothing changed");
       const result = await orgLeave(developerSession(), env);
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, orgClosed: result.orgClosed, message: result.message }, true) : orgLeaveText(result));
+    });
+
+  // Plan 3, Task 12b: the Linear, Jira and MCP connections of your organization (an owner or admin changes them; any member lists them).
+  const connections = program.command("connections").description("the Linear, Jira and MCP connections your organization has given Rovara");
+  connections
+    .command("list")
+    .description("list your organization's connections: what each is, whether a credential is saved and what the last check found")
+    .action(async (_options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await connectionsList(developerSession(), developerEnv(command));
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, connections: result.connections }, true) : connectionsListText(result));
+    });
+  connections
+    .command("add")
+    .description("add a connection (an organization owner or admin); the key or token is read from standard input, hidden on a terminal, and never shown again")
+    .argument("<type>", "linear, jira or mcp")
+    .option("--label <name>", "a name people recognize it by, such as \"Team Linear\"")
+    .option("--access <access>", "read or read_write: what Rovara's agents may do with it", "read")
+    .option("--site-url <url>", "jira: your Jira Cloud site, https://<site>.atlassian.net")
+    .option("--email <email>", "jira: the Atlassian account email the API token belongs to")
+    .option("--endpoint <url>", "mcp: the MCP server's https URL")
+    .option("--vendor <name>", "mcp: who runs the server, such as Sentry")
+    .option("--auth-header <name>", "mcp: the header that carries the token, if not Authorization")
+    .option("--auth-prefix <text>", "mcp: what goes before the token in that header, if not \"Bearer \"")
+    .action(async (type: string, options: { label?: string; access?: string; siteUrl?: string; email?: string; endpoint?: string; vendor?: string; authHeader?: string; authPrefix?: string }, command: Command) => {
+      const globals = globalOptions(command);
+      // Every option is checked before the secret is asked for, so a typo costs no paste.
+      const parsed = parseConnectionAdd({ type, ...options });
+      const secret = cleanConnectionSecret(await readHidden(dependencies.stdin ?? process.stdin, services.stderr, `${parsed.secretName} (hidden): `), parsed.secretName);
+      const result = await connectionsAdd(developerSession(), developerEnv(command), parsed, secret);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, connection: result.connection }, true) : connectionsAddText(result));
+    });
+  connections
+    .command("remove")
+    .description("remove a connection (an organization owner or admin); its secret is scheduled for deletion and can be recovered for 7 days")
+    .argument("<connection-id>", "the connection's ID, from agentx connections list")
+    .option("--yes", "remove without asking", false)
+    .action(async (connectionId: string, options: { yes: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const confirm = changeConfirmer(options.yes);
+      if (!await confirm(`Remove the connection ${sanitizeServerText(connectionId)}? Agents that use it stop working.`)) throw agentXError("CONFIRMATION_DECLINED", "you did not remove the connection; nothing changed");
+      const result = await connectionsRemove(developerSession(), developerEnv(command), connectionId);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, connectionId: result.connectionId }, true) : connectionsRemoveText(result));
+    });
+  connections
+    .command("check")
+    .description("test a connection with its saved secret (an organization owner or admin)")
+    .argument("<connection-id>", "the connection's ID, from agentx connections list")
+    .action(async (connectionId: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await connectionsCheck(developerSession(), developerEnv(command), connectionId);
+      if (!result.ok) throw new ReportedFailure("CONNECTION_CHECK_FAILED", `The connection ${sanitizeServerText(connectionId)} did not pass its check${result.message === undefined ? "" : `: ${sanitizeServerText(result.message)}`}.`);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, connectionId: result.connectionId, ok: true, ...(result.message === undefined ? {} : { message: result.message }) }, true) : connectionsCheckText(result));
     });
 
   const githubCommand = program.command("github").description("the GitHub App of a Rovara Cloud install");
