@@ -836,6 +836,20 @@ describe("a script that runs another script (round 2, item 5)", () => {
   });
 });
 
+describe("a script in a local action's folder (round 2, mutant)", () => {
+  it("reads $GITHUB_ACTION_PATH in it as that folder, not the root", async () => {
+    const files = {
+      [WORKFLOW]: workflowWith(steps("- uses: ./.github/actions/ship")),
+      ".github/actions/ship/action.yml": "runs:\n  using: composite\n  steps: []\n",
+      ".github/actions/ship/go.sh": "#!/bin/sh\nsource $GITHUB_ACTION_PATH/extra/lib.sh\n",
+      ".github/actions/ship/extra/lib.sh": "inside", "extra/lib.sh": "at the root",
+    };
+    const result = await scan(files);
+    expect(result.files).toContain(".github/actions/ship/extra/lib.sh");
+    expect(result.files).not.toContain("extra/lib.sh");
+  });
+});
+
 describe("a root action (round 2, item 6)", () => {
   const using = workflowWith(steps("- uses: ./"));
 
