@@ -64,14 +64,18 @@ const errorOf = (reply: Reply) => reply.body.error as { code: string; message: s
 async function world(options: { files?: Record<string, string> } = {}) {
   let files = options.files ?? baseFiles();
   let down = false;
+  let pinned: number | undefined;
   const members = new FakeProjectMembers();
   members.grant(TEST_ORG, "payments", MAX.developerId, "maintainer");
   members.grant(TEST_ORG, "payments", EVE.developerId, "contributor");
   for (const [who, role] of [[DANA, "admin"], [OWEN, "owner"]] as const) members.setOrgRole(TEST_ORG, who.developerId, role);
   const audit = capturingAuditDeps();
   const reads: string[] = [];
-  const agentRepositoryReader = vi.fn(async (url: string, scope: { orgId: OrgId }) => {
+  /** The pin each reader was made with (the third argument), in order. */
+  const pins: Array<number | undefined> = [];
+  const agentRepositoryReader = vi.fn(async (url: string, scope: { orgId: OrgId }, options?: { installationId?: number }) => {
     reads.push(`${url} ${scope.orgId}`);
+    pins.push(options?.installationId);
     if (down) throw new Error("GitHub is down");
     return treeReader(files);
   });
@@ -95,8 +99,8 @@ async function world(options: { files?: Record<string, string> } = {}) {
     store, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
     signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }),
     audit: audit.audit,
-    repositoryReader: async ({ orgId, repositoryUrl }) => agentRepositoryReader(repositoryUrl, { orgId }),
-    projectRepositories: async (orgId, project) => (orgId === TEST_ORG && project === "payments" ? [{ name: "demo", url: "https://github.com/example/demo.git" }] : undefined),
+    repositoryReader: async ({ orgId, repositoryUrl, installationId }) => agentRepositoryReader(repositoryUrl, { orgId }, installationId === undefined ? undefined : { installationId }),
+    projectRepositories: async (orgId, project) => (orgId === TEST_ORG && project === "payments" ? [{ name: "demo", url: "https://github.com/example/demo.git", ...(pinned === undefined ? {} : { installationId: pinned }) }] : undefined),
   };
   const call = async (who: Developer, method: string, path: string, body?: Record<string, unknown>): Promise<Reply> => {
     const reply = await h.dev(who, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body });
@@ -128,8 +132,8 @@ async function world(options: { files?: Record<string, string> } = {}) {
   };
   const rule = (project = "payments", taskId = "task-1", cache = memoryRunCache()) => commentTriggerRule({ ...deps, repositoryReader: deps.repositoryReader! }, { orgId: TEST_ORG, project, repository: REPOSITORY, taskId, cache });
   return {
-    ...h, files: () => files, setFiles: (next: Record<string, string>) => { files = next; }, setDown: (value: boolean) => { down = value; },
-    members, audit, deps, store, call, review, digest, ask, put, approvals, confirm, optOutThrough, rule, PATH, reads, agentRepositoryReader, enroll,
+    ...h, pin: (id: number | undefined) => { pinned = id; }, files: () => files, setFiles: (next: Record<string, string>) => { files = next; }, setDown: (value: boolean) => { down = value; },
+    members, audit, deps, store, call, review, digest, ask, put, approvals, confirm, optOutThrough, rule, PATH, reads, pins, agentRepositoryReader, enroll,
   };
 }
 
@@ -777,6 +781,33 @@ describe("a project with several repositories (review M7)", () => {
     expect(named.body.repositories).toMatchObject([{ repository: "example/api" }]);
     expect(w.reads).toEqual([`https://github.com/example/api.git ${TEST_ORG}`]);
     expect((await (await world()).review()).status).toBe(200);
+  });
+});
+
+describe("the project's pinned installation (review M5)", () => {
+  it("holds the request, the confirmation and the run's gate to it", async () => {
+    const w = await world();
+    w.pin(55);
+    const current = (await w.digest())[0]!;
+    const caller = { orgId: TEST_ORG, developerId: DANA.developerId, orgRole: "admin" as const };
+    w.pins.length = 0;
+    await requestOptOut(w.deps, caller, { requestId: randomUUID(), project: "payments", repository: REPOSITORY, expectedDigest: current.digest, reason: "ok" });
+    await w.confirm();
+    await commentTriggerRule({ ...w.deps, repositoryReader: w.deps.repositoryReader! }, { orgId: TEST_ORG, project: "payments", repository: REPOSITORY, installationId: 55, cache: memoryRunCache() });
+    expect(w.pins).toEqual([55, 55, 55]);
+    w.pin(undefined);
+    w.pins.length = 0;
+    await w.rule();
+    expect(w.pins).toEqual([undefined]);
+  });
+
+  it("is read from the project's current revision by the routes", async () => {
+    const w = await world();
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const revision = w.db.get(key.pk, key.sk) as { definition: { repositories: Array<Record<string, unknown>> } } & Record<string, unknown>;
+    w.db.set({ ...revision, definition: { ...revision.definition, repositories: revision.definition.repositories.map((repository) => ({ ...repository, installationId: 7 })) } });
+    expect((await w.review()).status).toBe(200);
+    expect(w.pins).toEqual([7]);
   });
 });
 
