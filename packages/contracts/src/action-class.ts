@@ -33,10 +33,22 @@ export interface ToolFacts {
   /** The read tool of an MCP connector that lists its labels (`id` to `name`), for `labelIdArguments`. */
   labelListTool?: string | undefined;
   /**
-   * Arguments that are not content: a repository's `owner` and `repo`, a path, a URL, an enum choice. They are not scanned for commands or
-   * mentions, left as given when mentions are stripped, and not read as an assignee (`owner`). A URL here still counts as an outward send.
+   * Arguments that are not content: a path, a URL, an enum choice. They are not scanned for commands or mentions and are left as given when
+   * mentions are stripped. A URL here still counts as an outward send, and an enum choice is still content of a change. Never a free-text field:
+   * `nonTextFactProblems` (broker) refuses `title`, `body`, `text`, `description`, `comment`, `message` and `summary`, and the classifier ignores such an entry.
    */
   nonTextArguments?: readonly string[] | undefined;
+  /**
+   * The arguments that scope an item reference, such as GitHub's `owner` and `repo`: the same number in another repository is another item. They key
+   * the items a run created (`<connector>#<scope>#<value>`), are not read as an assignee, and are exempt from the safe-change check. A `github`
+   * tool that declares none gets no own-item exemption.
+   */
+  itemScopeArguments?: readonly string[] | undefined;
+  /**
+   * Whether `labelArgument` and the label id arguments replace the item's whole label set (GitHub's `labels`) rather than add to it. Replacing the set
+   * on an item the run did not create is consequential. Absent: GitHub replaces, every other connector adds.
+   */
+  labelsReplace?: boolean | undefined;
   /** The paths in a create's result that name the new item (Linear `identifier`, GitHub `number`), besides `itemArguments`, so a later change to it is the run's own. */
   resultItemArguments?: readonly string[] | undefined;
 }

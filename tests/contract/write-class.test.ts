@@ -37,13 +37,13 @@ function grant(type: AgentConnectorType, upstreamName: string, options: GrantOpt
   return { connector, type, upstreamName, presentedName: `${connector}__${upstreamName}`, access, facts };
 }
 
-// GitHub's tools name the repository in `owner` and `repo`; Task 19 declares them as non-text arguments so `owner` is not read as an assignee.
+// GitHub's tools name the repository in `owner` and `repo`; Task 19 declares them as item scope arguments so `owner` is not read as an assignee.
 const REPOSITORY_ARGUMENTS = ["owner", "repo"];
 const saveIssue = (over: GrantOptions = {}) => grant("linear", "save_issue", { itemArguments: ["id"], labelArgument: "labels", labelIdArguments: ["labelIds"], ...over });
-const githubIssue = (over: GrantOptions = {}) => grant("github", "issue_write", { itemArguments: ["issue_number"], labelArgument: "labels", labelIdArguments: ["label_ids"], nonTextArguments: REPOSITORY_ARGUMENTS, ...over });
+const githubIssue = (over: GrantOptions = {}) => grant("github", "issue_write", { itemArguments: ["issue_number"], labelArgument: "labels", labelIdArguments: ["label_ids"], itemScopeArguments: REPOSITORY_ARGUMENTS, ...over });
 const linearComment = () => grant("linear", "create_comment");
-const githubComment = () => grant("github", "add_issue_comment", { nonTextArguments: REPOSITORY_ARGUMENTS });
-const githubReview = () => grant("github", "pull_request_review_write", { nonTextArguments: REPOSITORY_ARGUMENTS });
+const githubComment = () => grant("github", "add_issue_comment", { itemScopeArguments: REPOSITORY_ARGUMENTS });
+const githubReview = () => grant("github", "pull_request_review_write", { itemScopeArguments: REPOSITORY_ARGUMENTS });
 const mcp = (name: string, over: GrantOptions = {}) => grant("mcp", name, over);
 
 const LABELS = new Map<string, string | undefined>([["lbl-bug", "bug"], ["lbl-deploy", "deploy"], ["lbl-auto", "automerge"], ["101", "bug"], ["102", "automerge"]]);
@@ -73,29 +73,29 @@ describe("classifyWrite: Linear and GitHub item changes (Review Focus 1)", () =>
 
   it("makes a state, assignee or close change consequential", () => {
     for (const args of [{ id: "ENG-12", stateId: "s1" }, { id: "ENG-12", assigneeId: "u1" }, { id: "ENG-12", closed: true }, { id: "ENG-12", state: "Done" }]) {
-      expect(classOf(saveIssue(), args, { ownItems: new Set(["linear#ENG-12"]) }), JSON.stringify(args)).toBe("consequential");
+      expect(classOf(saveIssue(), args, { ownItems: new Set(["linear##ENG-12"]) }), JSON.stringify(args)).toBe("consequential");
     }
   });
 
   it("makes a title change safe on an item the run created and consequential otherwise (Linear identifier, GitHub number)", () => {
-    expect(classOf(saveIssue(), { id: "ENG-12", title: "New title" }, { ownItems: new Set(["linear#ENG-12"]) })).toBe("safe");
+    expect(classOf(saveIssue(), { id: "ENG-12", title: "New title" }, { ownItems: new Set(["linear##ENG-12"]) })).toBe("safe");
     expect(classOf(saveIssue(), { id: "ENG-12", title: "New title" })).toBe("consequential");
-    expect(classOf(saveIssue(), { id: "ENG-13", title: "New title" }, { ownItems: new Set(["linear#ENG-12"]) })).toBe("consequential");
-    expect(classOf(githubIssue(), { issue_number: 42, title: "New title" }, { ownItems: new Set(["github#42"]) })).toBe("safe");
-    expect(classOf(githubIssue(), { issue_number: 42, title: "New title" })).toBe("consequential");
-    expect(classOf(githubIssue(), { issue_number: 43, title: "New title" }, { ownItems: new Set(["github#42"]) })).toBe("consequential");
+    expect(classOf(saveIssue(), { id: "ENG-13", title: "New title" }, { ownItems: new Set(["linear##ENG-12"]) })).toBe("consequential");
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 42, title: "New title" }, { ownItems: new Set(["github#o/r#42"]) })).toBe("safe");
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 42, title: "New title" })).toBe("consequential");
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 43, title: "New title" }, { ownItems: new Set(["github#o/r#42"]) })).toBe("consequential");
   });
 
   it("needs every item a call names to be the run's own, and the connector to match", () => {
     const batch = grant("mcp", "update_items", { itemArguments: ["items[].id"] });
-    const own = new Set(["mcp#a", "mcp#b"]);
+    const own = new Set(["mcp##a", "mcp##b"]);
     expect(classOf(batch, { items: [{ id: "a", title: "x" }, { id: "b", title: "y" }] }, { ownItems: own })).toBe("safe");
     expect(classOf(batch, { items: [{ id: "a", title: "x" }, { id: "c", title: "y" }] }, { ownItems: own })).toBe("consequential");
-    expect(classOf(batch, { items: [{ id: "a", title: "x" }] }, { ownItems: new Set(["other#a"]) })).toBe("consequential");
+    expect(classOf(batch, { items: [{ id: "a", title: "x" }] }, { ownItems: new Set(["other##a"]) })).toBe("consequential");
   });
 
   it("does not let an own item excuse an assignee, a state change or a reviewer", () => {
-    const own = { ownItems: new Set(["linear#ENG-12"]) };
+    const own = { ownItems: new Set(["linear##ENG-12"]) };
     expect(classOf(saveIssue(), { id: "ENG-12", title: "t", assignee: "me" }, own)).toBe("consequential");
     expect(classOf(saveIssue(), { id: "ENG-12", title: "t", teamId: "t1" }, own)).toBe("consequential");
     expect(classOf(saveIssue(), { id: "ENG-12", fields: { owner: "x" } }, own)).toBe("consequential");
@@ -104,7 +104,9 @@ describe("classifyWrite: Linear and GitHub item changes (Review Focus 1)", () =>
   it("makes a call with no argument besides the item itself consequential unless the item is the run's own", () => {
     const acknowledge = mcp("acknowledge_alert", { itemArguments: ["alertId"] });
     expect(classOf(acknowledge, { alertId: "a1" })).toBe("consequential");
-    expect(classOf(acknowledge, { alertId: "a1" }, { ownItems: new Set(["mcp#a1"]) })).toBe("safe");
+    // The name must say it records something for an own item to be safe.
+    expect(classOf(acknowledge, { alertId: "a1" }, { ownItems: new Set(["mcp##a1"]) })).toBe("consequential");
+    expect(classOf(mcp("update_alert", { itemArguments: ["alertId"] }), { alertId: "a1" }, { ownItems: new Set(["mcp##a1"]) })).toBe("safe");
   });
 
   it("makes a comment safe, and a create carrying an assignee or an approving review consequential", () => {
@@ -173,13 +175,13 @@ describe("classifyWrite: name rules (R2-2)", () => {
       expect(classOf(mcp(name), { target: "x" }), name).toBe("consequential");
     }
     for (const name of ["create_note", "add_note", "save_note", "upsert_note", "write_note", "update_note", "edit_note", "set_note"]) {
-      expect(classOf(mcp(name, { itemArguments: name.startsWith("create") || name.startsWith("add") || name.startsWith("save") || name.startsWith("write") ? [] : ["id"] }), { id: "n1", text: "x" }, { ownItems: new Set(["mcp#n1"]) }), name).toBe("safe");
+      expect(classOf(mcp(name, { itemArguments: name.startsWith("create") || name.startsWith("add") || name.startsWith("save") || name.startsWith("write") ? [] : ["id"] }), { id: "n1", text: "x" }, { ownItems: new Set(["mcp##n1"]) }), name).toBe("safe");
     }
   });
 });
 
 describe("classifyWrite: labels and repositories", () => {
-  const own = { ownItems: new Set(["linear#ENG-12"]) };
+  const own = { ownItems: new Set(["linear##ENG-12"]) };
 
   it("makes adding a trigger label consequential and adding bug safe", () => {
     expect(classOf(saveIssue(), { id: "ENG-12", labels: ["automerge"] }, own)).toBe("consequential");
@@ -219,12 +221,12 @@ describe("classifyWrite: labels and repositories", () => {
   });
 
   it("resolves a GitHub label set by id the same way", () => {
-    const github = { ownItems: new Set(["github#42"]) };
-    expect(classOf(githubIssue(), { issue_number: 42, label_ids: ["102"] }, github)).toBe("consequential");
-    expect(classOf(githubIssue(), { issue_number: 42, label_ids: ["101"] }, github)).toBe("safe");
-    expect(classOf(githubIssue(), { issue_number: 42, label_ids: ["999"] }, github)).toBe("consequential");
-    expect(classOf(githubIssue(), { issue_number: 42, label_ids: [101] }, github)).toBe("safe");
-    expect(classOf(githubIssue(), { issue_number: 42, label_ids: [{ id: 101 }] }, github)).toBe("consequential");
+    const github = { ownItems: new Set(["github#o/r#42"]) };
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 42, label_ids: ["102"] }, github)).toBe("consequential");
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 42, label_ids: ["101"] }, github)).toBe("safe");
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 42, label_ids: ["999"] }, github)).toBe("consequential");
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 42, label_ids: [101] }, github)).toBe("safe");
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 42, label_ids: [{ id: 101 }] }, github)).toBe("consequential");
   });
 
   it("makes a plain comment consequential in a repository whose workflows listen to comments, and only a GitHub write", () => {
@@ -232,7 +234,7 @@ describe("classifyWrite: labels and repositories", () => {
     expect(classOf(githubComment(), body, { repositoryRule: { consequential: true } })).toBe("consequential");
     expect(classOf(githubComment(), body, { repositoryRule: { consequential: false } })).toBe("safe");
     expect(classOf(githubReview(), { pullNumber: 5, body: PLAIN }, { repositoryRule: { consequential: true } })).toBe("consequential");
-    expect(classOf(githubIssue(), { issue_number: 42, labels: ["bug"] }, { repositoryRule: { consequential: true } })).toBe("consequential");
+    expect(classOf(githubIssue(), { ...REPO, issue_number: 42, labels: ["bug"] }, { repositoryRule: { consequential: true } })).toBe("consequential");
     // A Linear comment is not in a repository.
     expect(classOf(linearComment(), { issueId: "1", body: PLAIN }, { repositoryRule: { consequential: true } })).toBe("safe");
   });
@@ -288,7 +290,7 @@ describe("classifyWrite: reads never wait, and only reads", () => {
   });
 
   it("does not make a read wait for an ask rule, always-ask or suggest autonomy", () => {
-    const result = classify(read("list_issues"), {}, { projectPolicy: policy({ tool: "list_issues", connector: "linear", outcome: "ask" }), rules: { alwaysAsk: ["list_*"] }, autonomy: "suggest" });
+    const result = classify(read("list_issues"), {}, { projectPolicy: policy({ tool: "list_*", connector: "linear", outcome: "ask" }), rules: { alwaysAsk: ["list_*"] }, autonomy: "suggest" });
     expect(result.class).toBe("read");
     expect(result.denied).toBeUndefined();
     expect(result.ignoredRules).toEqual([1]);
@@ -633,6 +635,8 @@ describe("prepareAgentWrite", () => {
 // ---------------------------------------------------------------------------------------------
 
 const WORKFLOW = ".github/workflows/triage.yml";
+/** The repository the wrapper tests work in: a GitHub call names it in `owner` and `repo`. */
+const DEMO = { owner: "example", repo: "demo" };
 
 function wrapper(options: { files?: Record<string, string>; down?: boolean; lists?: Record<string, LabelLister> } = {}) {
   const db = new FakeDynamoDb();
@@ -655,14 +659,14 @@ function wrapper(options: { files?: Record<string, string>; down?: boolean; list
 }
 
 /** What a successful create of `connector#value` left behind for the run. */
-function seedOwn(w: { db: FakeDynamoDb }, connector: string, value: string, orgId: OrgId = TEST_ORG, taskId = "task-1"): void {
-  w.db.set({ pk: `ORG#${orgId}#AGENT_ITEMS#${taskId}`, sk: `${connector}#${value}`, orgId, taskId, entityType: "AGENT_ITEM" });
+function seedOwn(w: { db: FakeDynamoDb }, connector: string, value: string, scope = "", orgId: OrgId = TEST_ORG, taskId = "task-1"): void {
+  w.db.set({ pk: `ORG#${orgId}#AGENT_ITEMS#${taskId}`, sk: `${connector}#${scope}#${value}`, orgId, taskId, entityType: "AGENT_ITEM" });
 }
 
 describe("classifyAgentWrite", () => {
   it("scans the repository for a GitHub write and finds a comment-triggered workflow consequential", async () => {
     const w = wrapper({ files: { [WORKFLOW]: workflow("issue_comment") } });
-    const result = await classifyAgentWrite(w.deps, { ...w.base, tool: githubComment(), args: { body: PLAIN } });
+    const result = await classifyAgentWrite(w.deps, { ...w.base, tool: githubComment(), args: { ...DEMO, body: PLAIN } });
     expect(result.class).toBe("consequential");
     expect(w.reads).toHaveBeenCalled();
   });
@@ -671,31 +675,31 @@ describe("classifyAgentWrite", () => {
     const seen: unknown[] = [];
     const w = wrapper();
     const deps = { ...w.deps, repositoryReader: async (request: { installationId?: number }) => { seen.push(request.installationId); return treeReader({ [WORKFLOW]: workflow("push") }); } };
-    await classifyAgentWrite(deps, { ...w.base, tool: githubComment(), args: { body: PLAIN }, installationId: 4242 });
-    await classifyAgentWrite(deps, { ...w.base, taskId: "task-2", tool: githubComment(), args: { body: PLAIN } });
+    await classifyAgentWrite(deps, { ...w.base, tool: githubComment(), args: { ...DEMO, body: PLAIN }, installationId: 4242 });
+    await classifyAgentWrite(deps, { ...w.base, taskId: "task-2", tool: githubComment(), args: { ...DEMO, body: PLAIN } });
     expect(seen).toEqual([4242, undefined]);
   });
 
   it("calls a plain comment safe when no workflow reacts to comments, and scans once per run", async () => {
     const w = wrapper();
-    for (let call = 0; call < 3; call += 1) expect((await classifyAgentWrite(w.deps, { ...w.base, tool: githubComment(), args: { body: PLAIN } })).class).toBe("safe");
+    for (let call = 0; call < 3; call += 1) expect((await classifyAgentWrite(w.deps, { ...w.base, tool: githubComment(), args: { ...DEMO, body: PLAIN } })).class).toBe("safe");
     expect(w.reads).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when the repository can't be read, and when the call names no repository", async () => {
     const down = wrapper({ down: true });
-    expect((await classifyAgentWrite(down.deps, { ...down.base, tool: githubComment(), args: { body: PLAIN } })).class).toBe("consequential");
+    expect((await classifyAgentWrite(down.deps, { ...down.base, tool: githubComment(), args: { ...DEMO, body: PLAIN } })).class).toBe("consequential");
     const noRepository = wrapper();
     const { repository: _repository, ...without } = noRepository.base;
     void _repository;
-    expect((await classifyAgentWrite(noRepository.deps, { ...without, tool: githubComment(), args: { body: PLAIN } })).class).toBe("consequential");
+    expect((await classifyAgentWrite(noRepository.deps, { ...without, tool: githubComment(), args: { ...DEMO, body: PLAIN } })).class).toBe("consequential");
     expect(noRepository.reads).not.toHaveBeenCalled();
   });
 
   it("fails closed when the repository reader throws something that is not an Error, or the scan itself breaks", async () => {
     const w = wrapper();
     const broken = { ...w.deps, repositoryReader: async () => { throw "boom"; } }; // eslint-disable-line @typescript-eslint/only-throw-error -- a non-Error rejection
-    expect((await classifyAgentWrite(broken, { ...w.base, tool: githubComment(), args: { body: PLAIN } })).class).toBe("consequential");
+    expect((await classifyAgentWrite(broken, { ...w.base, tool: githubComment(), args: { ...DEMO, body: PLAIN } })).class).toBe("consequential");
   });
 
   it("does not scan for a Linear write, or for a read", async () => {
@@ -708,8 +712,8 @@ describe("classifyAgentWrite", () => {
   it("resolves label ids through the connector's lister, once per run", async () => {
     const w = wrapper();
     const tool = githubIssue();
-    const args = (ids: string[]) => ({ issue_number: 42, label_ids: ids });
-    seedOwn(w, "github", "42");
+    const args = (ids: string[]) => ({ ...DEMO, issue_number: 42, label_ids: ids });
+    seedOwn(w, "github", "42", "example/demo");
     const ask = (ids: string[]) => classifyAgentWrite(w.deps, { ...w.base, tool, args: args(ids) });
     expect((await ask(["101"])).class).toBe("safe");
     expect((await ask(["102"])).class).toBe("consequential");
@@ -720,8 +724,8 @@ describe("classifyAgentWrite", () => {
 
   it("fails closed when the label lookup fails or the connector type has no lister", async () => {
     const failing = wrapper({ lists: { github: async () => { throw new Error("down"); } } });
-    seedOwn(failing, "github", "42");
-    expect((await classifyAgentWrite(failing.deps, { ...failing.base, tool: githubIssue(), args: { issue_number: 42, label_ids: ["101"] } })).class).toBe("consequential");
+    seedOwn(failing, "github", "42", "example/demo");
+    expect((await classifyAgentWrite(failing.deps, { ...failing.base, tool: githubIssue(), args: { ...DEMO, issue_number: 42, label_ids: ["101"] } })).class).toBe("consequential");
     const none = wrapper({ lists: {} });
     seedOwn(none, "linear", "ENG-1");
     expect((await classifyAgentWrite(none.deps, { ...none.base, tool: saveIssue(), args: { id: "ENG-1", labelIds: ["lbl-bug"] } })).class).toBe("consequential");
@@ -755,7 +759,7 @@ describe("classifyAgentWrite", () => {
   it("fails closed when the opt-out can't be read after a clean scan, and when the run cache breaks", async () => {
     const w = wrapper();
     const flaky = { ...w.deps, documentClient: { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "GetCommand") throw new Error("table down"); return w.db.send(command as never); } } };
-    expect((await classifyAgentWrite(flaky as never, { ...w.base, tool: githubComment(), args: { body: PLAIN } })).class).toBe("consequential");
+    expect((await classifyAgentWrite(flaky as never, { ...w.base, tool: githubComment(), args: { ...DEMO, body: PLAIN } })).class).toBe("consequential");
     const noCache = { ...w.deps, runCache: () => ({ get: async () => { throw new Error("cache down"); }, set: async () => { throw new Error("cache down"); } }) };
     seedOwn(w, "linear", "ENG-1");
     expect((await classifyAgentWrite(noCache, { ...w.base, tool: saveIssue(), args: { id: "ENG-1", labelIds: ["lbl-bug"] } })).class).toBe("consequential");
@@ -771,7 +775,7 @@ describe("classifyAgentWrite", () => {
 
   it("keeps the run cache and the own items under the run's org", async () => {
     const w = wrapper({ files: { [WORKFLOW]: workflow("issue_comment") } });
-    await classifyAgentWrite(w.deps, { ...w.base, tool: githubComment(), args: { body: PLAIN } });
+    await classifyAgentWrite(w.deps, { ...w.base, tool: githubComment(), args: { ...DEMO, body: PLAIN } });
     const cached = w.db.find((item) => item.entityType === "RUN_CACHE");
     expect(cached.length).toBeGreaterThan(0);
     for (const item of cached) expect(item.pk).toContain(`ORG#${TEST_ORG}#`);
@@ -780,7 +784,7 @@ describe("classifyAgentWrite", () => {
 
 describe("recordOwnItems and loadOwnItems", () => {
   const tool = saveIssue({ resultItemArguments: ["identifier"] });
-  const key = (value: string, connector = "linear") => ({ pk: `ORG#${TEST_ORG}#AGENT_ITEMS#task-1`, sk: `${connector}#${value}` });
+  const key = (value: string, connector = "linear") => ({ pk: `ORG#${TEST_ORG}#AGENT_ITEMS#task-1`, sk: `${connector}##${value}` });
 
   it("records every value at the item paths of the result after a create, under AGENT_ITEMS#<task>", async () => {
     const w = wrapper();
@@ -790,14 +794,14 @@ describe("recordOwnItems and loadOwnItems", () => {
     expect(items.map((item) => [item.pk, item.sk]).sort()).toEqual([[key("ENG-12").pk, key("ENG-12").sk], [key("uuid-1").pk, key("uuid-1").sk]].sort());
     for (const item of items) expect(item).toMatchObject({ orgId: TEST_ORG, taskId: "task-1" });
     expect(typeof items[0]!.indexExpiresAt).toBe("number");
-    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["linear#ENG-12", "linear#uuid-1"]));
+    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["linear##ENG-12", "linear##uuid-1"]));
   });
 
   it("records a GitHub number as a string, and reads an MCP result's text content", async () => {
     const w = wrapper();
     const github = githubIssue({ resultItemArguments: ["number"] });
-    await recordOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1", tool: github, args: { title: "t" }, resultText: JSON.stringify({ content: [{ type: "text", text: JSON.stringify({ number: 42, id: 9001 }) }] }) });
-    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["github#42"]));
+    await recordOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1", tool: github, args: { ...REPO, title: "t" }, resultText: JSON.stringify({ content: [{ type: "text", text: JSON.stringify({ number: 42, id: 9001 }) }] }) });
+    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["github#o/r#42"]));
   });
 
   it("records nothing for a change, a read, a result that is not JSON or holds no value at the paths", async () => {
@@ -817,7 +821,7 @@ describe("recordOwnItems and loadOwnItems", () => {
       resultText: JSON.stringify({ id: "ok-1", items: [{ id: "" }, { id: "bad\u0000id" }, { id: "x".repeat(300) }, { id: "fine-2" }, { id: true }], obj: { a: 1 } }),
     });
     expect(outcome).toEqual({ recorded: 2, failed: false });
-    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["mcp#ok-1", "mcp#fine-2"]));
+    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set(["mcp##ok-1", "mcp##fine-2"]));
   });
 
   it("keeps a repeat of the same result to the same items, and never lets one task or org see another's", async () => {
@@ -864,7 +868,7 @@ describe("the memory-only run cache still works with the wrapper's lookups", () 
   it("scans through a cache that holds nothing across calls", async () => {
     const w = wrapper();
     const deps = { ...w.deps, runCache: () => memoryRunCache() };
-    expect((await classifyAgentWrite(deps, { ...w.base, tool: githubComment(), args: { body: PLAIN } })).class).toBe("safe");
+    expect((await classifyAgentWrite(deps, { ...w.base, tool: githubComment(), args: { ...DEMO, body: PLAIN } })).class).toBe("safe");
   });
 });
 
@@ -1155,6 +1159,7 @@ describe("fix round 1: M4, any name word containing merge is a merge", () => {
     expect(classOf(mcp("automerge_pr"), {})).toBe("merge");
     expect(classOf(mcp("enable_automerge"), {}, { overrides: { mcp: { enable_automerge: "safe" } } })).toBe("merge");
     expect(classOf(grant("mcp", "enable_automerge", { access: "read" }), {})).toBe("consequential");
+    expect(classOf(mcp("create_emergency_contact"), { name: "x" })).toBe("safe");
   });
 });
 
@@ -1170,8 +1175,9 @@ describe("fix round 1: M5, comma lists and item-path values count for bulk", () 
   it("counts the values at an item path across an array of objects", () => {
     const tool = mcp("update_items", { itemArguments: ["a.b.items[].id"] });
     const items = (count: number) => ({ a: { b: { items: Array.from({ length: count }, (_, index) => ({ id: String(index) })) } }, labels: ["bug"] });
-    expect(classOf(tool, items(5))).toBe("safe");
-    expect(classOf(tool, items(6))).toBe("consequential");
+    const own = { ownItems: new Set(Array.from({ length: 10 }, (_, index) => `mcp##${String(index)}`)) };
+    expect(classOf(tool, items(5), own)).toBe("safe");
+    expect(classOf(tool, items(6), own)).toBe("consequential");
   });
 });
 
