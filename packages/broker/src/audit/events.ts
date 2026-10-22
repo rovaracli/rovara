@@ -262,6 +262,26 @@ export function auditGithubInstallationChanged(input: AuditBuilderBase & { insta
   return build("github.installation_changed", input, { kind: "github_installation", id: input.installationId }, { status: input.status, accountType: input.accountType });
 }
 
+// Company AI sources -----------------------------------------------------------------------------------------------------
+
+/**
+ * `occurrence`: `auditOccurrence(new revision)`. The org's AI sources are one document that commits once per revision, so the revision
+ * is the occurrence. No label, role, host or key goes in: the event names the source by its id and its kind.
+ */
+export function auditModelSourceSaved(input: AuditBuilderBase & { sourceId: string; sourceKind: string; change: "created" | "updated" | "tested" }): AuditEventInput {
+  return build("model_source.saved", input, { kind: "model_source", id: input.sourceId }, { kind: input.sourceKind, change: input.change });
+}
+
+/** `occurrence`: as `auditModelSourceSaved`. */
+export function auditModelSourceRemoved(input: AuditBuilderBase & { sourceId: string; sourceKind: string }): AuditEventInput {
+  return build("model_source.removed", input, { kind: "model_source", id: input.sourceId }, { kind: input.sourceKind });
+}
+
+/** `occurrence`: as `auditModelSourceSaved`. The target is the org, whose order changed; the fact is how many sources the new order names. */
+export function auditModelSourceOrderChanged(input: AuditBuilderBase & { count: number }): AuditEventInput {
+  return build("model_source.order_changed", input, { kind: "org", id: input.orgId }, { count: input.count });
+}
+
 // The ledger itself ------------------------------------------------------------------------------------------------------
 
 interface ReadFacts { fromSeq: number; toSeq: number; count: number; via: string }

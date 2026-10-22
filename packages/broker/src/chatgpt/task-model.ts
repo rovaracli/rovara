@@ -1,5 +1,5 @@
 // Sign in with ChatGPT (#341): which tasks run on a ChatGPT plan, whose plan, and on which model.
-import type { ModelSelection, OperationRequester } from "@agentx/contracts";
+import type { ModelSelection, OperationRequester, OrgModelSources } from "@agentx/contracts";
 import { catalogModel } from "@agentx/model-runtime/catalog";
 import type { ChatGptConnections } from "./connections.js";
 
@@ -25,11 +25,15 @@ export function chatGptTaskModel(allowed: readonly string[], preferred?: string)
 /**
  * The task's ChatGPT model when its owner has a working connection, or undefined when the task runs on the install's
  * default as before: no owner, no connection, a revoked one, a plan at its limit, or a connection that cannot be read.
+ *
+ * With `orgSources` (an install that runs the model proxy), the org decides: ChatGPT is on exactly when its order has `personal-chatgpt`, and it
+ * may prefer a model of its own. Without it the install-wide switch decides, as before.
  */
 export async function chatGptTaskSelection(
   connections: ChatGptConnections | undefined,
   ownerDeveloperId: string | undefined,
   now: number = Date.now(),
+  orgSources?: Pick<OrgModelSources, "order" | "chatgptPreferredModel">,
 ): Promise<{ developerId: string; model: ModelSelection } | undefined> {
   if (connections === undefined || ownerDeveloperId === undefined) return undefined;
   let view: Awaited<ReturnType<ChatGptConnections["view"]>>;
@@ -37,7 +41,7 @@ export async function chatGptTaskSelection(
   try {
     // #343: with the admin's switch off, every task runs on the default; connections are kept for when it is on.
     settings = await connections.settings();
-    if (!settings.enabled) return undefined;
+    if (!(orgSources === undefined ? settings.enabled : orgSources.order.includes("personal-chatgpt"))) return undefined;
     view = await connections.view(ownerDeveloperId);
   } catch (error) {
     // A task never fails because its owner's connection could not be read; it runs on the default.
@@ -46,7 +50,7 @@ export async function chatGptTaskSelection(
   }
   const limitPassed = view.status === "limit-reached" && view.statusAt !== undefined && Date.parse(view.statusAt) + CHATGPT_LIMIT_RETRY_MS <= now;
   if (!view.connected || (view.status !== "connected" && !limitPassed)) return undefined;
-  const modelId = chatGptTaskModel(view.models ?? [], settings.preferredModel);
+  const modelId = chatGptTaskModel(view.models ?? [], orgSources?.chatgptPreferredModel ?? settings.preferredModel);
   return modelId === undefined ? undefined : { developerId: ownerDeveloperId, model: { provider: "openai", modelId } };
 }
 

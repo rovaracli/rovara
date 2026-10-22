@@ -61,6 +61,7 @@ import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
+import { routeModelSourceRequest, type ModelSourceRouteDependencies } from "../model-sources/routes.js";
 import {
   applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicyWithRevision,
   writeProjectAi, writeSpendPolicy, type ProjectAiChange,
@@ -78,6 +79,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
    * with none follows it. Without it the order is Rovara's own AI alone.
    */
   orgSourceOrder?: (orgId: OrgId) => Promise<readonly string[]>;
+  /** The company AI source routes' dependencies (Task 24b). Absent where there is no model proxy: those routes then say so. */
+  modelSources?: ModelSourceRouteDependencies;
   /** Reads a pull request's head commit for a run whose context names one (Task 15); the broker supplies the GitHub App's. */
   pullRequestHead?: PullRequestHeadReader;
   /** Task 22 removes this with the refusal it lifts: whether a run of an agent made of agent steps may start (see AgentRunDependencies). */
@@ -112,7 +115,7 @@ const waiting = (result: Extract<ChangeResult<unknown>, { applied: false }>): St
  */
 export function isAgentRoute(pathname: string): boolean {
   return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget)(\/|$)/.test(pathname)
-    || /^\/v1\/app\/org\/(agent-guardrails|model-sources|spend|spend-policy)(\/|$)/.test(pathname)
+    || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy)(\/|$)/.test(pathname)
     || /^\/v1\/app\/tasks\/[^/]+\/continue-as-task$/.test(pathname)
     || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors)(\/|$)/.test(pathname);
 }
@@ -829,6 +832,9 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   // Task 30: the spend reads (`/v1/app/budget`, the org's spend and ledger, a project's and an agent's), before the agent paths they would otherwise match.
   const spend = await routeSpendRequest(deps, caller, request, url);
   if (spend !== undefined) return spend;
+  // Task 24b: the company AI sources (`/v1/app/org/model-sources*`).
+  const modelSources = await routeModelSourceRequest(deps, caller, request, url);
+  if (modelSources !== undefined) return modelSources;
   if (url.pathname === GUARDRAILS_PATH) {
     if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));

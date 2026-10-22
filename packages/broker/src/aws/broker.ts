@@ -342,6 +342,9 @@ import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchIte
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../chatgpt/task-model.js";
+import { readChatGptSettings } from "../chatgpt/settings.js";
+import { ModelSourceStore } from "../model-sources/store.js";
+import type { ModelSourceRouteDependencies } from "../model-sources/routes.js";
 import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEvent } from "./slack-chatgpt.js";
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
 import { OrgSecrets, type SecretsClient } from "../connections/org-secrets.js";
@@ -571,7 +574,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; agentStepRuns?: boolean } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; agentStepRuns?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a-presence (R66): the kinds of approval a person can decide on the confirmation page (`apr_` and `spr_`), each saying whether
    * a member may decide it now, what the page shows, and what deciding does. Absent, the confirmation page answers NOT_FOUND.
@@ -754,6 +757,21 @@ async function putInstallBudget(dependencies: AwsBrokerDependencies, identity: A
   return { budget };
 }
 
+/** What an install may set about company AI sources beyond the model proxy itself (Task 24b); the rest of their dependencies come from the broker's own. */
+export type ModelSourceBrokerOptions = Pick<ModelSourceRouteDependencies, "launch" | "checkEndpoint" | "bedrockTrustPrincipals" | "isKnownCatalog">;
+
+/** The company AI sources' record (Task 24b). The install-wide ChatGPT switch sets a new org's default order. */
+function modelSourceStoreOf(dependencies: AwsBrokerDependencies): ModelSourceStore {
+  return new ModelSourceStore({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    // Read the way ChatGPT's own code reads it, so what a new org's order says and what the install shows agree.
+    chatgptSwitch: async () => (dependencies.chatgpt === undefined
+      ? await readChatGptSettings({ documentClient: dependencies.documentClient, tableName: dependencies.tableName })
+      : await dependencies.chatgpt.settings()).enabled,
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+  });
+}
+
 function egressDepsOf(dependencies: AwsBrokerDependencies): EgressDomainsDependencies {
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, cloud: dependencies.cloud === true, now: () => new Date(), sync: dependencies.egressDomainsSync ?? (async () => ({ ok: false })),
@@ -848,6 +866,10 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
     ...(agents.servableModels === undefined ? {} : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? {} : { orgSourceOrder: agents.orgSourceOrder }),
+    // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).
+    ...(dependencies.modelAccess === undefined ? {} : {
+      modelSources: { store: modelSourceStoreOf(dependencies), access: dependencies.modelAccess.access, egress: egressDepsOf(dependencies), ...agents.modelSources },
+    }),
     // A run that names a pull request of a project repository reads its head through the GitHub App, for the run's org (Task 15, PF16).
     pullRequestHead: agents.pullRequestHead ?? (async ({ orgId, repositoryUrl, number }) => ({
       headSha: (await dependencies.githubPullRequests.getPullRequest(repositoryUrl, number, githubScope(dependencies, orgId))).headCommit,
@@ -4917,6 +4939,22 @@ async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId:
   return found;
 }
 
+/**
+ * #341 with the org's say (Task 24b): where the install runs the model proxy, the org's source order decides whether ChatGPT is used at all. An org
+ * whose sources cannot be read runs on the default rather than on a plan its admin may have left out of the order.
+ */
+async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId: OrgId, owner: string | undefined): ReturnType<typeof chatGptTaskSelection> {
+  if (dependencies.modelAccess === undefined) return chatGptTaskSelection(dependencies.chatgpt, owner);
+  let orgSources: Awaited<ReturnType<ModelSourceStore["orgSources"]>>;
+  try {
+    orgSources = await modelSourceStoreOf(dependencies).orgSources(orgId);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "model_sources.unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
+    return undefined;
+  }
+  return chatGptTaskSelection(dependencies.chatgpt, owner, Date.now(), orgSources);
+}
+
 /** A task operation, its worker invocation and outbox item: acceptTask's and the first developer task's (R3). */
 async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
@@ -4933,7 +4971,7 @@ async function taskOperationParts(
   const task = await workspaceTask(dependencies, workspace.id);
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.
   const planSelection = dependencies.chatgpt === undefined ? undefined
-    : await chatGptTaskSelection(dependencies.chatgpt, chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser));
+    : await chatGptSelectionForOrg(dependencies, orgId, chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser));
   // Plan 3, Task 16: the recipe the task froze at its start (never the live agent) decides this step's model, instructions and worker settings.
   const applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model);
   // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan.
@@ -13226,6 +13264,8 @@ function slackRequestQueue(queueUrl: string): SlackRequestQueue {
 const developer = developerConfiguration();
 const cloudProjectDefaults = cloudProjectDefaultsFromEnvironment(process.env);
 
+const bedrockTrustPrincipals = (process.env.MODEL_SOURCE_TRUST_PRINCIPALS ?? "").split(",").map((arn) => arn.trim()).filter((arn) => arn !== "");
+
 // Sign in with ChatGPT (#338): set only where the control plane has the connection key.
 const chatGptKeyArn = process.env.CHATGPT_CONNECTION_KEY_ARN;
 const chatgpt = chatGptKeyArn === undefined || chatGptKeyArn === "" ? undefined : chatGptConnections({
@@ -13347,7 +13387,8 @@ export const handler = createAwsBrokerHandler({
     : {}),
   ...(developer ? { developer } : {}),
   // Plan 3: the agent routes (`/v1/app/agents*`), on the real project members; they need the developer sign-in.
-  ...(developer ? { agents: {} } : {}),
+  // Rovara's roles that assume a Bedrock source's role (Task 24b), for the trust policy the sources page shows; unset until the control plane names them.
+  ...(developer ? { agents: bedrockTrustPrincipals.length === 0 ? {} : { modelSources: { bedrockTrustPrincipals } } } : {}),
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
   ...(egressDomainsSync === undefined ? {} : { egressDomainsSync }),

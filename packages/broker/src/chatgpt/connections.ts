@@ -16,7 +16,7 @@ import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/l
 import { DecryptCommand, EncryptCommand, type KMSClient } from "@aws-sdk/client-kms";
 import {
   CHATGPT_CONNECT_STATE_SECONDS, CLI_COMMAND_NAME, ChatGptConnectFinishRequestSchema, agentXError, AgentXError,
-  type ChatGptConnectionStatus, type ChatGptConnectionView, type ChatGptConnectStart, type ChatGptHealth,
+  type ChatGptConnectionStatus, type ChatGptConnectionView, type ChatGptConnectStart, type ChatGptHealth, type OrgId, type OrgModelSources,
 } from "@agentx/contracts";
 import { readChatGptSettings, type ChatGptSettings } from "./settings.js";
 import { CHATGPT_CONNECTIONS_INDEX_PK, chatGptHealth } from "./health.js";
@@ -56,6 +56,8 @@ export interface ChatGptConnectionsDependencies {
   /** This install's stable `urn:uuid:` for OpenAI (chatGptHostId). */
   hostId: string;
   sleep?: (ms: number) => Promise<void>;
+  /** The org's AI sources (Task 24b), for `settings(orgId)`. Absent where there is no model proxy: the install-wide switch then decides for every org. */
+  orgSources?: (orgId: OrgId) => Promise<Pick<OrgModelSources, "order" | "chatgptPreferredModel">>;
 }
 
 interface ConnectionRecord {
@@ -76,8 +78,11 @@ export interface ChatGptConnections {
   disconnect(developerId: string): Promise<ChatGptConnectionView>;
   /** A running task's owner's current access token, refreshed when needed (#341). */
   accessToken(developerId: string): Promise<ChatGptAccessToken>;
-  /** #343: the install's switch and preferred model. */
-  settings(): Promise<ChatGptSettings>;
+  /**
+   * #343: the install's switch and preferred model. With an org (and a model proxy), the org's own: enabled exactly when its source order has
+   * `personal-chatgpt`, preferring its own model when it set one.
+   */
+  settings(orgId?: OrgId): Promise<ChatGptSettings>;
   /** #343: what `rovara doctor` shows: the settings, how many people are connected, and whether OpenAI is reachable. */
   health(): Promise<ChatGptHealth>;
   /** Records what a task found (#342): the plan's limit, or a model list that changed. */
@@ -108,7 +113,13 @@ export function chatGptConnections(deps: ChatGptConnectionsDependencies): ChatGp
     ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: pkOf(developerId), sk }, ConsistentRead: true }))) as { Item?: T }).Item;
 
   const connection = (developerId: string) => get<ConnectionRecord>(developerId, "CONNECTION");
-  const settings = () => readChatGptSettings(deps);
+  const installSettings = () => readChatGptSettings(deps);
+  const settings = async (orgId?: OrgId): Promise<ChatGptSettings> => {
+    const installWide = await installSettings();
+    if (orgId === undefined || deps.orgSources === undefined) return installWide;
+    const org = await deps.orgSources(orgId);
+    return { enabled: org.order.includes("personal-chatgpt"), preferredModel: org.chatgptPreferredModel ?? installWide.preferredModel };
+  };
   /** The index follows a connection's status; one without an index item (made before it) is left alone. */
   const indexStatus = async (developerId: string, status: ChatGptConnectionStatus) => {
     try {
@@ -122,7 +133,7 @@ export function chatGptConnections(deps: ChatGptConnectionsDependencies): ChatGp
   };
   // #343: connecting needs the admin's switch on; with it off, existing connections are kept but unused.
   const requireEnabled = async () => {
-    if (!(await settings()).enabled) throw agentXError("FORBIDDEN", `Sign in with ChatGPT is turned off in this Rovara; ask an admin to turn it on with: ${CLI_COMMAND_NAME} config set models.chatgpt.enabled true`);
+    if (!(await installSettings()).enabled) throw agentXError("FORBIDDEN", `Sign in with ChatGPT is turned off in this Rovara; ask an admin to turn it on with: ${CLI_COMMAND_NAME} config set models.chatgpt.enabled true`);
   };
 
   return {

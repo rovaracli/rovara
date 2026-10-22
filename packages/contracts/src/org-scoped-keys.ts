@@ -288,6 +288,11 @@ export function agentGuardrailsKey(orgId: OrgId): OrgKey {
   return { pk: orgScoped(orgId, "AGENT_GUARDRAILS"), sk: "META" };
 }
 
+/** An org's company AI sources (Plan 3 Task 24b): one item holding the sources, their order and its revision. */
+export function modelSourcesKey(orgId: OrgId): OrgKey {
+  return { pk: orgScoped(orgId, "MODEL_SOURCES"), sk: "META" };
+}
+
 // ---- spend (Plan 3 Task 28): settings, top-ups, counters and the records the budget tasks keep
 
 /** A project's AI settings: its monthly budget, who pays, its source order and planning limits. */
