@@ -222,18 +222,20 @@ describe("the named TEST proof-only installation gate", () => {
 
     // Plan 2 Task 14 (merge 3): the legacy template gains the GitHub install-request reminder schedule and its notice-failed metric filter
     // (legacy-templates snapshot, +45 lines, additions only), so the legacy digests moved with them; the legacy broker policy is unchanged.
+    // Plan 3, Task 22: the notifier's stream filter also takes AGENT_REPORT_POST items (one more value in an existing filter), so the named and foreign
+    // digests moved with it; the legacy template has no notifier and is unchanged.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "dca11b5b6bbe601f96ad508bc64b7a7b385e9289d9917373f3273122e394af35",
-        withoutRoute: "f519c253f039211d8aef26d454a131293e9051e3d4731999c850ba32a4c3d4dc",
+        withRoute: "a431108e72d5ac263b6993ce448dd87ef339690d2b4b76ae381500fec2d6d137",
+        withoutRoute: "79d41d64d68f69a899da33af3e6c2e5f34a972556ef13f5a2921c6f8545b70b0",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "67b635ea5e49ab57b2538074e496ff04bdf2e140fd88d1f6b984e4b9972c32cd",
-        withoutRoute: "603fe305ceae707114b5c75fb79b8cdf5eec3a8383c3898e896cc0de51452b2e",
+        withRoute: "0e565c95b1da60093ec1cac60b851b77b8c302757500e9e58d46a60182cd3534",
+        withoutRoute: "09fc211f13d1de330bc7034b212775d712d27c47d47dbefe1ec78cf3be8154b1",
       },
       {
         label: "legacy",
