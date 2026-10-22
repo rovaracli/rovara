@@ -93,6 +93,17 @@ function putRevised(table: TableInput, key: { pk: string; sk: string }, entityTy
 }
 
 /**
+ * The figures an event compares with, read when the caller did not pass them: only if they are at the revision the write is conditioned on. Another
+ * revision means the write is about to be refused, and its "from" would describe a document the write never replaces, so no event is built (the
+ * throw is the hook's to swallow: the action goes on, and the write's own condition decides it).
+ */
+async function settingsAt<S extends { revision: number }, T>(expected: number, read: () => Promise<S>, pick: (stored: S) => T): Promise<T> {
+  const stored = await read();
+  if (stored.revision !== expected) throw coded("AGENT_REVISION_CONFLICT", "the settings moved since they were read");
+  return pick(stored);
+}
+
+/**
  * Makes `settings` the project's AI settings, in one transaction with the request's own item when `options.request` is given (R18). It
  * applies only while the document is at `options.expectedRevision` (by default the revision read now). Who may, and whether the values
  * fit the org, are the caller's checks.
@@ -110,7 +121,7 @@ export async function writeProjectAi(
   // One `budget.changed` for each money limit that moved. The write commits once per revision, so the revision is each event's occurrence.
   const events = await tryAuditEvents(deps, async () => projectAiEvents({
     orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: settings,
-    before: options.before ?? (await readProjectAiWithRevision(deps, orgId, project)).settings,
+    before: options.before ?? await settingsAt(expected, () => readProjectAiWithRevision(deps, orgId, project), (stored) => stored.settings),
   }));
   const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...settings, updatedBy: by, updatedAt }, expected);
   await commit(deps, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou(`${project}'s AI settings`), options.request, { settings, revision: expected + 1 });
@@ -196,7 +207,7 @@ export async function writeSpendPolicy(
   // One `spend_policy.changed` for each figure that moved, at the revision the write commits.
   const events = await tryAuditEvents(deps, async () => spendPolicyEvents({
     orgId, actor: auditActorOf(by), occurredAt: updatedAt, revision: expected + 1, after: policy,
-    before: options.before ?? (await readSpendPolicyWithRevision(deps, orgId)).policy,
+    before: options.before ?? await settingsAt(expected, () => readSpendPolicyWithRevision(deps, orgId), (stored) => stored.policy),
   }));
   const item = putRevised({ ...deps, now }, orgSettingsKey(orgId, "SPEND_POLICY"), "ORG_SPEND_POLICY", { ...policy, updatedBy: by, updatedAt }, expected);
   await commit({ ...deps, now }, [item, ...events.flatMap((event) => auditPending(deps, event))], () => changedUnderYou("your company's spend policy"), options.request, { policy, revision: expected + 1 });

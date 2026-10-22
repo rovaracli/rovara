@@ -16,7 +16,13 @@ export interface AuditBuilderBase {
   details?: AuditDetailPart[];
 }
 
-/** One occurrence value from several: `JSON.stringify(parts)`, so ("a|b", "c") and ("a", "b|c") stay different and no part can hold a newline. */
+/**
+ * Invariant for the revision-based occurrences (guardrails, a project's AI settings, the spend policy): such a document is never deleted and recreated
+ * outside an org close, because its revision would start again at 1 and an event of the new document would get the id of an old one, which the
+ * appender would drop as a duplicate. A path that resets one of them must carry something else in the occurrence (a generation, or the time).
+ *
+ * One occurrence value from several: `JSON.stringify(parts)`, so ("a|b", "c") and ("a", "b|c") stay different and no part can hold a newline.
+ */
 export function auditOccurrence(...parts: string[]): string {
   return JSON.stringify(parts);
 }

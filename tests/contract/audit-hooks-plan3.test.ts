@@ -23,6 +23,7 @@ import {
   type OrgId,
 } from "../../packages/contracts/src/index.js";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
+import { decisionProofOf } from "../../packages/broker/src/audit/plan3-hooks.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { AgentStore, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
@@ -594,13 +595,35 @@ describe("connection.saved and connection.removed", () => {
     }]);
   });
 
-  it("records the removal by Rovara itself when no person is named, and nothing when the connection does not exist", async () => {
+  it("records the removal by Rovara itself only when the caller says \"system\", and nothing when the connection does not exist", async () => {
     const s = connectionSetup();
     await s.store.put({ orgId: TEST_ORG, connection: LINEAR, by: ALICE });
-    await expect(s.store.remove({ orgId: TEST_ORG, connectionId: "con_bbbbbbbbbbbbbbbbbbbb" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(s.store.remove({ orgId: TEST_ORG, connectionId: "con_bbbbbbbbbbbbbbbbbbbb", by: BOB })).rejects.toMatchObject({ code: "NOT_FOUND" });
     s.clock.now += 1000;
-    await s.store.remove({ orgId: TEST_ORG, connectionId: CON });
+    await s.store.remove({ orgId: TEST_ORG, connectionId: CON, by: "system" });
     expect(s.capture!.recordedBy("connection.removed")).toMatchObject([{ actor: { kind: "system", id: "rovara" } }]);
+  });
+
+  it("refuses a removal that names nobody, so a person's removal is never recorded as Rovara's", async () => {
+    const s = connectionSetup();
+    await s.store.put({ orgId: TEST_ORG, connection: LINEAR, by: ALICE });
+    const removal = s.store.remove({ orgId: TEST_ORG, connectionId: CON } as unknown as Parameters<typeof s.store.remove>[0]);
+    await expect(removal).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await s.store.get(TEST_ORG, CON)).toBeDefined();
+    expect(s.capture!.recordedBy("connection.removed")).toEqual([]);
+  });
+
+  it("of two removes at once only one commits and records; the other finds no connection", async () => {
+    const s = connectionSetup();
+    await s.store.put({ orgId: TEST_ORG, connection: LINEAR, by: ALICE });
+    s.clock.now += 1000;
+    const outcomes = await Promise.allSettled([
+      s.store.remove({ orgId: TEST_ORG, connectionId: CON, by: ALICE }),
+      s.store.remove({ orgId: TEST_ORG, connectionId: CON, by: BOB }),
+    ]);
+    expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect((outcomes.find((outcome) => outcome.status === "rejected") as PromiseRejectedResult).reason).toMatchObject({ code: "NOT_FOUND" });
+    expect(s.capture!.recordedBy("connection.removed")).toHaveLength(1);
   });
 
   it("records nothing for a save that is refused before anything is written", async () => {
@@ -622,7 +645,7 @@ describe("connection.saved and connection.removed", () => {
     const s = connectionSetup("none");
     await s.store.put({ orgId: TEST_ORG, connection: LINEAR, by: ALICE });
     await s.store.put({ orgId: TEST_ORG, connection: { ...LINEAR, access: "read_write" }, by: ALICE });
-    await s.store.remove({ orgId: TEST_ORG, connectionId: CON });
+    await s.store.remove({ orgId: TEST_ORG, connectionId: CON, by: ALICE });
     expect(s.db.find((item) => String(item.pk).startsWith("AUDIT_PENDING#"))).toEqual([]);
   });
 });
@@ -862,5 +885,64 @@ describe("through the routes", () => {
     expect(policy.status).toBe(200);
     // Pending items are in time order, and two calls inside one millisecond tie: the order is not what this test is about.
     expect(hanging.pending().map((event) => event.action).sort()).toEqual(["agent.published", "spend_policy.changed"]);
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Fix round 1
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe("the proof a decision's event carries", () => {
+  it("is the caller's decide proof, and {kind: none} when the caller has none", () => {
+    const proof = { kind: "fresh_sign_in", method: "email_code", authTime: "2026-10-22T09:00:00.000Z", sessionRef: "a".repeat(64) } as const;
+    expect(decisionProofOf({ decideProof: proof })).toEqual(proof);
+    expect(decisionProofOf({})).toEqual({ kind: "none" });
+  });
+});
+
+describe("the figures an event compares with", () => {
+  it("are not taken from a read at another revision than the write is conditioned on", async () => {
+    const capture = capturingAuditDeps();
+    const db = new FakeDynamoDb();
+    capture.attach(db);
+    const deps = { documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => T0, audit: capture.audit };
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 20 }, ALICE, { expectedRevision: 0 });
+    // The first read of the policy (the hook's, when the caller passes no `before`) sees a newer revision than the one the write is conditioned on.
+    const key = orgSettingsKey(TEST_ORG, "SPEND_POLICY");
+    const original = db.send.bind(db) as (command: unknown) => Promise<unknown>;
+    let stale = true;
+    (db as unknown as { send: (command: unknown) => Promise<unknown> }).send = async (command: unknown) => {
+      const reply = await original(command) as { Item?: Record<string, unknown> };
+      if (stale && (command as { constructor: { name: string } }).constructor.name === "GetCommand" && (command as { input: { Key: { pk: string } } }).input.Key.pk === key.pk) {
+        stale = false;
+        return { Item: { ...reply.Item, revision: 2, leadApprovalThresholdUsd: 50 } };
+      }
+      return reply;
+    };
+    await writeSpendPolicy(deps, TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 30 }, ALICE, { expectedRevision: 1 });
+    expect(capture.recordedBy("spend_policy.changed").map((event) => event.facts)).toEqual([{ field: "leadApprovalThresholdUsd", from: defaultSpendPolicy().leadApprovalThresholdUsd * 100, to: 2000 }]);
+  });
+});
+
+describe("a member's limit rewritten twice", () => {
+  it("records both rewrites: each is its own occurrence even when the settings' updatedAt did not change", async () => {
+    const capture = capturingAuditDeps();
+    const db = new FakeDynamoDb();
+    capture.attach(db);
+    const clock = { now: T0 };
+    const orgs = new OrgStore({ documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: capture.audit });
+    const owner = "o".repeat(64);
+    const orgId = await orgs.createOrgWithOwner({ name: "Acme", developerId: owner });
+    const seed = () => db.set({ ...orgSettingsKey(orgId, "BUDGET"), entityType: "ORG_BUDGET", updatedBy: owner, updatedAt: "2026-10-01T00:00:00.000Z", memberDefaultMonthlyUsd: 20, memberOverrides: { [ALICE]: 40 } });
+    for (let round = 0; round < 2; round += 1) {
+      await orgs.addMember({ orgId, developerId: ALICE, role: "member" });
+      seed();
+      clock.now += 60_000;
+      await orgs.removeMember({ orgId, developerId: ALICE, emails: [], ban: false, by: { kind: "member", id: owner } });
+    }
+    const events = capture.recordedBy("budget.changed");
+    expect(events).toHaveLength(2);
+    expect(new Set(events.map((event) => event.eventId)).size).toBe(2);
   });
 });

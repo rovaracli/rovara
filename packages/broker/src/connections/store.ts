@@ -83,6 +83,11 @@ const parseOrg = (orgId: string): OrgId => {
   return parsed.data;
 };
 
+/** Every change names who made it (`"system"` for Rovara's own), so a person's change is never recorded as Rovara's by leaving it out. */
+function requireActor(by: unknown): void {
+  if (typeof by !== "string" || by === "") throw coded("CONFIG_INVALID", "by: say who is making this change");
+}
+
 /** The host a saved secret is sent to, or undefined for Linear (a fixed vendor endpoint). */
 function secretHost(connection: OrgConnection): string | undefined {
   if (connection.type === "jira") return new URL(connection.siteUrl).hostname;
@@ -152,8 +157,9 @@ export class OrgConnectionStore {
    * the saved one stays. A saved secret is never sent to another host: pointing a connection at a different site or
    * endpoint host needs a new secret with it.
    */
-  async put(input: { orgId: string; connection: unknown; secret?: unknown; by: string; /** The request's id, when it has one: it makes the audit event's occurrence. */ requestId?: string }): Promise<OrgConnectionRecord> {
+  async put(input: { orgId: string; connection: unknown; secret?: unknown; /** Who saves it; Rovara's own changes say `"system"`. */ by: string; /** The request's id, when it has one: it makes the audit event's occurrence. */ requestId?: string }): Promise<OrgConnectionRecord> {
     const orgId = parseOrg(input.orgId);
+    requireActor(input.by);
     const parsed = OrgConnectionSchema.safeParse(input.connection);
     if (!parsed.success) {
       const first = parsed.error.issues[0];
@@ -212,8 +218,9 @@ export class OrgConnectionStore {
   }
 
   /** Removes the connection and schedules its secret for deletion (7 days to recover it). */
-  async remove(input: { orgId: string; connectionId: string; /** Who removed it; Rovara itself when absent. */ by?: string; /** The request's id, when it has one: it makes the audit event's occurrence. */ requestId?: string }): Promise<void> {
+  async remove(input: { orgId: string; connectionId: string; /** Who removed it; Rovara's own removals say `"system"`. */ by: string; /** The request's id, when it has one: it makes the audit event's occurrence. */ requestId?: string }): Promise<void> {
     const orgId = parseOrg(input.orgId);
+    requireActor(input.by);
     const existing = await readItem(this.input, orgId, input.connectionId);
     if (existing === undefined) throw coded("NOT_FOUND", "no connection has that ID");
     if (existing.hasSecret === true) await this.input.secrets.scheduleDelete(orgId, orgConnectorSecretName(this.input.env, orgId, input.connectionId));
@@ -223,13 +230,21 @@ export class OrgConnectionStore {
       occurrence: input.requestId === undefined ? auditOccurrence(input.connectionId, at) : auditOccurrence(input.requestId, input.connectionId),
     }));
     const events = event === undefined ? [] : [event];
-    await this.input.documentClient.send(new TransactWriteCommand({
-      TransactItems: [
-        { Delete: { TableName: this.input.tableName, Key: connectionKey(orgId, input.connectionId) } },
-        { Delete: { TableName: this.input.tableName, Key: connectionsKey(orgId, input.connectionId) } },
-        ...events.flatMap((pending) => auditPending(this.input, pending)),
-      ],
-    }));
+    try {
+      await this.input.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          // Of two removes at once only one commits, and only that one records.
+          { Delete: { TableName: this.input.tableName, Key: connectionKey(orgId, input.connectionId), ConditionExpression: "attribute_exists(pk)" } },
+          { Delete: { TableName: this.input.tableName, Key: connectionsKey(orgId, input.connectionId) } },
+          ...events.flatMap((pending) => auditPending(this.input, pending)),
+        ],
+      }));
+    } catch (error) {
+      if (error instanceof Error && error.name === "TransactionCanceledException" && await readItem(this.input, orgId, input.connectionId) === undefined) {
+        throw coded("NOT_FOUND", "no connection has that ID");
+      }
+      throw error;
+    }
     await flushAuditEvents(this.input, events);
   }
 

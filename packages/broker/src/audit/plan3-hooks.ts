@@ -6,14 +6,23 @@
 // several limits can move in one write) is the occurrence: a retry of a refused write records nothing, and two changes never share an id. The agent store
 // writes an `EVENT#` item for every notable change; its sort key is the occurrence of the events about that change (the field joins it where one
 // write records several).
-import type { AuditActor, AuditDetailPart, AuditEventInput, ProjectAiSettings, SpendPolicy } from "@agentx/contracts";
+import type { AuditActor, AuditProof, AuditDetailPart, AuditEventInput, ProjectAiSettings, SpendPolicy } from "@agentx/contracts";
 import { auditBudgetChanged, auditOccurrence, auditOwnerChanged, auditSpendPolicyChanged } from "./events.js";
 
 export const SYSTEM_ACTOR: AuditActor = { kind: "system", id: "rovara" };
 
-/** The actor of a change made by `by`: Rovara itself for `system` (or nobody named), else the member. */
-export function auditActorOf(by: string | undefined): AuditActor {
-  return by === undefined || by === "system" ? SYSTEM_ACTOR : { kind: "member", id: by };
+/** The actor of a change made by `by`: Rovara itself for `system`, else the member. A caller always names who; nobody named is not Rovara. */
+export function auditActorOf(by: string): AuditActor {
+  return by === "system" ? SYSTEM_ACTOR : { kind: "member", id: by };
+}
+
+/**
+ * The proof a decision's audit event carries: the decide session's (`caller.decideProof`, set only by the decide routes from
+ * `requireDecideSession`), else `{ kind: "none" }`. The code that builds `approval.decided` and `spend_request.decided` calls this, so a decision
+ * made some other way is recorded as having no proof rather than with none at all.
+ */
+export function decisionProofOf(caller: { decideProof?: AuditProof }): AuditProof {
+  return caller.decideProof ?? { kind: "none" };
 }
 
 /** Whole cents, as the chain holds an amount. */

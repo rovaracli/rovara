@@ -560,12 +560,13 @@ export class OrgStore {
       const seen = item?.memberOverrides;
       if (item === undefined || typeof seen !== "object" || seen === null || !Object.hasOwn(seen, developerId)) return;
       const others = Object.fromEntries(Object.entries(seen).filter(([id]) => id !== developerId));
-      // The limit is the member's own until now and the members' default after. The change is Rovara's (the system), recorded with the write that makes it:
-      // one occurrence per override, because a later override of the same member is another write of the settings (`updatedAt`).
+      // The limit is the member's own until now and the members' default after. The change is Rovara's (the system), recorded with the write that makes it.
+      // The settings' `updatedAt` is not bumped by this rewrite, so the time of the rewrite makes each one its own occurrence.
       const own = (seen as Record<string, unknown>)[developerId];
       const fallback = item.memberDefaultMonthlyUsd;
+      const at = this.iso();
       const events = await tryAuditEvents(this.deps(), () => typeof own !== "number" ? [] : [memberLimitChangedEvent({
-        orgId, actor: SYSTEM_ACTOR, occurredAt: this.iso(), occurrence: auditOccurrence("override_removed", developerId, typeof item.updatedAt === "string" ? item.updatedAt : "", String(own)),
+        orgId, actor: SYSTEM_ACTOR, occurredAt: at, occurrence: auditOccurrence("override_removed", developerId, at, String(own)),
         developerId, from: own, to: typeof fallback === "number" ? fallback : undefined,
       })]);
       try {

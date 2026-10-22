@@ -240,14 +240,15 @@ async function moveBudgetOverride(deps: Deps, orgId: OrgId, survivorId: string, 
     const { [duplicateId]: limit, ...others } = seen;
     const survivorHasOne = Object.hasOwn(others, survivorId);
     // Recorded as Rovara's own change, in the write that makes it: the duplicate's limit falls back to the members' default, and the survivor's
-    // takes the duplicate's figure when the survivor had none. One occurrence per merge of this pair and limit (a second merge reads another limit or another settings write).
+    // takes the duplicate's figure when the survivor had none. The rewrite does not bump the settings' `updatedAt`, so its time makes each one its own occurrence.
+    const at = new Date(deps.now()).toISOString();
     const fallback = typeof item.memberDefaultMonthlyUsd === "number" ? item.memberDefaultMonthlyUsd : undefined;
     const events = await tryAuditEvents(deps, () => typeof limit !== "number" ? [] : [
       { developerId: duplicateId, from: limit, to: fallback },
       ...(survivorHasOne ? [] : [{ developerId: survivorId, from: fallback, to: limit }]),
     ].map((change) => memberLimitChangedEvent({
-      orgId, actor: SYSTEM_ACTOR, occurredAt: new Date(deps.now()).toISOString(),
-      occurrence: auditOccurrence("override_merged", duplicateId, survivorId, typeof item.updatedAt === "string" ? item.updatedAt : "", String(limit), change.developerId), ...change,
+      orgId, actor: SYSTEM_ACTOR, occurredAt: at,
+      occurrence: auditOccurrence("override_merged", duplicateId, survivorId, at, String(limit), change.developerId), ...change,
     })));
     try {
       // The whole item is written back, as the budget settings are; the condition keeps a concurrent edit of the overrides from being lost.
