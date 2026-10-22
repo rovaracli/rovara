@@ -130,10 +130,17 @@ export async function closeSetupCheck(
   return "busy";
 }
 
+/** Time one sweep spends closing checks. A larger backlog goes on in the next run; the reconciler's own limit is 4 minutes. */
+const SWEEP_BUDGET_MS = 120_000;
+const SWEEP_PAGE = 100;
+
 /**
  * The sweep: every check whose watch is older than the 50 minutes a prepare is given is closed (a prepare still running is failed first), and
- * its slot given back. The oldest come first, a page at a time. `kept` is a check that could not be closed now (its compute could not be deleted,
- * a result landed during the failing transaction): its watch stays and the next run tries again. `dropped` is a watch of a check with no record.
+ * its slot given back. The oldest come first and every page is read (follow-up N4), so watches that cannot be closed, which stay at the head,
+ * never starve the ones behind them; one watch failing never stops the rest. `kept` is a check that could not be closed now (its compute could
+ * not be deleted, a result landed during the failing transaction, the workspace is busy): its watch stays, the next run tries again, and a
+ * `stuck_setup_check.close_failed` or `stuck_setup_check.kept` log line names it (the reconciler counts `kept` for an alarm). `dropped` is a
+ * watch of a check with no record. After `budgetMs` it stops (having handled at least one watch) and logs `stuck_setup_check.sweep_incomplete`.
  */
 export async function sweepStuckSetupChecks(
   client: Client,
@@ -141,39 +148,54 @@ export async function sweepStuckSetupChecks(
   now: Date,
   deleteCompute: DeleteWorkspaceCompute,
   log: (entry: Record<string, unknown>) => void = () => undefined,
+  options: { budgetMs?: number } = {},
 ): Promise<{ closed: string[]; dropped: number; kept: number }> {
   const cutoff = new Date(now.getTime() - STUCK_SETUP_MS).toISOString();
-  const response = await client.send(new QueryCommand({
-    TableName: tableName,
-    KeyConditionExpression: "pk = :pk AND sk < :cutoff",
-    ExpressionAttributeValues: { ":pk": SETUP_CHECK_WATCH_PK, ":cutoff": cutoff },
-    ConsistentRead: true,
-    Limit: 100,
-  })) as { Items?: Array<{ pk: string; sk: string; workspaceId?: unknown }> };
+  const deadline = Date.now() + (options.budgetMs ?? SWEEP_BUDGET_MS);
   const closed: string[] = [];
   let dropped = 0;
   let kept = 0;
-  for (const watch of response.Items ?? []) {
-    if (typeof watch.workspaceId !== "string") {
-      await client.send(new DeleteCommand({ TableName: tableName, Key: { pk: watch.pk, sk: watch.sk } }));
-      dropped += 1;
-      continue;
-    }
-    try {
-      const outcome = await closeSetupCheck(client, tableName, watch.workspaceId, { now, stalled: true, deleteCompute });
-      if (outcome === "closed") {
-        closed.push(watch.workspaceId);
-        log({ event: "stuck_setup_check.closed", workspaceId: watch.workspaceId });
-      } else if (outcome === "none") {
-        await client.send(new DeleteCommand({ TableName: tableName, Key: { pk: watch.pk, sk: watch.sk } }));
-        dropped += 1;
-      } else {
-        kept += 1;
+  let handled = 0;
+  let startKey: Record<string, unknown> | undefined;
+  do {
+    const response = await client.send(new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: "pk = :pk AND sk < :cutoff",
+      ExpressionAttributeValues: { ":pk": SETUP_CHECK_WATCH_PK, ":cutoff": cutoff },
+      ConsistentRead: true,
+      Limit: SWEEP_PAGE,
+      ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
+    })) as { Items?: Array<{ pk: string; sk: string; workspaceId?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const watch of response.Items ?? []) {
+      if (handled > 0 && Date.now() >= deadline) {
+        log({ event: "stuck_setup_check.sweep_incomplete", closed: closed.length, dropped, kept });
+        return { closed, dropped, kept };
       }
-    } catch (error) {
-      kept += 1;
-      log({ event: "stuck_setup_check.close_failed", workspaceId: watch.workspaceId, error: error instanceof Error ? error.name : "unknown" });
+      handled += 1;
+      const workspaceId = typeof watch.workspaceId === "string" ? watch.workspaceId : undefined;
+      try {
+        if (workspaceId === undefined) {
+          await client.send(new DeleteCommand({ TableName: tableName, Key: { pk: watch.pk, sk: watch.sk } }));
+          dropped += 1;
+          continue;
+        }
+        const outcome = await closeSetupCheck(client, tableName, workspaceId, { now, stalled: true, deleteCompute });
+        if (outcome === "closed") {
+          closed.push(workspaceId);
+          log({ event: "stuck_setup_check.closed", workspaceId });
+        } else if (outcome === "none") {
+          await client.send(new DeleteCommand({ TableName: tableName, Key: { pk: watch.pk, sk: watch.sk } }));
+          dropped += 1;
+        } else {
+          kept += 1;
+          log({ event: "stuck_setup_check.kept", workspaceId });
+        }
+      } catch (error) {
+        kept += 1;
+        log({ event: "stuck_setup_check.close_failed", workspaceId, error: error instanceof Error ? error.name : "unknown" });
+      }
     }
-  }
+    startKey = response.LastEvaluatedKey;
+  } while (startKey !== undefined);
   return { closed, dropped, kept };
 }

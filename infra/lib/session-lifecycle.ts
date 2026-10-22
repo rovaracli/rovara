@@ -278,6 +278,20 @@ export class SessionLifecycle extends Construct {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }).addAlarmAction(props.notifyOperator);
 
+    // Follow-up N4, named environments only (setup checks exist only there; the legacy templates stay as they were): a check the sweep cannot close
+    // keeps its watch and its workspace slot. Two runs in a row (20 minutes) rules out a close that is just slow.
+    if (naming.env !== undefined) {
+      new cloudwatch.Alarm(this, "StuckSetupChecksAlarm", {
+        alarmName: naming.alarmName("StuckSetupChecks"),
+        alarmDescription: "The reconciler could not close a project setup check that is over 50 minutes old, on two runs in a row; the check still holds a workspace slot. Check the reconciler's logs for stuck_setup_check.close_failed and stuck_setup_check.kept events.",
+        metric: new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName: "ReconcilerStuckSetupChecksKept", statistic: "Maximum", period: Duration.minutes(10) }),
+        threshold: 1,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction(props.notifyOperator);
+    }
+
     new CfnOutput(stack, "SessionProvisionerArn", { value: this.provisioner.stateMachineArn });
     new CfnOutput(stack, "SessionDeleterArn", { value: this.deleter.stateMachineArn });
   }

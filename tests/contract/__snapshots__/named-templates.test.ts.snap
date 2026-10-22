@@ -10205,6 +10205,32 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::CloudWatch::Alarm",
     },
+    "SessionsStuckSetupChecksAlarm69266D82": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "OperatorAlertsA2431256",
+          },
+        ],
+        "AlarmDescription": "The reconciler could not close a project setup check that is over 50 minutes old, on two runs in a row; the check still holds a workspace slot. Check the reconciler's logs for stuck_setup_check.close_failed and stuck_setup_check.kept events.",
+        "AlarmName": "agentx-staging-StuckSetupChecks",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "EvaluationPeriods": 2,
+        "MetricName": "ReconcilerStuckSetupChecksKept",
+        "Namespace": "AgentX/staging",
+        "Period": 600,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "notBreaching",
+      },
+      "Type": "AWS::CloudWatch::Alarm",
+    },
     "SlackDeadLettersAlarm9EF9F079": {
       "Properties": {
         "AlarmActions": [

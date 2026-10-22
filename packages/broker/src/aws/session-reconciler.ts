@@ -48,6 +48,8 @@ export interface ReconcilerReport {
   quarantinedVolumes: string[];
   /** Spec 025 FR-055: workspaces whose developer-task setup the sweep failed this run. */
   stuckSetups: string[];
+  /** Follow-up N4: project setup checks over 50 minutes old that the sweep could not close this run (each is logged); counted for the StuckSetupChecks alarm. */
+  stuckSetupChecksKept?: number;
   /** Issue 195: tasks left CANCEL_REQUESTED that this run retried or ended; absent when no sweep is wired. */
   stuckCancels?: StuckCancelSweepResult;
   /** Issue 173: idle Slack tasks cancelled with nobody waiting; present only where the backstop is wired. */
@@ -72,7 +74,7 @@ export interface ReconcilerDependencies {
   binding: (workspaceId: string) => Promise<Ec2RuntimeBinding | undefined>;
   emit: (metrics: Record<string, number>) => void;
   /** Spec 025 FR-055: fails developer-task prepares 50 minutes old; absent in tests that do not need it. */
-  sweepStuckSetups?: (now: Date) => Promise<{ failed: string[] }>;
+  sweepStuckSetups?: (now: Date) => Promise<{ failed: string[]; keptChecks?: number }>;
   /** Issue 195: retries once, or ends, tasks stuck CANCEL_REQUESTED among the listed workspaces; absent in tests that do not need it. */
   sweepStuckCancels?: (candidates: StuckCancelCandidate[], now: Date) => Promise<StuckCancelSweepResult>;
   /**
@@ -177,7 +179,9 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
     if (dependencies.sweepStuckSetups !== undefined) {
       try {
         // The sweep logs each failed setup itself (stuck_setup.failed), so nothing is repeated here.
-        report.stuckSetups = (await dependencies.sweepStuckSetups(new Date(now))).failed;
+        const swept = await dependencies.sweepStuckSetups(new Date(now));
+        report.stuckSetups = swept.failed;
+        report.stuckSetupChecksKept = swept.keptChecks ?? 0;
       } catch (error) {
         sweepError = error instanceof Error ? error : new Error("stuck-setup sweep failed");
         log({ event: "reconciler.stuck_setup_sweep_failed", errorName: error instanceof Error ? error.name : "unknown" });
@@ -226,6 +230,7 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
       ReconcilerQuarantinedVolumes: report.quarantinedVolumes.length,
       ReconcilerStuckSetups: report.stuckSetups.length,
       ReconcilerStuckSetupErrors: sweepError === undefined ? 0 : 1,
+      ReconcilerStuckSetupChecksKept: report.stuckSetupChecksKept ?? 0,
       ...stuckCancelMetrics,
       ...unwaitedMetrics,
     });
@@ -474,7 +479,7 @@ const sessionManager = new SessionManager({
 });
 
 /** The stuck-setup sweep for developer tasks, and (final review I3) the one for project setup checks, which closes a stalled check's workspace. */
-async function sweepSetups(now: Date): Promise<{ failed: string[] }> {
+async function sweepSetups(now: Date): Promise<{ failed: string[]; keptChecks: number }> {
   const log = (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }));
   const [tasks, checks] = await Promise.allSettled([
     sweepStuckSetups(documentClient, tableName, now, log),
@@ -483,7 +488,7 @@ async function sweepSetups(now: Date): Promise<{ failed: string[] }> {
   // Both ran; the run fails (and the alarm sees it) when either did.
   if (tasks.status === "rejected") throw tasks.reason;
   if (checks.status === "rejected") throw checks.reason;
-  return { failed: [...tasks.value.failed, ...checks.value.closed] };
+  return { failed: [...tasks.value.failed, ...checks.value.closed], keptChecks: checks.value.kept };
 }
 
 export const handler = createReconcilerHandler({

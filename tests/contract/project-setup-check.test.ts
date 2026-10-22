@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { AppProjectDetailSchema, machineTimeMonthKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type OrgRole, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { sweepStuckSetupChecks } from "../../packages/broker/src/aws/setup-check-close.js";
+import { setupCheckRecordKey, setupCheckWatchKey } from "../../packages/broker/src/org/project-setup-check.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, registerRevision, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -535,6 +536,77 @@ describe("the setup check's workspace and slot (final review I3)", () => {
     expect(await sweepStuckSetupChecks(h.db, "state", late, vi.fn(async () => undefined))).toEqual({ closed: [workspaceId], dropped: 0, kept: 0 });
     expect(openWorkspaces(h)).toEqual([]);
     expect(heldSlots(h)).toBe(0);
+  });
+
+  describe("the sweep over a backlog (follow-up N4)", () => {
+    const old = (index: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
+    /** A finished check whose close did not land: record, open READY workspace and watch, as the start and the prepare callback leave them. */
+    function seedCheck(h: Harness, index: number): string {
+      const workspaceId = `ws-backlog-${String(index).padStart(4, "0")}`;
+      h.db.set({ ...setupCheckRecordKey(workspaceId), entityType: "SETUP_CHECK", workspaceId, createdAt: old(index) });
+      h.db.set({ pk: `WORKSPACE#${workspaceId}`, sk: "META", entityType: "WORKSPACE", id: workspaceId, status: "READY", deploymentMode: "ec2-ebs" });
+      h.db.set({ ...setupCheckWatchKey(old(index), workspaceId), entityType: "SETUP_CHECK_WATCH", workspaceId });
+      return workspaceId;
+    }
+    const watches = (h: Harness) => h.db.find((item) => item.pk === "SETUP_CHECK_WATCH");
+
+    it("pages through every stuck watch, not one page of 100", async () => {
+      const h = await harness();
+      const ids = Array.from({ length: 250 }, (_, index) => seedCheck(h, index));
+      const swept = await sweepStuckSetupChecks(h.db, "state", new Date(), vi.fn(async () => undefined));
+      expect(swept).toEqual({ closed: ids, dropped: 0, kept: 0 });
+      expect(watches(h)).toEqual([]);
+      expect(h.db.get(`WORKSPACE#${ids[249]!}`, "META")).toMatchObject({ status: "CLOSED", closedFrom: "READY" });
+    });
+
+    it("moves past a hundred watches that cannot be closed and closes the one behind them, and says which were kept", async () => {
+      const h = await harness();
+      const stuck = Array.from({ length: 101 }, (_, index) => seedCheck(h, index));
+      const behind = seedCheck(h, 500);
+      const logs: Array<Record<string, unknown>> = [];
+      const deleteCompute = vi.fn(async (workspace: { id: string }) => { if (stuck.includes(workspace.id)) throw new Error("busy"); });
+      const swept = await sweepStuckSetupChecks(h.db, "state", new Date(), deleteCompute, (entry) => { logs.push(entry); });
+      expect(swept).toEqual({ closed: [behind], dropped: 0, kept: 101 });
+      expect(watches(h)).toHaveLength(101);
+      expect(h.db.get(`WORKSPACE#${behind}`, "META")).toMatchObject({ status: "CLOSED" });
+      expect(logs.filter((entry) => entry.event === "stuck_setup_check.close_failed")).toHaveLength(101);
+      expect(logs).toContainEqual({ event: "stuck_setup_check.close_failed", workspaceId: stuck[0], error: "Error" });
+    });
+
+    it("logs a check that is kept because it is busy, not only one whose close threw", async () => {
+      const h = await harness();
+      const id = seedCheck(h, 1);
+      // A workspace in a state a close does not take (here DELETING): the sweep leaves it and the watch stays.
+      h.db.set({ ...(h.db.get(`WORKSPACE#${id}`, "META") as Record<string, unknown>), status: "DELETING" });
+      const logs: Array<Record<string, unknown>> = [];
+      expect(await sweepStuckSetupChecks(h.db, "state", new Date(), vi.fn(async () => undefined), (entry) => { logs.push(entry); })).toEqual({ closed: [], dropped: 0, kept: 1 });
+      expect(logs).toContainEqual({ event: "stuck_setup_check.kept", workspaceId: id });
+    });
+
+    it("does not let a watch it cannot drop block the others", async () => {
+      const h = await harness();
+      h.db.set({ pk: "SETUP_CHECK_WATCH", sk: `${old(0)}#orphan`, entityType: "SETUP_CHECK_WATCH" });
+      const id = seedCheck(h, 1);
+      const send = h.db.send.bind(h.db);
+      h.db.send = (async (command: { constructor: { name: string }; input?: { Key?: { sk?: string } } }) => {
+        if (command.constructor.name === "DeleteCommand" && command.input?.Key?.sk === `${old(0)}#orphan`) throw new Error("throttled");
+        return send(command as never);
+      }) as typeof h.db.send;
+      const logs: Array<Record<string, unknown>> = [];
+      const swept = await sweepStuckSetupChecks(h.db, "state", new Date(), vi.fn(async () => undefined), (entry) => { logs.push(entry); });
+      expect(swept).toEqual({ closed: [id], dropped: 0, kept: 1 });
+      expect(logs).toContainEqual({ event: "stuck_setup_check.close_failed", workspaceId: undefined, error: "Error" });
+    });
+
+    it("stops at its time budget, always closing at least one, and leaves the rest for the next run", async () => {
+      const h = await harness();
+      const ids = Array.from({ length: 5 }, (_, index) => seedCheck(h, index));
+      const logs: Array<Record<string, unknown>> = [];
+      const swept = await sweepStuckSetupChecks(h.db, "state", new Date(), vi.fn(async () => undefined), (entry) => { logs.push(entry); }, { budgetMs: 0 });
+      expect(swept).toEqual({ closed: [ids[0]], dropped: 0, kept: 0 });
+      expect(watches(h)).toHaveLength(4);
+      expect(logs).toContainEqual({ event: "stuck_setup_check.sweep_incomplete", closed: 1, dropped: 0, kept: 0 });
+    });
   });
 
   it("takes the check's slot, workspace, watch and record in the one transaction, within 100 items", async () => {
