@@ -826,13 +826,46 @@ describe("a check's message (review M3)", () => {
   it("caps a message at 300 characters and strips control characters, in the answer and in what is recorded", async () => {
     const { deps } = setup();
     const long = `${"x".repeat(400)}`;
-    const store = storeOf(deps, { checks: { sentry: async () => ({ ok: false, message: `bad\u0000 token\u001b[31m ${long}\u202e\u200b\n\tend` }) } });
+    const store = storeOf(deps, { checks: { sentry: async () => ({ ok: false, message: `bad\u0000 token\u001b[31m ${long}\u202e\u200b\n\tend\u2028\u2029` }) } });
     await store.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
     const answer = await store.check(ORG_A, CON_A);
     expect(answer.ok).toBe(false);
     expect(answer.message!.length).toBeLessThanOrEqual(300);
-    expect(answer.message).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(answer.message).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
     expect(answer.message!.startsWith("bad token[31m xxx")).toBe(true);
+  });
+
+  it("strips the line and paragraph separators U+2028 and U+2029, which hide the rest of a line (review A-M3)", async () => {
+    const { deps } = setup();
+    const store = storeOf(deps, { checks: { sentry: async () => ({ ok: false, message: "first\u2028second\u2029third" }) } });
+    await store.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
+    expect((await store.check(ORG_A, CON_A)).message).toBe("firstsecondthird");
+  });
+
+  it("replaces every value of the saved secret that a check's message holds with [redacted], however the vendor quoted it (review A-M3)", async () => {
+    const { deps } = setup();
+    const quoted = `Sentry said: invalid token ${SENTRY_TOKEN}; again ${SENTRY_TOKEN} and split ${SENTRY_TOKEN.slice(0, 8)}\u0000${SENTRY_TOKEN.slice(8)}`;
+    const sentry = storeOf(deps, { checks: { sentry: async () => ({ ok: false, message: quoted }) } });
+    await sentry.put({ orgId: ORG_A, connection: SENTRY, secret: secretFor(SENTRY), by: ALICE });
+    const answer = await sentry.check(ORG_A, CON_A);
+    expect(answer.message).toBe("Sentry said: invalid token [redacted]; again [redacted] and split [redacted]");
+    expect(JSON.stringify(answer)).not.toContain(SENTRY_TOKEN);
+    // A connection with two secret values (Datadog's API and application keys) has both replaced; the message is no longer after the cap.
+    const other = setup();
+    const datadog = storeOf(other.deps, { checks: { datadog: async ({ secret }) => ({ ok: false, message: `${"x".repeat(285)} keys ${JSON.stringify(secret)}` }) } });
+    await datadog.put({ orgId: ORG_A, connection: DATADOG, secret: secretFor(DATADOG), by: ALICE });
+    const refused = await datadog.check(ORG_A, CON_A);
+    expect(refused.message!.length).toBeLessThanOrEqual(300);
+    expect(JSON.stringify(refused)).not.toMatch(/dd-api-key|dd-app-key/u);
+    const both = storeOf(other.deps, { checks: { datadog: async () => ({ ok: false, message: "api dd-api-key-0123456789 app dd-app-key-0123456789" }) } });
+    expect((await both.check(ORG_A, CON_A)).message).toBe("api [redacted] app [redacted]");
+  });
+
+  it("leaves alone a message that holds no secret value, and a check with no secret to hold (CloudWatch)", async () => {
+    const { deps } = setup();
+    const store = storeOf(deps, { checks: { cloudwatch: async () => ({ ok: false, message: "the role could not be assumed" }) } });
+    await store.put({ orgId: ORG_A, connection: CLOUDWATCH, by: ALICE });
+    expect(await store.check(ORG_A, CON_A)).toEqual({ ok: false, message: "the role could not be assumed" });
   });
 
   it("leaves a short clean message alone, drops a message that is nothing but control characters, and counts code points not units", async () => {

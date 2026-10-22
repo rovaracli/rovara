@@ -1,7 +1,7 @@
 // Plan 4 Task 13: the Sentry connector. It reads one Sentry project through an org connection's auth token, in the broker (a native connector, no MCP
 // server): issues, one issue, its latest event and the project's releases. Every request goes to `https://<us|de>.sentry.io/api/0/` and nowhere else, and a
 // tool can only reach the project its scope names. The Sentry API is faked; no test reaches a network.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
 import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
@@ -23,7 +23,9 @@ const ALICE = "a".repeat(64);
 const TOKEN = "sntrys_SENTRYTESTTOKEN0123456789";
 const TOOLS = ["list_issues", "get_issue", "get_latest_event", "list_releases"] as const;
 
-afterEach(() => { vi.restoreAllMocks(); });
+// A check or a tool may reach Sentry only through the fetch it is given (held to Sentry's host, no redirect); the global one fails the test (review A-M3).
+beforeEach(() => { vi.stubGlobal("fetch", () => { throw new Error("test: the global fetch was used; a Sentry check and tool use only the fetch they are given"); }); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 function setup() {
   const fake = new FakeOrgSecrets({ env: ENV, now: () => Date.now() });
