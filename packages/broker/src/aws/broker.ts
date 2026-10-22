@@ -361,6 +361,7 @@ import { OrgSecrets, type SecretsClient } from "../connections/org-secrets.js";
 import { orgCredentialRegistry } from "../connections/registry.js";
 import { dnsResolveHost, checkEndpointUrl } from "../connections/endpoint-check.js";
 import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
+import { sentryConnectionCheck } from "./sentry-connector-type.js";
 import { OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
@@ -622,7 +623,9 @@ interface AwsBrokerDependencies {
    * Plan 3 Task 12b: how the connection routes reach a vendor. By default a connection is checked with `fetch`, the MCP server's tools are
    * listed over the network, and an MCP endpoint is checked with `checkEndpointUrl` and the system resolver; a test replaces any of them.
    */
-  connectionChecks?: Pick<OrgConnectionStoreInput, "fetch" | "listMcpTools" | "checkEndpoint" | "endpointGuard">;
+  connectionChecks?: Pick<OrgConnectionStoreInput, "fetch" | "listMcpTools" | "checkEndpoint" | "endpointGuard" | "checks">;
+  /** Plan 4 Task 13: a test replaces the fetch under every native connector's vendor requests; production uses the lookup-checked one. */
+  nativeFetch?: typeof fetch;
   /** The administrator turn record export; absent when the deployment has no TurnRecords table. */
   turnRecords?: TurnRecordExport;
   /** The TurnRecords table developer task audit records go to (spec 025); absent when there is none. */
@@ -908,6 +911,8 @@ function orgConnectionStoreOf(dependencies: AwsBrokerDependencies): OrgConnectio
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
     // The checks of an MCP endpoint and a Grafana address go over a connection pinned to the addresses checked (the store's default guard is `mcpEndpointGuard()`).
+    // Each native type's check is registered as its task lands (Plan 4 Tasks 13 to 17); a test may replace any of them through `connectionChecks.checks`.
+    checks: { sentry: sentryConnectionCheck },
     ...dependencies.connectionChecks,
   });
 }
@@ -2488,7 +2493,7 @@ async function authorizeGitHubConnector(dependencies: AwsBrokerDependencies, ide
  * Plan 2, Task 15: `scope` says whose work a GitHub token the connectors mint is for; it is asked only when one is minted. It is required, so
  * every caller names the scope its token is for and none inherits one by default.
  */
-export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud" | "mcpEndpointGuard">, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
+export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud" | "mcpEndpointGuard" | "nativeFetch">, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
   let credentialRegistry: ConnectorCredentials | undefined = dependencies.credentialRegistry;
   if (dependencies.cloud === true) {
     credentialRegistry = dependencies.orgConnections !== undefined && orgId !== undefined ? orgCredentialRegistry(dependencies.orgConnections, orgId) : undefined;
@@ -2497,6 +2502,7 @@ export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "
     ...(dependencies.githubMcp ? { githubMcp: githubMcpFor(dependencies.githubMcp, scope) } : {}),
     ...(credentialRegistry ? { credentialRegistry } : {}),
     ...(dependencies.mcpEndpointGuard ? { endpointGuard: dependencies.mcpEndpointGuard } : {}),
+    ...(dependencies.nativeFetch ? { nativeFetch: dependencies.nativeFetch } : {}),
   };
 }
 

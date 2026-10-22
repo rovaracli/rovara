@@ -5,6 +5,7 @@ import type { GitHubMcpDependencies } from "../github-mcp.js";
 import { GITHUB_LEDGER } from "./connector-ledger.js";
 import { asanaConnectorType } from "./asana-connector-type.js";
 import { mcpConnectorType } from "./connector-presets.js";
+import { sentryConnectorType } from "./sentry-connector-type.js";
 import type { ConnectorCredentials, HostPin } from "./credentials.js";
 import { jiraConnectorType } from "./jira-connector-type.js";
 import { linearConnectorType } from "./linear-connector-type.js";
@@ -46,6 +47,11 @@ export interface ConnectorTypeContext {
    * the types whose address a person typed (`HOST_TYPED_CONNECTOR_TYPES`: `mcp`, and Grafana's runtime connector) go through it; a vendor's own endpoint (Linear, Jira, Asana, GitHub) does not.
    */
   endpointGuard?: McpEndpointGuard;
+  /**
+   * Plan 4 Task 13: the fetch under every native connector's vendor requests, which hold it to the vendor's one host and refuse a redirect
+   * (`connectors/native/vendor-fetch.ts`). Absent, the connectors use the lookup-checked fetch that refuses a non-public address at connect time; a test passes a fake.
+   */
+  nativeFetch?: typeof fetch;
 }
 
 /** A stored connectors entry. Only its name and type are known before its type validates the rest. */
@@ -103,6 +109,8 @@ export const githubConnectorType: ConnectorType = {
  */
 export const BUILT_IN_CONNECTOR_TYPES: Readonly<Record<string, ConnectorType>> = {
   github: githubConnectorType, linear: linearConnectorType, jira: jiraConnectorType, asana: asanaConnectorType, mcp: mcpConnectorType,
+  // Plan 4: the native read-only connectors, as their tasks land.
+  sentry: sentryConnectorType,
 };
 
 /**

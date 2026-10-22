@@ -167,11 +167,11 @@ describe("vendorFetch", () => {
     const error = await vendorFetch({ url: `${URL_OK}?q=1`, allowedHosts: HOSTS, headers: { authorization: `Bearer ${TOKEN}` }, fetch: leaky.fn }).catch((caught: Error) => caught);
     expect(error).toBeInstanceOf(VendorFetchError);
     expect((error as Error).message).toBe("the vendor could not be reached");
-    expect(JSON.stringify([(error as Error).message, (error as Error).name, String(error)])).not.toContain(TOKEN);
+    expect(JSON.stringify([(error as Error).message, (error as Error).name, (error as Error).toString()])).not.toContain(TOKEN);
   });
 
   it("gives up on a vendor that does not answer, with a fixed message", async () => {
-    const hang = fakeFetch((_url, init) => new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)); }));
+    const hang = fakeFetch((_url, init) => new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener("abort", () => reject(init.signal!.reason as Error)); }));
     await expect(vendorFetch({ url: URL_OK, allowedHosts: HOSTS, timeoutMs: 20, fetch: hang.fn })).rejects.toThrow("the vendor did not answer in time");
   });
 
@@ -190,7 +190,7 @@ describe("vendorFetch", () => {
 /** Runs a node-style lookup and answers its callback arguments. */
 const lookupWith = (addresses: string[] | Error, options: object = { all: true }) =>
   new Promise<unknown[]>((resolve) => {
-    safeLookup(async () => { if (addresses instanceof Error) throw addresses; return addresses; })("vendor.example", options as never, ((...args: unknown[]) => resolve(args)) as never);
+    safeLookup(async () => { if (addresses instanceof Error) throw addresses; return addresses; })("vendor.example", options, ((...args: unknown[]) => resolve(args)));
   });
 
 describe("safeLookup (rebinding, Review Focus 6)", () => {

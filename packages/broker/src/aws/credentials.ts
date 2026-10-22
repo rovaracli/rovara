@@ -9,6 +9,7 @@ import {
   type CredentialRecord,
   type CredentialRegistration,
   type CredentialType,
+  type OrgConnection,
 } from "@agentx/contracts";
 import {
   CredentialUnavailable,
@@ -231,7 +232,13 @@ export function credentialSetupCommand(accepts: readonly CredentialType[] | unde
  * What a connector type reads of a credential registry: the install-wide one below, or, on a cloud install, one org's
  * connections (connections/registry.ts). It can say what is registered and hand out a provider; it cannot register.
  */
-export type ConnectorCredentials = Pick<CredentialRegistry, "has" | "registration" | "typeOf" | "provider">;
+export type ConnectorCredentials = Pick<CredentialRegistry, "has" | "registration" | "typeOf" | "provider"> & {
+  /**
+   * Plan 4: the settings (never the secret) of the org connection `ref` names, for a native connector that needs its region, site or organization. Only
+   * a cloud install's per-org registry has it; the install-wide one does not.
+   */
+  connection?(ref: string): Promise<OrgConnection | undefined>;
+};
 
 /** Registered connector credentials: records name a secret, never hold one. */
 export class CredentialRegistry {

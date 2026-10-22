@@ -73,7 +73,18 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
  * the caller's check (`mcpEndpointGuard`); this only keeps the connection to them.
  */
 export function pinnedFetch(addresses: readonly string[], options: { request?: RequestFunction; origin?: string } = {}): typeof fetch {
-  const lookup = pinnedLookup(addresses);
+  return lookupFetch(pinnedLookup(addresses), options);
+}
+
+/** A node connection `lookup`, as `pinnedLookup` and `safeLookup` build one. */
+export type ConnectionLookup = ReturnType<typeof pinnedLookup>;
+
+/**
+ * A `fetch` that connects through `lookup` whatever name the URL holds, opens a connection per request, never follows a redirect and ends with the caller's
+ * signal. `pinnedFetch` gives it a lookup that answers a fixed set of addresses; the native connectors' (`vendor-fetch.ts`) a lookup that resolves the name
+ * and refuses any address that is not public, at connect time.
+ */
+export function lookupFetch(lookup: ConnectionLookup, options: { request?: RequestFunction; origin?: string } = {}): typeof fetch {
   return async (input, init) => {
     const original = input instanceof Request ? input : undefined;
     const url = new URL(original?.url ?? (input instanceof URL ? input.href : input));

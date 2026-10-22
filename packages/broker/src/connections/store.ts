@@ -573,6 +573,12 @@ function pick(item: Item): unknown {
   return settings;
 }
 
+/** A stored record's settings as the connection they describe (never its secret, status or bookkeeping), or undefined when they do not parse. */
+export function connectionOf(record: Item): OrgConnection | undefined {
+  const parsed = OrgConnectionSchema.safeParse(pick(record));
+  return parsed.success ? parsed.data : undefined;
+}
+
 /** The secret version a record names (undefined for a record that predates versions: the current one is read). */
 const versionOf = (item: Item): string | undefined => (typeof item[VERSION_FIELD] === "string" ? item[VERSION_FIELD] : undefined);
 

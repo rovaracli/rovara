@@ -51,6 +51,7 @@ import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { projectArchivedSettingsMessage, readProjectMeta } from "../developer/project-roles.js";
 import { SETTINGS_STALE_MESSAGE, latestRevision, type LatestRevision } from "../org/project-settings.js";
+import { SENTRY_TOOL_NAMES } from "../connectors/native/sentry.js";
 import type { OrgConnectionStore } from "./store.js";
 
 /** What the project connector routes need beyond the approvals' dependencies; the broker builds it, and a deployment that is not Rovara Cloud sets `cloud: false`. */
@@ -98,7 +99,7 @@ const isNativeType = (type: string): type is NativeConnectorType => (NATIVE_CONN
  * and again when a confirmed change is applied, so a tool a later release stops offering is not approved by an old request.
  */
 export const PROJECT_CONNECTOR_TOOLS: Record<NativeConnectorType, readonly string[]> = {
-  sentry: [], datadog: [], cloudwatch: [], "github-actions": [], grafana: [], vercel: [], pagerduty: [],
+  sentry: SENTRY_TOOL_NAMES, datadog: [], cloudwatch: [], "github-actions": [], grafana: [], vercel: [], pagerduty: [],
 };
 
 const PRIVATE_INSTALL_MESSAGE = "ask an administrator to change this project's connectors with agentx admin project register";

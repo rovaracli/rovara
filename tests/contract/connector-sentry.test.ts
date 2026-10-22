@@ -2,7 +2,7 @@
 // server): issues, one issue, its latest event and the project's releases. Every request goes to `https://<us|de>.sentry.io/api/0/` and nowhere else, and a
 // tool can only reach the project its scope names. The Sentry API is faked; no test reaches a network.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { discoverTools, executeTool, type CatalogTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
+import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
 import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
@@ -151,7 +151,7 @@ describe("what the model is offered", () => {
   it("is read for Plan 3's write classification, whatever the arguments", async () => {
     const { definition, connector } = await resolved();
     const { tools } = await discoverTools(definition, context(), { connect: connector.connect! });
-    for (const tool of tools as CatalogTool[]) {
+    for (const tool of tools) {
       const granted: GrantedTool = {
         connector: "errors", type: "sentry", upstreamName: tool.name, presentedName: `errors__${tool.name}`, access: tool.access,
         facts: { connector: "errors", upstreamName: tool.name, access: tool.access, ...(tool.hints === undefined ? {} : { hints: tool.hints }) },
@@ -319,8 +319,8 @@ describe("the Sentry connection check", () => {
   it("is held to the Sentry host: the check cannot be pointed anywhere else", async () => {
     const s = await connected();
     const seen: string[] = [];
-    const fetch = (async (input: string | URL | Request) => { seen.push(String(input instanceof Request ? input.url : input)); return new Response("{}", { status: 200 }); }) as typeof fetch;
-    const store = new OrgConnectionStore({ ...s.deps, checkEndpoint: async () => undefined, fetch, checks: { sentry: sentryConnectionCheck } });
+    const recording = (async (input: string | URL | Request) => { seen.push(String(input instanceof Request ? input.url : input)); return new Response("{}", { status: 200 }); }) as typeof fetch;
+    const store = new OrgConnectionStore({ ...s.deps, checkEndpoint: async () => undefined, fetch: recording, checks: { sentry: sentryConnectionCheck } });
     await store.check(ORG_A, CON);
     expect(seen.map((url) => new URL(url).hostname)).toEqual(["us.sentry.io"]);
   });
