@@ -102,6 +102,8 @@ export function fakeSentry(options: FakeSentryOptions): { handler: VendorHandler
 
 export interface FakeDatadogMonitor { id: number; name: string; type?: string; overall_state?: string; tags: string[]; query?: string }
 
+export interface FakeDatadogLog { id: string; service: string; tags: string[]; message: string; status?: string }
+
 export interface FakeDatadogOptions {
   apiKey: string;
   appKey: string;
@@ -110,6 +112,8 @@ export interface FakeDatadogOptions {
   monitors?: readonly FakeDatadogMonitor[];
   /** A message the first log carries (to prove a key echoed back is scrubbed). */
   logMessage?: string;
+  /** The logs a search answers with, whatever the search asked for (a vendor that ignores the filter). */
+  logs?: readonly FakeDatadogLog[];
   /** Answers every request with this status (an outage, a 429). */
   status?: number;
 }
@@ -146,10 +150,11 @@ export function fakeDatadog(options: FakeDatadogOptions): { handler: VendorHandl
       return json({ status: "ok", query: url.searchParams.get("query"), series: [{ metric: "payments.latency", scope: "service:payments,env:prod", pointlist: [[1_760_000_000_000, 1.5], [1_760_000_060_000, 2.5], [1_760_000_120_000, 0.5]] }] });
     }
     if (url.pathname === "/api/v2/logs/events/search" && init?.method === "POST") {
-      return json({ data: [
-        { id: "l1", type: "log", attributes: { timestamp: "2026-10-22T10:00:00Z", status: "error", service: "billing", message: options.logMessage ?? "charge failed for order 17", tags: ["env:prod"] } },
-        { id: "l2", type: "log", attributes: { timestamp: "2026-10-22T09:59:00Z", status: "info", service: "billing", message: "charge started", tags: ["env:prod"] } },
-      ] });
+      const logs = options.logs ?? [
+        { id: "l1", service: "payments", tags: ["env:prod"], message: options.logMessage ?? "charge failed for order 17", status: "error" },
+        { id: "l2", service: "payments", tags: ["env:prod"], message: "charge started", status: "info" },
+      ];
+      return json({ data: logs.map((log, index) => ({ id: log.id, type: "log", attributes: { timestamp: `2026-10-22T10:0${String(index)}:00Z`, status: log.status ?? "info", service: log.service, message: log.message, tags: log.tags } })) });
     }
     return json({ errors: ["not found"] }, 404);
   };

@@ -140,6 +140,13 @@ describe("the six connection types' contracts", () => {
     }
     expect(OrgConnectionSchema.safeParse({ ...GRAFANA, baseUrl: "https://acme.grafana.net" }).success).toBe(true);
     expect(OrgConnectionSchema.safeParse({ ...GRAFANA, baseUrl: "https://tools.acme.dev/grafana" }).success).toBe(true);
+    // checkEndpointUrl refuses any port but 443 at every call, so a Grafana address with another port is refused when it is saved, in words that say why (review M-1).
+    for (const baseUrl of ["https://grafana.acme.dev:3000", "https://grafana.acme.dev:8443/grafana", "https://grafana.acme.dev:80"]) {
+      const parsed = OrgConnectionSchema.safeParse({ ...GRAFANA, baseUrl });
+      expect(parsed.success, baseUrl).toBe(false);
+      expect(parsed.error?.issues.map((issue) => issue.message), baseUrl).toEqual(["baseUrl must use the standard https port (443); Grafana on another port is not supported"]);
+    }
+    expect(OrgConnectionSchema.safeParse({ ...GRAFANA, baseUrl: "https://grafana.acme.dev:443" }).success).toBe(true);
     for (const teamId of ["acme", "team_", "team_a b", `team_${"a".repeat(65)}`, "Team_abc", "team_a-b"]) expect(OrgConnectionSchema.safeParse({ ...VERCEL, teamId }).success, teamId).toBe(false);
     expect(OrgConnectionSchema.safeParse({ ...VERCEL, teamId: `team_${"A1".repeat(32)}` }).success).toBe(true);
   });

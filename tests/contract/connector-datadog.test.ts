@@ -4,11 +4,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
 import type { DATADOG_SITES} from "../../packages/contracts/src/index.js";
-import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
+import { DatadogScopeSchema, ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { datadogConnectionCheck, datadogConnectorType } from "../../packages/broker/src/aws/datadog-connector-type.js";
-import { DATADOG_TOOL_NAMES } from "../../packages/broker/src/connectors/native/datadog.js";
+import { DATADOG_TOOL_NAMES, isContainedQuery, scopedMetricQuery } from "../../packages/broker/src/connectors/native/datadog.js";
 import { PROJECT_CONNECTOR_TOOLS } from "../../packages/broker/src/connections/project-connectors.js";
 import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
@@ -232,6 +232,76 @@ describe("running the tools", () => {
     expect(r.api.requests).toHaveLength(1);
   });
 
+  it("reads a backslash as an escape outside quotes as well as inside, as Datadog does (review C-1)", () => {
+    // The two queries the review sent: `\(` and `\"` are literal characters to Datadog, so neither opens a bracket or a quote there.
+    expect(isContainedQuery("x\\( ) OR * OR (x \\)")).toBe(false);
+    expect(isContainedQuery('a\\") OR *:* OR (b"c\\"d"')).toBe(false);
+    // Outside quotes: an escaped bracket or quote opens nothing, and does not hide the real ones around it.
+    expect(isContainedQuery("a\\(b")).toBe(true);
+    expect(isContainedQuery("a\\)b")).toBe(true);
+    expect(isContainedQuery('a\\"b')).toBe(true);
+    expect(isContainedQuery("(a\\))")).toBe(true);
+    expect(isContainedQuery("(a\\)")).toBe(false);
+    expect(isContainedQuery("a\\\\(b")).toBe(false);
+    expect(isContainedQuery("a\\\\\\(b)")).toBe(false);
+    expect(isContainedQuery('a\\\\"b')).toBe(false);
+    // Inside quotes the escape still holds.
+    expect(isContainedQuery('"a\\"b"')).toBe(true);
+    expect(isContainedQuery('"a\\"')).toBe(false);
+    expect(isContainedQuery('"a\\\\"')).toBe(true);
+    expect(isContainedQuery('"a\\\\" OR (b')).toBe(false);
+    // A trailing backslash would escape the bracket the scope puts after the query.
+    for (const query of ["foo\\", "\\", "(a)\\", "a\\\\\\", '"a"\\']) expect(isContainedQuery(query), query).toBe(false);
+    for (const query of ["a\\\\", "foo", "(a OR b) AND \"c (d\""]) expect(isContainedQuery(query), query).toBe(true);
+  });
+
+  it("refuses the review's escape queries, a trailing backslash and an unbalanced escape in a log or monitor search, in fixed words, making no request", async () => {
+    const r = await resolved();
+    const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: await tokenOf(r), tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
+    const queries = ["x\\( ) OR * OR (x \\)", 'a\\") OR *:* OR (b"c\\"d"', "foo\\", "(a)\\", '"a\\"', "a\\\\(b", "(a\\)"];
+    for (const query of queries) {
+      await expect(connection.call("search_logs", { ...ROUTING, query, fromMinutesAgo: 5 }), query).rejects.toMatchObject({ name: "ToolRefusal", message: "search_logs: query is not allowed", reason: "policy_denied" });
+      await expect(connection.call("search_monitors", { ...ROUTING, query }), query).rejects.toMatchObject({ name: "ToolRefusal", message: "search_monitors: query is not allowed", reason: "policy_denied" });
+    }
+    expect(r.api.requests).toEqual([]);
+    // A backslash that escapes something harmless is fine, and goes through inside its own group.
+    await expect(connection.call("search_logs", { ...ROUTING, query: "message:a\\(b", fromMinutesAgo: 5 })).resolves.toMatchObject({});
+    expect((r.api.requests[0]!.body as { filter: { query: string } }).filter.query).toBe("(service:payments AND env:prod) AND (message:a\\(b)");
+  });
+
+  it("drops a log that does not carry every scope tag, whatever the vendor's filter let through (review C-1)", async () => {
+    const logs: FakeDatadogLog[] = [
+      { id: "own-1", service: "payments", tags: ["env:prod", "team:core"], message: "own log by service attribute" },
+      { id: "own-2", service: "web", tags: ["service:payments", "env:prod"], message: "own log by service tag" },
+      { id: "other-service", service: "billing", tags: ["env:prod"], message: "another service's secret log" },
+      { id: "other-env", service: "payments", tags: ["env:dev"], message: "the dev environment's log" },
+      { id: "no-tags", service: "payments", tags: [], message: "a log with no tags" },
+    ];
+    const { result } = await run("search_logs", { query: "*", fromMinutesAgo: 60 }, { api: fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, logs }) });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("2 logs in pay");
+    expect(result.text).toContain("own log by service attribute");
+    expect(result.text).toContain("own log by service tag");
+    expect(result.text).not.toMatch(/another service|dev environment|no tags/u);
+    const none = await run("search_logs", { query: "*", fromMinutesAgo: 60 }, { api: fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, logs: logs.slice(2) }) });
+    expect(none.result.text).toBe("No logs in pay for that search.");
+    // The limit counts the logs that are shown, not the ones the vendor sent.
+    const limited = await run("search_logs", { query: "*", fromMinutesAgo: 60, limit: 1 }, { api: fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, logs: [logs[2]!, logs[0]!, logs[1]!] }) });
+    expect(limited.result.text).toContain("1 log in pay");
+    expect(limited.result.text).toContain("own log by service attribute");
+    expect(limited.result.text).not.toContain("another service");
+  });
+
+  it("drops a monitor from a search when it does not carry every scope tag, whatever the vendor's filter let through (review C-1)", async () => {
+    const { result } = await run("search_monitors", { query: "*" });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("1 monitor in pay");
+    expect(result.text).toContain("Payments latency");
+    expect(result.text).not.toContain("Billing errors");
+    const none = await run("search_monitors", {}, { api: fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, monitors: [{ id: 12, name: "Billing errors", tags: ["service:billing", "env:prod"] }, { id: 13, name: "Payments in dev", tags: ["service:payments", "env:dev"] }, { id: 14, name: "Untagged", tags: [] }] }) });
+    expect(none.result.text).toBe("No monitors in pay.");
+  });
+
   it("refuses a monitor search that could close the scope's group, like a log search, making no request", async () => {
     const r = await resolved();
     const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: await tokenOf(r), tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
@@ -279,6 +349,27 @@ describe("running the tools", () => {
       await expect(connection.call("query_metrics", { ...ROUTING, query, fromMinutesAgo: 60 }), query).rejects.toMatchObject({ message: "query_metrics: query is not allowed" });
     }
     expect(r.api.requests).toEqual([]);
+  });
+
+  it("takes no backslash in a metric query, in the filter, the grouping or a function's arguments", () => {
+    expect(scopedMetricQuery("avg:a.b{x:1}.rollup(max, 60)", TAGS)).toBe("avg:a.b{x:1,service:payments,env:prod}.rollup(max, 60)");
+    for (const query of ["avg:a.b{x\\:1}", "avg:a.b{x:1} by {h\\ost}", "avg:a.b{x:1}.rollup(max\\, 60)", "avg:a.b{x:1}.rollup(\\)", "avg:a.b{x:1}.rollup(60)\\"]) {
+      expect(scopedMetricQuery(query, TAGS), query).toBeUndefined();
+    }
+  });
+
+  it("accepts a scope of the longest tags the schema allows, 829 characters of them in the routing value, and shows its monitors", async () => {
+    const tags = ["a", "b", "c", "d", "e"].map((letter) => `k${"y".repeat(63)}:${letter}${"v".repeat(99)}`);
+    expect(tags.every((tag) => tag.length === 165)).toBe(true);
+    const scope = { alias: "long", tags };
+    expect(DatadogScopeSchema.safeParse(scope).success).toBe(true);
+    expect(tags.join(",")).toHaveLength(829);
+    const api = fakeDatadog({ apiKey: API_KEY, appKey: APP_KEY, monitors: [{ id: 21, name: "Long scoped monitor", tags: [...tags, "extra:1"] }, { id: 22, name: "Short scoped monitor", tags: tags.slice(0, 4) }] });
+    const { result } = await run("search_monitors", {}, { scope, config: { scopes: [scope] }, api });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("1 monitor in long");
+    expect(result.text).toContain("Long scoped monitor");
+    expect(result.text).not.toContain("Short scoped monitor");
   });
 
   it("scrubs both keys from anything a tool answers with", async () => {
