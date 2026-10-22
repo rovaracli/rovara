@@ -12,7 +12,7 @@ import {
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { effectiveLimits } from "../../packages/broker/src/spend/settings.js";
 import {
-  SPEND_RESUME_INSTRUCTIONS, orgSettingsKey, ownerBudgetKey, pausedTasksKey, suggestedMonthTopUpUsd, topUpKey,
+  SPEND_RESUME_INSTRUCTIONS, builtinSettingsKey, orgSettingsKey, ownerBudgetKey, pausedTasksKey, suggestedMonthTopUpUsd, topUpKey,
   type BudgetScope, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
@@ -706,5 +706,60 @@ describe("fix round 2 (the Task 32/33 re-check)", () => {
     expect(swept).toMatchObject({ expired: 1, heldStarts: 0, complete: false });
     expect(monthRequests(t).find((record) => record.spendRequestId === old.record.spendRequestId)!.status).toBe("EXPIRED");
     expect(resumeItems(t)).toHaveLength(3);
+  });
+
+  /** A month request for an agent asked for its owner Maya, so it goes to the admins (fix round 1, I-3). */
+  const adminAgentRequest = async (t: World, agentId: string, amountUsd: number) => {
+    const scope: BudgetScope = { kind: "agent", agentId };
+    return (await createSpendRequest(t.deps(), {
+      orgId: TEST_ORG, kind: "month", scope, subject: `MONTH#${month()}#AGENT#${agentId}#${MAYA.developerId}#${randomUUID()}`, amountUsd, newLimitUsd: (await limitOf(t, scope))! + amountUsd,
+      reason: "More.", requestedBy: { kind: "member", developerId: MAYA.developerId }, requestedFor: { developerId: MAYA.developerId },
+    })).record;
+  };
+  /** `deps` that run `meanwhile` once, just before the first transaction that writes a top-up. */
+  const beforeTopUpWrite = (t: World, meanwhile: () => Promise<unknown>) => {
+    const deps = t.deps();
+    const real = deps.documentClient;
+    let raced = false;
+    return { deps: { ...deps, documentClient: { send: async (command: { constructor: { name: string }; input: unknown }) => {
+      if (!raced && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("\"TOPUP\"")) {
+        raced = true;
+        await meanwhile();
+      }
+      return real.send(command);
+    } } }, raced: () => raced };
+  };
+
+  it("Minor 2: two admin top-ups that race can't both pass the guardrail; the one that lost is refused and stays PENDING", async () => {
+    const t = await setup();
+    const agentId = await t.budgeted(30);
+    const a = await adminAgentRequest(t, agentId, 15);
+    const b = await adminAgentRequest(t, agentId, 15);
+    expect([a.approverRole, b.approverRole]).toEqual(["org_admin", "org_admin"]);
+    // Deb's approval of a reads $30 (+$15 = $45, within the $50 guardrail); Ada's approval of b lands before Deb's write.
+    const race = beforeTopUpWrite(t, () => t.decide(ADA, b.spendRequestId));
+    const lost = await refusal(decideSpendRequest(race.deps, t.caller(DEB, "admin"), a.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }));
+    expect(race.raced()).toBe(true);
+    expect(lost).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect(topUp(t, { kind: "agent", agentId })).toBe(15);
+    expect(monthRequests(t).find((record) => record.spendRequestId === a.spendRequestId)!.status).toBe("PENDING");
+    // Decided again, it is checked on the live limit: $45 + $15 is past the guardrail.
+    expect(await refusal(t.decide(DEB, a.spendRequestId))).toMatchObject({ code: "CONFIG_INVALID" });
+    await t.decide(DEB, a.spendRequestId, "APPROVE", { amountUsd: 5 });
+    expect(await limitOf(t, { kind: "agent", agentId })).toBe(50);
+  });
+
+  it("Minor 2: a built-in agent, which has no owner counter, is held to the top-up the admin read", async () => {
+    const t = await setup();
+    const builtin = "root-cause-analyst";
+    t.db.set({ ...builtinSettingsKey(TEST_ORG, builtin), entityType: "BUILTIN_SETTINGS", orgId: TEST_ORG, agentId: builtin, monthlyBudgetUsd: 30 });
+    const a = await agentRequest(t, builtin, 15);
+    const b = await agentRequest(t, builtin, 15);
+    expect([a.approverRole, b.approverRole]).toEqual(["org_admin", "org_admin"]);
+    const race = beforeTopUpWrite(t, () => t.decide(ADA, b.spendRequestId));
+    const lost = await refusal(decideSpendRequest(race.deps, t.caller(DEB, "admin"), a.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }));
+    expect(race.raced()).toBe(true);
+    expect(lost).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect(topUp(t, { kind: "agent", agentId: builtin })).toBe(15);
   });
 });

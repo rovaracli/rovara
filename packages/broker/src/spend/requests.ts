@@ -188,8 +188,21 @@ export function effectiveOwnerCap(deps: SpendRequestDependencies, orgId: OrgId, 
 
 /** An agent's monthly limit for `month` before the guardrail's clamp: its base plus the month's top-up (fix round 1, I-4). */
 async function unclampedAgentLimit(deps: SpendRequestDependencies, orgId: OrgId, month: string, agentId: string): Promise<number> {
+  return (await agentLimitParts(deps, orgId, month, agentId)).limitUsd;
+}
+
+/** The unclamped limit and the top-up it was summed with, so a write can be held to that top-up (fix round 2, minor 2). */
+async function agentLimitParts(deps: SpendRequestDependencies, orgId: OrgId, month: string, agentId: string): Promise<{ limitUsd: number; topUpUsd: number }> {
   const base = isBuiltinAgentId(agentId) ? (await deps.store.getBuiltinSettings(orgId, agentId))?.monthlyBudgetUsd : (await deps.store.get(orgId, agentId))?.monthlyBudgetUsd;
-  return cleanUsd((base ?? 0) + await readTopUp(deps, orgId, month, { kind: "agent", agentId }));
+  const topUpUsd = await readTopUp(deps, orgId, month, { kind: "agent", agentId });
+  return { limitUsd: cleanUsd((base ?? 0) + topUpUsd), topUpUsd };
+}
+
+/** The version of an owner's counter now (0 for a counter from before versions). */
+async function ownerCounterVersion(deps: SpendRequestDependencies, orgId: OrgId, owner: string): Promise<number> {
+  await deps.store.ensureOwnerTotal(orgId, owner);
+  const version = (await getItem(deps, ownerBudgetKey(orgId, owner)))?.["version"];
+  return typeof version === "number" ? version : 0;
 }
 
 /** The UTC month a `month` request tops up: the month it was made in. */
@@ -1127,30 +1140,44 @@ async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestR
   if (!isBudgetScope(scope)) throw notFound();
   const items = [...decision.ending];
   const held: number[] = [];
+  // An admin's agent top-up is held to the owner counter's version and the top-up it checked the guardrail on (fix round 2, minor 2): of two that race, the
+  // one that loses is refused, the request stays PENDING, and deciding it again checks the live limit.
+  const raced: number[] = [];
   if (decision.status === "APPROVED" && decision.approvedUsd !== undefined) {
     const month = monthOfRequest(record);
+    // The owner's read must carry what it summed at; an owner's route without it is not decided on (fail closed).
+    if (scope.kind === "agent" && approvers.role === "agent_owner" && approvers.owner === undefined) throw agentXError("AGENT_REVISION_CONFLICT", "This request changed while it was decided. Open it again.");
+    const adminOwner = scope.kind === "agent" && approvers.owner === undefined ? await agentBudgetOwner(deps, record.orgId, scope.agentId) : undefined;
+    // Read before the limit, so a base raise or top-up after it moves the version the write is held to.
+    const adminVersion = adminOwner === undefined ? undefined : await ownerCounterVersion(deps, record.orgId, adminOwner);
+    let seenTopUp: number | undefined;
     if (scope.kind === "agent") {
-      const limit = cleanUsd(await unclampedAgentLimit(deps, record.orgId, month, scope.agentId) + decision.approvedUsd);
+      const parts = await agentLimitParts(deps, record.orgId, month, scope.agentId);
+      if (approvers.owner === undefined) seenTopUp = parts.topUpUsd;
+      const limit = cleanUsd(parts.limitUsd + decision.approvedUsd);
       const guardrail = (await readGuardrails(deps, record.orgId)).maxAgentMonthlyUsd;
       if (limit > guardrail) {
         throw agentXError("CONFIG_INVALID", `amountUsd: that would take this agent to ${dollars(limit)} a month, past the ${dollars(guardrail)} an agent may have. Approve less, or raise the agent guardrail first.`);
       }
     }
+    if (seenTopUp !== undefined) raced.push(items.length);
     items.push({
       Update: {
         TableName: deps.tableName, Key: topUpKey(record.orgId, month, scope),
         UpdateExpression: "SET entityType = :type, orgId = :org, updatedAt = :now ADD amountUsd :amount",
-        ExpressionAttributeValues: { ":type": "TOPUP", ":org": record.orgId, ":now": iso(deps.now()), ":amount": decision.approvedUsd },
+        ExpressionAttributeValues: {
+          ":type": "TOPUP", ":org": record.orgId, ":now": iso(deps.now()), ":amount": decision.approvedUsd,
+          ...(seenTopUp === undefined ? {} : seenTopUp === 0 ? { ":zero": 0 } : { ":seen": seenTopUp }),
+        },
+        ...(seenTopUp === undefined ? {} : { ConditionExpression: seenTopUp === 0 ? "attribute_not_exists(amountUsd) OR amountUsd <= :zero" : "amountUsd = :seen" }),
       },
     });
     if (scope.kind === "agent") {
-      // The owner's read must carry what it summed at; an owner's route without it is not decided on (fail closed).
-      if (approvers.role === "agent_owner" && approvers.owner === undefined) throw agentXError("AGENT_REVISION_CONFLICT", "This request changed while it was decided. Open it again.");
-      const owner = approvers.owner?.developerId ?? await agentBudgetOwner(deps, record.orgId, scope.agentId);
+      const owner = approvers.owner?.developerId ?? adminOwner;
       if (owner !== undefined) {
         await deps.store.ensureOwnerTotal(record.orgId, owner);
-        if (approvers.owner !== undefined) held.push(items.length);
-        items.push(ownerVersionItem(deps, record.orgId, owner, approvers.owner?.version));
+        (approvers.owner !== undefined ? held : raced).push(items.length);
+        items.push(ownerVersionItem(deps, record.orgId, owner, approvers.owner?.version ?? adminVersion));
       }
       if (approvers.owner !== undefined) {
         const revision = approvers.owner.policyRevision;
@@ -1171,6 +1198,9 @@ async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestR
     const failed = failedIndexes(error);
     if (failed !== undefined && held.some((index) => failed.has(index)) && !failed.has(0)) {
       return { spendRequest: spendRequestView(deps, await reroute(deps, record)), rerouted: true };
+    }
+    if (failed !== undefined && raced.some((index) => failed.has(index)) && !failed.has(0)) {
+      throw agentXError("AGENT_REVISION_CONFLICT", "This agent's budget changed while you decided. Open the request again: it is checked on the budget as it is now.");
     }
     await decision.refused(error);
   }
