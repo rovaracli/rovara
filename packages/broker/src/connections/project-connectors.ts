@@ -81,7 +81,7 @@ type Deps = ApprovalDependencies & { projectConnectors: Connectors };
 
 export const isProjectConnectorRoute = (pathname: string): boolean => /^\/v1\/app\/projects\/[^/]+\/connectors(\/|$)/.test(pathname);
 
-/** The connector types Plan 3 built: the ones that name an org connection, and GitHub through the org's GitHub App. The refusal of any other type names these (Plan 3's text). */
+/** The connector types Plan 3 built: the ones that name an org connection, and GitHub through the org's GitHub App. */
 const APP_CONNECTOR_TYPES = ["github", "linear", "jira", "mcp"] as const;
 
 /** Plan 4 Task 12: the seven read-only connector types that watch a company's systems. */
@@ -135,7 +135,7 @@ function parseConnector(raw: unknown, name: string): ConnectorConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw invalid("connector: must be an object");
   const type = (raw as { type?: unknown }).type;
   if (typeof type !== "string" || !ACCEPTED_CONNECTOR_TYPES.includes(type)) {
-    throw invalid(`type: a project connector is one of ${APP_CONNECTOR_TYPES.join(", ")}`);
+    throw invalid(`type: a project connector is one of ${ACCEPTED_CONNECTOR_TYPES.join(", ")}`);
   }
   const parsed = ConnectorConfigSchema.safeParse(raw);
   if (!parsed.success) {
@@ -386,7 +386,7 @@ async function validateConnector(deps: Deps, orgId: OrgId, definition: StoredPro
     }
     return;
   }
-  if (connector.type === "asana") throw invalid(`type: a project connector is one of ${APP_CONNECTOR_TYPES.join(", ")}`);
+  if (connector.type === "asana") throw invalid(`type: a project connector is one of ${ACCEPTED_CONNECTOR_TYPES.join(", ")}`);
   // A change that adds no reach to a connector as it was confirmed (a narrowing, or the same tools again) needs no connection: it can only hold or shrink what is there.
   if (holdsApproval) return;
   const connections = deps.projectConnectors.connections;

@@ -354,7 +354,7 @@ export function toolGrantProblems(tools: readonly ToolGrant[]): RecipeProblem[] 
   const problems: RecipeProblem[] = [];
   tools.forEach((grant, index) => {
     if ("name" in grant.connector && NOT_AGENT_CONNECTORS.includes(grant.connector.name)) {
-      problems.push({ path: `tools.${String(index)}.connector`, message: `${grant.connector.name} isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana or mcp` });
+      problems.push({ path: `tools.${String(index)}.connector`, message: `${grant.connector.name} isn't a connector agents can use; name a connector of the project, or pick a type: ${AgentConnectorTypeSchema.options.slice(0, -1).join(", ")} or ${AgentConnectorTypeSchema.options.at(-1) ?? ""}` });
     }
   });
   return problems;
