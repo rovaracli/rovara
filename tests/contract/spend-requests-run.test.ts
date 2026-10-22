@@ -597,6 +597,22 @@ describe("an owner's cap on agent budgets", () => {
     expect(t.requests()).toHaveLength(1);
   });
 
+  it("a repeat of the asking request with the same request id answers the same 202 and writes nothing (R18)", async () => {
+    const t = await setup();
+    await t.budgeted(50);
+    await t.budgeted(50);
+    const third = await t.agentOf();
+    const requestId = randomUUID();
+    const first = await t.dev(MAYA, "PUT", `/v1/app/agents/${third}/budget`, { requestId, monthlyUsd: 1 });
+    expect(first.status).toBe(202);
+    const writes = t.db.commandNames().length;
+    const again = await t.dev(MAYA, "PUT", `/v1/app/agents/${third}/budget`, { requestId, monthlyUsd: 1 });
+    expect(again.status).toBe(202);
+    expect({ ...again.body, requestId: undefined }).toEqual({ ...first.body, requestId: undefined });
+    expect(t.db.commandNames().slice(writes)).not.toContain("TransactWriteCommand");
+    expect((await t.dev(MAYA, "PUT", `/v1/app/agents/${third}/budget`, { requestId, monthlyUsd: 2 })).body).toMatchObject({ error: { code: "CONFIG_INVALID" } });
+  });
+
   it("a contributor and the owner (not an admin) get 403; an admin approves, the budget applies, the total reads $101 and one budget_changed names the admin", async () => {
     const t = await setup();
     await t.budgeted(50);

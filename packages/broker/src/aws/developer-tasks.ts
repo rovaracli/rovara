@@ -2094,6 +2094,8 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
     return;
   }
   if (task.budgetPause !== undefined) return;
+  // Ruling R60, first: a task whose creator was removed is not resumed.
+  await creatorGuard(deps, task);
   const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
   if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
     if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
