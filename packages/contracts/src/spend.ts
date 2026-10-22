@@ -28,6 +28,17 @@ export const DEFAULT_RUN_ESTIMATE_USD = {
   AGENT: { lowUsd: 0.5, highUsd: 2 },
 } as const satisfies Record<"QUICK" | "FULL" | "TASK" | "AGENT", RunEstimateRange>;
 
+/** A run's expected cost and the limits that follow from it (Task 34); `basis` says whether the range came from the org's own runs or the default. */
+export const RunEstimateSchema = z.object({
+  lowUsd: z.number().finite().min(0),
+  highUsd: z.number().finite().min(0),
+  runLimitUsd: z.number().finite().min(0),
+  stopAtUsd: z.number().finite().min(0),
+  basis: z.enum(["history", "default"]),
+  samples: z.number().int().min(0),
+}).strict();
+export type RunEstimate = z.infer<typeof RunEstimateSchema>;
+
 /** The limit on a workflow task's planning phase, before a plan is approved. */
 export const DEFAULT_PLANNING_LIMIT_USD = { QUICK: 2, FULL: 6 } as const;
 
