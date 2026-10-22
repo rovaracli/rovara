@@ -13,7 +13,7 @@ import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-sec
 const seen = vi.hoisted(() => ({ urls: [] as string[], made: 0 }));
 
 vi.mock("../../packages/broker/src/connectors/native/vendor-fetch.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../../packages/broker/src/connectors/native/vendor-fetch.js")>();
+  const original = await importOriginal<Record<string, unknown>>();
   return {
     ...original,
     safeVendorFetch: () => {
@@ -30,7 +30,7 @@ const ALICE = "a".repeat(64);
 beforeEach(() => { seen.urls.length = 0; seen.made = 0; vi.stubGlobal("fetch", () => { throw new Error("test: the global fetch was used by a connection check"); }); });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-function store(checks: ConstructorParameters<typeof OrgConnectionStore>[0]["checks"]) {
+function store(checks: NonNullable<ConstructorParameters<typeof OrgConnectionStore>[0]["checks"]>) {
   const fake = new FakeOrgSecrets({ env: "staging", now: () => Date.now() });
   const secrets = new OrgSecrets({ env: "staging", roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: () => Date.now() });
   // No `fetch` is given: the vendor types' checks use the connectors' own safe fetch.
