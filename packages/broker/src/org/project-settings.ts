@@ -110,10 +110,10 @@ export async function requireRepositoryConnectedByRecords(
   throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${owner}/${repository}`));
 }
 
-interface LatestRevision { definition: StoredProjectDefinition; runtimeBinding: unknown; setupApproval?: unknown }
+export interface LatestRevision { definition: StoredProjectDefinition; runtimeBinding: unknown; setupApproval?: unknown }
 
 /** The project's newest revision, read consistently; undefined when it has none or the newest cannot be read. */
-async function latestRevision(deps: Pick<ProjectSettingsDependencies, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<LatestRevision | undefined> {
+export async function latestRevision(deps: Pick<ProjectSettingsDependencies, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<LatestRevision | undefined> {
   const response = await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName,
     KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",

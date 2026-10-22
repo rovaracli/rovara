@@ -884,6 +884,20 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...(dependencies.cloud === true ? { cloud: true } : {}),
     // Task 12b: the org's connections, on the broker's own table and audit outbox. An MCP endpoint is checked at save and before every call.
     ...(connections === undefined ? {} : { connections }),
+    // Task 13: a project's connectors: the org's connections, the registration of each new revision (with the vendor preflight) and the live status of each connector.
+    projectConnectors: {
+      cloud: dependencies.cloud === true,
+      ...(connections === undefined ? {} : { connections }),
+      registerRevision: async (actor, input, extraItems) => {
+        const registered = await registerProjectFor(dependencies, actor, { ...input, preflight: true }, { creatorMembership: "none", extraItems });
+        return { duplicate: registered.duplicate, ...(registered.preflight === undefined ? {} : { preflight: registered.preflight }) };
+      },
+      preflight: async (actor, definition) => {
+        const project = definition as unknown as ProjectDefinition;
+        const context = connectorTypeContext(dependencies, actor.orgId, async () => githubScope(dependencies, actor.orgId));
+        return (await preflightConnectors(resolveConnectors(project, context, dependencies.connectorTypes), project, actor.ownerKey)).report.connectors;
+      },
+    },
   };
 }
 

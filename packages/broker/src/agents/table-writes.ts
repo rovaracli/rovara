@@ -1,7 +1,7 @@
 // What the agent store and the skill store share for writing the State table: the shapes of an item and a transaction item, the
 // aliases that keep an attribute name clear of DynamoDB's reserved words, how a cancelled transaction says which item refused, and the
 // request item (R18) that makes a write repeatable. Every multi-item write is one transaction, so a refused write leaves nothing behind.
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, agentRequestKey, agentXError, type AgentXErrorCode, type OrgId } from "@agentx/contracts";
 
 /** How long a request item answers a repeat; the State table's TTL removes it after that, and a repeat later is a new request. */
@@ -138,13 +138,11 @@ export async function transact(table: TableInput, items: TransactItem[], refuse:
   }
 }
 
-/** `transact` with the request's own item added: the mark is written with the change or not at all. */
-export async function commit(table: TableInput, items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined, request?: RequestMark, result?: unknown): Promise<void> {
-  if (request === undefined) return transact(table, items, refuse);
-  const at = items.length;
+/** The request's own item (R18): written with the change it belongs to, so a repeat of the request finds what the change returned. */
+export function requestMarkItem(table: TableInput, request: RequestMark, result?: unknown): TransactItem {
   const remembered = JSON.parse(JSON.stringify(request.result ?? result ?? null)) as unknown;
   const nowSeconds = Math.floor(table.now() / 1000);
-  const mark: TransactItem = {
+  return {
     Put: {
       TableName: table.tableName,
       Item: {
@@ -157,5 +155,20 @@ export async function commit(table: TableInput, items: TransactItem[], refuse: (
       ExpressionAttributeValues: { ":now": nowSeconds },
     },
   };
-  return transact(table, [...items, mark], (failed) => (failed.has(at) ? coded("IDEMPOTENCY_CONFLICT", "This request ID is already being used for another change.") : refuse(failed)));
+}
+
+/** What an earlier request of this developer's with this id did, or undefined when it did nothing or its item has expired. */
+export async function readRequest(table: TableInput, orgId: OrgId, developerId: string, requestId: string): Promise<{ fingerprint: string; result: unknown } | undefined> {
+  const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: agentRequestKey(orgId, developerId, requestId), ConsistentRead: true })) as { Item?: Item };
+  const earlier = response.Item;
+  const expires = earlier?.[INDEX_EXPIRY_ATTRIBUTE];
+  if (earlier === undefined || (typeof expires === "number" && expires <= Math.floor(table.now() / 1000))) return undefined;
+  return { fingerprint: String(earlier["fingerprint"]), result: earlier["result"] };
+}
+
+/** `transact` with the request's own item added: the mark is written with the change or not at all. */
+export async function commit(table: TableInput, items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined, request?: RequestMark, result?: unknown): Promise<void> {
+  if (request === undefined) return transact(table, items, refuse);
+  const at = items.length;
+  return transact(table, [...items, requestMarkItem(table, request, result)], (failed) => (failed.has(at) ? coded("IDEMPOTENCY_CONFLICT", "This request ID is already being used for another change.") : refuse(failed)));
 }

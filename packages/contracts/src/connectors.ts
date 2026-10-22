@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ItemPathSchema } from "./item-paths.js";
 import { GitHubMcpResultSchema, McpToolNameSchema, ToolApprovalListSchema } from "./github-mcp.js";
 import { ArgumentNameSchema, isOneLine, McpAuthSchema, McpEndpointSchema, ScopeValueNameSchema, ScopingSchema } from "./mcp-connector.js";
+import { ConnectionIdSchema } from "./agent.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 
 /** Becomes the tool prefix `<name>__<tool>`, so it is short and lowercase. */
@@ -33,6 +34,12 @@ export const ASANA_PROJECT_TOOL_ACCESS = {
 } as const satisfies Record<string, "read" | "write">;
 
 const RepositoryNameSchema = z.string().regex(AGENTX_NAME_PATTERN);
+
+/**
+ * What a connector's `credentialRef` names: a credential an administrator registered (an AgentX name, as on an install of your own), or on
+ * Rovara Cloud an org connection (`con_` and 20 base36 characters, Plan 3). The registry the install reads decides which can be found; the shape only allows both.
+ */
+export const CredentialRefSchema = z.union([z.string().regex(AGENTX_NAME_PATTERN), ConnectionIdSchema]);
 
 /** A scope alias such as a repository name. */
 export const ConnectorAliasSchema = z.string().regex(AGENTX_NAME_PATTERN);
@@ -75,7 +82,7 @@ const JiraScopeSchema = z.object({
 export const JiraConnectorSchema = z.object({
   name: ConnectorNameSchema,
   type: z.literal("jira"),
-  credentialRef: z.string().regex(AGENTX_NAME_PATTERN),
+  credentialRef: CredentialRefSchema,
   identity: z.literal("service").optional(),
   scopes: z.array(JiraScopeSchema).min(1).max(32),
   tools: ToolApprovalListSchema,
@@ -113,7 +120,7 @@ export const LinearScopeSchema = z.object({ alias: ConnectorAliasSchema, teamId:
 export const LinearConnectorSchema = z.object({
   name: ConnectorNameSchema,
   type: z.literal("linear"),
-  credentialRef: z.string().regex(AGENTX_NAME_PATTERN),
+  credentialRef: CredentialRefSchema,
   scopes: z.array(LinearScopeSchema).min(1).max(32)
     .refine((scopes) => new Set(scopes.map((scope) => scope.alias)).size === scopes.length, "connector scope aliases must be unique")
     .refine((scopes) => new Set(scopes.map((scope) => scope.teamId.toLowerCase())).size === scopes.length, "connector scopes must name different teams"),
@@ -176,7 +183,7 @@ export const McpConnectorSchema = z.object({
   scopeNoun: z.string().regex(/^[A-Za-z][A-Za-z0-9 -]{0,31}$/).optional(),
   /** What an administrator should check when the vendor refuses the credential. */
   permissionsHint: OneLineSchema(256).optional(),
-  credentialRef: z.string().regex(AGENTX_NAME_PATTERN),
+  credentialRef: CredentialRefSchema,
   auth: McpAuthSchema.optional(),
   scopes: z.array(McpScopeSchema).min(1).max(32),
   bind: z.object({

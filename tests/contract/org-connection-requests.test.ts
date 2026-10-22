@@ -6,10 +6,10 @@ import { connectionKey } from "../../packages/contracts/src/connections.js";
 import type { OrgConnection } from "../../packages/contracts/src/connections.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
-import { OrgSecrets, orgConnectorSecretName, orgHookSecretName } from "../../packages/broker/src/connections/org-secrets.js";
+import { BEING_REMOVED_MESSAGE, OrgSecrets, orgConnectorSecretName, orgHookSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { HookSecretStore, OrgConnectionStore, clearOrgConnections, connectionActorIds } from "../../packages/broker/src/connections/store.js";
 import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
-import { DescribeSecretCommand, DeleteSecretCommand } from "@aws-sdk/client-secrets-manager";
+import { CreateSecretCommand, DescribeSecretCommand, DeleteSecretCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 
@@ -364,5 +364,60 @@ describe("OrgSecrets.scheduleDelete, when Secrets Manager says the request is in
   it("is refused, failing closed, when the secret cannot be described either", async () => {
     const { secrets } = refusingDelete(async () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); });
     expect((await code(secrets.scheduleDelete(ORG_A, name)))?.code).toBe("RUNTIME_UNAVAILABLE");
+  });
+});
+
+describe("OrgSecrets.put, when the secret is waiting to be deleted", () => {
+  const name = orgConnectorSecretName(ENV, ORG_A, CON_A);
+
+  it("answers a plain, not retryable CONFIG_INVALID that says to remove the connection again, instead of a failure to retry", async () => {
+    const { secrets, fake } = setup();
+    await secrets.put(ORG_A, name, "old");
+    await secrets.scheduleDelete(ORG_A, name);
+    expect(fake.stored(name)?.deleteAt).toBeDefined();
+    const refused = await secrets.put(ORG_A, name, "new").then(() => undefined, (error: { code: string; message: string; retryable?: boolean }) => error);
+    expect(refused).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(refused!.message).toBe(`CONFIG_INVALID: ${BEING_REMOVED_MESSAGE}`);
+    expect(BEING_REMOVED_MESSAGE).toBe("this connection is being removed; remove it again, then add a new one");
+    // Nothing was written: the secret still holds the one version it had.
+    expect(fake.stored(name)?.versions).toBe(1);
+  });
+
+  it("leaves the connection as it was when its save is refused that way, and removing it again finishes the removal", async () => {
+    const { store, deps, db } = setup();
+    await store.put({ orgId: ORG_A, connection: LINEAR, secret: { apiKey: "k1" }, by: ALICE });
+    // A removal that scheduled the secret and stopped before the record went.
+    await deps.secrets.scheduleDelete(ORG_A, name);
+    const before = JSON.stringify(db.get(connectionKey(ORG_A, CON_A)));
+    const refused = await code(store.put({ orgId: ORG_A, connection: { ...LINEAR, label: "New label" }, secret: { apiKey: "k2" }, by: ALICE, requireExisting: true }));
+    expect(refused).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(BEING_REMOVED_MESSAGE) as string });
+    expect(JSON.stringify(db.get(connectionKey(ORG_A, CON_A)))).toBe(before);
+    await store.remove({ orgId: ORG_A, connectionId: CON_A, by: ALICE });
+    expect(await store.get(ORG_A, CON_A)).toBeUndefined();
+  });
+
+  /** A session whose write is refused as invalid (as for a secret that is not scheduled), with DescribeSecret answering as given. */
+  function refusingWrite(describe: () => Promise<{ DeletedDate?: Date }>) {
+    const { fake, clock } = setup();
+    return new OrgSecrets({
+      env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, now: () => clock.now,
+      secretsFor: (credentials) => {
+        const real = fake.secretsFor(credentials);
+        return { send: async (command) => {
+          if (command instanceof CreateSecretCommand) throw Object.assign(new Error("exists"), { name: "ResourceExistsException" });
+          if (command instanceof PutSecretValueCommand) throw Object.assign(new Error("invalid"), { name: "InvalidRequestException" });
+          if (command instanceof DescribeSecretCommand) return describe();
+          return real.send(command);
+        } };
+      },
+    });
+  }
+
+  it("believes the refusal only when the secret says it is scheduled: otherwise it stays a failure of the store, naming only the class", async () => {
+    expect(await code(refusingWrite(async () => ({})).put(ORG_A, name, "v"))).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("InvalidRequestException") as string });
+    expect((await code(refusingWrite(async () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); }).put(ORG_A, name, "v")))?.code).toBe("RUNTIME_UNAVAILABLE");
+    // A secret Secrets Manager cannot find at all does not make a write "being removed" (it does make a delete done).
+    expect((await code(refusingWrite(async () => { throw Object.assign(new Error("gone"), { name: "ResourceNotFoundException" }); }).put(ORG_A, name, "v")))?.code).toBe("RUNTIME_UNAVAILABLE");
+    expect(await code(refusingWrite(async () => ({ DeletedDate: new Date(START) })).put(ORG_A, name, "v"))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 });

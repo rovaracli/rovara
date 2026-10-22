@@ -7,7 +7,7 @@ import { connectionKey } from "../../packages/contracts/src/connections.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
-import { OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
+import { BEING_REMOVED_MESSAGE, OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
@@ -382,6 +382,25 @@ describe("a lookup that fails while a connection is checked", () => {
     expect(h.db.get(agentRequestKey(TEST_ORG, DANA.developerId, requestId))).toBeUndefined();
     failing = false;
     expect((await call(DANA, "POST", `/v1/app/connections/${id}/check`, {}, requestId)).body).toEqual({ ok: true, message: "2 tools" });
+  });
+});
+
+describe("a connection whose removal started and did not finish", () => {
+  it("answers a save with a new key as a plain CONFIG_INVALID, not a 503, and finishing the removal lets a new connection be added", async () => {
+    const { create, call, secrets } = await setup();
+    const id = (await create(DANA, LINEAR, { apiKey: LINEAR_KEY })).body.connection.connectionId;
+    // The removal scheduled the secret's deletion and stopped before the record was removed.
+    await secrets.scheduleDelete(TEST_ORG, orgConnectorSecretName(ENV, TEST_ORG, id));
+    const refused = await call(DANA, "PUT", `/v1/app/connections/${id}`, { connection: LINEAR, secret: { apiKey: "lin_api_NEWKEY0123456789ABCDEF" } });
+    expect(refused.status).toBe(400);
+    expect(errorOf(refused)).toMatchObject({ code: "CONFIG_INVALID", message: BEING_REMOVED_MESSAGE });
+    expect(JSON.stringify(refused.body)).not.toContain("NEWKEY");
+    // Remove it again, as the message says; then a new connection can be added.
+    expect((await call(DANA, "DELETE", `/v1/app/connections/${id}`, {})).status).toBe(200);
+    expect((await call(DANA, "GET", `/v1/app/connections/${id}`)).status).toBe(404);
+    const added = await create(DANA, LINEAR, { apiKey: "lin_api_NEWKEY0123456789ABCDEF" });
+    expect(added.status).toBe(201);
+    expect(added.body.connection.connectionId).not.toBe(id);
   });
 });
 

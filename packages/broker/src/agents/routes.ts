@@ -62,6 +62,7 @@ import type { OrgStore } from "../org/store.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
+import { isProjectConnectorRoute, registerProjectConnectorApprovals, routeProjectConnectorRequest } from "../connections/project-connectors.js";
 import {
   applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicyWithRevision,
   writeProjectAi, writeSpendPolicy, type ProjectAiChange,
@@ -836,6 +837,8 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     if (deps.connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
     return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);
   }
+  // Task 13: a project's connectors. Task 14b's `…/connectors/github/comment-triggers` is answered above this line once its route is merged (PF24).
+  if (isProjectConnectorRoute(url.pathname)) return routeProjectConnectorRequest(deps, caller, request, url);
   if (url.pathname === GUARDRAILS_PATH) {
     if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));
@@ -922,3 +925,4 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
 }
 
 registerAgentApprovals();
+registerProjectConnectorApprovals();

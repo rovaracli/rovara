@@ -12,6 +12,7 @@ import {
   AgentIdSchema,
   AgentPrincipalSchema,
   ApprovalIdSchema,
+  ConnectorConfigSchema,
   CHANGE_APPROVAL_TTL_DAYS,
   OrgIdSchema,
   agentXError,
@@ -23,8 +24,11 @@ import {
   type AgentGuardrails,
   type AgentId,
   type ApprovalId,
+  type AuditProof,
+  type ConnectorConfig,
   type OrgId,
 } from "@agentx/contracts";
+import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import type { AgentAccessDeps, AgentCaller, AgentShare } from "./access.js";
 import type { ServableModels } from "./guardrails.js";
 import type { ResolveOptions } from "./store.js";
@@ -38,6 +42,8 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   resolveSkill?: ResolveOptions["resolveSkill"];
   /** The models some source the company can use serves (Task 26); without it, the models Rovara's own AI serves. */
   servableModels?: ServableModels;
+  /** What a project's connectors need (Task 13): the org's connections, the project revision write and the live connector status. Without it those routes answer 404 and a widening cannot be applied. */
+  projectConnectors?: ProjectConnectorDependencies;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -63,9 +69,15 @@ export type AgentChangeSubject =
   /** Make `next` the company's agent guardrails, while they are still at `expectedRevision`. */
   | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number };
 
-/** The other kinds of change (connector widenings, opt-outs) carry their own details, typed by the task that makes them. */
-export type OtherChangeSubject = { kind: "connector_widen" | "opt_out" } & Record<string, unknown>;
-export type ChangeSubject = AgentChangeSubject | OtherChangeSubject;
+/**
+ * Make `connector` the connector called `name` on `project`: a tool newly approved as `write` (Task 13). It applies only while the project is still
+ * at `expectedRevision`, and writes exactly the connector stored here.
+ */
+export interface ConnectorWidenSubject { kind: "connector_widen"; project: string; name: string; expectedRevision: number; connector: ConnectorConfig }
+
+/** The other kinds of change (opt-outs) carry their own details, typed by the task that makes them. */
+export type OtherChangeSubject = { kind: "opt_out" } & Record<string, unknown>;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OtherChangeSubject;
 
 export interface ChangeApprovalRecord {
   orgId: OrgId;
@@ -93,8 +105,11 @@ export type ApprovalCaller = AgentCaller;
 
 /** Whether `caller` may decide `record` now. Evaluated live each time, so a person demoted since it was asked can't decide it. */
 export type ApproverRuleCheck = (deps: ApprovalDependencies, record: ApprovalRecord, caller: ApprovalCaller) => Promise<boolean>;
-/** Applies a confirmed record exactly as stored, or throws why it can't. `decidedBy` is set on the record when it runs. */
-export type ApprovalSubjectHandler = (deps: ApprovalDependencies, record: ApprovalRecord) => Promise<void>;
+/**
+ * Applies a confirmed record exactly as stored, or throws why it can't. `decidedBy` is set on the record when it runs. `decision.proof` is how the
+ * decision was made (the decide session's, Task 21a): a handler whose own audit event should carry it reads it here.
+ */
+export type ApprovalSubjectHandler = (deps: ApprovalDependencies, record: ApprovalRecord, decision?: { proof?: AuditProof }) => Promise<void>;
 
 const rules = new Map<string, ApproverRuleCheck>();
 const handlers = new Map<ChangeSubject["kind"], ApprovalSubjectHandler>();
@@ -135,8 +150,9 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
+  z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   // The other kinds carry details their own tasks type; only the kind is checked here.
-  z.object({ kind: z.enum(["connector_widen", "opt_out"]) }).passthrough(),
+  z.object({ kind: z.literal("opt_out") }).passthrough(),
 ]);
 /** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */
 const ChangeApprovalRecordSchema = z.object({
@@ -172,6 +188,11 @@ export async function getApproval(deps: Pick<ApprovalStoreDependencies, "documen
 }
 
 const listedPeople = (approvers: ApproverSpec): string[] => [...new Set(approvers.kind === "ids" ? approvers.ids : approvers.candidates)].sort().slice(0, MAX_LISTED_APPROVERS);
+
+/** The change a person's request made (a pending record), or undefined when that request made none: how a route tells a repeat from a new request. */
+export function pendingChangeFor(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, orgId: OrgId, requestedBy: string, requestId: string): Promise<ApprovalRecord | undefined> {
+  return getApproval(deps, orgId, approvalIdFor(orgId, requestedBy, requestId));
+}
 
 /** The same request always names the same approval, so a replay finds the record it made (R18). */
 function approvalIdFor(orgId: OrgId, requestedBy: string, requestId: string): ApprovalId {

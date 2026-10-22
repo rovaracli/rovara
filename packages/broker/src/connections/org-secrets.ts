@@ -12,6 +12,8 @@ export const ORG_TAG_KEY = "rovara:org";
 const SESSION_SECONDS = 900;
 const REFRESH_MARGIN_MS = 60_000;
 const DEFAULT_RECOVERY_DAYS = 7;
+/** What a save is told when its secret is waiting to be deleted: not a failure to retry, since only finishing the removal (and adding a new connection) gets past it. */
+export const BEING_REMOVED_MESSAGE = "this connection is being removed; remove it again, then add a new one";
 /** One path segment: the connection or hook id. No slash, no dot, so a name can never climb out of its org's path. */
 const LEAF = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -106,6 +108,9 @@ export class OrgSecrets {
       if (response.VersionId === undefined || response.VersionId === "") throw agentXError("RUNTIME_UNAVAILABLE", "the connector secret store did not say which version it saved");
       return response.VersionId;
     } catch (error) {
+      // A secret scheduled for deletion refuses a new version, and a new secret under its name, as invalid. Waiting does not help (the window is days), so this
+      // is not a retryable failure: the connection's removal began and did not finish, and removing it again finishes it. Believed only when the secret says it is scheduled.
+      if (errorName(error) === "InvalidRequestException" && await this.isScheduledForDeletion(org, name, false)) throw agentXError("CONFIG_INVALID", BEING_REMOVED_MESSAGE);
       throw this.refusal(error);
     }
   }
@@ -119,18 +124,19 @@ export class OrgSecrets {
       if (errorName(error) === "ResourceNotFoundException") return;
       // A secret already scheduled for deletion refuses a second delete as invalid, but the exception has other causes, so it is believed only
       // when the secret itself says it is scheduled (DeletedDate): a repeat of a removal, or a closed org run again, is then done. Anything else fails closed.
-      if (errorName(error) === "InvalidRequestException" && await this.isScheduledForDeletion(org, name)) return;
+      if (errorName(error) === "InvalidRequestException" && await this.isScheduledForDeletion(org, name, true)) return;
       throw this.refusal(error);
     }
   }
 
-  private async isScheduledForDeletion(org: OrgId, name: string): Promise<boolean> {
+  /** Whether Secrets Manager says the secret is scheduled for deletion. `goneCounts`: a secret it cannot find at all is as good as scheduled (true for a delete, not for a write). */
+  private async isScheduledForDeletion(org: OrgId, name: string, goneCounts: boolean): Promise<boolean> {
     try {
       const described = await this.run(org, (client) => client.send(new DescribeSecretCommand({ SecretId: name })));
       return described.DeletedDate !== undefined;
     } catch (error) {
-      // Gone altogether is as good as scheduled; a failure to ask is no answer, and the delete's own refusal stands.
-      return errorName(error) === "ResourceNotFoundException";
+      // A failure to ask is no answer, and the call's own refusal stands.
+      return goneCounts && errorName(error) === "ResourceNotFoundException";
     }
   }
 
