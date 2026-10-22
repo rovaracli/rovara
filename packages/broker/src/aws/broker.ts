@@ -294,7 +294,7 @@ import { CatalogCache, CredentialUnavailable } from "@agentx/gateway";
 import { proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import { unsupportedThinkingLevels } from "@agentx/model-runtime/thinking-levels";
 import { executeGitHubTool, toGitHubCatalog, type GitHubMcpDependencies } from "../github-mcp.js";
-import { DynamoConnectorLedger, GITHUB_LEDGER } from "./connector-ledger.js";
+import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "./connector-ledger.js";
 import { observeConnectorRoute } from "./connector-metrics.js";
 import { attributionDroppedLog, callConnector, connectorCatalogKey, discoverConnector, discoverLegacyGitHubScope, stripCode, type ConnectorContextBase, type ScopeDiscovery } from "./connector-routes.js";
 import { resolveConnectors, BUILT_IN_CONNECTOR_TYPES, type ConnectorType, type ConnectorTypeContext, type ResolvedConnector } from "./connector-types.js";
@@ -371,7 +371,8 @@ import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
-import { approvalsNotWiredGate, callAgentTool, listAgentTools, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
+import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
+import type { WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
 import { applyAgentStep, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
@@ -967,6 +968,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...(dependencies.cloud === true ? { cloud: true } : {}),
     // Task 12b: the org's connections, on the broker's own table and audit outbox. An MCP endpoint is checked at save and before every call.
     ...(connections === undefined ? {} : { connections }),
+    // Task 21: what a write approval needs, so the routes and the settlement job's sweep both find it (Task 19's pieces).
+    writeGate: writeGateRuntime(dependencies),
     // Task 13: a project's connectors: the org's connections, the registration of each new revision (with the vendor preflight) and the live status of each connector.
     projectConnectors: {
       cloud: dependencies.cloud === true,
@@ -1158,6 +1161,15 @@ function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies {
 /** The broker actions developer task routes call (spec 025); tests and the route wiring use this factory. */
 export function createDeveloperTaskActions(input: AwsBrokerInput): DeveloperTaskActions {
   return developerTaskActions(brokerDependencies(input));
+}
+
+/**
+ * Plan 3, Tasks 19 and 21: the agent routes' dependencies as the broker builds them for a request and for the settlement job (the write gate included), for the
+ * registrations Plan 3's later tasks make (Task 22's approval handlers) and for tests that decide an approval. Undefined where developer sign-in or agents are not set up.
+ */
+export function createAgentRouteDependencies(input: AwsBrokerInput): AgentRouteDependencies | undefined {
+  const dependencies = brokerDependencies(input);
+  return agentRouteDependencies(dependencies, developerTaskActions(dependencies));
 }
 
 /**
@@ -1759,8 +1771,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Plan 3 Task 9: the pinned skills of the operation's task snapshot, authorized by the operation's `agent-skills` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/agent-skills") return await handleAgentSkills(dependencies, request);
       // Plan 3 Task 19: the connector tools an agent step is granted, and one call of them; authorized by the operation's `agent-tools` capability.
-      if (request.method === "GET" && url.pathname === "/v1/internal/agent-tools") return json(await handleAgentTools(dependencies, request, "list"), request.requestId);
-      if (request.method === "POST" && url.pathname === "/v1/internal/agent-tools/call") return json(await handleAgentTools(dependencies, request, "call"), request.requestId);
+      if (request.method === "GET" && url.pathname === "/v1/internal/agent-tools") return json(await handleAgentTools(dependencies, agents, request, "list"), request.requestId);
+      if (request.method === "POST" && url.pathname === "/v1/internal/agent-tools/call") return json(await handleAgentTools(dependencies, agents, request, "call"), request.requestId);
       const callback = /^\/v1\/internal\/workspaces\/([0-9a-f-]+)\/operations\/([0-9a-f-]+)\/(events|artifacts|result|candidate-export|e2e-admission|e2e-evidence|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status)$/.exec(
         url.pathname,
       );
@@ -5455,7 +5467,7 @@ async function handleAgentSkills(dependencies: AwsBrokerDependencies, request: A
  * call is never begun after a stop), and its task must belong to the same org: any disagreement serves nothing. What a step may use, and every check before a
  * vendor is asked, is `agents/agent-tools-routes.ts`.
  */
-async function handleAgentTools(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest, kind: "list" | "call") {
+async function handleAgentTools(dependencies: AwsBrokerDependencies, agents: AgentRouteDependencies | undefined, request: AdaptedHttpRequest, kind: "list" | "call") {
   const token = request.headers["x-agentx-callback-capability"];
   if (!token) throw agentXError("AUTH_REQUIRED", "callback capability is required");
   let claims: CallbackClaims;
@@ -5473,12 +5485,22 @@ async function handleAgentTools(dependencies: AwsBrokerDependencies, request: Ad
   }
   const stepId = (operation as { programStepId?: unknown }).programStepId;
   const run: AgentToolsRun = { orgId, task, workspace, operation: { id: operation.id, ...(typeof stepId === "string" ? { programStepId: stepId } : {}) } };
-  const tools = agentToolsDependencies(dependencies);
+  const tools = agentToolsDependencies(dependencies, agents);
   return kind === "list" ? listAgentTools(tools, run) : callAgentTool(tools, run, parseBody(request.body));
 }
 
-/** What the agent tool routes run on, built from the broker's own tables and checks; `agentTools.configure` may change any of it. */
-function agentToolsDependencies(dependencies: AwsBrokerDependencies): AgentToolsDependencies {
+/**
+ * What the agent tool routes run on, built from the broker's own tables and checks; `agentTools.configure` may change any of it. Writes are decided by Task 21's
+ * `decideWrite` (`approvalsWriteGate` on the agent routes' dependencies); where agents have no approvals set up, the stand-in gate runs reads and safe writes and
+ * refuses everything else.
+ */
+function agentToolsDependencies(dependencies: AwsBrokerDependencies, agents: AgentRouteDependencies | undefined): AgentToolsDependencies {
+  const base = agentToolsBase(dependencies, agents === undefined ? approvalsNotWiredGate : approvalsWriteGate(agents));
+  return dependencies.agentTools?.configure?.(base) ?? base;
+}
+
+/** The agent tool routes' dependencies before `agentTools.configure`, with `gate` as the write gate. */
+function agentToolsBase(dependencies: AwsBrokerDependencies, gate: AgentToolsDependencies["gate"]): AgentToolsDependencies {
   const github = dependencies.githubPullRequests;
   const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
   const base: AgentToolsDependencies = {
@@ -5513,9 +5535,70 @@ function agentToolsDependencies(dependencies: AwsBrokerDependencies): AgentTools
       repositoryReader: ({ orgId, repositoryUrl, installationId }: { orgId: OrgId; repositoryUrl: string; installationId?: number }) =>
         github.agentRepositoryReader!(repositoryUrl, { orgId }, ...(installationId === undefined ? [] : [{ installationId }])),
     }),
-    gate: approvalsNotWiredGate,
+    gate,
   };
-  return dependencies.agentTools?.configure?.(base) ?? base;
+  return base;
+}
+
+/**
+ * Task 21's write gate runtime, built from Task 19's own pieces: what an approved write needs to be classified, re-granted and sent, long after the step's request
+ * ended. It is on the request-time dependencies and, the same object, on the ones the settlement job hands `runApprovalSweep`, so a retry finds it.
+ */
+function writeGateRuntime(dependencies: AwsBrokerDependencies): WriteGateRuntime {
+  // The stand-in gate is never used here: only the connectors, the ledger, the catalogs and the checks are.
+  const tools = () => dependencies.agentTools?.configure?.(agentToolsBase(dependencies, approvalsNotWiredGate)) ?? agentToolsBase(dependencies, approvalsNotWiredGate);
+  const taskOf = async (orgId: OrgId, taskId: string): Promise<DeveloperTaskRecord> => {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    // A task partition is global: the org is re-checked on the item.
+    if (task === undefined || task.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent task belongs to this approval");
+    return task;
+  };
+  const ledgers = (workspaceId: string, connector: string) => [connectorLedgerKeys(connector), GITHUB_LEDGER].map((keys) => new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspaceId, keys, connector));
+  return {
+    classify: classifyDependenciesOf(tools(), {}),
+    regrant: async ({ record, definition }) => {
+      const task = await taskOf(record.orgId, record.subject.taskId);
+      const workspace = await requireWorkspace(dependencies, task.workspaceId);
+      return regrantAgentTool(tools(), {
+        orgId: record.orgId, task, workspace, stepId: record.subject.stepId, connector: record.connector, scope: record.scope, tool: record.tool, args: record.arguments,
+        definition: definition as unknown as ProjectDefinition,
+      });
+    },
+    requireRunAuthority: async ({ orgId, ownerKey, project, taskId }) => {
+      await requireProjectAuthority(dependencies, orgId, ownerKey, project, { taskCreator: async () => (await taskOf(orgId, taskId)).developerId });
+    },
+    // What the connector ledger recorded for the approval's request id, without calling the vendor: the same record `runConnector` replays from.
+    recordedResult: async ({ workspaceId, connector, requestId }) => {
+      for (const ledger of ledgers(workspaceId, connector)) {
+        const found = await ledger.get(requestId);
+        if (found !== undefined) return found.result;
+      }
+      return undefined;
+    },
+    // Never throws once the vendor may have been asked: a call whose outcome is in doubt is an UNKNOWN result, which the approval's retry settles from the ledger.
+    runConnector: async (call) => {
+      const t = tools();
+      const task = await taskOf(call.orgId, call.taskId);
+      const workspace = await requireWorkspace(dependencies, call.workspaceId);
+      const definition = call.definition as unknown as ProjectDefinition;
+      const connector = t.connectors({ orgId: call.orgId, definition }).find((entry) => entry.name === call.connector);
+      // Before anything is sent, the same refusals `callConnector` makes first: these are fine to throw.
+      if (connector === undefined) throw agentXError("NOT_FOUND", "connector not found");
+      if (!connector.scopes.some((entry) => entry.alias === call.request.scope)) throw agentXError("NOT_FOUND", "connector scope not found");
+      if (!connector.approvals.some((entry) => entry.name === call.request.tool)) throw agentXError("FORBIDDEN", `${connector.vendor} MCP tool is not approved for this project`);
+      const executing = connector.type === "github" ? agentGitHubConnector(connector, t, { orgId: call.orgId, tool: call.request.tool }) : connector;
+      try {
+        return await callConnector({
+          connector: executing, workspace, context: { orgId: call.orgId, workspaceId: call.workspaceId, ownerKey: call.ownerKey, settingsRevision: definition.revision },
+          catalogs: t.catalogs, ledger: t.ledger(call.workspaceId, connector), request: call.request,
+          ...(connector.attribution ? { attribution: attributionOf(task, task.agent?.name ?? "agent") } : {}),
+        });
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "approval.write_outcome_unknown", approvalRequest: call.request.requestId, errorName: error instanceof Error ? error.name : "unknown" }));
+        return { requestId: call.request.requestId, status: "UNKNOWN", text: "Rovara could not confirm whether the connector carried this out.", truncated: false, replayed: false };
+      }
+    },
+  };
 }
 
 /**

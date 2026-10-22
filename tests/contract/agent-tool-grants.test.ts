@@ -31,6 +31,8 @@ import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "../suppor
 import { treeReader, workflow } from "../support/fake-repository.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
+import { decideApproval, getAnyApproval, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
+import { deriveWriteRequestId } from "../../packages/broker/src/agents/write-gate.js";
 
 beforeAll(async () => { await loadSlackBroker(); }, 60_000);
 
@@ -378,7 +380,7 @@ const GITHUB_FAKE_TOOLS: McpConnection["tools"] = [
   { name: "pull_request_read", description: "Read a pull request", inputSchema: objectSchema({ owner: { type: "string" }, repo: { type: "string" }, pullNumber: { type: "number" }, method: { type: "string" } }, ["owner", "repo", "pullNumber", "method"]) },
 ];
 
-interface WorldOptions { workflowFiles?: Record<string, string>; pinnedInstallation?: number; labelTool?: boolean | "write"; linearAttribution?: boolean; extraRepositories?: unknown[] }
+interface WorldOptions { standIn?: boolean; workflowFiles?: Record<string, string>; pinnedInstallation?: number; labelTool?: boolean | "write"; linearAttribution?: boolean; extraRepositories?: unknown[] }
 
 const UUID_AUTOMERGE = "5d8a1f0e-3b7c-4e2a-9f10-6c2b8d4e7a91";
 const UUID_BUG = "7a1c2d3e-4f50-4a61-8b72-9c83d4e5f607";
@@ -428,7 +430,7 @@ async function world(options: WorldOptions = {}) {
   const listAgentRepositoryLabels = vi.fn(async (url: string, _scope: unknown, labelOptions?: unknown) => { labelReads.push({ url, options: labelOptions }); return [{ id: 11, nodeId: "LA_automerge", name: "automerge" }, { id: 12, nodeId: "LA_bug", name: "bug" }]; });
   const agentRepositoryReader = vi.fn(async (url: string, _scope: unknown, readerOptions?: { installationId?: number }) => { repositories.push(url); readerPins.push(readerOptions?.installationId); return treeReader(options.workflowFiles ?? {}); });
   const secrets = { read: vi.fn(async (name: string) => (name === "agentx/connectors/linear-charterarc" ? JSON.stringify({ apiKey: LINEAR_KEY }) : undefined)) };
-  let configure: (base: AgentToolsDependencies) => AgentToolsDependencies = (base) => base;
+  let configure: (base: AgentToolsDependencies) => AgentToolsDependencies = options.standIn === true ? (base) => ({ ...base, gate: approvalsNotWiredGate }) : (base) => base;
   const h = await createDeveloperTaskBroker({
     register: false,
     brokerExtra: {
@@ -930,7 +932,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const requestId = randomUUID();
       const reply = await w.linearCall(run.capability, "save_issue", { id: "CHA-1", title: "new" }, { requestId });
       expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-      expect(reply.body.result).toEqual({ requestId, status: "IN_PROGRESS", text: "Waiting for a person to approve this change.", truncated: false, replayed: false });
+      expect(reply.body.result).toEqual({ requestId, status: "WAITING_FOR_APPROVAL", text: "Waiting for a person to approve this change.", truncated: false, replayed: false });
       expect(reply.body.approvalId).toBe("apr_aaaaaaaaaaaaaaaaaaaa");
       expect(w.linear.calls.filter((entry) => entry.name === "save_issue")).toEqual([]);
     });
@@ -1018,7 +1020,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
     });
 
     it("refuses a consequential call with a clear 'approvals are not available yet' message, and sends nothing", async () => {
-      const w = await world();
+      const w = await world({ standIn: true });
       const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
       const refused = await w.linearCall(run.capability, "save_issue", { id: "CHA-1", title: "Rename it" });
       expect(refused.status).toBe(403);
@@ -1030,7 +1032,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
     });
 
     it("refuses a call a project deny rule matches, even a read, with the not-granted text", async () => {
-      const w = await world();
+      const w = await world({ standIn: true });
       const key = projectRevisionKey(TEST_ORG, "payments", 1);
       const record = w.db.get(key) as { definition: Record<string, unknown> };
       w.db.set({ ...record, definition: { ...record.definition, actionPolicy: { rules: [{ tool: "linear__get_issue", outcome: "deny", reason: "closed to agents" }] } } });
@@ -1066,7 +1068,9 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const own = await w.githubCall(run.capability, "issue_write", { method: "update", issue_number: 7, title: "A worse bug" });
       expect(own.status, JSON.stringify(own.body)).toBe(200);
       const foreign = await w.githubCall(run.capability, "issue_write", { method: "update", issue_number: 8, title: "Rename it" });
-      expect(foreign.status).toBe(403);
+      expect(foreign.status).toBe(200);
+      expect(foreign.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+      expect(w.githubCalls.filter((entry) => entry.arguments.issue_number === 8)).toEqual([]);
     });
 
     it("records what a create made, so the same run may change it, and nothing else", async () => {
@@ -1078,7 +1082,9 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const own = await w.linearCall(run.capability, "save_issue", { id: "CHA-2", title: "Found a worse bug" });
       expect(own.status, JSON.stringify(own.body)).toBe(200);
       const foreign = await w.linearCall(run.capability, "save_issue", { id: "CHA-1", title: "Rename it" });
-      expect(foreign.status).toBe(403);
+      expect(foreign.status).toBe(200);
+      expect(foreign.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+      expect(w.linear.calls.filter((entry) => entry.arguments.id === "CHA-1" && entry.name === "save_issue")).toEqual([]);
       expect(w.db.find((item) => item.entityType === "AGENT_ITEM").map((item) => item.sk)).toEqual(["linear##CHA-2"]);
     });
   });
@@ -1154,7 +1160,8 @@ describe("POST /v1/internal/agent-tools/call", () => {
       w.configure((base) => ({ ...base, labelListers: () => ({ linear: async () => new Map([[UUID, "automerge"], ["rovara", "rovara"]]) }) }));
       const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
       const created = await w.linearCall(run.capability, "save_issue", { title: "x", addLabels: [UUID] });
-      expect(created.status).toBe(403);
+      expect(created.status).toBe(200);
+      expect(created.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
       expect(w.linear.calls).toEqual([]);
     });
   });
@@ -1228,7 +1235,8 @@ describe("GitHub through the agent routes", () => {
     const w = await world({ workflowFiles: { ".github/workflows/triage.yml": workflow("issue_comment", "./scripts/triage.sh"), "scripts/triage.sh": "echo triage" } });
     const run = await w.startRun({ tools: [grant({ type: "github" }, "read_write")] });
     const reply = await w.githubCall(run.capability, "add_issue_comment", { issue_number: 3, body: "hello" });
-    expect(reply.status).toBe(403);
+    expect(reply.status).toBe(200);
+    expect(reply.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
     expect(w.githubCalls).toEqual([]);
   });
 
@@ -1335,5 +1343,182 @@ describe("the catalog cache", () => {
 
   it("puts the org in the key", () => {
     expect(connectorCatalogKey(ORG_A, "web", 1, "linear", "team")).not.toBe(connectorCatalogKey(ORG_B, "web", 1, "linear", "team"));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Task 19 wired to Task 21: the real write gate, the approved call and the settlement job's sweep
+// ---------------------------------------------------------------------------------------------
+
+describe("write approvals through the agent routes", () => {
+  /** Another person's issue: changing it is consequential, so it waits for a person. */
+  const CHANGE = { id: "CHA-1", title: "Rename it" };
+
+  async function approvalWorld(recipe: Partial<ResolvedRecipe> = {}) {
+    const w = await world();
+    const seen: Array<Parameters<AgentWriteGate>[0]> = [];
+    // The broker's own gate (Task 21's decideWrite), observed.
+    w.configure((base) => ({ ...base, gate: async (input) => { seen.push(input); return base.gate(input); } }));
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")], ...recipe });
+    const broker = await loadSlackBroker() as unknown as { createAgentRouteDependencies(input: never): ApprovalDependencies | undefined };
+    const deps = broker.createAgentRouteDependencies(w.brokerInput as never);
+    if (deps === undefined) throw new Error("the broker has no agent route dependencies");
+    const approve = (approvalId: string, requestId: string = randomUUID()) =>
+      decideApproval(deps, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "owner" }, approvalId, { requestId, decision: "APPROVE" });
+    const saves = () => w.linear.calls.filter((entry) => entry.name === "save_issue");
+    const sweep = () => w.handler({ source: "agentx.spend-settlement" }) as Promise<{ statusCode: number; body: string }>;
+    return { w, run, seen, deps, approve, saves, sweep };
+  }
+
+  it("holds a consequential save_issue for a person, then sends it exactly once with the arguments it was asked with", async () => {
+    const { w, run, seen, deps, approve, saves } = await approvalWorld();
+    const waiting = await w.linearCall(run.capability, "save_issue", CHANGE);
+    expect(waiting.status, JSON.stringify(waiting.body)).toBe(200);
+    expect(waiting.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL", truncated: false, replayed: false });
+    expect(String((waiting.body.result as { text: string }).text)).toContain("A person must approve this before it happens.");
+    const approvalId = String(waiting.body.approvalId);
+    expect(approvalId).toMatch(/^apr_/u);
+    expect(saves()).toEqual([]);
+    // The approval holds exactly what the gate was given: the prepared arguments (no owner or repo, which only GitHub's server binds).
+    const stored = await getAnyApproval(deps, TEST_ORG, approvalId);
+    expect(stored).toMatchObject({ kind: "write", status: "PENDING", connector: "linear", tool: "save_issue", operationId: run.operationId, subject: { kind: "agent_run", taskId: run.taskId, stepId: "triage" }, agent: { agentId: AGENT.agentId } });
+    expect((stored as { arguments: unknown }).arguments).toEqual(seen[0]!.args);
+    expect(seen[0]).toMatchObject({ stepId: "triage", owner: { developerId: MAYA.developerId } });
+
+    // Asking again for the same change (a new request id) is the same approval, and still nothing is sent.
+    const again = await w.linearCall(run.capability, "save_issue", CHANGE);
+    expect(again.body.approvalId).toBe(approvalId);
+    expect(saves()).toEqual([]);
+
+    expect((await approve(approvalId)).status).toBe("APPROVED_DONE");
+    expect(saves()).toHaveLength(1);
+    expect(saves()[0]!.arguments).toMatchObject(seen[0]!.args);
+    // The ledger holds the call under the approval's own request id, in the task's workspace.
+    const ledgered = w.db.find((item) => item.pk === `WORKSPACE#${run.workspaceId}` && item.sk === `CONNECTOR#linear#${deriveWriteRequestId(approvalId)}`);
+    expect(ledgered).toHaveLength(1);
+    expect(await getAnyApproval(deps, TEST_ORG, approvalId as never)).toMatchObject({ status: "APPROVED_DONE", result: { status: "SUCCEEDED" } });
+
+    // A repeat of the decision, and the settlement job's sweep, send nothing more.
+    await approve(approvalId).catch(() => undefined);
+    expect(saves()).toHaveLength(1);
+  });
+
+  it("runs a safe call at once and never holds a read", async () => {
+    const { w, run, seen } = await approvalWorld();
+    const read = await w.linearCall(run.capability, "get_issue", { id: "CHA-1" });
+    expect(read.body.result).toMatchObject({ status: "SUCCEEDED" });
+    const comment = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "Looks like a duplicate of CHA-9" });
+    expect(comment.body.result).toMatchObject({ status: "SUCCEEDED" });
+    expect(seen.map((input) => input.tool.upstreamName)).toEqual(["get_issue", "save_comment"]);
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(w.db.find((item) => item.entityType === "OPEN_APPROVAL")).toEqual([]);
+  });
+
+  it("never holds a read, whatever the recipe asks for", async () => {
+    const { w, run } = await approvalWorld({ autonomy: "suggest" });
+    for (let index = 0; index < 3; index += 1) {
+      const read = await w.linearCall(run.capability, "get_issue", { id: "CHA-1" });
+      expect(read.body.result).toMatchObject({ status: "SUCCEEDED" });
+    }
+  });
+
+  it("refuses what a project rule denies, even a read, without making an approval", async () => {
+    const { w, run, deps } = await approvalWorld();
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const record = w.db.get(key) as { definition: Record<string, unknown> };
+    w.db.set({ ...record, definition: { ...record.definition, actionPolicy: { rules: [{ tool: "linear__save_issue", outcome: "deny", reason: "closed to agents" }] } } });
+    const refused = await w.linearCall(run.capability, "save_issue", CHANGE);
+    expect(refused.status).toBe(403);
+    expect(errorOf(refused).message).toBe("A rule on this project doesn't allow this action.");
+    expect(w.linear.calls.filter((entry) => entry.name === "save_issue")).toEqual([]);
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    expect(deps).toBeDefined();
+  });
+
+  it("declining sends nothing", async () => {
+    const { w, run, deps, saves } = await approvalWorld();
+    const waiting = await w.linearCall(run.capability, "save_issue", CHANGE);
+    const approvalId = String(waiting.body.approvalId);
+    const declined = await decideApproval(deps, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "owner" }, approvalId, { requestId: randomUUID(), decision: "DECLINE" });
+    expect(declined.status).toBe("DECLINED");
+    expect(saves()).toEqual([]);
+  });
+
+  it("does not throw once the vendor may have been asked: an outcome in doubt stays for the settlement job's sweep, which sends it once", async () => {
+    const { w, run, deps, approve, saves, sweep } = await approvalWorld();
+    const waiting = await w.linearCall(run.capability, "save_issue", CHANGE);
+    const approvalId = String(waiting.body.approvalId);
+    // The ledger breaks while the approved call is made, before the vendor is asked: the broker answers a result, never an error, and the record stays for the sweep.
+    let broken = true;
+    w.configure((base) => ({
+      ...base,
+      ledger: (workspaceId, connector) => {
+        const ledger = base.ledger(workspaceId, connector);
+        return {
+          claim: async (record) => { if (broken) throw new Error("the table is unavailable"); return ledger.claim(record); },
+          get: (requestId) => ledger.get(requestId), finish: (record) => ledger.finish(record),
+        };
+      },
+    }));
+    const decided = await approve(approvalId);
+    expect(decided.status).toBe("EXECUTING");
+    expect(saves()).toEqual([]);
+    expect(await getAnyApproval(deps, TEST_ORG, approvalId as never)).toMatchObject({ status: "EXECUTING", attempts: 1 });
+    broken = false;
+    // Ten minutes later the sweep (with the write gate on its dependencies too) finds it stuck and drives it again.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 10 * 60_000 });
+    try {
+      const run1 = await sweep();
+      const jobs = (JSON.parse(run1.body) as { jobs: Array<{ name: string; ok: boolean; result?: unknown }> }).jobs;
+      expect(jobs.find((job) => job.name === "expire-approvals")).toMatchObject({ ok: true, result: { redriven: 1 } });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(saves()).toHaveLength(1);
+    expect(await getAnyApproval(deps, TEST_ORG, approvalId as never)).toMatchObject({ status: "APPROVED_DONE" });
+  });
+
+  it("records what an approved create made, so the run may change it afterwards with no approval", async () => {
+    const { w, run, deps, approve, saves } = await approvalWorld();
+    // A create that adds a trigger label (one that makes automations act) is consequential.
+    const UUID = "5d8a1f0e-3b7c-4e2a-9f10-6c2b8d4e7a91";
+    w.configure((base) => ({ ...base, labelListers: () => ({ linear: async () => new Map([[UUID, "automerge"], ["rovara", "rovara"]]) }) }));
+    const waiting = await w.linearCall(run.capability, "save_issue", { title: "Found a bug", addLabels: [UUID] });
+    expect(waiting.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    const approvalId = String(waiting.body.approvalId);
+    expect((await approve(approvalId)).status).toBe("APPROVED_DONE");
+    expect(saves()).toHaveLength(1);
+    expect(deps).toBeDefined();
+    // The fake Linear answers a created issue as CHA-2: it is now the run's own, so changing it is not held (the fake Linear has no such issue to change).
+    expect(w.db.find((item) => item.entityType === "AGENT_ITEM").map((item) => item.sk)).toEqual(["linear##CHA-2"]);
+    const own = await w.linearCall(run.capability, "save_issue", { id: "CHA-2", title: "A worse bug" });
+    expect(own.status).toBe(200);
+    expect(own.body.approvalId).toBeUndefined();
+    expect(own.body.result).not.toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    const other = await w.linearCall(run.capability, "save_issue", { id: "CHA-1", title: "Rename it" });
+    expect(other.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+  });
+
+  it("sends an approved GitHub change with the repository the server binds, which the stored call does not hold", async () => {
+    const { w, run, deps, approve } = await approvalWorld({ tools: [grant({ type: "github" }, "read_write")] });
+    // The fake GitHub answers the guard's preflight with the issue it was asked for (the world's own fake answers a different shape).
+    w.connectGithub.mockImplementation(async (input): Promise<McpConnection> => ({
+      tools: GITHUB_FAKE_TOOLS.filter((candidate) => input.tools === undefined || input.tools.includes(candidate.name)),
+      call: async (name, args) => {
+        w.githubCalls.push({ name, arguments: args });
+        const issue = Number(args.issue_number);
+        return { content: [{ type: "text", text: JSON.stringify(name === "issue_read" ? { number: issue, html_url: `https://github.com/example/demo/issues/${issue}` } : { number: issue }) }] };
+      },
+      close: async () => undefined,
+    }));
+    const waiting = await w.githubCall(run.capability, "issue_write", { method: "update", issue_number: 7, title: "Rename it" });
+    expect(waiting.body.result).toMatchObject({ status: "WAITING_FOR_APPROVAL" });
+    const approvalId = String(waiting.body.approvalId);
+    expect((await getAnyApproval(deps, TEST_ORG, approvalId as never) as unknown as { arguments: Record<string, unknown> }).arguments).toEqual({ method: "update", issue_number: 7, title: "Rename it" });
+    expect(w.githubCalls.filter((entry) => entry.name === "issue_write")).toEqual([]);
+    expect((await approve(approvalId)).status).toBe("APPROVED_DONE");
+    const sent = w.githubCalls.filter((entry) => entry.name === "issue_write");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.arguments).toMatchObject({ owner: "example", repo: "demo", method: "update", issue_number: 7, title: "Rename it" });
   });
 });

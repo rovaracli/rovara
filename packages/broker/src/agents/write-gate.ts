@@ -41,7 +41,7 @@ import {
 } from "./approvals.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
-import { classifyAgentWrite, recordOwnItems, type ClassifyAgentWriteDependencies } from "./write-class.js";
+import { classifyAgentWrite, recordOwnItems, type ClassifyAgentWriteDependencies, type WriteClassification } from "./write-class.js";
 
 export const WRITE_APPROVER_RULE = "write_approver";
 
@@ -80,7 +80,11 @@ export interface ClassifyContext {
   guardrails?: { extraCommandWords: readonly string[]; extraTriggerLabels: readonly string[] } | undefined;
 }
 
-export type Regranted = { tool: GrantedTool; classify: ClassifyContext } | { refused: string };
+/**
+ * `classifyArgs` are the arguments classification and the own-item record read: the call's own plus the values the server binds that the stored call
+ * does not hold (a GitHub call's `owner` and `repo`, which the gateway refuses from a model). Absent: the stored arguments.
+ */
+export type Regranted = { tool: GrantedTool; classify: ClassifyContext; classifyArgs?: Record<string, unknown> } | { refused: string };
 
 /** One approved call, with everything `callConnector` needs besides the ledger and the catalogs. The task's own workspace id and owner key come from its record. */
 export interface ApprovedCall {
@@ -149,6 +153,11 @@ export interface DecideWriteInput {
   /** `arguments` are the PREPARED arguments (`prepareAgentWrite`'s): the approval holds exactly what will be sent. */
   call: { scope: string; schemaHash: string; arguments: Record<string, unknown> };
   classify: ClassifyContext;
+  /**
+   * What the caller already classified, on the arguments the server binds as well (the agent tools route does: it reads label lists and the run's own items
+   * with the run in hand). Absent: the call is classified here, on `call.arguments`.
+   */
+  classification?: WriteClassification;
   run: { project: string; owner: { developerId: string; name: string } };
   /** Defaults to the `write_approver` rule with `writeApproversFor` as its candidates; Plan 4 passes `chain_autonomous_writer`. */
   approvers?: ApproverSpec;
@@ -267,7 +276,7 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
   const found = await githubRepositoryOf(deps, input.orgId, run.project, tool, call.arguments);
   if (found === "refused") return { outcome: "refuse", reason: OTHER_REPOSITORY_TEXT };
 
-  const classification = await classifyAgentWrite(gate.classify, {
+  const classification = input.classification ?? await classifyAgentWrite(gate.classify, {
     orgId: input.orgId, taskId: input.taskId, project: run.project, tool, args: call.arguments, ...input.classify,
     ...(found.repository === undefined ? {} : { repository: found.repository }), ...(found.installationId === undefined ? {} : { installationId: found.installationId }),
   });
@@ -394,7 +403,7 @@ export async function executeWrite(deps: ApprovalDependencies, record: WriteAppr
   if (result.status === "FAILED") return failed(`The connector didn't run it: ${shownText(result.text, 300)}`);
   if (result.status !== "SUCCEEDED") return { outcome: "unfinished" };
   // A create that ran makes the item the run's own, so a later change to it needs no approval. The create already happened: a lost record only makes a later change ask.
-  await recordOwnItems(gate.classify, { orgId: record.orgId, taskId: task.taskId, tool: regranted.tool, args: record.arguments, resultText: result.text });
+  await recordOwnItems(gate.classify, { orgId: record.orgId, taskId: task.taskId, tool: regranted.tool, args: regranted.classifyArgs ?? record.arguments, resultText: result.text });
   return { outcome: "done", result: { status: result.status, text: capText(result.text, 16_000).text, truncated: result.truncated, replayed: result.replayed } };
 }
 

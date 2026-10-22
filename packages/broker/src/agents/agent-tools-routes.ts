@@ -9,8 +9,9 @@
 // prepared (mentions stripped, Rovara's label added to a ticket the agent creates); the write gate decides (`run`, `wait` or `refuse`); and only a `run` goes to
 // the vendor, through the connector call path with the connector's ledger and attribution. Nothing the model supplies decides any of it.
 //
-// THE SEAM FOR TASK 21: `AgentToolsDependencies.gate` is `decideWrite`'s place. Until Task 21 replaces it, `approvalsNotWiredGate` runs reads and safe writes, refuses
-// what a project rule denies, and refuses every other write with a clear message, so nothing that needs a person can run by accident.
+// THE GATE: `AgentToolsDependencies.gate` is where a write is decided. The broker sets `approvalsWriteGate` (Task 21's `decideWrite`), which runs reads and safe
+// writes, holds a consequential one for a person (`WAITING_FOR_APPROVAL`) and refuses what a project rule denies. `approvalsNotWiredGate` is what an install with no
+// approvals gets: it runs reads and safe writes and refuses every other write with a clear message, so nothing that needs a person can run by accident.
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -37,6 +38,8 @@ import { inertName } from "../developer/task-records.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type AgentGitHubScope, type AgentRepositoryLabel, type AgentTokenOptions } from "../github-app.js";
 import { githubAgentToolPermissions, type GitHubAgentTokenPermissions } from "./github-agent-tools.js";
+import type { ApprovalDependencies } from "./approvals-store.js";
+import { decideWrite, type ClassifyContext, type Regranted } from "./write-gate.js";
 import { githubLabelLister, type LabelLister } from "./label-names.js";
 import type { RunCache } from "./run-cache.js";
 import { factsForCall, grantCovers, resolveToolGrants, stepToolPatterns, toolGranted, type GrantConnector } from "./tool-grants.js";
@@ -79,6 +82,9 @@ export interface AgentWriteGateInput {
   operationId: string;
   project: string;
   agent: { id: string; name: string };
+  /** The recipe step the operation runs, and the person the run belongs to (the task's creator). */
+  stepId: string;
+  owner: { developerId: string; name: string };
   requestId: string;
   /** The project's name for the connector, the scope alias and the schema hash the step saw. */
   connector: string;
@@ -110,6 +116,28 @@ export const approvalsNotWiredGate: AgentWriteGate = async (input) => {
     message: "Changes that need a person's approval aren't available in this release yet, so this call was not sent. Nothing was changed.",
   };
 };
+
+/**
+ * Task 21's `decideWrite` as the gate: the classification the route made (on the arguments the server binds too) decides. A read or a safe write runs; a project
+ * rule's deny refuses; a consequential one or a merge becomes a pending approval and the step is told it waits. The approval holds exactly the prepared arguments.
+ */
+export function approvalsWriteGate(deps: ApprovalDependencies): AgentWriteGate {
+  return async (input) => {
+    const classification = await input.classify();
+    const context: ClassifyContext = {
+      rules: input.recipe.approvals, autonomy: input.recipe.autonomy, allowMentions: input.recipe.allowMentions,
+      projectPolicy: input.classifyInput.projectPolicy, guardrails: input.classifyInput.guardrails,
+    };
+    const decided = await decideWrite(deps, {
+      orgId: input.orgId, taskId: input.taskId, operationId: input.operationId, stepId: input.stepId, agentId: input.agent.id, agentName: input.agent.name,
+      tool: input.tool, call: { scope: input.scope, schemaHash: input.schemaHash, arguments: input.args }, classify: context, classification,
+      run: { project: input.project, owner: input.owner },
+    });
+    if (decided.outcome === "run") return { decision: "run" };
+    if (decided.outcome === "wait") return { decision: "wait", text: decided.answer.text, approvalId: decided.approvalId };
+    return { decision: "refuse", code: "FORBIDDEN", message: decided.reason };
+  };
+}
 
 const GateDecisionSchema = z.discriminatedUnion("decision", [
   z.object({ decision: z.literal("run") }).strict(),
@@ -217,7 +245,7 @@ const pinOf = (repository: { installationId?: number | undefined }): AgentTokenO
  * exactly the permissions of the tool being called (`githubAgentToolPermissions`; read-only for a catalog), held to the installation the project pinned, and
  * the guard is the agent guard (a pull request tool needs a pull request that exists in the bound repository). The human tokens of the Slack path are never used.
  */
-function agentGitHubConnector(connector: ResolvedConnector, deps: AgentToolsDependencies, input: { orgId: OrgId; tool?: string }): ResolvedConnector {
+export function agentGitHubConnector(connector: ResolvedConnector, deps: AgentToolsDependencies, input: { orgId: OrgId; tool?: string }): ResolvedConnector {
   const provider = deps.github;
   return {
     ...connector,
@@ -286,6 +314,7 @@ interface Frame {
   recipe: ResolvedRecipe;
   agentId: string;
   agentName: string;
+  stepId: string;
   stepTools: string[] | undefined;
   connectors: ResolvedConnector[];
   context: ConnectorContextBase;
@@ -306,6 +335,7 @@ async function frameOf(deps: AgentToolsDependencies, run: AgentToolsRun): Promis
     project, recipe,
     agentId: task.agent?.agentId ?? last?.agentId ?? "agent",
     agentName: task.agent?.name ?? last?.name ?? "This agent",
+    stepId: step.id,
     stepTools: stepToolPatterns(step),
     connectors: deps.connectors({ orgId, definition: project.definition }),
     context: { orgId, workspaceId: run.workspace.id, ownerKey: task.ownerKey, settingsRevision: project.definition.revision },
@@ -327,7 +357,7 @@ function withoutGateFields(tool: PresentedTool): PresentedTool {
 }
 
 /** The connector's catalog, with the gate fields, through the cache. A GitHub connector is asked with a read-only agent token. */
-function discover(deps: AgentToolsDependencies, run: AgentToolsRun, frame: Frame, connector: ResolvedConnector): Promise<ConnectorCatalog> {
+function discover(deps: AgentToolsDependencies, run: Pick<AgentToolsRun, "orgId" | "workspace">, frame: Pick<Frame, "context">, connector: ResolvedConnector): Promise<ConnectorCatalog> {
   const forAgent = connector.type === "github" ? agentGitHubConnector(connector, deps, { orgId: run.orgId }) : connector;
   return discoverConnector({ connector: forAgent, workspace: run.workspace, context: frame.context, catalogs: deps.catalogs, includeGateFields: true });
 }
@@ -357,7 +387,7 @@ export async function listAgentTools(deps: AgentToolsDependencies, run: AgentToo
 // ---------------------------------------------------------------------------------------------
 
 /** The footer a connector adds to the long text of a write: the person and the agent it is for. */
-function attributionOf(task: DeveloperTaskRecord, agentName: string): string {
+export function attributionOf(task: DeveloperTaskRecord, agentName: string): string {
   return `Requested by ${inertName(task.developerName)} via Rovara agent ${inertName(agentName)}`;
 }
 
@@ -394,8 +424,20 @@ function labelListersFor(deps: AgentToolsDependencies, run: AgentToolsRun, frame
   return { ...listers, ...deps.labelListers?.(run) };
 }
 
+/** What a call that waits for a person answers: the connector result's shape with the status that says so. */
+export type WaitingResult = Omit<ConnectorResult, "status"> & { status: "WAITING_FOR_APPROVAL" };
+
+/** What classification reads: the State table, the run's cache, the label lists and the repository reader. */
+export function classifyDependenciesOf(deps: AgentToolsDependencies, labelListers: Readonly<Record<string, LabelLister>>): ClassifyAgentWriteDependencies {
+  return {
+    documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
+    labelListers, runCache: (scope) => deps.runCache(scope),
+    repositoryReader: deps.repositoryReader ?? (async () => { throw new Error("reading repositories is not set up in this deployment"); }),
+  };
+}
+
 /** One tool call by an agent step. Returns the connector's result, or a wait for a person (the step must not send the call again). */
-export async function callAgentTool(deps: AgentToolsDependencies, run: AgentToolsRun, rawBody: unknown): Promise<{ result: ConnectorResult; approvalId?: string }> {
+export async function callAgentTool(deps: AgentToolsDependencies, run: AgentToolsRun, rawBody: unknown): Promise<{ result: ConnectorResult | WaitingResult; approvalId?: string }> {
   const parsed = AgentToolCallRequestSchema.safeParse(rawBody);
   if (!parsed.success) throw agentXError("CONFIG_INVALID", "invalid agent tool request");
   const { connector: connectorName, ...request } = parsed.data;
@@ -437,14 +479,11 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
     guardrails, orgId, taskId: task.taskId, project: task.project,
     ...(github === undefined ? {} : { repository: `${github.owner}/${github.name}`, ...(github.installationId === undefined ? {} : { installationId: github.installationId }) }),
   };
-  const classifyDeps: ClassifyAgentWriteDependencies = {
-    documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
-    labelListers: labelListersFor(deps, run, frame), runCache: (scope) => deps.runCache(scope),
-    repositoryReader: deps.repositoryReader ?? (async () => { throw new Error("reading repositories is not set up in this deployment"); }),
-  };
+  const classifyDeps = classifyDependenciesOf(deps, labelListersFor(deps, run, frame));
   let classification: Promise<WriteClassification> | undefined;
   const decision = GateDecisionSchema.safeParse(await deps.gate({
     orgId, taskId: task.taskId, operationId: run.operation.id, project: task.project, agent: { id: frame.agentId, name: frame.agentName },
+    stepId: frame.stepId, owner: { developerId: task.developerId, name: task.developerName },
     requestId: request.requestId, connector: connectorName, scope: request.scope, schemaHash: request.schemaHash,
     tool: classifyTool, args: prepared.args, strippedMentions: prepared.strippedMentions,
     recipe: { autonomy: frame.recipe.autonomy, approvals: frame.recipe.approvals, allowMentions: frame.recipe.allowMentions },
@@ -455,7 +494,8 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   if (decision.data.decision === "refuse") throw agentXError(decision.data.code, decision.data.message);
   if (decision.data.decision === "wait") {
     return {
-      result: { requestId: request.requestId, status: "IN_PROGRESS", text: decision.data.text, truncated: false, replayed: false },
+      // Not "IN_PROGRESS": the model is told what is happening and that it must not send the call again (a person decides it; the outcome comes back to the run).
+      result: { requestId: request.requestId, status: "WAITING_FOR_APPROVAL", text: decision.data.text, truncated: false, replayed: false },
       ...(decision.data.approvalId === undefined ? {} : { approvalId: decision.data.approvalId }),
     };
   }
@@ -496,4 +536,45 @@ function pinOfProjectRepository(definition: ProjectDefinition, url: string): Age
 function namedRepository(args: Record<string, unknown>): string | undefined {
   const { owner, repo } = args;
   return typeof owner === "string" && typeof repo === "string" ? `${owner.trim()}/${repo.trim()}`.toLowerCase() : undefined;
+}
+
+/**
+ * Task 21's `regrant`: the agent's grant for the tool of an approved write, resolved again against the project's CURRENT revision and the recipe the task froze
+ * (the step is the one the approval names), with the classifier's live inputs. `refused` carries the words shown on the approval's page. The snapshot and the
+ * catalog are read as a call reads them, so a snapshot that can't be read throws (`RUNTIME_UNAVAILABLE`) and the approval is tried again.
+ */
+export async function regrantAgentTool(
+  deps: AgentToolsDependencies,
+  input: { orgId: OrgId; task: DeveloperTaskRecord; workspace: WorkspaceInstance; stepId: string; connector: string; scope: string; tool: string; args: Record<string, unknown>; definition: ProjectDefinition },
+): Promise<Regranted> {
+  const { orgId, task, definition } = input;
+  const recipe = await deps.readSnapshot(task, orgId);
+  if (recipe === undefined) return { refused: "This task no longer has an agent to run this for." };
+  const agentName = task.agent?.name ?? recipe.chain.at(-1)?.name ?? "This agent";
+  const notGranted = { refused: notGrantedText(agentName, input.connector, input.tool, task.project) };
+  const step = recipe.steps.find((entry) => entry.id === input.stepId && entry.kind === "agent");
+  if (step === undefined) return notGranted;
+  const connector = deps.connectors({ orgId, definition }).find((entry) => entry.name === input.connector);
+  if (connector === undefined) return notGranted;
+  if (connector.type === "github") {
+    try { githubAgentToolPermissions(input.tool); } catch { return notGranted; }
+  }
+  const stepTools = stepToolPatterns(step);
+  if (toolGranted({ grants: recipe.tools, stepTools, connector: asGrantConnector(connector), upstreamName: input.tool }) === undefined) return notGranted;
+  const context: ConnectorContextBase = { orgId, workspaceId: input.workspace.id, ownerKey: task.ownerKey, settingsRevision: definition.revision };
+  const catalog = await discover(deps, { orgId, workspace: input.workspace }, { context }, connector);
+  const granted = resolveToolGrants({ grants: recipe.tools, stepTools, connectors: [asGrantConnector(connector)], catalogs: [catalog] }).find((tool) => tool.upstreamName === input.tool);
+  if (granted === undefined) return notGranted;
+  // The server binds a GitHub call's owner and repo, so the stored call has neither; classification and the own-item record need them.
+  const github = connector.type === "github" ? githubScopeRepository(connector, input.scope) : undefined;
+  const classifyArgs = github === undefined ? input.args : { ...input.args, owner: github.owner, repo: github.name };
+  const guardrails = await deps.guardrails(orgId);
+  return {
+    tool: { ...granted, facts: factsForCall(granted.type, granted.facts, classifyArgs) },
+    classifyArgs,
+    classify: {
+      rules: recipe.approvals, autonomy: recipe.autonomy, allowMentions: recipe.allowMentions,
+      ...(definition.actionPolicy === undefined ? {} : { projectPolicy: definition.actionPolicy }), guardrails,
+    },
+  };
 }
