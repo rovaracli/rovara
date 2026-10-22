@@ -578,9 +578,11 @@ describe("a publish or rollback that makes something less safe", () => {
     expect((await s.state(s.chainId)).currentVersion).toBe(1);
     // A person who does not manage the chain cannot decide it, even with a fresh session; the page says who can.
     const proof = { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date().toISOString(), sessionRef: "a".repeat(64) };
-    expect(await kind.inspect({ ...target, developerId: EVE.developerId })).toMatchObject({ status: "forbidden", who: "the chain's owner, a maintainer of its project, or an organization owner or admin" });
+    expect(await kind.inspect({ ...target, developerId: EVE.developerId })).toMatchObject({ status: "forbidden", who: "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin" });
     const shown = await kind.inspect({ ...target, developerId: DANA.developerId });
     expect(shown).toMatchObject({ status: "open", view: { title: "Publish a chain", paragraphs: ["raises the most one run may cost, from $30 to $60"] } });
+    // The page says which chain: the changes name steps, and a company has many chains made from one design.
+    expect((shown as { view: { facts: Array<{ label: string; value: string }> } }).view.facts).toContainEqual({ label: "Chain", value: (await s.state(s.chainId)).name });
     const outcome = await kind.decide({ ...target, developerId: DANA.developerId }, "approve", proof);
     expect(outcome.message).toMatch(/Approved/);
     expect((await s.state(s.chainId)).currentVersion).toBe(2);
@@ -861,6 +863,14 @@ describe("what the routes and the confirmation handlers hold to", () => {
       return { ...s, chainId, record: s.approvals()[0]! };
     };
 
+    it("shows on the page which chain and which version it is about", async () => {
+      const s = await askToRollBack();
+      const shown = await approvalDecideKind(s.deps).inspect({ orgId: TEST_ORG, approvalId: s.record.approvalId, developerId: DANA.developerId });
+      const facts = (shown as { view: { facts: Array<{ label: string; value: string }> } }).view.facts;
+      expect(facts).toContainEqual({ label: "Chain", value: (await s.state(s.chainId)).name });
+      expect(facts).toContainEqual({ label: "Version", value: "1" });
+    });
+
     it("refuses to apply it when the version it rolls back to is not the one that was shown", async () => {
       const s = await askToRollBack();
       const tampered = { ...decided(s.record), subject: { ...s.record.subject, digest: "0".repeat(64) } } as ApprovalRecord;
@@ -1066,7 +1076,9 @@ describe("sharing a chain with the whole company waits for the page", () => {
     const target = { orgId: TEST_ORG, approvalId: record.approvalId };
     const kind = approvalDecideKind(s.deps);
     expect(await kind.inspect({ ...target, developerId: EVE.developerId })).toMatchObject({ status: "forbidden" });
-    expect(await kind.inspect({ ...target, developerId: DANA.developerId })).toMatchObject({ status: "open", view: { title: "Share a chain with the whole company" } });
+    expect(await kind.inspect({ ...target, developerId: DANA.developerId })).toMatchObject({
+      status: "open", view: { title: "Share a chain with the whole company", facts: expect.arrayContaining([{ label: "Chain", value: (await s.state(chainId)).name }]) as unknown[] },
+    });
     const proof = { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date().toISOString(), sessionRef: "a".repeat(64) };
     await kind.decide({ ...target, developerId: DANA.developerId }, "approve", proof);
     expect((await s.chains.listShares(TEST_ORG, chainId)).map((share) => share.principal.kind).sort()).toEqual(["member", "org"]);
