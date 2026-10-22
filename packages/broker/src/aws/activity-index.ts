@@ -2,6 +2,7 @@
 // Spec 025 A4, A5: the failure index (FR-038) and the usage index, from the state table's stream.
 // The outbox publisher runs it after dispatching; it is best effort, and never fails the batch.
 // Logs carry event names, IDs and error names only: an operation's error can quote anything.
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import {
   ADMIN_ERROR_TEXT_MAX,
@@ -12,6 +13,8 @@ import {
   UsageIndexRecordSchema,
   OrgIdSchema,
   indexExpiresAt,
+  personalCounter,
+  spendCounterKey,
   orgFailureIndexKey,
   orgUsageIndexKey,
   redactAndCap,
@@ -31,6 +34,37 @@ export interface IndexStore {
   get(key: { pk: string; sk: string }, options?: IndexStoreOptions): Promise<Record<string, unknown> | undefined>;
   /** Conditioned attribute_not_exists(pk): a replayed record writes nothing twice. */
   put(item: Record<string, unknown>, options?: IndexStoreOptions): Promise<void>;
+  /**
+   * Plan 3 Task 30: the same write, in one transaction with an ADD of `tokens` to the counter at `counter` (a ChatGPT-plan task's tokens, counted per
+   * person and month), so a replayed record adds its tokens once. A store without it writes the item alone.
+   */
+  putCounting?(item: Record<string, unknown>, counter: { key: { pk: string; sk: string }; tokens: number }, options?: IndexStoreOptions): Promise<void>;
+}
+
+/**
+ * Writes a usage row and adds its tokens to a counter in one transaction. The row is created only if absent, so a record the stream delivers again
+ * (the row is there already) writes nothing and adds no tokens: the tokens are counted once.
+ */
+export async function putCountedUsage(
+  client: { send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown> },
+  tableName: string,
+  item: Record<string, unknown>,
+  counter: { key: { pk: string; sk: string }; tokens: number },
+  options: { abortSignal?: AbortSignal } = {},
+): Promise<void> {
+  try {
+    await client.send(new TransactWriteCommand({ TransactItems: [
+      { Put: { TableName: tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" } },
+      { Update: {
+        TableName: tableName, Key: counter.key, UpdateExpression: "SET #type = if_not_exists(#type, :type) ADD #tokens :tokens",
+        ExpressionAttributeNames: { "#type": "entityType", "#tokens": "tokens" }, ExpressionAttributeValues: { ":type": "SPEND_COUNTER", ":tokens": counter.tokens },
+      } },
+    ] }), options);
+  } catch (error) {
+    const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
+    if (error instanceof Error && error.name === "TransactionCanceledException" && reasons?.[0]?.Code === "ConditionalCheckFailed") return;
+    throw error;
+  }
 }
 
 /** Settles by `deadline` (epoch milliseconds): rejects with a TimeoutError when `run` has not answered by then. */
@@ -60,6 +94,7 @@ function bounded(store: IndexStore, signal: AbortSignal): IndexStore {
   return {
     get: (key) => untilAborted(signal, (callSignal) => store.get(key, { signal: callSignal })),
     put: (item) => untilAborted(signal, (callSignal) => store.put(item, { signal: callSignal })),
+    ...(store.putCounting === undefined ? {} : { putCounting: (item, counter) => untilAborted(signal, (callSignal) => store.putCounting!(item, counter, { signal: callSignal })) }),
   };
 }
 
@@ -132,7 +167,12 @@ async function failureItem(store: IndexStore, fallbackOrg: OrgId, next: Record<s
   return { ...orgFailureIndexKey(orgOf(fallbackOrg, next, { orgId: context.orgId }), endedAt, indexed.operationId), entityType: "FAILURE_INDEX", [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(endedAt), ...indexed };
 }
 
-async function usageItem(store: IndexStore, fallbackOrg: OrgId, event: Record<string, unknown>): Promise<Record<string, unknown> | "unreadable" | "invalid"> {
+/** A usage row, and the counter its tokens also go to when the task ran on a person's ChatGPT plan. */
+interface UsageRow { item: Record<string, unknown>; personal?: { key: { pk: string; sk: string }; tokens: number } }
+
+const asRow = (found: Record<string, unknown> | "invalid"): UsageRow | "invalid" => (found === "invalid" ? found : { item: found });
+
+async function usageItem(store: IndexStore, fallbackOrg: OrgId, event: Record<string, unknown>): Promise<UsageRow | "unreadable" | "invalid"> {
   const telemetry = TaskUsageTelemetrySchema.safeParse(event.payload);
   if (!telemetry.success) return "unreadable";
   const workspaceId = String(event.workspaceId);
@@ -148,7 +188,13 @@ async function usageItem(store: IndexStore, fallbackOrg: OrgId, event: Record<st
     outputTokens: telemetry.data.tokens.output, costUsd: telemetry.data.costUsd,
   };
   if (!UsageIndexRecordSchema.safeParse(indexed).success) return "invalid";
-  return { ...orgUsageIndexKey(orgOf(fallbackOrg, event, operation, { orgId: context.orgId }), at, operationId), entityType: "USAGE_INDEX", [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at), ...indexed };
+  const orgId = orgOf(fallbackOrg, event, operation, { orgId: context.orgId });
+  const item = { ...orgUsageIndexKey(orgId, at, operationId), entityType: "USAGE_INDEX", [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at), ...indexed };
+  // Plan 3 Task 30: what a task ran on a person's ChatGPT plan is counted on that person (it costs the company nothing, so it is tokens, not dollars). A task
+  // that fell back to the company's models is not: its usage is not all the plan's, and the proxy's spend already counts what it cost.
+  const planOwner = text(operation?.chatgptDeveloperId);
+  if (planOwner === undefined || operation?.chatgptFallback !== undefined) return { item };
+  return { item, personal: { key: spendCounterKey(orgId, at.slice(0, 7), personalCounter(planOwner)), tokens: indexed.inputTokens + indexed.outputTokens } };
 }
 
 /**
@@ -190,13 +236,14 @@ export async function indexActivity(
     }
     const operationId = String(failure ? next.id : next.operationId);
     try {
-      const item = failure ? await failureItem(store, fallbackOrg, next) : await usageItem(store, fallbackOrg, next);
-      if (item === "unreadable" || item === "invalid") {
-        log({ event: item === "unreadable" ? "activity_index.usage_unreadable" : "activity_index.record_invalid", operationId });
+      const found: UsageRow | "unreadable" | "invalid" = failure ? asRow(await failureItem(store, fallbackOrg, next)) : await usageItem(store, fallbackOrg, next);
+      if (found === "unreadable" || found === "invalid") {
+        log({ event: found === "unreadable" ? "activity_index.usage_unreadable" : "activity_index.record_invalid", operationId });
         result.failed += 1;
         continue;
       }
-      await store.put(item);
+      if (found.personal !== undefined && store.putCounting !== undefined) await store.putCounting(found.item, found.personal);
+      else await store.put(found.item);
       if (failure) result.failures += 1;
       else result.usage += 1;
     } catch (error) {

@@ -886,6 +886,22 @@ export class ControlPlaneStack extends Stack {
         retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
       },
     });
+    // Plan 3, Task 30 (PF13): every 5 minutes the spend settlement jobs run: the sweep that settles the model keys' spend and finalizes the ended ones.
+    // Named environments only: the model proxy they settle against exists only there, and the legacy template is unchanged. It needs no new grant: the
+    // broker already reads and writes the State table and invokes the model access function.
+    if (naming.env !== undefined) {
+      new scheduler.CfnSchedule(this, "SpendSettlementSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(5 minutes)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.spend-settlement" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
+    }
     // Gap 6: re-run any workflow dispatch (an automatic review start) left behind after its result committed.
     const workflowDispatchRecoveryRole = new iam.Role(this, "WorkflowDispatchRecoveryRole", {
       assumedBy: schedulerPrincipal,

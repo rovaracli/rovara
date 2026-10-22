@@ -60,6 +60,7 @@ import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnPro
 import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
+import { routeSpendRequest } from "../spend/routes.js";
 import {
   applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicyWithRevision,
   writeProjectAi, writeSpendPolicy, type ProjectAiChange,
@@ -70,6 +71,8 @@ import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, 
 export interface AgentRouteDependencies extends ApprovalDependencies {
   /** Where the org's plan is read (Task 28): a trial org keeps the placeholder limits (R49). Without it no org is a trial. */
   orgs?: Pick<OrgStore, "getOrg">;
+  /** Whether the install is a cloud one, whose orgs start with the placeholder monthly limits (R47); the spend routes show limits accordingly. */
+  cloud?: boolean;
   /**
    * The model sources the org tries, in order (Task 26 supplies it). A project's own order may only name sources in it, and a project
    * with none follows it. Without it the order is Rovara's own AI alone.
@@ -823,6 +826,9 @@ function jsonBody(request: AdaptedHttpRequest): unknown {
  * answers 404 `"that isn't available yet"`, so it is not mistaken for a route Plan 2 owns.
  */
 export async function routeAgentRequest(deps: AgentRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  // Task 30: the spend reads (`/v1/app/budget`, the org's spend and ledger, a project's and an agent's), before the agent paths they would otherwise match.
+  const spend = await routeSpendRequest(deps, caller, request, url);
+  if (spend !== undefined) return spend;
   if (url.pathname === GUARDRAILS_PATH) {
     if (request.method === "GET") return readGuardrailsWithRevision(deps, caller.orgId);
     if (request.method === "PUT") return putGuardrails(deps, caller, jsonBody(request));

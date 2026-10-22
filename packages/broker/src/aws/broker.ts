@@ -292,7 +292,7 @@ import {
 } from "../org/github-connection.js";
 import { bindRequestedInstallation, cancelInstallRequest, drainInstallNoticeOutbox, listInstallRequests, sendInstallRequestReminders } from "../org/github-install-requests.js";
 import { sendGithubConnectedNotice, sendGithubRequestReminder, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
-import { unlockTrial } from "../org/trial.js";
+import { monthOf, unlockTrial } from "../org/trial.js";
 import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
@@ -338,7 +338,9 @@ import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { admitSpend, changeBudgets, keyIdOf, mintCap, mintKeyHealing, recordMintedKey, type OrgBudgetSettings } from "../org/budget.js";
-import { keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
+import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
+import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
+import { runSettlementJobs, runSpendSweep } from "../spend/settlement-job.js";
 import { readProjectAi } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
@@ -821,6 +823,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...(agents.agentStepRuns === true ? { agentStepRuns: true } : {}),
     // A trial org keeps the placeholder limits (R49) on the budgets the routes set.
     orgs: orgStoreOf(dependencies),
+    // The spend routes show the placeholder limits a cloud org starts with (R47).
+    ...(dependencies.cloud === true ? { cloud: true } : {}),
   };
 }
 
@@ -1227,7 +1231,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const agents = agentRouteDependencies(dependencies, tasks);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Spec 025 E14: a Slack Confirm or Cancel press, invoked directly by the ingress (never through API Gateway).
     if (isAdminChangePressEvent(event)) {
       if (adminChanges === undefined) return json({ error: { code: "NOT_FOUND", message: "admin changes are not set up in this deployment" } }, "slack-ingress", 404);
@@ -1253,6 +1257,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         console.log(JSON.stringify({ component: "broker", event: "github.install_request_reminders_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "reminders_failed" }, "github-install-request-reminders", 500);
       }
+    }
+    // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
+    if (isSpendSettlementEvent(event)) {
+      const ledger = ledgerOf(dependencies);
+      if (ledger === undefined) return json({ skipped: true }, "spend-settlement");
+      const jobs = await runSettlementJobs(
+        [{ name: "sweep-spend", run: () => runSpendSweep(ledger, { budgetMs: SPEND_SWEEP_BUDGET_MS }) }],
+        (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+      );
+      return json({ jobs }, "spend-settlement");
     }
     // Plan 2, Task 19: every 5 minutes, the legacy backfill (once) and then the cell's DNS allowlist follows the approved egress domains.
     if (isEgressDomainsSyncEvent(event)) {
@@ -5183,6 +5197,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
         orgId: task.orgId, developerId: payment === undefined ? task.developerId as string | undefined : keyMember(payment.payer), refId: task.taskId, budgetUsd: task.budgetUsd ?? PER_TASK_BUDGET_USD,
         previousKeyIds: task.modelKeyIds ?? [], owner: taskKey(task.taskId), budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
         tags: payment === undefined ? undefined : mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId }),
+        scopes: payment?.scopes,
       };
     }
     if (current.orgId === undefined) return undefined;
@@ -5196,6 +5211,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       orgId: current.orgId, developerId: slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer), refId: current.id,
       budgetUsd: PER_TASK_BUDGET_USD, previousKeyIds: current.modelKeyIds ?? [], owner: operationKey(current.workspaceId, current.id), budgetBaselineUsd: 0,
       tags: slack === undefined ? undefined : mintTagsFor({ ...slack, origin: "slack", operationId: current.id, stepId: current.programStepId }),
+      scopes: slack === undefined ? undefined : budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }),
     };
   };
   const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true };
@@ -5213,11 +5229,22 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
         orgId: scope.orgId, ...(scope.developerId === undefined ? {} : { developerId: scope.developerId }), purpose: "task", refId: scope.refId,
         maxBudgetUsd, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(scope.tags === undefined ? {} : { tags: scope.tags }),
       });
+      // Task 30: the key is known to the ledger before anything else keeps it, so its spend is counted; a key that can't be recorded is given back.
+      const ledger = scope.tags === undefined || scope.scopes === undefined ? undefined : ledgerOf(dependencies);
+      if (ledger !== undefined) {
+        try {
+          await registerKey(ledger, { orgId: scope.orgId, month: monthOf(Date.now()), keyId: keyIdOf(minted.key), capUsd: maxBudgetUsd, scopes: scope.scopes!.map((key) => ({ key })), tags: scope.tags!, expiresAt: minted.expiresAt });
+        } catch (error) {
+          await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+          throw error;
+        }
+      }
       if (await recordMintedKey(budgets, scope.owner, keyIdOf(minted.key), scope.previousKeyIds.length)) {
         return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
       }
       // The key never reached the worker and has spent nothing; best effort, it expires on its own otherwise.
       await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+      if (ledger !== undefined) await forgetKey(ledger, scope.orgId, keyIdOf(minted.key)).catch(() => undefined);
     }
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
   } catch (error) {
@@ -5257,12 +5284,26 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
       { orgId: teamOrg, developerId, path: "CHAT" },
     );
+    const maxBudgetUsd = Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd);
+    const tags = slack === undefined ? undefined : mintTagsFor({ ...slack, origin: "slack" });
     const minted = await mintKeyHealing(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
-      { orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId,
-        maxBudgetUsd: Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd), ttlSeconds: TURN_KEY_TTL_SECONDS,
-        ...(slack === undefined ? {} : { tags: mintTagsFor({ ...slack, origin: "slack" }) }) },
+      { orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId, maxBudgetUsd, ttlSeconds: TURN_KEY_TTL_SECONDS,
+        ...(tags === undefined ? {} : { tags }) },
     );
+    // Task 30: a turn's key reserves nothing (R50) and settles into the counters; one that can't be recorded is given back.
+    const ledger = tags === undefined || slack === undefined ? undefined : ledgerOf(dependencies);
+    if (ledger !== undefined && tags !== undefined && slack !== undefined) {
+      try {
+        await registerKey(ledger, {
+          orgId: teamOrg, month: monthOf(Date.now()), keyId: keyIdOf(minted.key), capUsd: maxBudgetUsd, tags, expiresAt: minted.expiresAt,
+          scopes: budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }).map((key) => ({ key })),
+        });
+      } catch (error) {
+        await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+        throw error;
+      }
+    }
     return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
   } catch (error) {
     // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.
@@ -10107,6 +10148,22 @@ function isGithubInstallRequestReminderEvent(event: unknown): event is { kind: "
   return event !== null && typeof event === "object" && (event as { kind?: unknown }).kind === "github-install-request-reminders";
 }
 
+function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spend-settlement" } {
+  return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.spend-settlement";
+}
+
+/** The broker's function has 30 seconds; a sweep that has not finished by then stops and the next run resumes from where it was. */
+const SPEND_SWEEP_BUDGET_MS = 20_000;
+
+/** Task 30: what the spend ledger needs, or undefined where the install has no agents or no model proxy (it then keeps no ledger). */
+function ledgerOf(dependencies: AwsBrokerDependencies): LedgerDependencies | undefined {
+  if (dependencies.agents === undefined || dependencies.modelAccess === undefined) return undefined;
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, now: Date.now,
+    ...(dependencies.cloud === true ? { cloud: true } : {}),
+  };
+}
+
 function isEgressDomainsSyncEvent(event: unknown): event is { source: "agentx.egress-domains-sync" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.egress-domains-sync";
 }
@@ -11816,6 +11873,8 @@ async function recordTerminalResult(
       // #225 review: and records its failure event, in case the first one's did not land (once per prepare).
       await repeatPrepareFailureEvent(dependencies, operation);
     }
+    // A repeat of a task's result tries its keys again, in case the first end could not block them.
+    await blockEndedOperationKeys(dependencies, operation);
     return operation;
   }
   const workspace = await requireWorkspace(dependencies, operation.workspaceId);
@@ -12021,8 +12080,27 @@ async function recordTerminalResult(
       });
     }
   }
+  await blockEndedOperationKeys(dependencies, operation);
   if (recordedStatus !== terminalStatus) return { ...operation, status: recordedStatus, updatedAt: now, error: startRefusal.text ?? FIRST_TASK_QUEUE_FAILED };
   return { ...operation, status: terminalStatus, updatedAt: now, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) };
+}
+
+/**
+ * Task 30, the first phase of finalizing: a task operation that ended has no more use for its model keys, so they are blocked at the proxy and given a clock
+ * (`blockOperationKeys`); the scheduled sweep settles what they spent, including a request admitted before the block, and finalizes them. The keys are those
+ * the operation or its task recorded. A failure is logged and never fails the worker's result: the key's own expiry finalizes it ten minutes after it ends.
+ */
+async function blockEndedOperationKeys(dependencies: AwsBrokerDependencies, operation: OperationRecord): Promise<void> {
+  const ledger = ledgerOf(dependencies);
+  if (ledger === undefined || operation.orgId === undefined || operation.kind !== "task") return;
+  try {
+    const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
+    const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+    const taskKeys = task !== undefined && task.orgId === operation.orgId ? task.modelKeyIds ?? [] : [];
+    await blockOperationKeys(ledger, { orgId: operation.orgId, operationId: operation.id, keyIds: [...(operation.modelKeyIds ?? []), ...taskKeys] });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "spend.block_keys_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
+  }
 }
 
 /** Spec 051 Ruling T: the workspace's latest checks, as stored: what is known, which task, and when. */

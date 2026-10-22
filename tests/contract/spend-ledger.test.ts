@@ -1,22 +1,36 @@
 // Plan 3 Task 30: the spend ledger and its settlement. A key's spend is read from the model proxy and counted once on every counter it belongs to, a
 // key is reserved against the limited scopes before it is minted (Task 31 does that), and an ended operation's keys are blocked and finalized in two
 // phases so a request the proxy admitted before the block still counts. These tests drive the ledger directly on a fake table and a fake proxy.
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { Stack } from "aws-cdk-lib";
+import { Template } from "aws-cdk-lib/assertions";
+import { marshall } from "@aws-sdk/util-dynamodb";
+import { describe, expect, it, vi } from "vitest";
 import {
   FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, FINALIZED_SETTLE_WINDOW_MS,
-  agentRunsKey, budgetAlertKey, ledgerKey, modelKeyKey, openModelKeysKey, orgSettingsKey, spendCounterKey,
+  agentRunsKey, budgetAlertKey, builtinSettingsKey, ledgerKey, modelKeyKey, openModelKeysKey, orgSettingsKey, personalCounter, projectMemberKey, projectRevisionKey, spendCounterKey,
   type BudgetScope,
 } from "@agentx/contracts";
 import {
-  ScopeFullError, blockOperationKeys, checkAlerts, finalizeKey, registerKey, reserve, settleKey, sweepSpend,
+  ScopeFullError, blockOperationKeys, checkAlerts, finalizeKey, forgetKey, registerKey, reserve, settleKey, sweepSpend,
   type KeyInput, type LedgerDependencies, type ModelKeyRecord,
 } from "../../packages/broker/src/spend/ledger.js";
-import { agentUsageCounter, mintTagsFor } from "../../packages/broker/src/spend/payer.js";
+import { runSettlementJobs, runSpendSweep } from "../../packages/broker/src/spend/settlement-job.js";
+import { agentUsageCounter, mintTagsFor, paymentOfTask } from "../../packages/broker/src/spend/payer.js";
+import { indexActivity, putCountedUsage, type IndexStore } from "../../packages/broker/src/aws/activity-index.js";
+import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess, type FakeModelAccess } from "../support/fake-model-access.js";
+import { MAYA as DEV_MAYA, OMAR as DEV_OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
+import { buildAgentXApp } from "../../infra/lib/app.js";
+import { skipLambdaBundling } from "../support/skip-bundling.js";
+
+skipLambdaBundling();
 
 const OTHER_ORG = singleOrgIdForEnv("other-install");
 const MAYA = "1".repeat(64);
@@ -585,5 +599,534 @@ describe("the ledger lines", () => {
     ]);
     for (const line of lines) expect(String(line.pk)).toBe(`ORG#${t.orgId}#LEDGER#${MONTH}`);
     expect(setup({ orgId: OTHER_ORG as never }).ledger()).toEqual([]);
+  });
+});
+
+describe("forgetKey", () => {
+  it("takes back a key nothing was counted for, with its index item", async () => {
+    const t = setup();
+    const key = t.input();
+    await registerKey(t.deps(), key);
+    expect(await forgetKey(t.deps(), t.orgId, key.keyId)).toBe(true);
+    expect(t.record(key.keyId)).toBeUndefined();
+    expect(t.db.find((item) => item.pk === "OPEN_MODEL_KEYS")).toEqual([]);
+  });
+
+  it("keeps a key that reserved or was settled, for the sweep to finalize", async () => {
+    const t = setup();
+    const reserved = t.input({ scopes: [{ key: WEB, limitUsd: 20 }] });
+    await reserve(t.deps(), reserved);
+    expect(await forgetKey(t.deps(), t.orgId, reserved.keyId)).toBe(false);
+    const settled = t.input({ scopes: [{ key: ORG }] });
+    await registerKey(t.deps(), settled);
+    t.spend(settled, 0.5);
+    await settleKey(t.deps(), t.orgId, settled.keyId);
+    expect(await forgetKey(t.deps(), t.orgId, settled.keyId)).toBe(false);
+    expect(t.record(settled.keyId)).toBeDefined();
+  });
+});
+
+describe("the scheduled settlement run", () => {
+  it("runs every job, in order, and reports a job that failed without stopping the rest", async () => {
+    const order: string[] = [];
+    const log = vi.fn();
+    const reports = await runSettlementJobs([
+      { name: "one", run: async () => { order.push("one"); return { done: 1 }; } },
+      { name: "two", run: async () => { order.push("two"); throw Object.assign(new Error("secret detail"), { name: "BoomError" }); } },
+      { name: "three", run: async () => { order.push("three"); return null; } },
+    ], log);
+    expect(order).toEqual(["one", "two", "three"]);
+    expect(reports).toEqual([{ name: "one", ok: true, result: { done: 1 } }, { name: "two", ok: false, error: "BoomError" }, { name: "three", ok: true, result: null }]);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("secret detail");
+  });
+
+  it("resumes a sweep that ran out of time from where it stopped, and clears its place at the end", async () => {
+    const t = setup({ pageSize: 2 });
+    for (let index = 0; index < 5; index += 1) {
+      t.clock.now = T0 + index * 1000;
+      const key = t.input({ scopes: [{ key: ORG }] });
+      await registerKey(t.deps(), key);
+      t.spend(key, 1);
+    }
+    t.clock.now = T0 + 10_000;
+    const first = await runSpendSweep(t.deps(), { budgetMs: 0 });
+    expect(first).toMatchObject({ pages: 1, settled: 2, complete: false });
+    expect(t.db.get({ pk: "SPEND_SWEEP", sk: "CURSOR" })).toBeDefined();
+    const second = await runSpendSweep(t.deps(), { budgetMs: 0 });
+    expect(second).toMatchObject({ pages: 1, settled: 2, complete: false });
+    const third = await runSpendSweep(t.deps(), { budgetMs: 0 });
+    expect(third).toMatchObject({ pages: 1, settled: 1, complete: true });
+    expect(t.db.get({ pk: "SPEND_SWEEP", sk: "CURSOR" })).toBeUndefined();
+    near(t.counter("ORG")?.spentUsd, 5);
+    // With time to spare a run goes through every page.
+    const again = await runSpendSweep(t.deps(), { budgetMs: 60_000 });
+    expect(again).toMatchObject({ pages: 3, settled: 0, complete: true });
+  });
+});
+
+// ---- the ChatGPT plan's tokens ----
+
+describe("a ChatGPT-plan task's tokens", () => {
+  const WORKSPACE = "22222222-2222-4222-8222-222222222222";
+  const OPERATION = "11111111-1111-4111-8111-111111111111";
+  const usage = { schemaVersion: 1, outcome: "SUCCEEDED", provider: "openai", modelId: "gpt-6.1-sol", cacheRetention: "short", tokens: { input: 1200, output: 300, cacheRead: 400, cacheWrite: 100, total: 2000 }, cacheReadRatio: 0.25, costUsd: 0.0421 };
+  const event: StreamRecord = { eventID: "e1", eventName: "INSERT", dynamodb: { NewImage: marshall({
+    pk: `OPERATION#${OPERATION}`, sk: "EVENT#000000000001", entityType: "EVENT", workspaceId: WORKSPACE, operationId: OPERATION, type: "usage", timestamp: "2026-10-21T08:10:00.000Z", payload: usage,
+  }) } };
+  const operation = (extra: Record<string, unknown>) => ({ pk: `WORKSPACE#${WORKSPACE}`, sk: `OPERATION#${OPERATION}`, entityType: "OPERATION", id: OPERATION, workspaceId: WORKSPACE, kind: "task", status: "RUNNING", createdAt: "2026-10-21T08:00:00.000Z", ...extra });
+  const workspace = { pk: `WORKSPACE#${WORKSPACE}`, sk: "META", projectName: "payments", ownerKey: "a".repeat(64) };
+
+  function store(items: Array<Record<string, unknown>>, counting = true) {
+    const puts: Array<Record<string, unknown>> = [];
+    const counted: Array<{ item: Record<string, unknown>; counter: { key: { pk: string; sk: string }; tokens: number } }> = [];
+    const index: IndexStore = {
+      get: async (key) => items.find((item) => item.pk === key.pk && item.sk === key.sk),
+      put: async (item) => { puts.push(item); },
+      ...(counting ? { putCounting: async (item, counter) => { counted.push({ item, counter }); } } : {}),
+    };
+    return { index, puts, counted };
+  }
+
+  it("are added to the person's counter for the month, in the same write as the usage row", async () => {
+    const s = store([workspace, operation({ chatgptDeveloperId: MAYA })]);
+    expect(await indexActivity([event], s.index, vi.fn(), undefined, TEST_ORG)).toEqual({ failures: 0, usage: 1, failed: 0 });
+    expect(s.puts).toEqual([]);
+    expect(s.counted).toHaveLength(1);
+    expect(s.counted[0]!.item).toMatchObject({ entityType: "USAGE_INDEX", operationId: OPERATION });
+    // Input, cache reads and writes, and output, as the usage row counts them.
+    expect(s.counted[0]!.counter).toEqual({ key: spendCounterKey(TEST_ORG, "2026-10", personalCounter(MAYA)), tokens: 1200 + 400 + 100 + 300 });
+  });
+
+  it("are not counted for a task on the company's models, or one that fell back to them", async () => {
+    const plain = store([workspace, operation({})]);
+    await indexActivity([event], plain.index, vi.fn(), undefined, TEST_ORG);
+    expect(plain.counted).toEqual([]);
+    expect(plain.puts).toHaveLength(1);
+    const fell = store([workspace, operation({ chatgptDeveloperId: MAYA, chatgptFallback: "limit" })]);
+    await indexActivity([event], fell.index, vi.fn(), undefined, TEST_ORG);
+    expect(fell.counted).toEqual([]);
+    expect(fell.puts).toHaveLength(1);
+  });
+
+  it("leave the usage row written as before for a store that cannot count", async () => {
+    const s = store([workspace, operation({ chatgptDeveloperId: MAYA })], false);
+    expect(await indexActivity([event], s.index, vi.fn(), undefined, TEST_ORG)).toEqual({ failures: 0, usage: 1, failed: 0 });
+    expect(s.puts).toHaveLength(1);
+  });
+
+  it("are counted once when the stream delivers the record again", async () => {
+    const db = new FakeDynamoDb();
+    const item = { pk: "ORG#x#USAGE#2026-10-21", sk: "2026-10-21T08:10:00.000Z#op", entityType: "USAGE_INDEX" };
+    const counter = { key: spendCounterKey(TEST_ORG, "2026-10", personalCounter(MAYA)), tokens: 2000 };
+    await putCountedUsage(db, "state", item, counter);
+    await putCountedUsage(db, "state", item, counter);
+    expect(db.get(counter.key)).toMatchObject({ tokens: 2000 });
+    await putCountedUsage(db, "state", { ...item, sk: "2026-10-21T09:00:00.000Z#other" }, { ...counter, tokens: 500 });
+    expect(db.get(counter.key)).toMatchObject({ tokens: 2500 });
+    // A failure that is not a replay is the caller's.
+    db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    await expect(putCountedUsage(db, "state", { ...item, sk: "x" }, counter)).rejects.toMatchObject({ name: "InternalServerError" });
+  });
+});
+
+// ---- the broker: keys recorded at the mint, blocked at the end of the operation, settled on the schedule ----
+
+const PROXY_URL = "http://internal-proxy.example.test:4000";
+const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
+const NOW_MONTH = new Date().toISOString().slice(0, 7);
+
+async function brokerSetup(options: { agents?: boolean } = {}) {
+  const access = fakeModelAccess();
+  const h = await createDeveloperTaskBroker({ brokerExtra: { ...(options.agents === false ? {} : { agents: {} }), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  access.setMemberSpent(TEST_ORG, DEV_MAYA.developerId, 0);
+  access.setOrgSpent(TEST_ORG, 0);
+  const startTask = async () => {
+    const reply = await h.dev(DEV_MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const taskId = (reply.body.task as { taskId: string }).taskId;
+    return { taskId, workspaceId: (h.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId };
+  };
+  const active = (workspaceId: string) => String((h.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+  /** Finishes preparation, then asks for a key as the task's worker does. */
+  const mint = async (workspaceId: string) => {
+    await h.finish(workspaceId, active(workspaceId), "SUCCEEDED", PREPARED);
+    const operationId = active(workspaceId);
+    const outbox = h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!;
+    const capability = (outbox.invocation as { callbackCapability: string }).callbackCapability;
+    const ask = () => call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    const reply = await ask();
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    return { operationId, key: reply.body.apiKey as string, ask };
+  };
+  const record = (key: string) => h.db.get(modelKeyKey(TEST_ORG, keyIdOf(key))) as (ModelKeyRecord & Record<string, unknown>) | undefined;
+  const keyRecords = () => h.db.find((item) => item.entityType === "MODEL_KEY");
+  const counter = (sk: string) => h.db.get(spendCounterKey(TEST_ORG, NOW_MONTH, sk)) as { spentUsd?: number; committedUsd?: number } | undefined;
+  const sweep = () => h.handler({ source: "agentx.spend-settlement" } as never);
+  return { ...h, access, startTask, mint, active, record, keyRecords, counter, sweep };
+}
+
+describe("a key the broker mints", () => {
+  it("is recorded with who pays, what ran and the budgets it counts against", async () => {
+    const t = await brokerSetup();
+    const { taskId, workspaceId } = await t.startTask();
+    const { key, operationId } = await t.mint(workspaceId);
+    const stored = t.record(key)!;
+    const input = t.access.mintKey.mock.calls.at(-1)![0];
+    expect(stored).toMatchObject({ orgId: TEST_ORG, keyId: keyIdOf(key), month: NOW_MONTH, capUsd: input.maxBudgetUsd, settledUsd: 0, reserved: false, finalized: false, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") });
+    expect(stored.tags).toEqual(input.tags);
+    expect(stored.tags).toMatchObject({ taskId, operationId, payerKind: "member", payerId: DEV_MAYA.developerId, project: "payments" });
+    const task = t.db.get(`DEVTASK#${taskId}`, "META") as Parameters<typeof paymentOfTask>[0];
+    expect(stored.scopes).toEqual(paymentOfTask(task).scopes);
+    expect(t.db.find((item) => item.pk === "OPEN_MODEL_KEYS").map((item) => item.keyId)).toEqual([keyIdOf(key)]);
+  });
+
+  it("is not recorded on an install without agents", async () => {
+    const t = await brokerSetup({ agents: false });
+    const { workspaceId } = await t.startTask();
+    await t.mint(workspaceId);
+    expect(t.keyRecords()).toEqual([]);
+    expect(t.db.find((item) => item.pk === "OPEN_MODEL_KEYS")).toEqual([]);
+  });
+
+  it("is given back, and nothing is minted for the task, when the broker cannot record it", async () => {
+    const t = await brokerSetup();
+    const { taskId, workspaceId } = await t.startTask();
+    await t.finish(workspaceId, t.active(workspaceId), "SUCCEEDED", PREPARED);
+    const operationId = t.active(workspaceId);
+    const capability = ((t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation) as { callbackCapability: string }).callbackCapability;
+    t.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("MODEL_KEY"), error: { name: "InternalServerError" } });
+    const reply = await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    expect(reply).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
+    expect(t.access.revokeKey).toHaveBeenCalledWith(t.access.mintedKeys()[0]);
+    expect((t.db.get(`DEVTASK#${taskId}`, "META") as { modelKeyIds?: string[] }).modelKeyIds).toBeUndefined();
+  });
+
+  it("is blocked at the proxy once, and starts its finalize clock, when its operation ends", async () => {
+    const t = await brokerSetup();
+    const { workspaceId } = await t.startTask();
+    const { key, operationId } = await t.mint(workspaceId);
+    expect(t.access.blockKey).not.toHaveBeenCalled();
+    await t.finish(workspaceId, operationId, "FAILED", { error: "boom" });
+    expect(t.access.blockKey.mock.calls).toEqual([[keyIdOf(key)]]);
+    const started = t.record(key)!.finalizeAfter;
+    expect(started).toBeGreaterThan(Date.now() + FINALIZE_DELAY_MS - 10_000);
+    // The same end reported again blocks nothing more.
+    await t.finish(workspaceId, operationId, "FAILED", { error: "boom" });
+    expect(t.access.blockKey).toHaveBeenCalledTimes(1);
+    expect(t.record(key)!.finalizeAfter).toBe(started);
+  });
+
+  it("does not fail the worker's result when the proxy cannot block it; the repeat of the result tries again", async () => {
+    const t = await brokerSetup();
+    const { workspaceId } = await t.startTask();
+    const { key, operationId } = await t.mint(workspaceId);
+    t.access.blockKey.mockRejectedValueOnce(Object.assign(new Error("down"), { code: "MODEL_PROXY_UNAVAILABLE" }));
+    await t.finish(workspaceId, operationId, "SUCCEEDED", {});
+    expect(t.record(key)!.finalizeAfter).toBeUndefined();
+    await t.finish(workspaceId, operationId, "SUCCEEDED", {});
+    expect(t.record(key)!.finalizeAfter).toBeDefined();
+  });
+
+  it("is settled by the scheduled run, finalized once its clock runs out, and leaves nothing to write after", async () => {
+    const t = await brokerSetup();
+    const { workspaceId } = await t.startTask();
+    const { key, operationId } = await t.mint(workspaceId);
+    // The fake proxy's keys expire in the past; this one is alive for the next hour.
+    t.db.set({ ...t.record(key)!, expiresAt: Date.now() + 3_600_000 });
+    t.access.setKeySpent(key, 1.2);
+    const run = await t.sweep();
+    expect(run.statusCode).toBe(200);
+    expect(JSON.parse(run.body)).toMatchObject({ jobs: [{ name: "sweep-spend", ok: true, result: { settled: 1, complete: true } }] });
+    for (const sk of ["ORG", "PROJECT#payments", `MEMBER#${DEV_MAYA.developerId}`, "SOURCE#rovara", agentUsageCounter("rovara-code" as never)]) near(t.counter(sk)?.spentUsd, 1.2);
+    await t.finish(workspaceId, operationId, "SUCCEEDED", {});
+    t.access.setKeySpent(key, 1.5);
+    // Its clock has not run out: settled, not finalized.
+    await t.sweep();
+    near(t.counter("ORG")?.spentUsd, 1.5);
+    expect(t.record(key)!.finalized).toBe(false);
+    t.db.set({ ...t.record(key)!, finalizeAfter: Date.now() - 1 });
+    await t.sweep();
+    expect(t.record(key)).toMatchObject({ finalized: true, settledUsd: 1.5 });
+    const writes: string[] = [];
+    const stop = t.db.onWrite(({ before, after }) => writes.push(String((after ?? before)?.pk)));
+    await t.sweep();
+    stop();
+    expect(writes).toEqual([]);
+  });
+
+  it("is left alone by the scheduled run on an install without agents or a model proxy", async () => {
+    const t = await brokerSetup({ agents: false });
+    const run = await t.sweep();
+    expect(run.statusCode).toBe(200);
+    expect(JSON.parse(run.body)).toMatchObject({ skipped: true });
+    const bare = createBroker({ extra: {} });
+    expect(JSON.parse((await bare.handler({ source: "agentx.spend-settlement" } as never)).body)).toMatchObject({ skipped: true });
+  });
+
+  it("reports a job that cannot run at all by its error's name, without its detail", async () => {
+    const t = await brokerSetup();
+    t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("SPEND_SWEEP"), error: { name: "InternalServerError", message: "secret detail" } });
+    const run = await t.sweep();
+    expect(run.statusCode).toBe(200);
+    expect(JSON.parse(run.body)).toMatchObject({ jobs: [{ name: "sweep-spend", ok: false, error: "InternalServerError" }] });
+    expect(run.body).not.toContain("secret detail");
+  });
+});
+
+describe("a Slack turn's key", () => {
+  const SLACK_USER = "U0123456789";
+  const THREAD = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
+
+  async function install() {
+    const access = fakeModelAccess();
+    const { handler, db } = createBroker({ extra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+    await registerSlackProject(handler);
+    access.setOrgSpent(TEST_ORG, 0);
+    return { handler, db, access };
+  }
+
+  it("is recorded without a reservation, settles into the counters, and expires into a finalize", async () => {
+    const h = await install();
+    const linked = developerIdForSlackUser(SLACK_USER);
+    seedMembership(h.db, linked, { orgId: TEST_ORG, role: "member" });
+    h.access.setMemberSpent(TEST_ORG, linked, 0);
+    const reply = await serviceCall(h.handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId: "Ev1" });
+    expect(reply.status).toBe(200);
+    const key = reply.body.apiKey as string;
+    const stored = h.db.get(modelKeyKey(TEST_ORG, keyIdOf(key))) as ModelKeyRecord & Record<string, unknown>;
+    expect(stored).toMatchObject({ reserved: false, finalized: false, capUsd: 2 });
+    expect(stored.scopes).toEqual([{ kind: "org" }, { kind: "project", project: "payments" }, { kind: "member", developerId: linked }]);
+    expect(stored.tags).toMatchObject({ origin: "slack", payerKind: "member", payerId: linked, project: "payments" });
+    expect(stored.tags.operationId).toBeUndefined();
+    h.access.setKeySpent(key, 0.4);
+    const deps: LedgerDependencies = { documentClient: h.db, tableName: "state", access: h.access, now: Date.now, cloud: true };
+    expect(await settleKey(deps, TEST_ORG, keyIdOf(key))).toMatchObject({ deltaUsd: 0.4 });
+    const counter = (sk: string) => h.db.get(spendCounterKey(TEST_ORG, NOW_MONTH, sk)) as { spentUsd: number; committedUsd: number };
+    near(counter(`MEMBER#${linked}`).spentUsd, 0.4);
+    near(counter("PROJECT#payments").committedUsd, 0.4);
+  });
+
+  it("is given back when it cannot be recorded", async () => {
+    const h = await install();
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("MODEL_KEY"), error: { name: "InternalServerError" } });
+    const reply = await serviceCall(h.handler, THREAD, SLACK_USER, "POST", "/v1/service/model-access", { turnId: "Ev2" });
+    expect(reply).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
+    expect(h.access.revokeKey).toHaveBeenCalledWith(h.access.mintedKeys()[0]);
+  });
+});
+
+// ---- the routes ----
+
+describe("the spend routes", () => {
+  const OTHER = singleOrgIdForEnv("another-company");
+
+  /** Settled spend for the broker's own org, in October 2026: a person's run, a draft's test run, a scheduled run, and a project Maya has no role in. */
+  async function seeded() {
+    const t = await brokerSetup();
+    seedMembership(t.db, DEV_OMAR.developerId, { orgId: TEST_ORG, role: "admin" });
+    // Maya may start tasks on payments; she holds no role on "secret".
+    t.db.set({ ...projectMemberKey(TEST_ORG, DEV_MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: DEV_MAYA.developerId, projectName: "payments", role: "developer", projectRole: "contributor" });
+    t.db.set({ ...projectRevisionKey(TEST_ORG, "secret", 1), entityType: "PROJECT_REVISION", name: "secret" });
+    const access = fakeModelAccess();
+    const clock = { now: Date.parse("2026-10-21T12:00:00.000Z") };
+    const deps: LedgerDependencies = { documentClient: t.db, tableName: "state", access, now: () => clock.now, cloud: true };
+    const RUN_AGENT = "rovara-code" as never;
+    let count = 0;
+    const settle = async (extra: { scopes: BudgetScope[]; tags: ReturnType<typeof mintTagsFor>; usd: number; model?: string }) => {
+      count += 1;
+      const secret = `sk-route-key-${String(count)}`;
+      const keyId = keyIdOf(secret);
+      clock.now += 60_000;
+      await registerKey(deps, { orgId: TEST_ORG, month: "2026-10", keyId, capUsd: 5, scopes: extra.scopes.map((key) => ({ key })), tags: extra.tags, model: extra.model ?? MODEL, expiresAt: clock.now + 3_600_000 });
+      access.setKeySpent(secret, extra.usd);
+      await settleKey(deps, TEST_ORG, keyId);
+    };
+    const maya = DEV_MAYA.developerId;
+    await settle({ scopes: [{ kind: "org" }, { kind: "project", project: "payments" }, { kind: "member", developerId: maya }], usd: 1.2,
+      tags: mintTagsFor({ payer: { kind: "member", developerId: maya }, place: { project: "payments" }, agentId: RUN_AGENT, origin: "app", taskId: "task-a", operationId: "op-a" }) });
+    await settle({ scopes: [{ kind: "org" }, { kind: "project", project: "payments" }, { kind: "testing", developerId: maya }], usd: 0.3,
+      tags: mintTagsFor({ payer: { kind: "project", project: "payments" }, place: { project: "payments" }, agentId: RUN_AGENT, origin: "test_run", taskId: "task-b", operationId: "op-b" }) });
+    await settle({ scopes: [{ kind: "org" }, { kind: "project", project: "payments" }, { kind: "agent", agentId: RUN_AGENT }], usd: 0.5, model: "claude-haiku-4-5",
+      tags: mintTagsFor({ payer: { kind: "agent", agentId: RUN_AGENT }, place: { project: "payments" }, agentId: RUN_AGENT, origin: "schedule", operationId: "op-c" }) });
+    await settle({ scopes: [{ kind: "org" }, { kind: "project", project: "secret" }, { kind: "member", developerId: DEV_OMAR.developerId }], usd: 0.7,
+      tags: mintTagsFor({ payer: { kind: "member", developerId: DEV_OMAR.developerId }, place: { project: "secret" }, agentId: RUN_AGENT, origin: "app", taskId: "task-d", operationId: "op-d" }) });
+    return { ...t, settle, deps };
+  }
+  const get = (t: Awaited<ReturnType<typeof seeded>>, who: typeof DEV_MAYA, path: string) => t.dev(who, "GET", path);
+
+  it("shows a member their own figures, the org's, the testing allowance, the plan's tokens and their alerts only", async () => {
+    const t = await seeded();
+    t.db.set({ ...spendCounterKey(TEST_ORG, "2026-10", personalCounter(DEV_MAYA.developerId)), entityType: "SPEND_COUNTER", tokens: 5000 });
+    t.db.set({ ...budgetAlertKey(TEST_ORG, "2026-10", `MEMBER#${DEV_MAYA.developerId}`, "80"), entityType: "BUDGET_ALERT", scope: `MEMBER#${DEV_MAYA.developerId}`, level: "80", spentUsd: 24, limitUsd: 29, at: "2026-10-21T12:00:00.000Z" });
+    t.db.set({ ...budgetAlertKey(TEST_ORG, "2026-10", `MEMBER#${DEV_OMAR.developerId}`, "80"), entityType: "BUDGET_ALERT", scope: `MEMBER#${DEV_OMAR.developerId}`, level: "80", spentUsd: 24, limitUsd: 29, at: "2026-10-21T12:00:00.000Z" });
+    const reply = await get(t, DEV_MAYA, "/v1/app/budget?month=2026-10");
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(reply.body).toMatchObject({
+      month: "2026-10",
+      member: { spentUsd: 1.2, limitUsd: 29 },
+      org: { spentUsd: 2.7, limitUsd: 500 },
+      testing: { spentUsd: 0.3, limitUsd: 10 },
+      personalPlan: { tokens: 5000 },
+    });
+    expect(reply.body.alerts).toEqual([{ scope: `MEMBER#${DEV_MAYA.developerId}`, level: "80", spentUsd: 24, limitUsd: 29, at: "2026-10-21T12:00:00.000Z" }]);
+  });
+
+  it("shows zeros for a person with no spend, and the current month without ?month", async () => {
+    const t = await seeded();
+    const reply = await get(t, DEV_OMAR, "/v1/app/budget?month=2026-09");
+    expect(reply.status).toBe(200);
+    expect(reply.body).toMatchObject({ month: "2026-09", member: { spentUsd: 0, committedUsd: 0, limitUsd: 29 }, org: { spentUsd: 0 }, testing: { spentUsd: 0, limitUsd: 10 }, personalPlan: { tokens: 0 }, alerts: [] });
+    expect((await get(t, DEV_OMAR, "/v1/app/budget")).body).toMatchObject({ month: NOW_MONTH });
+  });
+
+  it("refuses a month that is not YYYY-MM", async () => {
+    const t = await seeded();
+    for (const month of ["2026-13", "26-10", "2026-10-01", "last", ""]) {
+      const reply = await get(t, DEV_MAYA, `/v1/app/budget?month=${month}`);
+      expect(reply.status, month).toBe(400);
+    }
+  });
+
+  it("gives an owner or admin the org's spend by project, member, agent, source and model", async () => {
+    const t = await seeded();
+    const reply = await get(t, DEV_OMAR, "/v1/app/org/spend?month=2026-10");
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(reply.body).toMatchObject({ month: "2026-10", totalUsd: 2.7, limitUsd: 500 });
+    expect(reply.body.byProject).toEqual([{ project: "payments", spentUsd: 2, committedUsd: 2 }, { project: "secret", spentUsd: 0.7, committedUsd: 0.7 }]);
+    expect(reply.body.byMember).toEqual([{ developerId: DEV_MAYA.developerId, spentUsd: 1.2 }, { developerId: DEV_OMAR.developerId, spentUsd: 0.7 }]);
+    expect(reply.body.byAgent).toEqual([{ agentId: "rovara-code", spentUsd: 2.7 }]);
+    expect(reply.body.bySource).toEqual([{ source: "rovara", spentUsd: 2.7 }]);
+    expect(reply.body.byModel).toEqual([{ model: MODEL, spentUsd: 2.2 }, { model: "claude-haiku-4-5", spentUsd: 0.5 }]);
+  });
+
+  it("refuses the org's spend and ledger to a member", async () => {
+    const t = await seeded();
+    for (const path of ["/v1/app/org/spend?month=2026-10", "/v1/app/org/spend/ledger?month=2026-10"]) {
+      expect((await get(t, DEV_MAYA, path)).status, path).toBe(403);
+    }
+  });
+
+  it("pages the ledger newest first, with a cursor that cannot reach another org's lines", async () => {
+    const t = await seeded();
+    for (let index = 0; index < 55; index += 1) {
+      await t.settle({ scopes: [{ kind: "org" }], usd: 0.01, tags: mintTagsFor({ payer: { kind: "member", developerId: DEV_MAYA.developerId }, place: { project: "payments" }, agentId: "rovara-code" as never, origin: "app", taskId: `task-${String(index)}`, operationId: `op-${String(index)}` }) });
+    }
+    const first = await get(t, DEV_OMAR, "/v1/app/org/spend/ledger?month=2026-10");
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const lines = first.body.lines as Array<{ at: string; usd: number; project: string; taskId?: string }>;
+    expect(lines).toHaveLength(50);
+    expect([...lines].sort((a, b) => b.at.localeCompare(a.at))).toEqual(lines);
+    expect(lines[0]).toMatchObject({ project: "payments", payerKind: "member", origin: "app", usd: 0.01 });
+    expect(lines[0]).not.toHaveProperty("keyId");
+    const cursor = first.body.next as string;
+    expect(typeof cursor).toBe("string");
+    const second = await get(t, DEV_OMAR, `/v1/app/org/spend/ledger?month=2026-10&cursor=${encodeURIComponent(cursor)}`);
+    const rest = second.body.lines as Array<{ at: string }>;
+    expect(rest).toHaveLength(9);
+    expect(second.body.next).toBeUndefined();
+    expect(new Set([...lines, ...rest].map((line) => JSON.stringify(line))).size).toBe(59);
+    // A cursor that is not one of ours is refused, not followed.
+    expect((await get(t, DEV_OMAR, "/v1/app/org/spend/ledger?month=2026-10&cursor=not-a-cursor")).status).toBe(400);
+  });
+
+  it("does not show one org's spend or ledger to another org's admin", async () => {
+    const t = await seeded();
+    const other = await createDeveloperTaskBroker({
+      brokerExtra: { agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: PROXY_URL }, cloud: true },
+      orgResolver: async ({ developerId }) => (developerId === DEV_OMAR.developerId ? OTHER : TEST_ORG),
+    });
+    seedMembership(other.db, DEV_OMAR.developerId, { orgId: OTHER, role: "admin" });
+    // The same table content as the first org's, read as the other org's admin: only the other org's own partition is read.
+    for (const item of t.db.find((candidate) => String(candidate.pk).startsWith(`ORG#${TEST_ORG}#`))) other.db.set(item);
+    const spend = await other.dev(DEV_OMAR, "GET", "/v1/app/org/spend?month=2026-10");
+    expect(spend.status, JSON.stringify(spend.body)).toBe(200);
+    expect(spend.body).toMatchObject({ totalUsd: 0, byProject: [], byMember: [] });
+    const ledger = await other.dev(DEV_OMAR, "GET", "/v1/app/org/spend/ledger?month=2026-10");
+    expect(ledger.body).toMatchObject({ month: "2026-10", lines: [] });
+    expect(ledger.body).not.toHaveProperty("next");
+    // Nor can a cursor taken from the first org's ledger reach into its partition.
+    const mine = await t.dev(DEV_OMAR, "GET", "/v1/app/org/spend/ledger?month=2026-10");
+    const sk = (mine.body.lines as Array<{ at: string }>)[0]!.at;
+    const forged = Buffer.from(JSON.stringify({ sk: `${new Date(sk).toISOString()}#${"a".repeat(64)}#000001` })).toString("base64url");
+    const crossed = await other.dev(DEV_OMAR, "GET", `/v1/app/org/spend/ledger?month=2026-10&cursor=${forged}`);
+    expect(crossed.body.lines).toEqual([]);
+  });
+
+  it("shows a project's spend to a maintainer or an org admin, not to a contributor, and says nothing of a project the caller has no role in", async () => {
+    const t = await seeded();
+    const admin = await get(t, DEV_OMAR, "/v1/app/projects/payments/spend?month=2026-10");
+    expect(admin.status, JSON.stringify(admin.body)).toBe(200);
+    expect(admin.body).toMatchObject({ month: "2026-10", project: "payments", spentUsd: 2, committedUsd: 2 });
+    expect((await get(t, DEV_MAYA, "/v1/app/projects/payments/spend?month=2026-10")).status).toBe(403);
+    const hidden = await get(t, DEV_MAYA, "/v1/app/projects/secret/spend?month=2026-10");
+    const missing = await get(t, DEV_MAYA, "/v1/app/projects/no-such-project/spend?month=2026-10");
+    expect(hidden.status).toBe(404);
+    expect(hidden.body.error).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+    t.db.set({ pk: `ORG#${TEST_ORG}#PROJECT_AI#payments`, sk: "SETTINGS", entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: 10, revision: 1 });
+    expect((await get(t, DEV_OMAR, "/v1/app/projects/payments/spend?month=2026-10")).body).toMatchObject({ limitUsd: 10 });
+  });
+
+  it("splits an agent's spend by where the run came from, lists its recent runs, and shows its budget", async () => {
+    const t = await seeded();
+    t.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code" as never), entityType: "BUILTIN_AGENT_SETTINGS", monthlyBudgetUsd: 20, maxPerRunUsd: 3 });
+    const reply = await get(t, DEV_OMAR, "/v1/app/agents/rovara-code/spend?month=2026-10");
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(reply.body).toMatchObject({ month: "2026-10", totalUsd: 2.7, byOrigin: { person: 1.9, autonomous: 0.5, test: 0.3 }, budget: { limitUsd: 20, spentUsd: 0.5 }, maxPerRunUsd: 3 });
+    const runs = reply.body.recentRuns as Array<{ project: string; usd: number; origin: string }>;
+    expect(runs.map((run) => [run.project, run.usd, run.origin]).sort()).toEqual([["payments", 0.3, "test_run"], ["payments", 0.5, "schedule"], ["payments", 1.2, "app"], ["secret", 0.7, "app"]].sort());
+  });
+
+  it("shows only the runs in projects the caller has a role in, and at most 20", async () => {
+    const t = await seeded();
+    for (let index = 0; index < 25; index += 1) {
+      await t.settle({ scopes: [{ kind: "org" }], usd: 0.01, tags: mintTagsFor({ payer: { kind: "member", developerId: DEV_MAYA.developerId }, place: { project: "payments" }, agentId: "rovara-code" as never, origin: "app", taskId: `many-${String(index)}`, operationId: `many-op-${String(index)}` }) });
+    }
+    const reply = await get(t, DEV_MAYA, "/v1/app/agents/rovara-code/spend?month=2026-10");
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const runs = reply.body.recentRuns as Array<{ project: string; lastAt: string }>;
+    expect(runs).toHaveLength(20);
+    expect(runs.every((run) => run.project === "payments")).toBe(true);
+    expect([...runs].sort((a, b) => b.lastAt.localeCompare(a.lastAt))).toEqual(runs);
+    // The budget and max-per-run are absent when the agent has none.
+    expect(reply.body).not.toHaveProperty("budget");
+    expect(reply.body).not.toHaveProperty("maxPerRunUsd");
+  });
+
+  it("answers an agent the caller cannot see, or that does not exist, with the same 404", async () => {
+    const t = await seeded();
+    const unknown = await get(t, DEV_MAYA, "/v1/app/agents/agt_zzzzzzzzzzzzzzzzzzzzzzzz/spend?month=2026-10");
+    expect(unknown.status).toBe(404);
+    const malformed = await get(t, DEV_MAYA, "/v1/app/agents/not-an-agent/spend?month=2026-10");
+    expect(malformed.status).toBe(404);
+    expect((malformed.body.error as { message: string }).message).toBe((unknown.body.error as { message: string }).message);
+  });
+});
+
+// ---- the schedule ----
+
+describe("the spend settlement schedule", () => {
+  type Schedule = { Type: string; Properties: { ScheduleExpression: string; State: string; FlexibleTimeWindow: unknown; Target: { Arn: unknown; RoleArn: unknown; Input: string; RetryPolicy: unknown } } };
+  const schedules = (context: Record<string, unknown>): Array<[string, Schedule]> => {
+    const stack = buildAgentXApp(context).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+    return Object.entries(Template.fromStack(stack!).toJSON().Resources as Record<string, Schedule>).filter(([, resource]) => resource.Type === "AWS::Scheduler::Schedule");
+  };
+
+  it("runs every 5 minutes through the same role as the other recovery schedules, with the event the broker answers", () => {
+    const found = schedules({ agentxEnv: "staging" });
+    const spend = found.filter(([id]) => id.startsWith("SpendSettlementSchedule"));
+    expect(spend).toHaveLength(1);
+    const [, schedule] = spend[0]!;
+    expect(schedule.Properties).toMatchObject({ ScheduleExpression: "rate(5 minutes)", State: "ENABLED", FlexibleTimeWindow: { Mode: "OFF" } });
+    expect(JSON.parse(schedule.Properties.Target.Input)).toStrictEqual({ source: "agentx.spend-settlement" });
+    expect(schedule.Properties.Target.RetryPolicy).toStrictEqual({ MaximumRetryAttempts: 2, MaximumEventAgeInSeconds: 300 });
+    const recovery = found.find(([id]) => id.startsWith("GithubWebhookRecoverySchedule"))![1];
+    expect(schedule.Properties.Target.Arn).toStrictEqual(recovery.Properties.Target.Arn);
+    expect(schedule.Properties.Target.RoleArn).toStrictEqual(recovery.Properties.Target.RoleArn);
+  });
+
+  it("is not in the legacy template", () => {
+    expect(schedules({}).map(([id]) => id).filter((id) => id.startsWith("SpendSettlement"))).toStrictEqual([]);
   });
 });
