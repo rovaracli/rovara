@@ -1,8 +1,8 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentXError, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskOpen } from "../developer/task-access.js";
-import { grantRoleOf } from "../developer/project-roles.js";
+import { effectiveProjectRole } from "../developer/project-roles.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
 import { taskKey, taskOwnerKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
@@ -290,13 +290,20 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
   throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch access changed while it was being verified");
 }
 
-/** Whether the task's creator holds a project grant that cannot start tasks (a viewer's), read live in the task's own org. */
+/**
+ * Whether the task's creator is, now, a project viewer: the effective project role (their org role first, so an owner or admin who still holds
+ * an old viewer row maintains every project, then their grant), read live in the task's own org. Same rule as `checkProjectAccess`.
+ */
 async function creatorIsProjectViewer(deps: TaskDispatchAccessDependencies, task: DeveloperTaskRecord): Promise<boolean> {
   const named = OrgIdSchema.safeParse((task as unknown as Record<string, unknown>).orgId);
   const orgId = named.success ? named.data : deps.orgId;
   if (orgId === undefined) return false;
-  const grant = await get<{ role?: unknown; projectRole?: unknown }>(deps, projectMemberKey(orgId, task.developerId, task.project));
-  return grantRoleOf(grant) === "viewer";
+  const [grant, member] = await Promise.all([
+    get<{ role?: unknown; projectRole?: unknown }>(deps, projectMemberKey(orgId, task.developerId, task.project)),
+    get<{ role?: unknown }>(deps, orgMemberKey(orgId, task.developerId)),
+  ]);
+  const orgRole = OrgRoleSchema.safeParse(member?.role);
+  return effectiveProjectRole({ developerId: task.developerId, orgRole: orgRole.success ? orgRole.data : "member" }, grant, false) === "viewer";
 }
 
 /** Marks only an incomplete core authority decision so the dispatcher retries the same durable operation. */
@@ -350,8 +357,9 @@ export async function resumeTaskDispatch(
   if (pauses.length === 0) return false;
   const pause = pauses.length === 1 ? pauses[0]! : undefined;
   const workflow = input.task.workflow;
-  if (pause === undefined || pause.peopleRevision > input.peopleRevision || workflow === undefined
-    || pause.workflowRevision !== workflow.revision || pause.workflowStage !== workflow.stage || pause.workflowState !== workflow.state) return false;
+  // A plain task (no workflow) is paused with no workflow fields (a project viewer's legacy task, Plan 2, Task 21), and resumes with none.
+  if (pause === undefined || pause.peopleRevision > input.peopleRevision
+    || pause.workflowRevision !== workflow?.revision || pause.workflowStage !== workflow?.stage || pause.workflowState !== workflow?.state) return false;
   const outbox = await get<DurableOutboxRecord>(deps, outboxKey(pause.outboxId));
   if (outbox?.status !== "WAITING_FOR_TASK_ACCESS" || outbox.operationId !== pause.operationId || outbox.workspaceId !== pause.workspaceId) return false;
   const at = new Date(deps.now()).toISOString();
@@ -365,10 +373,14 @@ export async function resumeTaskDispatch(
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: taskKey(input.task.taskId),
-      ConditionExpression: "workflow.#revision = :workflowRevision AND workflow.#stage = :workflowStage AND workflow.#state = :workflowState AND attribute_not_exists(closedAt)",
-      ExpressionAttributeNames: { "#revision": "revision", "#stage": "stage", "#state": "state" }, ExpressionAttributeValues: {
-        ":workflowRevision": pause.workflowRevision, ":workflowStage": pause.workflowStage, ":workflowState": pause.workflowState,
-      },
+      ...(workflow === undefined
+        ? { ConditionExpression: "attribute_not_exists(workflow) AND attribute_not_exists(closedAt)" }
+        : {
+          ConditionExpression: "workflow.#revision = :workflowRevision AND workflow.#stage = :workflowStage AND workflow.#state = :workflowState AND attribute_not_exists(closedAt)",
+          ExpressionAttributeNames: { "#revision": "revision", "#stage": "stage", "#state": "state" }, ExpressionAttributeValues: {
+            ":workflowRevision": pause.workflowRevision, ":workflowStage": pause.workflowStage, ":workflowState": pause.workflowState,
+          },
+        }),
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: { pk: `DEVTASK#${input.task.taskId}`, sk: "PEOPLE" },

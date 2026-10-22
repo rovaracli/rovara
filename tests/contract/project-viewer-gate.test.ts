@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 import { projectMemberKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
+import { pageAccess, requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
+import { registerRevision } from "../support/developer-task-broker.js";
 import { createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
@@ -50,21 +51,40 @@ async function planWaiting(h: Harness) {
 
 describe("requireProjectWorkRole: the one gate", () => {
   const task = { project: "payments" };
-  const access = (access: "granted" | "channel", role: ProjectRole) => ({ checkAccess: async () => ({ revision: 1, policy: {} as never, access, channelIds: [], role }) });
+  const actor = (orgRole: "member" | "admin" = "member") => ({ developerId: KIT.developerId, orgId: TEST_ORG, orgRole });
+  const rows = (item?: Record<string, unknown>) => ({ send: async () => ({ Item: item }) });
+  const failing = { send: async () => { throw new Error("DynamoDB is down"); } };
+  const deps = (checkAccess: () => Promise<unknown>, documentClient: { send(command: unknown): Promise<unknown> } = rows()) =>
+    ({ checkAccess, documentClient, tableName: "state" }) as never;
+  const access = (granted: "granted" | "channel", role: ProjectRole) => async () => ({ revision: 1, policy: {}, access: granted, channelIds: [], role });
+  const refuse = (code: string) => { const error = Object.assign(new Error(code), { code }); return async () => { throw error; }; };
+  const grantRow = (role: "viewer" | "developer", projectRole: ProjectRole) => ({ role, projectRole });
 
   it("refuses an actor who holds a grant that cannot start tasks, with the viewer message", async () => {
-    await expect(requireProjectWorkRole(access("granted", "viewer"), task)).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining(VIEWER_MESSAGE) as string });
+    await expect(requireProjectWorkRole(deps(access("granted", "viewer")), task, actor())).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining(VIEWER_MESSAGE) as string });
   });
 
   it("allows a maintainer, a contributor, and an actor with no grant (the share design is unchanged)", async () => {
-    for (const role of ["maintainer", "contributor"] as const) await expect(requireProjectWorkRole(access("granted", role), task)).resolves.toBeUndefined();
-    await expect(requireProjectWorkRole(access("channel", "contributor"), task)).resolves.toBeUndefined();
-    // Even if the channel role were a viewer (it never is), no grant means no refusal here.
-    await expect(requireProjectWorkRole(access("channel", "viewer"), task)).resolves.toBeUndefined();
+    for (const role of ["maintainer", "contributor"] as const) await expect(requireProjectWorkRole(deps(access("granted", role)), task, actor())).resolves.toBeUndefined();
+    await expect(requireProjectWorkRole(deps(access("channel", "contributor")), task, actor())).resolves.toBeUndefined();
+    await expect(requireProjectWorkRole(deps(access("channel", "viewer")), task, actor())).resolves.toBeUndefined();
   });
 
-  it("leaves things as they were when the project check cannot be made", async () => {
-    await expect(requireProjectWorkRole({ checkAccess: async () => { throw new Error("unavailable"); } }, task)).resolves.toBeUndefined();
+  it("when the project check throws (tasks turned off, a transient error), reads the actor's grant and org role directly: a viewer is refused", async () => {
+    for (const code of ["PROJECT_TASKS_DISABLED", "SLACK_UNAVAILABLE", "PROJECT_ACCESS_DENIED"]) {
+      await expect(requireProjectWorkRole(deps(refuse(code), rows(grantRow("viewer", "viewer"))), task, actor()), code).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining(VIEWER_MESSAGE) as string });
+    }
+  });
+
+  it("when the project check throws, a contributor, a maintainer, an old grant, an org admin with a stray viewer row and a grantless actor keep today's behaviour", async () => {
+    for (const item of [grantRow("developer", "contributor"), grantRow("developer", "maintainer"), { role: "developer" }, undefined]) {
+      await expect(requireProjectWorkRole(deps(refuse("PROJECT_TASKS_DISABLED"), rows(item)), task, actor())).resolves.toBeUndefined();
+    }
+    await expect(requireProjectWorkRole(deps(refuse("PROJECT_TASKS_DISABLED"), rows(grantRow("viewer", "viewer"))), task, actor("admin"))).resolves.toBeUndefined();
+  });
+
+  it("refuses when the fallback read fails too: the gate never fails open", async () => {
+    await expect(requireProjectWorkRole(deps(refuse("SLACK_UNAVAILABLE"), failing), task, actor())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 });
 
@@ -197,5 +217,102 @@ describe("the Slack service routes that change a project or start work refuse a 
       const answered = await serviceCall(h.handler, thread, "U0CONTRIBSL1", method, path, body);
       expect(answered.body.error ?? {}, label).not.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
     }
+  });
+});
+
+describe("round 4: the org role, a disabled project, the pre-checks and resuming a plain task", () => {
+  const startWorkflowTask = async (h: Harness) => {
+    const started = await h.dev(KIT, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = String(h.db.get(`DEVTASK#${taskId}`, "META")?.workspaceId);
+    return { taskId, workspaceId, record: h.db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === workspaceId)[0] as never };
+  };
+  const guardDeps = (h: Harness) => ({ documentClient: h.db, tableName: "state", orgId: TEST_ORG, now: () => Date.now() }) as never;
+
+  it("PROBE A: an org owner or admin with a stray viewer row is never parked by the dispatch guard (they maintain every project); a plain viewer still is", async () => {
+    for (const orgRole of ["member", "admin", "owner"] as const) {
+      const h = await withKit();
+      const { record } = await startWorkflowTask(h);
+      setGrant(h.db, KIT, "viewer");
+      seedMembership(h.db, KIT.developerId, { orgId: TEST_ORG, role: orgRole });
+      expect(await guardTaskDispatch(guardDeps(h), record), orgRole).toBe(orgRole === "member" ? "PARKED" : "ALLOWED");
+    }
+  });
+
+  it("PROBE B: when the project turns off tasks from AI tools, a lowered owner still cannot approve the plan; a contributor owner still can", async () => {
+    const h = await withKit();
+    const first = await planWaiting(h);
+    const decision = (taskId: string, revision: number, digest: string) => ({ requestId: randomUUID(), expectedRevision: revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+    await registerRevision(h.handler, 2, { enabled: false, share: "optional", shareMode: { default: "view", allowContinue: true }, channelMembersMayUse: true });
+    setGrant(h.db, KIT, "viewer");
+    const before = JSON.stringify(h.db.get(`DEVTASK#${first.taskId}`, "META"));
+    const refused = await h.dev(KIT, "POST", `/v1/dev/tasks/${first.taskId}/workflow/decision`, decision(first.taskId, first.revision, first.digest));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: expect.stringContaining(VIEWER_MESSAGE) as string });
+    expect(JSON.stringify(h.db.get(`DEVTASK#${first.taskId}`, "META"))).toBe(before);
+    // A contributor on the same project keeps today's behaviour (the decision is not blocked by the gate).
+    setGrant(h.db, KIT, "contributor");
+    const allowed = await h.dev(KIT, "POST", `/v1/dev/tasks/${first.taskId}/workflow/decision`, decision(first.taskId, first.revision, first.digest));
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+  });
+
+  it("the task page does not offer decide or ask to an owner lowered to viewer, and still does to a contributor", async () => {
+    const h = await withKit();
+    const { taskId } = await planWaiting(h);
+    const { getTaskPageState } = await import("../../packages/broker/src/aws/developer-tasks.js");
+    const routeDeps = (await import("../../packages/broker/src/aws/developer-routes.js")).developerTaskRouteDependencies;
+    const caller = { developerId: KIT.developerId, sessionId: KIT.sessionId, amr: KIT.provider, name: KIT.name, orgId: TEST_ORG, orgRole: "member" as const };
+    const state = () => getTaskPageState(routeDeps({ documentClient: h.db, tableName: "state", developer: h.brokerInput.developer as never, now: Date.now, tasks: h.actions }, caller), caller, taskId);
+    expect(await state()).toMatchObject({ canDecide: true });
+    setGrant(h.db, KIT, "viewer");
+    expect(await state()).toMatchObject({ canRead: true, canDecide: false, canAsk: false });
+  });
+
+  it("pageAccess offers decide and ask only where work is allowed (commenting is unaffected)", () => {
+    const open = { task: { closedAt: undefined, workflow: undefined } as never, role: "owner" as const, ownerActorIds: [] };
+    expect(pageAccess(open)).toMatchObject({ canComment: true, canDecide: true, canAsk: true });
+    expect(pageAccess(open, false)).toEqual({ role: "owner", canComment: true, canSuggest: false, canDecide: false, canAsk: false });
+  });
+
+  it("the Slack pre-check does not authorize decide, retry, publish or feedback for a lowered owner, and still authorizes stop and close", async () => {
+    const h = await withKit();
+    const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000601" };
+    const owner = "U0SLACKOWN1";
+    const developerId = developerIdForSlackUser(owner);
+    seedMembership(h.db, developerId, { orgId: TEST_ORG, role: "member" });
+    setGrant(h.db, { ...KIT, developerId }, "contributor");
+    const started = await h.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: owner, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+    const authorize = async (taskAction: string) => (await h.handler({ source: "agentx.slack-ingress", action: "task-people-authorize", taskAction, taskId, userId: owner, thread })).statusCode;
+    for (const action of ["decide", "retry", "publish", "feedback"]) expect(await authorize(action), action).toBe(200);
+    setGrant(h.db, { ...KIT, developerId }, "viewer");
+    for (const action of ["decide", "retry", "publish", "feedback"]) expect(await authorize(action), action).toBe(403);
+    for (const action of ["close", "control"]) expect(await authorize(action), action).toBe(200);
+  });
+
+  it("canvas closeout retry is a step of close, which a lowered owner may still do: it is not refused as new work", async () => {
+    const h = await withKit();
+    const { taskId } = await planWaiting(h);
+    setGrant(h.db, KIT, "viewer");
+    const answer = await h.dev(KIT, "POST", `/v1/dev/tasks/${taskId}/canvas-closeout/retry`, { requestId: randomUUID(), workflowRevision: 1 });
+    expect((answer.body.error as { code?: string } | undefined)?.code).not.toBe("PROJECT_ACCESS_DENIED");
+  });
+
+  it("a parked plain task (no workflow) resumes when its creator is a contributor again, instead of only being cancellable", async () => {
+    const h = await withKit();
+    const started = await h.dev(KIT, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const task = h.db.get(`DEVTASK#${taskId}`, "META") as unknown as { workspaceId: string; workflow?: unknown };
+    expect(task.workflow).toBeUndefined();
+    const record = h.db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === task.workspaceId)[0] as never;
+    const outboxId = (record as { id: string }).id;
+    setGrant(h.db, KIT, "viewer");
+    expect(await guardTaskDispatch(guardDeps(h), record)).toBe("PARKED");
+    // A viewer owner cannot continue it; once raised, continue brings the parked operation back instead of reporting the task busy.
+    expect((await h.dev(KIT, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Go on" })).status).toBe(403);
+    setGrant(h.db, KIT, "contributor");
+    const resumed = await h.dev(KIT, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Go on" });
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+    expect(h.db.get(`OUTBOX#${outboxId}`, "OUTBOX")).toMatchObject({ status: "PENDING" });
   });
 });

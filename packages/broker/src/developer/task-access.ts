@@ -1,8 +1,8 @@
 // Spec 061 slice 2: who may do what on a task page. Every check goes through resolveTaskAccess and the one role-to-action
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, projectAllows, type ProjectRole } from "@agentx/contracts";
-import { viewerCannotStartTasksMessage } from "./project-roles.js";
+import { agentXError, projectAllows, projectMemberKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { effectiveProjectRole, viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
@@ -39,17 +39,47 @@ export const WORK_ACTIONS: readonly TaskAction[] = ["decide", "retry", "publish"
 /**
  * The one gate for "viewers only view". An actor who holds a project grant that cannot start tasks (a viewer) is refused with the viewer
  * message; an actor with no grant (the share design), a maintainer, a contributor and an org owner or admin pass. `deps.checkAccess` is the
- * actor's own, read live. A project check that cannot be made leaves things as they were (it never widens access: it only adds a refusal).
+ * actor's own, read live. When it throws (the project turned off tasks from AI tools, Slack could not be asked, a read failed) the gate does
+ * not fail open: it reads the actor's own grant row and org role directly (`effectiveProjectRole`, no channel) and judges by that; if that
+ * read fails too it refuses with a retryable RUNTIME_UNAVAILABLE. People with no grant, and contributors on a project with AI tasks turned
+ * off, keep today's behaviour either way.
  */
-export async function requireProjectWorkRole(deps: Pick<AccessDependencies, "checkAccess">, task: { project: string }): Promise<void> {
-  let result: Awaited<ReturnType<AccessDependencies["checkAccess"]>>;
+export async function requireProjectWorkRole(
+  deps: Pick<AccessDependencies, "checkAccess" | "documentClient" | "tableName">,
+  task: { project: string },
+  actor: { developerId: string; orgId: OrgId; orgRole: OrgRole },
+): Promise<void> {
+  let role: ProjectRole | undefined;
+  let granted: boolean;
   try {
-    result = await deps.checkAccess(task.project);
+    const result = await deps.checkAccess(task.project);
+    role = result.role;
+    granted = result.access === "granted";
   } catch {
-    return;
+    try {
+      const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMemberKey(actor.orgId, actor.developerId, task.project), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+      role = effectiveProjectRole(actor, response.Item, false);
+      granted = true;
+    } catch {
+      throw agentXError("RUNTIME_UNAVAILABLE", "your role in this project could not be checked; try again in a moment");
+    }
   }
-  if (result.access === "granted" && result.role !== undefined && !projectAllows(result.role, "start_tasks")) {
+  if (granted && role !== undefined && !projectAllows(role, "start_tasks")) {
     throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(task.project));
+  }
+}
+
+/** Whether the actor may start or change work on the task now: false for a project viewer (or when that cannot be told). For the page's controls. */
+export async function projectWorkAllowed(
+  deps: Pick<AccessDependencies, "checkAccess" | "documentClient" | "tableName">,
+  task: { project: string },
+  actor: { developerId: string; orgId: OrgId; orgRole: OrgRole },
+): Promise<boolean> {
+  try {
+    await requireProjectWorkRole(deps, task, actor);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -82,7 +112,7 @@ const log = (deps: Pick<DeveloperTaskRouteDependencies, "log">, entry: Record<st
  */
 export async function resolveTaskAccess(deps: AccessDependencies, caller: DeveloperCaller, taskId: string, action?: TaskAction): Promise<TaskAccess> {
   const access = await resolveTaskRole(deps, caller, taskId, action);
-  if (action !== undefined && WORK_ACTIONS.includes(action)) await requireProjectWorkRole(deps, access.task);
+  if (action !== undefined && WORK_ACTIONS.includes(action)) await requireProjectWorkRole(deps, access.task, caller);
   return access;
 }
 
@@ -158,13 +188,14 @@ export function taskOpen(task: DeveloperTaskRecord): boolean {
 }
 
 /** What a reader may do on the page now, for the page view. */
-export function pageAccess(access: TaskAccess): { role: TaskRole; canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean } {
+export function pageAccess(access: TaskAccess, workAllowed = true): { role: TaskRole; canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean } {
   const open = taskOpen(access.task);
   return {
     role: access.role,
     canComment: open && can(access.role, "comment"),
     canSuggest: open && can(access.role, "suggest"),
-    canDecide: open && can(access.role, "decide"),
-    canAsk: open && can(access.role, "ask"),
+    // Deciding and asking are work: a project viewer (an owner lowered to viewer included) is not offered them.
+    canDecide: open && workAllowed && can(access.role, "decide"),
+    canAsk: open && workAllowed && can(access.role, "ask"),
   };
 }

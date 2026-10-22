@@ -362,7 +362,7 @@ import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSl
 import { batchResults, parseStartBody, requireBatchProject, showBatch, startBatch, stopBatchById } from "./eval-batch-admin.js";
 import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { slackWorkflowCaller } from "./slack-workflow-caller.js";
-import { can, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 
 const MAX_ARTIFACT_BYTES = 5_000_000;
@@ -6026,6 +6026,8 @@ async function authorizeSlackTaskAction(dependencies: AwsBrokerDependencies, tas
   // a fresh read+role check. The separately invoked mutation route still requires an open task.
   const access = await resolveTaskAccess(routeDeps, caller, taskId, "read");
   if (!can(access.role, event.taskAction)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  // The button's press is gated like the action behind it: a project viewer (an owner lowered to viewer included) is not offered work.
+  if (WORK_ACTIONS.includes(event.taskAction)) await requireProjectWorkRole(routeDeps, access.task, caller);
   if (access.task.share?.teamId !== thread.teamId || access.task.share.channelId !== thread.channelId || access.task.share.threadTs !== thread.threadTs) {
     throw agentXError("FORBIDDEN", "this task belongs to another Slack thread");
   }

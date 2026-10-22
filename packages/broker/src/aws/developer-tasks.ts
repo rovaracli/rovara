@@ -198,7 +198,7 @@ import type { TaskDocumentKind, TaskDocumentView, TaskFreshness } from "./task-w
 import type { PageCommentInput, PageDecisionInput, PageSuggestionInput, TaskPageState } from "./task-web-api.js";
 import { pageCommentViews, type CommentViewContext, type PageCommentView } from "./plan-page/comments.js";
 import type { PlanAnchor } from "./plan-page/render-plan.js";
-import { WORK_ACTIONS, can, pageAccess, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import { getTaskPeoplePresentation, resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 import { getTaskPeople as readTaskPeople, getTaskPeopleCapabilities as readTaskPeopleCapabilities, type TaskPersonCheck } from "../developer/task-people.js";
 import { confirmTaskPeopleProposal as confirmPeopleProposal, getTaskPeopleProposal as readPeopleProposal, getTaskPeopleProposalMetadata as readPeopleProposalMetadata, proposeTaskOwnership, proposeTaskPeopleRole,
@@ -568,7 +568,7 @@ async function authorizeTaskActor(
   const access = await authorizeTaskAction(deps, caller, taskId, "read");
   if (!can(access.role, action)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   // The same gate resolveTaskAccess applies to its work actions: an answer that only reads a record (the feedback review page) is exempt.
-  if (options.readOnly !== true && WORK_ACTIONS.includes(action)) await requireProjectWorkRole(deps, access.task);
+  if (options.readOnly !== true && WORK_ACTIONS.includes(action)) await requireProjectWorkRole(deps, access.task, caller);
   return access;
 }
 
@@ -1817,6 +1817,12 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
   await creatorGuard(deps, task);
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
+  // A plain task whose dispatch was parked (its creator was a project viewer) comes back by continuing it now that they may work again.
+  const resumed = await resumeTaskDispatch(deps, {
+    task, peopleRevision: access.peopleRevision ?? 0, actorId: access.actorId, requestId: request.requestId, payloadHash: hashJson(request),
+    reauthorize: async () => { await authorizeTaskAction(deps, caller, taskId, "work"); },
+  });
+  if (resumed) return { task: await taskView(deps, task, { events: 0, details: false }) };
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
   // Ruling R38: a Continue starts a new window of the task's own cap, at what its keys have spent so far. A proxy that cannot
@@ -2848,7 +2854,7 @@ async function startAcceptedPublication(deps: DeveloperTaskRouteDependencies, ta
 /** Re-drive only the task's current terminal revision and, when present, its exact manifest candidate. */
 async function retryTaskCanvasCloseout(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ status: "retry_requested"; workflowRevision: number; manifestDigest?: string }> {
   const request = parse(CanvasCloseoutRetryRequestSchema, value, deps, "canvas-closeout-retry");
-  const access = await authorizeTaskActor(deps, caller, taskId, "retry");
+  const access = await authorizeTaskActor(deps, caller, taskId, "close");
   const { task } = access;
   const closeout = task.workflow?.canvasCloseout;
   const attempt = task.workflow?.canvasCloseoutAttempt;
@@ -2885,7 +2891,7 @@ async function retryTaskCanvasCloseout(deps: DeveloperTaskRouteDependencies, cal
     return { status: "retry_requested", workflowRevision, ...(request.manifestDigest === undefined ? {} : { manifestDigest: request.manifestDigest }) };
   } catch (error) {
     if (!isConditional(error)) throw error;
-    const fresh = (await authorizeTaskActor(deps, caller, taskId, "retry")).task;
+    const fresh = (await authorizeTaskActor(deps, caller, taskId, "close")).task;
     if (fresh.canvasCloseoutRetry?.requestId === request.requestId && fresh.canvasCloseoutRetry.workflowRevision === workflowRevision
       && fresh.canvasCloseoutRetry.manifestDigest === request.manifestDigest
       && fresh.canvasCloseoutRetry.dispatchAttempt >= retry.dispatchAttempt) {
@@ -3273,7 +3279,7 @@ export async function getTaskPageState(deps: DeveloperTaskRouteDependencies, cal
     return latest === 0 ? [] : [{ anchor: anchor as PlanAnchor, version: latest }];
   });
   const counter = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: commentCounterKey(taskId), ConsistentRead: true })) as { Item?: { seq?: unknown } };
-  const permissions = pageAccess(access);
+  const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
   return {
     revision: workflow?.revision ?? 0, waiting: workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && task.closedAt === undefined,
     stage: taskPageStep(workflow, task.closedAt !== undefined), documents, commentSeq: typeof counter.Item?.seq === "number" ? counter.Item.seq : 0,
@@ -3400,7 +3406,7 @@ async function currentSuggestions(deps: DeveloperTaskRouteDependencies, task: De
 export async function createPageComment(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, input: PageCommentInput): Promise<{ comment: PageCommentView; duplicate: boolean; askRefused?: "limited" }> {
   const actor = await pageActor(deps, caller, taskId);
   // Asking AgentX is agent work: refused to a viewer (an owner lowered to viewer included) before the comment is posted.
-  if (input.ask && can(actor.role, "ask")) await requireProjectWorkRole(deps, actor.task);
+  if (input.ask && can(actor.role, "ask")) await requireProjectWorkRole(deps, actor.task, caller);
   const { parentId, ...rest } = input;
   const created = await createTaskComment(deps, actor, { ...rest, ...(parentId === undefined ? {} : { parentId }) });
   let comment = created.comment;
@@ -3692,7 +3698,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     ...(acceptedFindings.length === 0 ? {} : { acceptedFindings }),
     ...(visibleWorkflowDependenciesProgress === undefined ? {} : { workflowDependenciesProgress: visibleWorkflowDependenciesProgress }),
     pullRequests: (workflow?.pullRequests ?? []).map((pullRequest) => ({ url: pullRequest.url, number: pullRequest.number, state: pullRequest.state })),
-    history, access: pageAccess(access), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
+    history, access: pageAccess(access, await projectWorkAllowed(deps, task, caller)), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
     canTakeOwnership: capabilities.canTakeOwnership, comments, suggestions: shownSuggestions, askAvailable: await commentAnswersAvailable(deps, task),
     ...await pageDecidingView(deps, { task, caller, comments, suggestions: shownSuggestions, citations, claimIds }),
   };
