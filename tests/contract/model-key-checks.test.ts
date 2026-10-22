@@ -288,6 +288,12 @@ describe("the /key/list audit", () => {
     proxy.keys.push(...drifted);
     expect(await client(proxy, { now: () => clock }).auditKeys({ budgetMs: 2_500 })).toEqual({ checked: 4, blocked: 3, truncated: true });
     expect(proxy.seen.filter((entry) => entry.path === "/key/block")).toHaveLength(3);
+    // Stopping mid-page ends the audit there: the next page is not listed.
+    clock = 0;
+    const paged = litellm({ pageSize: 4, failOn: (seen) => { if (seen.path === "/key/block") clock += 1_000; return undefined; } });
+    paged.keys.push(...Array.from({ length: 8 }, () => scoped(["*"])));
+    expect(await client(paged, { now: () => clock }).auditKeys({ budgetMs: 2_500 })).toMatchObject({ truncated: true });
+    expect(paged.seen.filter((entry) => entry.path === "/key/list")).toHaveLength(1);
   });
 
   it("goes on to the other drifted keys when one block fails, counts the failure, and then fails visibly", async () => {
