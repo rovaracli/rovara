@@ -245,6 +245,21 @@ describe("the project's own order", () => {
   });
 });
 
+describe("a project's AI settings follow the org's order", () => {
+  it("shows the org's order as the project's effective order, and refuses a project order that names a source the org does not have in its own", async () => {
+    const t = await taskSetup();
+    await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"] });
+    const shown = await t.dev(MAYA, "GET", "/v1/app/projects/payments/ai");
+    expect(shown.status, JSON.stringify(shown.body)).toBe(200);
+    expect(shown.body).toMatchObject({ effective: { sourceOrder: [SRC_ANTHROPIC, "rovara"] } });
+    seedMembership(t.db, MAYA.developerId, { orgId: TEST_ORG, role: "admin" });
+    const refused = await t.dev(MAYA, "PUT", "/v1/app/projects/payments/ai", { requestId: randomUUID(), sourceOrder: [SRC_OPENAI] });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+    const allowed = await t.dev(MAYA, "PUT", "/v1/app/projects/payments/ai", { requestId: randomUUID(), sourceOrder: ["rovara", SRC_ANTHROPIC] });
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+  });
+});
+
 describe("the key is checked against the live sources each time it is asked for", () => {
   it("refuses a key for a route whose source has left the order since the operation was built", async () => {
     const t = await taskSetup();
