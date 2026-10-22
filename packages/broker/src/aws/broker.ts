@@ -338,7 +338,7 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import { DecideStore, DecideReauthRequired, type DecideRequestContext } from "../developer/decide-session.js";
 import type { DecideKinds } from "../developer/decide-kinds.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import { ADMISSION_REFUSALS, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
@@ -533,11 +533,11 @@ interface AwsBrokerDependencies {
   /** Which org a caller belongs to (ruling R1). Absent means every caller belongs to the install's single org (ruling R3). */
   orgResolver?: OrgResolver;
   /**
-   * Plan 3, Task 7: what the agent routes (`/v1/app/agents*`) need beyond the broker's own tables: who holds which role on a project (Plan 2
-   * Task 21's `createProjectMembers`). Absent, those routes answer NOT_FOUND. The store, access checks and approvals are built from the
-   * broker's State table and sign-in table.
+   * Plan 3, Task 7: what the agent routes (`/v1/app/agents*`) need beyond the broker's own tables. Absent, those routes answer NOT_FOUND.
+   * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
+   * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"] } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"] } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a-presence (R66): the kinds of approval a person can decide on the confirmation page (`apr_` and `spr_`), each saying whether
    * a member may decide it now, what the page shows, and what deciding does. Absent, the confirmation page answers NOT_FOUND.
@@ -775,9 +775,13 @@ function decideRequestContext(dependencies: AwsBrokerDependencies): DecideReques
 }
 
 /** The agent routes' dependencies, built once per handler; undefined without the project roles or developer sign-in they need. */
-function agentRouteDependencies(dependencies: AwsBrokerDependencies): AgentRouteDependencies | undefined {
+function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions): AgentRouteDependencies | undefined {
   const { agents, developer } = dependencies;
   if (agents === undefined || developer === undefined) return undefined;
+  // PF6: the real project members (Plan 2 Task 21), built the way the project members routes build theirs, so both read one set of people.
+  const projectMembers = agents.projectMembers ?? projectMembersOf({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
+  });
   const signInStore = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now });
   return {
     store: new AgentStore({
@@ -787,7 +791,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies): AgentRoute
       ...(agents.newId === undefined ? {} : { newId: agents.newId }),
       ...(agents.builtins === undefined ? {} : { builtins: agents.builtins }),
     }),
-    projectMembers: agents.projectMembers,
+    projectMembers,
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
     signInStore,
@@ -1183,7 +1187,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   }
   // Spec 025: the broker actions the developer task routes call, built once per handler.
   const tasks = developerTaskActions(dependencies);
-  const agents = agentRouteDependencies(dependencies);
+  const agents = agentRouteDependencies(dependencies, tasks);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
   return async (event: HttpApiV2Event | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
@@ -12932,6 +12936,8 @@ export const handler = createAwsBrokerHandler({
       } }
     : {}),
   ...(developer ? { developer } : {}),
+  // Plan 3: the agent routes (`/v1/app/agents*`), on the real project members; they need the developer sign-in.
+  ...(developer ? { agents: {} } : {}),
   ...(chatgpt ? { chatgpt } : {}),
   ...(modelAccess ? { modelAccess } : {}),
   ...(egressDomainsSync === undefined ? {} : { egressDomainsSync }),

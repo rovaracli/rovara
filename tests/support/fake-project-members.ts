@@ -1,6 +1,7 @@
-// PF6: an in-memory stand-in for Plan 2 Task 21's `createProjectMembers`, coded against the A3 interface. Org owners and
-// admins are `maintainer` of every project (as the real one will be); everyone else has the role a grant gives them, or none.
-// When Plan 2 Task 21 lands, the controller swaps in the real one and re-runs the focused tests.
+// PF6: an in-memory stand-in for Plan 2 Task 21's `createProjectMembers` (packages/broker/src/org/project-members.ts), kept in step with it
+// (tests/contract/project-members-parity.test.ts runs both over the same people). Org owners and admins are `maintainer` of every project
+// (listed once, as `org_role` rows, whatever grants they also hold); everyone else has the role a grant gives them, or none. A project that
+// is archived is left out of `projectsOf`. The real one is wired into the broker; this one is for unit tests that want no table.
 import type { ProjectMembers } from "../../packages/broker/src/agents/access.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
@@ -11,6 +12,8 @@ const isOrgAdmin = (orgRole: OrgRole) => orgRole === "owner" || orgRole === "adm
 export class FakeProjectMembers implements ProjectMembers {
   private readonly grants = new Map<string, ProjectRole>();
   private readonly projects = new Map<OrgId, Set<string>>();
+  private readonly archived = new Set<string>();
+  private readonly orgRoles = new Map<string, OrgRole>();
   /** Every `roleOf`, `list` and `projectsOf` call, so a test can check what was asked. */
   readonly calls: string[] = [];
 
@@ -18,6 +21,16 @@ export class FakeProjectMembers implements ProjectMembers {
     const names = this.projects.get(orgId) ?? new Set<string>();
     names.add(project);
     this.projects.set(orgId, names);
+  }
+
+  /** Records a developer's org role, so `list` can name the org's owners and admins (the real one reads the org's members). */
+  setOrgRole(orgId: OrgId, developerId: string, orgRole: OrgRole): void {
+    this.orgRoles.set(`${orgId}|${developerId}`, orgRole);
+  }
+
+  /** Archives a project: `projectsOf` no longer returns it (its roles still answer `roleOf` and `list`, as in the real one). */
+  archive(orgId: OrgId, project: string): void {
+    this.archived.add(`${orgId}|${project}`);
   }
 
   /** Gives a developer a role on a project (the project joins the org's catalog too). */
@@ -35,8 +48,22 @@ export class FakeProjectMembers implements ProjectMembers {
 
   list = (orgId: OrgId, project: string): Promise<Array<{ developerId: string; role: ProjectRole; source: "grant" | "org_role" }>> => {
     this.calls.push(`list ${project}`);
+    // A project that does not exist has no one; each owner or admin is listed once, as a maintainer by their org role; the others by their grant.
+    if (!this.projects.get(orgId)?.has(project)) return Promise.resolve([]);
+    const found: Array<{ developerId: string; role: ProjectRole; source: "grant" | "org_role" }> = [];
+    const admins = new Set<string>();
+    for (const [key, orgRole] of this.orgRoles) {
+      if (!key.startsWith(`${orgId}|`) || !isOrgAdmin(orgRole)) continue;
+      const developerId = key.slice(orgId.length + 1);
+      admins.add(developerId);
+      found.push({ developerId, role: "maintainer", source: "org_role" });
+    }
     const prefix = `${orgId}|${project}|`;
-    return Promise.resolve([...this.grants].filter(([key]) => key.startsWith(prefix)).map(([key, role]) => ({ developerId: key.slice(prefix.length), role, source: "grant" as const })));
+    for (const [key, role] of this.grants) {
+      const developerId = key.slice(prefix.length);
+      if (key.startsWith(prefix) && !admins.has(developerId)) found.push({ developerId, role, source: "grant" });
+    }
+    return Promise.resolve(found);
   };
 
   projectsOf = (orgId: OrgId, caller: Caller): Promise<Array<{ project: string; role: ProjectRole }>> => {
@@ -44,6 +71,7 @@ export class FakeProjectMembers implements ProjectMembers {
     const names = [...(this.projects.get(orgId) ?? [])].sort();
     const found: Array<{ project: string; role: ProjectRole }> = [];
     for (const project of names) {
+      if (this.archived.has(`${orgId}|${project}`)) continue;
       const role = isOrgAdmin(caller.orgRole) ? "maintainer" : this.grants.get(`${orgId}|${project}|${caller.developerId}`);
       if (role !== undefined) found.push({ project, role });
     }
