@@ -1091,6 +1091,14 @@ describe("a decision after the approval's time (re-check N1)", () => {
     expect(w.vendor.state.runs).toBe(0);
   });
 
+  it("treats the moment of expiresAt itself as expired", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.clock.now = Date.parse((await w.record(id)).expiresAt);
+    expect(await code(w.approve(BOB, id))).toEqual({ code: "APPROVAL_CLOSED", message: "this request has expired" });
+    expect(w.vendor.state.runs).toBe(0);
+  });
+
   it("still accepts a decision at the last moment (now equal to expiresAt minus 1 ms)", async () => {
     const w = world();
     const id = await w.waiting(1);
