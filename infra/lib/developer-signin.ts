@@ -245,13 +245,14 @@ export class DeveloperSignIn extends Construct {
       // Plan 3, Task 21a-presence (R66, R67, R6-2): decisions need a person present. The fresh sign-in's server-side state, the session it
       // makes, and the decide tickets and rate counters live in this table under their own prefixes (developer/decide-session.ts), each
       // narrowed by leading keys. The function needs no more than this on them: the state is written, read and spent (Delete); the session
-      // is written only (the broker reads, claims and ends it); tickets and counters are read, written and counted (Put, Update).
+      // is written, and ended when a newer sign-in replaces it (the broker reads, claims and ends it too); tickets and counters are read, written and counted (Put, Update).
       fn.addToRolePolicy(new iam.PolicyStatement({
         actions: ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:DeleteItem"], resources: [table.tableArn],
         conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DECIDE_STATE#*"] } },
       }));
+      // The session is written once; a new sign-in also ends the session the browser held before (DeleteItem on that one cookie's hash).
       fn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ["dynamodb:PutItem"], resources: [table.tableArn],
+        actions: ["dynamodb:PutItem", "dynamodb:DeleteItem"], resources: [table.tableArn],
         conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DECIDE_SESSION#*"] } },
       }));
       fn.addToRolePolicy(new iam.PolicyStatement({

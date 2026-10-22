@@ -1,5 +1,5 @@
 // tests/contract/developer-signin-infrastructure.test.ts
-import { Stack } from "aws-cdk-lib";
+import { Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -613,9 +613,9 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
   it("keeps the cloud template's sign-in table statements the same as a named environment's, and the broker's unchanged", () => {
     const [tableId] = ofType(cloud, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const functionActions = statementsOfRole(cloud, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId, SAMPLE_TABLE_ARN)).flatMap(actionsOf).sort();
-    // The named environment's five actions, plus the decide statements (state: Put, Get, Delete; session: Put; tickets and rates: Get, Put, Update).
+    // The named environment's five actions, plus the decide statements (state: Put, Get, Delete; session: Put, Delete; tickets and rates: Get, Put, Update).
     expect(functionActions).toEqual([
-      "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:GetItem",
+      "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:GetItem",
       "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:UpdateItem",
     ]);
     // Plan 3, Task 21a-presence (PF9): one exact list for the broker on a cloud install: the creator check, the reads, the developer-partition
@@ -649,7 +649,8 @@ describe("the decide flow's grants and pool (Plan 3, Task 21a-presence, cloud in
   it("gives DeveloperIdentity exactly the state, session, ticket and rate grants, each narrowed by leading keys", () => {
     expect(decideStatements("DeveloperSignInFunctionServiceRole").map(shape)).toEqual(expect.arrayContaining([
       { actions: ["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem"], keys: ["DECIDE_STATE#*"] },
-      { actions: ["dynamodb:PutItem"], keys: ["DECIDE_SESSION#*"] },
+      // Put to write the session, Delete to end the one a newer sign-in replaces (fix round 1).
+      { actions: ["dynamodb:DeleteItem", "dynamodb:PutItem"], keys: ["DECIDE_SESSION#*"] },
       { actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], keys: ["DECIDE_TICKET#*", "DECIDE_RATE#*"] },
     ]));
     expect(decideStatements("DeveloperSignInFunctionServiceRole")).toHaveLength(3);
@@ -714,5 +715,25 @@ describe("the decide flow's grants and pool (Plan 3, Task 21a-presence, cloud in
       expect(JSON.stringify(template)).not.toContain("DECIDE_");
       expect(grants(template).filter(({ statement }) => touches(statement, "cognito-idp") && withoutHash(grants(template).find((g) => g.statement === statement)!.role) === "DeveloperSignInFunctionServiceRole")).toEqual([]);
     }
+  });
+
+  it("keeps each broker managed-policy group under 5,500 characters on a cloud install (the guard under IAM's 6,144)", () => {
+    const app = buildAgentXApp({ agentxEnv: "staging", agentxCloud: true });
+    const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane")!;
+    Template.fromStack(stack); // synthesizes, so the merge-and-move aspect has run
+    const policies = stack.node.findAll().filter((node): node is iam.ManagedPolicy => node instanceof iam.ManagedPolicy && /^agentx-.+-broker-/.test(String((node.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)));
+    expect(policies.map((policy) => String((policy.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)).sort()).toEqual(["agentx-staging-broker-integrations", "agentx-staging-broker-orchestration", "agentx-staging-broker-state"]);
+    for (const policy of policies) {
+      // PolicyStatement._estimateSize is an internal API (pinned with aws-cdk-lib): 20 characters per action and 150 per unresolved token.
+      const estimate = (policy.document as unknown as { statements: Array<{ _estimateSize(options: { actionEstimate: number; arnEstimate: number }): number }> }).statements
+        .reduce((total, statement) => total + statement._estimateSize({ actionEstimate: 20, arnEstimate: 150 }), 0);
+      expect(estimate, `${String((policy.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)} is estimated at ${estimate}`).toBeLessThanOrEqual(5500);
+    }
+  });
+
+  it("has no API Gateway access log on the stage, so the ticket in a confirmation URL's query string is not recorded by it", () => {
+    // HTTP API access logs exist only as a stage's AccessLogSettings. If one is ever added, the ticket must move out of the query string first.
+    for (const [, stage] of ofType(cloud, "AWS::ApiGatewayV2::Stage")) expect(stage.Properties).not.toHaveProperty("AccessLogSettings");
+    expect(JSON.stringify(cloud)).not.toContain("AccessLogSettings");
   });
 });

@@ -29,6 +29,7 @@ import { pkceChallengeMatches, sha256Hex } from "./tokens.js";
 
 export const NO_VERIFIED_EMAIL_REFUSAL = "Rovara needs a verified email to confirm decisions. Sign in once with your email code, or ask an admin.";
 export const COGNITO_SETUP_REFUSAL = "Rovara couldn't set up email confirmation for your account. Ask an admin for help.";
+export const NOT_EMAIL_CODE_REFUSAL = "Confirm with the email code sent to your address. Open the approval again.";
 export const DIFFERENT_ACCOUNT_REFUSAL = "You confirmed as a different account. Open the approval again.";
 const OPEN_AGAIN = "Open the approval again from Rovara.";
 
@@ -53,7 +54,8 @@ export interface DecideSignInContext {
   resolveDeveloper(method: DeveloperSignInMethod, identity: ProviderIdentity): Promise<ResolvedSignInDeveloper>;
   /** Tells the account's address, best effort (never fails the flow), that an email-code sign-in was added for confirming decisions. */
   noticeDecideSignIn(to: string): Promise<void>;
-  page(statusCode: number, title: string, paragraphs: string[], links?: Array<{ href: string; label: string }>): HttpResult;
+  /** `refreshTo` adds a `<meta http-equiv="refresh">` to the same-origin path, for a page that sends the browser on after it is shown. */
+  page(statusCode: number, title: string, paragraphs: string[], links?: Array<{ href: string; label: string }>, refreshTo?: string): HttpResult;
   redirect(location: string): HttpResult;
   now(): number;
   log(entry: Record<string, unknown>): void;
@@ -188,56 +190,67 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
   // ---- start -------------------------------------------------------------------------------------------------------------------------
 
   /**
-   * Makes sure `developerId` has an email-code sign-in in the pool (R6-2, R7-2), and returns a refusal page when it cannot be set up. A member
-   * who already has a cloud identity has a pool user. Otherwise the pool user for their verified email is created (rate limited), or an
-   * existing one is read and used only when it is verified, has this email, and is linked to this member or to no one at all.
+   * The member's own native email-code pool user for `email` (R6-2, R7-2), made and linked if need be, or a refusal page. Whether one exists
+   * is Cognito's answer (`AdminGetUser`), never a link's provider: a Google sign-in through the pool is a `cloud` link too, and its pool
+   * user (status EXTERNAL_PROVIDER, with `identities`) cannot receive the email code. An existing native user is used only when it is
+   * verified, has this email, and is linked to this member or to no one at all. A missing one is created (at most one a day, and only a
+   * successful create uses the slot). Its `sub` is what the callback will require.
    */
-  async function ensureEmailCodeIdentity(developerId: string, email: string): Promise<HttpResult | undefined> {
+  async function ensureEmailCodeUser(developerId: string, email: string): Promise<{ sub: string } | HttpResult> {
     const { cognito } = deps;
-    const refusalPage = () => refuse(403, "Email confirmation isn't set up", [COGNITO_SETUP_REFUSAL]);
+    const refusalPage = (reason: string) => {
+      ctx.log({ event: "signin.decide_cognito_refused", developerId, reason });
+      return refuse(403, "Email confirmation isn't set up", [COGNITO_SETUP_REFUSAL]);
+    };
+    type PoolUser = { UserStatus?: string; UserAttributes?: Array<{ Name?: string; Value?: string }> };
+    const lookup = async (): Promise<PoolUser | undefined> => {
+      try {
+        return await cognito.client.send(new AdminGetUserCommand({ UserPoolId: cognito.userPoolId, Username: email })) as PoolUser;
+      } catch (error) {
+        if (errorName(error) === "UserNotFoundException") return undefined;
+        throw error;
+      }
+    };
+    let existing = await lookup();
     let sub: string | undefined;
-    await deps.store.takeCreateUserSlot(developerId);
-    try {
-      const created = await cognito.client.send(new AdminCreateUserCommand({
-        UserPoolId: cognito.userPoolId, Username: email,
-        UserAttributes: [{ Name: "email", Value: email }, { Name: "email_verified", Value: "true" }], MessageAction: "SUPPRESS",
-      })) as { User?: { Attributes?: Array<{ Name?: string; Value?: string }> } };
-      sub = attribute(created.User?.Attributes, "sub");
-    } catch (error) {
-      if (errorName(error) !== "UsernameExistsException" && errorName(error) !== "AliasExistsException") throw error;
-      const existing = await cognito.client.send(new AdminGetUserCommand({ UserPoolId: cognito.userPoolId, Username: email })) as { UserAttributes?: Array<{ Name?: string; Value?: string }> };
+    if (existing === undefined) {
+      await deps.store.takeCreateUserSlot(developerId);
+      try {
+        const created = await cognito.client.send(new AdminCreateUserCommand({
+          UserPoolId: cognito.userPoolId, Username: email,
+          UserAttributes: [{ Name: "email", Value: email }, { Name: "email_verified", Value: "true" }], MessageAction: "SUPPRESS",
+        })) as { User?: { Attributes?: Array<{ Name?: string; Value?: string }> } };
+        sub = attribute(created.User?.Attributes, "sub");
+        if (sub === undefined) return refusalPage("no_sub");
+      } catch (error) {
+        // Only a successful AdminCreateUser keeps the slot.
+        await deps.store.releaseCreateUserSlot(developerId);
+        if (errorName(error) !== "UsernameExistsException" && errorName(error) !== "AliasExistsException") throw error;
+        existing = await lookup();
+        if (existing === undefined) return refusalPage("create_raced");
+      }
+    }
+    if (existing !== undefined) {
       const existingSub = attribute(existing.UserAttributes, "sub");
       const existingEmail = attribute(existing.UserAttributes, "email");
+      if (existing.UserStatus === "EXTERNAL_PROVIDER" || attribute(existing.UserAttributes, "identities") !== undefined) return refusalPage("federated_user");
       if (existingSub === undefined || attribute(existing.UserAttributes, "email_verified") !== "true"
-        || existingEmail === undefined || normalizeEmail(existingEmail).email !== email) {
-        ctx.log({ event: "signin.decide_cognito_refused", developerId, reason: "user_not_usable" });
-        return refusalPage();
-      }
+        || existingEmail === undefined || normalizeEmail(existingEmail).email !== email) return refusalPage("user_not_usable");
       const identityKey = ownerKeyForSubject(deps.cloudIssuer, existingSub);
       const linkedTo = await ctx.signIn.developerForIdentity(identityKey);
       const hasLinkItem = await ctx.signIn.getIdentityLink(identityKey) !== undefined;
-      if (linkedTo !== undefined ? linkedTo !== developerId : hasLinkItem || await ctx.signIn.getDeveloper(identityKey) !== undefined) {
-        ctx.log({ event: "signin.decide_cognito_refused", developerId, reason: "sub_belongs_to_another" });
-        return refusalPage();
-      }
+      if (linkedTo !== undefined ? linkedTo !== developerId : hasLinkItem || await ctx.signIn.getDeveloper(identityKey) !== undefined) return refusalPage("sub_belongs_to_another");
       sub = existingSub;
     }
-    if (sub === undefined) {
-      ctx.log({ event: "signin.decide_cognito_refused", developerId, reason: "no_sub" });
-      return refusalPage();
-    }
-    const identityKey = ownerKeyForSubject(deps.cloudIssuer, sub);
-    const linked = await ctx.signIn.linkIdentity({ identityKey, developerId, provider: "cloud", issuer: deps.cloudIssuer, subject: sub, email });
+    const identityKey = ownerKeyForSubject(deps.cloudIssuer, sub!);
+    const linked = await ctx.signIn.linkIdentity({ identityKey, developerId, provider: "cloud", issuer: deps.cloudIssuer, subject: sub!, email });
     // Linking never moves an identity, and a link that lost a race to someone else is a refusal, not a re-link.
-    if (await ctx.signIn.developerForIdentity(identityKey) !== developerId) {
-      ctx.log({ event: "signin.decide_cognito_refused", developerId, reason: "link_not_ours" });
-      return refusalPage();
-    }
+    if (await ctx.signIn.developerForIdentity(identityKey) !== developerId) return refusalPage("link_not_ours");
     if (linked.created) {
       ctx.log({ event: "signin.decide_cognito_linked", developerId });
       await ctx.noticeDecideSignIn(email);
     }
-    return undefined;
+    return { sub: sub! };
   }
 
   /** `GET /v1/auth/decide/start?ticket=`: the only start route. It takes no `return` and no member; both come from the ticket. */
@@ -250,7 +263,7 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
     if (record?.revoked === true) return refuse(403, "You can't decide this", ["Contact a Rovara administrator."]);
     const inspection = await mayDecide(deps.kinds, { orgId: ticket.orgId, developerId: ticket.developerId, approvalId: ticket.approvalId });
     if (inspection.status !== "open") return inspectionPage(inspection);
-    const { emails, hasCloudIdentity } = await ctx.signIn.decideEmailsOf(ticket.developerId);
+    const { emails } = await ctx.signIn.decideEmailsOf(ticket.developerId);
     const email = emails[0];
     if (email === undefined) return refuse(403, "A verified email is needed", [NO_VERIFIED_EMAIL_REFUSAL]);
     let cloud: SignInProvider;
@@ -260,16 +273,14 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
       return unavailable();
     }
     try {
-      if (!hasCloudIdentity) {
-        const refused = await ensureEmailCodeIdentity(ticket.developerId, email);
-        if (refused !== undefined) return refused;
-      }
+      const poolUser = await ensureEmailCodeUser(ticket.developerId, email);
+      if (!("sub" in poolUser)) return poolUser;
       const state = randomBytes(32).toString("base64url");
       const nonce = randomBytes(32).toString("base64url");
       const verifier = randomBytes(32).toString("base64url");
       await deps.store.putState(state, {
         purpose: "decide", stateHash: sha256Hex(state), nonce, codeVerifierHash: sha256Hex(verifier), startedAt: ctx.now(),
-        return: returnPath, approvalId: ticket.approvalId, orgId: ticket.orgId, developerId: ticket.developerId,
+        return: returnPath, approvalId: ticket.approvalId, orgId: ticket.orgId, developerId: ticket.developerId, expectedSub: poolUser.sub,
         identityProvider: "COGNITO", prompt: "login", expiresAt: Math.floor(ctx.now() / 1000) + DECIDE_SECONDS,
       });
       const location = await cloud.authorizeUrl({ state, nonce, redirectUri: ctx.endpoint("/callback/cloud"), decide: { loginHint: email } });
@@ -310,16 +321,14 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
       ctx.log({ event: "signin.decide_refused", reason: "not_fresh", developerId: state.developerId });
       return refuse(403, "That sign-in wasn't recent enough", ["Confirm with a new email code.", OPEN_AGAIN], cleared);
     }
+    // Only the member's own email-code pool user counts (R67). Anything else, a Google-federated user above all, is refused before anything
+    // is linked, merged or written: a federated user of the same member resolves to them but is not the email code.
     const identityKey = ownerKeyForSubject(identity.issuer, identity.subject);
-    let signedInAs = await ctx.signIn.developerForIdentity(identityKey);
-    if (signedInAs === undefined && identity.emailVerified === true && identity.email !== undefined) {
-      // A pool user made by sign-up rather than by us: it joins the member its verified email names, as any sign-in would, and only that member.
-      const { emails } = await ctx.signIn.decideEmailsOf(state.developerId);
-      if (emails.includes(normalizeEmail(identity.email).email)) signedInAs = (await ctx.resolveDeveloper("cloud", identity)).developerId;
-    }
-    if (signedInAs !== state.developerId) {
-      ctx.log({ event: "signin.decide_refused", reason: "different_account" });
-      return refuse(403, "Different account", [DIFFERENT_ACCOUNT_REFUSAL], cleared);
+    const signedInAs = await ctx.signIn.developerForIdentity(identityKey);
+    if (identity.federated === true || identity.subject !== state.expectedSub || signedInAs !== state.developerId) {
+      const sameMember = signedInAs === state.developerId;
+      ctx.log({ event: "signin.decide_refused", reason: sameMember ? "not_email_code_user" : "different_account" });
+      return refuse(403, sameMember ? "Use the email code" : "Different account", [sameMember ? NOT_EMAIL_CODE_REFUSAL : DIFFERENT_ACCOUNT_REFUSAL], cleared);
     }
     if ((await ctx.signIn.getDeveloper(state.developerId))?.revoked === true) return refuse(403, "Your sign-in was turned off", ["Contact a Rovara administrator."], cleared);
     if (!APPROVE_RETURN_PATTERN.test(state.return) || state.return !== `/v1/app/approve/${state.approvalId}`) return refuse(400, "This link isn't valid", [OPEN_AGAIN], cleared);
@@ -330,8 +339,22 @@ export function createDecideSignIn(ctx: DecideSignInContext) {
       orgId: state.orgId, developerId: state.developerId, approvalId: state.approvalId, signedInAt, method: "email_code",
       csrfHash: sha256Hex(csrfTokenFor(cookie)), expiresAt: signedInAt + DECIDE_SECONDS,
     });
+    // A new sign-in ends the session this browser held before (the cookie it presented), so the old value stops working at once.
+    const earlier = cookieOf(headers, DECIDE_COOKIE);
+    if (earlier !== undefined && earlier !== cookie && earlier.length >= 32 && earlier.length <= 128) {
+      try {
+        await deps.store.deleteSession(earlier);
+      } catch (error) {
+        ctx.log({ event: "signin.decide_earlier_session_not_ended", error: errorName(error) });
+      }
+    }
     ctx.log({ event: "signin.decide_session_started", developerId: state.developerId, approvalId: state.approvalId });
-    return { ...ctx.redirect(state.return), cookies: [sessionCookie(cookie), ...cleared] };
+    // A same-origin page that sends the browser on itself, not a redirect: a SameSite=Strict cookie is not sent on a redirect that continues
+    // a navigation begun on the pool's (cross-site) page, but it is on the navigation this page starts.
+    return {
+      ...ctx.page(200, "Confirmed", ["You're signed in for this decision."], [{ href: state.return, label: "Continue to the approval" }], state.return),
+      cookies: [sessionCookie(cookie), ...cleared],
+    };
   }
 
   return { identify, identifyToProvider, identifyCallback, start, callback };

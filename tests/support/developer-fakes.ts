@@ -269,20 +269,29 @@ export function fakeOidc(options: { users: FakeOidcUser[]; clientSecret?: string
  * Amazon Cognito's admin API as far as the decide flow uses it. `users` are the pool's existing users (the same people `fakeOidc` signs
  * in, by `sub`); every command is recorded with its input. A created user is added with the sub `sub-of-<email>`.
  */
-export interface FakeCognitoUser { email: string; sub: string; emailVerified?: boolean }
+/** `federated`: a user made by a social sign-in (Google): Cognito reports it as EXTERNAL_PROVIDER, with an `identities` attribute. */
+export interface FakeCognitoUser { email: string; sub: string; emailVerified?: boolean; federated?: boolean }
 export function fakeCognito(options: { users?: FakeCognitoUser[]; createError?: string } = {}) {
   const users = new Map<string, FakeCognitoUser>((options.users ?? []).map((user) => [user.email, user]));
   const calls: Array<{ name: string; input: Record<string, unknown> }> = [];
   const attributes = (user: FakeCognitoUser) => [
     { Name: "sub", Value: user.sub }, { Name: "email", Value: user.email }, { Name: "email_verified", Value: String(user.emailVerified ?? true) },
+    ...(user.federated === true ? [{ Name: "identities", Value: JSON.stringify([{ providerName: "Google", providerType: "Google" }]) }] : []),
   ];
   return {
     calls, users,
-    async send(command: unknown): Promise<unknown> {
+    /** The next AdminCreateUser fails with an error of this name (once). */
+    failNextCreate: undefined as string | undefined,
+    async send(this: { failNextCreate: string | undefined }, command: unknown): Promise<unknown> {
       const name = (command as { constructor: { name: string } }).constructor.name;
       const input = (command as { input: Record<string, unknown> }).input;
       calls.push({ name, input });
       if (command instanceof AdminCreateUserCommand) {
+        if (this.failNextCreate !== undefined) {
+          const failure = this.failNextCreate;
+          this.failNextCreate = undefined;
+          throw Object.assign(new Error(failure), { name: failure });
+        }
         if (options.createError !== undefined) throw Object.assign(new Error(options.createError), { name: options.createError });
         const email = String(input.Username);
         if (users.has(email)) throw Object.assign(new Error("exists"), { name: "UsernameExistsException" });
@@ -293,7 +302,7 @@ export function fakeCognito(options: { users?: FakeCognitoUser[]; createError?: 
       if (command instanceof AdminGetUserCommand) {
         const found = users.get(String(input.Username));
         if (found === undefined) throw Object.assign(new Error("none"), { name: "UserNotFoundException" });
-        return { Username: found.sub, UserAttributes: attributes(found) };
+        return { Username: found.sub, UserStatus: found.federated === true ? "EXTERNAL_PROVIDER" : "CONFIRMED", UserAttributes: attributes(found) };
       }
       throw new Error(`fakeCognito does not support ${name}`);
     },

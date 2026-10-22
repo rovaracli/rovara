@@ -206,6 +206,11 @@ export class FakeDynamoDb {
       case "UpdateCommand":
       case "DeleteCommand": {
         const key = (input.Key ?? input.Item) as { pk: string; sk: string };
+        // Only the return values it models: anything else would silently answer nothing, which misleads a caller that reads the result.
+        const returnValues = input.ReturnValues as string | undefined;
+        if (returnValues !== undefined && !["NONE", "ALL_OLD", "ALL_NEW"].includes(returnValues)) {
+          throw Object.assign(new Error(`FakeDynamoDb does not model ReturnValues ${returnValues}`), { name: "ValidationException", $metadata: {} });
+        }
         const before = this.get(key.pk, key.sk);
         this.commit([toAction(command.constructor.name.replace("Command", "") as WriteAction["kind"], input)], "ConditionalCheckFailedException");
         // ReturnValues: the item as it was (ALL_OLD) or is now (ALL_NEW), which needs only the write's own permission on a real table.

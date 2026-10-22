@@ -216,3 +216,19 @@ describe("FakeDynamoDb realism defaults", () => {
     expect(await due("BETWEEN :from AND :to", { ":from": "2026-01-02", ":to": "2026-01-03" })).toEqual(["2026-01-02", "2026-01-03"]);
   });
 });
+
+describe("FakeDynamoDb ReturnValues", () => {
+  it("returns the old or the new item for ALL_OLD and ALL_NEW, and refuses a value it does not model instead of answering nothing", async () => {
+    const db = new FakeDynamoDb();
+    await db.send(new PutCommand({ TableName: TABLE, Item: { pk: "ITEM#1", sk: "META", n: 1 } }));
+    const old = await db.send(new UpdateCommand({ TableName: TABLE, Key: { pk: "ITEM#1", sk: "META" }, UpdateExpression: "SET n = :n", ExpressionAttributeValues: { ":n": 2 }, ReturnValues: "ALL_OLD" })) as { Attributes?: { n: number } };
+    expect(old.Attributes?.n).toBe(1);
+    const now = await db.send(new UpdateCommand({ TableName: TABLE, Key: { pk: "ITEM#1", sk: "META" }, UpdateExpression: "SET n = :n", ExpressionAttributeValues: { ":n": 3 }, ReturnValues: "ALL_NEW" })) as { Attributes?: { n: number } };
+    expect(now.Attributes?.n).toBe(3);
+    for (const unsupported of ["UPDATED_NEW", "UPDATED_OLD"] as const) {
+      const message = await validationError(db.send(new UpdateCommand({ TableName: TABLE, Key: { pk: "ITEM#1", sk: "META" }, UpdateExpression: "SET n = :n", ExpressionAttributeValues: { ":n": 4 }, ReturnValues: unsupported })));
+      expect(message).toContain(unsupported);
+    }
+    expect(db.get("ITEM#1", "META")?.n).toBe(3);
+  });
+});

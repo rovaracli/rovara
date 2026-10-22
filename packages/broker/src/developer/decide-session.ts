@@ -27,6 +27,8 @@ export const FORBIDDEN_ORIGIN_MESSAGE = "This request didn't come from Rovara's 
 const META = "META";
 const TICKETS_PER_MEMBER_PER_HOUR = 10;
 const TICKETS_PER_APPROVAL_PER_DAY = 20;
+/** Each member's share of an approval's daily cap, so one eligible member cannot use it up and block the others. */
+const TICKETS_PER_MEMBER_PER_APPROVAL_PER_DAY = 5;
 const CREATE_USERS_PER_MEMBER_PER_DAY = 1;
 const HOUR = 3600;
 const DAY = 86_400;
@@ -39,6 +41,8 @@ export interface DecideTicket {
 export interface DecideState {
   purpose: "decide"; stateHash: string; nonce: string; codeVerifierHash: string; startedAt: number;
   return: string; approvalId: string; orgId: OrgId; developerId: string;
+  /** The `sub` of the member's own native email-code pool user: the only ID token the callback accepts, so a Google-federated user never counts. */
+  expectedSub: string;
   /** What the start route asked Cognito for: the isFreshInteractiveSignIn fallback (no `amr`) relies on both. */
   identityProvider: "COGNITO"; prompt: "login"; expiresAt: number;
 }
@@ -91,11 +95,12 @@ export class DecideStore {
 
   /**
    * Mints a ticket (R7-1) for `developerId` to decide `approvalId`, and returns its raw value, which only the caller's response carries.
-   * At most 10 per member per hour and 20 per approval per day (429, the same text whoever asks); a new mint marks the previous unused
+   * At most 10 per member per hour, 5 per member per approval per day and 20 per approval per day (429, the same text whoever asks); a new mint marks the previous unused
    * ticket for the same (approval, member) used, so one is live at a time.
    */
   async mintTicket(input: { orgId: OrgId; developerId: string; approvalId: string; mintedBy: DecideTicket["mintedBy"] }): Promise<string> {
     await this.takeInWindow("MEMBER", input.developerId, TICKETS_PER_MEMBER_PER_HOUR, HOUR);
+    await this.takeInWindow("SHARE", `${input.approvalId}#${input.developerId}`, TICKETS_PER_MEMBER_PER_APPROVAL_PER_DAY, DAY);
     await this.takeInWindow("APPROVAL", input.approvalId, TICKETS_PER_APPROVAL_PER_DAY, DAY);
     const value = randomBytes(32).toString("base64url");
     const expiresAt = this.seconds() + DECIDE_SECONDS;
@@ -148,6 +153,20 @@ export class DecideStore {
   /** At most one `AdminCreateUser` per member per day (R6-2); 429 with the one text otherwise, whether or not the member exists. */
   async takeCreateUserSlot(developerId: string): Promise<void> {
     await this.takeInWindow("CREATE", developerId, CREATE_USERS_PER_MEMBER_PER_DAY, DAY);
+  }
+
+  /** Gives back a slot taken by `takeCreateUserSlot` for an AdminCreateUser that did not succeed. Best effort: a failure only makes the limit stricter. */
+  async releaseCreateUserSlot(developerId: string): Promise<void> {
+    const bucket = Math.floor(this.seconds() / DAY);
+    try {
+      await this.input.documentClient.send(new UpdateCommand({
+        TableName: this.input.tableName, Key: rateKey("CREATE", developerId, String(bucket)),
+        UpdateExpression: "ADD hits :minus", ConditionExpression: "attribute_exists(hits) AND hits > :zero",
+        ExpressionAttributeValues: { ":minus": -1, ":zero": 0 },
+      }));
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+    }
   }
 
   async putState(state: string, record: DecideState): Promise<void> {

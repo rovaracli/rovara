@@ -304,6 +304,8 @@ const request = (h: Harness, path: string, cookie?: string): Promise<HttpResult>
 const setCookie = (response: HttpResult, name: string) => (response.cookies ?? []).find((cookie) => cookie.startsWith(`${name}=`));
 const cookieValueOf = (response: HttpResult, name: string) => setCookie(response, name)?.split(";")[0]?.slice(name.length + 1);
 const nowSeconds = (h: Harness) => Math.floor(h.now() / 1000);
+/** Where the callback sends the browser next: a redirect's Location, or the target of the page's meta refresh. */
+const landingOf = (response: HttpResult) => response.headers.location ?? /http-equiv="refresh" content="0;url=([^"]*)"/.exec(response.body)?.[1]?.replaceAll("&amp;", "&");
 const decideItems = (h: Harness) => h.db.find((item) => /^DECIDE_(TICKET|STATE|SESSION)#/.test(String(item.pk)));
 
 const gina = { sub: "gina-1", name: "Gina Park", email: "gina@x.dev", email_verified: true } satisfies FakeOidcUser;
@@ -370,7 +372,10 @@ describe("GET /v1/auth/decide/start (fresh sign-in, R67)", () => {
     // The state's raw value and the verifier are never stored.
     expect(JSON.stringify(h.db.find(() => true))).not.toContain(state);
     expect(JSON.stringify(h.db.find(() => true))).not.toContain(cookieValueOf(started.response, DECIDE_PKCE_COOKIE)!);
-    expect(h.cognito.calls).toEqual([]);
+    // The member's own pool user is read (and, here, already linked): nothing is created.
+    expect(h.cognito.calls.filter((call) => call.name !== "AdminGetUserCommand")).toEqual([]);
+    // The state binds the callback to that user's sub (Important 1).
+    expect(record?.expectedSub).toBe(ginaCognito.sub);
   });
 
   it("takes who and where only from the ticket: a member, an email, an id or a return in the URL change nothing", async () => {
@@ -400,7 +405,7 @@ describe("GET /v1/auth/decide/start (fresh sign-in, R67)", () => {
     }
     expect((await request(h, "/v1/auth/decide/start")).statusCode).toBe(400);
     expect(h.db.find((item) => String(item.pk).startsWith("DECIDE_STATE#"))).toHaveLength(before);
-    expect(h.cognito.calls).toEqual([]);
+    expect(h.cognito.calls.filter((call) => call.name === "AdminCreateUserCommand")).toEqual([]);
   });
 
   it("refuses a member with no verified email, or only a non-ASCII one, with the exact words, and creates nothing", async () => {
@@ -444,8 +449,13 @@ describe("the callback that makes the session (R67, R6-4)", () => {
 
   it("accepts a fresh email-code sign-in: stores the session, sets the cookie, and redirects to the approval from the state", async () => {
     const { h, callback, started } = await approveAs();
-    expect(callback.statusCode).toBe(302);
-    expect(callback.headers.location).toBe(`/v1/app/approve/${APR_A}`);
+    // A same-origin page, not a redirect: the next request is a new same-site navigation, which carries the Strict cookie (Important 3).
+    expect(callback.statusCode).toBe(200);
+    expect(landingOf(callback)).toBe(`/v1/app/approve/${APR_A}`);
+    expect(callback.headers.location).toBeUndefined();
+    expect(callback.body).toContain(`<a class="method" href="/v1/app/approve/${APR_A}">`);
+    expect(callback.headers["cache-control"]).toBe("no-store");
+    expect(callback.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     const cookie = setCookie(callback, DECIDE_COOKIE)!;
     expect(cookie).toMatch(/^__Host-rovara_decide=[A-Za-z0-9_-]{43}; Secure; HttpOnly; SameSite=Strict; Path=\/; Max-Age=600$/);
     const value = cookieValueOf(callback, DECIDE_COOKIE)!;
@@ -499,7 +509,7 @@ describe("the callback that makes the session (R67, R6-4)", () => {
     const started = await startDecide(f.h, GINA_ID);
     const url = f.h.oidc.approve(started.providerUrl!, ginaCognito.sub, { claims: { auth_time: nowSeconds(f.h) } });
     const first = await request(f.h, url, started.pkce);
-    expect(first.statusCode).toBe(302);
+    expect(first.statusCode).toBe(200);
     expect(cookieValueOf(first, DECIDE_COOKIE)).toBeDefined();
     const again = await request(f.h, url, started.pkce);
     expect(again.statusCode).toBe(400);
@@ -540,8 +550,8 @@ describe("the callback that makes the session (R67, R6-4)", () => {
     await signInOnce(f.h, "cloud", gina.sub);
     await signInOnce(f.h, "cloud", hugo.sub);
     await signInOnce(f.h, "cloud", hugoCognito.sub);
-    const before = JSON.stringify(f.h.db.find((item) => !String(item.pk).startsWith("DECIDE_")));
     const started = await startDecide(f.h, GINA_ID);
+    const before = JSON.stringify(f.h.db.find((item) => !String(item.pk).startsWith("DECIDE_")));
     const callback = await finishDecide(f.h, started, hugoCognito.sub, { claims: { auth_time: nowSeconds(f.h) } });
     expect(callback.statusCode).toBe(403);
     expect(copy(callback).paragraphs).toContain("You confirmed as a different account. Open the approval again.");
@@ -554,7 +564,7 @@ describe("the callback that makes the session (R67, R6-4)", () => {
     await signInOnce(f.h, "cloud", gina.sub);
     const started = await startDecide(f.h, GINA_ID);
     const callback = await request(f.h, `${f.h.oidc.approve(started.providerUrl!, ginaCognito.sub, { claims: { auth_time: nowSeconds(f.h) } })}&return=https://evil.example&approvalId=${APR_B}&developerId=${HUGO_ID}`, started.pkce);
-    expect(callback.headers.location).toBe(`/v1/app/approve/${APR_A}`);
+    expect(landingOf(callback)).toBe(`/v1/app/approve/${APR_A}`);
     const session = f.h.db.find((item) => String(item.pk).startsWith("DECIDE_SESSION#"))[0];
     expect(session).toMatchObject({ approvalId: APR_A, developerId: GINA_ID });
   });
@@ -596,7 +606,7 @@ describe("a member with no Cognito identity (R6-2, R7-2)", () => {
     // The code goes to the member's verified email, and the sign-in completes as the same developer.
     expect(new URL(started.providerUrl!).searchParams.get("login_hint")).toBe("gina@x.dev");
     const callback = await finishDecide(f.h, started, ginaCognito.sub, { claims: { auth_time: nowSeconds(f.h) } });
-    expect(callback.statusCode).toBe(302);
+    expect(callback.statusCode).toBe(200);
     const session = f.h.db.find((item) => String(item.pk).startsWith("DECIDE_SESSION#"))[0];
     expect(session).toMatchObject({ developerId: GH_ID, approvalId: APR_A });
     // A second decision creates no user, no link and no notice.
@@ -612,11 +622,14 @@ describe("a member with no Cognito identity (R6-2, R7-2)", () => {
     await signInOnce(f.h, "github", "77");
     const started = await startDecide(f.h, GH_ID);
     expect(started.response.statusCode).toBe(302);
-    expect(f.cognito.calls.map((call) => call.name)).toEqual(["AdminCreateUserCommand", "AdminGetUserCommand"]);
+    // The pool user for that email is found by AdminGetUser first; nothing is created, so no account-creation slot is taken either.
+    expect(f.cognito.calls.map((call) => call.name)).toEqual(["AdminGetUserCommand"]);
+    await f.h.decide.takeCreateUserSlot(GH_ID);
     expect(f.h.db.get(`SIGNIN_IDENTITY#${ownerKeyForSubject(OIDC_ISSUER, "orphan-sub")}`, "META")).toMatchObject({ developerId: GH_ID });
     const again = await startDecide(f.h, GH_ID, APR_B);
     expect(again.response.statusCode).toBe(302);
-    expect(f.cognito.calls.filter((call) => call.name === "AdminGetUserCommand")).toHaveLength(1);
+    expect(f.cognito.calls.filter((call) => call.name === "AdminCreateUserCommand")).toHaveLength(0);
+    expect(f.h.db.find((item) => String(item.pk).startsWith("SIGNIN_IDENTITY#") && item.developerId === GH_ID)).toHaveLength(2);
   });
 
   it.each([
@@ -659,7 +672,7 @@ describe("a member with no Cognito identity (R6-2, R7-2)", () => {
     const started = await startDecide(f.h, GH_ID);
     expect(started.response.statusCode).toBe(429);
     expect(copy(started.response).paragraphs).toContain("Too many confirmation attempts. Try again later.");
-    expect(f.cognito.calls).toEqual([]);
+    expect(f.cognito.calls.map((call) => call.name)).toEqual(["AdminGetUserCommand"]);
   });
 });
 
@@ -734,7 +747,7 @@ describe("GET /v1/auth/decide/identify (R7-1): a link with no ticket names the m
     expect(sent).toHaveLength(1);
     const pkce = `${DECIDE_PKCE_COOKIE}=${cookieValueOf(start, DECIDE_PKCE_COOKIE)}`;
     const done = await request(h, h.oidc.approve(start.headers.location!, ginaCognito.sub, { claims: { auth_time: nowSeconds(h) } }), pkce);
-    expect(done.headers.location).toBe(`/v1/app/approve/${APR_A}`);
+    expect(landingOf(done)).toBe(`/v1/app/approve/${APR_A}`);
     const value = cookieValueOf(done, DECIDE_COOKIE)!;
     const context: DecideRequestContext = { store: h.decide, now: h.now, cellOrigin: API, kinds: {} };
     await expect(requireDecideSession(context, post(`/v1/app/approve/${APR_A}`, value, { csrf: csrfTokenFor(value) }, { origin: API }))).resolves.toMatchObject({ developerId: GH_ID, approvalId: APR_A });
@@ -1049,5 +1062,170 @@ describe("isFreshInteractiveSignIn (R67, R6-4)", () => {
     expect(isFreshInteractiveSignIn({ authTime: at(5), amr: [] }, state, T0 + 10_000)).toBe(false);
     expect(isFreshInteractiveSignIn({ authTime: at(5) }, { ...state, identityProvider: "Google" as never }, T0 + 10_000)).toBe(false);
     expect(isFreshInteractiveSignIn({ authTime: at(5) }, { ...state, prompt: "none" as never }, T0 + 10_000)).toBe(false);
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Fix round 1 (review of 21a-presence).
+// ---------------------------------------------------------------------------------------------------------------------------------
+describe("fix round 1: the callback must be the member's own email-code pool user", () => {
+  const fresh = (h: Harness) => ({ claims: { auth_time: nowSeconds(h) } });
+  const sessions = (h: Harness) => h.db.find((item) => String(item.pk).startsWith("DECIDE_SESSION#"));
+
+  it("refuses a Google-federated pool user's fresh token (no amr, a silent return) even though it resolves to the same member", async () => {
+    // gina-1 stands for the member's Google sign-in through the pool: linked to Gina, token without an email-code amr, auth_time fresh.
+    const f = await flow();
+    await signInOnce(f.h, "cloud", gina.sub);
+    const started = await startDecide(f.h, GINA_ID);
+    const callback = await finishDecide(f.h, started, gina.sub, fresh(f.h));
+    expect(callback.statusCode).toBe(403);
+    expect(copy(callback).paragraphs).toContain("Confirm with the email code sent to your address. Open the approval again.");
+    expect(cookieValueOf(callback, DECIDE_COOKIE)).toBeUndefined();
+    expect(sessions(f.h)).toEqual([]);
+  });
+
+  it("also refuses a token that names federated identities, whoever it is for", async () => {
+    const f = await flow({ oidcUsers: [gina, hugo, { ...ginaCognito, identities: [{ providerName: "Google" }] } as never] });
+    await signInOnce(f.h, "cloud", gina.sub);
+    const started = await startDecide(f.h, GINA_ID);
+    const callback = await finishDecide(f.h, started, ginaCognito.sub, fresh(f.h));
+    expect(callback.statusCode).toBe(403);
+    expect(sessions(f.h)).toEqual([]);
+  });
+
+  it("gives a member whose only cloud sign-in is Google an email-code user, links it with one notice, and lets them confirm", async () => {
+    const notices: Array<Record<string, unknown>> = [];
+    const f = await flow({ cognito: [], notice: notices, oidcUsers: [gina, ginaCognito] });
+    await signInOnce(f.h, "cloud", gina.sub);
+    const started = await startDecide(f.h, GINA_ID);
+    expect(started.response.statusCode).toBe(302);
+    expect(f.cognito.calls.map((call) => call.name)).toEqual(["AdminGetUserCommand", "AdminCreateUserCommand"]);
+    expect(f.h.db.get(`SIGNIN_IDENTITY#${ownerKeyForSubject(OIDC_ISSUER, ginaCognito.sub)}`, "META")).toMatchObject({ developerId: GINA_ID, provider: "cloud" });
+    expect(notices).toHaveLength(1);
+    const callback = await finishDecide(f.h, started, ginaCognito.sub, fresh(f.h));
+    expect(callback.statusCode).toBe(200);
+    expect(sessions(f.h)).toHaveLength(1);
+    // The same Google identity is still refused as the proof.
+    const second = await startDecide(f.h, GINA_ID, APR_B);
+    expect(f.cognito.calls.filter((call) => call.name === "AdminCreateUserCommand")).toHaveLength(1);
+    expect((await finishDecide(f.h, second, gina.sub, fresh(f.h))).statusCode).toBe(403);
+  });
+
+  it("refuses, with the one copy, an address whose pool user is a federated (EXTERNAL_PROVIDER) one, and creates nothing", async () => {
+    const f = await flow({ cognito: [{ email: "gina@x.dev", sub: "fed-sub", federated: true }] });
+    await signInOnce(f.h, "cloud", gina.sub);
+    const started = await startDecide(f.h, GINA_ID);
+    expect(started.response.statusCode).toBe(403);
+    expect(copy(started.response).paragraphs).toContain("Rovara couldn't set up email confirmation for your account. Ask an admin for help.");
+    expect(f.cognito.calls.map((call) => call.name)).toEqual(["AdminGetUserCommand"]);
+    expect(f.h.db.get(`SIGNIN_IDENTITY#${ownerKeyForSubject(OIDC_ISSUER, "fed-sub")}`, "META")).toBeUndefined();
+    expect(f.h.db.find((item) => String(item.pk).startsWith("DECIDE_STATE#"))).toEqual([]);
+  });
+
+  it("refuses a different account BEFORE any link: an unlinked pool user with the member's email is not linked or merged by the callback", async () => {
+    const signup = { sub: "signup-sub", name: "Signup", email: "gina@x.dev", email_verified: true, amr: ["otp"] };
+    const f = await flow({ oidcUsers: [gina, hugo, ginaCognito, signup] });
+    await signInOnce(f.h, "cloud", gina.sub);
+    const started = await startDecide(f.h, GINA_ID);
+    const before = JSON.stringify(f.h.db.find((item) => !String(item.pk).startsWith("DECIDE_")));
+    const callback = await finishDecide(f.h, started, signup.sub, fresh(f.h));
+    expect(callback.statusCode).toBe(403);
+    expect(copy(callback).paragraphs).toContain("You confirmed as a different account. Open the approval again.");
+    expect(f.h.db.get(`SIGNIN_IDENTITY#${ownerKeyForSubject(OIDC_ISSUER, signup.sub)}`, "META")).toBeUndefined();
+    expect(JSON.stringify(f.h.db.find((item) => !String(item.pk).startsWith("DECIDE_")))).toBe(before);
+    expect(sessions(f.h)).toEqual([]);
+  });
+
+  it("takes the daily account-creation slot only for a successful AdminCreateUser", async () => {
+    const failing = await flow({ cognito: [], github: true, oidcUsers: [ginaCognito] });
+    await signInOnce(failing.h, "github", "77");
+    failing.cognito.failNextCreate = "InternalErrorException";
+    const started = await startDecide(failing.h, GH_ID);
+    expect(started.response.statusCode).toBe(500);
+    // The failed attempt used no slot: a retry creates the user.
+    const retry = await startDecide(failing.h, GH_ID, APR_B);
+    expect(retry.response.statusCode).toBe(302);
+    expect(failing.cognito.calls.filter((call) => call.name === "AdminCreateUserCommand")).toHaveLength(2);
+    // The successful one used it.
+    await expect(failing.h.decide.takeCreateUserSlot(GH_ID)).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+  });
+});
+
+describe("fix round 1: the callback ends on a same-origin page, not a redirect (Strict cookie)", () => {
+  /**
+   * The browser rule this models: a SameSite=Strict cookie is sent only when the whole navigation is same-site. The callback is reached from
+   * the pool's managed-login page, a cross-site start, and a 302 continues that same navigation, so the cookie is not sent on the next hop.
+   * A page that sends the browser on itself (a link, a meta refresh) starts a new navigation, initiated by our own origin.
+   */
+  const nextHop = (response: HttpResult) => response.statusCode >= 300 && response.statusCode < 400
+    ? { path: response.headers.location!, strictCookieSent: false }
+    : { path: landingOf(response)!, strictCookieSent: true };
+
+  it("lets the person land on the confirmation page with the cookie the callback set", async () => {
+    const f = await flow();
+    await signInOnce(f.h, "cloud", gina.sub);
+    const started = await startDecide(f.h, GINA_ID);
+    const callback = await finishDecide(f.h, started, ginaCognito.sub, { claims: { auth_time: nowSeconds(f.h) } });
+    const cookie = cookieValueOf(callback, DECIDE_COOKIE)!;
+    const hop = nextHop(callback);
+    expect(hop).toEqual({ path: `/v1/app/approve/${APR_A}`, strictCookieSent: true });
+    const context: DecideRequestContext = { store: f.h.decide, now: f.h.now, cellOrigin: API, kinds: { apr: f.kind } };
+    const landing = await routeDecidePage(context, { method: "GET", path: hop.path, headers: hop.strictCookieSent ? withCookie(cookie) : {}, requestId: "r" }, new URL(`${API}${hop.path}`));
+    expect(landing.statusCode).toBe(200);
+    expect(landing.body).toContain('name="decision" value="approve"');
+    expect(callback.body).toContain(`<meta http-equiv="refresh" content="0;url=/v1/app/approve/${APR_A}">`);
+    expect(setCookie(callback, DECIDE_COOKIE)).toContain("SameSite=Strict");
+  });
+
+  it("shows the model catches the old behaviour: the same landing after a 302 finds no cookie and is sent round again", async () => {
+    const f = await flow();
+    await signInOnce(f.h, "cloud", gina.sub);
+    const started = await startDecide(f.h, GINA_ID);
+    const callback = await finishDecide(f.h, started, ginaCognito.sub, { claims: { auth_time: nowSeconds(f.h) } });
+    const redirected: HttpResult = { statusCode: 302, headers: { location: `/v1/app/approve/${APR_A}` }, body: "", cookies: callback.cookies ?? [] };
+    const hop = nextHop(redirected);
+    const context: DecideRequestContext = { store: f.h.decide, now: f.h.now, cellOrigin: API, kinds: { apr: f.kind } };
+    const landing = await routeDecidePage(context, { method: "GET", path: hop.path, headers: hop.strictCookieSent ? withCookie(cookieValueOf(callback, DECIDE_COOKIE)!) : {}, requestId: "r" }, new URL(`${API}${hop.path}`));
+    expect(landing.statusCode).toBe(302);
+    expect(landing.headers.location).toContain("/v1/auth/decide/identify");
+  });
+});
+
+describe("fix round 1: an earlier real session, the ticket in logs, and each member's share", () => {
+  it("ends the browser's earlier real decide session when a new sign-in completes, and the old value no longer works", async () => {
+    const f = await flow();
+    await signInOnce(f.h, "cloud", gina.sub);
+    const first = await finishDecide(f.h, await startDecide(f.h, GINA_ID), ginaCognito.sub, { claims: { auth_time: nowSeconds(f.h) } });
+    const old = cookieValueOf(first, DECIDE_COOKIE)!;
+    const context: DecideRequestContext = { store: f.h.decide, now: f.h.now, cellOrigin: API, kinds: {} };
+    await expect(requireDecideSession(context, get(`/v1/app/approve/${APR_A}`, withCookie(old)))).resolves.toBeDefined();
+    f.h.tick(1000);
+    const started = await startDecide(f.h, GINA_ID, APR_B);
+    const second = await request(f.h, f.h.oidc.approve(started.providerUrl!, ginaCognito.sub, { claims: { auth_time: nowSeconds(f.h) } }), `${started.pkce}; ${DECIDE_COOKIE}=${old}`);
+    const value = cookieValueOf(second, DECIDE_COOKIE)!;
+    expect(value).not.toBe(old);
+    expect(f.h.db.get(`DECIDE_SESSION#${sha(old)}`, "META")).toBeUndefined();
+    expect(await refusal(requireDecideSession(context, get(`/v1/app/approve/${APR_A}`, withCookie(old))))).toMatchObject({ code: "REAUTH_REQUIRED" });
+    await expect(requireDecideSession(context, get(`/v1/app/approve/${APR_B}`, withCookie(value)))).resolves.toBeDefined();
+  });
+
+  it("never logs a ticket, a state, a verifier or a cookie value across a whole decide flow", async () => {
+    const f = await flow();
+    await signInOnce(f.h, "cloud", gina.sub);
+    const started = await startDecide(f.h, GINA_ID);
+    const callback = await finishDecide(f.h, started, ginaCognito.sub, { claims: { auth_time: nowSeconds(f.h) } });
+    const secrets = [started.ticket, new URL(started.providerUrl!).searchParams.get("state")!, started.pkce!.split("=")[1]!, cookieValueOf(callback, DECIDE_COOKIE)!];
+    const logged = JSON.stringify(f.h.logs);
+    for (const secret of secrets) expect(logged).not.toContain(secret);
+  });
+
+  it("gives each member a share of the per-approval ticket cap: one member can't block the others", async () => {
+    const s = setup();
+    for (let index = 0; index < 5; index += 1) await s.store.mintTicket({ orgId: ORG, developerId: ALICE, approvalId: APR_A, mintedBy: "token" });
+    expect(await refusal(s.store.mintTicket({ orgId: ORG, developerId: ALICE, approvalId: APR_A, mintedBy: "token" }))).toMatchObject({ code: "TOO_MANY_REQUESTS", status: 429, message: RATE_LIMIT_MESSAGE });
+    // Bob still gets his, and Alice keeps hers on other approvals.
+    await s.store.mintTicket({ orgId: ORG, developerId: BOB, approvalId: APR_A, mintedBy: "token" });
+    await s.store.mintTicket({ orgId: ORG, developerId: ALICE, approvalId: APR_B, mintedBy: "token" });
   });
 });

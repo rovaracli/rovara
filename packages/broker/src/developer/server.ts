@@ -143,8 +143,9 @@ export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config
 const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? c);
 
-function page(statusCode: number, title: string, paragraphs: string[], links: Array<{ href: string; label: string }> = []): HttpResult {
+function page(statusCode: number, title: string, paragraphs: string[], links: Array<{ href: string; label: string }> = [], refreshTo?: string): HttpResult {
   const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title>`
+    + (refreshTo === undefined ? "" : `<meta http-equiv="refresh" content="0;url=${escape(refreshTo)}">`)
     + `<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5}a.method{display:block;margin:.75rem 0;padding:.75rem 1rem;border:1px solid #888;border-radius:.5rem;text-decoration:none;color:inherit}</style></head>`
     + `<body><main><h1>${escape(title)}</h1>${paragraphs.map((p) => `<p>${escape(p)}</p>`).join("")}`
     + `${links.map((link) => `<a class="method" href="${escape(link.href)}">${escape(link.label)}</a>`).join("")}</main></body></html>`;

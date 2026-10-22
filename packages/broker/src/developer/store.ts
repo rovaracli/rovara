@@ -475,9 +475,10 @@ export class DeveloperSignInStore {
    * Plan 3, Task 21a-presence (R7-2): the addresses a decision's email code may go to, most recently used first. Only a linked identity's
    * own address counts, and a provider hands the sign-in an address only when it vouches for it (ProviderIdentity.email is the verified
    * email), so every stored `email` is a verified one; an address that is not plain ASCII (normalizeEmail's `ascii`) never qualifies.
-   * `hasCloudIdentity`: whether one of the identities is the hosted Rovara (Cognito) sign-in, which already has an email-code user.
+   * Whether the member has an email-code user is Cognito's answer (the pool user for that address), never a link's provider: a Google
+   * sign-in through the pool is also a `cloud` link.
    */
-  async decideEmailsOf(developerId: string): Promise<{ emails: string[]; hasCloudIdentity: boolean }> {
+  async decideEmailsOf(developerId: string): Promise<{ emails: string[] }> {
     const identities = await this.activeIdentityItems(developerId);
     const seen = new Set<string>();
     const emails = identities
@@ -485,7 +486,7 @@ export class DeveloperSignInStore {
       .sort((left, right) => right.lastSignInAt.localeCompare(left.lastSignInAt) || right.linkedAt.localeCompare(left.linkedAt))
       .map((link) => normalizeEmail(link.email!).email)
       .filter((email) => !seen.has(email) && seen.add(email));
-    return { emails, hasCloudIdentity: identities.some((link) => link.provider === "cloud") };
+    return { emails };
   }
 
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */

@@ -22,6 +22,8 @@ export interface ProviderIdentity {
    * list of strings. The decide flow reads it to see that the email code was used; GitHub and Slack's tokens never carry one.
    */
   amr?: string[];
+  /** The ID token names federated identities (`identities`): a social sign-in through the pool, which is never the email code. */
+  federated?: true;
 }
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
@@ -107,6 +109,8 @@ const authTimeOf = (payload: JWTPayload): { authTime: number } | Record<string, 
 /** RFC 8176: `amr` is a list of strings; anything else is not a list the decide flow can use. */
 const amrOf = (payload: JWTPayload): { amr: string[] } | Record<string, never> =>
   Array.isArray(payload.amr) && payload.amr.every((value) => typeof value === "string") ? { amr: payload.amr } : {};
+
+const federatedOf = (payload: JWTPayload): { federated: true } | Record<string, never> => (payload.identities === undefined ? {} : { federated: true });
 
 const verifiedEmail = (payload: JWTPayload): string | undefined =>
   typeof payload.email === "string" && emailVerifiedClaim(payload) ? payload.email : undefined;
@@ -244,6 +248,7 @@ export function oidcSignInProvider(input: {
           ...(email === undefined ? {} : { email, emailVerified: emailVerifiedClaim(payload) }),
           ...authTimeOf(payload),
           ...amrOf(payload),
+          ...federatedOf(payload),
         },
       };
     },
