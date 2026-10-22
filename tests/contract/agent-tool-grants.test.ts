@@ -568,20 +568,28 @@ describe("GET /v1/internal/agent-tools", () => {
 });
 
 describe("POST /v1/internal/agent-tools/call", () => {
-  it("runs a granted read, and replays the same request id without asking the vendor again", async () => {
+  it("runs a granted read through the vendor", async () => {
     const w = await world();
     const run = await w.startRun();
     const requestId = randomUUID();
     const hash = await w.schemaHash(run.capability, "linear", "get_issue");
-    const body = { requestId, connector: "linear", scope: "charterarc", tool: "get_issue", schemaHash: hash, arguments: { id: "CHA-1" } };
+    const reply = await w.callTool(run.capability, { requestId, connector: "linear", scope: "charterarc", tool: "get_issue", schemaHash: hash, arguments: { id: "CHA-1" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(reply.body.result).toMatchObject({ requestId, status: "SUCCEEDED", replayed: false });
+    expect(w.linear.calls.filter((entry) => entry.name === "get_issue").length).toBeGreaterThan(0);
+  });
+
+  it("replays a write with the same request id without sending it twice", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    const requestId = randomUUID();
+    const hash = await w.schemaHash(run.capability, "linear", "save_comment");
+    const body = { requestId, connector: "linear", scope: "charterarc", tool: "save_comment", schemaHash: hash, arguments: { issueId: "CHA-1", body: "Looks like a duplicate" } };
     const first = await w.callTool(run.capability, body);
-    expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body.result).toMatchObject({ requestId, status: "SUCCEEDED", replayed: false });
-    const afterFirst = w.linear.calls.filter((entry) => entry.name === "get_issue").length;
-    expect(afterFirst).toBeGreaterThan(0);
     const second = await w.callTool(run.capability, body);
     expect(second.body.result).toMatchObject({ requestId, status: "SUCCEEDED", replayed: true });
-    expect(w.linear.calls.filter((entry) => entry.name === "get_issue")).toHaveLength(afterFirst);
+    expect(w.linear.calls.filter((entry) => entry.name === "save_comment")).toHaveLength(1);
   });
 
   it("refuses save_issue under a read grant with the exact AGENT_TOOL_NOT_GRANTED text, and asks neither the gate nor the vendor", async () => {
@@ -627,7 +635,9 @@ describe("POST /v1/internal/agent-tools/call", () => {
       requireProjectAuthority: async (...args) => { order.push("authority"); return base.requireProjectAuthority(...args); },
     }));
     const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
-    const reply = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "cc @alice" });
+    const schemaHash = await w.schemaHash(run.capability, "linear", "save_comment");
+    order.length = 0;
+    const reply = await w.callTool(run.capability, { requestId: randomUUID(), connector: "linear", scope: "charterarc", tool: "save_comment", schemaHash, arguments: { issueId: "CHA-1", body: "cc @alice" } });
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     expect(order).toEqual(["creator", "authority", "gate"]);
   });
@@ -638,7 +648,8 @@ describe("POST /v1/internal/agent-tools/call", () => {
     w.configure((base) => ({ ...base, requireProjectAuthority: async (...args) => { authority(...args); return base.requireProjectAuthority(...args); } }));
     const run = await w.startRun();
     expect((await w.linearCall(run.capability, "get_issue", { id: "CHA-1" })).status).toBe(200);
-    expect(authority).toHaveBeenCalledWith(TEST_ORG, MAYA.developerId, "payments", expect.anything());
+    const ownerKey = (w.db.get(`DEVTASK#${run.taskId}`, "META") as { ownerKey: string }).ownerKey;
+    expect(authority).toHaveBeenCalledWith(TEST_ORG, ownerKey, "payments", expect.objectContaining({ taskCreator: expect.any(Function) as unknown }));
     // The grant rows go, and the person is only a plain org member: the project is not theirs any more.
     for (const item of w.db.find((entry) => entry.entityType === "MEMBERSHIP")) w.db.delete(item.pk as string, item.sk as string);
     const before = w.linear.calls.length;
@@ -668,7 +679,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
       const w = await world();
       const { gate, seen } = recordingGate(() => ({ decision: "run" }));
       w.configure((base) => ({ ...base, gate }));
-      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")], approvals: { alwaysAsk: ["save_comment"] }, autonomy: "act" });
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")], approvals: { alwaysAsk: ["save_comment"] }, autonomy: "run" });
       const reply = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "cc @alice and @bob" });
       expect(reply.status, JSON.stringify(reply.body)).toBe(200);
       expect(seen).toHaveLength(1);
@@ -677,8 +688,8 @@ describe("POST /v1/internal/agent-tools/call", () => {
         orgId: TEST_ORG, taskId: run.taskId, project: "payments", connector: "linear", scope: "charterarc",
         tool: { connector: "linear", type: "linear", upstreamName: "save_comment", presentedName: "linear__save_comment", access: "write" },
         args: { issueId: "CHA-1", body: "cc alice and bob" },
-        strippedMentions: ["alice", "bob"],
-        recipe: { autonomy: "act", allowMentions: false, approvals: { alwaysAsk: ["save_comment"] } },
+        strippedMentions: ["@alice", "@bob"],
+        recipe: { autonomy: "run", allowMentions: false, approvals: { alwaysAsk: ["save_comment"] } },
       });
       expect(typeof input.classify).toBe("function");
       const classified = await input.classify();
@@ -715,10 +726,12 @@ describe("POST /v1/internal/agent-tools/call", () => {
     it("a gate that throws, or answers something it should not, sends nothing", async () => {
       const w = await world();
       const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
-      w.configure((base) => ({ ...base, gate: async () => { throw new Error("boom"); } }));
-      expect((await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" })).status).toBe(500);
+      w.configure((base) => ({ ...base, gate: async () => { throw new Error("boom: secret detail"); } }));
+      const thrown = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+      expect(thrown.status).toBe(400);
+      expect(JSON.stringify(thrown.body)).not.toContain("secret detail");
       w.configure((base) => ({ ...base, gate: (async () => ({ decision: "go-ahead" })) as never }));
-      expect((await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" })).status).toBe(500);
+      expect((await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" })).status).toBe(400);
       expect(w.linear.calls).toEqual([]);
     });
 
@@ -823,7 +836,7 @@ describe("POST /v1/internal/agent-tools/call", () => {
       await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "Looks like a duplicate" });
       const sent = w.linear.calls.find((entry) => entry.name === "save_comment")!;
       expect(bodyOf(sent)).toContain("Looks like a duplicate");
-      expect(bodyOf(sent)).toContain("Requested by Maya Chen via Rovara agent triage-bot");
+      expect(bodyOf(sent)).toContain("Requested by `Maya Chen` via Rovara agent `triage-bot`");
     });
   });
 
@@ -859,6 +872,7 @@ describe("GitHub through the agent routes", () => {
   it("refuses a tool on the refusal list with the pull request flow text, though the project approved it, and mints nothing", async () => {
     const w = await world();
     const run = await w.startRun({ tools: [grant({ type: "github" }, "read_write")] });
+    await w.tools(run.capability);
     const before = w.tokens.mock.calls.length;
     const reply = await w.githubCall(run.capability, "merge_pull_request", { pullNumber: 4 });
     expect(reply.status).toBe(403);
@@ -870,6 +884,7 @@ describe("GitHub through the agent routes", () => {
   it("refuses a call that names a repository the project does not have, before any token is minted", async () => {
     const w = await world();
     const run = await w.startRun({ tools: [grant({ type: "github" }, "read_write")] });
+    await w.tools(run.capability);
     const before = w.tokens.mock.calls.length;
     const reply = await w.githubCall(run.capability, "add_issue_comment", { owner: "other", repo: "secret", issue_number: 3, body: "hi" });
     expect(reply.status).toBe(403);

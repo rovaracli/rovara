@@ -3,12 +3,14 @@
 // is therefore never reached, and one that already resolves there at the next request is refused by the next check.
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { connectMcp } from "@agentx/gateway";
 import { guardedConnect, mcpEndpointGuard, pinnedFetch, pinnedLookup } from "../../packages/broker/src/connections/pinned-endpoint.js";
-import { connectorTypeContext } from "../../packages/broker/src/aws/broker.js";
 import { mcpConnectorType } from "../../packages/broker/src/aws/connector-presets.js";
 import { linearConnectorType } from "../../packages/broker/src/aws/linear-connector-type.js";
+import { loadSlackBroker } from "../support/slack-broker.js";
+
+beforeAll(async () => { await loadSlackBroker(); }, 60_000);
 
 const ENDPOINT = new URL("https://mcp.acme.dev/mcp");
 const PUBLIC = "52.1.2.3";
@@ -158,7 +160,7 @@ describe("guardedConnect", () => {
 describe("the MCP connector type", () => {
   const project = { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" } as never;
   const mcpConfig = {
-    name: "sentry", type: "mcp", endpoint: "https://mcp.acme.dev/mcp", label: "Sentry issues", vendor: "Sentry", credentialRef: "con_aaaaaaaaaaaaaaaaaaaa",
+    name: "sentry", type: "mcp", endpoint: "https://mcp.acme.dev/mcp", label: "Sentry issues", vendor: "Sentry", credentialRef: "sentry-key",
     scopes: [{ alias: "web", values: { project: "web" } }], scoping: { mode: "credential", acknowledgeUnscopedWrites: true }, tools: [{ name: "get_issue", access: "read" }],
   };
 
@@ -166,7 +168,7 @@ describe("the MCP connector type", () => {
     const base = vi.fn(async () => ({ tools: [], call: vi.fn(), close: vi.fn() })) as unknown as typeof connectMcp;
     const refusing = vi.fn(async () => { throw new Error("refused"); });
     const guarded = mcpConnectorType.resolve(mcpConfig, project, { connect: base, endpointGuard: refusing });
-    expect("unusable" in guarded).toBe(false);
+    expect(guarded).not.toHaveProperty("unusable");
     if ("unusable" in guarded) return;
     await expect(guarded.connect!({ endpoint: ENDPOINT, token: "t", tools: [], signal: new AbortController().signal })).rejects.toThrow("refused");
     expect(base).not.toHaveBeenCalled();
@@ -181,7 +183,8 @@ describe("the MCP connector type", () => {
     expect(linear.connect).toBeUndefined();
   });
 
-  it("the broker hands every connector type its endpoint guard", () => {
+  it("the broker hands every connector type its endpoint guard", async () => {
+    const { connectorTypeContext } = await import("../../packages/broker/src/aws/broker.js");
     const guard = vi.fn();
     const context = connectorTypeContext({ mcpEndpointGuard: guard } as never, undefined, async () => ({ system: "private-install" }));
     expect(context.endpointGuard).toBe(guard);

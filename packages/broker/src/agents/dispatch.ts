@@ -69,6 +69,8 @@ export interface AppliedAgentStep {
   promptSection?: string;
   /** What the worker is sent; absent for Rovara Code's built-in recipe and for an operation that is no step of the recipe. */
   agentStep?: AgentStepPayload;
+  /** The recipe grants connector tools (Task 19): an agent step of it is given the `agent-tools` capability. */
+  toolGrants?: true;
   /** The step chose a model of its own that the person's ChatGPT plan does not serve: the operation runs on the model proxy instead. */
   dropChatgpt: boolean;
   /** The model the operation will actually run on (the plan's when it stays on ChatGPT); what the operation record keeps for later comparisons. */
@@ -216,6 +218,7 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
     ...(model === undefined ? {} : { model }),
     ...(promptSection === undefined ? {} : { promptSection }),
     ...(agentStep === undefined ? {} : { agentStep }),
+    ...(recipe.tools.length > 0 ? { toolGrants: true as const } : {}),
     dropChatgpt,
     ...(ranModel === undefined ? {} : { ranModel }),
   };

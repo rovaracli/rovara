@@ -341,10 +341,30 @@ function toolProblem(step: ResolvedStep, tools: readonly string[]): string | und
   return `${label} can't use ${refused.join(", ")}; it can use ${can}`;
 }
 
+/**
+ * Integrations Rovara knows by name that are not connectors an agent can be given. A recipe that grants a connector called one of these is asking for
+ * something no project can give it, so it is refused when it is published rather than matching nothing in silence. (A project's connector may well be
+ * called `slack`; then the recipe names it by its type.) At run time a `{ name }` selector matches only a connector whose type is one of
+ * `AgentConnectorTypeSchema`, whatever its name.
+ */
+const NOT_AGENT_CONNECTORS: readonly string[] = ["slack"];
+
+/** Problems with a recipe's tool grants that can be seen without a project: a name selector that no connector an agent can use is called. */
+export function toolGrantProblems(tools: readonly ToolGrant[]): RecipeProblem[] {
+  const problems: RecipeProblem[] = [];
+  tools.forEach((grant, index) => {
+    if ("name" in grant.connector && NOT_AGENT_CONNECTORS.includes(grant.connector.name)) {
+      problems.push({ path: `tools.${String(index)}.connector`, message: `${grant.connector.name} isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana or mcp` });
+    }
+  });
+  return problems;
+}
+
 /** Why a recipe can't be published or run, in terms of its structure. Empty when it can. */
 export function recipeProblems(recipe: ResolvedRecipe): RecipeProblem[] {
   const problems: RecipeProblem[] = [];
   const add = (path: string, message: string) => { problems.push({ path, message }); };
+  problems.push(...toolGrantProblems(recipe.tools));
   const steps = recipe.steps;
   if (steps.length === 0) add("steps", "a recipe needs at least one step");
 
