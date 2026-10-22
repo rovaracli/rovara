@@ -1564,7 +1564,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (deps.modelAccess !== undefined) {
     try {
       admitted = await admitSpend({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: () => deps.now(), cloud: deps.cloud === true }, {
-        orgId: deps.orgId, developerId: caller.developerId, path: request.workflow === true && request.workflowPath === "FULL" ? "FULL" : "QUICK",
+        orgId: deps.orgId, developerId: caller.developerId, path: asWorkflow && workflowPath === "FULL" ? "FULL" : "QUICK",
       });
     } catch (error) {
       if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) return refused(error);
@@ -1636,7 +1636,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       entityType: "SHARED_TASK", taskId, workspaceId, ownerKey: task.ownerKey, developerId: task.developerId,
       developerName: task.developerName, project: task.project, mode: share.mode, sharedAt: share.sharedAt,
       // Only a Slack-started task (startSlackWorkflow sets initialSlackThread) is driven from its thread.
-      ...(deps.initialSlackThread !== undefined && request.workflow === true ? { workflowThread: true } : {}),
+      ...(deps.initialSlackThread !== undefined && asWorkflow ? { workflowThread: true } : {}),
     })]),
     putNew(deps.tableName, { ...index }),
     putNew(deps.tableName, { ...pointer }),

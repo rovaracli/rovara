@@ -22,7 +22,7 @@ import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { loadSlackBroker } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";
 
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
@@ -61,7 +61,7 @@ async function setup(options: { proxy?: boolean; agents?: Record<string, unknown
   const h = await createDeveloperTaskBroker({
     orgResolver,
     ...(options.memberLimit === undefined ? {} : { memberLimit: options.memberLimit }),
-    brokerExtra: { agents: options.agents ?? {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...options.brokerExtra },
+    brokerExtra: { agents: { agentStepRuns: true, ...options.agents }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...options.brokerExtra },
   });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
@@ -567,6 +567,83 @@ describe("a pull request in the run's context (PF16)", () => {
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
     expect(getPullRequest).toHaveBeenCalledWith("https://github.com/example/demo.git", 12, { system: "private-install" });
     expect(AgentRunStateSchema.parse(t.agentRunItem(t.taskOf(reply).taskId)).checkout?.[0]?.headSha).toBe(HEAD);
+  });
+});
+
+// Plan 3 Task 16 fold-ins from the Task 15 review.
+describe("what a start reads, whom it is for and what it refuses until the step engine exists", () => {
+  const review = (ref: string) => ({ text: "Review this pull request", context: [{ kind: "pull_request" as const, ref, title: "Fix retry" }] });
+
+  it("reads no pull request head for a coding run, so a GitHub outage cannot fail a Rovara Code start", async () => {
+    const pullRequestHead = vi.fn(async () => { throw new Error("GitHub is down"); });
+    const t = await setup({ agents: { pullRequestHead } });
+    const reply = await t.run(MAYA, "rovara-code", { input: review("example/demo#12") });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    expect(pullRequestHead).not.toHaveBeenCalled();
+    expect(t.agentRunItem(t.taskOf(reply).taskId)).toBeUndefined();
+    // The same outage still refuses a run that needs the head (an agent-step run).
+    const needs = await t.run(MAYA, "code-reviewer", { input: review("example/demo#12") });
+    expect(needs.status).toBe(503);
+    expect(pullRequestHead).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a run started for an owner other than the person who started it, until the payer rules arrive", async () => {
+    const t = await setup();
+    const refused = await refusal(startAgentRun(t.starter(), t.request({ owner: { developerId: OMAR.developerId } })));
+    expect(refused?.code).toBe("CONFIG_INVALID");
+    expect(refused?.message).toMatch(/^owner: /);
+    expect(t.taskCount()).toBe(0);
+    expect(t.charges()).toEqual([]);
+    expect(t.db.find((item) => item.entityType === "RUN_REQUEST")).toEqual([]);
+  });
+
+  it("refuses to start an agent-step run until the step engine is turned on, taking no slot and writing nothing", async () => {
+    const t = await setup({ agents: { agentStepRuns: false } });
+    const reply = await t.run(MAYA, "ticket-triage");
+    expect(reply.status).toBe(409);
+    expect(errorOf(reply)).toEqual({ code: "AGENT_UNAVAILABLE", message: "Ticket triage can't run yet: Rovara doesn't run agents that work in steps in this version." });
+    expect(t.taskCount()).toBe(0);
+    expect(t.workspaces()).toEqual([]);
+    expect(t.charges()).toEqual([]);
+    expect(t.agentTasks("ticket-triage")).toEqual([]);
+    // Through startAgentRun too, and a coding agent is not affected.
+    expect(await refusal(startAgentRun(t.starter(), t.request({ agent: { agentId: "ticket-triage" } })))).toMatchObject({ code: "AGENT_UNAVAILABLE" });
+    expect((await t.run(MAYA, "rovara-code")).status).toBe(202);
+  });
+
+  it("refuses an agent-step run in a broker built the way the deployed handler builds it", async () => {
+    // The harness switches the step engine on by default; the deployed handler passes `agents: {}` and nothing else.
+    const plain = await createDeveloperTaskBroker({ orgResolver, brokerExtra: { agents: {} } });
+    const reply = await plain.dev(MAYA, "POST", "/v1/app/agents/ticket-triage/runs", { requestId: randomUUID(), project: "payments", input: { text: "Triage LIN-1" } });
+    expect(reply.status).toBe(409);
+    expect((reply.body.error as { code: string }).code).toBe("AGENT_UNAVAILABLE");
+    expect(plain.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
+  });
+
+  it("admits a coding agent named on the start as the workflow it will be: QUICK unless the start asks for FULL", async () => {
+    const t = await setup({ proxy: true });
+    t.access!.setMemberSpent(TEST_ORG, MAYA.developerId, 27.5);
+    const agentId = await t.agentOf(CODING);
+    const named = (extra: Record<string, unknown>) => t.call(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Make the change", agent: { agentId }, client: "test-client", ...extra });
+    const full = await named({ workflow: true, workflowPath: "FULL" });
+    expect(full.status, JSON.stringify(full.body)).toBe(402);
+    expect(errorOf(full).code).toBe("BUDGET_EXCEEDED");
+    expect(t.taskCount()).toBe(0);
+    const quick = await named({});
+    expect(quick.status, JSON.stringify(quick.body)).toBe(200);
+    expect(t.meta(t.taskOf(quick).taskId).workflow).toMatchObject({ path: "QUICK" });
+  });
+
+  it("stores the snapshot, the origin and the agent of a workflow a Slack thread starts", async () => {
+    const t = await setup();
+    const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000031" };
+    const started = await t.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+    const pinned = (await t.store.ensureBuiltinSettings(TEST_ORG, "rovara-code")).pinnedVersion;
+    expect(t.meta(taskId)).toMatchObject({ origin: "slack", agent: { agentId: "rovara-code", version: pinned, builtin: true } });
+    const snapshot = t.recipeItem(taskId)!;
+    expect(snapshot.orgId).toBe(TEST_ORG);
+    expect(snapshot.digest).toBe(recipeDigest(await resolveAgent(t.store, TEST_ORG, "rovara-code", "current")));
   });
 });
 

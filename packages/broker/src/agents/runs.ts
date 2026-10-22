@@ -58,6 +58,11 @@ export type PullRequestHeadReader = (input: { orgId: OrgId; repositoryUrl: strin
 export interface AgentRunDependencies extends RosterDependencies {
   /** Without it, a run whose context names a pull request of a project repository is refused (it fails closed: it never reviews the wrong commit). */
   pullRequestHead?: PullRequestHeadReader;
+  /**
+   * TASK 22 REMOVES THIS SEAM. Until the agent-step engine exists, a run of an agent made of agent steps would take a workspace, run its
+   * prepare and read as finished having done nothing, so it is refused before anything is written. Only the tests switch it on.
+   */
+  agentStepRuns?: boolean;
 }
 
 /** H2: a start that is not necessarily a person at a keyboard. */
@@ -198,6 +203,10 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
   }
   const { recipe, digest, ref } = resolved;
   const runner = recipeRunner(recipe);
+  // TASK 22 REMOVES THIS REFUSAL (with `agentStepRuns`): nothing runs an agent step yet, so no such run may take a slot.
+  if (runner === "agent_steps" && deps.agentStepRuns !== true) {
+    throw agentXError("AGENT_UNAVAILABLE", `${ref.name} can't run yet: Rovara doesn't run agents that work in steps in this version.`);
+  }
   // A coding run is asked the text as written; an agent-step run keeps its input as state, so it must be a run input.
   if (runner === "agent_steps") {
     const valid = RunInputSchema.safeParse(input.input);
@@ -216,7 +225,8 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
     if (!valid.success) throw agentXError("CONFIG_INVALID", `${ref.name}'s steps can't run as a coding sequence: ${valid.error.issues[0]?.message ?? "the sequence is not valid"}`);
   }
   const limits = await runLimits(deps, input.orgId, ref, input.runLimitUsd);
-  const checkout = await pullRequestHeads(deps, input.orgId, input.input, input.repositories);
+  // Only an agent-step run checks a pull request out (a coding run is asked the text as written), so a coding run reads nothing from GitHub.
+  const checkout = runner === "agent_steps" ? await pullRequestHeads(deps, input.orgId, input.input, input.repositories) : [];
   return {
     recipe, digest, ref,
     origin: resolved.testRun ? "test_run" : input.origin,
@@ -388,6 +398,11 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
   if (!shape.success) {
     const issue = shape.error.issues[0];
     throw agentXError("CONFIG_INVALID", `${issue === undefined || issue.path.length === 0 ? "request" : issue.path.join(".")}: ${issue?.message ?? "is not valid"}`);
+  }
+  // TASK 29 REPLACES THIS with `resolvePayer`. Until then the person who started the run pays, and the owner is who the spend is charged to,
+  // so another person's request for an owner would bill one person and record the other as the payer.
+  if (request.startedBy !== undefined && request.startedBy.developerId !== request.owner.developerId) {
+    throw agentXError("CONFIG_INVALID", "owner: a run is owned by the person who started it");
   }
   const { caller, ...rest } = request;
   const fingerprint = runRequestFingerprint(rest);

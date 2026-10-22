@@ -77,6 +77,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   orgSourceOrder?: (orgId: OrgId) => Promise<readonly string[]>;
   /** Reads a pull request's head commit for a run whose context names one (Task 15); the broker supplies the GitHub App's. */
   pullRequestHead?: PullRequestHeadReader;
+  /** Task 22 removes this with the refusal it lifts: whether a run of an agent made of agent steps may start (see AgentRunDependencies). */
+  agentStepRuns?: boolean;
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */
   startRun?: (caller: AgentCaller, input: { requestId: string; project: string; agent: { agentId: AgentId; version?: number | "draft" }; input: RunInput }) => Promise<{ task: unknown }>;
 }

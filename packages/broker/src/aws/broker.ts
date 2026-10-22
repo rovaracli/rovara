@@ -538,7 +538,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"] } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; agentStepRuns?: boolean } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a-presence (R66): the kinds of approval a person can decide on the confirmation page (`apr_` and `spr_`), each saying whether
    * a member may decide it now, what the page shows, and what deciding does. Absent, the confirmation page answers NOT_FOUND.
@@ -806,6 +806,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     pullRequestHead: agents.pullRequestHead ?? (async ({ orgId, repositoryUrl, number }) => ({
       headSha: (await dependencies.githubPullRequests.getPullRequest(repositoryUrl, number, githubScope(dependencies, orgId))).headCommit,
     })),
+    // Task 22 removes this: only tests switch on runs of agents made of agent steps before the step engine exists.
+    ...(agents.agentStepRuns === true ? { agentStepRuns: true } : {}),
     // A trial org keeps the placeholder limits (R49) on the budgets the routes set.
     orgs: orgStoreOf(dependencies),
   };
