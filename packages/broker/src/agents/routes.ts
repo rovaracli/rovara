@@ -62,6 +62,7 @@ import type { PullRequestHeadReader } from "./runs.js";
 import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnProject, rosterAgentView, type RosterEntry } from "./roster.js";
 import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
+import type { RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
@@ -88,6 +89,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   modelSources?: ModelSourceRouteDependencies;
   /** Reads a pull request's head commit for a run whose context names one (Task 15); the broker supplies the GitHub App's. */
   pullRequestHead?: PullRequestHeadReader;
+  /** Task 34's seam to Task 32: makes the `run_limit` request when approving a plan needs a higher tier than the approver's; the developer API reads it from here (`AgentRunDependencies.requestRunLimit`). */
+  requestRunLimit?: RequestRunLimit;
   /** Task 12b: the org's connections (`/v1/app/connections*`). Without it (no connection secrets role) those routes answer NOT_FOUND. */
   connections?: ConnectionRouteDependencies["store"];
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */

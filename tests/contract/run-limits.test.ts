@@ -371,7 +371,7 @@ describe("the limit a run starts with", () => {
     expect(t.meta((await t.startTask()).taskId).budgetUsd).toBeUndefined();
   });
 
-  it("gives an agent-step run the AGENT estimate's run limit, and a request can lower it", async () => {
+  it("gives an agent-step run the AGENT estimate's run limit", async () => {
     const t = await world();
     const overlay: RecipeOverlay = { instructions: "Summarise the open tickets.", sequence: [{ id: "work", name: "work", kind: "agent", workspace: "none" }] };
     const created = await t.api(MAYA, "POST", "/v1/app/agents", { name: `Agent ${randomUUID().slice(0, 8)}`, overlay });
@@ -385,11 +385,9 @@ describe("the limit a run starts with", () => {
     const run = await t.api(MAYA, "POST", `/v1/app/agents/${agentId}/runs`, { project: "payments", input: { text: "Look at the new ticket" } });
     expect(run.status, JSON.stringify(run.body)).toBe(202);
     expect(t.meta(String((run.body.task as { taskId: string }).taskId)).budgetUsd).toBe(4);
-    const lower = await t.api(MAYA, "POST", `/v1/app/agents/${agentId}/runs`, { project: "payments", input: { text: "Look at it again" }, runLimitUsd: 1 });
-    expect(t.meta(String((lower.body.task as { taskId: string }).taskId)).budgetUsd).toBe(1);
   });
 
-  it("lowers the planning limit by a request and starts a run limited to 0 paused", async () => {
+  it("lets a request lower the limit a run starts with, never raise it, and starts a run limited to 0 paused", async () => {
     const t = await world();
     const starter = createAgentRunStarter(t.h.brokerInput as never)!;
     const request = (runLimitUsd: number) => ({

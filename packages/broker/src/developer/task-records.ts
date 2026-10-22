@@ -34,6 +34,7 @@ import {
   type OrgId,
   type Payer,
   type Place,
+  type RunEstimate,
   type WorkOrigin,
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
@@ -143,6 +144,13 @@ export interface DeveloperTaskRecord {
    * merged workflow task is: it gives back its workspace slot and its workspace (`workflowTaskFinished`, `releaseFinishedTask`).
    */
   agentRunEnd?: { state: "COMPLETE" | "FAILED" | "CANCELLED"; at: string };
+  /**
+   * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches
+   * review on an install with a model proxy. Approving the plan accepts `runLimitUsd` (`acceptRunLimit`); the plan-ready message and the task view show it.
+   */
+  runEstimate?: RunEstimate;
+  /** Plan 3, Task 34: when the run's cost was written for the estimates (`recordRunCost`), so a run is counted once. */
+  runCostRecordedAt?: string;
 }
 
 /** C1: a shared task's thread, as the task record keeps it. */

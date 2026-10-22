@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, type WorkflowSnapshot,
+  WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
 import { E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON } from "./task-records.js";
@@ -39,6 +39,10 @@ export interface WorkflowMessageContext {
   publishFailure?: { category: string; codeChanged?: boolean | undefined } | undefined;
   /** The step a closed required pull request's reopening started (the numbers reopened; empty when not known). */
   pullRequestReopened?: ReadonlyArray<{ repositoryId: string; number: number }> | undefined;
+  /** Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit approving it accepts; the plan-ready message says it. */
+  runEstimate?: RunEstimate | undefined;
+  /** The name of the agent doing the work, for the max-per-run line (Rovara Code when absent). */
+  agentName?: string | undefined;
 }
 export interface WorkflowMessage { text: string; blocks: Array<Record<string, unknown>> }
 
@@ -332,6 +336,16 @@ function structuredClaimLines(structured: NonNullable<WorkflowMessageContext["st
   return moreLine(0).filter((line) => visibleLength(line) + 1 <= room);
 }
 
+/**
+ * Plan 3, Task 34: the plan-ready lines for what the run is expected to cost: the range and the run limit, and, when the agent's max per run would stop the
+ * run before its run limit, that. Dollars are written as they are (fifty-cent steps: `$1.5`, `$4`).
+ */
+function runEstimateLines(estimate: RunEstimate, agentName: string): string[] {
+  const lines = [`Estimated cost: about $${String(estimate.lowUsd)}\u2013$${String(estimate.highUsd)}. Run limit: $${String(estimate.runLimitUsd)}.`];
+  if (estimate.stopAtUsd < estimate.runLimitUsd) lines.push(`${cleanLine(agentName, 60)}'s max per run is $${String(estimate.stopAtUsd)}, so this run will stop at $${String(estimate.stopAtUsd)}, before its run limit.`);
+  return lines;
+}
+
 function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof exitButtons>): { text: string; buttons: Button[] } {
   const { workflow, structured } = context;
   const name = workflowDocumentName(workflow);
@@ -363,6 +377,7 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
       tail.push(context.taskPageUrl === undefined || commentId === undefined ? line : link(`${context.taskPageUrl}?doc=${approved.replace(" ", "-")}#comment-${commentId}`, line));
     }
   } else if (answered !== undefined && answered.total > 0) tail.push(`AgentX answered ${answered.answered} of ${plural(answered.total, "comment")} from v${answered.fromVersion}.`);
+  if (context.runEstimate !== undefined && workflowDocumentType(workflow) === "plan") tail.push(...runEstimateLines(context.runEstimate, context.agentName ?? "Rovara Code"));
   const unlinked = `I couldn't link the full ${name}; ask an AgentX admin to check the task page.`;
   if (structured === undefined) {
     // A Markdown document: its first lines, and where the whole text reads.

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AgentIdSchema, ApprovalIdSchema } from "./agent.js";
 import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, RunInputSchema } from "./agent-run.js";
 import { StepIdSchema } from "./agent-recipe.js";
+import { RunEstimateSchema } from "./spend.js";
 import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
@@ -340,6 +341,8 @@ export const DeveloperTaskViewSchema = z.object({
   agent: z.object({ agentId: AgentIdSchema, name: z.string(), version: z.union([z.number().int().min(1), z.literal("draft")]), builtin: z.boolean() }).strict().optional(),
   /** Plan 3, Task 22: an agent-step run's progress; absent on every other task. */
   run: DeveloperTaskRunViewSchema.optional(),
+  /** Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit approving it accepts. */
+  runEstimate: RunEstimateSchema.optional(),
 });
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
 

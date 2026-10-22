@@ -264,6 +264,7 @@ import {
   type AgentId,
   type Payer,
   type Place,
+  type RunEstimate,
 } from "@agentx/contracts";
 import { compileE2EScenarios, collectE2EActualCliRun, qualifyE2ECollection, e2eSnapshotSourceDigest, parseE2EFirstPartyCapture, e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import { renderE2EMcpProjection, renderE2EPageHtml, renderE2ESlackBlocks, renderE2ENotifierSlackBlocks } from "../e2e-presentation.js";
@@ -373,6 +374,7 @@ import type { settlementBudgets} from "../spend/settlement-job.js";
 import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
+import { estimateRun } from "../spend/estimate.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
@@ -596,7 +598,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -955,6 +957,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       if (read === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading pull requests is not set up in this deployment");
       return { headSha: (await read.call(dependencies.githubPullRequests, repositoryUrl, number, { orgId }, ...(installationId === undefined ? [] : [{ installationId }]))).headSha };
     }),
+    // Task 34's seam to Task 32: the `run_limit` request a plan's approval makes when the approver's tier is too low. Task 32 wires it; until then none is made.
+    ...(agents.requestRunLimit === undefined ? {} : { requestRunLimit: agents.requestRunLimit }),
     // Task 14b: the scan of a repository's workflows for the comment rule and the opt-out reads the default branch with the same kind of token.
     ...(dependencies.githubPullRequests.agentRepositoryReader === undefined ? {} : {
       repositoryReader: ({ orgId, repositoryUrl, installationId }: { orgId: OrgId; repositoryUrl: string; installationId?: number }) =>
@@ -1552,7 +1556,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           return { attempted: 0, started: 0 };
         });
         // Finished tasks whose release found the workspace busy, failed or never ran: their slot and workspace are given back.
-        const releases = await releasePendingFinishedTasks({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient })
+        const releases = await releasePendingFinishedTasks({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) })
           .catch((error: unknown) => {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
@@ -4789,7 +4793,7 @@ async function healSlackMemberSlots(dependencies: AwsBrokerDependencies, orgId: 
     const key = slackMemberLimitKey(orgId, requester.teamId, requester.userId);
     const member = await getItem<{ count?: number }>(dependencies, key);
     if ((member?.count ?? 0) < effective.memberWorkspaceLimit) return;
-    await releaseFinishedTasksOf({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient }, key);
+    await releaseFinishedTasksOf({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) }, key);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_heal_failed", error: error instanceof Error ? error.name : "unknown" }));
   }
@@ -10492,7 +10496,7 @@ async function completedTurnItems(
 
 /** A finished workflow task gives back its workspace slot and its workspace (releaseFinishedTask); never throws. */
 async function releaseIfFinished(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
-  await releaseFinishedTaskQuietly({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient }, taskId);
+  await releaseFinishedTaskQuietly({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) }, taskId);
 }
 
 /** Refresh all linked PRs from the GitHub API before an owner decision (webhook payloads are hints only). */
@@ -11767,6 +11771,8 @@ async function completedWorkflowItems(
   let evidenceJob: { artifactId: string; artifactSha256: string } | undefined;
   /** The record of the comments the planner answered, committed with the plan it answered them in. */
   let recordedReplies: ReturnType<typeof plannerRepliesItem> | undefined;
+  /** Plan 3, Task 34: what the coding plan that just reached review is expected to cost, committed with it. */
+  let runEstimate: RunEstimate | undefined;
   let e2eAuthorityChecks: Array<Record<string, unknown>> = [];
   if (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS") {
     const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -12126,6 +12132,8 @@ async function completedWorkflowItems(
       planUnreadable = stored.planUnreadable;
       evidenceJob = stored.evidenceJob;
       if (stored.inlineEvidence !== undefined) inlineEvidence?.push({ ...stored.inlineEvidence, taskId: task.taskId });
+      // The coding plan (not a requirements or design document) carries the estimate its approval will accept as the run limit.
+      if (stored.next.stage === "PLAN_REVIEW" && stored.next.artifacts.at(-1)?.type === "plan") runEstimate = await planRunEstimate(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot });
       if (stored.plannerReplies !== undefined) {
         plannerReplies?.push(stored.plannerReplies);
         recordedReplies = plannerRepliesItem(dependencies.tableName, stored.plannerReplies, now);
@@ -12182,12 +12190,13 @@ async function completedWorkflowItems(
     TableName: dependencies.tableName,
     Key: taskKey(task.taskId),
     // A stored plan quoted the replies fed so far; the next plan's window starts after them.
-    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${forget ? " REMOVE planUnreadable" : ""}`,
+    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${forget ? " REMOVE planUnreadable" : ""}`,
     ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${graphCancelCondition}${e2eCancelCondition}`,
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": task.workflow.revision, ":stage": task.workflow.stage, ":running": "RUNNING",
       ...(planUnreadable === undefined || planUnreadable === null ? {} : { ":unreadable": planUnreadable }),
       ...(planUnreadable === null && task.threadNotesFedThrough !== undefined ? { ":fedFrom": task.threadNotesFedThrough } : {}),
+      ...(runEstimate === undefined ? {} : { ":runEstimate": runEstimate }),
       ...(graphApproval === undefined || graphCancelTarget?.workflowDependencies === undefined ? {} : {
         ":graphOperationId": graphCancelTarget.id,
         ":graphDigest": graphApproval.graphDigest,
@@ -12201,6 +12210,24 @@ async function completedWorkflowItems(
   } }, ...dispatch,
   ...(evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId: task.taskId, ...evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
   ...(recordedReplies === undefined ? [] : [{ Put: recordedReplies }])];
+}
+
+/**
+ * Plan 3, Task 34: what the run is expected to cost, from this org's runs of the task's project, agent and path (`estimateRun`), for the plan that just reached
+ * review. Only with a model proxy (without one nothing is limited). An estimate that can't be made is logged and left out: the plan is still stored, and its
+ * approval works the limit out again.
+ */
+async function planRunEstimate(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }): Promise<RunEstimate | undefined> {
+  if (dependencies.modelAccess === undefined || task.orgId === undefined) return undefined;
+  try {
+    return await estimateRun(
+      { documentClient: dependencies.documentClient, tableName: dependencies.tableName, ...(dependencies.cloud === true ? { cloud: true } : {}), now: Date.now },
+      { orgId: task.orgId, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, path: task.workflow.path, ...(task.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: task.maxPerRunUsd }) },
+    );
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "run_estimate.unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" }));
+    return undefined;
+  }
 }
 
 /** What the broker keeps of a planning answer it could not read: the problems found, at most this many. */
