@@ -37,6 +37,7 @@ import {
 } from "../../packages/broker/src/developer/decide-session.js";
 import type { DecideInspection, DecideKind, DecideTarget } from "../../packages/broker/src/developer/decide-kinds.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { getApprovalSubjectHandler, type ApprovalDependencies, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { writeProjectAi, writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
@@ -571,11 +572,11 @@ describe("connection.saved and connection.removed", () => {
     const requestId = randomUUID();
     await s.store.put({ orgId: TEST_ORG, connection: { ...LINEAR, access: "read_write" }, by: BOB, requestId });
 
-    const transaction = auditedTransactions(s.transactions).at(-1)!;
-    expect(writes(transaction, connectionKey(TEST_ORG, CON).pk)).toBe(true);
-    expect(s.capture!.recordedBy("connection.saved").at(-1)).toMatchObject({
-      eventId: auditEventId("connection.saved", auditOccurrence(requestId, CON)), actor: { kind: "member", id: BOB },
-    });
+    // The change and its audit item are one transaction: two audited transactions in all (the create, then this one), and the second holds the request's event.
+    const audited = auditedTransactions(s.transactions);
+    expect(audited).toHaveLength(2);
+    expect(writes(audited[1]!, connectionKey(TEST_ORG, CON).pk)).toBe(true);
+    expect(pendingIn(audited[1]!)).toMatchObject([{ eventId: auditEventId("connection.saved", auditOccurrence(requestId, CON)), actor: { kind: "member", id: BOB } }]);
     expect(s.capture!.recordedBy("connection.saved")).toHaveLength(2);
   });
 
@@ -746,6 +747,13 @@ describe("through the routes", () => {
     h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
     members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
     members.grant(TEST_ORG, "web", CARL.developerId, "maintainer");
+    // What a page confirming a change hands to the registered handler: a store of its own on the broker's table, auditing into the same capture.
+    const store = new AgentStore({ documentClient: h.db, tableName: AUDIT_CAPTURE_TABLE, now: Date.now, audit: capture.audit });
+    const deps: ApprovalDependencies = {
+      store, projectMembers: members, documentClient: h.db, tableName: AUDIT_CAPTURE_TABLE, now: Date.now, confirmOrigin: "https://cell.example.com",
+      signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }),
+    };
+    const approvals = () => h.db.find((item) => item.entityType === "APPROVAL") as unknown as ApprovalRecord[];
     const call = (who: Developer, method: string, path: string, body?: Record<string, unknown>) =>
       h.dev(who, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body });
     const create = async (who: Developer) => {
@@ -753,7 +761,7 @@ describe("through the routes", () => {
       expect(created.status, JSON.stringify(created.body)).toBe(201);
       return (created.body.agent as { agentId: AgentId }).agentId;
     };
-    return { h, capture, transactions, members, call, create };
+    return { h, capture, transactions, members, call, create, deps, approvals };
   }
 
   it("a safe publish records agent.published and nothing else", async () => {
@@ -808,6 +816,41 @@ describe("through the routes", () => {
     ]);
   });
 
+  it("a less-safe publish that a person confirmed records agent.published as less safe, with the person who confirmed it as the actor", async () => {
+    const s = await routeSetup();
+    const agentId = await s.create(MAYA);
+    expect((await s.call(MAYA, "POST", `/v1/app/agents/${agentId}/publish`, { expectedRevision: 1 })).status).toBe(200);
+    const draft = await s.call(MAYA, "PUT", `/v1/app/agents/${agentId}/draft`, { expectedRevision: 1, overlay: { ...SAFE, allowMentions: true } });
+    expect(draft.status, JSON.stringify(draft.body)).toBe(200);
+    const asked = await s.call(MAYA, "POST", `/v1/app/agents/${agentId}/publish`, { expectedRevision: 2 });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    // Asking changes nothing and records nothing.
+    expect(s.capture.recordedBy("agent.published")).toHaveLength(1);
+
+    const [record] = s.approvals();
+    await getApprovalSubjectHandler("agent_publish")!(s.deps, { ...record!, decidedBy: DANA.developerId });
+    expect(s.capture.recordedBy("agent.published").map((event) => [event.actor.id, event.facts])).toEqual([
+      [MAYA.developerId, { version: 1, safety: "safe" }],
+      [DANA.developerId, { version: 2, safety: "less_safe" }],
+    ]);
+  });
+
+  it("a guardrails change that a person confirmed records guardrails.changed as widened; the tightening before it was not", async () => {
+    const s = await routeSetup();
+    const tighter = { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: DEFAULT_AGENT_GUARDRAILS.maxAgentMonthlyUsd - 10 };
+    expect((await s.call(DANA, "PUT", "/v1/app/org/agent-guardrails", { expectedRevision: 0, guardrails: tighter })).status).toBe(200);
+    const asked = await s.call(DANA, "PUT", "/v1/app/org/agent-guardrails", { expectedRevision: 1, guardrails: DEFAULT_AGENT_GUARDRAILS });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect(s.capture.recordedBy("guardrails.changed")).toHaveLength(1);
+
+    const [record] = s.approvals();
+    await getApprovalSubjectHandler("guardrails")!(s.deps, { ...record!, decidedBy: CARL.developerId });
+    expect(s.capture.recordedBy("guardrails.changed").map((event) => [event.actor.id, event.facts])).toEqual([
+      [DANA.developerId, { revision: 1, widened: false }],
+      [CARL.developerId, { revision: 2, widened: true }],
+    ]);
+  });
+
   it("with an intake queue that never answers, the same calls return as they do today and the events wait for the drain", async () => {
     const hanging = hangingAuditDeps();
     const s = await routeSetup(hanging);
@@ -817,6 +860,7 @@ describe("through the routes", () => {
     expect(published.status).toBe(200);
     const policy = await settle(s.call(DANA, "PUT", "/v1/app/org/spend-policy", { ownerAgentBudgetCapUsd: 250 }));
     expect(policy.status).toBe(200);
-    expect(hanging.pending().map((event) => event.action)).toEqual(["agent.published", "spend_policy.changed"]);
+    // Pending items are in time order, and two calls inside one millisecond tie: the order is not what this test is about.
+    expect(hanging.pending().map((event) => event.action).sort()).toEqual(["agent.published", "spend_policy.changed"]);
   });
 });
