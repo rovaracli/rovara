@@ -397,6 +397,25 @@ export async function abandonKey(deps: LedgerDependencies, orgId: OrgId, keyId: 
 }
 
 /**
+ * Gives back what a task's earlier keys still hold, so its next key does not compete with them for room (Task 31 fix round). Each of the given keys that is
+ * open and reserved is, in this order: blocked at the proxy (so no spend can follow and no two keys of the task are live with their caps both counted),
+ * settled (the spend up to the block is counted), then finalized (the unspent part of its cap goes back to every scope). A key that is finalized, held nothing
+ * (a Slack turn's) or belongs to another org is left alone. The proxy failing at any step throws and leaves the rest for the next try: every step can be
+ * repeated. Answers how many keys it finalized.
+ */
+export async function supersedeKeys(deps: LedgerDependencies, orgId: OrgId, keyIds: readonly string[]): Promise<number> {
+  let finalized = 0;
+  for (const keyId of new Set(keyIds)) {
+    const record = await readRecord(deps, orgId, keyId);
+    if (record === undefined || record.finalized || !record.reserved) continue;
+    await deps.access.blockKey(keyId);
+    await settleKey(deps, orgId, keyId);
+    if (await finalizeKey(deps, orgId, keyId)) finalized += 1;
+  }
+  return finalized;
+}
+
+/**
  * The first phase of finalizing: an operation has ended, so each of its still-open keys is blocked at the proxy and given a `finalizeAfter` (after
  * `FINALIZE_DELAY_MS`, so a request the proxy had admitted before the block still counts). Keys that name another operation, are finalized or
  * were blocked already are left alone, so reporting the same end twice blocks nothing. Answers how many keys it blocked; a proxy that cannot block

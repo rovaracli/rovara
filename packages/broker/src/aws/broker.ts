@@ -5252,6 +5252,10 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   // A developer task names its org, owner and budget, and the keys already minted for it. Work with no task record (a Slack
   // thread's) is minted for from the signed operation: its org, the operation as the reference and as the record that keeps its
   // keys, and the default per-task budget (ruling R31; its start was admitted in ensureThreadWorkspace). Read afresh each attempt.
+  const unreadable = async <T>(what: string, read: () => Promise<T>): Promise<T> => read().catch((error: unknown) => {
+    console.log(JSON.stringify({ component: "broker", event: `model_access.${what}_unreadable`, operationId: claims.operationId, errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  });
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
@@ -5262,12 +5266,14 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     if (task !== undefined) {
       if (task.orgId === undefined) return undefined;
       const payment = withAgents ? paymentOfTask(task) : undefined;
+      const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];
-      const testCapUsd = payment?.origin === "test_run" ? (await readSpendPolicy(dependencies, task.orgId)).perTestCapUsd : undefined;
-      const stepBudgetUsd = payment === undefined ? undefined : await stepBudgetOf(dependencies, task, current);
+      // What these reads cannot answer is the retryable answer of the proxy, as the payer's read is; nothing is minted.
+      const testCapUsd = payment?.origin === "test_run" ? await unreadable("spend_policy", () => readSpendPolicy(dependencies, taskOrg)).then((policy) => policy.perTestCapUsd) : undefined;
+      const stepBudgetUsd = payment === undefined ? undefined : await unreadable("step_budget", () => stepBudgetOf(dependencies, task, current));
       return {
-        orgId: task.orgId, developerId: payment === undefined ? task.developerId : keyMember(payment.payer), refId: task.taskId,
+        orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
         runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd),
         taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
         // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal
@@ -5316,7 +5322,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       if (scope === undefined) throw new Error("the operation lost its organisation");
       // Ruling R30 and Task 31: the key's cap is the least of what the run's limits, the step, the member, the org and every budget the task counts against
       // have left; it is reserved before it is handed out, and recorded on the task and the operation.
-      const minted = await mintOperationKey({ ...budgets, ledger }, { ...scope, ttlSeconds: MODEL_KEY_TTL_SECONDS });
+      const minted = await mintOperationKey({ ...budgets, ledger }, { ...scope, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(attempt > 0 ? { keepEarlierKeys: true } : {}) });
       if (minted.outcome === "minted") return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
     }
     throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");

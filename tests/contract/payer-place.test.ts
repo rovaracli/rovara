@@ -331,6 +331,39 @@ describe("a person-started run records its payer and place", () => {
   });
 });
 
+describe("a test run's key", () => {
+  /** A draft test run whose preparation is finished, and the ask for its key. */
+  async function testRun() {
+    const t = await setup();
+    const agentId = await t.agentOf();
+    const reply = await t.call(DEV_MAYA, "POST", `/v1/app/agents/${agentId}/runs`, { project: "payments", version: "draft", input: { text: "Try it" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const taskId = (reply.body.task as { taskId: string }).taskId;
+    const { workspaceId } = t.meta(taskId);
+    const active = () => String((t.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    await t.finish(workspaceId, active(), "SUCCEEDED", PREPARED);
+    const outbox = t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === active())[0]!;
+    const capability = (outbox.invocation as { callbackCapability: string }).callbackCapability;
+    const ask = () => call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    return { ...t, taskId, ask };
+  }
+
+  it("carries no member's id even when the record names a member as its payer, so the member's own proxy budget does not apply to it", async () => {
+    const t = await testRun();
+    t.db.set({ ...t.meta(t.taskId), payer: { kind: "member", developerId: DEV_MAYA.developerId } });
+    t.access.setMemberSpent(TEST_ORG, DEV_MAYA.developerId, 29);
+    expect((await t.ask()).status).toBe(200);
+    expect(t.access.mintKey.mock.calls.at(-1)![0]).not.toHaveProperty("developerId");
+  });
+
+  it("answers the retryable 503, and mints nothing, when the spend policy can't be read", async () => {
+    const t = await testRun();
+    t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("SPEND_POLICY"), error: { name: "InternalServerError" } });
+    expect(await t.ask()).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
+    expect(t.access.mintKey).not.toHaveBeenCalled();
+  });
+});
+
 describe("startAgentRun resolves the payer from the origin", () => {
   it("refuses a payer that is not the one the origin names, and writes nothing", async () => {
     const t = await setup();

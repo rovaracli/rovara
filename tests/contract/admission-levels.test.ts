@@ -141,6 +141,26 @@ describe("admitWork", () => {
     expect((await rejection(admitWork(o.deps, memberWork()))).code).toBe("ORG_BUDGET_EXCEEDED");
   });
 
+  it("says the money is held by running work, not spent, when that is what is short", async () => {
+    const t = setup();
+    t.access.setMemberSpent(TEST_ORG, MAYA, 3);
+    t.seedCounter({ kind: "member", developerId: MAYA }, { spentUsd: 3, committedUsd: 28.8 });
+    const member = await rejection(admitWork(t.deps, memberWork()));
+    expect(member).toMatchObject({ code: "BUDGET_EXCEEDED", statusCode: 402 });
+    expect(member.message).toBe("BUDGET_EXCEEDED: Your monthly AI budget is committed to work that is running ($28.80 of $29.00). Try again when it finishes, or ask an admin to raise it.");
+    expect(member.message).not.toContain("$3.00");
+    const o = setup();
+    o.limitOrg(10);
+    o.seedCounter(ORG, { spentUsd: 1, committedUsd: 9.8 });
+    const org = await rejection(admitWork(o.deps, memberWork()));
+    expect(org).toMatchObject({ code: "ORG_BUDGET_EXCEEDED", message: "ORG_BUDGET_EXCEEDED: Your company's monthly AI budget is committed to work that is running. Try again when it finishes, or ask an admin to raise it." });
+    // What the proxy says is spent keeps the older words.
+    const spent = setup();
+    spent.access.setMemberSpent(TEST_ORG, MAYA, 28.8);
+    spent.seedCounter({ kind: "member", developerId: MAYA }, { spentUsd: 28.8, committedUsd: 28.8 });
+    expect((await rejection(admitWork(spent.deps, memberWork()))).message).toBe("BUDGET_EXCEEDED: Your monthly AI budget is used up ($28.80 of $29.00). Ask an admin to raise it.");
+  });
+
   it("starts a project-paid run whose member is over their own limit", async () => {
     const t = setup();
     t.access.setMemberSpent(TEST_ORG, MAYA, 29.4);
@@ -339,6 +359,19 @@ describe("mintOperationKey: the cap", () => {
     expect(pauseOf(t, "test-1")).toMatchObject({ scope: { kind: "test", taskId: "test-1" } });
     // The testing allowance is Kit's; the key is minted in no member's name.
     expect(t.access.mintKey.mock.calls.at(-1)![0].developerId).toBeUndefined();
+  });
+
+  it("measures a test run's cap across the whole run: a Continue does not give it a fresh one", async () => {
+    const t = setup();
+    seedTask(t, "test-1");
+    t.access.setKeySpent("sk-first", PER_TEST_CAP_USD);
+    const input = testRunInput({ taskKeyIds: [keyIdOf("sk-first")], budgetBaselineUsd: PER_TEST_CAP_USD });
+    const error = await rejection(capping(t, input));
+    expect(error.message).toBe(`BUDGET_EXCEEDED: ${TASK_BUDGET_EXCEEDED_PREFIX} ($2.00 of $2.00). Choose Continue to resume this task with a fresh budget.`);
+    expect(pauseOf(t, "test-1")).toMatchObject({ scope: { kind: "test", taskId: "test-1" } });
+    // Half of it spent before the Continue leaves half, and the run limit still counts from the new window.
+    t.access.setKeySpent("sk-first", 0.5);
+    expect(minted(await capping(t, testRunInput({ taskKeyIds: [keyIdOf("sk-first")], budgetBaselineUsd: 0.5 }))).maxBudgetUsd).toBe(1.5);
   });
 
   it("holds a step to its own budget, less what the operation's keys spent, without pausing the task", async () => {
@@ -549,6 +582,62 @@ describe("mintOperationKey: reserving before the key is handed out", () => {
   });
 });
 
+describe("mintOperationKey: a task's earlier keys", () => {
+  it("blocks, settles and finalizes the task's earlier keys before it reserves, so the next key gets the room left and not the room less its own hold", async () => {
+    const t = setup();
+    const first = minted(await reserving(t, taskInput()));
+    expect(first.maxBudgetUsd).toBe(25);
+    t.access.setKeySpent(first.key, 3);
+    const second = minted(await reserving(t, taskInput({ taskKeyIds: [first.keyId] })));
+    // $25 less the $3 the task spent; without the first key's hold given back it would be $29 - $25 = $4.
+    expect(second.maxBudgetUsd).toBe(22);
+    expect(t.db.get(modelKeyKey(TEST_ORG, first.keyId))).toMatchObject({ finalized: true, settledUsd: 3 });
+    for (const scope of [ORG, WEB, { kind: "member", developerId: MAYA } as const]) {
+      near(t.counter(scope)?.spentUsd, 3);
+      near(t.counter(scope)?.committedUsd, 3 + 22);
+    }
+    // The order never has two keys live with their caps both held: blocked, then (after the spend is counted) released, then the next key made.
+    const blockedAt = t.access.blockKey.mock.invocationCallOrder[0]!;
+    expect(blockedAt).toBeLessThan(t.access.mintKey.mock.invocationCallOrder[1]!);
+    expect(t.access.blockKey).toHaveBeenCalledWith(first.keyId);
+  });
+
+  it("leaves a key that is already finalized alone, and a retry after a lost race does not block the winner's key", async () => {
+    const t = setup();
+    const first = minted(await reserving(t, taskInput()));
+    const second = minted(await reserving(t, taskInput({ taskKeyIds: [first.keyId] })));
+    expect(t.access.blockKey.mock.calls).toEqual([[first.keyId]]);
+    // The first is finalized already: only the second is blocked now.
+    const third = minted(await reserving(t, taskInput({ taskKeyIds: [first.keyId, second.keyId] })));
+    expect(t.access.blockKey.mock.calls).toEqual([[first.keyId], [second.keyId]]);
+    // The retry of a lost race touches none, so it competes with the winner's hold ($29 less its $25).
+    const retry = minted(await reserving(t, taskInput({ taskKeyIds: [first.keyId, second.keyId, third.keyId], keepEarlierKeys: true })));
+    expect(t.access.blockKey).toHaveBeenCalledTimes(2);
+    expect(retry.maxBudgetUsd).toBe(4);
+    expect(t.db.get(modelKeyKey(TEST_ORG, third.keyId))).toMatchObject({ finalized: false });
+  });
+
+  it("refuses the mint, with the earlier key still held, when the proxy cannot block it", async () => {
+    const t = setup();
+    const first = minted(await reserving(t, taskInput()));
+    t.access.blockKey.mockRejectedValueOnce(new Error("boom"));
+    await rejection(reserving(t, taskInput({ taskKeyIds: [first.keyId] })));
+    expect(t.access.mintKey).toHaveBeenCalledTimes(1);
+    expect(t.db.get(modelKeyKey(TEST_ORG, first.keyId))).toMatchObject({ finalized: false });
+    // The next try finishes the job: block again, release, mint.
+    expect(minted(await reserving(t, taskInput({ taskKeyIds: [first.keyId] }))).maxBudgetUsd).toBe(25);
+  });
+
+  it("does not touch keys that held nothing, and takes no other org's key", async () => {
+    const t = setup();
+    const turn = taskInput();
+    await registerKey(t.ledger, { orgId: TEST_ORG, month: MONTH, keyId: keyIdOf("sk-turn"), capUsd: 2, scopes: [{ key: ORG }], tags: turn.tags!, expiresAt: T0 + 900_000 });
+    minted(await reserving(t, taskInput({ taskKeyIds: [keyIdOf("sk-turn"), "f".repeat(64)] })));
+    expect(t.access.blockKey).not.toHaveBeenCalled();
+    expect(t.db.get(modelKeyKey(TEST_ORG, keyIdOf("sk-turn")))).toMatchObject({ finalized: false });
+  });
+});
+
 describe("mintOperationKey: when a step fails", () => {
   it("holds nothing when the proxy cannot mint, and records nothing", async () => {
     const t = setup();
@@ -753,6 +842,27 @@ describe("a task's key at the broker", () => {
     expect(r.operation().modelKeyIds).toEqual([keyIdOf(key!)]);
   });
 
+  it("gives a task's second operation the room that is left, not the room less its own first key's hold", async () => {
+    const t = await brokerSetup();
+    const r = await t.running();
+    expect((await r.ask()).status).toBe(200);
+    const [first] = t.access.mintedKeys();
+    expect(t.access.mintKey.mock.calls[0]![0].maxBudgetUsd).toBe(25);
+    t.access.setKeySpent(first!, 2);
+    await t.finish(r.workspaceId, r.operationId, "SUCCEEDED", {});
+    const continued = await t.dev(DEV_MAYA, "POST", `/v1/dev/tasks/${r.taskId}/continue`, { requestId: randomUUID(), instructions: "more" });
+    expect(continued.status, JSON.stringify(continued.body)).toBe(200);
+    const operationId = t.active(r.workspaceId);
+    expect(operationId).not.toBe(r.operationId);
+    const capability = ((t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation) as { callbackCapability: string }).callbackCapability;
+    const reply = await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    // $29 for the member less the $2 spent: the full run limit of $25, and not the $4 the first key's hold left.
+    expect(t.access.mintKey.mock.calls[1]![0].maxBudgetUsd).toBe(25);
+    expect(t.db.get(modelKeyKey(TEST_ORG, keyIdOf(first!)))).toMatchObject({ finalized: true, settledUsd: 2 });
+    near(t.counter({ kind: "member", developerId: DEV_MAYA.developerId })?.committedUsd, 2 + 25);
+  });
+
   it("gives the key of a mint that lost a race back, blocked and finalized with its cap released, and reserves the retry", async () => {
     const t = await brokerSetup();
     // The member has room for several keys at once.
@@ -764,11 +874,11 @@ describe("a task's key at the broker", () => {
     expect([a.status, b.status]).toEqual([200, 200]);
     expect(new Set([a.body.apiKey, b.body.apiKey]).size).toBe(2);
     const keys = t.db.find((item) => item.entityType === "MODEL_KEY");
-    expect(keys.filter((item) => item.finalized === true)).toHaveLength(1);
-    expect(keys.filter((item) => item.finalized === false)).toHaveLength(3);
-    expect(t.access.blockKey).toHaveBeenCalledTimes(1);
-    // The first key's $25, and $23 for each of the two keys that stand: the loser's first cap went back.
-    near(t.counter({ kind: "member", developerId: DEV_MAYA.developerId })?.committedUsd, 25 + 23 + 23);
+    // The first key (superseded by the asks) and the loser's first key are finalized; the winner's and the loser's retry stand.
+    expect(keys.filter((item) => item.finalized === true)).toHaveLength(2);
+    expect(keys.filter((item) => item.finalized === false)).toHaveLength(2);
+    // The first key's $2 spent, and $23 for each of the two keys that stand: its unspent hold and the loser's first cap went back.
+    near(t.counter({ kind: "member", developerId: DEV_MAYA.developerId })?.committedUsd, 2 + 23 + 23);
     expect(r.task().modelKeyIds).toHaveLength(3);
   });
 
@@ -829,6 +939,14 @@ describe("a task's key at the broker", () => {
     t.access.setKeySpent(t.access.mintedKeys()[0]!, 6);
     expect((await r.ask()).status).toBe(402);
     expect(r.task().budgetPause).toMatchObject({ scope: { kind: "planning", taskId: r.taskId } });
+  });
+
+  it("answers the retryable 503 on the first ask when the task's recipe snapshot can't be read, and mints nothing", async () => {
+    const t = await brokerSetup();
+    const r = await t.running();
+    t.db.set({ ...r.task(), agent: { ...(r.task() as unknown as { agent: object }).agent, digest: "0".repeat(64) } });
+    expect(await r.ask()).toMatchObject({ status: 503, body: { error: { code: "MODEL_PROXY_UNAVAILABLE" } } });
+    expect(t.access.mintKey).not.toHaveBeenCalled();
   });
 
   it("writes no pause and keeps no ledger on an install without agents", async () => {

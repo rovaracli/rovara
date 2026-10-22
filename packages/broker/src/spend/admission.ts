@@ -17,7 +17,7 @@ import {
   type AdmissionDependencies, type BudgetDependencies, type SpendPath,
 } from "../org/budget.js";
 import { admitMachineTime, admitTrial, monthOf } from "../org/trial.js";
-import { ScopeFullError, abandonKey, finalizeKey, readScopeCounters, reserve, type KeyScope, type LedgerDependencies, type ScopeCounter } from "./ledger.js";
+import { ScopeFullError, abandonKey, finalizeKey, readScopeCounters, reserve, supersedeKeys, type KeyScope, type LedgerDependencies, type ScopeCounter } from "./ledger.js";
 import { budgetScopesFor } from "./payer.js";
 import { effectiveLimits } from "./settings.js";
 
@@ -44,6 +44,8 @@ export interface Level {
   leftUsd: number | undefined;
   /** The proxy's own figures, for the member's message. */
   proxy?: { spentUsd: number; limitUsd: number };
+  /** For an org or a member: true when what open keys hold, not what the proxy says is spent, is what limits the room; `heldUsd` is what the ledger counts. */
+  held?: { heldUsd: number };
 }
 
 /** The words each scope's refusal is made of. `agentName` names the agent whose budget it is. */
@@ -51,8 +53,11 @@ function refusalFor(level: Level, names: { agentName: string }): AgentXError {
   const { scope } = level;
   const figures = `$${dollars(level.usedUsd)} of $${dollars(level.limitUsd ?? 0)}`;
   switch (scope.kind) {
-    case "org": return orgBudgetExceeded();
-    case "member": return budgetExceeded(level.proxy?.spentUsd ?? level.usedUsd, level.proxy?.limitUsd ?? level.limitUsd ?? 0);
+    // Money held by running work is not money spent: say so, and do not show the proxy's figure of what is spent as if it were the reason.
+    case "org": return level.held === undefined ? orgBudgetExceeded()
+      : agentXError("ORG_BUDGET_EXCEEDED", "Your company's monthly AI budget is committed to work that is running. Try again when it finishes, or ask an admin to raise it.");
+    case "member": return level.held === undefined ? budgetExceeded(level.proxy?.spentUsd ?? level.usedUsd, level.proxy?.limitUsd ?? level.limitUsd ?? 0)
+      : agentXError("BUDGET_EXCEEDED", `Your monthly AI budget is committed to work that is running ($${dollars(level.held.heldUsd)} of $${dollars(level.limitUsd ?? 0)}). Try again when it finishes, or ask an admin to raise it.`);
     case "project": return agentXError(SCOPE_ERRORS.project.exceeded, `The ${scope.project} project's monthly AI budget is used up (${figures}). Ask for more from the project's page.`);
     case "agent": return agentXError(SCOPE_ERRORS.agent.exceeded, `${names.agentName}'s monthly AI budget is used up (${figures}). Ask its owner for more.`);
     case "testing": return agentXError(SCOPE_ERRORS.testing.exceeded, `Your testing allowance for this month is used up (${figures}). Run the agent as a normal task instead.`);
@@ -96,10 +101,10 @@ async function readLevels(deps: LevelDependencies, input: { orgId: OrgId; scopes
     const figures = scope.kind === "org" ? org : scope.kind === "member" ? member : undefined;
     if (figures === undefined) return { scope, limitUsd, usedUsd: counter.committedUsd, leftUsd: ledgerLeft };
     // The proxy's figure is the truth for an org and a member (R22), further held to what open keys have reserved.
-    return {
-      scope, limitUsd, usedUsd: figures.spentUsd, proxy: figures,
-      leftUsd: limitUsd === undefined ? undefined : Math.min(remaining(figures), ledgerLeft ?? Infinity),
-    };
+    const leftUsd = limitUsd === undefined ? undefined : Math.min(remaining(figures), ledgerLeft ?? Infinity);
+    // The ledger limits the room (and not the proxy) when it leaves less than the proxy does.
+    const held = ledgerLeft !== undefined && ledgerLeft < remaining(figures) ? { heldUsd: counter.committedUsd } : undefined;
+    return { scope, limitUsd, usedUsd: figures.spentUsd, proxy: figures, leftUsd, ...(held === undefined ? {} : { held }) };
   });
   return { levels };
 }
@@ -186,6 +191,11 @@ export interface MintOperationKeyInput {
   stepBudgetUsd?: number | undefined;
   /** True while a workflow task is planning: its run limit is then the planning limit. */
   planning?: boolean | undefined;
+  /**
+   * True on the second try after a lost race: the task's earlier keys were already given back by the first, and the key that won the race is live, so none is
+   * touched and this key competes with the winner's hold.
+   */
+  keepEarlierKeys?: boolean | undefined;
   /** The keys the task has minted so far (their spend is the run's), and those of this operation (the step's). */
   taskKeyIds: readonly string[];
   operationKeyIds?: readonly string[] | undefined;
@@ -250,9 +260,10 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
   const left = (limitUsd: number, spentUsd: number) => clean(Math.max(0, limitUsd - spentUsd));
   const taskId = input.pause?.taskId;
   const pauseAt = async (scope: PauseScope | undefined): Promise<void> => { if (scope !== undefined) await writePause(deps, input.pause, scope); };
-  if (input.testCapUsd !== undefined && left(input.testCapUsd, windowSpent) <= 0) {
+  // A test run's cap is for the whole run: a Continue (a new window) does not give it another.
+  if (input.testCapUsd !== undefined && left(input.testCapUsd, taskSpent) <= 0) {
     await pauseAt(taskId === undefined ? undefined : { kind: "test", taskId });
-    throw runLimitReached(windowSpent, input.testCapUsd);
+    throw runLimitReached(taskSpent, input.testCapUsd);
   }
   if (left(stopAtUsd, windowSpent) <= 0) {
     // The agent's max per run is what stopped it when that is lower than the run limit; during planning the run limit is the planning limit.
@@ -263,7 +274,7 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
   if (input.stepBudgetUsd !== undefined && left(input.stepBudgetUsd, stepSpent) <= 0) throw runLimitReached(stepSpent, input.stepBudgetUsd);
   const capUsd = clean(Math.min(
     left(stopAtUsd, windowSpent), smallestRoom(read.levels),
-    input.testCapUsd === undefined ? Infinity : left(input.testCapUsd, windowSpent),
+    input.testCapUsd === undefined ? Infinity : left(input.testCapUsd, taskSpent),
     input.stepBudgetUsd === undefined ? Infinity : left(input.stepBudgetUsd, stepSpent),
   ));
   return { capUsd, levels: read.levels };
@@ -327,6 +338,10 @@ export async function mintOperationKey(deps: MintOperationDependencies, input: M
   const scopes = input.scopes ?? [{ kind: "org" } as const, ...(input.developerId === undefined ? [] : [{ kind: "member", developerId: input.developerId } as const])];
   const ledger = input.scopes !== undefined && input.tags !== undefined ? deps.ledger : undefined;
   const tags = input.tags === undefined ? undefined : input.route?.sourceId === undefined ? input.tags : { ...input.tags, source: input.route.sourceId };
+  // The task's earlier keys hold their caps until they are finalized, which can be minutes after their operation ended (or an hour when nobody blocked them): the
+  // next key would compete with its own task's holds for room. They are blocked, counted and released first, so two keys of one task are never live at once with
+  // both caps counted. A proxy that cannot block one refuses the mint (retryable); nothing is lost, the steps repeat.
+  if (ledger !== undefined && input.keepEarlierKeys !== true) await supersedeKeys(ledger, input.orgId, input.taskKeyIds);
   for (let attempt = 0; ; attempt += 1) {
     const month = monthOf(now(deps));
     const { capUsd, levels } = await planCap(deps, input, scopes, names, month);
