@@ -3,7 +3,7 @@
 // owned. A removal moves what the person owned at once, and leaves the same kind of marker until it has.
 import { describe, expect, it, vi } from "vitest";
 import {
-  MEMBER_MERGE_QUEUE_PK, developerOrgKey, memberMergeQueueKey, orgMemberKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, type AgentId, type OrgId, type OrgRole, type RecipeOverlay,
+  MEMBER_MERGE_QUEUE_PK, developerOrgKey, memberMergeQueueKey, orgMemberKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, skillKey, type AgentId, type OrgId, type OrgRole, type RecipeOverlay,
 } from "@agentx/contracts";
 import { agentAccess, followMerges, type AgentAccessDeps, type AgentCaller } from "../../packages/broker/src/agents/access.js";
 import {
@@ -16,6 +16,7 @@ import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { AUDIT_CAPTURE_TABLE, capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
@@ -107,8 +108,9 @@ const SCRATCH: RecipeOverlay = { instructions: "x", sequence: [{ id: "work", nam
 const WRITES = new Set(["PutCommand", "UpdateCommand", "DeleteCommand", "TransactWriteCommand"]);
 const skillFile = (name: string) => `---\nname: ${name}\ndescription: Use when ${name}.\n---\n# Steps\n`;
 
-function agentWorld() {
+function agentWorld(options: { audit?: AuditCapture } = {}) {
   const db = new FakeDynamoDb();
+  options.audit?.attach(db);
   const clock = { now: T0 };
   const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
   const signInStore = new DeveloperSignInStore({ documentClient: db, tableName: "T", now: () => clock.now });
@@ -116,10 +118,11 @@ function agentWorld() {
   const store = new AgentStore({
     documentClient: db, tableName: "T", now: () => clock.now, newId: () => `agt_${String(++counter).padStart(20, "0")}`,
     resolveOwner: (_orgId, developerId) => followMerges(signInStore, developerId),
+    ...(options.audit === undefined ? {} : { audit: options.audit.audit }),
   });
   const projectMembers = new FakeProjectMembers();
   const deps: LifecycleDeps = {
-    store, projectMembers, documentClient: db, tableName: "T", signInStore, now: () => clock.now, log: (event, fields) => logs.push({ event, fields }),
+    store, projectMembers, documentClient: db, tableName: options.audit === undefined ? "T" : AUDIT_CAPTURE_TABLE, signInStore, now: () => clock.now, log: (event, fields) => logs.push({ event, fields }),
   };
   const member = (orgId: OrgId, developerId: string, role: OrgRole, joinedAt: string) => {
     db.set({ ...orgMemberKey(orgId, developerId), entityType: "ORG_MEMBER", orgId, developerId, role, joinedAt });
@@ -366,6 +369,112 @@ describe("onMembersMerged", () => {
     await w.memberAgent(OLD_ALICE, "Old", 60);
     w.merged(OLD_ALICE, ALICE);
     await onMembersMerged(w.deps, merge);
+    expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toEqual([]);
+  });
+});
+
+describe("what Rovara's own moves leave in the audit ledger (Audit Task 19)", () => {
+  const merge = { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE };
+
+  it("records each owner move as the system's own change, naming both people, in the move's own transaction", async () => {
+    const capture = capturingAuditDeps();
+    const w = agentWorld({ audit: capture });
+    const agent = await w.memberAgent(OLD_ALICE, "Old triage");
+    const web = await w.projectAgent("web", OLD_ALICE, "Web helper");
+    w.merged(OLD_ALICE, ALICE);
+
+    await onMembersMerged(w.deps, merge);
+
+    const events = capture.recordedBy("agent.owner_changed");
+    expect(events).toHaveLength(2);
+    for (const event of events) expect(event).toMatchObject({ orgId: ORG_A, actor: { kind: "system", id: "rovara" } });
+    expect(events.find((event) => event.target.id === agent.agentId)).toMatchObject({ facts: { field: "owner" }, related: expect.arrayContaining([OLD_ALICE, ALICE]) as unknown });
+    expect(events.find((event) => event.target.id === web.agentId)).toMatchObject({ facts: { field: "accountable" }, related: expect.arrayContaining([OLD_ALICE, ALICE]) as unknown });
+  });
+
+  it("records nothing for a move that was refused: the audit item is in the same transaction as the change", async () => {
+    const capture = capturingAuditDeps();
+    const w = agentWorld({ audit: capture });
+    const agent = await w.memberAgent(OLD_ALICE, "Old triage");
+    w.merged(OLD_ALICE, ALICE);
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("owner_changed"), error: { name: "InternalServerError" } });
+
+    await expect(onMembersMerged(w.deps, merge)).rejects.toMatchObject({ name: "InternalServerError" });
+
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLD_ALICE });
+    expect(capture.recordedBy("agent.owner_changed")).toEqual([]);
+  });
+
+  it("records a removal's move as the system's too", async () => {
+    const capture = capturingAuditDeps();
+    const w = agentWorld({ audit: capture });
+    const agent = await w.memberAgent(ERIN, "Erin's agent");
+    w.db.delete(orgMemberKey(ORG_A, ERIN));
+    await onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ERIN, by: OLIVE });
+    expect(capture.recordedBy("agent.owner_changed")).toMatchObject([{ actor: { kind: "system", id: "rovara" }, target: { id: agent.agentId }, related: expect.arrayContaining([ERIN, OWEN]) as unknown }]);
+  });
+});
+
+describe("a move that races another write", () => {
+  it("reads the agent again and moves it when something else changed it in between", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(OLD_ALICE, "Old triage", 5);
+    w.merged(OLD_ALICE, ALICE);
+    // The first attempt finds the agent changed under it (its guard fails); the second reads the new state and goes through.
+    w.db.injectFault({
+      command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("owner_changed"),
+      error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }, { Code: "None" }] },
+    });
+    await onMembersMerged(w.deps, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: ALICE });
+    expect(await w.ownerEvents(agent.agentId)).toHaveLength(1);
+  });
+
+  it("gives up after a few tries and leaves the move for the next sweep", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(OLD_ALICE, "Old triage", 5);
+    w.merged(OLD_ALICE, ALICE);
+    w.db.injectFault({
+      command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("owner_changed"), times: 10,
+      error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }, { Code: "None" }] },
+    });
+    await expect(onMembersMerged(w.deps, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE })).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
+    expect((await w.store.get(ORG_A, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OLD_ALICE });
+  });
+
+  it("does not take a skill someone else already handed to another owner", async () => {
+    const w = agentWorld();
+    const skill = await w.store.skills.create({ orgId: ORG_A, content: skillFile("triage"), owner: { kind: "member", developerId: OLD_ALICE }, by: OLD_ALICE });
+    const handedOver = { kind: "member", developerId: BOB } as const;
+    // Read as OLD_ALICE's, moved by someone else to BOB, then Rovara's move arrives with the old reading.
+    w.db.set({ ...w.db.get(skillKey(ORG_A, skill.skillId, "META"))!, owner: handedOver });
+    expect(await w.store.skills.moveOwner(ORG_A, skill.skillId, { kind: "member", developerId: OLD_ALICE }, { kind: "member", developerId: ALICE })).toBe(false);
+    expect((await w.store.skills.get(ORG_A, skill.skillId))!.owner).toEqual(handedOver);
+    expect(await w.store.skills.moveOwner(ORG_A, skill.skillId, handedOver, { kind: "member", developerId: ALICE })).toBe(true);
+    expect((await w.store.skills.get(ORG_A, skill.skillId))!.owner).toEqual({ kind: "member", developerId: ALICE });
+  });
+
+  it("does not move a share the person no longer holds, and does not give the survivor a lower one than they have", async () => {
+    const w = agentWorld();
+    const agent = await w.memberAgent(BOB, "Bob's agent");
+    await w.store.replaceShares({
+      orgId: ORG_A, agentId: agent.agentId, expectedSharesRevision: 0, by: "seed", remove: [],
+      upsert: [{ principal: { kind: "member", developerId: OLD_ALICE }, level: "view" }, { principal: { kind: "member", developerId: ALICE }, level: "edit" }],
+    });
+    await w.store.reassignShare({ orgId: ORG_A, agentId: agent.agentId, from: { kind: "member", developerId: OLD_ALICE }, to: { kind: "member", developerId: ALICE }, by: "system", cause: { kind: "member_merged", developerId: OLD_ALICE } });
+    expect((await w.store.listShares(ORG_A, agent.agentId)).map((share) => [(share.principal as { developerId: string }).developerId, share.level])).toEqual([[ALICE, "edit"]]);
+    const commands = w.db.commandNames().length;
+    await w.store.reassignShare({ orgId: ORG_A, agentId: agent.agentId, from: { kind: "member", developerId: OLD_ALICE }, to: { kind: "member", developerId: ALICE }, by: "system", cause: { kind: "member_merged", developerId: OLD_ALICE } });
+    expect(w.writesSince(commands)).toEqual([]);
+  });
+
+  it("says nothing about the cap when the new owner lands exactly on it", async () => {
+    const w = agentWorld();
+    await w.memberAgent(ALICE, "Alice's", 40);
+    await w.memberAgent(OLD_ALICE, "Old", 60);
+    w.merged(OLD_ALICE, ALICE);
+    await onMembersMerged(w.deps, { orgId: ORG_A, survivorId: ALICE, duplicateId: OLD_ALICE });
+    expect(await readOwnerTotal(w.deps, ORG_A, ALICE)).toBe(100);
     expect(w.logs.filter((entry) => entry.event === "owner_cap.exceeded_by_move")).toEqual([]);
   });
 });
