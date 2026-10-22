@@ -6,6 +6,11 @@
 // The scan also reaches into what a triggering workflow runs: local actions and reusable workflows (followed, at most 50 files), and the scripts named in
 // `run:` lines. The digest covers all of them, so an opt-out (comment-trigger-optouts.ts) lapses when any of them changes. Remote actions are listed with
 // their ref but not hashed (Accepted residual risks). Anything the scan cannot read completely answers `triggers: true, failedClosed: true`.
+//
+// What else is hashed: every `workflow_run` workflow whenever the repository triggers (they run from the default branch after the commenting workflow, and
+// a chain of them is followed because each is a workflow of its own), every file under a local action's folder, `package.json` and `Makefile` where a run line
+// uses npm, npx, yarn, pnpm or make, and this repository's own files named remotely at its default branch. Accepted residual risks: a script run by name with
+// no path or extension and not through those tools, a command resolved from the PATH, and a script fetched at run time.
 import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import { CommentTriggerRepositorySchema, COMMENT_TRIGGER_FILES_MAX, COMMENT_TRIGGER_FILE_NAME_MAX, agentXError, type OrgId } from "@agentx/contracts";
@@ -25,14 +30,14 @@ export interface RepoCommandTriggers {
 
 export interface RepoScanDependencies {
   /** A read-only reader of the repository's default branch for the org (the GitHub App's `agentRepositoryReader`). */
-  repositoryReader: (input: { orgId: OrgId; repositoryUrl: string }) => Promise<AgentRepositoryReader>;
+  repositoryReader: (input: { orgId: OrgId; repositoryUrl: string; installationId?: number }) => Promise<AgentRepositoryReader>;
   /** Where this run keeps what it found. Without one, every call reads again. Nothing is kept across runs. */
   cache?: RunCache;
   now?: () => number;
 }
 
 export const WORKFLOW_DIRECTORY = ".github/workflows";
-export const BOT_CONFIG_PATHS: readonly string[] = [".mergify.yml", ".mergify/config.yml", ".github/mergify.yml", "bors.toml", ".kodiak.toml", ".github/.kodiak.toml", "atlantis.yaml"];
+export const BOT_CONFIG_PATHS: readonly string[] = [".mergify.yml", ".mergify/config.yml", ".github/mergify.yml", "bors.toml", ".github/bors.toml", ".kodiak.toml", ".github/.kodiak.toml", "atlantis.yaml", "atlantis.yml"];
 export const MAX_WORKFLOW_FILES = 100;
 export const MAX_FILE_BYTES = 512 * 1024;
 export const MAX_REACHED_FILES = 50;
@@ -41,6 +46,7 @@ const MAX_LOOKUPS = 400;
 /** A scan that takes longer than this gives up (fail closed): the call it is part of has its own time to keep. */
 export const SCAN_BUDGET_MS = 25_000;
 const MAX_WALK_DEPTH = 64;
+const MAX_DIRECTORY_DEPTH = 8;
 const MAX_CANDIDATES_PER_RUN_BLOCK = 200;
 const FAILED_DIGEST = "0".repeat(64);
 
@@ -90,10 +96,35 @@ function parseYaml(text: string): unknown {
 
 function normalizedPath(raw: string): string | undefined {
   const withoutDot = raw.replace(/^\.\//u, "").replace(/\/+$/u, "");
-  if (withoutDot === "" || withoutDot.length > 300 || withoutDot.startsWith("/") || withoutDot.includes("\\") || /[\p{Cc}$*{}~]/u.test(withoutDot)) return undefined;
+  if (withoutDot === "" || withoutDot.length > 300 || withoutDot.startsWith("/") || withoutDot.includes("\\") || /[$*{}~]/u.test(withoutDot)) return undefined;
   const parts = withoutDot.split("/");
   return parts.some((part) => part === "" || part === "." || part === "..") ? undefined : parts.join("/");
 }
+
+/** `github.action_path` and `GITHUB_ACTION_PATH` are the folder of the action that runs the step; `github.workspace` and `GITHUB_WORKSPACE` the repository's root. */
+const ACTION_PATH = /\$\{\{\s*github\.action_path\s*\}\}|\$\{GITHUB_ACTION_PATH\}|\$GITHUB_ACTION_PATH(?![A-Za-z0-9_])/gu;
+const WORKSPACE = /\$\{\{\s*github\.workspace\s*\}\}|\$\{GITHUB_WORKSPACE\}|\$GITHUB_WORKSPACE(?![A-Za-z0-9_])/gu;
+
+/** A run block with those four names replaced by the folders they stand for, written as `./folder` so that what follows reads as a path in the repository. */
+export function withKnownFolders(run: string, actionDirectory: string): string {
+  return run.replace(ACTION_PATH, actionDirectory === "" ? "." : `./${actionDirectory}`).replace(WORKSPACE, ".");
+}
+
+const PACKAGE_MANAGERS = new Set(["npm", "npx", "yarn", "pnpm"]);
+const MAKE = new Set(["make", "gmake"]);
+
+/**
+ * The manifests a run block's tools read their commands from: `package.json` for npm, npx, yarn and pnpm, `Makefile` for make. A script they run
+ * without a path or an extension is found through these (an extensionless script run by name is an accepted residual risk).
+ */
+export function toolManifests(run: string): string[] {
+  const words = new Set(run.split(/[\s;|&()<>"'`]+/u).map((word) => word.toLowerCase()));
+  return [...(([...PACKAGE_MANAGERS].some((tool) => words.has(tool))) ? ["package.json"] : []), ...(([...MAKE].some((tool) => words.has(tool))) ? ["Makefile"] : [])];
+}
+
+/** A remote action: `owner/repo@ref`, `owner/repo/path@ref`, or a `docker://` image. Anything else is not a reference this scan can list. */
+const REMOTE_ACTION = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_./-]+))?@([A-Za-z0-9_./-]+)$/u;
+const DOCKER_ACTION = /^docker:\/\/[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,300}$/u;
 
 const INTERPRETERS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "node", "nodejs", "python", "python2", "python3", "ruby", "perl", "php", "deno", "bun", "tsx", "ts-node", "pwsh", "powershell", "source", "."]);
 const SCRIPT_EXTENSION = /\.(?:sh|bash|zsh|py|rb|js|mjs|cjs|ts|pl|ps1|php)$/u;
@@ -125,27 +156,50 @@ interface Reach {
   scripts: string[];
 }
 
-/** Everything a parsed workflow or action file names: its `uses` (local or remote) and the scripts in its `run` blocks, wherever they are in the tree. */
-function reachOf(document: unknown, directory: string): Reach {
+/** The repository being scanned and its default branch: a remote reference to it at that branch is its own file. */
+interface Self { repository: string; branch: string }
+
+/**
+ * Everything a parsed workflow or action file names: its `uses` (local or remote) and the scripts in its `run` blocks, wherever they are in the tree.
+ * `directory` is the folder of the action the file is (empty for a workflow).
+ */
+function reachOf(document: unknown, directory: string, self: Self): Reach {
   const reach: Reach = { local: [], remote: [], scripts: [] };
   const visit = (node: unknown, depth: number, workingDirectory: string | undefined): void => {
     if (depth > MAX_WALK_DEPTH) return fail("a workflow is nested too deeply");
     if (Array.isArray(node)) { for (const item of node) visit(item, depth + 1, workingDirectory); return; }
     if (!isRecord(node)) return;
-    const here = typeof node["working-directory"] === "string" ? normalizedPath(node["working-directory"]) ?? workingDirectory : workingDirectory;
+    // A step's own working-directory wins; then the nearest `defaults.run.working-directory` (a job's over the workflow's); then what came down.
+    const own = typeof node["working-directory"] === "string" ? normalizedPath(node["working-directory"]) : undefined;
+    const defaults = isRecord(node["defaults"]) && isRecord(node["defaults"]["run"]) ? node["defaults"]["run"]["working-directory"] : undefined;
+    const fromDefaults = typeof defaults === "string" ? normalizedPath(defaults) : undefined;
+    const here = own ?? fromDefaults ?? workingDirectory;
     const uses = node["uses"];
     if (typeof uses === "string") {
       if (uses.startsWith("./") || uses === ".") {
         const path = uses === "." || uses === "./" ? "" : normalizedPath(uses);
         if (path !== undefined) reach.local.push({ path });
-      } else {
-        if (uses.length > COMMENT_TRIGGER_FILE_NAME_MAX) fail("a workflow names an action by a very long reference");
+      } else if (uses.startsWith("docker://")) {
+        if (!DOCKER_ACTION.test(uses)) fail("a workflow names a container image that is not a plain reference");
         reach.remote.push(uses);
+      } else {
+        const match = REMOTE_ACTION.exec(uses);
+        if (match === null || uses.length > COMMENT_TRIGGER_FILE_NAME_MAX) return fail("a workflow names an action that is not a plain reference");
+        if (`${match[1]!}/${match[2]!}`.toLowerCase() === self.repository && match[4] === self.branch) {
+          // This repository at its default branch is the file that is there.
+          const path = match[3] === undefined ? "" : normalizedPath(match[3]);
+          if (path === undefined) return fail("a workflow names a path of this repository that is not a plain one");
+          reach.local.push({ path });
+        } else {
+          reach.remote.push(uses);
+        }
       }
     }
     const run = node["run"];
     if (typeof run === "string") {
-      for (const candidate of scriptCandidates(run)) {
+      const expanded = withKnownFolders(run, directory);
+      const named = [...scriptCandidates(expanded), ...toolManifests(expanded)];
+      for (const candidate of named) {
         reach.scripts.push(candidate);
         if (here !== undefined) reach.scripts.push(`${here}/${candidate}`);
       }
@@ -168,17 +222,21 @@ function reachOf(document: unknown, directory: string): Reach {
 
 // ---- the scan
 
-async function scan(reader: AgentRepositoryReader, now: () => number): Promise<RepoCommandTriggers> {
+async function scan(reader: AgentRepositoryReader, now: () => number, selfRepository: string): Promise<RepoCommandTriggers> {
   const started = now();
+  const self: Self = { repository: selfRepository, branch: reader.defaultBranch };
   const hashed = new Map<string, string>();
   const remote = new Set<string>();
   let lookups = 0;
   const lookedUp = new Map<string, Awaited<ReturnType<AgentRepositoryReader["read"]>>>();
+  const spend = (): void => {
+    lookups += 1;
+    if (lookups > MAX_LOOKUPS) fail("a scan needs too many lookups");
+    if (now() - started > SCAN_BUDGET_MS) fail("a scan takes too long");
+  };
   const read = async (path: string) => {
     if (lookedUp.has(path)) return lookedUp.get(path);
-    lookups += 1;
-    if (lookups > MAX_LOOKUPS) return fail("a scan needs too many lookups");
-    if (now() - started > SCAN_BUDGET_MS) return fail("a scan takes too long");
+    spend();
     const file = await reader.read(path, MAX_FILE_BYTES);
     if (file !== undefined && "tooLarge" in file && file.tooLarge === true) fail("a file is over the size limit");
     lookedUp.set(path, file);
@@ -210,18 +268,32 @@ async function scan(reader: AgentRepositoryReader, now: () => number): Promise<R
 
   // Which workflows act on comments. A file that is not a workflow (not a mapping) can't be judged, so it fails closed.
   const triggering: Array<{ path: string; sha: string; document: unknown }> = [];
+  const others: Array<{ path: string; sha: string; document: Record<string, unknown> }> = [];
   for (const workflow of workflows) {
     const document = parseYaml(workflow.text);
-    if (!isRecord(document)) fail("a workflow file is not a mapping");
-    if (workflowTriggers(document as Record<string, unknown>)) triggering.push({ path: workflow.path, sha: workflow.sha, document });
+    if (!isRecord(document)) return fail("a workflow file is not a mapping");
+    if (workflowTriggers(document)) triggering.push({ path: workflow.path, sha: workflow.sha, document });
+    else others.push({ path: workflow.path, sha: workflow.sha, document });
   }
 
-  for (const entry of [...triggering, ...botConfigs]) hashed.set(entry.path, entry.sha);
+  // A workflow_run workflow runs from the default branch after another workflow, and whatever it does, it does because of the comment that started the chain.
+  // Whenever the repository triggers, every one of them is part of what was reviewed, whichever workflow it names (so a chain of any length is followed).
+  const triggers = triggering.length > 0 || botConfigs.length > 0;
+  const chained: typeof triggering = [];
+  if (triggers) {
+    for (const { path, sha, document } of others) {
+      const on = Object.hasOwn(document, "on") ? document["on"] : document["true"];
+      if (eventsOf(on).some(({ event }) => event === "workflow_run")) chained.push({ path, sha, document });
+    }
+  }
+  const reviewed = [...triggering, ...chained];
 
-  // What the triggering workflows reach, transitively through local actions and reusable workflows.
+  for (const entry of [...reviewed, ...botConfigs]) hashed.set(entry.path, entry.sha);
+
+  // What those workflows reach, transitively through local actions and reusable workflows.
   let reached = 0;
-  const pending: Array<{ path: string; document: unknown; directory: string }> = triggering.map((entry) => ({ path: entry.path, document: entry.document, directory: "" }));
-  const visited = new Set<string>(triggering.map((entry) => entry.path));
+  const pending: Array<{ path: string; document: unknown; directory: string }> = reviewed.map((entry) => ({ path: entry.path, document: entry.document, directory: "" }));
+  const visited = new Set<string>(reviewed.map((entry) => entry.path));
   const take = async (path: string, followYaml: boolean, directory: string): Promise<void> => {
     if (visited.has(path)) return;
     visited.add(path);
@@ -232,16 +304,36 @@ async function scan(reader: AgentRepositoryReader, now: () => number): Promise<R
     hashed.set(path, file.sha);
     if (followYaml) pending.push({ path, document: parseYaml(file.text), directory });
   };
+  /** Every file under a local action's folder is that action's code, whether or not a run line names it. */
+  const takeDirectory = async (directory: string, depth: number): Promise<void> => {
+    if (depth > MAX_DIRECTORY_DEPTH) fail("a local action's folder is nested too deeply");
+    spend();
+    const listing = await reader.list(directory);
+    if (listing === undefined) return;
+    if (listing.truncated) fail("a local action's folder may be cut short");
+    for (const entry of listing.entries) {
+      if (entry.type === "dir") await takeDirectory(entry.path, depth + 1);
+      else if (entry.type === "file") {
+        if (entry.size > MAX_FILE_BYTES) fail("a file is over the size limit");
+        await take(entry.path, false, "");
+      } else fail("a local action's folder holds something that is not a plain file");
+    }
+  };
   while (pending.length > 0) {
     const current = pending.shift()!;
-    const reach = reachOf(current.document, current.directory);
+    const reach = reachOf(current.document, current.directory, self);
     for (const uses of reach.remote) remote.add(uses);
     for (const { path } of reach.local) {
       if (/\.ya?ml$/iu.test(path)) await take(path, true, path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
       else {
         const action = [path === "" ? "action.yml" : `${path}/action.yml`, path === "" ? "action.yaml" : `${path}/action.yaml`];
         for (const candidate of action) {
-          if (!visited.has(candidate) && (await read(candidate)) !== undefined) { await take(candidate, true, path); break; }
+          if (!visited.has(candidate) && (await read(candidate)) !== undefined) {
+            await take(candidate, true, path);
+            // The root action is the whole repository; only its action file is its own.
+            if (path !== "") await takeDirectory(path, 0);
+            break;
+          }
         }
       }
     }
@@ -250,9 +342,11 @@ async function scan(reader: AgentRepositoryReader, now: () => number): Promise<R
 
   const files = [...hashed.keys(), ...remote].sort();
   if (files.length > COMMENT_TRIGGER_FILES_MAX) fail("a scan lists too many files");
+  // What is listed reaches the API and the page an admin decides on: a name with a control or format character (a bidi override, say) is not shown, it fails closed.
+  if (files.some((file) => file.length > COMMENT_TRIGGER_FILE_NAME_MAX || /[\p{Cc}\p{Cf}]/u.test(file))) fail("a file name holds control or format characters");
   const pairs = [...hashed.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   return {
-    triggers: triggering.length > 0 || botConfigs.length > 0,
+    triggers,
     failedClosed: false,
     digest: sha256(pairs.map(([path, sha]) => `${path}\t${sha}\n`).join("")),
     files,
@@ -267,7 +361,7 @@ async function scan(reader: AgentRepositoryReader, now: () => number): Promise<R
  * installation bound to another org gives no token, which also fails closed). A successful scan is kept for this run only, in `deps.cache`; a failed one is
  * not, so the next call tries again.
  */
-export async function repoCommandTriggers(deps: RepoScanDependencies, input: { orgId: OrgId; repository: string }): Promise<RepoCommandTriggers> {
+export async function repoCommandTriggers(deps: RepoScanDependencies, input: { orgId: OrgId; repository: string; /** The installation the project pinned for this repository: the reader is held to it. */ installationId?: number | undefined }): Promise<RepoCommandTriggers> {
   const checked = CommentTriggerRepositorySchema.safeParse(input.repository);
   if (!checked.success) throw agentXError("CONFIG_INVALID", "repository: must be a repository as owner/name");
   const key = cacheNameOf(input.orgId, checked.data.toLowerCase());
@@ -275,7 +369,8 @@ export async function repoCommandTriggers(deps: RepoScanDependencies, input: { o
   if (isKeptScan(kept)) return kept;
   let result: RepoCommandTriggers;
   try {
-    result = await scan(await deps.repositoryReader({ orgId: input.orgId, repositoryUrl: `https://github.com/${checked.data}.git` }), deps.now ?? Date.now);
+    const reader = await deps.repositoryReader({ orgId: input.orgId, repositoryUrl: `https://github.com/${checked.data}.git`, ...(input.installationId === undefined ? {} : { installationId: input.installationId }) });
+    result = await scan(reader, deps.now ?? Date.now, checked.data.toLowerCase());
   } catch {
     // Whatever went wrong, nothing is known about this repository, so the answer is the cautious one. The reason stays out of the answer and the log:
     // it may hold a path or a name from the repository.

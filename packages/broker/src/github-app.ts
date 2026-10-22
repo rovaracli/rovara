@@ -118,6 +118,12 @@ export interface GitHubInstallationRepository { fullName: string; githubReposito
 /** The scope an agent's GitHub reads and tokens take: always an org's own work, never a system scope (Plan 3, PF10). */
 export type AgentGitHubScope = { orgId: OrgId };
 
+/**
+ * What an agent's mint may be held to: the installation the project pinned for this repository (`installationId` on the project's repository). A repository
+ * that GitHub now reaches through another installation gets no token (GITHUB_NOT_CONNECTED), whatever the org's bindings say.
+ */
+export interface AgentTokenOptions { installationId?: number | undefined }
+
 /** One entry of a repository directory, as GitHub lists it. */
 export interface AgentRepositoryEntry { name: string; path: string; type: "file" | "dir" | "symlink" | "submodule" | "other"; sha: string; size: number }
 /** A file's blob sha and size, and its text unless it is over the cap that was asked for (`tooLarge`). */
@@ -311,18 +317,20 @@ export class GitHubAppCredentialProvider {
    * pull_requests, contents and metadata are refused (FORBIDDEN) before GitHub is asked. For an org on a cloud install the installation must
    * be bound to the org, active, at this moment (`requireInstallationBound`), like every other mint (PF10).
    */
-  async createAgentInstallationToken(repository: string | { owner: string; name: string }, permissions: GitHubAgentTokenPermissions, scope: AgentGitHubScope): Promise<string> {
+  async createAgentInstallationToken(repository: string | { owner: string; name: string }, permissions: GitHubAgentTokenPermissions, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<string> {
     requireAgentScope(scope);
     const checked = checkAgentTokenPermissions(permissions);
     const installed = await this.installed(typeof repository === "string" ? parseGitHubRepository(repository) : repository, scope);
+    requirePinnedInstallation(installed, options);
     return this.createInstallationToken(installed, { ...checked, metadata: "read" }, scope);
   }
 
   /** The repository as the installation spells it, checked for the org (once), with an agent token for it. */
-  private async installedWithAgentToken(repositoryUrl: string, permissions: GitHubAgentTokenPermissions, scope: AgentGitHubScope): Promise<{ repository: InstalledRepository; token: string }> {
+  private async installedWithAgentToken(repositoryUrl: string, permissions: GitHubAgentTokenPermissions, scope: AgentGitHubScope, options: AgentTokenOptions): Promise<{ repository: InstalledRepository; token: string }> {
     requireAgentScope(scope);
     const checked = checkAgentTokenPermissions(permissions);
     const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    requirePinnedInstallation(repository, options);
     return { repository, token: await this.createInstallationToken(repository, { ...checked, metadata: "read" }, scope) };
   }
 
@@ -330,9 +338,9 @@ export class GitHubAppCredentialProvider {
    * The head commit of a pull request, read with an agent token (`pull_requests: read`, `contents: read`) for the org, so a run that reviews it
    * checks out exactly that commit. A pull request that is not there is a clear refusal; anything else GitHub says is "unavailable".
    */
-  async getAgentPullRequestHead(repositoryUrl: string, number: number, scope: AgentGitHubScope): Promise<{ headSha: string; state: "open" | "closed" | "merged" }> {
+  async getAgentPullRequestHead(repositoryUrl: string, number: number, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<{ headSha: string; state: "open" | "closed" | "merged" }> {
     if (!Number.isSafeInteger(number) || number < 1) throw agentXError("CONFIG_INVALID", "pull request number is invalid");
-    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { pull_requests: "read", contents: "read" }, scope);
+    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { pull_requests: "read", contents: "read" }, scope, options);
     const response = await this.fetchImplementation(pullRequestUrl(repository, number), { headers: githubHeaders(token), signal: AbortSignal.timeout(AGENT_READ_TIMEOUT_MS), redirect: "error" });
     if (response.status === 404) {
       await response.body?.cancel();
@@ -352,8 +360,8 @@ export class GitHubAppCredentialProvider {
    * A read-only view of the repository's default branch for an org's run: one `contents: read` agent token, the default branch's head commit
    * read once, and every file and directory read at that commit. Nothing is cached beyond the reader's own life.
    */
-  async agentRepositoryReader(repositoryUrl: string, scope: AgentGitHubScope): Promise<AgentRepositoryReader> {
-    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { contents: "read" }, scope);
+  async agentRepositoryReader(repositoryUrl: string, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<AgentRepositoryReader> {
+    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { contents: "read" }, scope, options);
     const base = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
     const get = (path: string, accept?: string): Promise<Response> =>
       this.fetchImplementation(`${base}${path}`, { headers: { ...githubHeaders(token), ...(accept === undefined ? {} : { accept }) }, signal: AbortSignal.timeout(AGENT_READ_TIMEOUT_MS), redirect: "error" });
@@ -380,7 +388,8 @@ export class GitHubAppCredentialProvider {
         const response = await get(contents(path));
         if (response.status === 404) { await response.body?.cancel(); return undefined; }
         const body = await json(response, "directory");
-        if (!Array.isArray(body)) return undefined;
+        // Only a 404 is "not there": a 200 that is not a listing (a file, a link, a submodule) is something this reader can't read.
+        if (!Array.isArray(body)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not answer with a directory listing");
         const entries = body.map((entry): AgentRepositoryEntry => {
           const record = entry !== null && typeof entry === "object" ? entry as Record<string, unknown> : {};
           if (typeof record.name !== "string" || typeof record.path !== "string" || typeof record.sha !== "string" || typeof record.size !== "number") {
@@ -395,9 +404,12 @@ export class GitHubAppCredentialProvider {
         const response = await get(contents(path));
         if (response.status === 404) { await response.body?.cancel(); return undefined; }
         const body = await json(response, "file");
-        const record = body !== null && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : undefined;
-        if (record === undefined) return undefined;
-        if (record.type !== "file" || typeof record.sha !== "string" || typeof record.size !== "number") return undefined;
+        // A directory where a file was asked for is not a file there; anything else that is not a file (a link, a submodule, an odd answer) can't be read.
+        if (Array.isArray(body)) return undefined;
+        const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : undefined;
+        if (record === undefined || record.type !== "file" || typeof record.sha !== "string" || typeof record.size !== "number") {
+          throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not answer with a file");
+        }
         if (record.size > maxBytes) return { sha: record.sha, size: record.size, tooLarge: true };
         if (record.encoding !== "base64" || typeof record.content !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid file response");
         const bytes = Buffer.from(record.content, "base64");
@@ -412,8 +424,8 @@ export class GitHubAppCredentialProvider {
    * label id in an agent's call can be turned into the name a trigger-label rule checks. More than 1,000 labels throws: an id that can't be
    * looked up is treated as consequential by the caller.
    */
-  async listAgentRepositoryLabels(repositoryUrl: string, scope: AgentGitHubScope): Promise<AgentRepositoryLabel[]> {
-    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { issues: "read" }, scope);
+  async listAgentRepositoryLabels(repositoryUrl: string, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<AgentRepositoryLabel[]> {
+    const { repository, token } = await this.installedWithAgentToken(repositoryUrl, { issues: "read" }, scope, options);
     const labels: AgentRepositoryLabel[] = [];
     for (let page = 1; page <= AGENT_LABEL_PAGES; page += 1) {
       const response = await this.fetchImplementation(
@@ -1283,6 +1295,12 @@ function matchesUpdate(details: GitHubPullRequestDetails, update: GitHubPullRequ
   return (update.title === undefined || details.title === update.title) &&
     (update.body === undefined || details.body === update.body) &&
     (update.state === undefined || details.state === update.state);
+}
+
+function requirePinnedInstallation(installed: { owner: string; name: string; installationId: number }, options: AgentTokenOptions): void {
+  if (options.installationId !== undefined && options.installationId !== installed.installationId) {
+    throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${installed.owner}/${installed.name}`));
+  }
 }
 
 /** Refuses (FORBIDDEN) any scope but an org's own: an agent's token is never minted for a system scope or for no one. */

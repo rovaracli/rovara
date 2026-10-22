@@ -184,9 +184,9 @@ export interface CommentTriggerRule {
  */
 export async function commentTriggerRule(
   deps: OptOutDependencies & { repositoryReader: Parameters<typeof repoCommandTriggers>[0]["repositoryReader"] },
-  input: { orgId: OrgId; project: string; repository: string; taskId?: string; cache?: RunCache },
+  input: { orgId: OrgId; project: string; repository: string; taskId?: string; cache?: RunCache; /** The installation the project pinned for the repository: the scan is held to it. */ installationId?: number },
 ): Promise<CommentTriggerRule> {
-  const scan = await repoCommandTriggers({ repositoryReader: deps.repositoryReader, now: deps.now, ...(input.cache === undefined ? {} : { cache: input.cache }) }, { orgId: input.orgId, repository: input.repository });
+  const scan = await repoCommandTriggers({ repositoryReader: deps.repositoryReader, now: deps.now, ...(input.cache === undefined ? {} : { cache: input.cache }) }, { orgId: input.orgId, repository: input.repository, ...(input.installationId === undefined ? {} : { installationId: input.installationId }) });
   if (scan.failedClosed) return { consequential: true, scan, optedOut: false };
   await lapseStaleOptOuts(deps, { orgId: input.orgId, repository: input.repository, scan, ...(input.taskId === undefined ? {} : { taskId: input.taskId }) });
   const stored = await readOptOut(deps, input.orgId, input.repository, input.project);
@@ -246,13 +246,21 @@ const repositoryUrlName = (url: string): string | undefined => {
   }
 };
 
-/** The repository as the project registers it (`owner/name`), or undefined when it is not one of the project's. */
-export async function projectRepository(deps: Pick<ApprovalDependencies, "projectRepositories">, orgId: OrgId, project: string, repository: string): Promise<string | undefined> {
+/** The repository as the project registers it (`owner/name`) with the installation the project pinned for it, or undefined when it is not one of the project's. */
+export async function projectRepositoryEntry(deps: Pick<ApprovalDependencies, "projectRepositories">, orgId: OrgId, project: string, repository: string): Promise<{ repository: string; installationId?: number } | undefined> {
   if (deps.projectRepositories === undefined) throw agentXError("NOT_FOUND", "comment-triggered workflows are not set up in this deployment");
   const repositories = await deps.projectRepositories(orgId, project);
   if (repositories === undefined) return undefined;
   const wanted = repository.toLowerCase();
-  return repositories.map((candidate) => repositoryUrlName(candidate.url)).find((name) => name === wanted);
+  for (const candidate of repositories) {
+    if (repositoryUrlName(candidate.url) === wanted) return { repository: wanted, ...(candidate.installationId === undefined ? {} : { installationId: candidate.installationId }) };
+  }
+  return undefined;
+}
+
+/** The repository as the project registers it (`owner/name`), or undefined when it is not one of the project's. */
+export async function projectRepository(deps: Pick<ApprovalDependencies, "projectRepositories">, orgId: OrgId, project: string, repository: string): Promise<string | undefined> {
+  return (await projectRepositoryEntry(deps, orgId, project, repository))?.repository;
 }
 
 /** What the page and the routes say about one repository's workflows: the scan, and the project's opt-out when it matches. */
@@ -266,9 +274,12 @@ export interface RepositoryTriggerView {
 }
 
 /** A fresh scan (never the run cache's) of one repository for an admin to review, with the project's opt-out when there is one. */
-export async function reviewRepository(deps: OptOutDependencies & Pick<ApprovalDependencies, "repositoryReader">, input: { orgId: OrgId; project: string; repository: string }): Promise<RepositoryTriggerView> {
+export async function reviewRepository(deps: OptOutDependencies & Pick<ApprovalDependencies, "repositoryReader" | "projectRepositories">, input: { orgId: OrgId; project: string; repository: string }): Promise<RepositoryTriggerView> {
   if (deps.repositoryReader === undefined) throw agentXError("NOT_FOUND", "comment-triggered workflows are not set up in this deployment");
-  const scan = await repoCommandTriggers({ repositoryReader: deps.repositoryReader, now: deps.now }, { orgId: input.orgId, repository: input.repository });
+  // The scan is held to the installation the project pinned for the repository.
+  const entry = await projectRepositoryEntry(deps, input.orgId, input.project, input.repository);
+  if (entry === undefined) throw agentXError("CONFIG_INVALID", "repository: that is not one of this project's repositories");
+  const scan = await repoCommandTriggers({ repositoryReader: deps.repositoryReader, now: deps.now }, { orgId: input.orgId, repository: input.repository, ...(entry.installationId === undefined ? {} : { installationId: entry.installationId }) });
   const stored = await readOptOut(deps, input.orgId, input.repository, input.project);
   return {
     repository: input.repository, triggers: scan.triggers, failedClosed: scan.failedClosed, digest: scan.digest, files: scan.files,
@@ -299,7 +310,7 @@ export async function requestOptOut(
   const view = await reviewRepository(deps, { orgId: caller.orgId, project: input.project, repository });
   if (view.failedClosed) throw agentXError("CONFIG_INVALID", COMMENT_TRIGGER_UNREADABLE_TEXT);
   if (view.digest !== input.expectedDigest) throw agentXError("CONFIG_INVALID", COMMENT_TRIGGER_STALE_TEXT);
-  const subject: OptOutChangeSubject = { kind: "opt_out", project: input.project, repository, expectedDigest: input.expectedDigest, files: view.files, reason: input.reason };
+  const subject: OptOutChangeSubject = { kind: "opt_out", project: input.project, repository, expectedDigest: input.expectedDigest, files: view.files, reason: checked.data.reason };
   const changes = [
     `Lets agents comment, review and label in ${repository} on ${input.project} without waiting for a person, although workflows there act on comments or labels`,
     `Covers ${String(view.files.length)} files, digest ${input.expectedDigest.slice(0, 12)}`,
@@ -325,10 +336,11 @@ function decidedBy(record: ApprovalRecord): string {
 async function confirmOptOut(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
   const by = decidedBy(record);
   const subject = record.subject as OptOutChangeSubject;
-  const repository = await projectRepository(deps, record.orgId, subject.project, subject.repository);
-  if (repository === undefined) throw agentXError("CONFIG_INVALID", "this repository is no longer one of the project's, so the opt-out can't be applied");
+  const entry = await projectRepositoryEntry(deps, record.orgId, subject.project, subject.repository);
+  if (entry === undefined) throw agentXError("CONFIG_INVALID", "this repository is no longer one of the project's, so the opt-out can't be applied");
+  const repository = entry.repository;
   if (deps.repositoryReader === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "comment-triggered workflows are not set up in this deployment");
-  const scan = await repoCommandTriggers({ repositoryReader: deps.repositoryReader, now: deps.now }, { orgId: record.orgId, repository });
+  const scan = await repoCommandTriggers({ repositoryReader: deps.repositoryReader, now: deps.now }, { orgId: record.orgId, repository, ...(entry.installationId === undefined ? {} : { installationId: entry.installationId }) });
   if (scan.failedClosed) throw agentXError("CONFIG_INVALID", COMMENT_TRIGGER_UNREADABLE_TEXT);
   if (scan.digest !== subject.expectedDigest) throw agentXError("CONFIG_INVALID", COMMENT_TRIGGER_STALE_TEXT);
 

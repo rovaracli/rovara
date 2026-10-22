@@ -373,8 +373,8 @@ describe("reading the default branch, once per repository per run", () => {
   it("hands the project's pinned installation to the reader, and only when there is one", async () => {
     const made: Array<Record<string, unknown>> = [];
     const deps = { repositoryReader: async (input: Record<string, unknown>) => { made.push(input); return treeReader({}); } };
-    await repoCommandTriggers(deps as never, { orgId: TEST_ORG, repository: "example/demo", installationId: 55 });
-    await repoCommandTriggers(deps as never, { orgId: TEST_ORG, repository: "example/demo" });
+    await repoCommandTriggers(deps, { orgId: TEST_ORG, repository: "example/demo", installationId: 55 });
+    await repoCommandTriggers(deps, { orgId: TEST_ORG, repository: "example/demo" });
     expect(made).toEqual([{ orgId: TEST_ORG, repositoryUrl: "https://github.com/example/demo.git", installationId: 55 }, { orgId: TEST_ORG, repositoryUrl: "https://github.com/example/demo.git" }]);
   });
 

@@ -58,7 +58,7 @@ import { taskAgentRunKey, taskRecipeKey } from "../developer/task-records.js";
 export const RUN_RECORD_MEMORY_DAYS = 90;
 
 /** Reads a pull request's head commit through the GitHub App, for the org (a read-only token; the run only ever reads). */
-export type PullRequestHeadReader = (input: { orgId: OrgId; repositoryUrl: string; number: number }) => Promise<{ headSha: string }>;
+export type PullRequestHeadReader = (input: { orgId: OrgId; repositoryUrl: string; number: number; /** The installation the project pinned for the repository, when it did. */ installationId?: number }) => Promise<{ headSha: string }>;
 
 /** What the run start needs on top of the roster checks. */
 export interface AgentRunDependencies extends RosterDependencies {
@@ -233,7 +233,7 @@ export interface PrepareRunInput {
   runLimitUsd?: number;
   resultContract?: ResultContract;
   /** The project's repositories, from the revision the task starts on. */
-  repositories: ReadonlyArray<{ name: string; url: string }>;
+  repositories: ReadonlyArray<{ name: string; url: string; installationId?: number | undefined }>;
   /** The models the project approves (`definition.models.approved`), from the same revision; absent when it lists none. */
   projectApproved?: ReadonlyArray<ModelIdentifier>;
 }
@@ -340,7 +340,7 @@ function githubRepositoryOf(url: string): string | undefined {
  * org; the run's workspace checks that commit out read-only (Task 22 carries it to the step). Anything else in the context is information
  * and reads nothing. Fails closed: when the head cannot be read the run is not started, so a review never looks at the wrong commit.
  */
-async function pullRequestHeads(deps: AgentRunDependencies, orgId: OrgId, input: RunInput, repositories: ReadonlyArray<{ name: string; url: string }>): Promise<RunCheckout[]> {
+async function pullRequestHeads(deps: AgentRunDependencies, orgId: OrgId, input: RunInput, repositories: ReadonlyArray<{ name: string; url: string; installationId?: number | undefined }>): Promise<RunCheckout[]> {
   const found: RunCheckout[] = [];
   for (const item of input.context ?? []) {
     if (item.kind !== "pull_request") continue;
@@ -353,7 +353,7 @@ async function pullRequestHeads(deps: AgentRunDependencies, orgId: OrgId, input:
     if (found.some((entry) => entry.repository === repository.name && entry.pullRequest === number)) continue;
     try {
       if (deps.pullRequestHead === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading pull requests is not set up in this deployment");
-      const { headSha } = await deps.pullRequestHead({ orgId, repositoryUrl: repository.url, number });
+      const { headSha } = await deps.pullRequestHead({ orgId, repositoryUrl: repository.url, number, ...(repository.installationId === undefined ? {} : { installationId: repository.installationId }) });
       if (!/^[a-f0-9]{40}$/.test(headSha)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not answer with a commit");
       found.push({ repository: repository.name, pullRequest: number, headSha });
     } catch (error) {
