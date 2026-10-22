@@ -68,7 +68,7 @@ async function get(deps: Pick<BudgetDependencies, "documentClient" | "tableName"
 }
 
 /** The org's budget settings; an org that never set any, or a record that does not read, has the defaults. */
-export async function readBudgets(deps: Pick<BudgetDependencies, "documentClient" | "tableName" | "cloud">, orgId: OrgId): Promise<OrgBudgetSettings> {
+export async function readBudgets<D extends Pick<BudgetDependencies, "documentClient" | "tableName" | "cloud">>(deps: D, orgId: OrgId): Promise<OrgBudgetSettings> {
   const base = defaults(deps.cloud);
   const item = await get(deps, orgSettingsKey(orgId, "BUDGET"));
   if (item === undefined) return base;

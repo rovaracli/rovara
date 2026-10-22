@@ -2,6 +2,7 @@
 // the agent store changes in the same transaction as the agent's own item, so it can't drift from the budgets it adds up. Only an active
 // agent's `monthlyBudgetUsd` counts: not a per-run cap, not a top-up (Task 33 keeps those under the same cap), and not an archived agent.
 import { ownerBudgetKey, type AgentOwner, type OrgId } from "@agentx/contracts";
+import type { AgentRecord, BuiltinSettings } from "../agents/store.js";
 import { addToCounter, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { cleanUsd } from "./top-ups.js";
 
@@ -14,8 +15,8 @@ export interface BudgetSubject {
 }
 
 /** The developer an agent's budget counts for: the member owner, else the accountable maintainer; a built-in with no accountable counts for no one. */
-export function budgetOwnerOf(record: Pick<BudgetSubject, "owner" | "accountable">): string | undefined {
-  return record.owner?.kind === "member" ? record.owner.developerId : record.accountable?.developerId;
+export function budgetOwnerOf(record: AgentRecord | BuiltinSettings | BudgetSubject): string | undefined {
+  return "owner" in record && record.owner?.kind === "member" ? record.owner.developerId : record.accountable?.developerId;
 }
 
 /** `subject` with some of its budget fields replaced; a field given as `undefined` is removed. */

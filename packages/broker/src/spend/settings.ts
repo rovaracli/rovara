@@ -138,12 +138,12 @@ export function applyProjectAiChange(current: ProjectAiSettings, change: Project
 }
 
 /** The path's planning limit: the project's own, else the default. */
-export function planningLimit(settings: Pick<ProjectAiSettings, "planningLimitUsd">, path: "QUICK" | "FULL"): number {
+export function planningLimit(settings: Partial<ProjectAiSettings>, path: "QUICK" | "FULL"): number {
   return settings.planningLimitUsd?.[path] ?? DEFAULT_PLANNING_LIMIT_USD[path];
 }
 
 /** The model sources a project tries, in order: its own order, else the org's (an absent value means the org order). */
-export function projectSourceOrder(settings: Pick<ProjectAiSettings, "sourceOrder">, orgOrder: readonly string[]): readonly string[] {
+export function projectSourceOrder(settings: Partial<ProjectAiSettings>, orgOrder: readonly string[]): readonly string[] {
   return settings.sourceOrder ?? orgOrder;
 }
 

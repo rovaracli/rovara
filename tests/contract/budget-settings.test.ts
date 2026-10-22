@@ -124,9 +124,8 @@ describe("a top-up on the proxy's limits", () => {
 
   it("leaves an unset limit unset: a top-up on no limit changes nothing the proxy is told", async () => {
     const { access, db, topUp } = limitsSetup();
-    const orgs = new OrgStore({ documentClient: db, tableName: "state", now: () => NOW_OCTOBER });
     topUp("2026-10", { kind: "member", developerId: DEV1 }, 10);
-    await ensureSynced({ documentClient: db, tableName: "state", access, orgs, now: () => NOW_OCTOBER }, TEST_ORG, DEV1); // a private install: no limits
+    await ensureSynced({ documentClient: db, tableName: "state", access, now: () => NOW_OCTOBER }, TEST_ORG, DEV1); // a private install: no limits
     expect(access.upsertMember.mock.calls[0]?.[2]).toBeGreaterThan(100_000);
     expect(access.upsertMember.mock.calls[0]?.[2]).toBe(1_000_000);
   });
@@ -477,7 +476,7 @@ async function routeSetup(options: { orgSourceOrder?: string[]; trial?: boolean 
     store, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: "https://cell.example.com",
     signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }),
   };
-  const call = async (who: Developer, method: string, path: string, body?: Record<string, unknown>, requestId = randomUUID()): Promise<Reply> => {
+  const call = async (who: Developer, method: string, path: string, body?: Record<string, unknown>, requestId: string = randomUUID()): Promise<Reply> => {
     const reply = await h.dev(who, method, path, body === undefined ? undefined : { requestId, ...body });
     const { requestId: _requestId, ...rest } = reply.body; // eslint-disable-line @typescript-eslint/no-unused-vars -- the envelope's id is not part of an answer
     return { status: reply.status, body: rest };
