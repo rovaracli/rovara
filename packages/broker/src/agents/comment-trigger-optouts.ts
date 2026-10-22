@@ -270,6 +270,8 @@ export interface RepositoryTriggerView {
   failedClosed: boolean;
   digest: string;
   files: string[];
+  /** Why the scan failed closed, in one fixed sentence, when it knows. Never text from the repository. */
+  hint?: string;
   optOut?: CommentTriggerOptOut;
 }
 
@@ -283,6 +285,7 @@ export async function reviewRepository(deps: OptOutDependencies & Pick<ApprovalD
   const stored = await readOptOut(deps, input.orgId, input.repository, input.project);
   return {
     repository: input.repository, triggers: scan.triggers, failedClosed: scan.failedClosed, digest: scan.digest, files: scan.files,
+    ...(scan.hint === undefined ? {} : { hint: scan.hint }),
     ...(stored === undefined ? {} : { optOut: optOutView(stored) }),
   };
 }

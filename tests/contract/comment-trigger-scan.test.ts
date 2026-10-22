@@ -228,7 +228,7 @@ describe("what a triggering workflow reaches", () => {
   });
 
   it("follows a script that lives in a step's working directory", async () => {
-    const files = { [WORKFLOW]: trigger("./build.sh", "      - working-directory: app\n        run: ./build.sh\n"), "app/build.sh": "echo build" };
+    const files = { [WORKFLOW]: `name: w\non: issue_comment\njobs:\n  j:\n    runs-on: x\n    steps:\n      - working-directory: app\n        run: ./build.sh\n`, "app/build.sh": "echo build" };
     expect((await scan(files)).files).toEqual([WORKFLOW, "app/build.sh"].sort());
   });
 
@@ -324,7 +324,7 @@ describe("reading the default branch, once per repository per run", () => {
     expect(made).toEqual([{ orgId: TEST_ORG, repositoryUrl: "https://github.com/Example/Demo.git" }]);
     // Only the workflow listing and the fixed bot-config paths were read, and the file itself once.
     expect(reader.lists).toEqual([".github/workflows"]);
-    expect(reader.reads).toEqual([WORKFLOW, ...BOT_CONFIG_PATHS]);
+    expect(reader.reads).toEqual([WORKFLOW, ...BOT_CONFIG_PATHS, ".gitmodules"]);
   });
 
   it("scans once per repository per run when a cache is given, and again with none", async () => {
@@ -591,8 +591,8 @@ describe("what a files entry may be (review I4)", () => {
     const bidi = "tools/\u202Ehs.yolped";
     expect(await scan({ [WORKFLOW]: trigger("", `./${bidi}`), [bidi]: "x" })).toMatchObject({ triggers: true, failedClosed: true });
     expect(await scan({ ".github/workflows/\u200Bci.yml": workflow("issue_comment") })).toMatchObject({ triggers: true, failedClosed: true });
-    // The same path, with the character, but no file there: nothing is hashed, so nothing odd is listed.
-    expect(await scan({ [WORKFLOW]: trigger("", `./${bidi}`) })).toMatchObject({ failedClosed: false, files: [WORKFLOW] });
+    // The same path with no file there is a named file that is missing: also closed, and nothing odd is listed.
+    expect(await scan({ [WORKFLOW]: trigger("", `./${bidi}`) })).toMatchObject({ failedClosed: true, files: [] });
   });
 });
 
@@ -612,9 +612,10 @@ describe("the same repository named remotely (review M3)", () => {
   });
 
   it("keeps another ref of this repository, and another repository, as remote and unhashed", async () => {
-    const files = { [WORKFLOW]: caller(`example/demo/${deploy}@v1`), [deploy]: reusable };
-    expect((await scan(files)).files).toEqual([WORKFLOW, `example/demo/${deploy}@v1`].sort());
-    expect((await scan({ [WORKFLOW]: caller(`example/other/${deploy}@main`), [deploy]: reusable })).files).toEqual([WORKFLOW, `example/other/${deploy}@main`].sort());
+    // The reusable file is a workflow of this repository, so it is read whichever way it is named; the remote name is listed and not hashed.
+    const files = { [WORKFLOW]: caller(`example/demo/${deploy}@v1`), [deploy]: reusable, "go.sh": "x" };
+    expect((await scan(files)).files).toEqual([WORKFLOW, deploy, "go.sh", `example/demo/${deploy}@v1`].sort());
+    expect((await scan({ ...files, [WORKFLOW]: caller(`example/other/${deploy}@main`) })).files).toEqual([WORKFLOW, deploy, "go.sh", `example/other/${deploy}@main`].sort());
   });
 });
 
@@ -735,7 +736,7 @@ describe("a path that leaves the folder fails closed (round 2, item 3)", () => {
 });
 
 describe("BASH_ENV and a custom shell (round 2, item 4)", () => {
-  const files = { "scripts/env.sh": "export A=1", "scripts/wrap.sh": "exec bash \"$@\"" };
+  const files = { "scripts/env.sh": "export A=1", "scripts/wrap.sh": "echo wrapped" };
 
   it("hashes the file BASH_ENV names, at workflow, job and step level and in a run line", async () => {
     for (const where of [
@@ -996,7 +997,7 @@ describe("a directory change that is not spelled cd (round 3, B4)", () => {
 
 describe("files found or listed at run time (round 3, B5)", () => {
   it.each<[string]>([
-    ["find tools -name '*.sh' -exec bash {} \;"], ["find . -execdir ./x {} +"], ["find tools -ok bash {} \;"], ["run-parts tools/ci"], ["find tools -name x.sh | xargs -n1 bash"], ["xargs -a jobs.txt bash"],
+    ["find tools -name '*.sh' -exec bash {} \\;"], ["find . -execdir ./x {} +"], ["find tools -ok bash {} \\;"], ["run-parts tools/ci"], ["find tools -name x.sh | xargs -n1 bash"], ["xargs -a jobs.txt bash"],
     ["echo a | xargs"], ["ls | xargs -n1 sh"], ["xargs -I{} python {}"],
   ])("fails closed for %s", async (run) => {
     expect(await scan({ [WORKFLOW]: block(run), ...TOOLS_X })).toMatchObject(closedScan);
@@ -1132,7 +1133,7 @@ describe("what a scan that failed closed says (round 3, hint)", () => {
     ["a parent folder", "bash ../x.sh", "keep paths inside the repository: no .., glob or brace expansion"],
     ["make -C with a variable", "make -C $D", "use working-directory instead of -C, --prefix, --cwd or --chdir"],
     ["env -C", "env -C tools ./x.sh", "use working-directory instead of -C, --prefix, --cwd or --chdir"],
-    ["find -exec", "find . -exec bash {} \;", "name each script in the run block instead of finding or piping them"],
+    ["find -exec", "find . -exec bash {} \\;", "name each script in the run block instead of finding or piping them"],
     ["a missing file", "./nowhere.sh", "name only files that exist in the repository"],
     ["python -m", "python -m tools", "run Python scripts by path instead of python -m"],
   ])("gives one fixed hint for %s", async (_name, run, hint) => {
