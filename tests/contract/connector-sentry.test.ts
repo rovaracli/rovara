@@ -220,6 +220,15 @@ describe("running the tools", () => {
     expect(new URL(api.requests[0]!.url).pathname).toBe("/api/0/projects/acme/web-app/releases/");
   });
 
+  it("shows the model the formatted text of the issues, permalink included, and no structured copy (review I-2)", async () => {
+    const { result } = await run("list_issues", { limit: 5 });
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text).toContain("https://sentry.io/organizations/acme/issues/101/");
+    expect(result.text).toContain("WEB-1 [error, unresolved] TypeError: x is undefined");
+    expect(result.text.startsWith("[{")).toBe(false);
+    expect(result.text.length).toBeLessThanOrEqual(32_768);
+  });
+
   it("reads an issue of its own project", async () => {
     const { result, api } = await run("get_issue", { issueId: "101" });
     expect(result.status).toBe("SUCCEEDED");

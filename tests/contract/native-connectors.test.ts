@@ -2,9 +2,9 @@
 // approved tools, validates every call's arguments against the tool's schema, and answers text of a bounded size. `vendorFetch` is the only way a tool
 // reaches its vendor: one allowed host, https, no redirect, a bounded answer, and no credential in a failure. `safeLookup` refuses a non-public address when
 // the connection is made. No test here reaches a network.
-import { ToolRefusal } from "@agentx/gateway";
+import { ToolRefusal, discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
 import { describe, expect, it, vi } from "vitest";
-import { NativeToolRefusal, nativeConnection, type NativeTool } from "../../packages/broker/src/connectors/native/runtime.js";
+import { NATIVE_TEXT_LIMIT, NativeToolRefusal, nativeConnection, type NativeTool } from "../../packages/broker/src/connectors/native/runtime.js";
 import { VendorFetchError, safeLookup, safeVendorFetch, vendorFetch, vendorFetcher } from "../../packages/broker/src/connectors/native/vendor-fetch.js";
 
 const TOKEN = "sntrys_VERYSECRETTOKEN0123456789";
@@ -35,10 +35,10 @@ const big: NativeTool<Scope> = { name: "big", description: "Big", inputSchema: {
 const refusing: NativeTool<Scope> = { name: "refusing", description: "Refuses", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => { throw new NativeToolRefusal("that issue is not in web"); } };
 const failing: NativeTool<Scope> = { name: "failing", description: "Fails", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => { throw new VendorFetchError("the vendor could not be reached"); } };
 const crashing: NativeTool<Scope> = { name: "crashing", description: "Crashes", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => { throw new Error(`boom with ${TOKEN}`); } };
-const structured: NativeTool<Scope> = { name: "structured", description: "Structured", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => ({ text: "two rows", structured: [{ id: 1 }, { id: 2 }] }) };
 const quoting: NativeTool<Scope> = { name: "quoting", description: "Quotes", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => { throw new NativeToolRefusal(`the vendor said ${TOKEN}`); } };
 const leaking: NativeTool<Scope> = { name: "leaking", description: "Leaks", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => ({ text: `the vendor echoed ${TOKEN} back` }) };
-const ALL = [echo, big, refusing, failing, crashing, structured, quoting, leaking];
+const straddling: NativeTool<Scope> = { name: "straddling", description: "Straddles", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => ({ text: `${"x".repeat(NATIVE_TEXT_LIMIT - 22)}${TOKEN}${"y".repeat(500)}` }) };
+const ALL = [echo, big, refusing, failing, crashing, quoting, leaking, straddling];
 const SCOPE_ARGS = { organization: "acme", projectSlug: "web-app" };
 
 function connection(approved: readonly string[], fetch: Parameters<typeof nativeConnection>[2]["fetch"] = vi.fn() as never) {
@@ -48,8 +48,8 @@ const textOf = (result: { content?: Array<{ text?: string | undefined }> | undef
 
 describe("nativeConnection", () => {
   it("lists only the approved tools, each read-only, with the routing arguments required in its schema", () => {
-    const listed = connection(["echo", "structured"]).tools;
-    expect(listed.map((tool) => tool.name)).toEqual(["echo", "structured"]);
+    const listed = connection(["echo", "big"]).tools;
+    expect(listed.map((tool) => tool.name)).toEqual(["echo", "big"]);
     for (const tool of listed) {
       expect(tool.annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
       expect(tool.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
@@ -96,13 +96,29 @@ describe("nativeConnection", () => {
     expect(textOf(result)).toBe('echo {"text":"hi","limit":2,"mode":"a","items":[{"name":"n"}]} in acme/web-app');
   });
 
-  it("truncates a long answer to 32,768 characters with (truncated), and passes structured content", async () => {
-    const text = textOf(await connection(["big"]).call("big", SCOPE_ARGS));
-    expect(text).toHaveLength(32_768);
+  it("truncates a long answer to 32,768 characters with (truncated), and emits no structured content (review I-2)", async () => {
+    const result = await connection(["big"]).call("big", SCOPE_ARGS);
+    const text = textOf(result);
+    expect(text).toHaveLength(NATIVE_TEXT_LIMIT);
     expect(text.endsWith("(truncated)")).toBe(true);
-    const result = await connection(["structured"]).call("structured", SCOPE_ARGS);
-    expect(textOf(result)).toBe("two rows");
-    expect(result.structuredContent).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(result).not.toHaveProperty("structuredContent");
+  });
+
+  it("scrubs the token before it cuts, so no part of one that straddles the cut survives (review I-1)", async () => {
+    const text = textOf(await connection(["straddling"]).call("straddling", SCOPE_ARGS));
+    expect(text.length).toBeLessThanOrEqual(NATIVE_TEXT_LIMIT);
+    expect(text).toContain("[REDACTED]");
+    for (let start = 0; start + 8 <= TOKEN.length; start += 1) expect(text.includes(TOKEN.slice(start, start + 8)), TOKEN.slice(start, start + 8)).toBe(false);
+  });
+
+  it("refuses __proto__ as an argument no schema declares (review M-2)", async () => {
+    const args = JSON.parse('{"organization":"acme","projectSlug":"web-app","__proto__":{"x":1}}') as Record<string, unknown>;
+    const result = await connection(["echo"]).call("echo", args);
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe("echo: __proto__ is not allowed");
+    // The same name inside a nested object, where a schema declares its keys.
+    const nested = JSON.parse('{"organization":"acme","projectSlug":"web-app","items":[{"name":"a","__proto__":{"x":1}}]}') as Record<string, unknown>;
+    expect(textOf(await connection(["echo"]).call("echo", nested))).toBe("echo: items.0.__proto__ is not allowed");
   });
 
   it("replaces the token with [REDACTED] in anything a tool answers or refuses with", async () => {
@@ -237,5 +253,42 @@ describe("safeLookup (rebinding, Review Focus 6)", () => {
     const answer = await new Promise<unknown[]>((resolve) => seen[0]!.lookup("us.sentry.io", { all: true }, (...args) => resolve(args)));
     expect((answer[0] as Error).message).toContain("not public");
     expect(resolveHost).toHaveBeenCalledWith("us.sentry.io");
+  });
+});
+
+
+/** A tool run through the real engine (discovery, then `executeTool`) over a `nativeConnection`, as a connector would be. */
+async function throughEngine(tool: NativeTool<Scope>) {
+  const connect = (async (target: { tools: readonly string[]; token: string }) => nativeConnection<Scope>([tool], target.tools, { credential: { token: target.token, bindings: {} }, fetch: vi.fn() as never, routing: ROUTING })) as never;
+  const definition: ConnectorDefinition<{ alias: string }> = {
+    label: "Toy", endpoint: new URL("https://toy.example/"), permissionsHint: "the toy token",
+    credentials: { issue: async () => ({ token: TOKEN, bindings: {} }) },
+    binder: { properties: ["organization", "projectSlug"], bind: () => SCOPE_ARGS },
+    guards: [],
+  };
+  const context = { workspaceId: "ws", ownerKey: "owner", scopeAlias: "a", scope: { alias: "a" }, settingsRevision: 1, policy: { tools: [{ name: tool.name, access: "read" as const }] } };
+  const ledger: Ledger = { claim: async () => true, get: async () => undefined, finish: async () => undefined };
+  const discovered = (await discoverTools(definition, context, { connect })).tools.find((entry) => entry.name === tool.name)!;
+  return executeTool({ requestId: "11111111-1111-4111-8111-111111111111", scope: "a", tool: tool.name, schemaHash: discovered.schemaHash, arguments: {} }, definition, context, { connect, ledger });
+}
+
+describe("what the model sees through the engine", () => {
+  it("is the capped, scrubbed text of an oversized answer, and never more than 32,768 characters (review I-2)", async () => {
+    const result = await throughEngine(big);
+    expect(result.status).toBe("SUCCEEDED");
+    expect(result.text.length).toBeLessThanOrEqual(NATIVE_TEXT_LIMIT);
+    expect(result.text.endsWith("(truncated)")).toBe(true);
+    const cut = await throughEngine(straddling);
+    for (let start = 0; start + 8 <= TOKEN.length; start += 1) expect(cut.text.includes(TOKEN.slice(start, start + 8))).toBe(false);
+  });
+
+  it("is the refusal words we wrote, scrubbed of the token, with their reason, and never a crash's words (review M-1)", async () => {
+    expect(await throughEngine(refusing)).toMatchObject({ status: "FAILED", reason: "policy_denied", text: "that issue is not in web" });
+    expect(await throughEngine(failing)).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "the vendor could not be reached" });
+    expect(await throughEngine(quoting)).toMatchObject({ status: "FAILED", reason: "policy_denied", text: "the vendor said [REDACTED]" });
+    const crashed = await throughEngine(crashing);
+    expect(crashed).toMatchObject({ status: "FAILED", reason: "vendor_error" });
+    expect(crashed.text).toContain("MCP request failed before any write");
+    expect(JSON.stringify(crashed)).not.toContain("boom");
   });
 });
