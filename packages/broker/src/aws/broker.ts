@@ -199,9 +199,11 @@ import {
   redactText,
   DISPLAY_NAME_MAX_ENCODED_LENGTH,
   modelKey,
+  ModelSelectionSchema,
   type ModelIdentifier,
   type ModelRef,
   type ModelSelection,
+  type ResolvedRecipe,
   type ProjectModelOptions,
   EgressApproveBodySchema,
   EgressRejectBodySchema,
@@ -335,7 +337,9 @@ import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, type ProjectMembers } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
-import type { AgentRunStarter } from "../agents/runs.js";
+import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
+import { applyAgentStep, priorStepIds, stepForOperation, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { readGuardrails } from "../agents/guardrails.js";
 import { DecideStore, DecideReauthRequired, type DecideRequestContext } from "../developer/decide-session.js";
 import type { DecideKinds } from "../developer/decide-kinds.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
@@ -4773,6 +4777,51 @@ async function createConversation(
   return conversation;
 }
 
+/** The developer task a workspace runs, or undefined for work that has none (a Slack thread operation). */
+async function workspaceTask(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<DeveloperTaskRecord | undefined> {
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
+  return pointer === undefined ? undefined : getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+}
+
+/**
+ * Plan 3, Task 16: applies the task's frozen recipe to one coding operation. Undefined for work with no agent (nothing changes). The snapshot
+ * is read with the task's org and must be the one the task recorded; the guardrails are read now (a model forbidden since the start refuses
+ * the next step), and the earlier operations only when this step must differ in company from them.
+ */
+async function dispatchAgentStep(
+  dependencies: AwsBrokerDependencies,
+  orgId: OrgId,
+  workspace: WorkspaceInstance,
+  task: DeveloperTaskRecord | undefined,
+  input: { workflowMode?: DispatchMode; programStepId?: string },
+  settings: RegisteredProjectRecord,
+  projectModel: ModelSelection | undefined,
+  chatgptModel: ModelSelection | undefined,
+): Promise<AppliedAgentStep | undefined> {
+  if (task?.agent === undefined) return undefined;
+  const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
+  if (frozen === undefined || frozen.digest !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  const guardrails = await readGuardrails(dependencies, orgId);
+  const stepIds = priorStepIds({ recipe: frozen.recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails });
+  const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, frozen.recipe, stepIds);
+  return applyAgentStep({
+    recipe: frozen.recipe, ref: task.agent, mode: input.workflowMode, programStepId: input.programStepId, guardrails, project: workspace.projectName,
+    projectModel, projectApproved: settings.definition.models?.approved, chatgptModel, priorOperations,
+  });
+}
+
+/** The models the workspace's earlier coding operations ran on, by the recipe step each was (only those that recorded one). */
+async function priorStepModels(dependencies: AwsBrokerDependencies, workspaceId: string, recipe: ResolvedRecipe, stepIds: readonly string[]): Promise<Array<{ stepId: string; model: ModelSelection }>> {
+  const found: Array<{ stepId: string; model: ModelSelection }> = [];
+  for (const item of await queryAllItems(dependencies, `WORKSPACE#${workspaceId}`, "OPERATION#")) {
+    if (item.entityType !== "OPERATION" || item.kind !== "task" || item.workflowMode === undefined) continue;
+    const model = ModelSelectionSchema.safeParse(item.model);
+    const stepId = stepForOperation(recipe, item.workflowMode as DispatchMode, typeof item.programStepId === "string" ? item.programStepId : undefined)?.id;
+    if (model.success && stepId !== undefined && stepIds.includes(stepId)) found.push({ stepId, model: model.data });
+  }
+  return found;
+}
+
 /** A task operation, its worker invocation and outbox item: acceptTask's and the first developer task's (R3). */
 async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
@@ -4786,9 +4835,14 @@ async function taskOperationParts(
   const orgId = input.orgId ?? await orgOfRecord(dependencies, workspace);
   const settings = await requireLatestProject(dependencies, orgId, workspace.projectName);
   const resolvedModel = await resolveProjectModel(dependencies, orgId, settings);
+  const task = await workspaceTask(dependencies, workspace.id);
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.
-  const chatgpt = dependencies.chatgpt === undefined ? undefined
-    : await chatGptTaskSelection(dependencies.chatgpt, chatGptOwner(await workspaceTaskOwner(dependencies, workspace.id), input.requester.requestedBy, developerIdForSlackUser));
+  const planSelection = dependencies.chatgpt === undefined ? undefined
+    : await chatGptTaskSelection(dependencies.chatgpt, chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser));
+  // Plan 3, Task 16: the recipe the task froze at its start (never the live agent) decides this step's model, instructions and worker settings.
+  const applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model);
+  // A step that picks a model of its own which the person's plan does not serve runs on the model proxy, not on the plan.
+  const chatgpt = applied?.dropChatgpt === true ? undefined : planSelection;
   const operationId = input.operationId ?? randomUUID();
   const fence = workspace.fence + 1;
   const operation = operationRecord({
@@ -4817,6 +4871,8 @@ async function taskOperationParts(
     ...input.requester,
   });
   operation.settingsRevision = settings.definition.revision;
+  // The model this operation runs on, kept so a later step that must differ in company from this one can be compared with it.
+  if (applied?.ranModel !== undefined) operation.model = applied.ranModel;
   if (chatgpt !== undefined) {
     operation.chatgptDeveloperId = chatgpt.developerId;
     // #342: where a fallback is told when the task ends.
@@ -4843,11 +4899,13 @@ async function taskOperationParts(
   const checksInstructions = planChecks === "" ? "" : `\n\n${planChecks}`;
   // A task started without the workflow still runs its first turn in IMPLEMENT mode; its prompt is unchanged.
   const gated = input.workflowMode !== undefined && input.legacyTask !== true;
+  // The agent's instructions come after Rovara's own rules and the phase text, in a block that says it adds to them (Plan 3, Task 16).
+  const agentSection = applied?.promptSection === undefined ? "" : `\n\n${applied.promptSection}`;
   const selectedPrompt = input.workflowMode === "PLAN"
-    ? `${WORKFLOW_PREAMBLE}\n\nPlanning phase only. Do not edit, write, or create files. Inspect the request and repository. ${PLAN_PHASE_LIMITS} Avoid filler and include only material risks or genuine unanswered questions. This linked detail is shown to the owner for approval before the next phase or code changes.\n\n${documentInstructions}${checksInstructions}\n\nRequest:\n${input.prompt}`
+    ? `${WORKFLOW_PREAMBLE}\n\nPlanning phase only. Do not edit, write, or create files. Inspect the request and repository. ${PLAN_PHASE_LIMITS} Avoid filler and include only material risks or genuine unanswered questions. This linked detail is shown to the owner for approval before the next phase or code changes.\n\n${documentInstructions}${checksInstructions}${agentSection}\n\nRequest:\n${input.prompt}`
     : input.workflowMode === "REVIEW"
-      ? `${WORKFLOW_PREAMBLE}\n\nReview the current code read-only for the current task. Do not edit files or run commands that modify the workspace. Return concise critic and security review findings. The broker will bind your reports to this operation and candidate.\n\n${input.prompt}`
-      : gated ? `${WORKFLOW_PREAMBLE}\n\n${input.prompt}` : input.prompt;
+      ? `${WORKFLOW_PREAMBLE}\n\nReview the current code read-only for the current task. Do not edit files or run commands that modify the workspace. Return concise critic and security review findings. The broker will bind your reports to this operation and candidate.${agentSection}\n\n${input.prompt}`
+      : gated ? `${WORKFLOW_PREAMBLE}${agentSection}\n\n${input.prompt}` : `${applied?.promptSection === undefined ? "" : `${applied.promptSection}\n\n`}${input.prompt}`;
   const prompt = workerPrompt(selectedPrompt, input.shared === true);
   // The preamble and phase text are added to the approved document after the request was size-checked.
   if (gated && Buffer.byteLength(prompt, "utf8") > OPERATION_PROMPT_MAX_BYTES) {
@@ -4866,6 +4924,8 @@ async function taskOperationParts(
     callbackCapability: issueCapability(dependencies, workspace.id, operationId, fence, {
       feedbackBundles: input.workflowMode === "FEEDBACK_REVIEW", feedbackApproval: input.workflowFeedbackApproval !== undefined, chatGptToken: chatgpt !== undefined,
       candidateExport: input.workflowMode === "IMPLEMENT", workflowE2E: input.workflowE2EAdmission !== undefined, modelAccess: dependencies.modelAccess !== undefined,
+      // The worker reads the step's skills through the broker, which serves only the snapshot's, so the capability is granted only when the step has some.
+      agentSkills: (applied?.agentStep?.skills?.length ?? 0) > 0,
     }),
     payload: {
       conversationId: input.conversationId,
@@ -4886,8 +4946,9 @@ async function taskOperationParts(
       ...(input.workflowReviewFeedback === undefined ? {} : { workflowReviewFeedback: input.workflowReviewFeedback }),
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: [...input.workflowReviewers] }),
-      ...(resolvedModel.model === undefined ? {} : { model: resolvedModel.model }),
+      ...((applied?.model ?? resolvedModel.model) === undefined ? {} : { model: applied?.model ?? resolvedModel.model }),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
+      ...(applied?.agentStep === undefined ? {} : { agentStep: applied.agentStep }),
       ...(resolvedModel.diagnostic === undefined ? {} : { modelSelectionDiagnostic: resolvedModel.diagnostic }),
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as
       // publicationProject merges it, since that is what publication gates on. None when the project has none.
@@ -5200,8 +5261,7 @@ const MODEL_KEY_TTL_SECONDS = 3_600;
 
 /** #341: the developer who owns the task a workspace runs, or undefined for a workspace that runs no developer task. */
 async function workspaceTaskOwner(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<string | undefined> {
-  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
-  return pointer === undefined ? undefined : (await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)))?.developerId;
+  return (await workspaceTask(dependencies, workspaceId))?.developerId;
 }
 
 async function gatedTaskWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<boolean> {

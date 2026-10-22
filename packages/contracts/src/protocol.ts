@@ -116,6 +116,8 @@ export const AgentStepPayloadSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("coding"),
     ...AgentStepBase,
+    // A test run of an agent's draft has no published version.
+    version: z.union([AgentStepBase.version, z.literal("draft")]),
     tools: z.array(PiToolNameSchema).max(PI_TOOL_NAMES.length).optional(),
     skills: AgentStepSkillsSchema.optional(),
     timeoutMs: AgentStepTimeoutSchema.optional(),

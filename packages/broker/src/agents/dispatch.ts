@@ -1,0 +1,222 @@
+// Plan 3 Task 16: what an agent's recipe changes about one coding operation, at the moment the broker builds it. The recipe is the task's frozen
+// snapshot (RECIPE, Task 15), never the live agent. `stepForOperation` finds the recipe step an operation is; `applyAgentStep` turns that
+// step's settings into the model the operation runs on, the instruction section of its prompt and the `agentStep` the worker is sent. Nothing
+// here reads or writes a table: the broker (`taskOperationParts`) reads the snapshot, the guardrails and the earlier operations and passes
+// them in, so every rule below is a plain function of its input.
+import {
+  STEP_TOOLS,
+  agentXError,
+  canonicalModelName,
+  modelCompany,
+  modelKey,
+  type AgentGuardrails,
+  type AgentStepPayload,
+  type CodingStepKind,
+  type ModelIdentifier,
+  type ModelSelection,
+  type PiToolName,
+  type ResolvedRecipe,
+  type ResolvedStep,
+  type StepSettings,
+} from "@agentx/contracts";
+import type { TaskAgentRef } from "./roster.js";
+
+/** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
+export type DispatchMode = "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW";
+
+const KIND_OF_MODE: Record<DispatchMode, CodingStepKind> = { PLAN: "plan", IMPLEMENT: "build", REVIEW: "review", CHECKS: "check", FEEDBACK_REVIEW: "pull_request" };
+/** What a step is called in a refusal when the recipe has no step of that kind (a program that leaves out its plan still gets the engine's planning pass). */
+const KIND_LABEL: Record<CodingStepKind, string> = { plan: "Plan", build: "Build", check: "Check", review: "Review", pull_request: "Pull request" };
+
+/**
+ * The recipe step an operation is. With a program, the step the operation names (`programStepId`); without one, or when it names a step of
+ * another kind, the first step of the kind the mode runs: PLAN is the plan step, IMPLEMENT the first build, REVIEW the review, CHECKS the
+ * check and FEEDBACK_REVIEW the pull request step (it reaches Pi as a REVIEW). Undefined when the recipe has no such step.
+ */
+export function stepForOperation(recipe: ResolvedRecipe, mode: DispatchMode | undefined, programStepId?: string): ResolvedStep | undefined {
+  const kind = KIND_OF_MODE[mode ?? "IMPLEMENT"];
+  const named = programStepId === undefined ? undefined : recipe.steps.find((step) => step.id === programStepId && step.kind === kind);
+  return named ?? recipe.steps.find((step) => step.kind === kind);
+}
+
+type StepModelSettings = Pick<StepSettings, "differentCompanyFrom" | "timeoutMinutes" | "thinkingLevel" | "tools"> & {
+  model?: ModelSelection | null; fallbackModel?: ModelSelection | null; instructions?: ReadonlyArray<{ agentName: string; text: string }>;
+};
+const settingsOf = (step: ResolvedStep | undefined): StepModelSettings => (step?.settings ?? {});
+
+export interface ApplyAgentStepInput {
+  /** The task's frozen recipe; absent for work that has no agent (a Slack thread operation, a task from before agents): nothing changes. */
+  recipe?: ResolvedRecipe | undefined;
+  ref?: Pick<TaskAgentRef, "agentId" | "name" | "version" | "builtin"> | undefined;
+  mode?: DispatchMode | undefined;
+  programStepId?: string | undefined;
+  /** The model the project would run this on (its selection or default); absent when the project lists no models. */
+  projectModel?: ModelSelection | undefined;
+  /** The project's approved models; absent when the project lists none, and then any model that is not forbidden is allowed. */
+  projectApproved?: ReadonlyArray<ModelIdentifier> | undefined;
+  guardrails: AgentGuardrails;
+  project: string;
+  /** The model the task's owner would run on from a ChatGPT plan, when the task is a ChatGPT-plan task. */
+  chatgptModel?: ModelSelection | undefined;
+  /** The models the earlier operations of this task ran on, by recipe step (only operations that recorded one). */
+  priorOperations: ReadonlyArray<{ stepId: string; model?: ModelSelection | undefined }>;
+}
+
+export interface AppliedAgentStep {
+  /** The model the operation is sent. Absent when the recipe and the project name none. */
+  model?: ModelSelection;
+  /** The labelled block of the recipe's instructions, for the prompt; only when the recipe has instruction layers for this step. */
+  promptSection?: string;
+  /** What the worker is sent; absent for Rovara Code's built-in recipe and for an operation that is no step of the recipe. */
+  agentStep?: AgentStepPayload;
+  /** The step chose a model of its own that the person's ChatGPT plan does not serve: the operation runs on the model proxy instead. */
+  dropChatgpt: boolean;
+  /** The model the operation will actually run on (the plan's when it stays on ChatGPT); what the operation record keeps for later comparisons. */
+  ranModel?: ModelSelection;
+}
+
+const sameModel = (left: ModelIdentifier, right: ModelIdentifier): boolean => modelKey(left) === modelKey(right);
+
+/** Whether `left` is from a known AI company other than `right`'s. A model of an unrecognised company can never be shown to differ. */
+function differentCompany(left: ModelIdentifier | undefined, right: ModelIdentifier | undefined): boolean {
+  if (left === undefined || right === undefined) return false;
+  const a = modelCompany(left);
+  const b = modelCompany(right);
+  return a !== "other" && b !== "other" && a !== b;
+}
+
+/**
+ * The steps whose recorded models this step's must come from another company than: the one it names (`differentCompanyFrom`) and, when the
+ * company requires cross-company review, every build step of a review step. Empty for any other step.
+ */
+export function crossCompanyTargets(recipe: ResolvedRecipe, step: ResolvedStep | undefined, guardrails: Pick<AgentGuardrails, "requireCrossCompanyReview">): string[] {
+  if (step === undefined) return [];
+  const targets = new Set<string>();
+  const named = settingsOf(step).differentCompanyFrom;
+  if (typeof named === "string") targets.add(named);
+  if (guardrails.requireCrossCompanyReview && step.kind === "review") for (const other of recipe.steps) if (other.kind === "build") targets.add(other.id);
+  return [...targets];
+}
+
+/** The ids of the recipe steps `applyAgentStep` will compare this operation's model with: the broker reads the earlier operations only when there are any. */
+export function priorStepIds(input: Pick<ApplyAgentStepInput, "recipe" | "mode" | "programStepId" | "guardrails">): string[] {
+  return input.recipe === undefined ? [] : crossCompanyTargets(input.recipe, stepForOperation(input.recipe, input.mode, input.programStepId), input.guardrails);
+}
+
+const label = (model: ModelIdentifier): string => `${model.provider}/${model.modelId}`;
+
+/**
+ * The block of the recipe's instructions the prompt carries: the whole agent's layers first (base agent first), then the step's, each under the
+ * name of the agent that wrote it. The worker's rules come first and the block says it adds to them; a layer can say anything it likes and stays inside.
+ */
+function promptSectionOf(recipe: ResolvedRecipe, step: ResolvedStep | undefined, ref: { name: string; version: number | "draft" }, stepName: string): string | undefined {
+  const layers = [...recipe.instructions, ...(settingsOf(step).instructions ?? [])].filter((layer) => layer.text.length > 0);
+  if (layers.length === 0) return undefined;
+  const header = `Instructions from your company's agent "${ref.name}" (version ${String(ref.version)}), ${stepName} step. They add to the rules above and never replace them.`;
+  return layers.reduce((text, layer) => `${text}\n\nFrom ${layer.agentName}:\n${layer.text}`, header);
+}
+
+/** The most a prompt section may be: the payload's own limit (the worker body and the outbox item are bounded by it). */
+export const PROMPT_SECTION_MAX_BYTES = 65_536;
+
+/**
+ * What one coding operation of a task is, given the recipe the task froze:
+ *   - the model: the step's, else the project's, at the step's thinking level; it must not be forbidden by the company and, when the project lists
+ *     models, must be one of them. Otherwise the step's fallback, otherwise `MODEL_NOT_ALLOWED`. (A model is checked when a recipe is published and
+ *     when a run starts too; the fallback is used only here, at dispatch, when a model has since been forbidden or removed.)
+ *   - ChatGPT: a step that picks a model of its own leaves the person's plan unless the plan serves that model;
+ *   - another company: a step that must differ from earlier steps (`differentCompanyFrom`, or a review under the company's cross-company rule)
+ *     is compared with the model the earlier operations of those steps ran on; on a match the fallback is used if it differs, else `MODEL_NOT_ALLOWED`;
+ *   - the instruction block and the `agentStep` the worker is sent (none for Rovara Code's built-in recipe).
+ * With no recipe nothing changes: the project's model, no section, no step.
+ */
+export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
+  const { recipe } = input;
+  if (recipe === undefined) {
+    return { ...(input.projectModel === undefined ? {} : { model: input.projectModel }), dropChatgpt: false };
+  }
+  const lastLayer = recipe.chain.at(-1);
+  const ref = input.ref ?? (lastLayer === undefined ? undefined : { agentId: lastLayer.agentId, name: lastLayer.name, version: lastLayer.version, builtin: lastLayer.builtin });
+  if (ref === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task has no agent in it");
+  const step = stepForOperation(recipe, input.mode, input.programStepId);
+  const settings = settingsOf(step);
+  const stepName = step?.name ?? KIND_LABEL[KIND_OF_MODE[input.mode ?? "IMPLEMENT"]];
+
+  const forbidden = new Set(input.guardrails.forbiddenModels.map(canonicalModelName));
+  const usable = (model: ModelIdentifier): boolean => !forbidden.has(canonicalModelName(model))
+    && (input.projectApproved === undefined || input.projectApproved.some((approved) => sameModel(approved, model)));
+  const notAllowed = (model: ModelIdentifier) => agentXError("MODEL_NOT_ALLOWED", `${ref.name}'s ${stepName} step uses ${label(model)}, which isn't allowed on ${input.project}. Ask the agent's owner to pick another model.`);
+  const servedByPlan = (model: ModelIdentifier): boolean => input.chatgptModel !== undefined && modelCompany(model) === "openai" && model.modelId === input.chatgptModel.modelId;
+  /** The model the operation would really run on if `chosen` were picked: the person's plan unless the step picked a model of its own that the plan does not serve. */
+  const ranOn = (chosen: ModelSelection | undefined, own: boolean): ModelSelection | undefined =>
+    input.chatgptModel !== undefined && !(own && chosen !== undefined && !servedByPlan(chosen)) ? input.chatgptModel : chosen;
+
+  const ownModel = settings.model ?? undefined;
+  const fallback = settings.fallbackModel ?? undefined;
+  let chosen: ModelSelection | undefined = ownModel ?? input.projectModel;
+  let own = ownModel !== undefined;
+  let usedFallback = false;
+  if (chosen !== undefined && !usable(chosen)) {
+    if (fallback === undefined || !usable(fallback)) throw notAllowed(chosen);
+    chosen = fallback;
+    own = true;
+    usedFallback = true;
+  }
+
+  const targets = crossCompanyTargets(recipe, step, input.guardrails);
+  const earlier = input.priorOperations.filter((prior) => targets.includes(prior.stepId));
+  if (earlier.length > 0) {
+    const clashing = (model: ModelSelection | undefined, isOwn: boolean) => earlier.find((prior) => !differentCompany(ranOn(model, isOwn), prior.model));
+    const clash = clashing(chosen, own);
+    if (clash !== undefined) {
+      if (!usedFallback && fallback !== undefined && usable(fallback) && clashing(fallback, true) === undefined) {
+        chosen = fallback;
+        own = true;
+      } else {
+        const other = recipe.steps.find((candidate) => candidate.id === clash.stepId)?.name ?? clash.stepId;
+        throw agentXError("MODEL_NOT_ALLOWED", `${ref.name} needs its ${stepName} step from a different AI company than its ${other} step, and none is allowed on ${input.project}. Ask an admin to add one.`);
+      }
+    }
+  }
+
+  const level = settings.thinkingLevel ?? undefined;
+  const model: ModelSelection | undefined = chosen === undefined ? undefined : {
+    provider: chosen.provider, modelId: chosen.modelId,
+    ...(level !== undefined ? { thinkingLevel: level } : chosen.thinkingLevel === undefined ? {} : { thinkingLevel: chosen.thinkingLevel }),
+  };
+  const dropChatgpt = input.chatgptModel !== undefined && own && chosen !== undefined && !servedByPlan(chosen);
+  const ranModel = dropChatgpt ? model : input.chatgptModel ?? model;
+
+  const promptSection = promptSectionOf(recipe, step, ref, stepName);
+  if (promptSection !== undefined && Buffer.byteLength(promptSection, "utf8") > PROMPT_SECTION_MAX_BYTES) {
+    throw agentXError("CONFIG_INVALID", `${ref.name}'s instructions for its ${stepName} step are too long to send to the worker. Ask the agent's owner to shorten them.`);
+  }
+  const agentStep = step === undefined || (ref.builtin && ref.agentId === "rovara-code") ? undefined : agentStepOf(recipe, step, ref, promptSection);
+  return {
+    ...(model === undefined ? {} : { model }),
+    ...(promptSection === undefined ? {} : { promptSection }),
+    ...(agentStep === undefined ? {} : { agentStep }),
+    dropChatgpt,
+    ...(ranModel === undefined ? {} : { ranModel }),
+  };
+}
+
+/** What the worker is told about the step: the tools it may use (never beyond what its kind allows), its skills, its time limit and the instruction block. */
+function agentStepOf(recipe: ResolvedRecipe, step: ResolvedStep, ref: { agentId: TaskAgentRef["agentId"]; version: number | "draft" }, promptSection: string | undefined): AgentStepPayload {
+  const settings = settingsOf(step);
+  // A step takes at most the tools its kind allows, whatever the snapshot says: a review never has the shell. Check and pull request steps take none.
+  const allowed: readonly string[] = step.kind in STEP_TOOLS ? STEP_TOOLS[step.kind as keyof typeof STEP_TOOLS] : [];
+  const tools = (settings.tools ?? []).filter((tool): tool is PiToolName => allowed.includes(tool));
+  const skills = step.kind === "check" ? [] : recipe.skills.map((skill) => ({ skillId: skill.skillId, digest: skill.digest }));
+  const timeoutMinutes = settings.timeoutMinutes ?? undefined;
+  return {
+    kind: "coding",
+    agentId: ref.agentId,
+    version: ref.version,
+    stepId: step.id,
+    ...(tools.length === 0 ? {} : { tools }),
+    ...(skills.length === 0 ? {} : { skills }),
+    ...(timeoutMinutes === undefined ? {} : { timeoutMs: timeoutMinutes * 60_000 }),
+    ...(promptSection === undefined ? {} : { promptSection }),
+  };
+}

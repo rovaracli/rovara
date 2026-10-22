@@ -8,6 +8,7 @@ import {
   agentXError,
   unhandledDeploymentMode,
   type CodeBuildGateDefinition,
+  type ModelSelection,
   type Operation,
   type OperationRequester,
   type OrgId,
@@ -44,6 +45,8 @@ export interface OperationRecord extends Operation {
   modelKeyIds?: string[];
   /** The project revision whose non-disk settings applied, which may be newer than the workspace's. */
   settingsRevision?: number;
+  /** Plan 3, Task 16: the model a task operation of an agent ran on (the person's ChatGPT plan model when it did), kept for the cross-company check of a later step. */
+  model?: ModelSelection;
   /** #341: the developer whose ChatGPT plan this task runs on; its chatgpt-token callback answers only their token. */
   chatgptDeveloperId?: string;
   /** #342: why this task stopped using its owner's ChatGPT plan, as its worker said; set once. */
