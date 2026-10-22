@@ -188,6 +188,12 @@ describe("classifyWrite: labels and repositories", () => {
     expect(classOf(saveIssue(), { id: "ENG-12", labels: "bug, ui" }, own)).toBe("safe");
   });
 
+  it("reads the declared label argument as labels, whatever it is called", () => {
+    const tagged = saveIssue({ labelArgument: "tags" });
+    expect(classOf(tagged, { title: "t", tags: ["automerge", "rovara"] })).toBe("consequential");
+    expect(classOf(tagged, { title: "t", tags: ["bug", "rovara"] })).toBe("safe");
+  });
+
   it("applies the org's own extra trigger labels and command words", () => {
     const guardrails = { extraTriggerLabels: ["ship-it*"], extraCommandWords: ["engage"] };
     expect(classOf(saveIssue(), { id: "ENG-12", labels: ["ship-it-now"] }, { ...own, guardrails })).toBe("consequential");
@@ -249,6 +255,19 @@ describe("classifyWrite: reads never wait, and only reads", () => {
     expect(isReadByName(read("list_issues"))).toBe(true);
   });
 
+  it("does not treat a read-approved tool the vendor marks as writing as a read", () => {
+    expect(classOf(grant("linear", "list_issues", { access: "read", hints: { readOnlyHint: false } }), {})).toBe("consequential");
+    expect(classOf(grant("linear", "list_issues", { access: "read", hints: { destructiveHint: true } }), {})).toBe("consequential");
+    expect(classOf(grant("linear", "list_issues", { access: "read", hints: { readOnlyHint: true } }), {})).toBe("read");
+  });
+
+  it("reads a plural or a gerund of a destructive word as that word, and the past tense as a filter", () => {
+    for (const name of ["get_transitions", "list_deletes", "cancelling_jobs", "closing_issues", "removes_items", "archiving_items"]) {
+      expect(classOf(read(name), {}), name).toBe("consequential");
+    }
+    for (const name of ["list_deleted_items", "list_archived_items", "get_cancelled_jobs", "list_resolved_issues"]) expect(classOf(read(name), {}), name).toBe("read");
+  });
+
   it("does not treat get_and_close_issue as a read", () => {
     const result = classify(read("get_and_close_issue"), { id: "ENG-1" });
     expect(result.class).toBe("consequential");
@@ -270,6 +289,7 @@ describe("classifyWrite: reads never wait, and only reads", () => {
     const result = classify(read("list_issues"), {}, { projectPolicy: policy({ tool: "list_issues", connector: "linear", outcome: "ask" }), rules: { alwaysAsk: ["list_*"] }, autonomy: "suggest" });
     expect(result.class).toBe("read");
     expect(result.denied).toBeUndefined();
+    expect(result.ignoredRules).toEqual([1]);
   });
 });
 
@@ -314,6 +334,10 @@ describe("classifyWrite: outward creates", () => {
       expect(classOf(mcp("create_note"), { text: "x", [key]: "v" }), key).toBe("consequential");
     }
     expect(classOf(mcp("create_note"), { text: "x", meta: { to: "a@b.com" } })).toBe("consequential");
+  });
+
+  it("makes a create whose name says message, email or sms consequential even without a send verb", () => {
+    for (const name of ["create_message", "create_email", "create_sms", "add_message"]) expect(classOf(mcp(name), { text: "x" }), name).toBe("consequential");
   });
 
   it("makes a plain note safe", () => {
@@ -565,6 +589,11 @@ describe("prepareAgentWrite", () => {
     expect(classOf(jira, { fields: { labels: ["bug", "rovara"] } })).toBe("safe");
   });
 
+  it("does not take a label that only contains rovara as the label", () => {
+    const comma = saveIssue({ labelArgument: "tags", labelArgumentShape: "comma_list" });
+    expect(prepareAgentWrite(comma, { title: "t", tags: "bug, not-rovara" }, { allowMentions: false }).args).toEqual({ title: "t", tags: "bug, not-rovara, rovara" });
+  });
+
   it("does not add it twice, in any case", () => {
     expect(prepareAgentWrite(saveIssue(), { title: "t", labels: ["ROVARA", "bug"] }, { allowMentions: false }).args).toEqual({ title: "t", labels: ["ROVARA", "bug"] });
   });
@@ -712,6 +741,15 @@ describe("classifyAgentWrite", () => {
     expect((await classifyAgentWrite(broken as never, { ...w.base, tool, args: { id: "ENG-12", title: "t" } })).class).toBe("consequential");
   });
 
+  it("fails closed when the opt-out can't be read after a clean scan, and when the run cache breaks", async () => {
+    const w = wrapper();
+    const flaky = { ...w.deps, documentClient: { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "GetCommand") throw new Error("table down"); return w.db.send(command as never); } } };
+    expect((await classifyAgentWrite(flaky as never, { ...w.base, tool: githubComment(), args: { body: PLAIN } })).class).toBe("consequential");
+    const noCache = { ...w.deps, runCache: () => ({ get: async () => { throw new Error("cache down"); }, set: async () => { throw new Error("cache down"); } }) };
+    seedOwn(w, "linear", "ENG-1");
+    expect((await classifyAgentWrite(noCache, { ...w.base, tool: saveIssue(), args: { id: "ENG-1", labelIds: ["lbl-bug"] } })).class).toBe("consequential");
+  });
+
   it("uses the org's guardrails passed in, and the project's policy", async () => {
     const w = wrapper();
     const guardrails = { extraTriggerLabels: [], extraCommandWords: ["engage"] };
@@ -781,6 +819,8 @@ describe("recordOwnItems and loadOwnItems", () => {
     expect(await loadOwnItems(w.deps, { orgId: ORG_B, taskId: "task-1" })).toEqual(new Set());
     const [item] = w.db.find((candidate) => String(candidate.pk).includes("AGENT_ITEMS#"));
     w.db.set({ ...item!, orgId: ORG_B });
+    expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set());
+    w.db.set({ ...item!, taskId: "task-9" });
     expect(await loadOwnItems(w.deps, { orgId: TEST_ORG, taskId: "task-1" })).toEqual(new Set());
   });
 
