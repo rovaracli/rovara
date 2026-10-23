@@ -1897,11 +1897,21 @@ describe("Task 22 review: the Slack report can never ping (C2) and flattens bare
     expect(result.kind).toBe("text");
     expect(result.text).not.toContain("evil.example/login");
     expect(result.text).not.toContain("www.");
-    expect(result.text).toContain("link (evil.example)");
-    expect(result.text).toContain("link (evil.com)");
+    // The flattened host is defanged (its dots in brackets), or Slack would link it again (final fix wave, runs minor 2, Task 22 M4).
+    expect(result.text).toContain("link (evil[.]example)");
+    expect(result.text).toContain("link (evil[.]com)");
+    expect(result.text).not.toMatch(/evil\.(?:example|com)/u);
     const mail = prepareSlackReport("write to mailto:boss@evil.example or <mailto:boss@evil.example|the boss>", options());
     expect(mail.text).not.toContain("mailto:");
-    expect(mail.text).toContain("(evil.example)");
+    expect(mail.text).toContain("(evil[.]example)");
+    expect(mail.text).not.toContain("evil.example");
+  });
+
+  it("minor 2: a host with a port, a subdomain, an unparseable address and a Slack `<url|label>` link are all shown with their dots defanged", () => {
+    const result = prepareSlackReport("a <https://login.evil.example:8443/x|sign in> and https://a.b.evil.example/p and evil.example:8080/x", options());
+    expect(result.text).not.toMatch(/[a-z]\.[a-z]/u);
+    expect(result.text).toContain("sign in (login[.]evil[.]example:8443)");
+    expect(result.text).toContain("link (a[.]b[.]evil[.]example)");
   });
 
   it("M4: leaves versions, file names and the org's own bare domain alone", () => {
@@ -1912,7 +1922,7 @@ describe("Task 22 review: the Slack report can never ping (C2) and flattens bare
   it("flattens a link written in the label of an allowed link, so the label never shows an address that is not the link's", () => {
     const result = prepareSlackReport("<https://docs.acme.example/x|https://evil.example/login>", options({ reportLinkDomains: ["acme.example"] }));
     expect(result.text).not.toContain("https://evil.example");
-    expect(result.text).toContain("(evil.example)");
+    expect(result.text).toContain("(evil[.]example)");
     expect(result.text).toMatch(/^<https:\/\/docs\.acme\.example\/x\|/u);
   });
 });
