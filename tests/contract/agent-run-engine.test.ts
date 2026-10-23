@@ -32,7 +32,7 @@ import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, grantProject, recordStream, unbindChannel, type Developer } from "../support/developer-task-broker.js";
 import { taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";
-import { operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
+import { agentRunDispatchItem, operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
@@ -2607,5 +2607,227 @@ describe("Task 22 review: one gate for every dispatch (M1), the step's pending c
     await advanceAgentRun(deps, run.taskId);
     const rerun = t.stepOps(run.workspaceId)[2]!;
     expect(t.invocationOf(rerun.id).payload.agentStep!.inputs).toContain("Approved and done: comment on LIN-12");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Plan 3 final fix wave, runs I-1: a budget stop with no pause written yet (the proxy's mid-step "budget exceeded") is told with its real scope, once.
+// None of these tests sets `budgetPause` before the step's result: that is the real path.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("final fix wave, runs I-1: a budget stop the broker has not turned into a pause yet", () => {
+  const META = (taskId: string) => ({ TableName: "state", Key: { pk: `DEVTASK#${taskId}`, sk: "META" } });
+  const eventsOf = (t: World, taskId: string) => t.taskEvents(taskId).map((item) => String(item.text));
+  const rows = (t: World, taskId: string) => t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId);
+  const requests = (t: World) => t.db.find((item) => item.entityType === "SPEND_REQUEST");
+
+  /** A run whose first step is running, whose keys have spent `spent` of a $5 run limit (and `maxPerRun` when given). */
+  async function running(options: { spent: number; maxPerRun?: number }) {
+    const t = await setup({ proxy: true });
+    const paused = pauseHandler();
+    const ended = endHandler();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const key = "sk-step-key";
+    await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "SET modelKeyIds = :keys, budgetUsd = :limit" + (options.maxPerRun === undefined ? "" : ", maxPerRunUsd = :max"),
+      ExpressionAttributeValues: { ":keys": [keyIdOf(key)], ":limit": 5, ...(options.maxPerRun === undefined ? {} : { ":max": options.maxPerRun }) } }));
+    t.access!.setKeySpent(key, options.spent);
+    return { t, run, paused, ended, first: t.stepOps(run.workspaceId)[0]! };
+  }
+  const stop = (t: World, run: { workspaceId: string }, operationId: string) => t.finish(run.workspaceId, operationId, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+
+  it("tells the real scope once (the run limit the ledger shows was reached), asks for it once, and neither resumes nor dispatches the step again", async () => {
+    const { t, run, paused, ended, first } = await running({ spent: 6 });
+    await stop(t, run, first.id);
+    const scope = { kind: "task", taskId: run.taskId };
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET", pause: { scope, notifiedAt: expect.any(String) as string } });
+    expect(t.runItem(run.taskId)!.pause).not.toHaveProperty("unconfirmed");
+    expect(paused).toEqual([{ orgId: TEST_ORG, taskId: run.taskId, scope }]);
+    expect(ended).toEqual([]);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+    expect(eventsOf(t, run.taskId).filter((text) => text.includes("budget was raised"))).toEqual([]);
+    expect(requests(t)).toHaveLength(1);
+    expect(requests(t)[0]).toMatchObject({ kind: "run_limit", taskId: run.taskId, status: "PENDING" });
+    // The sweep finds nothing more to tell.
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(paused).toHaveLength(1);
+    expect(requests(t)).toHaveLength(1);
+  });
+
+  it("tells a max per run as a max per run when that is the lower stop", async () => {
+    const { t, run, paused, first } = await running({ spent: 3, maxPerRun: 2 });
+    await stop(t, run, first.id);
+    expect(paused).toEqual([{ orgId: TEST_ORG, taskId: run.taskId, scope: { kind: "max_per_run", taskId: run.taskId } }]);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET" });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+  });
+
+  it("an approval that answered the stop before its result was driven resumes the step, and tells no pause", async () => {
+    const { t, run, paused, first } = await running({ spent: 6 });
+    // The refusal wrote a pause and an approval cleared it before the result arrived: nothing but `budgetStopOf` is left of it.
+    await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "SET budgetStopOf = :operation", ExpressionAttributeValues: { ":operation": first.id } }));
+    await stop(t, run, first.id);
+    expect(paused).toEqual([]);
+    expect(requests(t)).toEqual([]);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    expect(t.stepOps(run.workspaceId)[1]).toMatchObject({ programStepId: "investigate" });
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ id: "investigate", status: "running" }, { id: "report", status: "pending" }] });
+    expect(t.runItem(run.taskId)!.pause).toBeUndefined();
+    expect(eventsOf(t, run.taskId).filter((text) => text.includes("budget was raised"))).toHaveLength(1);
+  });
+
+  describe("no pause could be worked out (the ledger says spend is just under the stop)", () => {
+    it("keeps the run waiting without telling a made-up scope, keeps its row due in about two minutes, and never resumes the step meanwhile", async () => {
+      const { t, run, paused, ended, first } = await running({ spent: 0.5 });
+      const before = Date.now();
+      await stop(t, run, first.id);
+      expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET", pause: { unconfirmed: true, operationId: first.id }, steps: [{ id: "investigate", status: "pending" }, { id: "report", status: "pending" }] });
+      expect(paused).toEqual([]);
+      expect(ended).toEqual([]);
+      expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+      expect(rows(t, run.taskId)).toHaveLength(1);
+      const due = Date.parse(String(rows(t, run.taskId)[0]!.nextAttemptAt));
+      expect(due).toBeGreaterThan(before + 60_000);
+      expect(due).toBeLessThan(before + 5 * 60_000);
+      // Advancing does not resume it either: no pause was ever told.
+      await advanceAgentRun(t.routeDeps(), run.taskId);
+      expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+      expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET" });
+    });
+
+    it("ends FAILED with the budget words once the bounded wait is over, and tells the end handlers (not the pause handlers)", async () => {
+      const { t, run, paused, ended, first } = await running({ spent: 0.5 });
+      await stop(t, run, first.id);
+      // Looked at again after a few minutes: still waiting, the row is armed again.
+      expect(await driveAgentRun(t.routeDeps({ now: Date.now() + 3 * 60_000 }), run.taskId)).toBe("WAIT");
+      expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET" });
+      expect(rows(t, run.taskId)).toHaveLength(1);
+      expect(await driveAgentRun(t.routeDeps({ now: Date.now() + 11 * 60_000 }), run.taskId)).toBe("DONE");
+      expect(t.runItem(run.taskId)).toMatchObject({ state: "FAILED" });
+      expect(t.runItem(run.taskId)!.endReason).toMatch(/budget/iu);
+      expect(paused).toEqual([]);
+      expect(ended).toEqual([expect.objectContaining({ taskId: run.taskId, outcome: "failed" })]);
+      expect(rows(t, run.taskId)).toEqual([]);
+    });
+
+    it("tells the pause that appears while it waits, with its real scope, once, and still waits for the approval", async () => {
+      const { t, run, paused, first } = await running({ spent: 0.5 });
+      await stop(t, run, first.id);
+      const scope = { kind: "max_per_run", taskId: run.taskId };
+      await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "SET budgetPause = :pause, budgetStopOf = :operation", ExpressionAttributeValues: { ":pause": { scope, at: new Date().toISOString() }, ":operation": first.id } }));
+      await driveAgentRun(t.routeDeps(), run.taskId);
+      expect(paused).toEqual([{ orgId: TEST_ORG, taskId: run.taskId, scope }]);
+      expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET", pause: { scope, notifiedAt: expect.any(String) as string } });
+      await driveAgentRun(t.routeDeps(), run.taskId);
+      expect(paused).toHaveLength(1);
+      expect(t.stepOps(run.workspaceId)).toHaveLength(1);
+      // The approval clears the pause: now the step runs again, once.
+      await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "REMOVE budgetPause" }));
+      await advanceAgentRun(t.routeDeps(), run.taskId);
+      expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    });
+
+    it("resumes silently when the stop was answered meanwhile (its pause was approved away and `budgetStopOf` names the operation)", async () => {
+      const { t, run, paused, first } = await running({ spent: 0.5 });
+      await stop(t, run, first.id);
+      await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "SET budgetStopOf = :operation", ExpressionAttributeValues: { ":operation": first.id } }));
+      await driveAgentRun(t.routeDeps(), run.taskId);
+      expect(paused).toEqual([]);
+      expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+      expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING" });
+    });
+  });
+
+  it("a pause that was never told (its handler is down) is told before the step runs again, and an approval that raced it resumes without a tell", async () => {
+    const t = await setup();
+    let down = true;
+    const heard: TaskPauseEvent[] = [];
+    unregister.push(registerTaskPauseHandler(async (_deps, event) => { if (down) throw new Error("down"); heard.push(event); }));
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const scope = { kind: "task", taskId: run.taskId };
+    await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "SET budgetPause = :pause", ExpressionAttributeValues: { ":pause": { scope, at: new Date().toISOString() } } }));
+    await t.finish(run.workspaceId, t.stepOps(run.workspaceId)[0]!.id, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(heard).toEqual([]);
+    // The pause is lifted before anyone heard it, with no record that it answered this operation: the handlers hear it, then the step runs again.
+    await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "REMOVE budgetPause" }));
+    down = false;
+    await advanceAgentRun(t.routeDeps(), run.taskId);
+    expect(heard).toEqual([{ orgId: TEST_ORG, taskId: run.taskId, scope }]);
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+  });
+});
+
+describe("final fix wave, runs minors: the dispatch row, the stop of a step, and the continuation allowance", () => {
+  const rowOf = (t: World, taskId: string) => t.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId)[0];
+
+  it("m4: finishing an end does not delete a row a newer write made", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    expect(await cancelAgentRun(t.routeDeps(), run.taskId)).toBe(true);
+    expect(rowOf(t, run.taskId)).toBeUndefined();
+    // The end's own row is back (its follow-up was owed); a newer write (a resume or a result of another process) replaces it just before the end deletes it.
+    const row = (revision: number) => (agentRunDispatchItem("state", { taskId: run.taskId, orgId: TEST_ORG, revision, dueAt: "2026-10-22T00:00:00.000Z", now: "2026-10-22T00:00:00.000Z" }) as { Put: { Item: Record<string, unknown> } }).Put.Item;
+    t.db.set(row(1));
+    const racing = { ...t.routeDeps(), documentClient: { send: async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "DeleteCommand") t.db.set(row(999));
+      return t.db.send(command as never);
+    } } } as unknown as ApprovalDependencies;
+    await cancelAgentRun(racing, run.taskId);
+    expect(rowOf(t, run.taskId)).toMatchObject({ workflowRevision: 999 });
+    // And an unraced one is deleted, as before.
+    t.db.set(row(1));
+    await cancelAgentRun(t.routeDeps(), run.taskId);
+    expect(rowOf(t, run.taskId)).toBeUndefined();
+  });
+
+  it("m4: a rearm made from an older look leaves a newer row alone", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const newer = { ...rowOf(t, run.taskId)!, workflowRevision: 999, nextAttemptAt: "2026-10-22T00:00:00.000Z", dispatchDueSk: `2026-10-22T00:00:00.000Z#${String(rowOf(t, run.taskId)!.sk)}` };
+    const racing = { ...t.routeDeps(), documentClient: { send: async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "PutCommand" && (command as unknown as { input: { Item: { kind?: string } } }).input.Item.kind === "agent_run") t.db.set(newer);
+      return t.db.send(command as never);
+    } } } as unknown as ApprovalDependencies;
+    await driveAgentRun(racing, run.taskId);
+    expect(rowOf(t, run.taskId)).toMatchObject({ workflowRevision: 999, nextAttemptAt: "2026-10-22T00:00:00.000Z" });
+  });
+
+  it("m5: an end whose stop of the running step failed leaves its row, and the sweep's finishEnd stops the step again", async () => {
+    const t = await setup();
+    const stopOperation = vi.fn<(task: unknown, operationId: string) => Promise<void>>(async () => { throw new Error("worker unreachable"); });
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const spied = { ...deps, agentRuns: { ...deps.agentRuns!, stopOperation } } as ApprovalDependencies;
+    expect(await cancelAgentRun(spied, run.taskId)).toBe(true);
+    expect(stopOperation).toHaveBeenCalledTimes(1);
+    expect(stopOperation).toHaveBeenLastCalledWith(expect.anything(), first.id);
+    expect(rowOf(t, run.taskId)).toBeDefined();
+    // The process that ended the run died (here: its stop failed); the sweep's finishEnd asks again.
+    stopOperation.mockImplementation(async () => undefined);
+    await driveAgentRun(spied, run.taskId);
+    expect(stopOperation).toHaveBeenCalledTimes(2);
+    expect(stopOperation).toHaveBeenLastCalledWith(expect.anything(), first.id);
+    expect(rowOf(t, run.taskId)).toBeUndefined();
+  });
+
+  it("m6: reruns after a budget pause do not use up the continuation allowance", async () => {
+    const t = await setup();
+    const run = await t.start("root-cause-analyst");
+    await run.finishPrepare();
+    const first = t.stepOps(run.workspaceId)[0]!;
+    const deps = t.routeDeps();
+    const write = await askWrite(t, deps, { taskId: run.taskId, stepId: "investigate", operationId: first.id, summary: "comment on LIN-12" });
+    // Four budget-pause reruns have used four operations; none of them was a continuation.
+    const item = t.db.get(`DEVTASK#${run.taskId}`, "AGENT_RUN") as Record<string, unknown> & { steps: Array<{ id: string; operationIds: string[] }> };
+    t.db.set({ ...item, steps: item.steps.map((step) => (step.id === "investigate" ? { ...step, operationIds: [randomUUID(), randomUUID(), randomUUID(), randomUUID(), first.id], continuations: 0 } : step)) });
+    await t.finishStep(run, first.id, "Waiting.");
+    await approve(deps, write.approvalId);
+    expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ id: "investigate", status: "running", continuations: 1 }, { id: "report", status: "pending" }] });
+    expect(t.stepOps(run.workspaceId)).toHaveLength(2);
   });
 });
