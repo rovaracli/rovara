@@ -190,6 +190,14 @@ describe("the view of a run", () => {
     expect(bare.sections[0]).not.toHaveProperty("costUsd");
   });
 
+  it("refuses to show a stored run that does not satisfy the contract, rather than sending it", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const run = await v.w.start(chain.chainId);
+    v.w.db.set({ ...v.w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, spentUsd: -1 });
+    await expect(chainRunView(v.deps, callerOf(PRIYA), run.runId)).rejects.toThrow();
+  });
+
   it("neutralises a name that carries control characters", async () => {
     const v = world();
     const chain = await v.w.publish(twoSteps());
