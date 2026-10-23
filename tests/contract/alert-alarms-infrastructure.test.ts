@@ -147,6 +147,39 @@ describe("issue #46: the dispatch dead-letter queue alarm (environment naming)",
   });
 });
 
+describe("Plan 4 Task 8 (R41): the autonomous write approver selector alarm (environment naming)", () => {
+  const filters = () => Object.values(controlPlane.findResources("AWS::Logs::MetricFilter", { Properties: { FilterPattern: '{ $.event = "write_approver_selector.failed" }' } })) as Array<{ Properties: Record<string, unknown> }>;
+  const alarms = () => Object.values(controlPlane.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: "agentx-staging-ChainWriteApproverSelectorFailed" } })) as Array<{ Properties: Record<string, unknown>; Condition?: string }>;
+
+  it("counts the broker's write_approver_selector.failed lines into ChainWriteApproverSelectorFailures", () => {
+    expect(filters()).toHaveLength(1);
+    const [filter] = filters();
+    expect(filter!.Properties.MetricTransformations).toEqual([{ MetricNamespace: "AgentX/staging", MetricName: "ChainWriteApproverSelectorFailures", MetricValue: "1" }]);
+    // On the broker function's own log group, the one the broker's other metric filters read.
+    const others = Object.values(controlPlane.findResources("AWS::Logs::MetricFilter", { Properties: { FilterPattern: '{ $.event = "github.install_request_notice_failed" }' } })) as Array<{ Properties: Record<string, unknown> }>;
+    expect(others).toHaveLength(1);
+    expect(filter!.Properties.LogGroupName).toEqual(others[0]!.Properties.LogGroupName);
+  });
+
+  it("alarms on at least 1 in 5 minutes and notifies the alerts topic, as the other alarms do", () => {
+    expect(alarms()).toHaveLength(1);
+    const [alarm] = alarms();
+    expect(alarm!.Properties).toMatchObject({
+      Namespace: "AgentX/staging", MetricName: "ChainWriteApproverSelectorFailures", Statistic: "Sum", Period: 300, EvaluationPeriods: 1, Threshold: 1,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
+    });
+    const [topicId] = Object.keys(controlPlane.findResources("AWS::SNS::Topic")).filter((id) => id.startsWith("OperatorAlerts"));
+    expect(alarm!.Properties.AlarmActions).toEqual([{ Ref: topicId }]);
+    expect(alarm!.Condition).toBeUndefined();
+  });
+
+  it("names the alarm with a single-word suffix, so the admin health route lists it as this environment's", () => {
+    const prefix = naming.alarmName("");
+    const name = alarms()[0]!.Properties.AlarmName as string;
+    expect(name.slice(prefix.length)).toMatch(/^[A-Za-z0-9]+$/);
+  });
+});
+
 describe("the legacy stacks stay as they are", () => {
   it("adds none of this without environment naming", () => {
     const legacySlack = Template.fromStack(new SlackOrchestratorStack(new App(), "LegacySlack"));
@@ -157,5 +190,8 @@ describe("the legacy stacks stay as they are", () => {
     expect(Object.keys(legacyControlPlane.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: "AgentXDispatchDeadLetters" } }))).toEqual([]);
     const legacyAlarmQueues = Object.values(legacyControlPlane.findResources("AWS::CloudWatch::Alarm")).map((resource) => JSON.stringify((resource as { Properties: { Dimensions?: unknown } }).Properties.Dimensions ?? []));
     expect(legacyAlarmQueues.some((dimensions) => dimensions.includes("DispatchDeadLetterQueue"))).toBe(false);
+    // Plan 4 Task 8: the chain write approver alarm and its filter are for named environments only.
+    expect(Object.keys(legacyControlPlane.findResources("AWS::Logs::MetricFilter", { Properties: { FilterPattern: '{ $.event = "write_approver_selector.failed" }' } }))).toEqual([]);
+    expect(JSON.stringify(legacyControlPlane.toJSON())).not.toContain("ChainWriteApproverSelector");
   });
 });
