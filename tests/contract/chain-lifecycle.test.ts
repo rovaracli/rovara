@@ -1694,6 +1694,16 @@ describe("the spend of the task of a run that was stopped", () => {
     expect(w.attempts(run.runId)[0]).toMatchObject({ status: "timed_out", failure: { reason: "run_timeout" } });
   });
 
+  it("is added when the cancel lands between the end's read and its write, so the end's own transaction loses", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    w.beforeTransaction('"step_ended"', async () => { await (await lifecycle()).cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId: randomUUID() }); });
+    await tellEnd(w, 0.75);
+    expect(w.run(run.runId)).toMatchObject({ status: "cancelled", spentUsd: 0.75 });
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "cancelled", spendPending: false });
+  });
+
   it("is not counted twice for a step that ended by its own end before the run was stopped", async () => {
     const w = setupGateWorld();
     const chain = await w.publish(twoSteps());
