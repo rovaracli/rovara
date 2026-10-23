@@ -449,7 +449,11 @@ describe("what the endpoint reads and counts before it knows who is asking", () 
   it("counts requests with no source address together, and addresses cut at 64 characters as one", async () => {
     const { w, hook } = await linear();
     const nobody = { source: "linear", hookId: `hk_${"7".repeat(26)}` };
-    for (let index = 0; index < HOOK_PRE_VERIFY_PER_IP_PER_MINUTE; index += 1) await w.receive({ ...w.delivery(nobody, bodyOf(w, "x")), sourceIp: undefined });
+    for (let index = 0; index < HOOK_PRE_VERIFY_PER_IP_PER_MINUTE; index += 1) {
+      w.clock.now += 1;
+      await w.receive({ ...w.delivery(nobody, bodyOf(w, "x")), sourceIp: undefined });
+    }
+    w.clock.now += 1;
     expect((await w.receive({ ...w.delivery(hook, bodyOf(w, "e1")), sourceIp: undefined })).status).toBe(429);
     const long = "a".repeat(64);
     for (let index = 0; index < HOOK_PRE_VERIFY_PER_IP_PER_MINUTE; index += 1) await w.receive(w.delivery(nobody, bodyOf(w, "x"), { ip: `${long}${String(index % 10)}` }));
@@ -467,10 +471,10 @@ describe("what the secret cache and the checks may not do", () => {
     expect((await w.receive(w.delivery(hook, bodyOf(w, "c"), { secret: SECRET_2 }))).status).toBe(202);
   });
 
-  it("forgets a secret that is gone: a signature of the old secret is not believed from a copy kept while the gate is tripped", async () => {
+  it.each([["is gone", (w: HookWorld, key: string) => w.secrets.values.delete(key)], ["can't be read", (w: HookWorld, key: string) => w.secrets.values.set(key, "not json")]])("forgets a secret that %s: a signature of the old secret is not believed from a copy kept while the gate is tripped", async (_name, spoil) => {
     const { w, hook } = await linear();
     expect((await w.receive(w.delivery(hook, bodyOf(w, "a")))).status).toBe(202);
-    w.secrets.values.delete(`${ORG_A}|${hook.hookId}`);
+    spoil(w, `${ORG_A}|${hook.hookId}`);
     w.clock.now += 6 * 60_000;
     for (let index = 0; index < HOOK_FAILED_VERIFY_PER_MINUTE; index += 1) await w.receive(w.delivery(hook, bodyOf(w, `f${String(index)}`), { secret: SECRET_2 }));
     expect((await w.receive(w.delivery(hook, bodyOf(w, "late")))).status).toBe(403);
