@@ -1,0 +1,157 @@
+// Every IAM role of a named cloud environment lives under /agentx/<env>/ (the access stack's two roles are the
+// intentional exception), and every ARN that names a fixed-name role carries that role's real path and name.
+//
+// Why it is more than a Path property: a role with a fixed RoleName is looked up by name before CloudFormation creates it
+// (iam:GetRole), and IAM authorizes a lookup of a role that does not exist yet against the path-less ARN
+// role/<name>, because the path of a missing role is unknown. The deploy role is scoped to role/agentx/<env>/*, so
+// that first call is refused (staging, 2026-10-23: ConnectorSecretsRole, "iam:GetRole on resource: role
+// agentx-staging-connector-secrets"), and so is the rollback's delete. So each fixed-name role needs its exact
+// path-less ARN named, for the read and delete actions only, in the deploy role and in the boundary it carries.
+import { Stack } from "aws-cdk-lib";
+import { Template } from "aws-cdk-lib/assertions";
+import { beforeAll, describe, expect, it } from "vitest";
+import { buildAgentXApp } from "../../infra/lib/app.js";
+import { defaultBoundaryStatements, serviceRoleStatements, type PolicyScope, type PolicyStatementJson } from "../../infra/lib/access-policies.js";
+import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
+import { skipLambdaBundling } from "../support/skip-bundling.js";
+
+skipLambdaBundling();
+
+type Json = Record<string, unknown>;
+type Resource = { Type: string; Properties: Json };
+type Synthesized = { access: Record<string, Resource>; others: Array<{ stack: string; resources: Record<string, Resource> }> };
+
+const ACCOUNT = "111122223333";
+const ENVIRONMENTS = ["staging", "a1234567890123456789", "agentxlivetest123"];
+
+const synthesized = new Map<string, Synthesized>();
+
+function synthesize(env: string): Synthesized {
+  const app = buildAgentXApp({ agentxEnv: env, agentxCloud: "true" });
+  const result: Synthesized = { access: {}, others: [] };
+  for (const stack of app.node.children.filter((child): child is Stack => Stack.isStack(child))) {
+    const resources = Template.fromStack(stack).toJSON().Resources as Record<string, Resource>;
+    if (stack.node.id === "AgentXAccess") result.access = resources;
+    else result.others.push({ stack: stack.node.id, resources });
+  }
+  return result;
+}
+
+/** An ARN or any other string as text: pseudo parameters become sample values, anything else a character no ARN holds. */
+function flatten(value: unknown): string {
+  if (typeof value === "string") return value;
+  const node = value as { "Fn::Join"?: [string, unknown[]]; Ref?: string };
+  if (node["Fn::Join"] !== undefined) return node["Fn::Join"][1].map(flatten).join(node["Fn::Join"][0]);
+  if (node.Ref === "AWS::Partition") return "aws";
+  if (node.Ref === "AWS::Region") return "us-west-2";
+  if (node.Ref === "AWS::AccountId") return ACCOUNT;
+  return "\u0000";
+}
+
+/** Every string in a template, with the Fn::Join chains flattened. */
+function strings(value: unknown, into: string[] = []): string[] {
+  if (typeof value === "string") into.push(value);
+  else if (Array.isArray(value)) for (const item of value) strings(item, into);
+  else if (typeof value === "object" && value !== null) {
+    const node = value as Json;
+    if (node["Fn::Join"] !== undefined) into.push(flatten(node));
+    for (const child of Object.values(node)) strings(child, into);
+  }
+  return into;
+}
+
+const roleResources = (resources: Record<string, Resource>) => Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::IAM::Role");
+const glob = (pattern: string, text: string) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`).test(text);
+const asList = <T>(value: T | T[] | undefined): T[] => (value === undefined ? [] : Array.isArray(value) ? value : [value]);
+
+/** Whether the statements allow the action on the resource: some Allow matches and no Deny whose resource matches does. Conditions are ignored (a Deny with one counts as applying). */
+function allowed(statements: PolicyStatementJson[], action: string, resource: string): boolean {
+  const matches = (statement: PolicyStatementJson) =>
+    statement.Action.some((pattern) => glob(pattern.toLowerCase(), action.toLowerCase()))
+    && (statement.NotResource !== undefined
+      ? !asList(statement.NotResource).some((pattern) => glob(pattern, resource))
+      : asList(statement.Resource).some((pattern) => glob(pattern, resource)));
+  return statements.some((s) => s.Effect === "Allow" && matches(s)) && !statements.some((s) => s.Effect === "Deny" && matches(s));
+}
+
+beforeAll(() => {
+  for (const env of ENVIRONMENTS) synthesized.set(env, synthesize(env));
+}, 600_000);
+
+describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env) => {
+  const path = `/agentx/${env}/`;
+  const scope = (): PolicyScope => ({
+    env, partition: "aws", region: "us-west-2", account: ACCOUNT,
+    artifactBucketArn: `arn:aws:s3:::agentx-${env}-access-artifactbucket-abc`, pullThroughPrefix: `agentx-${env}`,
+    cloudFormationRoleName: `agentx-${env}-cloudformation`,
+  });
+  const fixedNameRoles = (): Array<{ stack: string; id: string; name: string }> =>
+    synthesized.get(env)!.others.flatMap(({ stack, resources }) => roleResources(resources)
+      .filter(([, resource]) => resource.Properties.RoleName !== undefined)
+      .map(([id, resource]) => ({ stack, id, name: flatten(resource.Properties.RoleName) })));
+
+  it("sit under /agentx/<env>/, except the access stack's two, which stay at the root", () => {
+    const { access, others } = synthesized.get(env)!;
+    const wrong: string[] = [];
+    let count = 0;
+    for (const { stack, resources } of others) {
+      for (const [id, resource] of roleResources(resources)) {
+        count += 1;
+        if (resource.Properties.Path !== path) wrong.push(`${stack}/${id}: ${String(resource.Properties.Path)}`);
+      }
+    }
+    expect(count).toBeGreaterThan(20);
+    expect(wrong).toEqual([]);
+    expect(roleResources(access).map(([id, resource]) => [id, resource.Properties.Path, resource.Properties.RoleName])).toEqual([
+      ["CloudFormationServiceRole", undefined, `agentx-${env}-cloudformation`],
+      ["OperatorRole", undefined, `agentx-${env}-operator`],
+    ]);
+  });
+
+  it("have exactly the fixed names this test knows, so a new fixed-name role cannot slip past the deploy role", () => {
+    expect(fixedNameRoles().map((role) => role.name).sort()).toEqual(
+      [`agentx-${env}-connector-secrets`, ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : [])].sort(),
+    );
+  });
+
+  it("are named in every ARN that points at a fixed-name role with that role's path and name", () => {
+    const names = fixedNameRoles().map((role) => role.name);
+    const found: string[] = [];
+    for (const { resources } of synthesized.get(env)!.others) {
+      for (const text of strings(resources)) {
+        const at = text.indexOf(":role/");
+        if (at < 0) continue;
+        const rest = text.slice(at + ":role/".length);
+        if (names.some((name) => rest.endsWith(name))) found.push(text);
+      }
+    }
+    for (const text of found) expect(text).toMatch(new RegExp(`:iam::${ACCOUNT}:role${path}[^/]+$`));
+    // The boundary names the connector secrets role, and the broker builds its ARN from the environment alone: all three agree.
+    const arn = `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-connector-secrets`;
+    const boundaryStatement = defaultBoundaryStatements(scope()).find((statement) => statement.Sid === "ConnectorSecretsRole");
+    expect(boundaryStatement?.Resource).toBe(arn);
+    const built: MutableEnvironment = { AGENTX_ENV: env, AGENTX_NAMES: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: ACCOUNT };
+    hydrateBrokerEnvironment(built);
+    expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe(arn);
+  });
+
+  it("can be looked up, and cleaned up on a rollback, by the deploy role and the boundary it carries, before they exist", () => {
+    // What IAM authorizes for a role that does not exist yet: the path-less ARN. These calls are what failed on staging.
+    for (const { name } of fixedNameRoles()) {
+      const pathless = `arn:aws:iam::${ACCOUNT}:role/${name}`;
+      for (const [label, statements] of [["deploy role", serviceRoleStatements(scope())], ["boundary", defaultBoundaryStatements(scope())]] as const) {
+        for (const action of ["iam:GetRole", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:GetRolePolicy", "iam:DeleteRolePolicy", "iam:DetachRolePolicy", "iam:DeleteRole"]) {
+          expect(allowed(statements, action, pathless), `${label} allows ${action} on ${pathless}`).toBe(true);
+        }
+        // Not create or change: a role at the root path would escape the path scoping and the boundary requirement.
+        for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:PutRolePermissionsBoundary", "iam:PassRole"]) {
+          expect(allowed(statements, action, pathless), `${label} refuses ${action} on ${pathless}`).toBe(false);
+        }
+        // Only that exact role, and the real path still works.
+        expect(allowed(statements, "iam:GetRole", `arn:aws:iam::${ACCOUNT}:role/${name}-other`), `${label} refuses a similar name`).toBe(false);
+        expect(allowed(statements, "iam:GetRole", `arn:aws:iam::${ACCOUNT}:role/agentx-${env}-operator`), `${label} refuses the access stack's roles`).toBe(false);
+        expect(allowed(statements, "iam:CreateRole", `arn:aws:iam::${ACCOUNT}:role${path}${name}`), `${label} creates it under its path`).toBe(true);
+      }
+    }
+  });
+});
