@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AGENT_REPORT_MAX_BYTES, AgentXError, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema,
+  AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema,
   StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
   openChainRunKey, projectAllows, shortenToBytes, stepSk,
   type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge,
@@ -701,7 +701,7 @@ async function resultOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRec
     if (isAgentRun) {
       const report = shortenToBytes(event.finalReport ?? "", AGENT_REPORT_MAX_BYTES);
       if (report.trim() === "") return { status: "failed", failure: { reason: "result_invalid", message: `${attempt.agent?.name ?? attempt.stepName} finished without a report.` } };
-      const branch = event.branch !== undefined && /^[a-z][a-z0-9_]{0,23}$/u.test(event.branch) ? event.branch : undefined;
+      const branch = event.branch !== undefined && BranchIdSchema.safeParse(event.branch).success ? event.branch : undefined;
       return { status: "succeeded", result: { report, ...(branch === undefined ? {} : { branch }) } };
     }
     const links = (event.pullRequests ?? []).flatMap((pullRequest) => {
