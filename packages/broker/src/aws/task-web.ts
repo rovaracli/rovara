@@ -98,7 +98,7 @@ export interface TaskWebDependencies {
   getTaskFreshness?(caller: DeveloperCaller, taskId: string): Promise<TaskFreshness>;
   /** The page's JSON API (`/review/<task ID>/task/api/*`, see task-web-api.ts). Without it, those paths are not found. */
   api?(request: AdaptedHttpRequest, url: URL): Promise<WebResponse>;
-  getTaskPeople?(caller: DeveloperCaller, taskId: string): Promise<TaskPeopleView>;
+  getTaskPeople?(caller: DeveloperCaller, taskId: string): Promise<TaskPeopleView | undefined>;
   getTaskPeopleRequest?(caller: DeveloperCaller, taskId: string, requestId: string): Promise<TaskPeopleChangeResult>;
   getTaskPeopleProposalMetadata?(caller: DeveloperCaller, taskId: string, requestId: string): Promise<TaskPeopleProposal>;
   getTaskPersonName?(caller: DeveloperCaller, taskId: string, personId: string): Promise<string | undefined>;
@@ -560,7 +560,7 @@ export function createTaskWeb(deps: TaskWebDependencies): (request: AdaptedHttpR
       if (deps.getTaskPeople !== undefined) {
         try {
           const people = await deps.getTaskPeople(caller, taskId);
-          if (view.peopleRevision === people.revision) view = { ...view, people };
+          if (people !== undefined && view.peopleRevision === people.revision) view = { ...view, people };
         } catch { /* A complete People read is optional presentation; authority stays in the page projection. */ }
       }
       const nonce = randomBytes(18).toString("base64url");

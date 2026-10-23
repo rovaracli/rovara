@@ -93,7 +93,7 @@ export interface TaskWebApiDependencies {
   setSuggestion(caller: DeveloperCaller, taskId: string, input: PageSuggestionInput): Promise<unknown>;
   /** Must refuse a caller who may not decide with an error carrying `pageReason: "owners_only"`. */
   decide(caller: DeveloperCaller, taskId: string, input: PageDecisionInput): Promise<{ revision: number }>;
-  getPeople?(caller: DeveloperCaller, taskId: string): Promise<TaskPeopleView>;
+  getPeople?(caller: DeveloperCaller, taskId: string): Promise<TaskPeopleView | undefined>;
   proposePeopleRole?(caller: DeveloperCaller, taskId: string, input: TaskPeopleRoleRequest): Promise<TaskPeopleChangeResult>;
   proposeOwnership?(caller: DeveloperCaller, taskId: string, input: TaskPeopleTakeOwnershipRequest): Promise<TaskPeopleChangeResult>;
   getPeopleRequest?(caller: DeveloperCaller, taskId: string, requestId: string): Promise<TaskPeopleChangeResult>;
@@ -164,7 +164,9 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
       if (method === "GET") {
         if (endpoint === "people") {
           if (deps.getPeople === undefined) return json(404, { error: "not_found" });
-          return json(200, await deps.getPeople(caller, taskId));
+          // A reader who holds the task only through a session level is given no People data, and no refusal either.
+          const people = await deps.getPeople(caller, taskId);
+          return people === undefined ? json(404, { error: "not_found" }) : json(200, people);
         }
         if (peopleRequestId !== undefined) {
           if (deps.getPeopleRequest === undefined) return json(404, { error: "not_found" });

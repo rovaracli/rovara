@@ -400,6 +400,20 @@ export const getTaskPeople = (deps: DeveloperTaskRouteDependencies, caller: Deve
   readTaskPeople(deps, caller, taskId);
 export const getTaskPeopleCapabilities = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string) =>
   readTaskPeopleCapabilities(deps, caller, taskId);
+
+/**
+ * The People list for the task page: what `getTaskPeople` answers, except that a reader who holds the task only through a session level (Plan 5)
+ * gets nothing (undefined) where the list would refuse them. They read the task, not who may act on it.
+ */
+export async function getTaskPeopleForPage(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<Awaited<ReturnType<typeof readTaskPeople>> | undefined> {
+  try {
+    return await readTaskPeople(deps, caller, taskId);
+  } catch (error) {
+    const viaSession = await resolveTaskAccess(deps, caller, taskId, "peopleRead").then((access) => access.source === "session", () => false);
+    if (viaSession) return undefined;
+    throw error;
+  }
+}
 export const getTaskPeopleProposal = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, requestId: string) =>
   readPeopleProposal(taskPeopleEffectsDependencies(deps), caller, taskId, requestId);
 export const getTaskPeopleProposalMetadata = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, requestId: string) =>
@@ -4113,6 +4127,8 @@ async function coherentPageAccess(deps: DeveloperTaskRouteDependencies, caller: 
 }> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const access = await resolveTaskAccess(deps, caller, taskId);
+    // A reader who holds the task only through a session level reads it; they have no Task People entry to ask about and nothing to manage.
+    if (access.source === "session") return { access, capabilities: { canManagePeople: false, canTakeOwnership: false } };
     const capabilities = await readTaskPeopleCapabilities(deps, caller, taskId);
     if (access.peopleRevision === capabilities.peopleRevision) return { access, capabilities };
   }
