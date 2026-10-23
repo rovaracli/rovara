@@ -106,6 +106,14 @@ describe("a crash between recording an event and starting its work does not lose
     expect(w.dispatched).toEqual([]);
   });
 
+  it("writes the item again when it was forgotten between the failed write and the read of it", async () => {
+    const w = setupHookWorld();
+    const hook = await w.hook();
+    w.db.injectFault({ command: "PutCommand", match: (input) => String((input["Item"] as { pk?: string } | undefined)?.pk).includes("HOOK_EVENT#"), error: { name: "ConditionalCheckFailedException" } });
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "e1")))).status).toBe(202);
+    expect(w.dispatched).toHaveLength(1);
+  });
+
   it("answers a dispatched event as a duplicate an hour later, whatever the pending window is", async () => {
     const w = setupHookWorld();
     const hook = await w.hook();
