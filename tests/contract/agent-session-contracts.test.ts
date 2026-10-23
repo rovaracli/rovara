@@ -129,22 +129,24 @@ const view = {
   sessionId: SESSION,
   kind: "task",
   mode: "delegate",
-  subject: { kind: "task", taskId: TASK },
-  legs: [],
-  where: { kind: "cloud" },
   title: "Bump the Stripe SDK",
   owner: { developerId: DEV, name: "Priya" },
   startedBy: { kind: "member", developerId: DEV },
-  origin: "app",
-  followerCount: 1,
-  following: true,
-  viewing: [],
-  level: "view",
+  where: { kind: "cloud" },
+  status: "running",
+  step: "Writing the migration",
+  cost: { spentUsd: 1.25, payer: { kind: "member", name: "Priya" } },
+  approvals: [],
+  followers: 1,
+  viewingNow: [],
+  you: { level: "view", owner: false, following: true, actions: ["watch", "comment"] },
   link: `https://app.rovara.example/s/${SESSION}`,
+  bindings: [],
+  legs: [],
   revision: 2,
-  summary,
   createdAt: NOW,
   updatedAt: LATER,
+  body: { kind: "local", tool: "claude-code" },
 };
 
 const tile = {
@@ -477,8 +479,8 @@ describe("the view schemas", () => {
     // Removing or renaming a key below bumps AGENT_SESSION_CONTRACT_VERSION and needs Plans 5, 7 and 8 (the screens read these).
     // Adding an optional key or a new enum value stays under version 1.
     expect(Object.keys(SessionViewSchema.shape).sort()).toEqual([
-      "agent", "contractVersion", "createdAt", "endedAt", "followerCount", "following", "kind", "legs", "level", "link", "mode", "origin",
-      "owner", "project", "retryOf", "revision", "sessionId", "startedBy", "subject", "summary", "title", "updatedAt", "viewing", "where",
+      "agent", "approvals", "bindings", "body", "contractVersion", "cost", "createdAt", "endedAt", "followers", "kind", "lastRunFailed", "legs", "link", "mode",
+      "owner", "peek", "project", "retryOf", "revision", "sessionId", "startedBy", "status", "step", "title", "updatedAt", "viewingNow", "where", "you",
     ]);
     expect(Object.keys(SessionTileSchema.shape).sort()).toEqual([
       "agent", "contractVersion", "createdAt", "endedAt", "kind", "level", "owner", "project", "revision", "sessionId", "summary", "title", "updatedAt", "where",
@@ -495,17 +497,17 @@ describe("the view schemas", () => {
   });
 
   it("reads a newer server's view: unknown values read as unknown, the extra field is kept, and the strict schemas refuse it", () => {
-    const newer = { ...view, summary: { ...summary, status: "frozen" }, kind: "pair", where: { kind: "tablet", serial: "x1" }, level: "own", futureField: { a: 1 } };
+    const newer = { ...view, status: "frozen", kind: "pair", where: { kind: "tablet", serial: "x1" }, you: { ...view.you, level: "own" }, futureField: { a: 1 } };
     expect(SessionViewSchema.safeParse(newer).success).toBe(false);
     const read = SessionViewReaderSchema.parse(newer);
-    expect(read.summary.status).toBe("unknown");
+    expect(read.status).toBe("unknown");
     expect(read.kind).toBe("unknown");
-    expect(read.level).toBe("unknown");
+    expect(read.you.level).toBe("unknown");
     expect(read.where.kind).toBe("unknown");
     expect((read.where as Record<string, unknown>).serial).toBe("x1");
     expect((read as Record<string, unknown>).futureField).toEqual({ a: 1 });
     // A value it knows is read as it is.
-    expect(SessionViewReaderSchema.parse(view).summary.status).toBe("running");
+    expect(SessionViewReaderSchema.parse(view).status).toBe("running");
   });
 
   it("reads a newer server's event page and tile", () => {
@@ -524,11 +526,11 @@ describe("the view schemas", () => {
 
   it("keeps a missing required value an error in the reader, not an unknown", () => {
     expect(SessionViewReaderSchema.safeParse({ ...view, title: undefined }).success).toBe(false);
-    expect(SessionViewReaderSchema.safeParse({ ...view, summary: { ...summary, status: undefined } }).success).toBe(false);
-    expect(SessionViewReaderSchema.safeParse({ ...view, summary: { ...summary, status: 7 } }).success).toBe(false);
+    expect(SessionViewReaderSchema.safeParse({ ...view, status: undefined }).success).toBe(false);
+    expect(SessionViewReaderSchema.safeParse({ ...view, status: 7 }).success).toBe(false);
     // A kind it knows with a broken field is an error, not an "unknown" kind.
-    expect(SessionViewReaderSchema.safeParse({ ...view, where: { kind: "mac", deviceId: "dvc_bad", label: "Mac" } }).success).toBe(false);
-    expect(SessionViewReaderSchema.safeParse({ ...view, where: { kind: "mac", deviceId: DEVICE, label: "Mac" } }).success).toBe(true);
+    expect(SessionViewReaderSchema.safeParse({ ...view, where: { kind: "mac", label: "", offline: false } }).success).toBe(false);
+    expect(SessionViewReaderSchema.safeParse({ ...view, where: { kind: "mac", label: "Mac", offline: false } }).success).toBe(true);
   });
 
   it("declares the home, project and confirmation shapes, strict and reader", () => {
