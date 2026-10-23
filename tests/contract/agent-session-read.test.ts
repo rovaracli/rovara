@@ -23,7 +23,9 @@ import { listSessions, sessionStepTask, sessionView, type SessionReadDependencie
 import { isAgentSessionRoute } from "../../packages/broker/src/agent-sessions/routes.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
 import { createWriteApprovalRecord, getApprovalSubjectHandler, getApproverRule, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
-import { can } from "../../packages/broker/src/developer/task-access.js";
+import { can, resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
+import { mayDecideSpendRequest } from "../../packages/broker/src/spend/requests.js";
+import { spendRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -146,6 +148,17 @@ describe("reading a task session", () => {
     expect((await view(cancelled, PRIYA, cancelled.w.seedSession().sessionId)).status).toBe("cancelled");
     const starting = readWorld({}, { status: "STARTING" });
     expect((await view(starting, PRIYA, starting.w.seedSession().sessionId)).status).toBe("starting");
+  });
+
+  it("takes the run limit and the stop point from the task until the summary is computed", async () => {
+    const r = readWorld();
+    const { sessionId, taskId } = r.w.seedSession();
+    r.w.db.set({ ...r.w.db.get(taskKey(taskId))!, budgetUsd: 10, maxPerRunUsd: 4 });
+    expect((await view(r, PRIYA, sessionId)).cost).toMatchObject({ runLimitUsd: 10, stopAtUsd: 4 });
+    r.w.db.set({ ...r.w.db.get(taskKey(taskId))!, budgetUsd: 10, maxPerRunUsd: 40 });
+    expect((await view(r, PRIYA, sessionId)).cost).toMatchObject({ runLimitUsd: 10, stopAtUsd: 10 });
+    r.w.db.set({ ...r.w.db.get(taskKey(taskId))!, budgetUsd: undefined, maxPerRunUsd: undefined });
+    expect((await view(r, PRIYA, sessionId)).cost).not.toHaveProperty("runLimitUsd");
   });
 
   it("names who pays, and shows the budget link only to a person who may decide it", async () => {
@@ -361,6 +374,17 @@ describe("listing sessions", () => {
     expect(bad?.message).not.toContain("xxxx");
   });
 
+  it("drops an index row that names another org, and refuses a limit outside 1 to 100", async () => {
+    const l = listWorld();
+    const key = mySessionsKey(ORG_A, PRIYA, "2026-10-22T08:01:00.000Z", l.a);
+    l.w.db.set({ ...l.w.db.get(key)!, orgId: ORG_B });
+    expect(ids(await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me" }))).toEqual([l.e, l.c, l.d]);
+    expect(await code(listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 101 }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 0 }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 100 })).sessions).toHaveLength(3);
+    expect((await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 1 })).sessions).toHaveLength(1);
+  });
+
   it("needs exactly one of owner, project or shared, and a real project name", async () => {
     const l = listWorld();
     expect(await code(listSessions(l.deps, l.w.caller(PRIYA), {}))).toMatchObject({ code: "CONFIG_INVALID" });
@@ -449,6 +473,18 @@ describe("a task from before sessions", () => {
     const l = lazyWorld();
     const broken = { documentClient: { send: async () => { throw new Error("table is down"); } }, tableName: "state", now: () => 0 };
     await expect(ensureTaskSession(broken as never, l.full as never, { ownerName: "Priya", title: "x" })).resolves.toBeUndefined();
+  });
+
+  it("leaves a session another read named in the meantime alone, and never answers with another org's", async () => {
+    const l = lazyWorld();
+    const other = "ses_00000000000000000001";
+    // A read that raced us already named one; ours, still holding the old copy of the task, writes nothing.
+    l.w.db.set({ ...l.w.db.get(taskKey(l.taskId))!, sessionId: other });
+    expect(await l.ensure()).toBe(other);
+    expect(sessionsOf(l.w)).toHaveLength(0);
+    expect((l.w.db.get(taskKey(l.taskId)) as { sessionId?: string }).sessionId).toBe(other);
+    // A copy of the task that says another org gets nothing from this one's record.
+    expect(await l.ensure({ orgId: ORG_B })).toBeUndefined();
   });
 
   it("keeps a task that is somebody else's org out", async () => {
@@ -636,6 +672,85 @@ describe("the session routes", () => {
   });
 });
 
+describe("what the routes refuse", () => {
+  it("answers only the methods and paths it maps", async () => {
+    const t = await setup();
+    const { sessionId } = await t.start();
+    expect((await t.dev(MAYA, "POST", "/v1/app/sessions", {})).status).toBe(404);
+    expect((await t.dev(MAYA, "GET", `/v1/app/sessions/${sessionId}/shares/ORG`)).status).toBe(404);
+    expect((await t.dev(MAYA, "PUT", `/v1/app/sessions/${sessionId}/sections/1/task`, {})).status).toBe(404);
+    expect((await t.dev(MAYA, "GET", `/v1/app/sessions/${sessionId}/sections/1/task`)).status).toBe(404);
+    for (const limit of ["abc", "1e1", "-1", "1000"]) expect((await t.dev(MAYA, "GET", `/v1/app/sessions?owner=me&limit=${limit}`)).status, limit).toBe(400);
+    expect((await t.dev(MAYA, "GET", "/v1/app/sessions?owner=me&limit=5")).status).toBe(200);
+    expect((await t.dev(MAYA, "GET", "/v1/app/sessions?owner=me&status=nope")).status).toBe(400);
+  });
+
+  it("fails closed on a chain session's readers until Plan 4 supplies them", async () => {
+    const t = await setup();
+    const deps = t.starter() as unknown as { agentSessions: { chainReadAccess?: (caller: { orgId: OrgId; developerId: string }, session: never) => Promise<boolean> } };
+    expect(deps.agentSessions.chainReadAccess).toBeDefined();
+    expect(await deps.agentSessions.chainReadAccess!({ orgId: TEST_ORG, developerId: MAYA.developerId }, {} as never)).toBe(false);
+  });
+
+  it("leaves a budget request nobody can decide any more without a link", async () => {
+    const t = await setup();
+    const id = "spr_0123456789abcdefghij";
+    const asked = { orgId: TEST_ORG, developerId: MAYA.developerId };
+    expect(await mayDecideSpendRequest(t.starter() as never, asked, id)).toBe(false);
+    const record = { ...spendRequestKey(TEST_ORG, id), entityType: "SPEND_REQUEST", orgId: TEST_ORG, spendRequestId: id, kind: "run_limit", amountUsd: 5, approverIds: [MAYA.developerId], requestedBy: { kind: "system" } };
+    t.db.set({ ...record, status: "PENDING", expiresAt: new Date(Date.now() - 60_000).toISOString() });
+    expect(await mayDecideSpendRequest(t.starter() as never, asked, id)).toBe(false);
+    t.db.set({ ...record, status: "APPROVED", expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    expect(await mayDecideSpendRequest(t.starter() as never, asked, id)).toBe(false);
+  });
+
+  it("names a pending decision only on its own session, and only to a person who may decide it", async () => {
+    const t = await setup();
+    const first = await t.start();
+    const second = await t.start();
+    await t.share(MAYA, first.sessionId, OMAR);
+    const ask = (taskId: string, approvalId: string, ids: string[]) => createWriteApprovalRecord({ documentClient: t.db, tableName: "state", now: Date.now }, {
+      orgId: TEST_ORG, approvalId, kind: "write", subject: { kind: "agent_run", taskId, stepId: "work" }, operationId: randomUUID(), connector: "linear", connectorType: "linear",
+      tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64), arguments: {}, argumentsHash: "c".repeat(64),
+      summary: `Change ${approvalId}`, class: "consequential", approvers: { kind: "ids", ids }, status: "PENDING", project: "payments", owner: { developerId: MAYA.developerId, name: MAYA.name },
+      attempts: 0, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    } as never, [], 8);
+    // Listed for Omar too, who has no role on the project and so may not decide it.
+    expect(await ask(first.taskId, "apr_aaaaaaaaaaaaaaaaaaaa", [MAYA.developerId, OMAR.developerId])).toBe("created");
+    expect(await ask(second.taskId, "apr_bbbbbbbbbbbbbbbbbbbb", [MAYA.developerId])).toBe("created");
+    const onFirst = SessionResponseSchema.parse(bodyOf(await t.dev(MAYA, "GET", `/v1/app/sessions/${first.sessionId}`))).session.approvals;
+    expect(onFirst.map((entry) => entry.approvalId)).toEqual(["apr_aaaaaaaaaaaaaaaaaaaa"]);
+    const onSecond = SessionResponseSchema.parse(bodyOf(await t.dev(MAYA, "GET", `/v1/app/sessions/${second.sessionId}`))).session.approvals;
+    expect(onSecond.map((entry) => entry.approvalId)).toEqual(["apr_bbbbbbbbbbbbbbbbbbbb"]);
+    expect(SessionResponseSchema.parse(bodyOf(await t.dev(OMAR, "GET", `/v1/app/sessions/${first.sessionId}`))).session.approvals).toEqual([]);
+  });
+});
+
+describe("the task page's access for a session viewer", () => {
+  it("is a read-only viewer from the session, and nothing for any action but reading", async () => {
+    const w = sessionWorld();
+    const { sessionId, taskId } = w.seedSession();
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ZED }, "view");
+    const deps = {
+      documentClient: w.db, tableName: "state", now: () => w.clock.now, agentSessions: { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members },
+      checkAccess: async () => { throw new Error("no project access"); }, log: () => undefined,
+    };
+    const access = await resolveTaskAccess(deps, w.caller(ZED), taskId);
+    expect(access).toMatchObject({ role: "viewer", source: "session", ownerActorIds: [] });
+    expect(await resolveTaskAccess(deps as never, w.caller(ZED), taskId, "read")).toMatchObject({ source: "session" });
+    expect(await resolveTaskAccess(deps as never, w.caller(ZED), taskId, "peopleRead")).toMatchObject({ source: "session" });
+    for (const action of ["comment", "takeOwnership", "decide", "retry", "work", "peopleManage"] as const) {
+      expect(await code(resolveTaskAccess(deps as never, w.caller(ZED), taskId, action)), action).toMatchObject({ code: "TASK_NOT_FOUND" });
+    }
+    // A project viewer reads through their session level too; someone with no level, and everyone when the session dependencies are absent, do not.
+    expect(await code(resolveTaskAccess(deps as never, w.caller(MIA), taskId, "read"))).toBeUndefined();
+    const nobody = "7".repeat(64);
+    w.member(ORG_A, nobody, "member");
+    expect(await code(resolveTaskAccess(deps as never, w.caller(nobody), taskId, "read"))).toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect(await code(resolveTaskAccess({ ...deps, agentSessions: undefined } as never, w.caller(ZED), taskId))).toMatchObject({ code: "TASK_NOT_FOUND" });
+  });
+});
+
 describe("a task read for the first time after the deploy", () => {
   it("gets its session on the full read, once, even when two reads race, and the session then reads", async () => {
     const t = await setup();
@@ -652,6 +767,16 @@ describe("a task read for the first time after the deploy", () => {
     expect(t.db.find((entry) => String(entry.pk).includes("AGENT_SESSION#") && entry.sk === "META")).toHaveLength(1);
     expect((await t.dev(MAYA, "GET", `/v1/app/sessions/${first}`)).status).toBe(200);
     expect((t.db.get(taskKey(taskId)) as { sessionId?: string }).sessionId).toBe(first);
+  });
+
+  it("is not given one by a read that isn't the full one", async () => {
+    const t = await setup();
+    const { taskId, sessionId } = await t.start();
+    for (const item of t.db.find((entry) => typeof entry.pk === "string" && entry.pk.includes(sessionId))) t.db.delete({ pk: String(item.pk), sk: String(item.sk) });
+    const { sessionId: _sessionId, ...task } = t.db.get(taskKey(taskId))!; // eslint-disable-line @typescript-eslint/no-unused-vars -- removed on purpose
+    t.db.set(task);
+    expect((await t.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}/events`)).status).toBe(200);
+    expect(t.db.find((entry) => String(entry.pk).includes("AGENT_SESSION#"))).toHaveLength(0);
   });
 });
 
@@ -701,6 +826,7 @@ describe("the link /s/<id>", () => {
     expect(anonymous.headers.location).toBe(`/v1/auth/browser/authorize?return_to=${encodeURIComponent(`/s/${sessionId}`)}`);
     expect((await t.browser("/s/not-a-session", MAYA)).status).toBe(404);
     expect((await t.browser(`/s/${sessionId}`, MAYA, { method: "POST" })).status).toBe(405);
+    expect((await t.browser(`/s/${sessionId}x`, MAYA)).status).toBe(404);
   });
 
   it("sends the owner to their own task page as before", async () => {
