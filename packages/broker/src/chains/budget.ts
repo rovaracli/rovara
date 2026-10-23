@@ -9,7 +9,7 @@ import {
 } from "@agentx/contracts";
 import { admitWork } from "../spend/admission.js";
 import type { AdmissionDependencies } from "../org/budget.js";
-import { resolvePayer, type NamedPerson } from "../spend/payer.js";
+import { resolvePayer, type NamedPerson, type PayerFacts } from "../spend/payer.js";
 import { cleanUsd } from "../spend/top-ups.js";
 
 /** The person a chain's budget counts for: the member who owns it, else the maintainer accountable for it (the same rule as an agent's). */
@@ -22,10 +22,14 @@ export type ChainRunOrigin = Extract<WorkOrigin, "app" | "cli" | "mcp" | "slack"
  * Whose budget a chain run is charged to (`resolvePayer`, Plan 3 Task 29): an event or a schedule that starts a chain is paid by the chain; a person's run is
  * paid by the project when it pays for its tasks, else by the member who started it.
  */
-export function chainRunPayer(input: { origin: ChainRunOrigin; project: string; projectPays: boolean; chainId: ChainId; startedBy?: NamedPerson | undefined }): Payer {
+export function chainRunPayer(input: { origin: ChainRunOrigin; project: string; projectPays: boolean; chainId: ChainId; startedBy?: NamedPerson | undefined } & PayerFacts): Payer {
   return resolvePayer({
     origin: input.origin, project: input.project, projectPays: input.projectPays, chainId: input.chainId,
     ...(input.startedBy === undefined ? {} : { startedBy: input.startedBy }),
+    // A Linear-started run follows Plan 3's payer table: its person assigner pays, else the member who approved a bot's assignment, else the project.
+    ...(input.assignedBy === undefined ? {} : { assignedBy: input.assignedBy }),
+    ...(input.approvedBy === undefined ? {} : { approvedBy: input.approvedBy }),
+    ...(input.acceptedBy === undefined ? {} : { acceptedBy: input.acceptedBy }),
   });
 }
 

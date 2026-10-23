@@ -402,12 +402,14 @@ export async function spendApprovers(deps: SpendRequestDependencies, request: Sp
     const policy = await readSpendPolicy(deps, orgId);
     const limit = newLimitFor(request, amountUsd);
     const project = task.place?.project ?? task.project;
-    // A chain step's raise past what its run had left is a run-level raise: the project's maintainers are not asked for it, the chain's owner is (and the admins above).
+    // A chain step's raise past what its run had left is a run-level raise (`chainRaise`): whatever the payer and the amount, the chain's owner decides it (a chain
+    // run never goes past its limit without them), and the admins above the admin threshold, or when the chain or the run can't be read (fail closed).
     const raise = await chainRaise(deps, task, limit);
-    if (limit <= policy.leadApprovalThresholdUsd) found = await payerOf(deps, orgId, task);
-    else if (limit <= policy.adminApprovalThresholdUsd) {
-      found = raise.runLevel ? (raise.chainId === undefined ? await admins(deps, orgId) : await chainOwners(deps, orgId, raise.chainId)) : await maintainersOrAdmins(deps, orgId, project, "project_maintainer");
-    } else found = await admins(deps, orgId);
+    if (raise.runLevel) {
+      found = limit <= policy.adminApprovalThresholdUsd && raise.chainId !== undefined ? await chainOwners(deps, orgId, raise.chainId) : await admins(deps, orgId);
+    } else if (limit <= policy.leadApprovalThresholdUsd) found = await payerOf(deps, orgId, task);
+    else if (limit <= policy.adminApprovalThresholdUsd) found = await maintainersOrAdmins(deps, orgId, project, "project_maintainer");
+    else found = await admins(deps, orgId);
   } else if (request.kind === "max_per_run") {
     const task = await readTask(deps, orgId, request.taskId);
     const agentId = task?.agent?.agentId;
@@ -423,7 +425,7 @@ export async function spendApprovers(deps: SpendRequestDependencies, request: Sp
     found = await admins(deps, orgId);
   }
   const members = await Promise.all(found.ids.map(async (id) => (await orgRoleOf(deps, orgId, id)) !== undefined));
-  return withoutStarter(deps, request, members.some(Boolean) ? found : await admins(deps, orgId));
+  return withoutStarter(deps, request, members.some(Boolean) ? found : await admins(deps, orgId), amountUsd);
 }
 
 /** The person whose run a task's request is for (its starter), as the survivor of any merge. */
@@ -435,25 +437,24 @@ async function starterOf(deps: SpendRequestDependencies, request: SpendRequestRe
  * Whether a run's starter may decide their own run's request (fix round 1, I-4): a run limit or planning limit when they are the payer member, or the org's
  * only owner or admin (merge of Tasks 32 and 34: else nobody could decide it); a max per run never, even as the agent's owner, unless they are the org's only owner or admin (as an owner's cap is ruled). A month's request (Task 33 fix round 1,
  * I-3, M-11) the same as a max per run: its asker, or the starter of the task whose pause asked, never decides it unless they are the only owner or admin.
+ * A chain step's raise past its run's limit is never the payer's to decide; and a chain's owner who starts the run is no exception (Plan 4 Task 5, review M-5).
  */
-async function starterMayDecide(deps: SpendRequestDependencies, request: SpendRequestRecord, starter: string): Promise<boolean> {
+async function starterMayDecide(deps: SpendRequestDependencies, request: SpendRequestRecord, starter: string, amountUsd: number = request.amountUsd): Promise<boolean> {
   // The org's only owner or admin, whatever the kind: nobody else could decide it, and the request would wait until it expired.
   const ids = await orgAdmins(deps, request.orgId);
   if (ids.length === 1 && ids[0] === starter) return true;
   if (request.kind === "max_per_run" || request.kind === "month") return false;
-  const payer = await taskPayerId(deps, request);
-  if (payer !== undefined) return await resolveSurvivor(deps, request.orgId, payer) === starter;
-  // A chain pays through its owner: the starter who is the chain's owner is the payer's side of their own run's request, as the payer member is.
+  // A raise that takes a chain run past its own limit is the chain's owner's to decide, not the payer's: the payer exception does not cover it.
   const task = await readTask(deps, request.orgId, request.taskId);
-  if (task?.payer?.kind !== "chain") return false;
-  const owners = await chainOwners(deps, request.orgId, task.payer.chainId);
-  return owners.role === "chain_owner" && (await Promise.all(owners.ids.map((id) => resolveSurvivor(deps, request.orgId, id)))).includes(starter);
+  if (task?.chain !== undefined && (await chainRaise(deps, task, newLimitFor(request, amountUsd))).runLevel) return false;
+  const payer = await taskPayerId(deps, request);
+  return payer !== undefined && await resolveSurvivor(deps, request.orgId, payer) === starter;
 }
 
 /** Approvers without the run's starter where they may not decide: someone else of the same list, else the org's other owners and admins. */
-async function withoutStarter(deps: SpendRequestDependencies, request: SpendRequestRecord, found: SpendApprovers): Promise<SpendApprovers> {
+async function withoutStarter(deps: SpendRequestDependencies, request: SpendRequestRecord, found: SpendApprovers, amountUsd: number): Promise<SpendApprovers> {
   const starter = await starterOf(deps, request);
-  if (starter === undefined || await starterMayDecide(deps, request, starter)) return found;
+  if (starter === undefined || await starterMayDecide(deps, request, starter, amountUsd)) return found;
   const survivors = await Promise.all(found.ids.map((id) => resolveSurvivor(deps, request.orgId, id)));
   const rest = found.ids.filter((_id, index) => survivors[index] !== starter);
   if (rest.length === found.ids.length) return found;
@@ -491,7 +492,7 @@ async function mayDecideNow(deps: SpendRequestDependencies, caller: Pick<AgentCa
     const payer = await taskPayerId(deps, record);
     return answer(payer !== undefined && await resolveSurvivor(deps, caller.orgId, payer) === me);
   }
-  if (await starterOf(deps, record) === me && !await starterMayDecide(deps, record, me)) return answer(false);
+  if (await starterOf(deps, record) === me && !await starterMayDecide(deps, record, me, amountUsd)) return answer(false);
   return answer(true);
 }
 

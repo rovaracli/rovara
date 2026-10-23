@@ -31,7 +31,7 @@ export const ownerOverCap = (owner: string, budgets: BudgetWords = "agent") => O
 /** Which budgets a refusal talks about: the agent path says "agent", the chain path (the total holds both kinds) says "agent and chain". */
 export type BudgetWords = "agent" | "agent and chain";
 
-export const totalsMoved = (budgets: BudgetWords = "agent") => coded("AGENT_REVISION_CONFLICT", `Someone else changed this person's ${budgets} budgets just now. Reload and make your change again.`);
+export const totalsMoved = (budgets: BudgetWords = "agent") => coded(budgets === "agent" ? "AGENT_REVISION_CONFLICT" : "CHAIN_REVISION_CONFLICT", `Someone else changed this person's ${budgets} budgets just now. Reload and make your change again.`);
 
 /** What an approved `owner_cap` request adds to a budget write (Plan 3 Task 32): the request's own end rides in the write's transaction, so the approval is the override. */
 export interface OverrideCap {
@@ -164,7 +164,7 @@ export class OwnerBudgets {
    * read, and every write to a budget changes the total in the same transaction, so the figure written is exact; a write that raced it makes
    * it read again. A merge calls this for the survivor, because a duplicate's budgets were counted under the duplicate until now.
    */
-  async rebuild(orgId: OrgId, owner: string): Promise<number> {
+  async rebuild(orgId: OrgId, owner: string, budgets: BudgetWords = "agent"): Promise<number> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const seen = (await this.readTotal(orgId, owner))?.["totalUsd"];
       const total = await this.sum(orgId, owner);
@@ -184,7 +184,7 @@ export class OwnerBudgets {
         if (errorName(error) !== "ConditionalCheckFailedException") throw error;
       }
     }
-    throw totalsMoved();
+    throw totalsMoved(budgets);
   }
 
   /**
@@ -193,7 +193,7 @@ export class OwnerBudgets {
    * because the duplicate's budgets may be counted under the duplicate. A raise held to `cap` also checks the spend policy is still at the
    * revision the cap was read from. The changed item itself must be first in the transaction.
    */
-  async itemsFor(orgId: OrgId, before: BudgetSubject, after: BudgetSubject, cap?: OwnerCap): Promise<OwnerTotalItems> {
+  async itemsFor(orgId: OrgId, before: BudgetSubject, after: BudgetSubject, cap?: OwnerCap, budgets: BudgetWords = "agent"): Promise<OwnerTotalItems> {
     const resolve = async (subject: BudgetSubject): Promise<{ share?: OwnerShare; stale: boolean }> => {
       const share = ownerShare(subject);
       if (share === undefined) return { stale: false };
@@ -204,7 +204,7 @@ export class OwnerBudgets {
     const owners = new Map<string, boolean>();
     for (const side of [was, now]) if (side.share !== undefined) owners.set(side.share.owner, (owners.get(side.share.owner) ?? false) || side.stale);
     for (const [owner, stale] of owners) {
-      if (stale) await this.rebuild(orgId, owner);
+      if (stale) await this.rebuild(orgId, owner, budgets);
       else await this.ensure(orgId, owner);
     }
     const counters = ownerTotalItems(this.input, orgId, was.share, now.share, cap?.usd, cap?.seen);

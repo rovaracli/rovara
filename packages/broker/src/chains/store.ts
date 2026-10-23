@@ -111,7 +111,7 @@ const notFound = () => coded("NOT_FOUND", "no chain has that ID");
 const nameTaken = (name: string) => coded("CONFIG_INVALID", `name: another chain in your company is called ${name}`);
 const budgetConflict = () => coded("CHAIN_REVISION_CONFLICT", "Someone else changed this chain's owner, status or budget just now. Reload it and make your change again.");
 const policyMoved = () => coded("CHAIN_REVISION_CONFLICT", "Your company's spend policy changed just now. Reload and make your change again.");
-const totalsChanged = () => coded("CHAIN_REVISION_CONFLICT", totalsMoved("agent and chain").message.replace(/^AGENT_REVISION_CONFLICT: /, ""));
+const totalsChanged = () => totalsMoved("agent and chain");
 const ROLLBACK_MOVED = "An agent this chain uses changed while it was being rolled back. Roll back again.";
 const agentMoved = () => coded("CHAIN_REVISION_CONFLICT", "An agent this chain uses changed while it was being published. Publish again.");
 
@@ -492,7 +492,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
 
   /** The counter items that take a chain from `before` to `after`, and what their refusals mean. */
   private async totalsFor(orgId: OrgId, before: BudgetSubject, after: BudgetSubject, cap?: OwnerCap): Promise<{ items: TransactItem[]; refuse: (failed: Set<number>) => Error }> {
-    const totals = await this.ownerBudgets.itemsFor(orgId, before, after, cap);
+    const totals = await this.ownerBudgets.itemsFor(orgId, before, after, cap, "agent and chain");
     return {
       items: totals.items,
       refuse: (failed) => {
