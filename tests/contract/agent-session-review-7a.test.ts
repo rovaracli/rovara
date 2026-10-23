@@ -357,13 +357,19 @@ describe("I-6: a summary is validated before it is written, and the seams are va
     expect(p.sessionOf(local.sessionId).summary).toMatchObject({ status: "running", offline: true, costUsd: 0.5 });
   });
 
-  it("a summary the schema refuses is not written, and the refresh says so rather than failing after a commit", async () => {
+  it("a summary the schema refuses is not written: nothing changes and the refresh logs it", async () => {
     const p = projectorWorld();
     const s = p.open();
     p.operation(s.workspaceId, "task", "RUNNING");
-    // A step name the task page would produce is cut and cleaned; the way to an invalid summary here is a cost that is not a number (a corrupt counter).
-    p.w.db.set({ pk: `ORG#${ORG_A}#TASK_SPENT#${s.taskId}`, sk: "META", entityType: "TASK_SPENT", orgId: ORG_A, settledUsd: Number.NaN });
-    await p.refresh(s.sessionId);
+    // A corrupt run limit on the task (negative) would make the summary invalid.
+    p.patchTask(s.taskId, { budgetUsd: -5 });
+    const before = JSON.stringify(p.sessionOf(s.sessionId));
+    expect(await p.refresh(s.sessionId)).toBe("unchanged");
+    expect(JSON.stringify(p.sessionOf(s.sessionId))).toBe(before);
+    expect(p.logs.map((entry) => entry.event)).toContain("agent_session.summary_invalid");
+    // The session is still readable, and a task that is sound again is refreshed.
+    p.patchTask(s.taskId, { budgetUsd: 5 });
+    expect(await p.refresh(s.sessionId)).toBe("updated");
     expect(SessionSummarySchema.safeParse(p.sessionOf(s.sessionId).summary).success).toBe(true);
   });
 });
