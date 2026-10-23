@@ -313,16 +313,18 @@ export class GitHubAppCredentialProvider {
 
   /**
    * A token for one repository that an agent's tool (or the broker, reading for an agent's run) uses. It carries exactly `permissions` plus
-   * `metadata: read`, and nothing else: `contents: write`, `workflows`, `administration`, `actions: write` and every key outside issues,
-   * pull_requests, contents and metadata are refused (FORBIDDEN) before GitHub is asked. For an org on a cloud install the installation must
-   * be bound to the org, active, at this moment (`requireInstallationBound`), like every other mint (PF10).
+   * `metadata: read`, and nothing else. The allowed keys are issues, pull_requests, contents and metadata, plus `actions` and `deployments` at
+   * `read` only (the GitHub Actions connector's, once `checkAgentTokenPermissions` lists them, as it does with Plan 4). Everything else is
+   * refused (FORBIDDEN) before GitHub is asked: `contents: write`, `workflows`, `administration`, `actions: write`, `deployments: write` and every
+   * other key. For an org on a cloud install the installation must be bound to the org, active, at this moment (`requireInstallationBound`),
+   * like every other mint (PF10).
    */
   async createAgentInstallationToken(repository: string | { owner: string; name: string }, permissions: GitHubAgentTokenPermissions, scope: AgentGitHubScope, options: AgentTokenOptions = {}): Promise<string> {
     requireAgentScope(scope);
     const checked = checkAgentTokenPermissions(permissions);
     const installed = await this.installed(typeof repository === "string" ? parseGitHubRepository(repository) : repository, scope);
     requirePinnedInstallation(installed, options);
-    return this.createInstallationToken(installed, { ...checked, metadata: "read" }, scope);
+    return this.createInstallationToken(installed, { ...checked, metadata: "read" }, scope, false, options);
   }
 
   /** The repository as the installation spells it, checked for the org (once), with an agent token for it. */
@@ -331,7 +333,7 @@ export class GitHubAppCredentialProvider {
     const checked = checkAgentTokenPermissions(permissions);
     const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
     requirePinnedInstallation(repository, options);
-    return { repository, token: await this.createInstallationToken(repository, { ...checked, metadata: "read" }, scope) };
+    return { repository, token: await this.createInstallationToken(repository, { ...checked, metadata: "read" }, scope, false, options) };
   }
 
   /**
@@ -1161,19 +1163,23 @@ export class GitHubAppCredentialProvider {
    * A token for one repository. An `InstalledRepository` has just been through `installed()` (so the org check is done, once); a bare
    * repository goes through it here. When the cached installation is gone (the App was uninstalled and installed again, which gives it a
    * new ID), the installation is looked up once more, and checked again. GitHub's 422 for a repository an installation does not (or no
-   * longer) reach means, for an org, that its connection does not cover the repository.
+   * longer) reach means, for an org, that its connection does not cover the repository. An agent's token carries the project's pinned
+   * installation (`options`), and the retry checks it again exactly as the first attempt did: a lookup that crosses to another installation is
+   * refused before any token is asked of it.
    */
   private async createInstallationToken(
     repository: { owner: string; name: string } | InstalledRepository,
     permissions: Record<string, "read" | "write">,
     scope: GitHubTokenScope,
     retried = false,
+    options: AgentTokenOptions = {},
   ): Promise<string> {
     const installed = "installationId" in repository ? repository : await this.installed(repository, scope);
+    requirePinnedInstallation(installed, options);
     const response = await this.postInstallationToken(installed.installationId, { repositories: [installed.name], permissions });
     if (response.status === 404 && !retried) {
       this.installations.delete(installed.owner.toLowerCase());
-      return this.createInstallationToken({ owner: installed.owner, name: installed.name }, permissions, scope, true);
+      return this.createInstallationToken({ owner: installed.owner, name: installed.name }, permissions, scope, true, options);
     }
     if (response.status === 422 && "orgId" in scope) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${installed.owner}/${installed.name}`));
     return this.tokenOf(response);
