@@ -127,7 +127,7 @@ describe("a coding agent's max-per-run pause is not skipped by a retry or a send
     expect(request).toMatchObject({ approverRole: "project_maintainer", approverIds: [BEN.developerId] });
     const retried = await t.api(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/workflow/retry`, { expectedRevision: before.meta.workflow!.revision, instructions: "Try again." });
     expect(retried.status, JSON.stringify(retried.body)).toBe(409);
-    expect(retried.body).toMatchObject({ error: { code: "WORKSPACE_BUSY", message: expect.stringContaining("project maintainer") as unknown } });
+    expect(retried.body).toMatchObject({ error: { code: "WORKSPACE_BUSY", message: expect.stringContaining("a maintainer of payments") as unknown } });
     expect(snapshot(t, run.taskId, run.workspaceId, request.spendRequestId)).toEqual(before);
   });
 

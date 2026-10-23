@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
   AgentIdSchema, AgentXError, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, RUN_LIMIT_BLOCK_PREFIX, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, RUN_LIMIT_BLOCK_PREFIX, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, ROVARA_CODE_AGENT_ID,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
@@ -1645,6 +1645,38 @@ export async function withdrawTaskSpendRequests(deps: SpendRequestDependencies, 
     items: [...endItems(deps, record, { status: "EXPIRED", expiredAt: at, endedBecause: "continued" }), ...events.flatMap((event) => auditPending(deps, event))],
     flush: () => flushAuditEvents(deps, events),
   };
+}
+
+/**
+ * Final fix wave (runs I-3, money I-1; owner decision 2 = A): whether `caller` may go on with a task that is paused on a run limit, a planning limit or its
+ * agent's max per run, by a Continue, a workflow retry or a send-back, which start a new window of the cap and so skip the approval the pause asked for. Only a
+ * person who may decide that request themselves (`mayDecideNow`: the open request, else the request the pause would ask for, routed as `requestForPausedTask`
+ * routes it) may; anyone else is told who is asked. A max per run holds for every task; a run limit or planning limit holds for a run with an agent (a plain
+ * Rovara Code task keeps R38). A pause that is a month's budget, a test's cap or a run held at its start is not a window: nothing here.
+ */
+export async function pausedTaskGate(
+  deps: SpendRequestDependencies, caller: Pick<AgentCaller, "orgId" | "developerId">, task: Pick<DeveloperTaskRecord, "orgId" | "taskId" | "budgetPause" | "agent" | "budgetUsd" | "maxPerRunUsd" | "startedBy" | "developerId" | "payer">,
+): Promise<{ allowed: true } | { allowed: false; who: string }> {
+  const pause = task.budgetPause;
+  const kind = pause === undefined || pause.firstDispatch !== undefined ? undefined : REQUEST_KIND_OF_PAUSE[pause.scope.kind];
+  if (pause === undefined || kind === undefined || task.orgId === undefined) return { allowed: true };
+  const withAgent = task.agent !== undefined && !(task.agent.builtin && task.agent.agentId === ROVARA_CODE_AGENT_ID);
+  if (kind !== "max_per_run" && !withAgent) return { allowed: true };
+  const orgId = task.orgId as OrgId;
+  const open = await openRequestFor(deps, orgId, `TASK#${task.taskId}`, kind);
+  let record = open !== undefined && Date.parse(open.expiresAt) > deps.now() ? open : undefined;
+  if (record === undefined) {
+    // Nothing is open (denied, expired, or never asked): the request that would be asked now decides who may go on.
+    const limit = runLimitOf(task as DeveloperTaskRecord);
+    const max = task.maxPerRunUsd ?? limit;
+    const amountUsd = suggestedTopUpUsd(kind === "max_per_run" ? max : limit);
+    const newLimitUsd = kind === "max_per_run" ? cleanUsd(max + amountUsd) : kind === "planning" ? amountUsd : cleanUsd(limit + amountUsd);
+    record = {
+      orgId, kind, scope: pause.scope, taskId: task.taskId, amountUsd, newLimitUsd, requestedBy: { kind: "system" }, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId },
+    } as SpendRequestRecord;
+  }
+  const may = await mayDecideNow(deps, caller, record);
+  return may.allowed ? { allowed: true } : { allowed: false, who: may.who };
 }
 
 // ---- the member movers (PF14)

@@ -319,6 +319,12 @@ export interface DeveloperTaskRouteDependencies {
    * with its audit flushed once that committed. Absent where agents are not set up.
    */
   withdrawSpendRequests?(task: DeveloperTaskRecord): Promise<{ items: TransactItems; flush(): Promise<void> }>;
+  /**
+   * Final fix wave (owner decision 2 = A): whether `caller` may go on with a task paused on a run limit, planning limit or max per run by a Continue, a workflow
+   * retry or a send-back, which would start a new window and skip that approval. Allowed only to a person who may decide the request themselves. Absent where
+   * agents are not set up.
+   */
+  pausedTaskGate?(caller: { orgId: OrgId; developerId: string }, task: DeveloperTaskRecord): Promise<{ allowed: true } | { allowed: false; who: string }>;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -2010,6 +2016,19 @@ async function capWindowBaseline(deps: DeveloperTaskRouteDependencies, task: Dev
 const staleBudgetPause = (task: DeveloperTaskRecord): boolean => task.budgetPause !== undefined && task.budgetPause.firstDispatch === undefined;
 
 /**
+ * Owner decision 2 = A: a person's Continue, retry or send-back never skips an approval unless they may decide it themselves. Refused, naming who is asked, before
+ * anything is read for or written to the task. A system resume (`spendResume`, a spend approval going on) is the approval itself.
+ */
+async function requireMayGoOn(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<void> {
+  if (deps.spendResume !== undefined || deps.pausedTaskGate === undefined || !staleBudgetPause(task)) return;
+  const gate = await deps.pausedTaskGate({ orgId: deps.orgId, developerId: caller.developerId }, task);
+  if (!gate.allowed) throw agentXError("WORKSPACE_BUSY", `This run is waiting for ${gate.who} to approve more. Continuing can't skip that approval.`);
+}
+
+/** An agent-step run takes no free-form turn: the engine owns its steps, and a coding session in its workspace would break the run's no-shell guarantee. */
+const AGENT_RUN_TURN_REFUSAL = "An agent run takes no follow-up. Start a new run instead.";
+
+/**
  * The clause and values that record the window in the same update that moves the task, since one transaction cannot touch a record twice. The clause comes
  * last in its update: with `task`, it also removes a stale mid-run pause (Task 32).
  */
@@ -2037,6 +2056,8 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
   await creatorGuard(deps, task);
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
+  if (task.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) throw agentXError("WORKSPACE_BUSY", AGENT_RUN_TURN_REFUSAL);
+  await requireMayGoOn(deps, caller, task);
   // A plain task whose dispatch was parked (its creator was a project viewer) comes back by continuing it now that they may work again.
   const resumed = await resumeTaskDispatch(deps, {
     task, peopleRevision: access.peopleRevision ?? 0, actorId: access.actorId, requestId: request.requestId, payloadHash: hashJson(request),
@@ -2819,6 +2840,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     const selected = workflowSelectedChecks({ ...policy, selectedOptionalIds, selectedProposedIds });
     if (selected.length === 0) throw agentXError("CONFIG_INVALID", "keep at least one check before retrying verification, or close the task");
     await actionableWorkspace(deps, task);
+    await requireMayGoOn(deps, caller, task);
     const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
     const receivedAt = iso(deps);
     const { blockReason: _previousBlockReason, ...unblocked } = workflow;
@@ -2933,6 +2955,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   if (request.expectedRevision !== undefined && request.expectedRevision !== task.workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
@@ -3143,7 +3166,8 @@ async function queueWorkflowCoding(
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const { workflow } = task;
-  // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew.
+  // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew, unless that skips an approval they may not decide.
+  await requireMayGoOn(deps, caller, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
   try {
@@ -3255,6 +3279,7 @@ async function retryWorkflowImplementation(
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
   const plan = await approvedCodingPlan(deps, workflow);
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
@@ -3289,6 +3314,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   }
   if (request.expectedRevision === undefined) throw agentXError("CONFIG_INVALID", "refresh the task and include its current revision before sending it back to coding");
   if (request.expectedRevision !== workflow.revision) throw agentXError("IDEMPOTENCY_CONFLICT", "this send-back is out of date; refresh the task and try again");
+  await requireMayGoOn(deps, caller, task);
   if (!workflowSendBackOffered(workflow)) {
     throw agentXError("CONFIG_INVALID", "there is no current failed check or review finding to send back to coding");
   }

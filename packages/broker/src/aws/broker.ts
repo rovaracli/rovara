@@ -202,6 +202,7 @@ import {
   modelKey,
   ModelSelectionSchema,
   recipeDigest,
+  recipeRunner,
   type InvocationModelRoute,
   type ModelIdentifier,
   type ModelRef,
@@ -5186,6 +5187,8 @@ async function dispatchAgentStep(
   const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
   // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
   if (frozen === undefined || recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  // A run of agent steps is driven by the engine alone: any other task operation (a legacy turn from whichever route) would run a full coding session in its workspace.
+  if (input.agentRun === undefined && recipeRunner(frozen.recipe) === "agent_steps") throw agentXError("CONFIG_INVALID", "an agent run takes no follow-up; start a new run instead");
   const guardrails = await readGuardrails(dependencies, orgId);
   const stepIds = priorStepIds({ recipe: frozen.recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails, agentRun: input.agentRun });
   const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, frozen.recipe, stepIds);
