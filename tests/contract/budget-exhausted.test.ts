@@ -100,7 +100,7 @@ describe("the model runtime meets the proxy's budget refusal", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it.each(["project", "agent", "test"] as const)("carries the %s's refusal of a re-minted key to the worker in the stream's message", async (scope) => {
+  it.each(["project", "agent", "chain", "test"] as const)("carries the %s's refusal of a re-minted key to the worker in the stream's message", async (scope) => {
     let asked = 0;
     const { runtime, model } = await proxiedRuntime(vi.fn<typeof fetch>(), async () => {
       asked += 1;
@@ -131,6 +131,8 @@ describe("the worker's model access meets a spent budget at a re-mint (ruling R3
     ["the agent's", "AGENT_BUDGET_EXCEEDED", "Ticket Triage's monthly AI budget is used up ($20.00 of $20.00). Ask its owner for more.", "agent", 402],
     ["a member's testing allowance", "TEST_ALLOWANCE_USED", "Your testing allowance for this month is used up ($10.00 of $10.00). Run the agent as a normal task instead.", "test", 402],
     ["an agent with no budget", "AGENT_BUDGET_REQUIRED", "Ticket Triage has no monthly budget, so it can't run work that no person started. Ask its owner to set one.", "agent", 409],
+    ["the chain's (Plan 4)", "CHAIN_BUDGET_EXCEEDED", "Investigate's monthly AI budget is used up ($5.00 of $5.00). Ask its owner for more.", "chain", 402],
+    ["a chain with no budget (Plan 4)", "CHAIN_BUDGET_REQUIRED", "Investigate has no monthly budget and run limit, so events and schedules can't start it. Ask its owner to set both.", "chain", 409],
   ] as const)("ends on %s refusal with ModelBudgetExhaustedError", async (_name, code, message, scope, status = 402) => {
     const error = await caught(new Response(body(code, message), { status }));
     // By name: the worker's source imports the package's built copy of the class, this test its source's.
