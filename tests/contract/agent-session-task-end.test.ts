@@ -18,7 +18,7 @@ type Item = Record<string, unknown>;
 const unregister: Array<() => void> = [];
 afterEach(() => { while (unregister.length > 0) unregister.pop()!(); });
 
-const TASK_SCOPE: PauseScope = { kind: "task", taskId: "x" } as PauseScope;
+const TASK_SCOPE: PauseScope = { kind: "task", taskId: "x" };
 
 /** What Plan 3's end and pause calls are given: the table client (which a test may break) and the clock. */
 function plan3(p: PW, options: { failTransactions?: { on: boolean } } = {}) {
@@ -236,7 +236,7 @@ describe("whose end it is", () => {
     p.patchTask(step.taskId, { chain: { chainRunId: chain.sessionId, stepId: "review" }, agentRunEnd: { state: "COMPLETE", at: iso(T0) } });
     const { sessionId: _sessionId, ...stepTask } = p.w.db.get(taskKey(step.taskId))!; // eslint-disable-line @typescript-eslint/no-unused-vars -- a chain step's task has no session of its own
     p.w.db.set(stepTask);
-    const read = vi.fn(async () => ({ status: "gate" as const, stepName: "Review gate", spentUsd: 1, needsPeople: [ARJUN] }));
+    const read = vi.fn(async () => ({ orgId: ORG_A, status: "gate" as const, stepName: "Review gate", spentUsd: 1, needsPeople: [ARJUN] }));
     unregister.push(registerAgentSessionTaskHandlers({ chains: { read } }));
     await plan3(p).end(step.taskId);
     expect(read).toHaveBeenCalledTimes(1);
@@ -254,7 +254,7 @@ describe("registration", () => {
     p.patchTask(step.taskId, { chain: { chainRunId: chain.sessionId, stepId: "s" } });
     const { sessionId: _sessionId, ...stepTask } = p.w.db.get(taskKey(step.taskId))!; // eslint-disable-line @typescript-eslint/no-unused-vars -- a chain step's task has no session of its own
     p.w.db.set(stepTask);
-    const read = vi.fn(async () => ({ status: "running" as const, stepName: "Build", spentUsd: 0 }));
+    const read = vi.fn(async () => ({ orgId: ORG_A, status: "running" as const, stepName: "Build", spentUsd: 0 }));
     registerAgentSessionTaskHandlers({ chains: { read } });
     unregister.push(registerAgentSessionTaskHandlers({ chains: { read } }));
     await plan3(p).end(step.taskId);

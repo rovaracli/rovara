@@ -345,10 +345,12 @@ export function agentRunDispatchItem(tableName: string, input: { taskId: string;
 export const operationEndDispatchKey = (taskId: string) => ({ pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#end` } as const);
 
 /**
- * `endOf: "closed"` (Plan 3, M-6 m-2) is the row of a closed plain task whose `closed` end was not finished: the sweep tells that end, whatever operation `operationId`
- * names (it is not looked up).
+ * `endOf` (Plan 3, M-6 m-2; Plan 5 Task 7b) is the row of a task whose own end was not finished, as against an operation's: `"closed"` for a closed plain task, `"workflow"`
+ * for a workflow task that merged or closed, `"creator_removed"` for a task whose creator was removed. The sweep tells that end from the task, whatever operation
+ * `operationId` names (it is not looked up).
  */
-export function operationEndDispatchItem(tableName: string, input: { taskId: string; orgId: string; workspaceId: string; operationId: string; now: string; dueAt?: string; endOf?: "closed" }): TransactItems[number] {
+export type TaskEndRowKind = "closed" | "workflow" | "creator_removed";
+export function operationEndDispatchItem(tableName: string, input: { taskId: string; orgId: string; workspaceId: string; operationId: string; now: string; dueAt?: string; endOf?: TaskEndRowKind }): TransactItems[number] {
   const key = operationEndDispatchKey(input.taskId);
   const dueAt = input.dueAt ?? input.now;
   // The agent-step engine's row with its own key and kind (one builder keeps the due-time index keys and the expiry backstop the same for every row).

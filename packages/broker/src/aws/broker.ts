@@ -350,7 +350,8 @@ import {
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { driveAgentRun, giveUpAgentRun, type AgentRunHost } from "../agents/run-engine.js";
-import { END_LEASE_MS, hasTaskEndHandlers, hasTaskPauseHandlers } from "../agents/task-end.js";
+import { END_LEASE_MS, hasTaskEndHandlers, hasTaskPauseHandlers, type TaskEndOutcome } from "../agents/task-end.js";
+import { registerAgentSessionTaskHandlers } from "../agent-sessions/index.js";
 import { agentRunWakeItems } from "./agent-run-wakeup.js";
 import { requireRecipeAllowed } from "../agents/roster.js";
 import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
@@ -1487,6 +1488,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   // Spec 025: the broker actions the developer task routes call, built once per handler.
   const tasks = developerTaskActions(dependencies);
   const agents = agentRouteDependencies(dependencies, tasks);
+  // Plan 5, Task 7b: a session follows its task's end and budget pause as Plan 3 tells them, instead of waiting for the stream or the sweep. Only where agents are set up
+  // (sessions begin there); a broker without them registers nothing, so Plan 3's "nobody listens" behaviour is unchanged. Plan 4's chain and Task 18's device reads are given
+  // here when those land (the sweep's event passes them the same way).
+  if (agents !== undefined) registerAgentSessionTaskHandlers();
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
@@ -11360,6 +11365,16 @@ async function runAgentRunDispatch(dependencies: AwsBrokerDependencies, item: Wo
 }
 
 /**
+ * The end a task is owed for the kind of row that names it (`endOf`), or undefined when it is owed none (the row is stale): `closed` when the task is closed, `creator_removed`
+ * when that was its outcome, and for `workflow` what its workflow ended as (never an agent-step run's, which its engine tells).
+ */
+function taskEndOwed(task: DeveloperTaskRecord, endOf: "closed" | "workflow" | "creator_removed"): TaskEndOutcome | undefined {
+  if (endOf === "closed") return task.closedAt === undefined ? undefined : "closed";
+  if (endOf === "creator_removed") return task.outcome === "creator_removed" ? "creator_removed" : undefined;
+  return task.agentRunEnd === undefined ? workflowEndOutcome(task) : undefined;
+}
+
+/**
  * Plan 3, Task 22 (review I2): a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel sweep), which left this
  * row. The operation's model keys are blocked here, and the task's end is told as a result the broker heard itself would tell it (the first end a task has is the
  * one told). Both never throw, so a lost proxy is the key expiry's backstop, as for a result the broker heard. The row goes only when the end is finished (every
@@ -11372,15 +11387,17 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
   try {
     let told: EndTold;
     let orgId: string;
-    if (row.endOf === "closed") {
-      // M-6 (m-2): the `closed` end of a plain task whose close could not finish telling it. The task, not an operation, is what is looked at.
+    if (row.endOf === "closed" || row.endOf === "workflow" || row.endOf === "creator_removed") {
+      // M-6 (m-2): the `closed` end of a plain task whose close could not finish telling it; Plan 5 Task 7b (the Task 22 hand-off): the end of a workflow task that merged
+      // or closed, and of a task whose creator was removed. The task, not an operation, is what is looked at, and the end it is owed is worked out from it now.
       const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
-      if (task === undefined || task.orgId === undefined || task.orgId !== row.orgId || task.closedAt === undefined) {
+      const outcome = task === undefined || task.orgId === undefined || task.orgId !== row.orgId ? undefined : taskEndOwed(task, row.endOf);
+      if (task === undefined || task.orgId === undefined || outcome === undefined) {
         await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
         return "STALE";
       }
       orgId = task.orgId;
-      told = await noteTaskEnded(dependencies, task, "closed");
+      told = await noteTaskEnded(dependencies, task, outcome);
     } else {
       const operation = typeof row.workspaceId === "string" && typeof row.operationId === "string"
         ? await getItem<OperationRecord>(dependencies, operationKey(row.workspaceId, row.operationId)) : undefined;
@@ -11396,7 +11413,7 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
       // Another call holds the end and may die with it: the row stays, due when its lease could have run out, so whoever looks then finishes the end.
       await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: (operationEndDispatchItem(dependencies.tableName, {
         taskId: item.taskId, orgId, workspaceId: String(row.workspaceId), operationId: String(row.operationId), now: new Date().toISOString(), dueAt: new Date(Date.now() + END_LEASE_MS + 5_000).toISOString(),
-        ...(row.endOf === "closed" ? { endOf: "closed" as const } : {}),
+        ...(row.endOf === "closed" || row.endOf === "workflow" || row.endOf === "creator_removed" ? { endOf: row.endOf } : {}),
       }) as { Put: { Item: Record<string, unknown> } }).Put.Item }));
       return "RETRY";
     }

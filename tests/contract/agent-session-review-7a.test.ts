@@ -105,10 +105,10 @@ describe("I-3: an unreadable source leaves the summary as it was", () => {
     const events = p.events(s.sessionId).length;
     const revision = p.sessionOf(s.sessionId).summaryRevision;
     const send = p.w.db.send.bind(p.w.db);
-    const spy = vi.spyOn(p.w.db, "send").mockImplementation(async (command: never) => {
+    const spy = vi.spyOn(p.w.db, "send").mockImplementation(async (command: unknown) => {
       const key = (command as { input?: { Key?: { sk?: string } } }).input?.Key;
       if (key?.sk === "AGENT_RUN") throw throttled();
-      return send(command);
+      return send(command as never);
     });
     await expect(p.refresh(s.sessionId)).rejects.toMatchObject({ name: "ThrottlingException" });
     spy.mockRestore();
@@ -123,9 +123,9 @@ describe("I-3: an unreadable source leaves the summary as it was", () => {
     p.operation(other.workspaceId, "task", "RUNNING");
     await p.refresh(s.sessionId);
     const send = p.w.db.send.bind(p.w.db);
-    const spy = vi.spyOn(p.w.db, "send").mockImplementation(async (command: never) => {
+    const spy = vi.spyOn(p.w.db, "send").mockImplementation(async (command: unknown) => {
       if ((command as { input?: { Key?: { sk?: string } } }).input?.Key?.sk === "AGENT_RUN") throw throttled();
-      return send(command);
+      return send(command as never);
     });
     const result = await p.project([p.w.db.get({ pk: `DEVTASK#${s.taskId}`, sk: "META" })!, p.w.db.get({ pk: `DEVTASK#${other.taskId}`, sk: "META" })!]);
     spy.mockRestore();
@@ -143,11 +143,11 @@ describe("I-3: an unreadable source leaves the summary as it was", () => {
     expect(p.sessionOf(s.sessionId).summary.peek).toBe("Reading the repository");
     p.spent(s.taskId, 1);
     const send = p.w.db.send.bind(p.w.db);
-    const spy = vi.spyOn(p.w.db, "send").mockImplementation(async (command: never) => {
+    const spy = vi.spyOn(p.w.db, "send").mockImplementation(async (command: unknown) => {
       const input = (command as { input?: { KeyConditionExpression?: string; ExpressionAttributeValues?: Record<string, unknown> } }).input;
       const partition = input?.ExpressionAttributeValues?.[":pk"];
       if (typeof partition === "string" && partition.startsWith("OPERATION#")) throw throttled();
-      return send(command);
+      return send(command as never);
     });
     await p.refresh(s.sessionId);
     spy.mockRestore();

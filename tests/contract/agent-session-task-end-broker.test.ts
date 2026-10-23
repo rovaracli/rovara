@@ -81,7 +81,7 @@ describe("a broker with agents follows its runs", () => {
     expect(paused.record.summary.status).toBe("paused");
     expect(paused.record.endedAt).toBeUndefined();
     expect(paused.open).toBe(true);
-    expect(t.sessionEvents(paused.sessionId)).toContain("Paused for budget");
+    expect(t.sessionEvents(paused.sessionId).some((text) => String(text).includes("Paused for budget"))).toBe(true);
     expect(t.db.get(`DEVTASK#${run.taskId}`, "TASK_END")).toBeUndefined();
   });
 

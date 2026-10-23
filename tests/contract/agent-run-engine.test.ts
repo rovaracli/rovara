@@ -7,6 +7,7 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
+import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import {
@@ -83,6 +84,9 @@ async function setup(options: { proxy?: boolean; brokerExtra?: Record<string, un
     ...(options.readyChecks === true ? { register: false } : {}),
     brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...options.brokerExtra },
   });
+  // Plan 5 Task 7b: a broker with agents registers the sessions' end and pause handlers. These tests are Plan 3's contract for the handlers it is given (who is told, in what
+  // order, how many), and some of them are about nobody listening, so they run without that pair (agent-session-task-end-broker.test.ts covers it with the real broker).
+  unregisterAgentSessionTaskHandlers();
   if (options.readyChecks === true) await registerSlackProject(h.handler, { readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }] });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);

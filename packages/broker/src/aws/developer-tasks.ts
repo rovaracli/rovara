@@ -209,7 +209,7 @@ import {
   type TurnParty,
   type WorkspaceCharge,
 } from "../developer/task-records.js";
-import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, operationEndDispatchItem, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
+import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../developer/plan-evidence-jobs.js";
 import { loadPlanEvidence, loadWorkflowDocument, shortenMarkdown, type LoadedDocument } from "../developer/plan-artifacts.js";
 import type { DeveloperTaskActions, TransactItems } from "./developer-task-actions.js";
@@ -249,7 +249,8 @@ import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "..
 import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
-import { END_LEASE_MS, hasTaskEndHandlers, onTaskEnded, onTaskPaused, type TaskEndOutcome } from "../agents/task-end.js";
+import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, type TaskEndOutcome } from "../agents/task-end.js";
+import { leaveTaskEndRow } from "./task-end-row.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -6066,14 +6067,7 @@ async function tellClosedTaskEnd(deps: { tableName: string; documentClient: { se
     if (fresh.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) return;
     const told = await noteTaskEnded(deps, fresh, "closed");
     // An end that is not finished (a handler threw, or another call is telling it) is left to the recovery sweep, as a plain task's operation end is (Task 22, N1).
-    if (told !== "told" && fresh.orgId !== undefined) {
-      const now = Date.now();
-      const row = operationEndDispatchItem(deps.tableName, {
-        taskId: task.taskId, orgId: fresh.orgId, workspaceId: task.workspaceId, operationId: "close", now: new Date(now).toISOString(),
-        dueAt: new Date(now + (told === "in_progress" ? END_LEASE_MS + 5_000 : 60_000)).toISOString(), endOf: "closed",
-      }) as { Put: { Item: Record<string, unknown> } };
-      await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: row.Put.Item }));
-    }
+    if (told !== "told") await leaveTaskEndRow(deps, fresh, "closed", told);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "task_end.close_not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
   }
@@ -6142,7 +6136,11 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
   // A merged or closed workflow task has ended: its end handlers hear it (an agent-step run's end is told by its engine).
   if (!closed && task.agentRunEnd === undefined) {
     const outcome = workflowEndOutcome(task);
-    if (outcome !== undefined) await noteTaskEnded(deps, task, outcome);
+    if (outcome !== undefined) {
+      // Plan 5 Task 7b (the Task 22 hand-off): the release goes on whatever the handlers did, so an end that was not finished leaves its own row for the sweep.
+      const told = await noteTaskEnded(deps, task, outcome);
+      if (told !== "told") await leaveTaskEndRow(deps, task, "workflow", told);
+    }
   }
   if (task.releasedAt !== undefined) return "already_released";
   let releaseWorkspace = false;
