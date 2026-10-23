@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { brotliCompressSync, gzipSync, brotliDecompressSync, gunzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAppHandler } from "../../packages/web/src/server/handler.js";
+import { renderShell } from "../../packages/web/src/server/shell.js";
 import { appHeaders } from "../../packages/web/src/server/headers.js";
 const CDN = "https://assets.example", HTTP = "events.example.test", WS = "socket.example.test";
 const script = "console.log('fixture-only');", css = "body{color:blue}";
@@ -46,6 +47,17 @@ describe("the cell app shell and its immutable files", () => {
    const bytes = Buffer.from(response.body, "base64");expect((encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString()).toBe(script);
   }
   const shell = await app("")(event("/app"));expect(shell.body).toContain('href="/app/assets/icon-fixture.svg"');expect(shell.headers["content-security-policy"]).not.toContain(CDN);
+ });
+ it("serves stylesheet and icon bytes with types accepted under nosniff", async () => {
+  for (const [file, type, content] of [["main-fixture.css", "text/css; charset=utf-8", css], ["icon-fixture.svg", "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg"></svg>']]) {
+   const response = await app("")(event("/app/assets/" + file));expect(response.statusCode).toBe(200);expect(response.headers["content-type"]).toBe(type);expect(response.headers["x-content-type-options"]).toBe("nosniff");expect(Buffer.from(response.body, "base64").toString()).toBe(content);
+  }
+ });
+ it("refuses origins or nonces that could escape their shell or policy context", () => {
+  for (const origin of ["http://assets.example", "https://fixture@assets.example", "https://:fixture@assets.example", "https://assets.example/path", "https://assets.example/?v=1", "https://assets.example/#v"]) expect(() => appHeaders({ assetOrigin: origin, realtimeHttpHost: HTTP, realtimeWsHost: WS }, "fixture")).toThrow("Invalid web hosting configuration.");
+  expect(() => appHeaders({ assetOrigin: CDN, realtimeHttpHost: HTTP, realtimeWsHost: WS }, "fixture'quoted")).toThrow("Invalid response nonce.");
+  expect(() => renderShell("<head></head>", CDN, 'fixture"quoted')).toThrow("Invalid response nonce.");
+  for (const host of ["*.example", "bad..host", "https://example", "example;script-src"]) expect(appHeaders({ assetOrigin: "", realtimeHttpHost: host, realtimeWsHost: host }, "fixture")["content-security-policy"]).toContain("connect-src 'self';");
  });
  it("omits unavailable realtime hosts instead of opening a wildcard connection policy", () => {
   const headers = appHeaders({ assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" }, "fixture");expect(headers["content-security-policy"]).toContain("connect-src 'self';");expect(headers["content-security-policy"]).not.toContain("*");
