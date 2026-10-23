@@ -356,3 +356,58 @@ describe("a pinned installation id", () => {
     expect(github.minted()).toHaveLength(5);
   });
 });
+
+// ---- Hardening 1 (review task-17-review.md, noted item): the retry after a 404 keeps the pin
+
+describe("a pinned installation id and the token retry after a 404", () => {
+  const NOT_CONNECTED = { code: "GITHUB_NOT_CONNECTED", message: expect.stringContaining("example/demo") as string };
+  const pull = { number: 12, state: "open", merged: false, head: { sha: HEAD, ref: "x" }, base: { ref: "main" } };
+  const LOOKUP = /^\/repos\/[^/]+\/[^/]+\/installation$/;
+
+  /** example/demo is first under installation 55 (whose token request is then answered 404), and under installation 77 when GitHub is asked again. */
+  const moving = () => {
+    let lookups = 0;
+    return fakeGithub({
+      handler: (request) => {
+        if (LOOKUP.test(request.path)) { lookups += 1; return Response.json({ id: lookups === 1 ? 55 : 77, account: { login: "example" } }); }
+        if (request.path === "/app/installations/55/access_tokens") return Response.json({ message: "Not Found" }, { status: 404 });
+        if (request.path === "/app/installations/77/access_tokens") return Response.json({ token: "token-of-77" }, { status: 201 });
+        if (request.path === "/repos/example/demo/pulls/12") return Response.json(pull);
+        return undefined;
+      },
+    });
+  };
+
+  it("refuses a retry that would cross to another installation than the pinned one, and mints nothing there", async () => {
+    const github = moving();
+    const provider = providerOf(github);
+    expect(await refusal(provider.createAgentInstallationToken(REPOSITORY, { issues: "read" }, { orgId: TEST_ORG }, { installationId: 55 }))).toMatchObject(NOT_CONNECTED);
+    expect(github.minted().map((request) => request.path)).toEqual(["/app/installations/55/access_tokens"]);
+  });
+
+  it("refuses it for the reads made with an agent token too", async () => {
+    const github = moving();
+    const provider = providerOf(github);
+    expect(await refusal(provider.getAgentPullRequestHead(REPOSITORY, 12, { orgId: TEST_ORG }, { installationId: 55 }))).toMatchObject(NOT_CONNECTED);
+    expect(github.minted().map((request) => request.path)).toEqual(["/app/installations/55/access_tokens"]);
+    expect(github.requests.some((request) => request.authorization === "Bearer token-of-77")).toBe(false);
+  });
+
+  it("still retries when GitHub answers with the pinned installation again, and when nothing is pinned", async () => {
+    let lookups = 0;
+    let first = true;
+    const github = fakeGithub({
+      handler: (request) => {
+        if (LOOKUP.test(request.path)) { lookups += 1; return Response.json({ id: 55, account: { login: "example" } }); }
+        if (request.path === "/app/installations/55/access_tokens" && first) { first = false; return Response.json({ message: "Not Found" }, { status: 404 }); }
+        return undefined;
+      },
+    });
+    await providerOf(github).createAgentInstallationToken(REPOSITORY, { issues: "read" }, { orgId: TEST_ORG }, { installationId: 55 });
+    expect(lookups).toBe(2);
+    expect(github.minted()).toHaveLength(2);
+    const unpinned = moving();
+    await providerOf(unpinned).createAgentInstallationToken(REPOSITORY, { issues: "read" }, { orgId: TEST_ORG });
+    expect(unpinned.minted().map((request) => request.path)).toEqual(["/app/installations/55/access_tokens", "/app/installations/77/access_tokens"]);
+  });
+});

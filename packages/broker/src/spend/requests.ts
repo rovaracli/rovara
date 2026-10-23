@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
   AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, orgMemberKey, orgRemovedKey, RUN_LIMIT_BLOCK_PREFIX,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, RUN_LIMIT_BLOCK_PREFIX, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
@@ -19,7 +19,7 @@ import { roleOnProject } from "../agents/roster.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { budgetOwnerOf, ownerVersionItem } from "./owner-total.js";
 import { readGuardrails } from "../agents/guardrails.js";
-import type { RequestRunLimit } from "./estimate.js";
+import { askedRunLimit, type RequestRunLimit, type RunLimitRequest } from "./estimate.js";
 import { checkTime, registerMemberMover, registerOwnerCapConfirmation, type LifecycleDeps } from "../agents/lifecycle.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { failedIndexes, readRequest, requestMarkItem, type RequestMark, type TransactItem } from "../agents/table-writes.js";
@@ -626,14 +626,93 @@ export function runLimitRequester(deps: SpendRequestDependencies): RequestRunLim
   return async (request) => {
     const task = await readTask(deps, request.orgId, request.taskId);
     if (task === undefined) return undefined;
-    const { record } = await createSpendRequest(deps, {
-      orgId: request.orgId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, amountUsd: request.amountUsd, newLimitUsd: request.newLimitUsd,
-      reason: request.reason, requestedBy: request.requestedBy, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId }, resume: "implement",
-      // Its own slot: an open `run_limit` request that resumes nothing (the follow-up after a max-per-run raise) must not answer for the plan, since approving it would not start coding.
-      subject: `TASK#${task.taskId}#IMPLEMENT`,
-    });
+    const { record } = await createRunLimitRequest(deps, task, request);
     return { spendRequestId: record.spendRequestId };
   };
+}
+
+/** The `run_limit` request that resumes a blocked plan's coding, for the task's starter, in its own slot (so an open request that resumes nothing cannot answer for it). */
+function createRunLimitRequest(
+  deps: SpendRequestDependencies, task: DeveloperTaskRecord, request: Pick<RunLimitRequest, "orgId" | "amountUsd" | "newLimitUsd" | "reason" | "requestedBy">, mark?: RequestMark,
+  extraItems?: TransactItem[],
+) {
+  return createSpendRequest(deps, {
+    orgId: request.orgId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, amountUsd: request.amountUsd, newLimitUsd: request.newLimitUsd,
+    reason: request.reason, requestedBy: request.requestedBy, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId }, resume: "implement",
+    // Its own slot: an open `run_limit` request that resumes nothing (the follow-up after a max-per-run raise) must not answer for the plan, since approving it would not start coding.
+    subject: planRunLimitSubject(task.taskId),
+    ...(extraItems === undefined ? {} : { extraItems: () => extraItems }),
+    ...(mark === undefined ? {} : { request: mark, requestResult: (record: SpendRequestRecord) => ({ spendRequestId: record.spendRequestId, created: true }) }),
+  });
+}
+
+const AskRunLimitSchema = z.object({ requestId: z.string().uuid() }).strict();
+const planBlockedOnRunLimit = (task: DeveloperTaskRecord): boolean =>
+  task.closedAt === undefined && task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED" && task.workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+
+/**
+ * `POST /v1/app/tasks/{id}/run-limit-request` [the task's owner]: `{ requestId }`. A plan blocked on its run limit has one way on, the approval of a `run_limit`
+ * request; once the last one was denied or ran out, the owner asks again here, for the same plan and limit, routed as the first was. It only asks (R66): coding
+ * starts when a person approves the new request on its page. While a request is open it answers that one (`created: false`); one whose time has run out but that
+ * the sweep has not ended yet is ended as EXPIRED first. R18: a repeat of the request ID answers what it first did. Anyone but the task's owner gets the
+ * answer a task they can't see gets.
+ */
+async function askRunLimitAgain(deps: SpendRequestDependencies, caller: AgentCaller, taskId: string, value: unknown): Promise<StatusReply> {
+  const parsed = AskRunLimitSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "is not valid"}`);
+  }
+  const task = await readTask(deps, caller.orgId, taskId);
+  const me = await resolveSurvivor(deps, caller.orgId, caller.developerId);
+  if (task === undefined || await resolveSurvivor(deps, caller.orgId, task.developerId) !== me) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
+  const mark: RequestMark = {
+    orgId: caller.orgId, developerId: caller.developerId, requestId: parsed.data.requestId,
+    fingerprint: createHash("sha256").update(JSON.stringify(["ask-run-limit", taskId])).digest("hex"),
+  };
+  const earlier = await readRequest(deps, caller.orgId, caller.developerId, parsed.data.requestId);
+  if (earlier !== undefined) {
+    if (earlier.fingerprint !== mark.fingerprint) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
+    return new StatusReply((earlier.result as { created?: boolean }).created === true ? 201 : 200, earlier.result as object);
+  }
+  if (!planBlockedOnRunLimit(task)) throw agentXError("CONFIG_INVALID", "this task is not waiting for a run limit");
+  // Approved, and the start after the approval has not been made yet (it is retried): there is nothing left to ask for.
+  if (await getItem(deps, heldPlanStartKey(caller.orgId, taskId)) !== undefined) {
+    throw agentXError("CONFIG_INVALID", "the run limit was approved and coding is starting; there is nothing to ask for");
+  }
+  let open = await openRequestFor(deps, caller.orgId, planRunLimitSubject(taskId), "run_limit");
+  if (open !== undefined && Date.parse(open.expiresAt) <= deps.now()) {
+    await expireOne(deps, open);
+    open = await openRequestFor(deps, caller.orgId, planRunLimitSubject(taskId), "run_limit");
+  }
+  // A new request, not the answer to one that is open: at most one in ten minutes, so approvers are not asked over and over.
+  if (open === undefined) {
+    const next = await nextAskAt(deps, caller.orgId, taskId);
+    if (next !== undefined) throw agentXError("CONFIG_INVALID", `You asked for this run limit a few minutes ago. You can ask again after ${iso(next)}.`);
+  }
+  const { runLimitUsd, needs } = await askedRunLimit(deps, task);
+  const askedAt = deps.now();
+  const made = await createRunLimitRequest(deps, task, {
+    orgId: caller.orgId, newLimitUsd: runLimitUsd, amountUsd: Math.max(0, cleanUsd(runLimitUsd - (task.budgetUsd ?? 0))), requestedBy: { kind: "member", developerId: me },
+    reason: `Asked again: this plan's run limit is $${String(runLimitUsd)}, which needs ${needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.`,
+  }, mark, [{ Put: { TableName: deps.tableName, Item: {
+    ...runLimitAskedKey(caller.orgId, taskId), entityType: "RUN_LIMIT_ASKED", orgId: caller.orgId, taskId, at: iso(askedAt), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(askedAt / 1000) + 86_400,
+  } } }]);
+  const answer = { spendRequestId: made.record.spendRequestId, created: made.created };
+  // An ask that found a request open (the open one, or one made by another ask in the meantime) wrote no mark with it: the answer is remembered here.
+  if (!made.created) {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [requestMarkItem(deps, mark, answer)] })).catch((error: unknown) => {
+      if (failedIndexes(error)?.has(0) !== true) throw error;
+    });
+  }
+  return new StatusReply(made.created ? 201 : 200, answer);
+}
+
+/** When the owner may next make a new ask for a plan's run limit, if that is still ahead; undefined when they may now. */
+export async function nextAskAt(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName" | "now">, orgId: OrgId, taskId: string): Promise<number | undefined> {
+  const last = await getItem(deps, runLimitAskedKey(orgId, taskId));
+  const at = typeof last?.["at"] === "string" ? Date.parse(last["at"]) : Number.NaN;
+  return Number.isFinite(at) && at + RUN_LIMIT_ASK_COOLDOWN_MS > deps.now() ? at + RUN_LIMIT_ASK_COOLDOWN_MS : undefined;
 }
 
 /** A task event, written once per key: a pause message, an approval's note. */
@@ -1216,6 +1295,10 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
         ...held, entityType: "SPEND_HELD_START", orgId: record.orgId, taskId: record.taskId, spendRequestId: record.spendRequestId, resetRunWindow: change.resetRunWindow, expiresAt: record.expiresAt,
         ...(runLimitUsd === undefined ? {} : { resume: "implement", runLimitUsd }),
       } } });
+      // "Approved, starting" for the task: while it stands the owner is not offered another ask (it is removed with the held start).
+      if (runLimitUsd !== undefined) {
+        extra.push({ Put: { TableName: deps.tableName, Item: { ...heldPlanStartKey(record.orgId, current!.taskId), entityType: "SPEND_HELD_PLAN_START", orgId: record.orgId, taskId: current!.taskId, spendRequestId: record.spendRequestId, expiresAt: record.expiresAt } } });
+      }
     }
     return { change, followUp, followUpWords, extra, held, runLimitUsd };
   };
@@ -1253,7 +1336,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
           orgId: record.orgId, taskId: task.taskId, spendRequestId: record.spendRequestId, resetRunWindow: change.resetRunWindow, firstDispatch: change.firstDispatch,
           ...(runLimitUsd === undefined ? {} : { resume: "implement" as const, runLimitUsd }),
         });
-        if (held !== undefined) await clearHeldStart(deps, held, record.orgId, task.taskId);
+        if (held !== undefined) await clearHeldStart(deps, held, record.orgId, task.taskId, false, runLimitUsd !== undefined);
       } catch (error) {
         logLine(deps, "spend_request.resume_failed", { spendRequestId: record.spendRequestId, taskId: task.taskId, error: errorName(error) });
         if (held !== undefined) {
@@ -1409,14 +1492,18 @@ const HELD_STARTS_BUDGET_MS = 500;
 const heldStartKey = (at: string, orgId: OrgId, taskId: string) => ({ pk: HELD_STARTS, sk: `${at}#${orgId}#${taskId}` });
 
 /** Removes a held start's item once its run was dispatched (its pause is gone) or its task closed; `giveUp` removes it whatever the task is. */
-async function clearHeldStart(deps: SpendRequestDependencies, key: { pk: string; sk: string }, orgId: OrgId, taskId: string, giveUp = false): Promise<boolean> {
+async function clearHeldStart(deps: SpendRequestDependencies, key: { pk: string; sk: string }, orgId: OrgId, taskId: string, giveUp = false, planStart = false): Promise<boolean> {
   const task = await readTask(deps, orgId, taskId);
   if (!giveUp && task?.budgetPause?.firstDispatch !== undefined && task.closedAt === undefined) return false;
-  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: deps.tableName, Key: key } }] }));
+  // A plan's run limit start also removes its "approved, starting" marker.
+  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+    { Delete: { TableName: deps.tableName, Key: key } },
+    ...(planStart ? [{ Delete: { TableName: deps.tableName, Key: heldPlanStartKey(orgId, taskId) } }] : []),
+  ] }));
   return true;
 }
 
-/** The refusals of a resume that no later try can change: the task's creator was removed (R60), or its owner can no longer act in the org. */
+/** The refusals a resume gives when its creator was removed (R60) or its owner can't act in the org. They are also what an unreadable access proof gives, so `creatorGone` confirms before an item is dropped. */
 const MEMBER_LEFT_CODES = new Set(["TASK_ACCESS_DENIED", "FORBIDDEN"]);
 const memberLeft = (error: unknown): boolean => MEMBER_LEFT_CODES.has(String((error as { code?: unknown } | undefined)?.code));
 
@@ -1474,7 +1561,8 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
           await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: false, firstDispatch: false });
           if (await clearHeldStart(deps, key, orgId, taskId, true)) dispatched += 1;
         } catch (error) {
-          if (memberLeft(error)) await dropMonthResume(deps, key, orgId, taskId, spendRequestId).catch(() => undefined);
+          // Dropped only when the creator is really gone (as for a plan's run-limit start): a refusal of access that could not be verified keeps the item until it expires.
+          if (memberLeft(error) && await creatorGone(deps, orgId, task)) await dropMonthResume(deps, key, orgId, taskId, spendRequestId).catch(() => undefined);
           else logLine(deps, "spend_request.month_resume_failed", { spendRequestId, taskId, error: errorName(error) });
         }
         continue;
@@ -1484,17 +1572,17 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
         const runLimitUsd = item["runLimitUsd"];
         if (task === undefined || task.closedAt !== undefined || expired || host === undefined || typeof runLimitUsd !== "number") {
           if (expired && task?.closedAt === undefined) logLine(deps, "spend_request.run_limit_start_gave_up", { spendRequestId, taskId });
-          if (host !== undefined || expired) await clearHeldStart(deps, key, orgId, taskId, true).catch(() => false);
+          if (host !== undefined || expired) await clearHeldStart(deps, key, orgId, taskId, true, true).catch(() => false);
           continue;
         }
         try {
           const outcome = await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: true, firstDispatch: false, resume: "implement", runLimitUsd });
           // A plan that was no longer blocked on its limit (STALE) clears the item, and was not started now.
-          if (await clearHeldStart(deps, key, orgId, taskId, true) && outcome !== "STALE") dispatched += 1;
+          if (await clearHeldStart(deps, key, orgId, taskId, true, true) && outcome !== "STALE") dispatched += 1;
         } catch (error) {
           // Dropped only when the creator is really gone (R60): any other refusal, including a task-access proof that could not be read (a transport failure,
           // a brief loss of channel access), keeps the item, which tries again until the request's time runs out. The plan has no other way to start.
-          if (memberLeft(error) && await creatorGone(deps, orgId, task)) await clearHeldStart(deps, key, orgId, taskId, true).catch(() => false);
+          if (memberLeft(error) && await creatorGone(deps, orgId, task)) await clearHeldStart(deps, key, orgId, taskId, true, true).catch(() => false);
           logLine(deps, "spend_request.run_limit_start_failed", { spendRequestId, taskId, error: errorName(error) });
         }
         continue;
@@ -1916,8 +2004,17 @@ async function askForMonth(deps: SpendRequestDependencies, caller: AgentCaller, 
 
 const SPEND_REQUESTS_PATH = /^\/v1\/app\/spend-requests(?:\/([^/]+)(?:\/(decide|confirm-link))?)?$/;
 const CONTINUE_AS_TASK_PATH = /^\/v1\/app\/tasks\/([^/]+)\/continue-as-task$/;
+/** A task ID from a path segment; a malformed percent-encoding is a task that does not exist, not a server error. */
+function taskIdOfPath(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw agentXError("TASK_NOT_FOUND", "that task doesn't exist");
+  }
+}
+const RUN_LIMIT_REQUEST_PATH = /^\/v1\/app\/tasks\/([^/]+)\/run-limit-request$/;
 
-export const isSpendRequestRoute = (pathname: string): boolean => SPEND_REQUESTS_PATH.test(pathname) || CONTINUE_AS_TASK_PATH.test(pathname);
+export const isSpendRequestRoute = (pathname: string): boolean => SPEND_REQUESTS_PATH.test(pathname) || CONTINUE_AS_TASK_PATH.test(pathname) || RUN_LIMIT_REQUEST_PATH.test(pathname);
 
 function jsonBody(request: Pick<AdaptedHttpRequest, "body">): unknown {
   if (request.body === undefined || request.body === "") return {};
@@ -1944,13 +2041,19 @@ async function maySee(deps: SpendRequestDependencies, caller: AgentCaller, recor
  *   POST /v1/app/spend-requests/{id}/decide        through `requireDecide` only (R66): a token gets REAUTH_REQUIRED with the page's link
  *   POST /v1/app/spend-requests/{id}/confirm-link  the ticketed link for a person who may decide it now
  *   POST /v1/app/tasks/{id}/continue-as-task       [the task's owner] a test run that reached its cap goes on as a normal task
+ *   POST /v1/app/tasks/{id}/run-limit-request      [the task's owner] ask again for a blocked plan's run limit, once the last request was denied or ran out
  */
 export async function routeSpendRequests(deps: SpendRequestDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   const continued = CONTINUE_AS_TASK_PATH.exec(url.pathname);
   if (continued !== null) {
     if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
     if (deps.spendRequests?.continueAsTask === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
-    return deps.spendRequests.continueAsTask(caller, decodeURIComponent(continued[1]!), jsonBody(request));
+    return deps.spendRequests.continueAsTask(caller, taskIdOfPath(continued[1]!), jsonBody(request));
+  }
+  const asked = RUN_LIMIT_REQUEST_PATH.exec(url.pathname);
+  if (asked !== null) {
+    if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
+    return askRunLimitAgain(deps, caller, taskIdOfPath(asked[1]!), jsonBody(request));
   }
   const matched = SPEND_REQUESTS_PATH.exec(url.pathname);
   if (matched === null) throw agentXError("NOT_FOUND", "route not found");

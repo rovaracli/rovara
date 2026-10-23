@@ -392,8 +392,15 @@ function confirmationPage(raw: string, cellUrl: string): string | undefined {
  * The confirmation page's link for one approval (ticketed for a person who may decide it now). Nothing is decided here. `openUrl` is set only
  * when the link is this cell's own confirmation page; any other link is printed, never handed to a browser.
  */
-export async function approvalsConfirmLink(deps: DeveloperSessionDeps, env: string | undefined, approvalId: string): Promise<AppResult & { openUrl?: string }> {
-  const answer = await appRequest(deps, env, `/v1/app/approvals/${seg(approvalId)}/confirm-link`, { method: "POST" });
+export const approvalsConfirmLink = (deps: DeveloperSessionDeps, env: string | undefined, approvalId: string): Promise<AppResult & { openUrl?: string }> =>
+  confirmLink(deps, env, `/v1/app/approvals/${seg(approvalId)}/confirm-link`);
+
+/** The same for a spend request (`agentx spend-requests open`): its page is the one place it is decided. */
+export const spendRequestConfirmLink = (deps: DeveloperSessionDeps, env: string | undefined, spendRequestId: string): Promise<AppResult & { openUrl?: string }> =>
+  confirmLink(deps, env, `/v1/app/spend-requests/${seg(spendRequestId)}/confirm-link`);
+
+async function confirmLink(deps: DeveloperSessionDeps, env: string | undefined, path: string): Promise<AppResult & { openUrl?: string }> {
+  const answer = await appRequest(deps, env, path, { method: "POST" });
   if (typeof answer.body.confirmUrl !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "AgentX answered without the confirmation link; try again");
   const openUrl = confirmationPage(answer.body.confirmUrl, answer.url);
   const text = `Approve or decline it on its page: ${clean(answer.body.confirmUrl)}\n${openUrl === undefined ? "That is not this AgentX's confirmation page, so it was not opened.\n" : ""}`;

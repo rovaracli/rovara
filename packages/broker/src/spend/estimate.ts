@@ -180,8 +180,32 @@ async function tierOf(deps: AcceptRunLimitDependencies, task: DeveloperTaskRecor
   }
 }
 
+/** The run limit a task's plan carries: its estimate (`task.runEstimate`, else one worked out now), which a start that asked for a lower limit may only lower (H2). */
+export async function planRunLimit(deps: EstimateDependencies, task: DeveloperTaskRecord): Promise<number> {
+  if (task.orgId === undefined) throw new Error("a task with no org has no run limit to accept");
+  const estimated = task.runEstimate?.runLimitUsd ?? (await estimateRun(deps, {
+    orgId: task.orgId, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, path: estimatePathOf(task),
+    ...(task.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: task.maxPerRunUsd }),
+  })).runLimitUsd;
+  return task.requestedRunLimitUsd === undefined ? estimated : Math.min(estimated, task.requestedRunLimitUsd);
+}
+
+/** Who a run limit above the lead threshold has to go to: a project maintainer up to the admin threshold, an org admin above it. */
+const needsOf = (runLimitUsd: number, policy: { adminApprovalThresholdUsd: number }): "maintainer" | "admin" => (runLimitUsd > policy.adminApprovalThresholdUsd ? "admin" : "maintainer");
+
 /**
- * Whether `approver` may accept the run limit the task's plan carries (`task.runEstimate`, else one worked out now). A member accepts up to the lead
+ * What asking for the run limit of a plan that is blocked on it takes, whoever asks: the limit and who has to approve it. For the owner asking again after
+ * a denial or an expiry; it does not say whether anyone may accept the limit (`acceptRunLimit` does that for an approver).
+ */
+export async function askedRunLimit(deps: EstimateDependencies, task: DeveloperTaskRecord): Promise<{ runLimitUsd: number; needs: "maintainer" | "admin"; approverRole: RunLimitRequest["approverRole"] }> {
+  if (task.orgId === undefined) throw new Error("a task with no org has no run limit to ask for");
+  const [runLimitUsd, policy] = await Promise.all([planRunLimit(deps, task), readSpendPolicy(deps, task.orgId)]);
+  const needs = needsOf(runLimitUsd, policy);
+  return { runLimitUsd, needs, approverRole: needs === "admin" ? "org_admin" : "project_maintainer" };
+}
+
+/**
+ * Whether `approver` may accept the run limit the task's plan carries (`planRunLimit`). A member accepts up to the lead
  * threshold, a maintainer by grant up to the admin threshold, an org owner or admin any amount. Not accepted: what is needed, and the words to block with.
  * The caller makes the acceptance and its writes (`budgetUsd` and `budgetBaselineUsd`) in the decision's own transaction.
  */
@@ -192,16 +216,11 @@ export async function acceptRunLimit(
   const { task, approver } = input;
   if (task.orgId === undefined) throw new Error("a task with no org has no run limit to accept");
   const orgId = task.orgId;
-  const estimated = task.runEstimate?.runLimitUsd ?? (await estimateRun(deps, {
-    orgId, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, path: estimatePathOf(task),
-    ...(task.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: task.maxPerRunUsd }),
-  })).runLimitUsd;
-  // A start that asked for a lower run limit keeps it: a request can only lower the limit (H2).
-  const runLimitUsd = task.requestedRunLimitUsd === undefined ? estimated : Math.min(estimated, task.requestedRunLimitUsd);
+  const runLimitUsd = await planRunLimit(deps, task);
   const [policy, tier] = await Promise.all([readSpendPolicy(deps, orgId), tierOf(deps, task, approver)]);
   const may = tier === "admin" || (tier === "maintainer" ? runLimitUsd <= policy.adminApprovalThresholdUsd : runLimitUsd <= policy.leadApprovalThresholdUsd);
   if (may) return { accepted: true, runLimitUsd };
-  const needs = runLimitUsd > policy.adminApprovalThresholdUsd ? "admin" : "maintainer";
+  const needs = needsOf(runLimitUsd, policy);
   return { accepted: false, runLimitUsd, needs, approverRole: needs === "admin" ? "org_admin" : "project_maintainer", message: runLimitBlockText(runLimitUsd, needs) };
 }
 

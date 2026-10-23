@@ -78,12 +78,12 @@ import { cleanConnectionSecret, connectionsAdd, connectionsAddText, connectionsC
 import { INIT_STEP_IDS, type InitStepId } from "./init/install-state.js";
 import {
   agentsAccountable, agentsAdopt, agentsArchive, agentsCreate, agentsDiff, agentsDraftGet, agentsDraftSet, agentsList, agentsPublish, agentsRollback, agentsRun,
-  agentsShare, agentsShow, agentsUpdateBase, agentsVersions, approvalsConfirmLink, approvalsList, approvalsShow, commentTriggersOptOut, commentTriggersShow,
+  agentsShare, agentsShow, agentsUpdateBase, agentsVersions, approvalsConfirmLink, approvalsList, approvalsShow, spendRequestConfirmLink, commentTriggersOptOut, commentTriggersShow,
   guardrailsSet, guardrailsShow, projectAgentsChange, projectConnectorsList, projectConnectorsRemove, projectConnectorsSet, skillsAdd, skillsList, sourcesAdd,
   sourcesCheck, sourcesList, sourcesOrder, sourcesRemove, type AppResult,
 } from "./developer/agents.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
-import { agentsBudget, projectAiSet } from "./developer/spend.js";
+import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
 import { ssmParameterStore, type ParameterStore } from "./environments/parameter-store.js";
@@ -864,6 +864,12 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--max-per-run <usd|none>", "the most one run may spend")
     .action(async (agentId: string, options: { monthly?: string; maxPerRun?: string }, command: Command) => printResult(command, await agentsBudget(developerSession(), developerEnv(command), agentId, options)));
   agents
+    .command("spend")
+    .description("what an agent has spent this month, where its runs came from, and its latest runs")
+    .argument("<agent-id>", "the agent's ID")
+    .option("--month <YYYY-MM>", "a month other than this one")
+    .action(async (agentId: string, options: { month?: string }, command: Command) => printResult(command, await agentsSpend(developerSession(), developerEnv(command), agentId, options)));
+  agents
     .command("run")
     .description("start a run of an agent on a project; --version <n> runs a published version, --draft the draft as a test run")
     .argument("<agent-id>", "the agent's ID")
@@ -912,6 +918,43 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       if (options.browser && link.openUrl !== undefined) await (dependencies.login?.openBrowser ?? openSystemBrowser)(link.openUrl).catch(() => undefined);
     });
 
+  // R66: a spend request is read here and decided only by a person on its confirmation page; there is no approve, decline or deny command.
+  const spendRequests = program.command("spend-requests").description("requests for a higher limit; a person approves or declines each on its confirmation page");
+  spendRequests
+    .command("list")
+    .description("list the spend requests waiting for you, and your own")
+    .action(async (_options: unknown, command: Command) => printResult(command, await spendRequestsList(developerSession(), developerEnv(command))));
+  spendRequests
+    .command("open")
+    .description("open a spend request's confirmation page in your browser, where you approve or decline it")
+    .argument("<spend-request-id>", "the request's ID, from agentx spend-requests list")
+    .option("--no-browser", "print the link instead of opening a browser")
+    .action(async (spendRequestId: string, options: { browser: boolean }, command: Command) => {
+      const link = await spendRequestConfirmLink(developerSession(), developerEnv(command), spendRequestId);
+      printResult(command, link);
+      if (options.browser && link.openUrl !== undefined) await (dependencies.login?.openBrowser ?? openSystemBrowser)(link.openUrl).catch(() => undefined);
+    });
+
+  // A task that stopped at a limit: a test run goes on as a normal task, and a plan whose run limit was denied or ran out asks again. Neither decides anything.
+  const taskCommand = program.command("task").description("a task that stopped at a limit");
+  taskCommand
+    .command("continue-as-task")
+    .description("a test run that reached its cap goes on as a normal task of yours")
+    .argument("<task-id>", "the task's ID")
+    .action(async (taskId: string, _options: unknown, command: Command) => printResult(command, await taskContinueAsTask(developerSession(), developerEnv(command), taskId)));
+  taskCommand
+    .command("ask-run-limit")
+    .description("ask again for a plan's run limit after the last request was denied or ran out; a person approves it on its page")
+    .argument("<task-id>", "the task's ID")
+    .action(async (taskId: string, _options: unknown, command: Command) => printResult(command, await taskAskRunLimit(developerSession(), developerEnv(command), taskId)));
+
+  org
+    .command("spend")
+    .description("what your organization has spent this month by project, member, agent, source and model (an org owner or admin); --ledger lists the settled lines")
+    .option("--month <YYYY-MM>", "a month other than this one")
+    .option("--ledger", "list the month's settled lines, newest first", false)
+    .option("--cursor <cursor>", "with --ledger: the next page, from the cursor the last page printed")
+    .action(async (options: { month?: string; ledger: boolean; cursor?: string }, command: Command) => printResult(command, await orgSpend(developerSession(), developerEnv(command), options)));
   const guardrails = org.command("guardrails").description("your company's agent guardrails");
   guardrails
     .command("show")

@@ -1,6 +1,7 @@
 // Plan 3 Task 28: the one monthly total each person's agent budgets count against. The total is a counter (`OWNER_AGENT_BUDGET#<developer>`)
 // the agent store changes in the same transaction as the agent's own item, so it can't drift from the budgets it adds up. Only an active
-// agent's `monthlyBudgetUsd` counts: not a per-run cap, not a top-up, and not an archived agent. The cap itself is on the effective total, the counter plus this
+// agent's `monthlyBudgetUsd` counts in the counter: not a per-run cap, not a top-up, and not an archived agent. A scope whose base is $0 counts $0 there, but it is still
+// one of the owner's scopes (Plan 4 review I-2): this month's top-ups on it are spendable, so the effective total adds them. The cap itself is on the effective total, the counter plus this
 // month's top-ups (Task 33 fix round 1, I-1): a raise is held to the cap less the top-ups, at the counter's version (`ownerTotalItems`' `seen`).
 import { ownerBudgetKey, type AgentOwner, type OrgId } from "@agentx/contracts";
 import type { AgentRecord, BuiltinSettings } from "../agents/store.js";
@@ -34,7 +35,10 @@ export function withBudgetFields<T extends BudgetSubject>(subject: T, changes: {
   } as T;
 }
 
-/** What an agent adds to someone's total: nothing while it is archived, has no budget or has no one to count for. */
+/**
+ * What an agent adds to someone's total: nothing while it is archived, has no budget or has no one to count for. A budget of $0 is a share of $0: the agent is
+ * still the owner's (its top-ups are spendable and count in the effective total), and it adds nothing to the counter.
+ */
 export interface OwnerShare {
   owner: string;
   usd: number;
@@ -43,7 +47,7 @@ export interface OwnerShare {
 export function ownerShare(subject: BudgetSubject): OwnerShare | undefined {
   const owner = budgetOwnerOf(subject);
   const usd = subject.monthlyBudgetUsd;
-  if (subject.status === "archived" || owner === undefined || usd === undefined || usd <= 0) return undefined;
+  if (subject.status === "archived" || owner === undefined || usd === undefined || usd < 0) return undefined;
   return { owner, usd };
 }
 
@@ -60,20 +64,23 @@ export function ownerTotalItems(table: TableInput, orgId: OrgId, before: OwnerSh
   const items: TransactItem[] = [];
   const owners: string[] = [];
   const capped: number[] = [];
-  const add = (owner: string, delta: number) => {
-    if (delta === 0) return;
+  // `moves`: the agent starts or stops counting for this owner. A $0 share changes no figure, but its top-ups join or leave the owner's effective total, so the
+  // counter's version still moves (a zero `ADD`), and a join held to the cap is pinned to the version the cap was read at (Plan 4 review I-2).
+  const add = (owner: string, delta: number, moves = false) => {
+    if (delta === 0 && !moves) return;
     const holdsCap = delta > 0 && capUsd !== undefined;
-    if (holdsCap) capped.push(items.length);
+    const pinned = delta === 0 && moves && capUsd !== undefined && seen?.owner === owner;
+    if (holdsCap || pinned) capped.push(items.length);
     owners.push(owner);
-    const held = holdsCap && seen?.owner === owner ? seen : undefined;
+    const held = (holdsCap || pinned) && seen?.owner === owner ? seen : undefined;
     const counter = withVersionBump(addToCounter(table, ownerBudgetKey(orgId, owner), "totalUsd", delta, holdsCap ? cleanUsd(capUsd - (held?.extraUsd ?? 0)) : undefined));
     items.push(held === undefined ? counter : atVersion(counter, held.version));
   };
   if (before !== undefined && after !== undefined && before.owner === after.owner) {
     add(after.owner, cleanUsd(after.usd - before.usd));
   } else {
-    if (before !== undefined) add(before.owner, cleanUsd(-before.usd));
-    if (after !== undefined) add(after.owner, cleanUsd(after.usd));
+    if (before !== undefined) add(before.owner, cleanUsd(-before.usd) + 0, true);
+    if (after !== undefined) add(after.owner, cleanUsd(after.usd), true);
   }
   return { items, owners, capped };
 }

@@ -159,7 +159,11 @@ import {
   workflowVerificationPosition,
   capText,
   ROVARA_CODE_AGENT_ID,
+  RUN_LIMIT_ASK_COOLDOWN_MS,
   RUN_LIMIT_BLOCK_PREFIX,
+  heldPlanStartKey,
+  planRunLimitSubject,
+  runLimitAskedKey,
   runLimitBlockText,
   type ProjectRole,
 } from "@agentx/contracts";
@@ -168,7 +172,7 @@ import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDec
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
 import { admitWork } from "../spend/admission.js";
-import { acceptRunLimit, estimateRun, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
+import { acceptRunLimit, estimateRun, planRunLimit, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
 import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import type { ModelAccess } from "../model-proxy/access.js";
@@ -1310,6 +1314,7 @@ export async function taskView(
   const derived = run === undefined ? derivedWithE2E : statusOfRun(derivedWithE2E, run, task);
   // Plan 3, Task 32: a task waiting for money says so, with its request, what planning found and a test's offer.
   const pausedView = await pauseViewOf(deps, task, operations);
+  const runLimit = await runLimitViewOf(deps, task);
   // #225: a task whose setup failed shows its prepare's events (the failure the broker recorded).
   const eventsOf = derived.current ?? derived.failedPrepare;
   const operationEvents = eventsOf === undefined || options.events === 0
@@ -1389,6 +1394,7 @@ export async function taskView(
     ...(task.agent === undefined ? {} : { agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version, builtin: task.agent.builtin } }),
     ...(run === undefined ? {} : { run }),
     ...pausedView,
+    ...(runLimit === undefined ? {} : { runLimit }),
     ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
@@ -2251,6 +2257,34 @@ async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: Developer
     if (said !== undefined) out.planningSoFar = Array.from(said).slice(0, 4096).join("");
   }
   return out;
+}
+
+/**
+ * Plan 3, Task 35b: what the view says of a plan blocked on its run limit (and of nothing else): the limit it waits for, the request that asks for it while one is
+ * open and still has time, and whether the owner may ask again (`POST /v1/app/tasks/{id}/run-limit-request`). A request whose time has run out reads as ended,
+ * as it does everywhere, so the owner is not told to wait for one nobody can decide.
+ */
+async function runLimitViewOf(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<DeveloperTaskView["runLimit"]> {
+  if (task.orgId === undefined || task.closedAt !== undefined || task.workflow === undefined || !blockedOnRunLimit(task.workflow)) return undefined;
+  let limitUsd: number;
+  try {
+    limitUsd = await planRunLimit(estimateDependencies(deps), task);
+  } catch (error) {
+    // The estimate's history could not be read: the rest of the view still stands.
+    log(deps, { event: "developer.run_limit_view_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+    return undefined;
+  }
+  const slot = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, planRunLimitSubject(task.taskId), "run_limit"));
+  const record = slot?.spendRequestId === undefined ? undefined : await get<{ orgId?: string; status?: string; expiresAt?: string }>(deps, spendRequestKey(task.orgId, slot.spendRequestId));
+  const open = record?.orgId === task.orgId && record.status === "PENDING" && Date.parse(record.expiresAt ?? "") > deps.now() ? slot?.spendRequestId : undefined;
+  if (open !== undefined) return { limitUsd, spendRequestId: open, canAskAgain: false };
+  // Approved, and the start after the approval is still to be made: nothing to ask for.
+  if (await get<Record<string, unknown>>(deps, heldPlanStartKey(task.orgId, task.taskId)) !== undefined) return { limitUsd, canAskAgain: false };
+  // Asked a few minutes ago: the next ask is allowed from then.
+  const last = await get<{ at?: string }>(deps, runLimitAskedKey(task.orgId, task.taskId));
+  const lastAt = typeof last?.at === "string" ? Date.parse(last.at) : Number.NaN;
+  if (Number.isFinite(lastAt) && lastAt + RUN_LIMIT_ASK_COOLDOWN_MS > deps.now()) return { limitUsd, canAskAgain: false, askAgainAfter: new Date(lastAt + RUN_LIMIT_ASK_COOLDOWN_MS).toISOString() };
+  return { limitUsd, canAskAgain: true };
 }
 
 /**
