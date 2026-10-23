@@ -5,8 +5,9 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
-import { agentRequestKey, runCostKey, spendRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
+import { agentRequestKey, runCostKey, spendRequestKey, spendRequestSlotKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { SPEND_REQUEST_TTL_DAYS, planRunLimitSubject } from "../../packages/contracts/src/spend.js";
+import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { BEN, CARL, PREPARED, setup, type World } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -43,6 +44,13 @@ async function blockedPlan() {
   const ask = (who = MAYA, body: Record<string, unknown> = {}) => w.api(who, "POST", path, body);
   const later = () => Date.now() + (SPEND_REQUEST_TTL_DAYS + 1) * 86_400_000;
   return { w, taskId, workspaceId, implementations, requestsOfTask, ask, path, later };
+}
+
+/** Moves the owner's last ask back past the cooldown (the fake clock is the real one). */
+function passCooldown(w: World): void {
+  const asked = w.db.find((item) => item.entityType === "RUN_LIMIT_ASKED");
+  expect(asked.length).toBeGreaterThan(0);
+  for (const item of asked) w.db.set({ ...item, at: new Date(Date.now() - 11 * 60_000).toISOString() });
 }
 
 const runLimitOf = async (w: World, taskId: string) => (await w.view(MAYA, taskId) as { runLimit?: { limitUsd: number; spendRequestId?: string; canAskAgain: boolean } }).runLimit;
@@ -84,6 +92,7 @@ describe("asking again for a run limit that was denied", () => {
     await w.decide(BEN, requestsOfTask()[0]!.spendRequestId, "DENY");
     const second = await ask();
     await w.decide(BEN, String(second.body.spendRequestId), "DENY");
+    passCooldown(w);
     const third = await ask();
     expect(third.status).toBe(201);
     expect(requestsOfTask()).toHaveLength(3);
@@ -210,5 +219,115 @@ describe("what the task view says", () => {
     const { w: blocked, taskId, requestsOfTask } = await blockedPlan();
     await blocked.decide(BEN, requestsOfTask()[0]!.spendRequestId);
     expect(await runLimitOf(blocked, taskId)).toBeUndefined();
+  });
+});
+
+describe("a plan whose approved run limit has not started coding yet (review M1)", () => {
+  /** The approval commits, the start after it fails (the proxy loses the second read), so the plan is still blocked with no request open. */
+  async function approvedButNotStarted() {
+    const plan = await blockedPlan();
+    const { w, taskId, requestsOfTask } = plan;
+    w.db.set({ ...w.meta(taskId), modelKeyIds: [keyIdOf("sk-planning-key")] });
+    w.access.keySpend.mockImplementationOnce(async () => 0).mockRejectedValueOnce(new Error("proxy lost"));
+    expect((await w.decide(BEN, requestsOfTask()[0]!.spendRequestId)).spendRequest).toMatchObject({ status: "APPROVED" });
+    expect(plan.implementations()).toEqual([]);
+    expect(w.meta(taskId).workflow).toMatchObject({ state: "BLOCKED" });
+    return plan;
+  }
+
+  it("refuses to ask, makes no request, and the view does not offer it", async () => {
+    const { w, taskId, requestsOfTask, ask } = await approvedButNotStarted();
+    expect(await runLimitOf(w, taskId)).toMatchObject({ canAskAgain: false });
+    expect(await ask()).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID", message: expect.stringContaining("approved") as unknown } } });
+    expect(requestsOfTask()).toHaveLength(1);
+  });
+
+  it("is over once coding has started: nothing is shown, and asking is refused as not waiting", async () => {
+    const { w, taskId, implementations, ask } = await approvedButNotStarted();
+    expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 1 });
+    expect(implementations()).toHaveLength(1);
+    expect(await runLimitOf(w, taskId)).toBeUndefined();
+    expect(await ask()).toMatchObject({ status: 400, body: { error: { message: expect.stringContaining("not waiting for a run limit") as unknown } } });
+  });
+});
+
+describe("an ask that loses the race to another ask (review M2)", () => {
+  it("still remembers its request ID: a repeat after the open request was denied answers the same", async () => {
+    const { w, taskId, requestsOfTask, ask } = await blockedPlan();
+    const open = requestsOfTask()[0]!.spendRequestId;
+    // The first read of the plan's slot, the route's own, finds nothing (the other ask had not made its request yet); the create then finds it.
+    const slot = spendRequestSlotKey(TEST_ORG, planRunLimitSubject(taskId), "run_limit");
+    const original = w.db.send.bind(w.db) as (command: { constructor: { name: string }; input: { Key?: { pk?: string; sk?: string } } }) => Promise<unknown>;
+    let hidden = false;
+    (w.db as unknown as { send: typeof original }).send = async (command) => {
+      if (!hidden && command.constructor.name === "GetCommand" && command.input.Key?.pk === slot.pk && command.input.Key?.sk === slot.sk) {
+        hidden = true;
+        return {};
+      }
+      return original(command);
+    };
+    const requestId = randomUUID();
+    expect(await ask(MAYA, { requestId })).toMatchObject({ status: 200, body: { spendRequestId: open, created: false } });
+    expect(hidden).toBe(true);
+    (w.db as unknown as { send: typeof original }).send = original;
+    await w.decide(BEN, open, "DENY");
+    expect(await ask(MAYA, { requestId })).toMatchObject({ status: 200, body: { spendRequestId: open, created: false } });
+    expect(requestsOfTask()).toHaveLength(1);
+  });
+});
+
+describe("the cooldown on asking again (review M4)", () => {
+  it("allows one new ask in ten minutes, says when the next can be made, and the view says so too", async () => {
+    const { w, taskId, requestsOfTask, ask } = await blockedPlan();
+    await w.decide(BEN, requestsOfTask()[0]!.spendRequestId, "DENY");
+    const before = Date.now();
+    const first = await ask();
+    expect(first.status).toBe(201);
+    await w.decide(BEN, String(first.body.spendRequestId), "DENY");
+    const refused = await ask();
+    expect(refused.status).toBe(400);
+    const error = (refused.body.error as { code: string; message: string });
+    expect(error.code).toBe("CONFIG_INVALID");
+    const next = /^You asked for this run limit a few minutes ago\. You can ask again after (\d{4}-\d{2}-\d{2}T[\d:.]+Z)\.$/.exec(error.message);
+    expect(next, error.message).not.toBeNull();
+    const at = Date.parse(next![1]!);
+    expect(at).toBeGreaterThanOrEqual(before + 10 * 60_000);
+    expect(at).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
+    expect(requestsOfTask()).toHaveLength(2);
+    expect(await runLimitOf(w, taskId)).toEqual({ limitUsd: 20, canAskAgain: false, askAgainAfter: next![1] });
+    // Ten minutes later it can be asked again, and the view says so.
+    passCooldown(w);
+    expect(await runLimitOf(w, taskId)).toEqual({ limitUsd: 20, canAskAgain: true });
+    expect((await ask()).status).toBe(201);
+    expect(requestsOfTask()).toHaveLength(3);
+  });
+
+  it("does not hold back answering the request that is open, nor a repeat of the ask that made it", async () => {
+    const { w, requestsOfTask, ask } = await blockedPlan();
+    await w.decide(BEN, requestsOfTask()[0]!.spendRequestId, "DENY");
+    const requestId = randomUUID();
+    const first = await ask(MAYA, { requestId });
+    expect(await ask(MAYA, { requestId })).toMatchObject({ status: 201, body: { spendRequestId: first.body.spendRequestId } });
+    expect(await ask()).toMatchObject({ status: 200, body: { spendRequestId: first.body.spendRequestId, created: false } });
+  });
+
+  it("is kept per task and written only with a request that was made", async () => {
+    const { w, requestsOfTask, ask } = await blockedPlan();
+    expect(await ask()).toMatchObject({ status: 200 });
+    expect(w.db.find((item) => item.entityType === "RUN_LIMIT_ASKED")).toEqual([]);
+    await w.decide(BEN, requestsOfTask()[0]!.spendRequestId, "DENY");
+    expect((await ask()).status).toBe(201);
+    expect(w.db.find((item) => item.entityType === "RUN_LIMIT_ASKED")).toHaveLength(1);
+  });
+});
+
+describe("a malformed task ID in the path (review M4)", () => {
+  it("is answered as a task that does not exist, never as a server error, on both task routes", async () => {
+    const w = await setup();
+    for (const route of ["run-limit-request", "continue-as-task"]) {
+      const reply = await w.api(MAYA, "POST", `/v1/app/tasks/%E0%A4%A/${route}`, {});
+      expect(reply.status, route).toBe(404);
+      expect(reply.body, route).toMatchObject({ error: { code: "TASK_NOT_FOUND" } });
+    }
   });
 });

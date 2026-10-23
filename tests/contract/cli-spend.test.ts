@@ -170,6 +170,24 @@ describe("agentx org spend", () => {
     expect(h.calls.at(-1)!.query).toBe(`?month=2026-10&cursor=${next}`);
   });
 
+  it("prints the cursor exactly as the broker sent it, even when it is shaped like a token, and not one that is not URL-safe base64 (review M3)", async () => {
+    const odd = "agxr_AAAAbbbbCCCC-_09";
+    const h = await agentsCli({ "GET /v1/app/org/spend/ledger": Response.json({ month: "2026-10", lines: [], next: odd }) });
+    expect(await h.run(["org", "spend", "--ledger"])).toBe(0);
+    expect(h.stdout()).toContain(`--cursor ${odd}`);
+    const bad = await agentsCli({ "GET /v1/app/org/spend/ledger": Response.json({ month: "2026-10", lines: [], next: "abc def\u202E;rm" }) });
+    expect(await bad.run(["org", "spend", "--ledger"])).toBe(0);
+    expect(bad.stdout()).not.toContain("--cursor");
+    expect(bad.stdout()).not.toContain("rm");
+    expect(bad.stdout()).toContain("can't be paged");
+  });
+
+  it("refuses --cursor without --month, so a cursor is never applied to another month (review M3)", async () => {
+    const h = await agentsCli({});
+    expect(await h.run(["org", "spend", "--ledger", "--cursor", "abc"])).not.toBe(0);
+    expect(h.calls).toEqual([]);
+  });
+
   it("refuses a bad month, and --cursor without --ledger, before sending", async () => {
     const h = await agentsCli({});
     expect(await h.run(["org", "spend", "--month", "2026-00"])).not.toBe(0);
