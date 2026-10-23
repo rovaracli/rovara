@@ -209,7 +209,7 @@ describe("a new month resumes the tasks the last month stopped", () => {
     await t.pauseAndEnd(task, MEMBER);
     await t.set(task.taskId, "SET closedAt = :now", { ":now": new Date().toISOString() });
     // Nothing is open any more, as when the request was swept in the month it was made.
-    for (const record of t.requests()) t.db.delete({ pk: String(record.pk), sk: String(record.sk) } as never);
+    for (const record of t.requests()) t.db.delete({ pk: `ORG#${TEST_ORG}#SPEND_REQUEST#${record.spendRequestId}`, sk: "META" } as never);
     for (const item of t.openItems()) t.db.delete({ pk: String(item.pk), sk: String(item.sk) } as never);
     expect(t.db.find((item) => item.entityType === "PAUSED_TASK")).toHaveLength(1);
     await escalateOwnerRequests(t.deps(() => nextMonthStart()), { budgetMs: 5_000 });

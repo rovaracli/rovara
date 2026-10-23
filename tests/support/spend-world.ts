@@ -10,6 +10,7 @@ import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentRunStarter } from "../../packages/broker/src/agents/runs.js";
+import type { DeveloperTaskActions } from "../../packages/broker/src/aws/developer-task-actions.js";
 import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, ownerBudgetKey, type AgentId, type OrgId, type PauseScope, type SpendRequestRecord } from "@agentx/contracts";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
@@ -184,9 +185,10 @@ export async function setup(options: {
     if (found === undefined) throw new Error("the broker has no agent run starter");
     return found;
   };
+  const actions: DeveloperTaskActions = h.actions; // named here so the declaration of `setup` can refer to it
   // The harness's own fields the tests use, by name: a spread of the whole harness would carry the broker's input types into this module's declaration.
   return {
-    db: h.db, actions: h.actions, handler: h.handler, dev: h.dev, events: h.events, finish: h.finish, artifact: h.artifact, orgOf: h.orgOf, access, store, deps, api, caller, decide, agentOf, publishNext, setBudget, shareWith, budgeted, ownerTotal, agentItem, agentEvents, grantRole,
+    db: h.db, actions, handler: h.handler, dev: h.dev, events: h.events, finish: h.finish, artifact: h.artifact, orgOf: h.orgOf, access, store, deps, api, caller, decide, agentOf, publishNext, setBudget, shareWith, budgeted, ownerTotal, agentItem, agentEvents, grantRole,
     meta, operations, taskOps, activeOf, outboxOf, set, plainTask, runOf, pauseAndEnd, requests, requestOf, openItems, view, taskEvents, starter,
   };
 }
