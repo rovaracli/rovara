@@ -244,8 +244,12 @@ describe("a plan whose approved run limit has not started coding yet (review M1)
 
   it("is over once coding has started: nothing is shown, and asking is refused as not waiting", async () => {
     const { w, taskId, implementations, ask } = await approvedButNotStarted();
+    const markers = () => w.db.find((item) => item.entityType === "SPEND_HELD_PLAN_START");
+    expect(markers()).toHaveLength(1);
     expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 1 });
     expect(implementations()).toHaveLength(1);
+    // The marker goes with the held start.
+    expect(markers()).toEqual([]);
     expect(await runLimitOf(w, taskId)).toBeUndefined();
     expect(await ask()).toMatchObject({ status: 400, body: { error: { message: expect.stringContaining("not waiting for a run limit") as unknown } } });
   });
@@ -257,7 +261,8 @@ describe("an ask that loses the race to another ask (review M2)", () => {
     const open = requestsOfTask()[0]!.spendRequestId;
     // The first read of the plan's slot, the route's own, finds nothing (the other ask had not made its request yet); the create then finds it.
     const slot = spendRequestSlotKey(TEST_ORG, planRunLimitSubject(taskId), "run_limit");
-    const original = w.db.send.bind(w.db) as (command: { constructor: { name: string }; input: { Key?: { pk?: string; sk?: string } } }) => Promise<unknown>;
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the stricter type check (tsconfig.lint.json) needs the command typed; eslint's own config already has it
+    const original = w.db.send.bind(w.db) as unknown as (command: { constructor: { name: string }; input: { Key?: { pk?: string; sk?: string } } }) => Promise<unknown>;
     let hidden = false;
     (w.db as unknown as { send: typeof original }).send = async (command) => {
       if (!hidden && command.constructor.name === "GetCommand" && command.input.Key?.pk === slot.pk && command.input.Key?.sk === slot.sk) {

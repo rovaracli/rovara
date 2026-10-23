@@ -159,8 +159,11 @@ import {
   workflowVerificationPosition,
   capText,
   ROVARA_CODE_AGENT_ID,
+  RUN_LIMIT_ASK_COOLDOWN_MS,
   RUN_LIMIT_BLOCK_PREFIX,
+  heldPlanStartKey,
   planRunLimitSubject,
+  runLimitAskedKey,
   runLimitBlockText,
   type ProjectRole,
 } from "@agentx/contracts";
@@ -2274,7 +2277,14 @@ async function runLimitViewOf(deps: DeveloperTaskRouteDependencies, task: Develo
   const slot = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, planRunLimitSubject(task.taskId), "run_limit"));
   const record = slot?.spendRequestId === undefined ? undefined : await get<{ orgId?: string; status?: string; expiresAt?: string }>(deps, spendRequestKey(task.orgId, slot.spendRequestId));
   const open = record?.orgId === task.orgId && record.status === "PENDING" && Date.parse(record.expiresAt ?? "") > deps.now() ? slot?.spendRequestId : undefined;
-  return { limitUsd, ...(open === undefined ? {} : { spendRequestId: open }), canAskAgain: open === undefined };
+  if (open !== undefined) return { limitUsd, spendRequestId: open, canAskAgain: false };
+  // Approved, and the start after the approval is still to be made: nothing to ask for.
+  if (await get<Record<string, unknown>>(deps, heldPlanStartKey(task.orgId, task.taskId)) !== undefined) return { limitUsd, canAskAgain: false };
+  // Asked a few minutes ago: the next ask is allowed from then.
+  const last = await get<{ at?: string }>(deps, runLimitAskedKey(task.orgId, task.taskId));
+  const lastAt = typeof last?.at === "string" ? Date.parse(last.at) : Number.NaN;
+  if (Number.isFinite(lastAt) && lastAt + RUN_LIMIT_ASK_COOLDOWN_MS > deps.now()) return { limitUsd, canAskAgain: false, askAgainAfter: new Date(lastAt + RUN_LIMIT_ASK_COOLDOWN_MS).toISOString() };
+  return { limitUsd, canAskAgain: true };
 }
 
 /**

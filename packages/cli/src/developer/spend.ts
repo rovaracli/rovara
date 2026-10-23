@@ -110,13 +110,18 @@ export async function agentsSpend(deps: DeveloperSessionDeps, env: string | unde
 export async function orgSpend(deps: DeveloperSessionDeps, env: string | undefined, input: { month?: string; ledger?: boolean; cursor?: string }): Promise<AppResult> {
   const month = parseMonth(input.month);
   if (input.cursor !== undefined && input.ledger !== true) throw agentXError("CONFIG_INVALID", "--cursor goes with --ledger");
+  // A cursor belongs to the month it was printed for: applied to another month it would skip or repeat lines.
+  if (input.cursor !== undefined && month === undefined) throw agentXError("CONFIG_INVALID", "--cursor needs --month, the month the cursor was printed for");
   const query = [...(month === undefined ? [] : [`month=${month}`]), ...(input.cursor === undefined ? [] : [`cursor=${encodeURIComponent(input.cursor)}`])].join("&");
   const answer = await appRequest(deps, env, `/v1/app/org/spend${input.ledger === true ? "/ledger" : ""}${query === "" ? "" : `?${query}`}`);
   const body = answer.body;
   if (input.ledger === true) {
     const lines = list(body.lines).map((line) =>
       `  ${str(line.at)}  ${dollars(line.settledUsd ?? line.usd)}${line.finalized === true ? "" : " (not final)"}  ${str(line.model)}  ${str(line.project)}  ${str(line.origin)}  ${str(line.taskId ?? line.operationId, "-")}`);
-    const next = typeof body.next === "string" ? [`More lines follow: agentx org spend --ledger --month ${str(body.month)} --cursor ${str(body.next)}`] : [];
+    // The cursor is printed only as the broker sent it: URL-safe base64 characters, which no cleaning changes.
+    const next = typeof body.next !== "string" ? []
+      : /^[A-Za-z0-9_-]+$/.test(body.next) ? [`More lines follow: agentx org spend --ledger --month ${str(body.month)} --cursor ${body.next}`]
+        : ["More lines follow, but the cursor AgentX sent is not one this command can use, so the ledger can't be paged from here."];
     return result(answer, body, `${[`Settled spend lines of ${str(body.month)}, newest first:`, ...(lines.length === 0 ? ["  none"] : lines), ...next].join("\n")}\n`);
   }
   const section = (title: string, rows: Body[], key: string): string[] => (rows.length === 0 ? [] : [`${title}:`, ...named(rows, key)]);

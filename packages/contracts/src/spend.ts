@@ -55,6 +55,16 @@ export const runLimitBlockText = (runLimitUsd: number, needs: "maintainer" | "ad
  */
 export const planRunLimitSubject = (taskId: string): string => `TASK#${taskId}#IMPLEMENT`;
 
+/**
+ * Kept while an approved plan's coding start has not been made (the approval committed; a start that failed is retried): "approved, starting" for the task.
+ * The ask-again route and the task view read it; it is removed when the start is made, given up or the task closes.
+ */
+export const heldPlanStartKey = (orgId: string, taskId: string): { pk: string; sk: string } => ({ pk: `HELD_SPEND_STARTS#PLAN#${orgId}`, sk: taskId });
+/** The owner's last new ask for a plan's run limit (`POST /v1/app/tasks/{id}/run-limit-request`), for the cooldown between asks. */
+export const runLimitAskedKey = (orgId: string, taskId: string): { pk: string; sk: string } => ({ pk: `RUN_LIMIT_ASKED#${orgId}`, sk: taskId });
+/** How long after one new ask the owner may make the next. */
+export const RUN_LIMIT_ASK_COOLDOWN_MS = 10 * 60_000;
+
 /** The limit on a workflow task's planning phase, before a plan is approved. */
 export const DEFAULT_PLANNING_LIMIT_USD = { QUICK: 2, FULL: 6 } as const;
 
