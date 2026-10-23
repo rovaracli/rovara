@@ -186,7 +186,7 @@ export async function setup(options: {
   };
   // The harness's own fields the tests use, by name: a spread of the whole harness would carry the broker's input types into this module's declaration.
   return {
-    db: h.db, handler: h.handler, dev: h.dev, events: h.events, finish: h.finish, artifact: h.artifact, orgOf: h.orgOf, access, store, deps, api, caller, decide, agentOf, publishNext, setBudget, shareWith, budgeted, ownerTotal, agentItem, agentEvents, grantRole,
+    db: h.db, actions: h.actions, handler: h.handler, dev: h.dev, events: h.events, finish: h.finish, artifact: h.artifact, orgOf: h.orgOf, access, store, deps, api, caller, decide, agentOf, publishNext, setBudget, shareWith, budgeted, ownerTotal, agentItem, agentEvents, grantRole,
     meta, operations, taskOps, activeOf, outboxOf, set, plainTask, runOf, pauseAndEnd, requests, requestOf, openItems, view, taskEvents, starter,
   };
 }
