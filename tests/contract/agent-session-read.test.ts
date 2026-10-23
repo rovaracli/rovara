@@ -19,7 +19,7 @@ import {
   SessionViewSchema,
 } from "../../packages/contracts/src/index.js";
 import { createTaskSessionItems, ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
-import { requireSessionLevel } from "../../packages/broker/src/agent-sessions/access.js";
+import { newSessionRoleMemo, requireSessionLevel } from "../../packages/broker/src/agent-sessions/access.js";
 import { listSessions, sessionStepTask, sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
 import { isAgentSessionRoute } from "../../packages/broker/src/agent-sessions/routes.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
@@ -237,6 +237,8 @@ describe("a taken-over session names its effective owner (review m-4)", () => {
     expect(seen.you).toMatchObject({ owner: false });
     expect((await view(r, ARJUN, sessionId)).owner).toEqual({ developerId: ARJUN, name: "Arjun" });
     expect((await view(r, ARJUN, sessionId)).you.owner).toBe(true);
+    // The list's tile names the taker too.
+    expect((await listSessions(r.deps, r.w.caller(PRIYA), { owner: "me" })).sessions.find((tile) => tile.sessionId === sessionId)?.owner).toEqual({ developerId: ARJUN, name: "Arjun" });
     // A session nobody took over keeps its own owner.
     const plain = r.w.seedSession();
     expect((await view(r, ARJUN, plain.sessionId)).owner).toEqual({ developerId: PRIYA, name: "Priya" });
@@ -447,6 +449,13 @@ describe("listing sessions", () => {
         expect(refused, bad).toMatchObject({ code: "CONFIG_INVALID" });
         if (bad !== "") expect(refused?.message).not.toContain(bad.slice(0, 12)); // an empty cursor has nothing to echo
       }
+      // The one spelling it was written in: no prefix, and no other base64url spelling of the same bytes, opens it.
+      expect(await code(listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor: cursor.slice("v1.".length) }))).toMatchObject({ code: "CONFIG_INVALID" });
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      const bytes = Buffer.from(cursor.slice("v1.".length), "base64url");
+      const spellings = [...alphabet].map((c) => `v1.${cursor.slice("v1.".length, -1)}${c}`).filter((text) => text !== cursor && Buffer.from(text.slice("v1.".length), "base64url").equals(bytes));
+      expect(spellings.length).toBeGreaterThan(0);
+      for (const same of spellings) expect(await code(listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor: same })), same).toMatchObject({ code: "CONFIG_INVALID" });
       // Another list, and another person's list, refuse it too.
       expect(await code(listSessions(l.deps, l.w.caller(PRIYA), { project: "web", limit: 2, cursor }))).toMatchObject({ code: "CONFIG_INVALID" });
       expect(await code(listSessions(l.deps, l.w.caller(ARJUN), { owner: "me", limit: 2, cursor }))).toMatchObject({ code: "CONFIG_INVALID" });
@@ -478,6 +487,17 @@ describe("listing sessions", () => {
     expect((await listSessions(r.deps, r.w.caller(BO, ORG_B), { project: "web" })).sessions).toEqual([]);
     const other = r.w.members.calls.length;
     expect(other).toBeLessThanOrEqual(1);
+  });
+
+  it("asks the channel once for a project share's role too, for an org admin who has no grant (review m-2)", async () => {
+    const r = readWorld();
+    const first = r.w.seedSession().sessionId;
+    const second = r.w.seedSession().sessionId;
+    for (const id of [first, second]) r.w.seedShare(ORG_A, id, { kind: "project", project: "web" }, "view");
+    const memo = newSessionRoleMemo();
+    r.w.members.calls.length = 0;
+    for (const id of [first, second]) await requireSessionLevel(r.deps, r.w.caller(OLA), id, "view", "view it", { memo });
+    expect(r.w.members.calls.filter((call) => call === "roleOf web").length).toBeLessThanOrEqual(2); // once as an admin, once as a member
   });
 
   it("drops an index row that names another org, and refuses a limit outside 1 to 100", async () => {

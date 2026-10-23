@@ -276,8 +276,6 @@ export interface SessionListQuery {
 const DEFAULT_PAGE = 50;
 const PROBE_ID = "ses_00000000000000000000";
 const PROBE_AT = "2000-01-01T00:00:00.000Z";
-const INDEX_SK = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z#(?:ses|crn)_[0-9a-z]{20}$/;
-const SHARED_SK = /^(?:ses|crn)_[0-9a-z]{20}$/;
 
 function tileOf(session: AgentSessionRecord, level: SessionTile["level"], owner: SessionTile["owner"]): SessionTile {
   return {
@@ -321,7 +319,7 @@ function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: Se
 }
 
 /** The sort key a cursor holds, or `CONFIG_INVALID` for anything this list, this person and this server key didn't give. */
-function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, pattern: RegExp, cursor: string): string {
+function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, cursor: string): string {
   const key = cursorKeyOf(deps);
   const refuse = () => invalid("cursor: is not one this list gave");
   if (!cursor.startsWith(CURSOR_VERSION)) throw refuse();
@@ -333,7 +331,6 @@ function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: Se
     decipher.setAAD(cursorContext(caller.orgId, caller.developerId, pk));
     decipher.setAuthTag(bytes.subarray(bytes.length - 16));
     const sk = Buffer.concat([decipher.update(bytes.subarray(12, bytes.length - 16)), decipher.final()]).toString("utf8");
-    if (!pattern.test(sk)) throw refuse();
     return sk;
   } catch {
     throw refuse();
@@ -359,12 +356,11 @@ export async function listSessions(deps: SessionReadDependencies, caller: Sessio
   const pk = query.project !== undefined ? projectSessionsKey(orgId, query.project, PROBE_AT, PROBE_ID).pk
     : query.shared !== undefined ? sharedSessionsKey(orgId, { kind: "member", developerId: caller.developerId }, PROBE_ID).pk
       : mySessionsKey(orgId, caller.developerId, PROBE_AT, PROBE_ID).pk;
-  const pattern = query.shared === undefined ? INDEX_SK : SHARED_SK;
   cursorKeyOf(deps); // a list that can't seal its cursor doesn't start
   const memo = newSessionRoleMemo(); // the caller's role on each project, asked once for the whole request (review m-2)
   let start: Record<string, unknown> | undefined;
   if (query.cursor !== undefined) {
-    start = { pk, sk: openCursor(deps, caller, pk, pattern, query.cursor) };
+    start = { pk, sk: openCursor(deps, caller, pk, query.cursor) };
   }
 
   const tiles: SessionTile[] = [];
