@@ -147,6 +147,37 @@ describe("service role policy", () => {
   });
 });
 
+describe("AppSync Events API creation (Plan 5 Task 8 review, I-1)", () => {
+  // appsync:CreateApi and appsync:ListApis take no resource type, so an ARN-scoped statement never matches them: they need "*", held to the deploy region.
+  const unscoped = ["appsync:CreateApi", "appsync:ListApis"];
+  const apisArn = "arn:aws:appsync:us-east-1:123456789012:apis/*";
+  const checks: Array<[string, ReturnType<typeof serviceRoleStatements>]> = [
+    ["service role", serviceRoleStatements(scope)],
+    ["boundary", defaultBoundaryStatements(scope)],
+  ];
+  for (const [name, statements] of checks) {
+    it(`the ${name} allows CreateApi and ListApis on "*" only inside the deploy region`, () => {
+      const statement = statements.find((s) => s.Sid === "AppSyncEventsCreate")!;
+      expect(statement).toEqual({
+        Sid: "AppSyncEventsCreate", Effect: "Allow", Action: unscoped, Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } },
+      });
+    });
+
+    it(`the ${name} keeps every other AppSync Events action on this account's APIs, and none of the resource-less two`, () => {
+      const scoped = statements.find((s) => s.Sid === "AppSyncEvents")!;
+      expect(scoped.Resource).toBe(apisArn);
+      expect(scoped.Condition).toBeUndefined();
+      expect([...scoped.Action].sort()).toEqual([
+        "appsync:CreateChannelNamespace", "appsync:DeleteApi", "appsync:DeleteChannelNamespace", "appsync:GetApi", "appsync:GetChannelNamespace",
+        "appsync:ListTagsForResource", "appsync:TagResource", "appsync:UntagResource", "appsync:UpdateApi", "appsync:UpdateChannelNamespace",
+      ]);
+      // Nothing else names either action: no second grant on "*" without the region condition, and none on the APIs' ARN.
+      const naming = statements.filter((s) => s.Action.some((a) => unscoped.includes(a)));
+      expect(naming.map((s) => s.Sid)).toEqual(["AppSyncEventsCreate"]);
+    });
+  }
+});
+
 describe("operator role policy", () => {
   it("has no wildcard actions", () => {
     expect(operatorRoleStatements(scope).flatMap((s) => s.Action).filter((a) => a.endsWith(":*") || a === "*")).toEqual([]);
