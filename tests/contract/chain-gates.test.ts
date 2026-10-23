@@ -252,6 +252,15 @@ describe("who may decide a gate (checked when they decide)", () => {
     expect(approverWords([{ kind: "starter" }, { kind: "chain_owner" }, { kind: "members", developerIds: [CARL, VIV] }], context)).toBe("the person who started this run, Fix flow's owner, Carl or Viv");
   });
 
+  it("fails closed when the chain store is not there at all", async () => {
+    const { gateEligible } = await gates();
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate();
+    const record = await w.approval(approvalId);
+    expect(await gateEligible(w.deps, record, callerOf(PRIYA))).toBe(true);
+    expect(await gateEligible({ ...w.deps, chains: undefined } as never, record, callerOf(PRIYA))).toBe(false);
+  });
+
   it("fails closed when the gate can't be read: a missing chain version, an attempt that is not this approval's", async () => {
     const w = setupGateWorld();
     const { run, approvalId } = await w.runAtGate();
@@ -318,6 +327,18 @@ describe("what passes a gate", () => {
     const { advanceChainRun } = await runner();
     await advanceChainRun(w.deps, ORG_A, run.runId);
     expect(w.attempts(run.runId).at(-1)).toMatchObject({ status: "waiting" });
+    expect(w.starts).toHaveLength(1);
+  });
+
+  it("applies a decision only while the attempt still waits on that approval, down to the transaction: an attempt that changed hands between the read and the write is not passed", async () => {
+    const { recordGateDecision } = await runner();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    const attempt = w.db.find((item) => item.entityType === "CHAIN_RUN_STEP" && item.runId === run.runId && item.seq === 2)[0]!;
+    w.beforeTransaction("gate_decided", () => { w.db.set({ ...attempt, approvalId: "apr_zzzzzzzzzzzzzzzzzzzz" }); });
+    await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", { approvalId, name: "Priya" })).rejects.toThrow();
+    expect(w.attempts(run.runId)[1]).toMatchObject({ status: "waiting" });
+    expect(w.decidedEvents(run.runId)).toEqual([]);
     expect(w.starts).toHaveLength(1);
   });
 
