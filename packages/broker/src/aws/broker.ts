@@ -343,7 +343,7 @@ import {
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { driveAgentRun, giveUpAgentRun, type AgentRunHost } from "../agents/run-engine.js";
-import { END_LEASE_MS, hasTaskEndHandlers } from "../agents/task-end.js";
+import { END_LEASE_MS, hasTaskEndHandlers, hasTaskPauseHandlers } from "../agents/task-end.js";
 import { agentRunWakeItems } from "./agent-run-wakeup.js";
 import { requireRecipeAllowed } from "../agents/roster.js";
 import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
@@ -398,7 +398,7 @@ import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, continueAsTask, resumeTaskAfterSpendApproval, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, continueAsTask, resumeTaskAfterSpendApproval, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -5838,7 +5838,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
           planning: current.workflowMode === "PLAN",
           ...(testCapUsd === undefined ? {} : { testCapUsd }),
           ...(stepBudgetUsd === undefined ? {} : { stepBudgetUsd }),
-          pause: { taskId: task.taskId, key: taskKey(task.taskId) },
+          pause: { taskId: task.taskId, key: taskKey(task.taskId), operationId: current.id },
           recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }, { key: operationKey(current.workspaceId, current.id) }],
         }),
       };
@@ -11294,21 +11294,36 @@ async function runAgentRunDispatch(dependencies: AwsBrokerDependencies, item: Wo
  * is tried again with the row's backoff (Task 22 re-check, N1).
  */
 async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
-  const row = item as WorkflowDispatchRecord & { orgId?: unknown; workspaceId?: unknown; operationId?: unknown };
+  const row = item as WorkflowDispatchRecord & { orgId?: unknown; workspaceId?: unknown; operationId?: unknown; endOf?: unknown };
   const key = { pk: item.pk, sk: item.sk };
   try {
-    const operation = typeof row.workspaceId === "string" && typeof row.operationId === "string"
-      ? await getItem<OperationRecord>(dependencies, operationKey(row.workspaceId, row.operationId)) : undefined;
-    if (operation === undefined || !TERMINAL.has(operation.status) || operation.orgId === undefined || operation.orgId !== row.orgId) {
-      await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
-      return "STALE";
+    let told: EndTold;
+    let orgId: string;
+    if (row.endOf === "closed") {
+      // M-6 (m-2): the `closed` end of a plain task whose close could not finish telling it. The task, not an operation, is what is looked at.
+      const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
+      if (task === undefined || task.orgId === undefined || task.orgId !== row.orgId || task.closedAt === undefined) {
+        await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
+        return "STALE";
+      }
+      orgId = task.orgId;
+      told = await noteTaskEnded(dependencies, task, "closed");
+    } else {
+      const operation = typeof row.workspaceId === "string" && typeof row.operationId === "string"
+        ? await getItem<OperationRecord>(dependencies, operationKey(row.workspaceId, row.operationId)) : undefined;
+      if (operation === undefined || !TERMINAL.has(operation.status) || operation.orgId === undefined || operation.orgId !== row.orgId) {
+        await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
+        return "STALE";
+      }
+      await blockEndedOperationKeys(dependencies, operation);
+      orgId = operation.orgId;
+      told = await tellTaskStop(dependencies, operation, item.taskId, operation.status, operation.kind === "task" && operation.status === "FAILED" && operation.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE);
     }
-    await blockEndedOperationKeys(dependencies, operation);
-    const told = await tellTaskEnd(dependencies, operation, item.taskId, operation.status);
     if (told === "in_progress") {
       // Another call holds the end and may die with it: the row stays, due when its lease could have run out, so whoever looks then finishes the end.
       await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: (operationEndDispatchItem(dependencies.tableName, {
-        taskId: item.taskId, orgId: operation.orgId, workspaceId: operation.workspaceId, operationId: operation.id, now: new Date().toISOString(), dueAt: new Date(Date.now() + END_LEASE_MS + 5_000).toISOString(),
+        taskId: item.taskId, orgId, workspaceId: String(row.workspaceId), operationId: String(row.operationId), now: new Date().toISOString(), dueAt: new Date(Date.now() + END_LEASE_MS + 5_000).toISOString(),
+        ...(row.endOf === "closed" ? { endOf: "closed" as const } : {}),
       }) as { Put: { Item: Record<string, unknown> } }).Put.Item }));
       return "RETRY";
     }
@@ -12914,16 +12929,17 @@ async function recordTerminalResult(
   if (taskPointer !== undefined) await dispatchWorkflowContinuation(dependencies, taskPointer.taskId);
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
+  // Plan 3, Task 32: a task operation that ran out of budget is paused, and asks for the limit its pause names (an agent-step run's engine paused it above).
+  const budgetStopped = taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
+  const stop = { asked: false };
   // Plan 3, Task 22 (G7): a workflow task that passed its sequence, and a plain task whose operation ended, tell the end handlers (an agent-step run's engine tells its own).
-  if (taskPointer !== undefined && !closeCanFinish && hasTaskEndHandlers()) {
-    const told = await tellTaskEnd(dependencies, operation, taskPointer.taskId, terminalStatus);
+  // Plan 3, M-6: a plain task that stopped on a budget is paused, not ended (Task 32 may resume it): the pause handlers hear that instead, before the ask below.
+  if (taskPointer !== undefined && !closeCanFinish && (hasTaskEndHandlers() || (budgetStopped && hasTaskPauseHandlers()))) {
+    const told = await tellTaskStop(dependencies, operation, taskPointer.taskId, terminalStatus, budgetStopped, stop);
     // An end that is not finished (a handler threw, or another call is telling it) is left to the recovery sweep through an `operation_end` row (Task 22 re-check, N1).
     if (told !== "told") await leaveOperationEndRow(dependencies, operation, taskPointer.taskId, told === "in_progress" ? END_LEASE_MS + 5_000 : 60_000);
   }
-  // Plan 3, Task 32: a task operation that ran out of budget asks for the limit its pause names (an agent-step run's engine paused it above).
-  if (taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
-    await askForPausedTask(dependencies, taskPointer.taskId, operation);
-  }
+  if (budgetStopped && !stop.asked && taskPointer !== undefined) await askForPausedTask(dependencies, taskPointer.taskId, operation);
   // Spec 061: read the code a new plan cites, in the background; a lost start is the sweep's.
   if (recordedStatus === terminalStatus) {
     await startPlanEvidenceJobs(dependencies, evidenceJobs);
@@ -12958,13 +12974,51 @@ async function recordTerminalResult(
  * Plan 3, Task 32: the spend request of a task whose operation ended out of budget. Never fails the worker's result: a request that can't be made now is logged,
  * and the task stays paused (the owner's Continue, or the next refusal, asks again).
  */
-async function askForPausedTask(dependencies: AwsBrokerDependencies, taskId: string, operation: OperationRecord): Promise<void> {
+async function askForPausedTask(dependencies: AwsBrokerDependencies, taskId: string, operation: OperationRecord): Promise<"asked" | "failed"> {
   const agents = agentRouteDependencies(dependencies, developerTaskActions(dependencies));
-  if (agents === undefined) return;
+  if (agents === undefined) return "asked";
   try {
-    await requestForPausedTask(agents, taskId, operation.workflowMode === undefined ? {} : { workflowMode: operation.workflowMode });
+    await requestForPausedTask(agents, taskId, { ...(operation.workflowMode === undefined ? {} : { workflowMode: operation.workflowMode }), operationId: operation.id });
+    return "asked";
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "spend_request.not_asked", taskId, errorName: error instanceof Error ? error.name : "unknown" }));
+    return "failed";
+  }
+}
+
+/**
+ * Plan 3, M-6: how a task's operation that ended is told. An operation that ran out of budget (`budgetStopped`) of a plain task that is paused (its `budgetPause`)
+ * is told to the pause handlers, once, and is not an end: Task 32 may resume the task, and an end would block its keys and release its workspace. Its end is told
+ * when it really ends (it finishes after the resume, is cancelled, fails for another reason, or is closed). A stop with no pause that was not resumed is a failure.
+ */
+async function tellTaskStop(dependencies: AwsBrokerDependencies, operation: OperationRecord, taskId: string, status: OperationStatus, budgetStopped: boolean, stop: { asked: boolean } = { asked: false }): Promise<EndTold> {
+  if (!budgetStopped) return tellTaskEnd(dependencies, operation, taskId, status);
+  try {
+    let task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task === undefined || task.orgId === undefined) return "told";
+    // A workflow task and an agent-step run keep their own ends (a budget stop is none of them).
+    if (task.workflow !== undefined || (task.agent !== undefined && await getItem(dependencies, taskAgentRunKey(taskId)) !== undefined)) return tellTaskEnd(dependencies, operation, taskId, status);
+    // A closed task has ended, whatever stopped its last operation (the first end it has is the one told).
+    if (task.closedAt !== undefined) return await noteTaskEnded(dependencies, task, "closed");
+    // Already told for this operation (a replay, the recovery sweep): nothing more, and not an end.
+    if (task.budgetPauseToldFor === operation.id) return "told";
+    // A later operation started (Task 32's approval resumed the task): this stop is stale, and is never the pause of that operation. Nothing ended.
+    const workspace = await getItem<{ fence?: number }>(dependencies, workspaceKey(operation.workspaceId));
+    if (workspace?.fence !== undefined && workspace.fence > operation.fence) return "told";
+    if (task.budgetPause !== undefined) return await noteTaskPaused(dependencies, task, operation.id);
+    // The refusal stopped this operation and an approval has since removed the pause (before the result came, or before the pause tell succeeded): a pause answered, not a failure.
+    if (task.budgetStopOf === operation.id) return "told";
+    // No pause was written: the ask works it out from the task's spend (Task 31's Minor 2), and comes first because the stop would otherwise read as a failure. If the ask could
+    // not run, the answer is not known: nothing is told and the sweep looks again (never a `failed` end on a transient error).
+    stop.asked = true;
+    if (await askForPausedTask(dependencies, taskId, operation) === "failed") return "failed";
+    task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task === undefined) return "told";
+    if (task.budgetPause !== undefined) return await noteTaskPaused(dependencies, task, operation.id);
+    return await tellTaskEnd(dependencies, operation, taskId, status);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "task_pause.not_told", taskId, error: error instanceof Error ? error.name : "unknown" }));
+    return "failed";
   }
 }
 

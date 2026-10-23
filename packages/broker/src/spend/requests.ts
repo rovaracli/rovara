@@ -683,7 +683,7 @@ async function derivedPause(deps: SpendRequestDependencies, task: DeveloperTaskR
  * a test's cap asks for nothing (the task's owner may continue it as a normal task); a month's budget asks for nothing here. A pause the task has not got is
  * derived from the end (`derivedPause`) and written first. Answers the request, or undefined when nothing was asked.
  */
-export async function requestForPausedTask(deps: SpendRequestDependencies, taskId: string, refusal: { workflowMode?: string } = {}): Promise<SpendRequestRecord | undefined> {
+export async function requestForPausedTask(deps: SpendRequestDependencies, taskId: string, refusal: { workflowMode?: string; operationId?: string } = {}): Promise<SpendRequestRecord | undefined> {
   let task = await getItem(deps, taskKey(taskId)) as DeveloperTaskRecord | undefined;
   if (task?.orgId === undefined) return undefined;
   const orgId = task.orgId;
@@ -693,8 +693,9 @@ export async function requestForPausedTask(deps: SpendRequestDependencies, taskI
     const pause = { scope, at: iso(deps.now()) };
     try {
       await deps.documentClient.send(new UpdateCommand({
-        TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET #pause = :pause",
-        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(#pause)", ExpressionAttributeNames: { "#pause": "budgetPause" }, ExpressionAttributeValues: { ":pause": pause },
+        TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: refusal.operationId === undefined ? "SET #pause = :pause" : "SET #pause = :pause, budgetStopOf = :operation",
+        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(#pause)", ExpressionAttributeNames: { "#pause": "budgetPause" },
+        ExpressionAttributeValues: { ":pause": pause, ...(refusal.operationId === undefined ? {} : { ":operation": refusal.operationId }) },
       }));
     } catch (error) {
       if (errorName(error) !== "ConditionalCheckFailedException") throw error;

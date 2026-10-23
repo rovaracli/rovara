@@ -206,7 +206,7 @@ import {
   type TurnParty,
   type WorkspaceCharge,
 } from "../developer/task-records.js";
-import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
+import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, operationEndDispatchItem, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../developer/plan-evidence-jobs.js";
 import { loadPlanEvidence, loadWorkflowDocument, shortenMarkdown, type LoadedDocument } from "../developer/plan-artifacts.js";
 import type { DeveloperTaskActions, TransactItems } from "./developer-task-actions.js";
@@ -241,7 +241,7 @@ import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
-import { onTaskEnded, type TaskEndOutcome } from "../agents/task-end.js";
+import { END_LEASE_MS, hasTaskEndHandlers, onTaskEnded, onTaskPaused, type TaskEndOutcome } from "../agents/task-end.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -5810,6 +5810,7 @@ export async function finishTaskClose(
       // First, at positions 0 and 1: releaseConflict reads the cancellation reasons by position.
       await deps.actions.transact([...(release ? releaseItems(deps.tableName, task.charge, task.taskId) : []), ...closing(current)]);
       await endAgentRunOfClosedTask(deps, task);
+      await tellClosedTaskEnd(deps, task);
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
@@ -5818,6 +5819,7 @@ export async function finishTaskClose(
       // Another call finished the close first; its transaction released the counters once.
       if (fresh?.closedAt !== undefined) {
         await endAgentRunOfClosedTask(deps, task);
+        await tellClosedTaskEnd(deps, task);
         return;
       }
       // Ruling F4: the notifier changed the share (it recorded the thread) meanwhile: close that one.
@@ -5884,6 +5886,53 @@ export async function noteTaskEnded(deps: { tableName: string; documentClient: {
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "task_end.not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
     return "failed";
+  }
+}
+
+/**
+ * Plan 3, M-6: a plain task's operation stopped on a budget, and the task is paused (its `budgetPause`), not ended: Task 32 may resume it. Tells the pause
+ * handlers (`onTaskPaused`, as the agent-step engine does) and marks the stop as told on the task (`budgetPauseToldFor`), so a replay or the recovery sweep tells it
+ * once; the mark also says the task's end is still owed (`tellClosedTaskEnd`). Never throws: `failed` means a handler threw or the mark could not be written, and the caller
+ * keeps a recovery row to try again.
+ */
+export async function noteTaskPaused(deps: { tableName: string; documentClient: { send(command: unknown): Promise<unknown> } }, task: DeveloperTaskRecord, operationId: string): Promise<EndTold> {
+  try {
+    if (task.budgetPause === undefined) return "told";
+    await onTaskPaused({ documentClient: deps.documentClient, tableName: deps.tableName, now: Date.now }, task, task.budgetPause.scope);
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET budgetPauseToldFor = :operation", ConditionExpression: "attribute_exists(pk)",
+      ExpressionAttributeValues: { ":operation": operationId },
+    }));
+    return "told";
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "task_pause.not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    return "failed";
+  }
+}
+
+/**
+ * Plan 3, M-6: a plain task (no workflow, no agent-step run) that was closed while its end was still owed (it stopped on a budget, so its end was not told) has ended: tells `closed`. The first
+ * end a task has is the one told, so a task that already ended tells nobody again. Never throws; a close that could not tell is left for the recovery sweep (an `operation_end` row with `endOf: "closed"`).
+ */
+async function tellClosedTaskEnd(deps: { tableName: string; documentClient: { send(command: unknown): Promise<unknown> } }, task: DeveloperTaskRecord): Promise<void> {
+  if (!hasTaskEndHandlers() || task.workflow !== undefined) return;
+  try {
+    const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId)) ?? task;
+    if (fresh.budgetPause === undefined && fresh.budgetPauseToldFor === undefined) return;
+    // An agent-step run's end is its engine's (the close cancels the run above).
+    if (fresh.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) return;
+    const told = await noteTaskEnded(deps, fresh, "closed");
+    // An end that is not finished (a handler threw, or another call is telling it) is left to the recovery sweep, as a plain task's operation end is (Task 22, N1).
+    if (told !== "told" && fresh.orgId !== undefined) {
+      const now = Date.now();
+      const row = operationEndDispatchItem(deps.tableName, {
+        taskId: task.taskId, orgId: fresh.orgId, workspaceId: task.workspaceId, operationId: "close", now: new Date(now).toISOString(),
+        dueAt: new Date(now + (told === "in_progress" ? END_LEASE_MS + 5_000 : 60_000)).toISOString(), endOf: "closed",
+      }) as { Put: { Item: Record<string, unknown> } };
+      await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: row.Put.Item }));
+    }
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "task_end.close_not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
   }
 }
 
