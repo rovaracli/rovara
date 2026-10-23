@@ -27,14 +27,14 @@ const agentStep = (id: string, name: string, agentId: string, next: unknown, ext
 const twoSteps = (first: Record<string, unknown> = {}, limits: Record<string, unknown> = { maxRunUsd: 30 }): ChainDefinitionInput => ({
   start: "look", limits,
   steps: [agentStep("look", "Look into it", "root-cause-analyst", { kind: "go", to: "act" }, first), agentStep("act", "Act on it", "code-reviewer", { kind: "end" })],
-}) as ChainDefinitionInput;
+});
 /** look (may be sent back to itself twice) -> end. */
 const looping = (first: Record<string, unknown>): ChainDefinitionInput => ({
   start: "look", limits: { maxRunUsd: 30 },
   steps: [agentStep("look", "Look into it", "root-cause-analyst", {
     kind: "branch", default: "done", choices: [{ id: "again", description: "Look again", to: "look", maxTraversals: 2 }, { id: "done", description: "Enough", to: "$end" }],
   }, first)],
-}) as ChainDefinitionInput;
+});
 
 const sweep = async (w: GateWorld) => (await lifecycle()).sweepChainRuns(w.deps, w.clock.now);
 const endTask = async (w: GateWorld, taskId: string, extra: Record<string, unknown> = {}) => (await runner()).onStepTaskEnded(w.deps, w.endEvent(taskId, extra));
@@ -45,6 +45,8 @@ const failTask = async (w: GateWorld, taskId: string, reason?: string) => {
 };
 /** What a refused call said: its code and its words without the code. */
 const refusal = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
+/** The stored META item of a run, whole. */
+const runItem = (w: GateWorld, runId: string) => w.db.find((item) => item.entityType === "CHAIN_RUN" && item.runId === runId)[0]!;
 const openRunsOf = async (w: GateWorld, chainId: string) => (await w.chainOf(chainId)).openRuns;
 const live = (w: GateWorld, runId: string) => w.attempts(runId).filter((attempt) => ["starting", "running", "paused", "waiting"].includes(attempt.status));
 const startedAgain = (w: GateWorld) => w.starts.length;
@@ -472,7 +474,7 @@ describe("the sweep", () => {
   it("starts an attempt that is `starting` with no task once, with the same request id", async () => {
     const w = setupGateWorld();
     const chain = await w.publish(twoSteps());
-    w.hooks.refuse.push(new Error("the runtime is busy"));
+    w.hooks.refuse.push(agentXError("RUNTIME_UNAVAILABLE", "the runtime is busy"));
     const run = await w.start(chain.chainId);
     expect(w.attempts(run.runId)[0]).toMatchObject({ status: "starting" });
     expect(w.attempts(run.runId)[0]!.taskId).toBeUndefined();
@@ -493,7 +495,7 @@ describe("the sweep", () => {
     const dead = await w.start(chain.chainId);
     await w.start(chain.chainId);
     expect(await openRunsOf(w, chain.chainId)).toBe(2);
-    w.db.set({ ...w.db.get(w.db.find((item) => item.entityType === "CHAIN_RUN" && item.runId === dead.runId)[0]!)!, status: "failed", endedAt: new Date(w.clock.now).toISOString() });
+    w.db.set({ ...runItem(w, dead.runId), status: "failed", endedAt: new Date(w.clock.now).toISOString() });
     w.clock.now += 6 * MIN;
     await sweep(w);
     expect(w.openItems().map((item) => String(item.sk))).not.toContain(openChainRunKey(dead.dueAt, ORG_A, dead.runId).sk);
@@ -534,7 +536,7 @@ describe("the sweep", () => {
     const w = setupGateWorld();
     const chain = await w.publish(twoSteps());
     const run = await w.start(chain.chainId);
-    w.db.set({ ...w.db.get(w.db.find((item) => item.entityType === "CHAIN_RUN" && item.runId === run.runId)[0]!)!, orgId: ORG_B });
+    w.db.set({ ...runItem(w, run.runId), orgId: ORG_B });
     w.clock.now += 6 * MIN;
     const report = await sweep(w);
     expect(report.failed).toBe(0);
@@ -762,7 +764,8 @@ describe("cancelling a run", () => {
     const w = setupGateWorld();
     const chain = await w.publish(twoSteps());
     const run = await w.start(chain.chainId, PRIYA);
-    w.db.delete(w.db.find((item) => item.entityType === "ORG_MEMBER" && item.developerId === PRIYA)[0]!);
+    const member = w.db.find((item) => item.entityType === "ORG_MEMBER" && item.developerId === PRIYA)[0]!;
+    w.db.delete(member.pk as string, member.sk as string);
     expect((await refusal(cancelAs(w, PRIYA, run.runId)))?.code).toMatch(/NOT_FOUND|FORBIDDEN/u);
     expect(w.run(run.runId)).toMatchObject({ status: "running" });
   });
@@ -771,7 +774,7 @@ describe("cancelling a run", () => {
     const w = setupGateWorld();
     const { run, approvalId, chain } = await w.runAtGate(PRIYA);
     const record = await w.stepApproval(approvalId);
-    const listed = (record.approvers as { candidates: string[] }).candidates;
+    const listed = (record.approvers as unknown as { candidates: string[] }).candidates;
     expect(listed.length).toBeGreaterThan(0);
     await cancelAs(w, MAX, run.runId);
     const closed = await w.stepApproval(approvalId);
@@ -855,7 +858,7 @@ describe("cancelling a run", () => {
 
   it("loses to a step that ended first, and says the run has ended when that was its last", async () => {
     const w = setupGateWorld();
-    const chain = await w.publish({ start: "only", limits: { maxRunUsd: 30 }, steps: [agentStep("only", "Only step", "root-cause-analyst", { kind: "end" })] } as ChainDefinitionInput);
+    const chain = await w.publish({ start: "only", limits: { maxRunUsd: 30 }, steps: [agentStep("only", "Only step", "root-cause-analyst", { kind: "end" })] });
     const run = await w.start(chain.chainId, PRIYA);
     await endTask(w, "task-1", { finalReport: "Done." });
     expect(w.run(run.runId)).toMatchObject({ status: "succeeded" });
@@ -929,7 +932,7 @@ describe("closeStepApproval", () => {
     expect(record).toMatchObject({ status: "EXPIRED", closedReason: "The run was cancelled.", closedBy: "system", handlerDone: true });
     expect(record.decidedBy).toBeUndefined();
     expect(w.db.get(openApprovalKey(before.expiresAt, ORG_A, approvalId))).toBeUndefined();
-    for (const developerId of (before.approvers as { candidates: string[] }).candidates) expect(w.db.get(approverIndexKey(ORG_A, developerId, approvalId))).toBeUndefined();
+    for (const developerId of (before.approvers as unknown as { candidates: string[] }).candidates) expect(w.db.get(approverIndexKey(ORG_A, developerId, approvalId))).toBeUndefined();
     // The run itself is not touched: closing an approval is not ending a run.
     expect(w.run(run.runId)).toMatchObject({ status: "waiting" });
     // Closed once: again, it is left as it is.

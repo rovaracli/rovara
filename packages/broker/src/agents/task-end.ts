@@ -162,6 +162,19 @@ async function eventOf(deps: TaskEndDependencies, task: DeveloperTaskRecord, out
 }
 
 /**
+ * The event a task's recorded end tells its handlers, built again from what is stored: the outcome the first call recorded (`TASK_END`) and the task as it is now. Plan 4's
+ * sweep tells a handler that missed it. Undefined when the task has no recorded end, or the end or the task is another org's. `detail` is what the run ended with (its
+ * report and its branch), which the end record does not keep.
+ */
+export async function readTaskEndEvent(deps: TaskEndDependencies, orgId: OrgId, taskId: string, detail: { finalReport?: string; branch?: string } = {}): Promise<TaskEndEvent | undefined> {
+  const record = await get<EndRecord>(deps, taskEndKey(taskId));
+  if (record === undefined || record.orgId !== orgId || record.outcome === undefined) return undefined;
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== orgId) return undefined;
+  return eventOf(deps, task, record.outcome, detail);
+}
+
+/**
  * The task has ended. Records the end, blocks the task's model keys, gives its workspace back and tells every end handler, once. `"called"`: this call told
  * the handlers (or the rest of them); `"already_ended"`: an earlier call told all of them; `"in_progress"`: another call holds the lease and is telling them
  * now (the caller must look again once the lease could have run out: the end is not finished until a call answers `called` or `already_ended`);

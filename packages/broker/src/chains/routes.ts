@@ -8,6 +8,7 @@ import {
   CHAIN_REVISION_CONFLICT_MESSAGE,
   CHAIN_START_INPUT_MAX,
   ChainIdSchema,
+  ChainRunIdSchema,
   AgentOwnerSchema,
   MAX_SPEND_SETTING_USD,
   agentXError,
@@ -38,6 +39,7 @@ import {
 import { withBudgetFields } from "../spend/owner-total.js";
 import { chainLessSafeChanges, type ChainLessSafeLookups } from "./less-safe.js";
 import { chainDigest, type ChainRecord, type ChainStore, type ChainVersion } from "./store.js";
+import { cancelChainRun } from "./lifecycle.js";
 import { startChainRun, type ChainRunRecord } from "./runner.js";
 import { chainGraphProblems, formatChainProblem, validateChainForPublish, validatePinnedChainForOrg, type ChainProblem } from "./validate.js";
 
@@ -469,8 +471,18 @@ async function startRun(deps: ChainRouteDependencies, caller: AgentCaller, chain
   return new StatusReply(202, { run: runStartView(run) });
 }
 
+/** `POST /v1/app/chain-runs/{id}/cancel`: stops a run (Task 9). The body is the request id alone; who may is `cancelChainRun`'s to say. */
+async function cancelRun(deps: ChainRouteDependencies, caller: AgentCaller, rawId: string, body: unknown): Promise<Shown> {
+  if (deps.chainRuns === undefined) throw agentXError("NOT_FOUND", "chain runs are not set up in this deployment");
+  if (!ChainRunIdSchema.safeParse(rawId).success) throw agentXError("NOT_FOUND", "no chain run has that ID");
+  const input = parseBody(RequestOnlySchema, body);
+  const run = await cancelChainRun({ ...deps, chainRuns: deps.chainRuns }, caller, rawId, { requestId: input.requestId });
+  return { run: runStartView(run) };
+}
+
 // ---- routing
 
+const CHAIN_RUN_CANCEL_PATH = /^\/v1\/app\/chain-runs\/([^/]+)\/cancel$/;
 const CHAIN_PATH = /^\/v1\/app\/chains(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
 
 /**
@@ -478,6 +490,11 @@ const CHAIN_PATH = /^\/v1\/app\/chains(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}
  * answers 404 `"that isn't available yet"`.
  */
 export async function routeChainRequest(deps: ChainRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  const cancelling = CHAIN_RUN_CANCEL_PATH.exec(url.pathname);
+  if (cancelling !== null) {
+    if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
+    return cancelRun(deps, caller, cancelling[1]!, jsonBody(request));
+  }
   const matched = CHAIN_PATH.exec(url.pathname);
   if (matched === null) throw agentXError("NOT_FOUND", "that isn't available yet");
   const [, rawId, sub, rawVersion] = matched;

@@ -3730,6 +3730,35 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::IAM::ManagedPolicy",
     },
+    "ChainSweepSchedule": {
+      "Properties": {
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "ScheduleExpression": "rate(5 minutes)",
+        "State": "ENABLED",
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.chain-sweep"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 300,
+            "MaximumRetryAttempts": 2,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "GithubWebhookRecoveryRoleD4894C8E",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
     "ChainWriteApproverSelectorFailedAlarm2C845E82": {
       "Properties": {
         "AlarmActions": [

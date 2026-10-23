@@ -91,6 +91,10 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Named environments have the one schedule (spend-ledger.test.ts asserts it) and the legacy template has none; nothing else may hide under the prefix.
   expect(spendSchedules.length, "at most the one spend settlement schedule is taken out").toBeLessThanOrEqual(1);
   for (const id of spendSchedules) delete resources[id];
+  // Plan 4 Task 9's chain sweep schedule is no part of the proof-only addition either (named-templates.test.ts asserts it).
+  const chainSweepSchedules = Object.keys(resources).filter((id) => id.startsWith("ChainSweepSchedule"));
+  expect(chainSweepSchedules.length, "at most the one chain sweep schedule is taken out").toBeLessThanOrEqual(1);
+  for (const id of chainSweepSchedules) delete resources[id];
   // Plan 3 Task 11's one statement (PutItem on the MEMBER_MERGE_QUEUE partition, for the sign-in function) is no part of the proof-only addition either.
   const mergeMarkerGrants = Object.values(resources).flatMap((resource) => {
     if (resource.Type !== "AWS::IAM::Policy") return [];

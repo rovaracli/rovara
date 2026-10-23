@@ -935,6 +935,21 @@ export class ControlPlaneStack extends Stack {
         },
       });
     }
+    // Plan 4 Task 9: every 5 minutes the chain sweep looks at the chain runs that are due (a step that ran out of time, a callback or a decision the run did not hear, an ending
+    // left half done). Named environments only, as the chains' own routes are; it runs through the same role as the other recovery schedules and needs no new grant.
+    if (naming.env !== undefined) {
+      new scheduler.CfnSchedule(this, "ChainSweepSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(5 minutes)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.chain-sweep" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
+    }
     // Gap 6: re-run any workflow dispatch (an automatic review start) left behind after its result committed.
     const workflowDispatchRecoveryRole = new iam.Role(this, "WorkflowDispatchRecoveryRole", {
       assumedBy: schedulerPrincipal,

@@ -14,7 +14,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dyn
 import {
   AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema,
   StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
-  GATE_DEFAULT_TIMEOUT_HOURS, openChainRunKey, projectAllows, shortenToBytes, stepSk,
+  GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, openChainRunKey, projectAllows, shortenToBytes, stepSk,
   type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge,
   type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin,
 } from "@agentx/contracts";
@@ -34,6 +34,7 @@ import { admitChainRun, chainRunLimitUsd, chainRunPayer, runRaiseMessage, settle
 import { requireChainAccess, type ChainAccessDeps } from "./access.js";
 import { buildHandoff, HandoffTriggerSchema, redactSecrets, type EarlierReport, type HandoffTrigger } from "./handoff.js";
 import { onChainGateDecided, openGateApproval } from "./gates.js";
+import { cancelAbandonedTask, closeAbandonedGate } from "./lifecycle.js";
 import { neutralText, runEventItems, type RunEventInput } from "./run-events.js";
 import type { ChainRouteDependencies } from "./routes.js";
 import type { ChainRecord } from "./store.js";
@@ -45,7 +46,7 @@ const TERMINAL: ReadonlySet<string> = new Set<ChainRunStatus>(["succeeded", "fai
 export const isTerminalStatus = (status: string): boolean => TERMINAL.has(status);
 
 /** How a run ends: the states nothing moves it out of. */
-type EndStatus = "succeeded" | "failed" | "cancelled" | "timed_out";
+export type EndStatus = "succeeded" | "failed" | "cancelled" | "timed_out";
 
 export interface ChainRunFailure { seq?: number; reason: string; message: string }
 
@@ -81,6 +82,8 @@ export interface ChainRunRecord {
   dueAt: string;
   endedAt?: string;
   failure?: ChainRunFailure;
+  /** Who cancelled the run (Task 9), as the member they are. */
+  cancelledBy?: string;
 }
 
 /** One attempt of one step, at `chainRunKey(orgId, runId, stepSk(seq))`. */
@@ -107,6 +110,14 @@ export interface StepAttemptRecord {
   branch?: { id: string; fellBack: boolean };
   /** A gate's decision, once someone decided it. */
   decision?: "approved" | "declined";
+  /** How many retries this visit of the step has used: 0 (absent) for the first attempt, 1 for its first retry (Task 9). A step entered again by an edge starts over. */
+  retriesUsed?: number;
+  /** Set by the sweep when the attempt ran past its time and its task was asked to stop (Task 9); the task's end then ends the attempt `timed_out`. */
+  timedOutAt?: string;
+  /** The limit the attempt had when it was flagged, in minutes. */
+  timeoutMinutes?: number;
+  /** When the sweep last saw the attempt paused or waiting on approvals: the time it has run is counted from here when this is later than `startedAt`. */
+  timeoutBase?: string;
 }
 
 // ---- what the runner needs
@@ -119,6 +130,11 @@ export interface ChainRunPorts {
   callerFor(orgId: OrgId, developerId: string): Promise<AgentCaller | undefined>;
   /** The model proxy's admission, for a start to be checked against the chain's budget. Absent where there is no proxy: nothing is limited. */
   admission?: AdmissionDependencies;
+  /**
+   * Plan 3's cancel of a step's task, as the task's owner (the run's owner: the system acts for them). The request id makes a repeat the same cancel. Resolves when
+   * the task is cancelled or already over; the task's own end still comes back through the end handler. Throws what Plan 3's cancel throws.
+   */
+  cancelTask(request: { orgId: OrgId; taskId: string; owner: { developerId: string }; requestId: string }): Promise<void>;
 }
 
 /** The chain routes' dependencies, and the run starts and the people they need. */
@@ -131,6 +147,13 @@ export function chainRunPortsFor(starter: AgentRunStarter, admission?: Admission
     callerFor: async (orgId, developerId) => {
       const caller = await starter.callerFor(orgId, developerId);
       return caller === undefined ? undefined : { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole };
+    },
+    // The owner is a member of the org or Plan 3 has already ended their tasks (creator removed): nothing is left to cancel as them.
+    cancelTask: async (request) => {
+      const caller = await starter.callerFor(request.orgId, request.owner.developerId);
+      if (caller === undefined) return;
+      if (starter.cancelTask === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "a chain step's task can't be cancelled in this deployment");
+      await starter.cancelTask(caller, request.taskId, request.requestId);
     },
     ...(admission === undefined ? {} : { admission }),
   };
@@ -154,8 +177,8 @@ export interface StartChainRunInput {
   requestId: string;
 }
 
-type Deps = ChainRunnerDependencies;
-type Table = Pick<Deps, "documentClient" | "tableName" | "now">;
+export type Deps = ChainRunnerDependencies;
+export type Table = Pick<Deps, "documentClient" | "tableName" | "now">;
 
 /** How soon the sweep (Task 9) first looks at a new run. */
 const FIRST_LOOK_MS = 5 * 60_000;
@@ -163,13 +186,17 @@ const FIRST_LOOK_MS = 5 * 60_000;
 const DEFAULT_STEP_TEXT = "Do your job for this chain run.";
 const CODING_AGENT_NAME = "Rovara Code";
 const REASON_MAX = 300;
+/** What a failed or cancelled task is said to have done when it left no reason of its own. */
+const NO_REASON = "it did not finish";
+/** The reason Plan 3's engine gives a run that was cancelled with nothing more to say. */
+const PLAIN_CANCEL_REASON = "Cancelled.";
 
-const iso = (deps: Pick<Table, "now">): string => new Date(deps.now()).toISOString();
-const errorName = (error: unknown): string => (error instanceof Error ? error.name : "unknown");
+export const iso = (deps: Pick<Table, "now">): string => new Date(deps.now()).toISOString();
+export const errorName = (error: unknown): string => (error instanceof Error ? error.name : "unknown");
 
 /** The words of an error without the `CODE: ` Plan 3's errors begin with, and without a full stop at the end (the caller adds its own). */
 const reasonOf = (error: AgentXError): string => trimStop(error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message);
-const trimStop = (text: string): string => text.replace(/\.+$/u, "");
+export const trimStop = (text: string): string => text.replace(/\.+$/u, "");
 const textOf = (error: AgentXError): string => (error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message);
 
 /** A failure that may pass on its own, anywhere the runner moves a run along and an unknown failure is better left for the next try than thrown at a caller. */
@@ -190,7 +217,7 @@ const unexpectedStartMessage = (stepName: string): string => `Step "${stepName}"
 
 // ---- reading
 
-async function getItem(deps: Table, key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> {
+export async function getItem(deps: Table, key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> {
   return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
 }
 
@@ -228,33 +255,33 @@ export async function readStepAttempts(deps: Table, orgId: OrgId, runId: ChainRu
 
 // ---- writing
 
-const transact = (deps: Table, items: TransactItem[]) => deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+export const transact = (deps: Table, items: TransactItem[]) => deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
 
 /** An update of one item's fields, conditional on a clause built with the same aliases. */
-function update(deps: Table, key: { pk: string; sk: string }, fields: Record<string, unknown>, when: (aliases: Aliases) => string): TransactItem {
+export function update(deps: Table, key: { pk: string; sk: string }, fields: Record<string, unknown>, when: (aliases: Aliases) => string): TransactItem {
   const aliases = new Aliases();
   const sets = Object.entries(fields).map(([name, value]) => `${aliases.name(name)} = ${aliases.value(value)}`);
   const condition = when(aliases);
   return { Update: { TableName: deps.tableName, Key: key, UpdateExpression: `SET ${sets.join(", ")}`, ConditionExpression: condition, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values } };
 }
 
-const runKey = (run: Pick<ChainRunRecord, "orgId" | "runId">) => chainRunKey(run.orgId, run.runId, "META");
-const attemptKey = (run: Pick<ChainRunRecord, "orgId" | "runId">, seq: number) => chainRunKey(run.orgId, run.runId, stepSk(seq));
+export const runKey = (run: Pick<ChainRunRecord, "orgId" | "runId">) => chainRunKey(run.orgId, run.runId, "META");
+export const attemptKey = (run: Pick<ChainRunRecord, "orgId" | "runId">, seq: number) => chainRunKey(run.orgId, run.runId, stepSk(seq));
 
 /** The run's META moved to `fields` with its events: `eventSeq`, `version` and `updatedAt` move with them, and it applies only while the version is the one that was read. */
-function moveRun(deps: Table, run: ChainRunRecord, fields: Record<string, unknown>, events: readonly RunEventInput[]): TransactItem[] {
+export function moveRun(deps: Table, run: ChainRunRecord, fields: Record<string, unknown>, events: readonly RunEventInput[]): TransactItem[] {
   const numbered = runEventItems(deps.tableName, run, events, iso(deps));
   const move = update(deps, runKey(run), { ...fields, eventSeq: numbered.eventSeq, version: run.version + 1, updatedAt: iso(deps) }, (aliases) => `${aliases.name("version")} = ${aliases.value(run.version)}`);
   return [move, ...numbered.items];
 }
 
 /** An update of an attempt that applies only while it is in one of the statuses given. */
-function moveAttempt(deps: Table, run: ChainRunRecord, seq: number, fields: Record<string, unknown>, from: readonly string[]): TransactItem {
+export function moveAttempt(deps: Table, run: ChainRunRecord, seq: number, fields: Record<string, unknown>, from: readonly string[]): TransactItem {
   return update(deps, attemptKey(run, seq), fields, (aliases) => `(${from.map((status) => `${aliases.name("status")} = ${aliases.value(status)}`).join(" OR ")})`);
 }
 
 /** Whether a failed transaction was a lost race: the run has moved since it was read. Anything else is the caller's to throw. */
-async function lostRace(deps: Table, run: ChainRunRecord, error: unknown): Promise<boolean> {
+export async function lostRace(deps: Table, run: ChainRunRecord, error: unknown): Promise<boolean> {
   if (failedIndexes(error) === undefined) return false;
   const fresh = await readChainRun(deps, run.orgId, run.runId);
   return fresh === undefined || fresh.version !== run.version;
@@ -281,7 +308,7 @@ export function stepRequestId(runId: string, seq: number): string {
 
 // ---- who and what a step is
 
-type PinnedStep = PinnedChainDefinition["steps"][number];
+export type PinnedStep = PinnedChainDefinition["steps"][number];
 type PinnedAgentStep = Extract<PinnedStep, { kind: "agent" }>;
 const agentSteps = (definition: PinnedChainDefinition): PinnedAgentStep[] => definition.steps.filter((step): step is PinnedAgentStep => step.kind === "agent");
 
@@ -495,16 +522,20 @@ async function advanceOnce(deps: Deps, orgId: OrgId, runId: ChainRunId): Promise
   return afterAttempt(deps, run, latest, attempts, definition);
 }
 
-async function designOf(deps: Deps, run: ChainRunRecord): Promise<PinnedChainDefinition> {
+export async function designOf(deps: Deps, run: ChainRunRecord): Promise<PinnedChainDefinition> {
   const version = await deps.chains.getVersion(run.orgId, run.chainId, run.chainVersion);
   if (version === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "a chain run's version is missing");
   return version.definition;
 }
 
-const stepOf = (definition: PinnedChainDefinition, stepId: string): PinnedStep | undefined => definition.steps.find((step) => step.id === stepId);
+export const stepOf = (definition: PinnedChainDefinition, stepId: string): PinnedStep | undefined => definition.steps.find((step) => step.id === stepId);
 
-/** The end of a run: its terminal state, its event, and the open item and the chain's open-run count given back, in one transaction (the caller adds an attempt's update). */
-function endRunItems(deps: Table, run: ChainRunRecord, ended: { status: EndStatus; failure?: ChainRunFailure; events: RunEventInput[]; fields?: Record<string, unknown> }): TransactItem[] {
+/**
+ * The end of a run: its terminal state, its event, and the open item and the chain's open-run count given back, in one transaction (the caller adds an attempt's
+ * update). The open item goes whether or not it is where the run says (a run's end must not wait on bookkeeping that drifted); the count goes last, so a caller
+ * can leave it out when it is already 0.
+ */
+export function endRunItems(deps: Table, run: ChainRunRecord, ended: { status: EndStatus; failure?: ChainRunFailure; events: RunEventInput[]; fields?: Record<string, unknown> }): TransactItem[] {
   const text = ended.status === "succeeded" ? `${run.chainName} finished.` : ended.failure?.message ?? `${run.chainName} ${ended.status === "cancelled" ? "was cancelled" : "stopped"}.`;
   const closing: RunEventInput = { type: "ended", text };
   const aliases = new Aliases();
@@ -515,30 +546,54 @@ function endRunItems(deps: Table, run: ChainRunRecord, ended: { status: EndStatu
       ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
     },
   };
-  const dropOpen: TransactItem = { Delete: { TableName: deps.tableName, Key: openChainRunKey(run.dueAt, run.orgId, run.runId), ConditionExpression: "attribute_exists(pk)" } };
+  const dropOpen: TransactItem = { Delete: { TableName: deps.tableName, Key: openChainRunKey(run.dueAt, run.orgId, run.runId) } };
   return [...moveRun(deps, run, { status: ended.status, endedAt: iso(deps), ...(ended.failure === undefined ? {} : { failure: ended.failure }), ...ended.fields }, [...ended.events, closing]), dropOpen, give];
 }
 
-/** Ends the run as failed (or `status`) because of the attempt `seq`, with the attempt's own update when it has one. */
+/**
+ * Ends the run as failed (or `status`) because of the attempt `seq`, with the attempt's own update when it has one. If the only thing refused is the chain's open-run
+ * count (it is already 0: it drifted), the run ends without giving a place back and the drift is logged; a count that is wrong is the sweep's to notice, never a reason
+ * for a run that can't end.
+ */
 async function endRun(deps: Deps, run: ChainRunRecord, ended: { status: EndStatus; failure?: ChainRunFailure; events?: RunEventInput[]; attemptUpdate?: TransactItem; fields?: Record<string, unknown> }): Promise<Progress> {
+  const base = endRunItems(deps, run, { status: ended.status, ...(ended.failure === undefined ? {} : { failure: ended.failure }), events: ended.events ?? [], ...(ended.fields === undefined ? {} : { fields: ended.fields }) });
+  const attempt = ended.attemptUpdate === undefined ? [] : [ended.attemptUpdate];
+  const giveAt = base.length - 1;
   try {
-    await transact(deps, [...endRunItems(deps, run, { status: ended.status, ...(ended.failure === undefined ? {} : { failure: ended.failure }), events: ended.events ?? [], ...(ended.fields === undefined ? {} : { fields: ended.fields }) }), ...(ended.attemptUpdate === undefined ? [] : [ended.attemptUpdate])]);
+    await transact(deps, [...base, ...attempt]);
     return "done";
   } catch (error) {
     if (await lostRace(deps, run, error)) return "raced";
-    throw error;
+    const failed = failedIndexes(error);
+    if (failed === undefined || failed.size !== 1 || !failed.has(giveAt)) throw error;
+    (deps.log ?? ((event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))))("chain_run.open_runs_drifted", { runId: run.runId, chainId: run.chainId });
+    await transact(deps, [...base.slice(0, giveAt), ...attempt]);
+    return "done";
   }
 }
 
-/** What follows an attempt that ended: its edge, or the end of the run. (Task 9 adds retries before a failed attempt fails the run.) */
+/**
+ * What follows an attempt that ended: a retry while the step has retries left (a failed or timed out attempt, whose task has ended, so never two attempts of a step at
+ * once), its edge, or the end of the run. A run ends `failed` with the step's name and the task's own words; one whose task was cancelled (a person declined an approval
+ * inside it, say) ends `cancelled` with the words the task gave.
+ */
 async function afterAttempt(deps: Deps, run: ChainRunRecord, ended: StepAttemptRecord, attempts: StepAttemptRecord[], definition: PinnedChainDefinition): Promise<Progress> {
   const step = stepOf(definition, ended.stepId);
   if (step === undefined) return endRun(deps, run, { status: "failed", failure: { seq: ended.seq, reason: "design_invalid", message: `Step "${ended.stepName}" is not in this chain's design.` } });
+  if (ended.status === "failed" || ended.status === "timed_out") {
+    const said = trimStop(ended.failure?.message ?? NO_REASON);
+    const allowed = step.kind === "agent" ? step.retries ?? 0 : 0;
+    const used = ended.retriesUsed ?? 0;
+    if (used < allowed) {
+      const retrying: RunEventInput = { type: "retrying", stepSeq: ended.seq, text: `Step "${ended.stepName}" failed: ${said}. Trying again (attempt ${String(used + 2)} of ${String(allowed + 1)}).` };
+      return enterStep(deps, run, attempts, definition, step.id, { ended, traversals: run.traversals, events: [retrying], retry: used + 1 });
+    }
+    return endRun(deps, run, { status: "failed", failure: { seq: ended.seq, reason: ended.failure?.reason ?? "step_failed", message: `Step "${ended.stepName}" failed: ${said}.` } });
+  }
   if (ended.status !== "succeeded") {
-    const status = ended.status === "cancelled" ? "cancelled" : ended.status === "timed_out" ? "timed_out" : "failed";
-    const reason = ended.failure?.reason ?? (status === "cancelled" ? "step_cancelled" : "step_failed");
-    const message = status === "cancelled" ? `Step "${ended.stepName}" was cancelled.` : `Step "${ended.stepName}" ${status === "timed_out" ? "ran out of time" : "failed"}: ${trimStop(ended.failure?.message ?? "it did not finish")}.`;
-    return endRun(deps, run, { status, failure: { seq: ended.seq, reason, message } });
+    const given = ended.failure?.message;
+    const message = given !== undefined && given !== NO_REASON && given !== PLAIN_CANCEL_REASON ? given : `Step "${ended.stepName}" was cancelled.`;
+    return endRun(deps, run, { status: "cancelled", failure: { seq: ended.seq, reason: ended.failure?.reason ?? "step_cancelled", message } });
   }
   let edge: Edge;
   let branch: { id: string; fellBack: boolean } | undefined;
@@ -565,7 +620,8 @@ async function afterAttempt(deps: Deps, run: ChainRunRecord, ended: StepAttemptR
   return enterStep(deps, run, attempts, definition, edge.to, { ended, traversals: taken.traversals, events, ...(branchUpdate === undefined ? {} : { branchUpdate }) });
 }
 
-interface Entry { ended: StepAttemptRecord; traversals: Record<string, number>; events: RunEventInput[]; branchUpdate?: TransactItem }
+/** How a step is entered after an attempt: by an edge, or (with `retry`, the retries this visit has used by then) again after a failure. */
+interface Entry { ended: StepAttemptRecord; traversals: Record<string, number>; events: RunEventInput[]; branchUpdate?: TransactItem; retry?: number }
 
 /** Writes the next step's attempt (a gate `waiting`, an agent step `starting`) with the run moved on to it and its events, then starts an agent step. */
 async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptRecord[], definition: PinnedChainDefinition, targetId: string, via: Entry | undefined): Promise<Progress> {
@@ -588,7 +644,7 @@ async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptR
     const input = stepInput(run, target, attempts, seq);
     record = {
       seq, stepId: target.id, stepName: target.name, kind: "agent", attempt, status: "starting", agent, remainingAtStartUsd: stepRunLimitUsd(run),
-      inputDigest: digestOf(input), startedAt,
+      inputDigest: digestOf(input), startedAt, ...(via?.retry === undefined ? {} : { retriesUsed: via.retry }),
     };
     events = [{ type: "step_started", stepSeq: seq, text: `Step "${target.name}" started with ${agent.name} version ${String(agent.version)}${attempt > 1 ? ` (attempt ${String(attempt)})` : ""}.` }];
   } else {
@@ -611,14 +667,18 @@ async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptR
       currentSeq: seq, stepRuns: run.stepRuns + (target.kind === "agent" ? 1 : 0), traversals, status: target.kind === "agent" ? "running" : "waiting", ...(dueAt === undefined ? {} : { dueAt }),
     }, [...(via?.events ?? []), ...events]),
     ...(dueAt === undefined ? [] : [
-      { Delete: { TableName: deps.tableName, Key: openChainRunKey(run.dueAt, run.orgId, run.runId), ConditionExpression: "attribute_exists(pk)" } },
+      { Delete: { TableName: deps.tableName, Key: openChainRunKey(run.dueAt, run.orgId, run.runId) } },
       { Put: { TableName: deps.tableName, Item: { ...openChainRunKey(dueAt, run.orgId, run.runId), entityType: "OPEN_CHAIN_RUN", orgId: run.orgId, runId: run.runId } } },
     ]),
   ];
   try {
     await transact(deps, items);
   } catch (error) {
-    if (await lostRace(deps, run, error)) return "raced";
+    if (await lostRace(deps, run, error)) {
+      // A gate's approval that the run will never wait on (it ended, or moved on past this gate) would sit PENDING in everyone's list: it is closed.
+      if (opened !== undefined) await closeAbandonedGate(deps, run, opened.record.approvalId, seq);
+      return "raced";
+    }
     throw error;
   }
   if (target.kind === "gate") {
@@ -684,7 +744,11 @@ async function driveStart(deps: Deps, run: ChainRunRecord, attempt: StepAttemptR
 async function recordStarted(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, started: AgentRunResult): Promise<Progress> {
   for (let round = 0; round < 3; round += 1) {
     const current = await readChainRun(deps, run.orgId, run.runId);
-    if (current === undefined || isTerminalStatus(current.status)) return "done";
+    if (current === undefined || isTerminalStatus(current.status)) {
+      // The run was stopped while this start was being made: the task it made has no attempt to tell it so, so it is asked to stop here.
+      if (current !== undefined && (current.status === "cancelled" || current.status === "timed_out")) await cancelAbandonedTask(deps, current, attempt.seq, started.taskId);
+      return "done";
+    }
     const stored = (await readStepAttempts(deps, run.orgId, run.runId)).find((candidate) => candidate.seq === attempt.seq);
     if (stored === undefined || stored.status !== "starting") return "done";
     const fields = { taskId: started.taskId, grantedRunLimitUsd: started.runLimitUsd, stopAtUsd: started.stopAtUsd, status: started.paused ? "paused" : "running" };
@@ -811,7 +875,7 @@ async function resultOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRec
   }
   const task = await getItem(deps, { pk: `DEVTASK#${event.taskId}`, sk: "META" });
   const said = [isAgentRun ? agentRun["endReason"] : undefined, task?.["outcomeReason"]].find((candidate): candidate is string => typeof candidate === "string" && candidate !== "");
-  const reason = neutralText(redactSecrets(said ?? "it did not finish"), REASON_MAX);
+  const reason = neutralText(redactSecrets(said ?? NO_REASON), REASON_MAX);
   if (event.outcome === "failed") return { status: "failed", failure: { reason: "step_failed", message: reason } };
   return { status: "cancelled", failure: { reason: event.outcome === "cancelled" ? "step_cancelled" : event.outcome, message: reason } };
 }
@@ -832,14 +896,19 @@ export async function onStepTaskEnded(deps: Deps, event: TaskEndEvent): Promise<
   }
   const outcome = await resultOf(deps, run, attempt, event);
   const settled = settleStepSpend(run, { remainingAtStartUsd: attempt.remainingAtStartUsd ?? stepRunLimitUsd(run) }, event);
+  // A task that ended in the cancel the sweep asked for (its attempt ran past its time) timed out; one that finished anyway, or failed on its own, is what it did.
+  const timedOut = attempt.timedOutAt !== undefined && outcome.status === "cancelled";
+  const minutes = attempt.timeoutMinutes ?? STEP_DEFAULT_TIMEOUT_MINUTES;
+  const fields = outcome.status === "succeeded" ? { status: "succeeded", result: outcome.result }
+    : timedOut ? { status: "timed_out", failure: { reason: "step_timeout", message: `it ran longer than ${String(minutes)} minutes` } }
+    : { status: outcome.status, failure: outcome.failure };
   const events: RunEventInput[] = [];
   if (attempt.status === "paused" && outcome.status === "succeeded") events.push({ type: "resumed", stepSeq: attempt.seq, text: `Step "${attempt.stepName}" is running again.` });
   events.push({
     type: "step_ended", stepSeq: attempt.seq,
-    text: outcome.status === "succeeded" ? `Step "${attempt.stepName}" finished.` : outcome.status === "cancelled" ? `Step "${attempt.stepName}" was cancelled.` : `Step "${attempt.stepName}" failed.`,
+    text: outcome.status === "succeeded" ? `Step "${attempt.stepName}" finished.` : timedOut ? `Step "${attempt.stepName}" ran out of time.` : outcome.status === "cancelled" ? `Step "${attempt.stepName}" was cancelled.` : `Step "${attempt.stepName}" failed.`,
   });
   if (settled.raisedUsd > 0) events.push({ type: "step_ended", stepSeq: attempt.seq, text: runRaiseMessage("Someone", settled.raisedUsd) });
-  const fields = outcome.status === "succeeded" ? { status: "succeeded", result: outcome.result } : { status: outcome.status, failure: outcome.failure };
   try {
     await transact(deps, [
       moveAttempt(deps, run, attempt.seq, { ...fields, ...taskFields(attempt, event.taskId), endedAt: iso(deps) }, ["starting", "running", "paused"]),

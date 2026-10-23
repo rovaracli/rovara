@@ -133,6 +133,8 @@ export interface RunStartOptions {
 export interface AgentRunStarter extends AgentRunDependencies {
   callerFor(orgId: OrgId, developerId: string): Promise<DeveloperCaller | undefined>;
   startTask(caller: DeveloperCaller, body: unknown, run: RunStartOptions): Promise<{ task: { taskId: string }; run: AgentRunResult }>;
+  /** Plan 4 Task 9: Plan 3's cancel of a task, as its owner; a repeat of `requestId` is the same cancel. A task that is already over or closed is left as it is. Absent where tasks can't be cancelled this way. */
+  cancelTask?(caller: DeveloperCaller, taskId: string, requestId: string): Promise<void>;
 }
 
 const Hex64 = z.string().regex(/^[a-f0-9]{64}$/);

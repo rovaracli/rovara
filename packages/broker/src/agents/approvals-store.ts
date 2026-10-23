@@ -160,6 +160,10 @@ interface DecidedFields {
   /** Set when the member movers changed who may decide this (a merge or a removal), with when: the audit event `approval.rerouted` names the people. */
   movedBy?: "system";
   movedAt?: string;
+  /** Set when a step approval was closed because the run it belonged to ended (Plan 4, `closeStepApproval`), not decided: who closed it, why and when. */
+  closedBy?: "system";
+  closedReason?: string;
+  closedAt?: string;
 }
 
 /** A step of a run that waits for a person (an `approval` step, or a chain gate). */
@@ -333,6 +337,9 @@ const DecidedShape = {
   handlerTries: z.number().int().min(0).optional(),
   movedBy: z.literal("system").optional(),
   movedAt: z.string().optional(),
+  closedBy: z.literal("system").optional(),
+  closedReason: z.string().optional(),
+  closedAt: z.string().optional(),
 };
 const RunOwnerSchema = z.object({ developerId: z.string(), name: z.string() }).strict();
 /** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */

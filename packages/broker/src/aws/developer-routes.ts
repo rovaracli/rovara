@@ -19,6 +19,7 @@ import {
   TaskPersonProofResponseSchema,
   TaskChannelPeopleResponseSchema,
   TaskPeopleDisplayReadResponseSchema,
+  AgentXError,
   agentXError,
   MEMBER_GRANT_SK_PREFIX,
   PROJECT_REVISION_SK_PREFIX,
@@ -112,7 +113,7 @@ import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeople, getTaskPeopleCapabilities, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  CLOSED_TASK, cancelTask, getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
@@ -1316,6 +1317,16 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
         });
       }
       return { task: answer.task, run: answer.run };
+    },
+    // Plan 4 Task 9: a chain stops a step's task through the owner's own cancel (the same path as their cancel button), so the workspace, the keys and the end are Plan 3's.
+    cancelTask: async (caller, taskId, requestId) => {
+      try {
+        await cancelTask(developerTaskRouteDependencies(deps, caller), caller, taskId, { requestId });
+      } catch (error) {
+        // A task that was closed is over: there is nothing left to stop.
+        if (error instanceof AgentXError && error.message.endsWith(CLOSED_TASK)) return;
+        throw error;
+      }
     },
   };
 }

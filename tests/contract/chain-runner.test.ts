@@ -1890,7 +1890,8 @@ describe("what a run is made of that is not in the worked example", () => {
   });
 
   it.each([
-    ["timed_out", "timed_out", "step_failed", 'Step "Look into it" ran out of time: it did not finish.'],
+    // A step that timed out and has no retries left fails the run (Task 9); the run's own time is the one that ends it `timed_out`.
+    ["timed_out", "failed", "step_failed", 'Step "Look into it" failed: it did not finish.'],
     ["failed", "failed", "step_failed", 'Step "Look into it" failed: it did not finish.'],
     ["cancelled", "cancelled", "step_cancelled", 'Step "Look into it" was cancelled.'],
   ])("ends a run whose attempt ended %s with no reason of its own as %s, with reason %s", async (attemptStatus, runStatus, reason, message) => {
@@ -1999,17 +2000,25 @@ describe("what a run is made of that is not in the worked example", () => {
     expect(w.events(other.runId).find((event) => event.type === "step_ended")!.text).toBe('Step "Look into it" failed.');
   });
 
-  it("gives back the run's slot only for a run that has a slot to give, and only while its open item is there", async () => {
+  it("ends a run whatever its slot bookkeeping says (Task 9, Task 6's M-3), and gives back a slot only when there is one to give", async () => {
     const w = setupWorld();
+    const logged: string[] = [];
+    w.deps.log = (event) => { logged.push(event); };
     const chain = await w.publish(ONE_STEP);
     const run = await startAs(w, PRIYA, chain.chainId);
+    // The chain's count drifted to 0: the end goes through, the count stays 0, and the drift is said.
     w.db.set({ ...w.db.get(chainKey(ORG_A, chain.chainId, "META"))!, openRuns: 0 });
-    await expect(endTask(w, "task-1", { finalReport: "done" })).rejects.toThrow();
-    expect(w.run(run.runId)!.status).toBe("running");
-    w.db.set({ ...w.db.get(chainKey(ORG_A, chain.chainId, "META"))!, openRuns: 1 });
-    w.db.delete(openChainRunKey(run.dueAt, ORG_A, run.runId));
-    await expect(endTask(w, "task-1", { finalReport: "done" })).rejects.toThrow();
-    expect(w.run(run.runId)!.status).toBe("running");
+    await endTask(w, "task-1", { finalReport: "done" });
+    expect(w.run(run.runId)!.status).toBe("succeeded");
+    expect((await w.chainOf(chain.chainId)).openRuns).toBe(0);
+    expect(logged).toEqual(["chain_run.open_runs_drifted"]);
+    // The open item is not where the run says: the end goes through and the slot is given back.
+    const other = await startAs(w, PRIYA, chain.chainId);
+    w.db.delete(openChainRunKey(other.dueAt, ORG_A, other.runId));
+    expect((await w.chainOf(chain.chainId)).openRuns).toBe(1);
+    await endTask(w, "task-2", { finalReport: "done" });
+    expect(w.run(other.runId)!.status).toBe("succeeded");
+    expect((await w.chainOf(chain.chainId)).openRuns).toBe(0);
   });
 });
 

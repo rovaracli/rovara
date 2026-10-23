@@ -397,6 +397,7 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import { ChainStore } from "../chains/store.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
+import { sweepChainRuns } from "../chains/lifecycle.js";
 import { chainRunPortsFor, chainRunSpendReader, type ChainRunnerDependencies } from "../chains/runner.js";
 import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
@@ -1290,12 +1291,19 @@ export function uninstallChainRunner(): void {
  */
 function installChainRunner(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): void {
   if (dependencies.agents?.registerChainRunner !== true) return;
+  const built = chainRunnerDependenciesOf(dependencies, tasks, agents);
+  if (built === undefined) return;
+  chainRunnerDependencies = built;
+  removeChainRunner ??= registerChainRunner(() => chainRunnerDependencies);
+}
+
+/** What the chain runner and its sweep work with: the agent routes' dependencies with the chain store and Plan 3's run starter. Undefined where agents, chains or developer sign-in are not set up. */
+function chainRunnerDependenciesOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ChainRunnerDependencies | undefined {
   const starter = agentRunStarterFrom(dependencies, tasks, agents);
-  if (agents?.chains === undefined || starter === undefined) return;
+  if (agents?.chains === undefined || starter === undefined) return undefined;
   const admission = dependencies.modelAccess === undefined ? undefined
     : { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, now: Date.now, cloud: dependencies.cloud === true };
-  chainRunnerDependencies = { ...agents, chains: agents.chains, chainRuns: agents.chainRuns ?? chainRunPortsFor(starter, admission) };
-  removeChainRunner ??= registerChainRunner(() => chainRunnerDependencies);
+  return { ...agents, chains: agents.chains, chainRuns: agents.chainRuns ?? chainRunPortsFor(starter, admission) };
 }
 
 /** Spec 025 phase 25d: what the admin read routes need, from the broker's own dependencies. */
@@ -1540,7 +1548,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   installChainRunner(dependencies, tasks, agents);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.chain-sweep" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Plan 3, Task 21a-wiring (hand-off 1): the sign-in function asks whether a member may decide an approval, by a direct invoke (never through
     // API Gateway). The same live evaluation as the page, answered as one word (and the words for a refusal); a failure here is an error, never "open".
     if (isDecideInspectEvent(event)) {
@@ -1613,6 +1621,17 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
       return json({ jobs: await runSettlementJobs(jobs, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))) }, "spend-settlement");
+    }
+    // Plan 4 Task 9: every 5 minutes, the chain runs that are due (a step or run that ran out of time, a callback or a decision the run did not hear, an ending left half done).
+    if (isChainSweepEvent(event)) {
+      try {
+        const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
+        if (chainDependencies === undefined) return json({ skipped: true }, "chain-sweep");
+        return json(await sweepChainRuns(chainDependencies, Date.now()), "chain-sweep");
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "chain_sweep.failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "sweep_failed" }, "chain-sweep", 500);
+      }
     }
     // Plan 2, Task 19: every 5 minutes, the legacy backfill (once) and then the cell's DNS allowlist follows the approved egress domains.
     if (isEgressDomainsSyncEvent(event)) {
@@ -11027,6 +11046,10 @@ function isEgressDomainsSyncEvent(event: unknown): event is { source: "agentx.eg
 
 function isGithubWebhookRecoveryEvent(event: unknown): event is { source: "agentx.github-webhook-recovery" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.github-webhook-recovery";
+}
+
+function isChainSweepEvent(event: unknown): event is { source: "agentx.chain-sweep" } {
+  return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.chain-sweep";
 }
 
 function isWorkflowMergeRecoveryEvent(event: unknown): event is { source: "agentx.workflow-merge-recovery" } {
