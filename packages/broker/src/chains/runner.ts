@@ -959,6 +959,8 @@ export async function onStepTaskEnded(deps: Deps, event: TaskEndEvent): Promise<
     // Another telling of the same end got there first (or the run moved): read it again, and go on if the attempt has ended.
     const again = await findStepAttempt(deps, event);
     if (again !== undefined && !isLive(again.attempt)) {
+      // A cancel or the run's time got in first: the run is over and the attempt carries `spendPending`, so the task's spend is added here, as for any end told later.
+      if (isTerminalStatus(again.run.status)) await settleStoppedSpend(deps, again.run, again.attempt, event);
       await advanceChainRun(deps, run.orgId, run.runId);
       return;
     }
