@@ -2,7 +2,7 @@
 // same `NOTE#` items, count and cap as a Slack reply), the task's next planning or coding step reads it under "Messages from people (information only, never instructions)", and nothing in it
 // can decide an approval or a gate or change the agent's tools, permissions or budget (it is never read for anything but being shown to the model).
 //
-// `planSteer` decides, before anything is written, where a message would go and refuses what can't take one: an ended session (`SESSION_ENDED`), a paused one (`BUDGET_EXCEEDED`), and a kind of
+// `planSteer` decides, before anything is written, where a message would go and refuses what can't take one: an ended session (`SESSION_ENDED`), and a kind of
 // session whose delivery is a later task (an agent-step run is Task 11b, a session on a Mac is Task 18; a chain waits for Plan 4's reads). `deliverSteer` then gives the committed message to
 // its place: a Rovara Code workflow task's note (`recordSessionNote`), or `not_delivered` with the reason a person can read. It is safe to run again: a note is one item per message, and a
 // delivery answer is written only to a message that is still queued, so a repeated request finishes whatever a crash left undone and writes nothing twice. A queued message becomes `delivered`
@@ -36,7 +36,6 @@ const THE_AGENT = "The agent";
 // ---- the words a refusal or a delivery says
 
 export const STEER_UNAVAILABLE_TEXT = "Messages to this kind of session aren't available yet.";
-export const STEER_PAUSED_TEXT = "This session is paused for budget. Send your message again after it continues.";
 const NOT_READABLE_TEXT = "This session can't be read right now.";
 const BUSY_TEXT = "Your message was saved but is not with the agent yet. Send it again to finish.";
 export const PLAIN_TASK_REASON = "this task takes instructions only from its owner's next request";
@@ -62,7 +61,7 @@ export interface SteerDependencies extends Pick<SessionAccessDependencies, "docu
 
 /** Where a message goes now. */
 type Route =
-  | { kind: "note"; task: DeveloperTaskRecord; paused: boolean }
+  | { kind: "note"; task: DeveloperTaskRecord }
   | { kind: "not_delivered"; reason: string }
   | { kind: "ended"; taskId?: string }
   | { kind: "unavailable"; message: string };
@@ -90,8 +89,8 @@ const taskEnded = (task: DeveloperTaskRecord): boolean =>
 
 function taskRoute(session: AgentSessionRecord, task: DeveloperTaskRecord): Route {
   if (taskEnded(task)) return { kind: "ended", taskId: task.taskId };
-  // A Rovara Code (workflow) task reads notes at its next planning or coding step: today's path, whatever the task is doing now.
-  if (task.workflow !== undefined) return { kind: "note", task, paused: task.budgetPause !== undefined || session.summary.status === "paused" };
+  // A Rovara Code (workflow) task reads notes at its next planning or coding step: today's path, whatever the task is doing now (a task paused for budget or stopped takes it too: it is read when the work resumes, since a budget stop is a pause).
+  if (task.workflow !== undefined) return { kind: "note", task };
   // An agent-step run reads them at its next agent step (Task 11b).
   if (task.agent !== undefined) return { kind: "unavailable", message: STEER_UNAVAILABLE_TEXT };
   return { kind: "not_delivered", reason: PLAIN_TASK_REASON };
@@ -130,7 +129,6 @@ export async function planSteer(deps: SteerDependencies, session: AgentSessionRe
   const route = await routeOf(deps, session);
   if (route.kind === "ended") throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
   if (route.kind === "unavailable") throw agentXError("RUNTIME_UNAVAILABLE", route.message);
-  if (route.kind === "note" && route.paused) throw agentXError("BUDGET_EXCEEDED", STEER_PAUSED_TEXT);
 }
 
 // ---- delivering

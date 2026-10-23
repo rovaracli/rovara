@@ -220,7 +220,7 @@ async function replayOf(deps: SessionMessageDependencies, session: AgentSessionR
  * Sends a comment on a session [view, and not a project viewer], or (`kind: "steer"`) a message to the agent [use, and not a project viewer; see `steer.ts`]. `requestId` names the request: the
  * same one again answers the same message and writes nothing (for a message to the agent it finishes any delivery a crash left undone), and with other words it is `IDEMPOTENCY_CONFLICT`.
  * At most `COMMENT_RATE.comments` comments per person and session in ten minutes, `STEER_RATE` messages to the agent per person and per session in an hour (`TOO_MANY_REQUESTS`), and at
- * most `SESSION_MESSAGES_MAX` of both on a session; an ended session takes comments but not messages to the agent (`SESSION_ENDED`), and a paused one takes none of those (`BUDGET_EXCEEDED`).
+ * most `SESSION_MESSAGES_MAX` of both on a session; an ended session takes comments but not messages to the agent (`SESSION_ENDED`). A paused or stopped task queues a message to the agent, which its next step reads when it resumes.
  */
 export async function sendSessionMessage(
   deps: SessionMessageDependencies,
