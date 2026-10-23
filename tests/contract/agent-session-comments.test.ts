@@ -362,6 +362,32 @@ describe("a comment, when the table is not quiet", () => {
     expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "comment"))!.indexExpiresAt).toBe(Math.floor((T0 + 3 * COMMENT_RATE.windowMs) / 1000));
   });
 
+  it("treats a request item past its memory as a new request", async () => {
+    const f = world();
+    const requestId = randomUUID();
+    const first = await f.send(ARJUN, "Again", { requestId });
+    f.w.clock.now += 8 * 86_400_000;
+    const second = await f.send(ARJUN, "Again", { requestId });
+    expect(second.messageId).not.toBe(first.messageId);
+    expect(f.messageItems()).toHaveLength(2);
+  });
+
+  it("is not a recorded event that makes a comment succeed: when the message or the count refuses along with the event, it fails", async () => {
+    const f = world();
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "None", "ConditionalCheckFailed", "None", "None", "ConditionalCheckFailed") });
+    expect(await code(f.send(ARJUN, "Not recorded"))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(f.messageItems()).toHaveLength(0);
+  });
+
+  it("cuts text that grew past the limit by characters, not by UTF-16 units", async () => {
+    const f = world();
+    const raw = Array.from({ length: 250 }, () => "\u{1F600}pwd=x").join("\n");
+    expect(raw.length).toBeLessThanOrEqual(2000);
+    const message = await f.send(ARJUN, raw);
+    expect([...message.text]).toHaveLength(SESSION_MESSAGE_MAX_CHARS);
+    expect(SessionMessageSchema.safeParse(message).success).toBe(true);
+  });
+
   it("does not read a message that belongs to another company or has expired", async () => {
     const f = world();
     const mine = await f.send(ARJUN, "Visible");
@@ -369,12 +395,12 @@ describe("a comment, when the table is not quiet", () => {
       ...agentSessionKey(ORG_A, f.sid, `MESSAGE#${id}`), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: f.sid, messageId: id, kind: "comment", source: "app",
       author: { developerId: PRIYA, name: "Priya" }, text: "Hidden", createdAt: new Date(T0 + 1_000).toISOString(), rev: 1, ...fields,
     });
-    row("msg_foreignorg000000000", { orgId: ORG_B });
-    row("msg_otherssession000000", { sessionId: "ses_other000000000000000" });
-    row("msg_expiredmessage00000", { indexExpiresAt: Math.floor(T0 / 1000) });
-    row("msg_notamessage00000000", { text: "" });
+    row("msg_foreignorg0000000000", { orgId: ORG_B });
+    row("msg_otherssession0000000", { sessionId: "ses_other000000000000000" });
+    row("msg_expiredmessage000000", { indexExpiresAt: Math.floor(T0 / 1000) });
+    row("msg_notamessage000000000", { text: "" });
     expect((await f.list(ARJUN)).messages.map((message) => message.messageId)).toEqual([mine.messageId]);
-    expect(await code(editSessionMessage(f.deps, f.w.caller(PRIYA), f.sid, "msg_expiredmessage00000", { rev: 1, text: "Revive" }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(editSessionMessage(f.deps, f.w.caller(PRIYA), f.sid, "msg_expiredmessage000000", { rev: 1, text: "Revive" }))).toMatchObject({ code: "NOT_FOUND" });
   });
 });
 
@@ -413,6 +439,17 @@ describe("changing a comment", () => {
     expect(await code(editSessionMessage(f.deps, caller(ZED), f.sid, mine.messageId, { rev: 1, text: "x" }))).toMatchObject({ code: "NOT_FOUND" });
     expect(await code(editSessionMessage(f.deps, f.w.caller(BO, ORG_B), f.sid, mine.messageId, { rev: 1, text: "x" }))).toMatchObject({ code: "NOT_FOUND" });
     expect(f.messageItems()[0]).toMatchObject({ text: "Mine", rev: 1 });
+  });
+
+  it("never builds a key from an id that can't be a message's, so a long or odd id reads no item", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Mine");
+    const keys: string[] = [];
+    const spy = { send: async (command: { constructor: { name: string }; input: { Key?: { sk?: string } } }) => { if (command.constructor.name === "GetCommand") keys.push(String(command.input.Key?.sk)); return f.w.db.send(command as never); } };
+    for (const id of ["x".repeat(3000), "COUNT", "msg_short", mine.messageId.toUpperCase()]) {
+      expect(await code(editSessionMessage({ ...f.deps, documentClient: spy }, f.w.caller(ARJUN), f.sid, id, { rev: 1, text: "Changed" })), id).toMatchObject({ code: "NOT_FOUND" });
+    }
+    expect(keys.filter((key) => key.startsWith("MESSAGE#"))).toEqual([]);
   });
 
   it("deletes to a marker that holds none of the text, once, and then refuses to change it", async () => {
@@ -470,12 +507,43 @@ describe("changing a comment", () => {
     };
     seed("msg_steerdelivered000000", "delivered");
     seed("msg_steerqueued000000000", "queued");
+    f.w.db.set({ ...f.w.db.get(agentSessionKey(ORG_A, f.sid, "MESSAGE#msg_steerdelivered000000"))!, sk: "MESSAGE#msg_steernotsent00000000", messageId: "msg_steernotsent00000000", delivery: { state: "not_delivered", at: "2026-10-22T09:00:00.000Z", reason: "ended" } });
     // Changing a message the agent will read needs "can use" still (a share that was taken back doesn't let it be rewritten).
     expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued000000000", { rev: 1, text: "Use v3" }))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
     f.w.seedShare(ORG_A, f.sid, { kind: "member", developerId: ARJUN }, "use");
+    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steernotsent00000000", { rev: 1, text: "Use v3" }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered000000", { rev: 1, text: "Use v3" }))).toEqual({ code: "CONFIG_INVALID", message: "The agent already has this message, so it can't be changed." });
     expect(await code(deleteSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered000000", { rev: 1 }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued000000000", { rev: 1, text: "Use v3" }))).toBeUndefined();
+  });
+});
+
+describe("changing a comment, when only one item of the write moved", () => {
+  it("reads the comment again when its own revision moved but the person's rate did not, and says so", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Mine");
+    const key = agentSessionKey(ORG_A, f.sid, `MESSAGE#${mine.messageId}`);
+    let done = false;
+    const racing = { send: async (command: { constructor: { name: string } }) => { if (!done && command.constructor.name === "TransactWriteCommand") { done = true; f.w.db.set({ ...f.w.db.get(key)!, rev: 2 }); } return f.w.db.send(command as never); } };
+    expect(await code(editSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1, text: "Changed" }))).toMatchObject({ code: "SESSION_REVISION_CONFLICT" });
+  });
+
+  it("reads the person's rate again when only it moved, and still makes the change", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Mine");
+    const key = sessionRateKey(ORG_A, f.sid, ARJUN, "change");
+    await editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1, text: "One" });
+    let done = false;
+    const racing = { send: async (command: { constructor: { name: string } }) => { if (!done && command.constructor.name === "TransactWriteCommand") { done = true; f.w.db.set({ ...f.w.db.get(key)!, count: 9 }); } return f.w.db.send(command as never); } };
+    expect(await editSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 2, text: "Two" })).toMatchObject({ rev: 3 });
+    expect(f.w.db.get(key)).toMatchObject({ count: 10 });
+  });
+
+  it("gives up when only the rate item keeps moving", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Mine");
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }, { Code: "None" }] }, times: 3 });
+    expect(await editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1, text: "Fourth time" })).toMatchObject({ rev: 2 });
   });
 });
 
@@ -618,6 +686,31 @@ describe("the conversation", () => {
     expect(await code(f.list(ARJUN, "nonsense"))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
+  it("repeats at most 100 messages before the cursor, and none from the page older than the few seconds", async () => {
+    const f = world();
+    const seed = (n: number, at: number) => {
+      const id = `msg_${at.toString(36).padStart(9, "0")}${String(n).padStart(11, "0")}`;
+      f.w.db.set({ ...agentSessionKey(ORG_A, f.sid, `MESSAGE#${id}`), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: f.sid, messageId: id, kind: "comment", source: "app", author: { developerId: PRIYA, name: "Priya" }, text: `Note ${String(n)}`, createdAt: new Date(at).toISOString(), rev: 1 });
+    };
+    for (let n = 0; n < 230; n += 1) seed(n, T0 + 60_000 + n * 10);
+    f.pageComment({ text: "An old page comment", createdAt: new Date(T0 + 1_000).toISOString() });
+    const first = await f.list(ARJUN);
+    const second = await f.list(ARJUN, first.next);
+    const third = await f.list(ARJUN, second.next);
+    const last = await f.list(ARJUN, third.next);
+    // The last cursor is Note 229; Notes 129 to 228 are inside the five seconds, at most 100 of them are repeated, and the old page comment is not.
+    expect(last.messages.map((message) => message.text)).toEqual(Array.from({ length: 100 }, (_, n) => `Note ${String(129 + n)}`));
+    expect(last.next).toBe(third.next);
+    expect([...first.messages, ...second.messages, ...third.messages].some((message) => message.source === "page")).toBe(true);
+    expect(last.messages.some((message) => message.source === "page")).toBe(false);
+  });
+
+  it("refuses a cursor with a date that is not one", async () => {
+    const f = world();
+    expect(await code(f.list(ARJUN, "2026-02-30T09:00:00.000Z#msg_00000000000000000000"))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(f.list(ARJUN, "2026-10-22T09:00:00.000Z#msg_0000000000000000000"))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
   it("pages the page's comments by the same cursor, interleaved by time", async () => {
     const f = world();
     for (let n = 0; n < 3; n += 1) f.pageComment({ text: `Page ${String(n)}`, createdAt: new Date(T0 + (2 * n + 1) * 1_000).toISOString() });
@@ -668,6 +761,9 @@ describe("the routes", () => {
     const made = SessionMessageSchema.parse(await call(ARJUN, "POST", base, { requestId: randomUUID(), kind: "comment", text: "Via the route" }));
     expect(made).toMatchObject({ text: "Via the route", author: { developerId: ARJUN } });
     expect(SessionMessagePageSchema.parse(await call(PRIYA, "GET", base)).messages.map((message) => message.messageId)).toEqual([made.messageId]);
+    const cursor = encodeURIComponent(`${made.createdAt}#${made.messageId}`);
+    expect(SessionMessagePageSchema.parse(await call(PRIYA, "GET", `${base}?after=${cursor}`))).toEqual({ messages: [], next: `${made.createdAt}#${made.messageId}` });
+    expect(await code(call(PRIYA, "GET", `${base}?after=nope`))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await call(ARJUN, "PATCH", `${base}/${made.messageId}`, { rev: 1, text: "Edited" })).toMatchObject({ text: "Edited", rev: 2 });
     expect(await call(ARJUN, "DELETE", `${base}/${made.messageId}`, { rev: 2 })).toMatchObject({ text: "[deleted]", rev: 3 });
     expect(SessionMessagePageSchema.parse(await call(PRIYA, "GET", base)).messages).toMatchObject([{ messageId: made.messageId, text: "[deleted]" }]);

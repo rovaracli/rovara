@@ -275,8 +275,7 @@ export async function sendSessionMessage(
       }
     } catch (error) {
       if (isTransactionConflict(error)) {
-        if (attempt >= ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
-        continue;
+        continue; // the loop's own end is the bound
       }
       const failed = failedIndexes(error);
       if (failed === undefined) throw error;
@@ -288,8 +287,8 @@ export async function sendSessionMessage(
       if (failed.has(SESSION)) throw agentXError("NOT_FOUND", "session not found");
       if (failed.has(COUNT)) throw agentXError("CONFIG_INVALID", TOO_MANY_TEXT);
       // Another request of this person took a place since the count was read: read it again.
-      if (failed.has(RATE) && attempt < ATTEMPTS) continue;
-      if (failed.has(RATE) || failed.has(MESSAGE)) throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
+      if (failed.has(RATE)) continue;
+      if (failed.has(MESSAGE)) throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
       throw error;
     }
     await tellSession(deps, session);
@@ -334,7 +333,7 @@ async function changeMessage(deps: SessionMessageDependencies, caller: MessageCa
             Update: {
               TableName: deps.tableName, Key: messageKey(session, messageId),
               UpdateExpression: `SET #text = :text, rev = :next, ${change.kind === "edit" ? "editedAt" : "deletedAt"} = :at`,
-              ConditionExpression: `attribute_exists(pk) AND rev = :rev AND attribute_not_exists(deletedAt)${current.kind === "steer" ? " AND #delivery.#state = :queued" : ""}`,
+              ConditionExpression: `attribute_exists(pk) AND rev = :rev${current.kind === "steer" ? " AND #delivery.#state = :queued" : ""}`,
               ExpressionAttributeNames: { "#text": "text", ...(current.kind === "steer" ? { "#delivery": "delivery", "#state": "state" } : {}) },
               ExpressionAttributeValues: { ":text": text, ":next": next.rev, ":at": at, ":rev": current.rev, ...(current.kind === "steer" ? { ":queued": "queued" } : {}) },
             },
@@ -344,15 +343,13 @@ async function changeMessage(deps: SessionMessageDependencies, caller: MessageCa
       }));
     } catch (error) {
       if (isTransactionConflict(error)) {
-        if (attempt >= ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
-        continue;
+        continue; // the loop's own end is the bound
       }
       const failed = failedIndexes(error);
       if (failed === undefined) throw error;
       if (failed.has(SESSION)) throw agentXError("NOT_FOUND", "session not found");
       // The message moved since it was read (another change, or its delivery): read it again and say which.
-      if (failed.has(MESSAGE) && attempt < ATTEMPTS) continue;
-      if (failed.has(RATE) && attempt < ATTEMPTS) continue;
+      if (failed.has(MESSAGE) || failed.has(RATE)) continue;
       throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
     }
     await tellSession(deps, session);
