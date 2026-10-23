@@ -131,7 +131,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     // Comments (Task 10) and messages to the agent (Task 11a: `kind: "steer"`, which needs "can use").
     const messageDeps = { ...read, realtimePublish: deps.realtimePublish, chainSteer: deps.chainSteer };
     if (rawMessageId === undefined) {
-      if (method === "GET") return listSessionMessages(messageDeps, caller, sessionId, { after: url.searchParams.get("after") ?? undefined });
+      if (method === "GET") return listSessionMessages(messageDeps, caller, sessionId, { after: url.searchParams.get("after") ?? undefined, anchor: url.searchParams.get("anchor") ?? undefined });
       if (method === "POST") return sendSessionMessage(messageDeps, caller, sessionId, parseMessageBody(SendBodySchema, jsonBody(request)));
       throw notFound();
     }

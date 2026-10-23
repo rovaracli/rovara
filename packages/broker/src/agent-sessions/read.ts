@@ -29,6 +29,7 @@ import {
   type SessionView,
 } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { anchorTargetsOf } from "./anchors.js";
 import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
 import { viewingNow } from "./followers.js";
 import type { SessionShareDependencies } from "./shares.js";
@@ -201,6 +202,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   }
 
   const followerItem = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `FOLLOWER#${caller.developerId}`));
+  // The parts a comment can be pinned to, from the very view shown (Task 10b).
+  const anchors = taskShown === undefined ? [] : anchorTargetsOf(taskShown);
   return {
     contractVersion: AGENT_SESSION_CONTRACT_VERSION,
     sessionId: session.sessionId,
@@ -231,6 +234,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     bindings: await bindingsOf(deps, session),
     legs: session.legs,
     ...(session.retryOf === undefined ? {} : { retryOf: session.retryOf }),
+    ...(anchors.length === 0 ? {} : { anchors }),
     revision: session.revision,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,

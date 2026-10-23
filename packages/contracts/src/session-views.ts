@@ -14,8 +14,10 @@ import {
   HOME_CARD_BUTTONS_MAX,
   LIVE_PAGE_MAX,
   SESSION_EVENTS_PAGE_MAX,
+  SESSION_ANCHORS_MAX,
   SESSION_MESSAGES_PAGE_MAX,
   SESSION_KINDS,
+  SessionAnchorRefSchema,
   SESSION_LEVELS,
   SESSION_MODES,
   SessionAgentSchema,
@@ -155,6 +157,8 @@ export const SessionViewSchema = z
     bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue"]), url: LinkSchema }).strict()).max(2),
     legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
     retryOf: SessionIdSchema.optional(),
+    /** Task 10b: the parts of the work a comment can be pinned to (a paragraph of the plan, a step, a changed file) with the revision of each now. Absent when there are none. */
+    anchors: z.array(SessionAnchorRefSchema).max(SESSION_ANCHORS_MAX).optional(),
     /** The session's revision: what a change to it (a take-over, a share) is asked against. */
     revision: CountSchema,
     createdAt: InstantSchema,

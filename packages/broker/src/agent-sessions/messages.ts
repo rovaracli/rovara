@@ -19,9 +19,13 @@ import {
   SESSION_MESSAGES_PAGE_MAX,
   STEER_RATE,
   SESSION_ENDED_MESSAGE,
+  SESSION_ANCHOR_EXCERPT_MAX,
+  SESSION_ANCHOR_TARGETS,
   SESSION_MESSAGE_MAX_CHARS,
   SESSION_RETENTION_DAYS,
   SESSION_REVISION_CONFLICT_MESSAGE,
+  SessionAnchorInputSchema,
+  SessionAnchorSchema,
   SessionMessageIdSchema,
   SessionMessageSchema,
   agentSessionKey,
@@ -34,6 +38,9 @@ import {
   sessionRequestKey,
   type AgentSessionRecord,
   type OrgId,
+  type SessionAnchor,
+  type SessionAnchorInput,
+  type SessionAnchorRef,
   type SessionMessage,
   type SessionMessagePage,
 } from "@agentx/contracts";
@@ -42,11 +49,12 @@ import { listTaskComments } from "../developer/page-comments.js";
 import { sessionNoteItems } from "../aws/developer-tasks.js";
 import { taskKey } from "../developer/task-records.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
+import { anchorKey, anchorTargetsFor, presentMessages, withoutExcerpt, type AnchorDependencies } from "./anchors.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { planSteer, queuedSteersItem, steerNotDeliveredEvent, type SteerDependencies } from "./steer.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
-export interface SessionMessageDependencies extends SessionAccessDependencies, Pick<SteerDependencies, "chainSteer"> {
+export interface SessionMessageDependencies extends SessionAccessDependencies, Pick<SteerDependencies, "chainSteer">, Pick<AnchorDependencies, "taskView"> {
   /** The events API a comment's `session.updated` notice is posted to; without it nothing is posted. */
   realtimePublish?: RealtimeConfig | undefined;
   log?: ((entry: Record<string, unknown>) => void) | undefined;
@@ -99,7 +107,7 @@ const isoOf = (ms: number) => new Date(ms).toISOString();
 
 const RequestIdSchema = z.string().uuid();
 const TextSchema = z.string().max(10_000);
-export const SendBodySchema = z.object({ requestId: RequestIdSchema, kind: z.enum(["comment", "steer"]), text: TextSchema }).strict();
+export const SendBodySchema = z.object({ requestId: RequestIdSchema, kind: z.enum(["comment", "steer"]), text: TextSchema, anchor: SessionAnchorInputSchema.optional(), threadId: SessionMessageIdSchema.optional() }).strict();
 export const EditBodySchema = z.object({ rev: z.number().int().min(1), text: TextSchema }).strict();
 export const DeleteBodySchema = z.object({ rev: z.number().int().min(1) }).strict();
 
@@ -122,6 +130,31 @@ function storedText(raw: string, tooLong: string = TOO_LONG_TEXT): string {
   const cleaned = cleanCommentText(raw);
   if (!cleaned.ok) throw agentXError("CONFIG_INVALID", cleaned.reason === "empty" ? EMPTY_TEXT : tooLong);
   return [...plainMentions(cleaned.text)].slice(0, SESSION_MESSAGE_MAX_CHARS).join("");
+}
+
+/** The part of the session was not found, or the writer can't see it. Names nothing the client sent. */
+const PART_NOT_FOUND_TEXT = "that part of the session was not found";
+const PART_UNAVAILABLE_TEXT = "That part of the session can't be checked right now.";
+
+/**
+ * What an anchor's excerpt is when stored: cleaned and redacted like a comment, mentions made plain, flattened to one line with no control or format characters, and only then cut to the limit.
+ * Undefined when nothing is left. The client's excerpt is for display only: nothing decides on it.
+ */
+function storedExcerpt(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const cleaned = cleanCommentText(raw);
+  if (!cleaned.ok) return undefined;
+  const line = plainMentions(cleaned.text).replace(/\s+/gu, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim();
+  const cut = [...line].slice(0, SESSION_ANCHOR_EXCERPT_MAX).join("").trim();
+  return cut === "" ? undefined : cut;
+}
+
+/** `<target>:<targetId>`, the spelling `?anchor=` takes: the target is one of the known parts, the id is anything that is a valid id (a colon may be in it). `CONFIG_INVALID`, echoing nothing, otherwise. */
+export function parseAnchorQuery(raw: string): Pick<SessionAnchorRef, "target" | "targetId"> {
+  const separator = raw.indexOf(":");
+  const parsed = separator < 0 ? undefined : SessionAnchorInputSchema.pick({ target: true, targetId: true }).safeParse({ target: raw.slice(0, separator), targetId: raw.slice(separator + 1) });
+  if (parsed === undefined || !parsed.success) throw agentXError("CONFIG_INVALID", `anchor: must be <${SESSION_ANCHOR_TARGETS.join("|")}>:<id>`);
+  return parsed.data;
 }
 
 // ---- ids
@@ -228,20 +261,42 @@ export async function sendSessionMessage(
   deps: SessionMessageDependencies,
   caller: MessageCaller,
   sessionId: string,
-  input: { requestId: string; kind: "comment" | "steer"; text: string; source?: "app" | "linear" | "page" | "slack" },
+  input: { requestId: string; kind: "comment" | "steer"; text: string; source?: "app" | "linear" | "page" | "slack"; anchor?: unknown; threadId?: unknown },
 ): Promise<SessionMessage> {
   if (!RequestIdSchema.safeParse(input.requestId).success) throw agentXError("CONFIG_INVALID", "requestId: must be a UUID");
   const steer = input.kind === "steer";
   // A comment is written in the app; a message to the agent in the app or by Linear (the page's comments are read through, and Slack's replies come by their own path).
   if (input.source !== undefined && input.source !== "app" && !(steer && input.source === "linear")) throw agentXError("CONFIG_INVALID", steer ? "source: a message to the agent is sent from the app or Linear" : "source: a comment is written in the app");
   const source: "app" | "linear" = input.source === "linear" ? "linear" : "app";
+  // A comment can be pinned to a part of the session (`anchor`) or answer a thread (`threadId`, which takes the thread's anchor); a message to the agent can do neither.
+  if (steer && (input.anchor !== undefined || input.threadId !== undefined)) throw agentXError("CONFIG_INVALID", "anchor: a message to the agent can't be pinned or threaded");
+  if (input.anchor !== undefined && input.threadId !== undefined) throw agentXError("CONFIG_INVALID", "anchor: a reply takes the anchor of its thread");
+  const anchorInput: SessionAnchorInput | undefined = input.anchor === undefined ? undefined : parseMessageBody(z.object({ anchor: SessionAnchorInputSchema }).strict(), { anchor: input.anchor }).anchor;
+  const threadId: string | undefined = input.threadId === undefined ? undefined : parseMessageBody(z.object({ threadId: SessionMessageIdSchema }).strict(), { threadId: input.threadId }).threadId;
   const access = steer
     ? await requireSessionLevel(deps, caller, sessionId, "use", "send messages to the agent")
     : await requireSessionLevel(deps, caller, sessionId, "view", "comment on it", { comment: true });
   const { session } = access;
-  const fingerprint = sha256(steer ? { op: "steer", sessionId: session.sessionId, source, text: input.text } : { op: "comment", sessionId: session.sessionId, text: input.text });
+  const fingerprint = sha256(steer
+    ? { op: "steer", sessionId: session.sessionId, source, text: input.text }
+    : { op: "comment", sessionId: session.sessionId, text: input.text, ...(anchorInput === undefined ? {} : { anchor: anchorInput }), ...(threadId === undefined ? {} : { threadId }) });
   const earlier = await replayOf(deps, session, caller.developerId, input.requestId, fingerprint);
-  if (earlier !== undefined) return earlier;
+  if (earlier !== undefined) return (await presentMessages(deps, session, access, [earlier]))[0]!;
+
+  // Where a comment is pinned: its part, found in the view built for the writer (a part they can't see is not found); or its thread's anchor, which a reply takes as it is now (without the excerpt).
+  let anchor: SessionAnchor | undefined;
+  let targets: SessionAnchorRef[] | undefined;
+  if (anchorInput !== undefined) {
+    targets = await anchorTargetsFor(deps, session, access);
+    if (targets === undefined) throw agentXError("RUNTIME_UNAVAILABLE", PART_UNAVAILABLE_TEXT);
+    if (!targets.some((part) => anchorKey(part) === anchorKey(anchorInput))) throw agentXError("NOT_FOUND", PART_NOT_FOUND_TEXT);
+    const excerpt = storedExcerpt(anchorInput.excerpt);
+    anchor = SessionAnchorSchema.parse({ target: anchorInput.target, targetId: anchorInput.targetId, revision: anchorInput.revision, ...(excerpt === undefined ? {} : { excerpt }) });
+  } else if (threadId !== undefined) {
+    const root = messageOf(await getItem(deps, messageKey(session, threadId)), session, secondsOf(deps.now()));
+    if (root === undefined || root.kind !== "comment" || root.threadId !== undefined || root.deletedAt !== undefined) throw agentXError("NOT_FOUND", "message not found");
+    if (root.anchor !== undefined) anchor = withoutExcerpt(root.anchor);
+  }
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     // Where a message to the agent goes is read again on every try, so a task that closed, filled up or moved its mark since is seen (a refusal leaves nothing written).
@@ -255,6 +310,7 @@ export async function sendSessionMessage(
     const name = cleanSessionName(caller.name) ?? "Someone";
     const message = SessionMessageSchema.parse({
       messageId: newMessageId(nowMs, caller.developerId, input.requestId), sessionId: session.sessionId, kind: input.kind, source, author: { developerId: caller.developerId, name }, text, createdAt: isoOf(nowMs), rev: 1,
+      ...(anchor === undefined ? {} : { anchor }), ...(threadId === undefined ? {} : { threadId }),
       ...(plan === undefined ? {} : { delivery: plan.kind === "note" ? { state: "queued", at: isoOf(nowMs) } : { state: "not_delivered", at: isoOf(nowMs), reason: plan.reason } }),
     });
     const events = [sessionEventItem(deps, session, steer
@@ -312,7 +368,7 @@ export async function sendSessionMessage(
       // This very request committed already (a retry that crossed its own first try): its message is the answer.
       if (failed.has(REQUEST)) {
         const again = await replayOf(deps, session, caller.developerId, input.requestId, fingerprint);
-        if (again !== undefined) return again;
+        if (again !== undefined) return (await presentMessages(deps, session, access, [again]))[0]!;
       }
       if (failed.has(SESSION)) {
         // A message to the agent finds out whether the session ended or is gone.
@@ -328,7 +384,8 @@ export async function sendSessionMessage(
       throw error;
     }
     await tellSession(deps, session);
-    return message;
+    // A pinned comment answers with its state: the part was read for this write, so it is not read again.
+    return (await presentMessages(deps, session, access, [message], anchorInput === undefined ? undefined : targets))[0]!;
   }
   throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
 }
@@ -359,7 +416,9 @@ async function changeMessage(deps: SessionMessageDependencies, caller: MessageCa
     const rate = await rateStep(deps, session, caller.developerId, "change", COMMENT_RATE.changes, nowMs);
     if (!rate.room) throw agentXError("TOO_MANY_REQUESTS", RATE_TEXT);
     const at = isoOf(nowMs);
-    const next: SessionMessage = SessionMessageSchema.parse({ ...current, text, rev: current.rev + 1, ...(change.kind === "edit" ? { editedAt: at } : { deletedAt: at }) });
+    // A deleted comment keeps no copy of what it quoted: its anchor loses the excerpt, in the store too.
+    const anchor = change.kind === "delete" && current.anchor !== undefined ? withoutExcerpt(current.anchor) : current.anchor;
+    const next: SessionMessage = SessionMessageSchema.parse({ ...current, text, rev: current.rev + 1, ...(anchor === undefined ? {} : { anchor }), ...(change.kind === "edit" ? { editedAt: at } : { deletedAt: at }) });
     const RATE = 0, MESSAGE = 1, SESSION = 2;
     try {
       await deps.documentClient.send(new TransactWriteCommand({
@@ -368,10 +427,10 @@ async function changeMessage(deps: SessionMessageDependencies, caller: MessageCa
           {
             Update: {
               TableName: deps.tableName, Key: messageKey(session, messageId),
-              UpdateExpression: `SET #text = :text, rev = :next, ${change.kind === "edit" ? "editedAt" : "deletedAt"} = :at`,
+              UpdateExpression: `SET #text = :text, rev = :next, ${change.kind === "edit" ? "editedAt" : "deletedAt"} = :at${change.kind === "delete" && anchor !== undefined ? ", anchor = :anchor" : ""}`,
               ConditionExpression: "attribute_exists(pk) AND rev = :rev",
               ExpressionAttributeNames: { "#text": "text" },
-              ExpressionAttributeValues: { ":text": text, ":next": next.rev, ":at": at, ":rev": current.rev },
+              ExpressionAttributeValues: { ":text": text, ":next": next.rev, ":at": at, ":rev": current.rev, ...(change.kind === "delete" && anchor !== undefined ? { ":anchor": anchor } : {}) },
             },
           },
           sessionStillThere(deps, session),
@@ -389,7 +448,7 @@ async function changeMessage(deps: SessionMessageDependencies, caller: MessageCa
       throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
     }
     await tellSession(deps, session);
-    return next;
+    return (await presentMessages(deps, session, access, [next]))[0]!;
   }
   throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
 }
@@ -466,10 +525,14 @@ async function pageMessages(deps: SessionMessageDependencies, session: AgentSess
  * (`<createdAt>#<messageId>`, the last message of the previous page) it first repeats the five seconds before it (at most `REREAD_MAX`, never the cursor's own), so a message committed late is
  * still found; readers de-duplicate by `messageId`. A person who can view the session can read it, a project viewer included; anyone else gets `NOT_FOUND`.
  */
-export async function listSessionMessages(deps: SessionMessageDependencies, caller: SessionCaller, sessionId: string, query: { after?: string | undefined }): Promise<SessionMessagePage> {
+export async function listSessionMessages(deps: SessionMessageDependencies, caller: SessionCaller, sessionId: string, query: { after?: string | undefined; anchor?: string | undefined }): Promise<SessionMessagePage> {
   const cursor = parseCursor(query.after);
-  const { session } = await requireSessionLevel(deps, caller, sessionId, "view", "read its comments");
-  const all = [...await ownMessages(deps, session, cursor === undefined ? undefined : cursor.ms - REREAD_MS), ...await pageMessages(deps, session)].map(positioned).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const only = query.anchor === undefined ? undefined : parseAnchorQuery(query.anchor);
+  const access = await requireSessionLevel(deps, caller, sessionId, "view", "read its comments");
+  const { session } = access;
+  // The comments of one part (and their replies, which hold its anchor) come from the session's own store: the task page's comments are never pinned.
+  const kept = (message: SessionMessage) => only === undefined || (message.anchor?.target === only.target && message.anchor.targetId === only.targetId);
+  const all = [...(await ownMessages(deps, session, cursor === undefined ? undefined : cursor.ms - REREAD_MS)).filter(kept), ...(only === undefined ? await pageMessages(deps, session) : [])].map(positioned).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   let repeated: Positioned[] = [];
   let fresh: Positioned[];
   if (cursor === undefined) {
@@ -481,5 +544,5 @@ export async function listSessionMessages(deps: SessionMessageDependencies, call
   }
   fresh = fresh.slice(0, SESSION_MESSAGES_PAGE_MAX);
   const next = fresh.at(-1)?.key ?? query.after;
-  return { messages: [...repeated, ...fresh].map((entry) => entry.message), ...(next === undefined ? {} : { next }) };
+  return { messages: await presentMessages(deps, session, access, [...repeated, ...fresh].map((entry) => entry.message)), ...(next === undefined ? {} : { next }) };
 }

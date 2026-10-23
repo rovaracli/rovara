@@ -305,6 +305,41 @@ export const SessionEventSchema = z
   .strict();
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 
+// ---- comments pinned to a part of the session (Plan 5 Task 10b)
+
+/** The parts of a session a comment can be pinned to, each with a stable id in the session view: a paragraph of the plan (`p1`, `p2`, ...), a step of an agent run, a file in the changes. */
+export const SESSION_ANCHOR_TARGETS = ["plan_block", "step", "change_file"] as const;
+/** What a pinned comment says about its part now: `current` (the part is as the person saw it), `outdated` (it changed) or `gone` (it is not in the reader's view). */
+export const SESSION_ANCHOR_STATES = ["current", "outdated", "gone"] as const;
+export const SESSION_ANCHOR_EXCERPT_MAX = 200;
+/** The most parts a session view lists for pinning: 200 plan paragraphs, 100 steps and 300 changed files. */
+export const SESSION_ANCHORS_MAX = 600;
+const ANCHOR_ID_MAX_CHARS = 300;
+const ANCHOR_REVISION_MAX_CHARS = 64;
+
+/** A part of the session and the revision of it now, as the session view lists it (`plan_block`: `v<plan version>`; `step`: the step's status; `change_file`: `+<added>-<removed>`). */
+export const SessionAnchorRefSchema = z
+  .object({ target: z.enum(SESSION_ANCHOR_TARGETS), targetId: lineText(ANCHOR_ID_MAX_CHARS), revision: lineText(ANCHOR_REVISION_MAX_CHARS) })
+  .strict();
+export type SessionAnchorRef = z.infer<typeof SessionAnchorRefSchema>;
+
+/** A pinned comment's anchor as it is stored and read: the part, the revision the person was looking at, and the excerpt they quoted (display only; redacted when stored). */
+export const SessionAnchorSchema = z
+  .object({ target: z.enum(SESSION_ANCHOR_TARGETS), targetId: lineText(ANCHOR_ID_MAX_CHARS), revision: lineText(ANCHOR_REVISION_MAX_CHARS), excerpt: lineText(SESSION_ANCHOR_EXCERPT_MAX).optional() })
+  .strict();
+export type SessionAnchor = z.infer<typeof SessionAnchorSchema>;
+
+/** The anchor a client sends: the same, with an excerpt of any characters (at most 200), which the server cleans, redacts and flattens to one line before it stores it. */
+export const SessionAnchorInputSchema = z
+  .object({
+    target: z.enum(SESSION_ANCHOR_TARGETS),
+    targetId: lineText(ANCHOR_ID_MAX_CHARS),
+    revision: lineText(ANCHOR_REVISION_MAX_CHARS),
+    excerpt: z.string().refine((value) => [...value].length <= SESSION_ANCHOR_EXCERPT_MAX, `must be at most ${String(SESSION_ANCHOR_EXCERPT_MAX)} characters`).optional(),
+  })
+  .strict();
+export type SessionAnchorInput = z.infer<typeof SessionAnchorInputSchema>;
+
 /** A comment (for people only) or a message to the agent (needs "can use"), at `MESSAGE#<messageId>`. */
 export const SessionMessageSchema = z
   .object({
@@ -322,8 +357,15 @@ export const SessionMessageSchema = z
       .object({ state: z.enum(["queued", "delivered", "not_delivered"]), at: InstantSchema, reason: lineText(DELIVERY_REASON_MAX_CHARS).optional() })
       .strict()
       .optional(),
+    /** Task 10b, comments only: the part of the session the comment is pinned to. A reply holds its thread's anchor (without the excerpt). */
+    anchor: SessionAnchorSchema.optional(),
+    /** Task 10b, on a read only (never stored): what the part is now, for the reader. */
+    anchorState: z.enum(SESSION_ANCHOR_STATES).optional(),
+    /** Task 10b, comments only: a reply holds the id of the first message of its thread. */
+    threadId: SessionMessageIdSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((message) => message.kind === "comment" || (message.anchor === undefined && message.anchorState === undefined && message.threadId === undefined), { message: "only a comment can be pinned or threaded", path: ["kind"] });
 export type SessionMessage = z.infer<typeof SessionMessageSchema>;
 
 /** The outside place a session is bound to: one Slack thread or one Linear issue, at `BINDING#<kind>` (Plan 9 posts through it). */
