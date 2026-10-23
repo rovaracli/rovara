@@ -18,6 +18,7 @@ import {
   SESSION_MESSAGES_MAX,
   SESSION_MESSAGES_PAGE_MAX,
   STEER_RATE,
+  SESSION_ENDED_MESSAGE,
   SESSION_MESSAGE_MAX_CHARS,
   SESSION_RETENTION_DAYS,
   SESSION_REVISION_CONFLICT_MESSAGE,
@@ -38,11 +39,12 @@ import {
 } from "@agentx/contracts";
 import { failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { listTaskComments } from "../developer/page-comments.js";
+import { sessionNoteItems } from "../aws/developer-tasks.js";
 import { taskKey } from "../developer/task-records.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
-import { deliverSteer, planSteer, type SteerDependencies } from "./steer.js";
-import { sessionEventItem } from "./store.js";
+import { planSteer, queuedSteersItem, steerNotDeliveredEvent, type SteerDependencies } from "./steer.js";
+import { AgentSessionStore, sessionEventItem } from "./store.js";
 
 export interface SessionMessageDependencies extends SessionAccessDependencies, Pick<SteerDependencies, "chainSteer"> {
   /** The events API a comment's `session.updated` notice is posted to; without it nothing is posted. */
@@ -177,9 +179,9 @@ async function rateStep(deps: SessionMessageDependencies, session: AgentSessionR
   };
 }
 
-/** The check that the session is still there, so nothing is written into one that was removed since it was read. */
-const sessionStillThere = (deps: SessionMessageDependencies, session: AgentSessionRecord): TransactItem => ({
-  ConditionCheck: { TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"), ConditionExpression: "attribute_exists(pk)" },
+/** The check that the session is still there, so nothing is written into one that was removed since it was read; `open` also needs it not to have ended (a message to the agent is never queued into an ended session). */
+const sessionStillThere = (deps: SessionMessageDependencies, session: AgentSessionRecord, open = false): TransactItem => ({
+  ConditionCheck: { TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"), ConditionExpression: open ? "attribute_exists(pk) AND attribute_not_exists(endedAt)" : "attribute_exists(pk)" },
 });
 
 /** Tells the session's own channel that it changed: ids only, never the feed of anyone (a comment is not something to catch up on). Never throws. */
@@ -218,7 +220,7 @@ async function replayOf(deps: SessionMessageDependencies, session: AgentSessionR
 
 /**
  * Sends a comment on a session [view, and not a project viewer], or (`kind: "steer"`) a message to the agent [use, and not a project viewer; see `steer.ts`]. `requestId` names the request: the
- * same one again answers the same message and writes nothing (for a message to the agent it finishes any delivery a crash left undone), and with other words it is `IDEMPOTENCY_CONFLICT`.
+ * same one again answers the same message and writes nothing (a message to the agent is written with its note and its fate in one transaction, so there is nothing left to finish), and with other words it is `IDEMPOTENCY_CONFLICT`.
  * At most `COMMENT_RATE.comments` comments per person and session in ten minutes, `STEER_RATE` messages to the agent per person and per session in an hour (`TOO_MANY_REQUESTS`), and at
  * most `SESSION_MESSAGES_MAX` of both on a session; an ended session takes comments but not messages to the agent (`SESSION_ENDED`). A paused or stopped task queues a message to the agent, which its next step reads when it resumes.
  */
@@ -239,12 +241,12 @@ export async function sendSessionMessage(
   const { session } = access;
   const fingerprint = sha256(steer ? { op: "steer", sessionId: session.sessionId, source, text: input.text } : { op: "comment", sessionId: session.sessionId, text: input.text });
   const earlier = await replayOf(deps, session, caller.developerId, input.requestId, fingerprint);
-  // A repeated message to the agent that is still queued finishes its delivery (the first try may have died between its message and its note).
-  if (earlier !== undefined) return steer ? await deliverSteer(deps, session, earlier, { isOwner: access.owner }) : earlier;
-  if (steer) await planSteer(deps, session);
-  const text = storedText(input.text, steer ? TOO_LONG_STEER_TEXT : TOO_LONG_TEXT);
+  if (earlier !== undefined) return earlier;
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    // Where a message to the agent goes is read again on every try, so a task that closed, filled up or moved its mark since is seen (a refusal leaves nothing written).
+    const plan = steer ? await planSteer(deps, session) : undefined;
+    const text = storedText(input.text, steer ? TOO_LONG_STEER_TEXT : TOO_LONG_TEXT);
     const nowMs = deps.now();
     const rate = steer ? await rateStep(deps, session, caller.developerId, "steer", STEER_RATE.perPersonPerHour, nowMs, STEER_WINDOW_MS) : await rateStep(deps, session, caller.developerId, "comment", COMMENT_RATE.comments, nowMs);
     if (!rate.room) throw agentXError("TOO_MANY_REQUESTS", steer ? PERSON_STEER_RATE_TEXT : RATE_TEXT);
@@ -253,11 +255,14 @@ export async function sendSessionMessage(
     const name = cleanSessionName(caller.name) ?? "Someone";
     const message = SessionMessageSchema.parse({
       messageId: newMessageId(nowMs, caller.developerId, input.requestId), sessionId: session.sessionId, kind: input.kind, source, author: { developerId: caller.developerId, name }, text, createdAt: isoOf(nowMs), rev: 1,
-      ...(steer ? { delivery: { state: "queued", at: isoOf(nowMs) } } : {}),
+      ...(plan === undefined ? {} : { delivery: plan.kind === "note" ? { state: "queued", at: isoOf(nowMs) } : { state: "not_delivered", at: isoOf(nowMs), reason: plan.reason } }),
     });
-    const event = sessionEventItem(deps, session, steer
+    const events = [sessionEventItem(deps, session, steer
       ? { eventId: sessionEventId("steer", message.messageId), at: message.createdAt, type: "steer", actor: { kind: "member", developerId: caller.developerId, name }, source, messageId: message.messageId, text: `${name} sent ${session.agent?.name ?? "the agent"} a message.` }
-      : { eventId: sessionEventId("comment", message.messageId), at: message.createdAt, type: "comment", actor: { kind: "member", developerId: caller.developerId, name }, source: "app", messageId: message.messageId, text: `${name} commented.` });
+      : { eventId: sessionEventId("comment", message.messageId), at: message.createdAt, type: "comment", actor: { kind: "member", developerId: caller.developerId, name }, source: "app", messageId: message.messageId, text: `${name} commented.` }),
+      // A message that can't be given to the agent says so, in the same transaction.
+      ...(plan?.kind === "not_delivered" ? [steerNotDeliveredEvent(deps, session, message, plan.reason)] : []),
+    ];
     // Where each item sits, for reading a cancellation by position; the event is always last.
     const base: TransactItem[] = [];
     const place = (item: TransactItem) => base.push(item) - 1;
@@ -279,17 +284,24 @@ export async function sendSessionMessage(
         ConditionExpression: "attribute_not_exists(pk)",
       },
     });
-    const SESSION = place(sessionStillThere(deps, session));
+    const SESSION = place(sessionStillThere(deps, session, steer));
     const REQUEST = place(REQUEST_ITEM(deps, session, caller.developerId, input.requestId, fingerprint, message.messageId, nowMs));
+    // A message the task takes is written with its note, the task's count and the session's queue count, so it is never left queued without its note.
+    let noteItems: number[] = [];
+    if (plan?.kind === "note") {
+      const note = sessionNoteItems(deps, plan.task, { taskId: plan.task.taskId, source, developerId: caller.developerId, name, isOwner: access.owner, sessionId: session.sessionId, messageId: message.messageId, text });
+      if (note.outcome === "refused") continue; // the plan read the task a moment ago: read it again
+      noteItems = [place(note.items[0]), place(note.items[1]), place(queuedSteersItem(deps, session, 1, nowMs))];
+    }
     const EVENT = base.length;
     try {
       try {
-        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...base, event] }));
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...base, ...events] }));
       } catch (error) {
-        // The event is never a reason for a message to fail: when only it refuses (it is recorded already), the rest is written without it.
+        // An event is never a reason for a message to fail: when only events refuse (they are recorded already), the rest is written without them.
         const failed = failedIndexes(error);
-        if (failed === undefined || failed.size !== 1 || !failed.has(EVENT)) throw error;
-        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: base }));
+        if (failed === undefined || failed.size === 0 || [...failed].some((index) => index < EVENT)) throw error;
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...base, ...events.filter((_, index) => !failed.has(EVENT + index))] }));
       }
     } catch (error) {
       if (isTransactionConflict(error)) {
@@ -300,21 +312,23 @@ export async function sendSessionMessage(
       // This very request committed already (a retry that crossed its own first try): its message is the answer.
       if (failed.has(REQUEST)) {
         const again = await replayOf(deps, session, caller.developerId, input.requestId, fingerprint);
-        if (again !== undefined) return steer ? await deliverSteer(deps, session, again, { isOwner: access.owner }) : again;
+        if (again !== undefined) return again;
       }
-      if (failed.has(SESSION)) throw agentXError("NOT_FOUND", "session not found");
+      if (failed.has(SESSION)) {
+        // A message to the agent finds out whether the session ended or is gone.
+        if (steer && (await new AgentSessionStore(deps).get(session.orgId, session.sessionId))?.endedAt !== undefined) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
+        throw agentXError("NOT_FOUND", "session not found");
+      }
       if (failed.has(COUNT)) throw agentXError("CONFIG_INVALID", TOO_MANY_TEXT);
+      // The task changed since it was read (it closed, filled up, lost its workflow or a step moved its mark): read it again and build again.
+      if (noteItems.some((index) => failed.has(index))) continue;
       // Another request of this person (or, for a message to the agent, of anyone on the session) took a place since the count was read: read it again.
       if (failed.has(RATE) || failed.has(EVERYONE)) continue;
       if (failed.has(MESSAGE)) throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
       throw error;
     }
     await tellSession(deps, session);
-    if (!steer) return message;
-    const delivered = await deliverSteer(deps, session, message, { isOwner: access.owner });
-    // A message that could not be given to the agent is told to the open pages too.
-    if (delivered.delivery?.state !== "queued") await tellSession(deps, session);
-    return delivered;
+    return message;
   }
   throw agentXError("RUNTIME_UNAVAILABLE", BUSY_TEXT);
 }

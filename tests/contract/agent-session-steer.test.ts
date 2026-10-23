@@ -493,7 +493,7 @@ describe("a task that cannot take a message", () => {
     expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "not_delivered", reason: CAP_REASON } });
     expect(f.notes()).toHaveLength(0);
     expect(f.queued()).toBe(0);
-    expect(f.events().map((item) => item.type)).toEqual(["steer", "steer_not_delivered"]);
+    expect(f.events().map((item) => String(item.type)).sort()).toEqual(["steer", "steer_not_delivered"]);
     expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "steer"))).toMatchObject({ count: 1 });
   });
 
@@ -672,7 +672,7 @@ describe("telling the session that a step took a message", () => {
     f.w.db.set({ ...f.w.db.get(f.metaKey)!, endedAt: "2026-10-22T09:30:00.000Z" });
     f.w.clock.now += 5_000;
     // Not an ended session: nothing is closed.
-    expect(await closeQueuedSteers(f.deps, { ...f.session(), endedAt: undefined } as never)).toBe(0);
+    expect(await closeQueuedSteers(f.deps, { ...f.session(), endedAt: undefined })).toBe(0);
     await settleSteerDeliveries(f.deps, f.session());
     expect(await closeQueuedSteers(f.deps, f.session())).toBe(1);
     const state = (id: string) => (f.w.db.get(agentSessionKey(ORG_A, f.sid, `MESSAGE#${id}`)) as { delivery: Record<string, unknown> }).delivery;
@@ -949,7 +949,7 @@ describe("the edges of a message's route", () => {
     f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }, { Code: "None" }] }, times: 2 });
     expect(await f.send(ARJUN, "hello")).toMatchObject({ delivery: { state: "not_delivered" } });
     expect(f.messageItems()).toHaveLength(1);
-    expect(f.events().map((item) => item.type)).toEqual(["steer", "steer_not_delivered"]);
+    expect(f.events().map((item) => String(item.type)).sort()).toEqual(["steer", "steer_not_delivered"]);
   });
 
   it("answers with the stored message when the first try of this very request committed while this one was being written", async () => {
@@ -1020,7 +1020,7 @@ describe("telling the session, at the edges", () => {
     seedQueued(f, 3);
     f.w.db.delete(sessionQueuedSteersKey(ORG_A, f.sid));
     const noteReads: unknown[] = [];
-    const spy = { send: async (command: { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, unknown> } }) => { if (command.constructor.name === "QueryCommand" && command.input.ExpressionAttributeValues?.[":note"] !== undefined) noteReads.push(command.input); return f.w.db.send(command as never); } };
+    const spy = { send: async (command: { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, unknown> } }) => { if (command.constructor.name === "QueryCommand" && command.input.ExpressionAttributeValues?.[":note"] !== undefined) noteReads.push(command.input); return f.w.db.send(command); } };
     expect(await settleSteerDeliveries({ ...f.deps, documentClient: spy }, f.session())).toBe(0);
     await refreshSessionSummary({ documentClient: spy, tableName: "state", now: () => f.w.clock.now }, ORG_A, f.sid);
     expect(noteReads).toHaveLength(0);

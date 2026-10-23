@@ -20,6 +20,7 @@ import {
   type SessionBinding,
   type SessionId,
 } from "@agentx/contracts";
+import { closeQueuedSteers } from "./steer.js";
 import { AgentSessionStore } from "./store.js";
 import { ENDED_DRAIN_CURSOR_KEY, refreshSessionSummary, type SummaryDependencies } from "./summary.js";
 
@@ -187,6 +188,8 @@ async function drainSession(deps: SummaryDependencies, work: Item, deadline: num
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
     return true;
   }
+  // A message to the agent no step took can never be delivered now: it is closed (the end's own refresh does this; this is the backstop, and a failure here is tried again like any drain failure).
+  await closeQueuedSteers(deps, session);
   const expires = Math.floor(Date.parse(session.endedAt) / 1000) + SESSION_RETENTION_DAYS * SECONDS_PER_DAY;
   const pk = agentSessionKey(session.orgId, session.sessionId, "META").pk;
   let cursor = (work["cursor"] as Cursor | undefined) ?? { prefix: 0 };

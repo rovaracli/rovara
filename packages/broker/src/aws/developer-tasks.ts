@@ -182,6 +182,7 @@ import { admitWork } from "../spend/admission.js";
 import { acceptRunLimit, estimateRun, planRunLimit, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
 import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { cleanUsd } from "../spend/top-ups.js";
+import type { TransactItem } from "../agents/table-writes.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { chargeConflict, chargeItems, developerCharge, limitReached, readWorkspaceLimits, releaseConflict, releaseItems, type ChargeConflict, type WorkspaceLimits } from "../developer/limits.js";
 import {
@@ -5452,65 +5453,74 @@ export async function readWorkflowThreadNotes(
 /** Why a session message's note was not saved: the task closed, has no workflow (its steps take no notes), or already keeps as many notes as it may. */
 export type SessionNoteRefusal = "closed" | "no_workflow" | "full";
 
+export interface SessionNoteInput { taskId: string; source: "app" | "linear"; developerId: string; name: string; isOwner: boolean; sessionId: string; messageId: string; text: string }
+
 /**
- * Plan 5 Task 11a: saves one message a person sent to the agent from a session, as the task's input for its next planning or coding step. It shares `NOTE#`, the task's note count and its
- * cap with a Slack reply, and never touches the task's workflow, approvals, tools or budget: only the note and the count are written, together. The note's key is the message's id, so a
- * message that is saved twice is one note (`duplicate`); the text is redacted again here and cut to the note limit by characters, marked `truncated` when it was cut. A message to a task that
- * is closed, has no workflow or holds all its notes is `refused` with the reason. The note's stamp is after any step's mark, so the next step reads it.
+ * Plan 5 Task 11a: the two writes that save one message a person sent to the agent from a session as the task's input for its next planning or coding step, for the caller to put in its OWN
+ * transaction (the message's, so a message is never left without its note): the note, and the task's note count going up by one. They share `NOTE#`, the count and its cap with a Slack reply, and
+ * never touch the task's workflow, approvals, tools or budget. The note's key is the message's id; the text is redacted again here and cut to the note limit by characters (marked `truncated`
+ * when it was cut). A task that is closed, has no workflow or holds all its notes is `refused` with the reason. The note is stamped after any step's mark, so the next step reads it. The count's
+ * condition holds the task as it was read (open, a workflow, room, the mark), so a task that changed since gives a cancellation at the second item: read the task again and build again.
+ */
+export function sessionNoteItems(
+  deps: Pick<DeveloperTaskRouteDependencies, "tableName" | "now">,
+  task: DeveloperTaskRecord | undefined,
+  input: SessionNoteInput,
+): { outcome: "write"; items: [TransactItem, TransactItem]; receivedAt: string } | { outcome: "refused"; reason: SessionNoteRefusal } {
+  if (task === undefined || task.closedAt !== undefined) return { outcome: "refused", reason: "closed" };
+  if (task.workflow === undefined) return { outcome: "refused", reason: "no_workflow" };
+  if ((task.threadNoteCount ?? 0) >= WORKFLOW_THREAD_NOTES_MAX) return { outcome: "refused", reason: "full" };
+  const trimmed = redactText(input.text).trim();
+  const text = truncateText(trimmed, WORKFLOW_THREAD_NOTE_MAX_CHARS).trim();
+  // A step that took notes through a mark at or after now: stamp this one strictly after it, so it goes to the next step.
+  const mark = task.threadNotesFedThrough;
+  let receivedAt = iso(deps);
+  if (mark !== undefined && mark >= receivedAt) receivedAt = new Date(Math.max(deps.now(), Date.parse(mark) + 1)).toISOString();
+  const note: AppNote = AppNoteSchema.parse({
+    schemaVersion: 1, source: input.source, taskId: task.taskId, developerId: input.developerId, name: input.name, isOwner: input.isOwner, sessionId: input.sessionId, messageId: input.messageId,
+    text, truncated: text.length < trimmed.length, receivedAt, workflowRevision: task.workflow.revision,
+  });
+  return {
+    outcome: "write", receivedAt,
+    items: [putNew(deps.tableName, { pk: `DEVTASK#${task.taskId}`, sk: `NOTE#${note.messageId}`, entityType: "WORKFLOW_THREAD_NOTE", ...note }), noteCountUpdate(deps.tableName, task.taskId, note.receivedAt)],
+  };
+}
+
+/**
+ * `sessionNoteItems`, written on its own: one transaction of the note and the count, tried up to three times while the task changes under it. A message that is saved already is one note
+ * (`duplicate`, whatever the task is doing now).
  */
 export async function recordSessionNote(
   deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "now">,
-  input: { taskId: string; source: "app" | "linear"; developerId: string; name: string; isOwner: boolean; sessionId: string; messageId: string; text: string },
+  input: SessionNoteInput,
 ): Promise<{ outcome: "captured" | "duplicate"; receivedAt: string } | { outcome: "refused"; reason: SessionNoteRefusal }> {
-  const refusal = (task: DeveloperTaskRecord | undefined): SessionNoteRefusal | undefined => {
-    if (task === undefined || task.closedAt !== undefined) return "closed";
-    if (task.workflow === undefined) return "no_workflow";
-    return (task.threadNoteCount ?? 0) >= WORKFLOW_THREAD_NOTES_MAX ? "full" : undefined;
-  };
-  // A message that is saved already is one note, whatever the task is doing now.
-  const saved = await get<{ receivedAt?: unknown }>(deps, { pk: `DEVTASK#${input.taskId}`, sk: `NOTE#${input.messageId}` });
+  const noteKey = { pk: `DEVTASK#${input.taskId}`, sk: `NOTE#${input.messageId}` };
+  const saved = await get<{ receivedAt?: unknown }>(deps, noteKey);
   if (saved !== undefined) return { outcome: "duplicate", receivedAt: typeof saved.receivedAt === "string" ? saved.receivedAt : iso(deps) };
-  const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
-  const refused = refusal(task);
-  if (refused !== undefined || task?.workflow === undefined) return { outcome: "refused", reason: refused ?? "no_workflow" };
-  const trimmed = redactText(input.text).trim();
-  const text = truncateText(trimmed, WORKFLOW_THREAD_NOTE_MAX_CHARS).trim();
-  const workflowRevision = task.workflow.revision;
-  let receivedAt = iso(deps);
+  let task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
   let failure: unknown;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const note: AppNote = AppNoteSchema.parse({
-      schemaVersion: 1, source: input.source, taskId: task.taskId, developerId: input.developerId, name: input.name, isOwner: input.isOwner, sessionId: input.sessionId, messageId: input.messageId,
-      text, truncated: text.length < trimmed.length, receivedAt, workflowRevision,
-    });
+    const built = sessionNoteItems(deps, task, input);
+    if (built.outcome === "refused") return built;
     try {
       // Position 0: the note itself; position 1: the task's count. The cancellation reasons are read by position.
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
-        putNew(deps.tableName, { pk: `DEVTASK#${task.taskId}`, sk: `NOTE#${note.messageId}`, entityType: "WORKFLOW_THREAD_NOTE", ...note }),
-        noteCountUpdate(deps.tableName, task.taskId, note.receivedAt),
-      ] }));
-      return { outcome: "captured", receivedAt };
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: built.items }));
+      return { outcome: "captured", receivedAt: built.receivedAt };
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "TransactionCanceledException") throw error;
       const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
       const code = (index: number) => Array.isArray(reasons) ? (reasons[index] as { Code?: unknown } | undefined)?.Code : undefined;
       if (code(0) === "ConditionalCheckFailed") {
         // This message was saved already: its note is the answer.
-        const saved = await get<{ receivedAt?: unknown }>(deps, { pk: `DEVTASK#${task.taskId}`, sk: `NOTE#${note.messageId}` });
-        return { outcome: "duplicate", receivedAt: typeof saved?.receivedAt === "string" ? saved.receivedAt : receivedAt };
+        const again = await get<{ receivedAt?: unknown }>(deps, noteKey);
+        return { outcome: "duplicate", receivedAt: typeof again?.receivedAt === "string" ? again.receivedAt : built.receivedAt };
       }
-      if (code(1) === "ConditionalCheckFailed") {
-        const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
-        const why = refusal(fresh);
-        if (why !== undefined) return { outcome: "refused", reason: why };
-        // A step took notes through a mark at or after this stamp while this one was being saved: stamp it strictly after the mark and try again.
-        const mark = fresh?.threadNotesFedThrough;
-        if (mark !== undefined && mark >= receivedAt) receivedAt = new Date(Math.max(deps.now(), Date.parse(mark) + 1)).toISOString();
-      }
+      // The task changed since it was read (closed, lost its workflow, filled, or a step moved its mark): read it again; the next build says which.
+      if (code(1) === "ConditionalCheckFailed") task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
       failure = error;
     }
   }
-  // A conflict with another write, or a cancellation with no readable reason, says nothing about the message: fail so it is saved on a retry. Never a silent loss.
+  // A conflict with another write, or a cancellation with no readable reason says nothing about the message: fail so it is saved on a retry. Never a silent loss.
   throw new Error("the session message could not be saved: its transaction was cancelled", { cause: failure });
 }
 
