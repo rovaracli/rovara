@@ -8,6 +8,7 @@ import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import type { AgentCaller } from "../../packages/broker/src/agents/access.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
+import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentRunStarter } from "../../packages/broker/src/agents/runs.js";
 import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, ownerBudgetKey, type AgentId, type OrgId, type PauseScope, type SpendRequestRecord } from "@agentx/contracts";
@@ -48,11 +49,20 @@ export type Reply = { status: number; body: Record<string, unknown> };
 export const refusal = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 export const month = () => new Date().toISOString().slice(0, 7);
 
-export async function setup(options: { decide?: boolean; secondAdmin?: boolean; plan?: "team" | "trial" } = {}) {
+export async function setup(options: {
+  decide?: boolean; secondAdmin?: boolean; plan?: "team" | "trial";
+  /** Task 36: which org each caller belongs to (default: every caller is in the install's org). */
+  orgResolver?: OrgResolver;
+  /** Task 36: the agent route dependencies' extras (default `{}`), such as `modelSources`. */
+  agents?: Record<string, unknown>;
+  /** Task 36: more broker input, spread last (connections, connector types, cloud project defaults). */
+  extra?: Record<string, unknown>;
+} = {}) {
   const { createAgentRouteDependencies, createAgentRunStarter } = await brokerModule();
   const access = fakeModelAccess();
   const h = await createDeveloperTaskBroker({
-    brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true, ...(options.decide === true ? { decide: {} } : {}) },
+    ...(options.orgResolver === undefined ? {} : { orgResolver: options.orgResolver }),
+    brokerExtra: { agents: options.agents ?? {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true, ...(options.decide === true ? { decide: {} } : {}), ...options.extra },
   });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
