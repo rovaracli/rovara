@@ -107,7 +107,7 @@ export function sessionWorld() {
       db.set({
         ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: options.taskOrgId ?? orgId, developerId: owner, developerName: NAMES[owner] ?? "Someone", provider: "oidc",
         project: projectName ?? "web", workspaceId: randomUUID(), ownerKey: `owner-${owner.slice(0, 6)}`, sessionId, createdAt, updatedAt: createdAt,
-        ...(options.currentOwner === undefined ? {} : { currentOwner: { developerId: options.currentOwner, since: createdAt } }),
+        ...(options.currentOwner === undefined ? {} : { currentOwner: { developerId: options.currentOwner, name: NAMES[options.currentOwner] ?? "Someone", provider: "oidc", since: createdAt } }),
       });
       if (options.people !== undefined) {
         db.set({

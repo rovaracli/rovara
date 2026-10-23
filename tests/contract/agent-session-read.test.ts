@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
-import { agentXError, agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sharedSessionsKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { LIVE_INDEX_SCAN_MAX, agentXError, agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sharedSessionsKey, type OrgId } from "../../packages/contracts/src/index.js";
 import {
   NeedsConfirmationSchema,
   SessionListReaderSchema,
@@ -19,6 +19,7 @@ import {
   SessionViewSchema,
 } from "../../packages/contracts/src/index.js";
 import { createTaskSessionItems, ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
+import { requireSessionLevel } from "../../packages/broker/src/agent-sessions/access.js";
 import { listSessions, sessionStepTask, sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
 import { isAgentSessionRoute } from "../../packages/broker/src/agent-sessions/routes.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
@@ -52,7 +53,7 @@ function readWorld(extra: Partial<SessionReadDependencies> = {}, viewExtra: Reco
   const w = sessionWorld();
   const calls: ViewCall[] = [];
   const deps: SessionReadDependencies = {
-    documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL,
+    documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
     taskView: async (task, options) => {
       calls.push({ taskId: task.taskId, options });
       return taskViewOf(task, viewExtra) as never;
@@ -226,6 +227,43 @@ describe("reading a task session", () => {
   });
 });
 
+describe("a taken-over session names its effective owner (review m-4)", () => {
+  it("shows the taker as the owner in the header and in the tile, and the previous owner as someone who doesn't own it", async () => {
+    const r = readWorld();
+    const { sessionId } = r.w.seedSession({ currentOwner: ARJUN });
+    r.index(sessionId);
+    const seen = await view(r, PRIYA, sessionId);
+    expect(seen.owner).toEqual({ developerId: ARJUN, name: "Arjun" });
+    expect(seen.you).toMatchObject({ owner: false });
+    expect((await view(r, ARJUN, sessionId)).owner).toEqual({ developerId: ARJUN, name: "Arjun" });
+    expect((await view(r, ARJUN, sessionId)).you.owner).toBe(true);
+    // A session nobody took over keeps its own owner.
+    const plain = r.w.seedSession();
+    expect((await view(r, ARJUN, plain.sessionId)).owner).toEqual({ developerId: PRIYA, name: "Priya" });
+  });
+
+  it("tells a person who needs more to ask the effective owner, not the one who handed it over", async () => {
+    const r = readWorld();
+    const { sessionId } = r.w.seedSession({ currentOwner: ARJUN });
+    const refused = await code(requireSessionLevel(r.deps, r.w.caller(PRIYA), sessionId, "edit", "stop it"));
+    expect(refused).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(refused?.message).toContain("Ask Arjun to share it with you");
+    expect(refused?.message).not.toContain("Priya");
+    // The same text for a session nobody took over names its owner.
+    const plain = r.w.seedSession();
+    expect((await code(requireSessionLevel(r.deps, r.w.caller(ARJUN), plain.sessionId, "edit", "stop it")))?.message).toContain("Ask Priya to share it with you");
+  });
+
+  it("never names the previous owner when the taker's name isn't recorded", async () => {
+    const r = readWorld();
+    const { sessionId, taskId } = r.w.seedSession({ currentOwner: ARJUN });
+    const { name: _name, ...taker } = (r.w.db.get(taskKey(taskId)) as { currentOwner: Record<string, unknown> }).currentOwner; // eslint-disable-line @typescript-eslint/no-unused-vars -- removed on purpose
+    r.w.db.set({ ...r.w.db.get(taskKey(taskId))!, currentOwner: taker });
+    expect((await view(r, PRIYA, sessionId)).owner).toEqual({ developerId: ARJUN, name: "the owner" });
+    expect((await code(requireSessionLevel(r.deps, r.w.caller(PRIYA), sessionId, "edit", "stop it")))?.message).toContain("Ask the owner to share it with you");
+  });
+});
+
 describe("reading a local session", () => {
   it("shows the tool and whether the Mac is offline, and only to the owner and the people it was shared with", async () => {
     const r = readWorld();
@@ -372,6 +410,74 @@ describe("listing sessions", () => {
     const bad = await code(listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", cursor: "x".repeat(50) }));
     expect(bad).toMatchObject({ code: "CONFIG_INVALID" });
     expect(bad?.message).not.toContain("xxxx");
+  });
+
+  describe("the cursor (review m-1)", () => {
+    const flip = (text: string, at: number) => `${text.slice(0, at)}${text[at] === "A" ? "B" : "A"}${text.slice(at + 1)}`;
+    const readable = (text: string) => [text, Buffer.from(text, "base64url").toString("latin1"), ...text.split(".").map((part) => Buffer.from(part, "base64url").toString("latin1"))].join("\n");
+
+    it("never names a session the caller can't see, even when the scan cap stops the page", async () => {
+      const r = readWorld();
+      // The caller has no role on ops, and the scan stops at its cap on rows of sessions they can't see.
+      for (let n = 0; n <= LIVE_INDEX_SCAN_MAX; n += 1) {
+        const sessionId = `ses_${String(700000 + n).padStart(20, "0")}`;
+        const createdAt = new Date(Date.parse("2026-10-21T00:00:00.000Z") + n * 1000).toISOString();
+        r.w.db.set({ ...projectSessionsKey(ORG_A, "ops", createdAt, sessionId), entityType: "PROJECT_SESSION", orgId: ORG_A, sessionId, project: "ops", createdAt });
+      }
+      const page = await listSessions(r.deps, r.w.caller(ZED), { project: "ops" });
+      expect(page.sessions).toEqual([]);
+      expect(page.next).toEqual(expect.any(String));
+      const shown = readable(page.next!);
+      expect(shown).not.toMatch(/ses_[0-9a-z]{20}/);
+      expect(shown).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+      // The cursor still works: the one row left is read, and nothing more is promised.
+      const rest = await listSessions(r.deps, r.w.caller(ZED), { project: "ops", cursor: page.next! });
+      expect(rest).toEqual({ sessions: [] });
+    });
+
+    it("is refused when any part of it changes, and is bound to the list and the person it was given to", async () => {
+      const l = listWorld();
+      const first = await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2 });
+      const cursor = first.next!;
+      expect(ids(await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor }))).toEqual([l.a, l.d]);
+      const changed = [flip(cursor, 0), flip(cursor, 5), flip(cursor, Math.floor(cursor.length / 2)), flip(cursor, cursor.length - 1), cursor.slice(0, -1), `${cursor}A`, cursor.toUpperCase(), ""];
+      for (const bad of changed) {
+        if (bad === cursor) continue;
+        const refused = await code(listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor: bad }));
+        expect(refused, bad).toMatchObject({ code: "CONFIG_INVALID" });
+        expect(refused?.message).not.toContain(bad.slice(0, 12));
+      }
+      // Another list, and another person's list, refuse it too.
+      expect(await code(listSessions(l.deps, l.w.caller(PRIYA), { project: "web", limit: 2, cursor }))).toMatchObject({ code: "CONFIG_INVALID" });
+      expect(await code(listSessions(l.deps, l.w.caller(ARJUN), { owner: "me", limit: 2, cursor }))).toMatchObject({ code: "CONFIG_INVALID" });
+      const project = await listSessions(l.deps, l.w.caller(ARJUN), { project: "web", limit: 1 });
+      expect(project.next).toEqual(expect.any(String));
+      expect(await code(listSessions(l.deps, l.w.caller(MIA), { project: "web", limit: 1, cursor: project.next! }))).toMatchObject({ code: "CONFIG_INVALID" });
+      // A key the server no longer holds: the old cursors stop working.
+      expect(await code(listSessions({ ...l.deps, cursorKey: "z".repeat(64) }, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor }))).toMatchObject({ code: "CONFIG_INVALID" });
+    });
+
+    it("answers RUNTIME_UNAVAILABLE rather than a list it can't sign, when no cursor key is set", async () => {
+      const l = listWorld();
+      const { cursorKey: _key, ...without } = l.deps; // eslint-disable-line @typescript-eslint/no-unused-vars -- removed on purpose
+      expect(await code(listSessions(without as never, l.w.caller(PRIYA), { owner: "me" }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    });
+  });
+
+  it("asks the project channel for the caller's role once per request, not once per row (review m-2)", async () => {
+    const r = readWorld();
+    r.w.members.channel(ORG_A, "web", ZED);
+    const made = Array.from({ length: 6 }, (_, n) => r.w.seedSession({ owner: n % 2 === 0 ? PRIYA : ARJUN }).sessionId);
+    made.forEach((id, n) => r.index(id, `2026-10-22T08:0${String(n)}:00.000Z`));
+    r.w.members.calls.length = 0;
+    const page = await listSessions(r.deps, r.w.caller(ZED), { project: "web" });
+    expect(page.sessions).toHaveLength(6);
+    expect(r.w.members.calls.filter((call) => call === "roleOf web")).toHaveLength(1);
+    // A person with no role at all costs one lookup too, and sees nothing.
+    r.w.members.calls.length = 0;
+    expect((await listSessions(r.deps, r.w.caller(BO, ORG_B), { project: "web" })).sessions).toEqual([]);
+    const other = r.w.members.calls.length;
+    expect(other).toBeLessThanOrEqual(1);
   });
 
   it("drops an index row that names another org, and refuses a limit outside 1 to 100", async () => {
