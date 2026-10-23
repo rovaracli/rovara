@@ -1,6 +1,7 @@
 // A task session is created with the run it wraps (Plan 5 Task 2): `createTaskSessionItems` returns the items that join the run's own start
 // transaction, so the task and its session exist together or not at all.
 import { createHash } from "node:crypto";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentSessionRecordSchema,
   SESSION_TITLE_MAX,
@@ -122,3 +123,74 @@ export function createTaskSessionItems(table: TableInput, input: TaskSessionInpu
   ];
 }
 
+
+// ---- a task from before sessions
+
+/** What a lazy creation reads of a task record. */
+export interface LazySessionTask {
+  taskId: string;
+  orgId?: OrgId | undefined;
+  sessionId?: string | undefined;
+  project: string;
+  developerId: string;
+  createdAt: string;
+  agent?: { agentId: string; name: string; version: number | "draft" } | undefined;
+  origin?: WorkOrigin | undefined;
+  payer?: Payer | undefined;
+  startedBy?: { developerId: string } | undefined;
+  chain?: { chainRunId: string; stepId: string } | undefined;
+}
+
+/**
+ * The one session id a task gets when it is made after the fact: derived from the task id, so two first reads that race write the same item and
+ * the loser's transaction is refused instead of making a second session.
+ */
+export function lazySessionId(taskId: string): string {
+  return `ses_${sha256(`task-session\n${taskId}`).slice(0, 20)}`;
+}
+
+/**
+ * Gives a task started before sessions its session, the first time it is read (a ruling of 2026-10-22: no sweep). One transaction writes the session
+ * items and names the session on the task, conditioned on the task having none and belonging to this org, so a repeat or a racing read finds the
+ * first one. The starter comes from `sessionStarterFor` (a trigger is not kept on a task, so a scheduled or event run from before skips); a chain
+ * step's task, a task with no starter, agent or origin, and a task of another org are skipped. Never throws: a failure is a task with no session
+ * yet, which the next read tries again. `input.title` has already been through `inertTaskTitle`. The session is stamped with the task's own
+ * creation time, so it sorts where the task started; the sweep (Task 7a) corrects its summary.
+ */
+export async function ensureTaskSession(
+  table: TableInput,
+  task: LazySessionTask,
+  input: { ownerName: string; title: string },
+): Promise<string | undefined> {
+  try {
+    if (task.sessionId !== undefined) return task.sessionId;
+    const startedBy = sessionStarterFor({ trigger: undefined, startedBy: task.startedBy, chain: task.chain });
+    if (startedBy === undefined || task.orgId === undefined || task.agent === undefined || task.origin === undefined) return undefined;
+    const sessionId = lazySessionId(task.taskId);
+    const key = { pk: `DEVTASK#${task.taskId}`, sk: "META" };
+    const items: TransactItem[] = [
+      ...createTaskSessionItems(table, {
+        orgId: task.orgId, sessionId, taskId: task.taskId, project: task.project, agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version },
+        title: input.title, owner: { developerId: task.developerId, name: input.ownerName }, startedBy, origin: task.origin,
+        payer: task.payer ?? { kind: "member", developerId: task.developerId }, now: task.createdAt,
+      }),
+      {
+        Update: {
+          TableName: table.tableName, Key: key, UpdateExpression: "SET sessionId = :sessionId",
+          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(sessionId) AND orgId = :orgId",
+          ExpressionAttributeValues: { ":sessionId": sessionId, ":orgId": task.orgId },
+        },
+      },
+    ];
+    try {
+      await table.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      return sessionId;
+    } catch {
+      // Someone made it first (or the task changed): what the task says now is the answer.
+      const stored = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true }))) as { Item?: { sessionId?: unknown; orgId?: unknown } };
+      return stored.Item?.orgId === task.orgId && typeof stored.Item.sessionId === "string" ? stored.Item.sessionId : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+}

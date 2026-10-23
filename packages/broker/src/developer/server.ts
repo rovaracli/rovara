@@ -108,7 +108,10 @@ export type ChannelMembersResult = ChannelMembersResponse | { ok: false; error: 
 
 const CHALLENGE = /^[A-Za-z0-9_-]{43,128}$/;
 // The PR-feedback review page, or the read-only task page, which may name one document and the earlier version it came from.
-const REVIEW_RETURN_TO = /^\/review\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/task(?:\?doc=(?:requirements|design|coding-plan)(?:&from=[1-9][0-9]{0,2})?)?)?$/i;
+/** A session's link (Plan 5): a person who followed `/s/<id>` signed out comes back to it. Only a real session id shape, no query. */
+const SESSION_RETURN_TO = /^\/s\/(?:ses|crn)_[0-9a-z]{20}$/;
+const REVIEW_RETURN_TO_PATH = /^\/review\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/task(?:\?doc=(?:requirements|design|coding-plan)(?:&from=[1-9][0-9]{0,2})?)?)?$/i;
+const REVIEW_RETURN_TO = { test: (value: string) => REVIEW_RETURN_TO_PATH.test(value) || SESSION_RETURN_TO.test(value) };
 const REVIEW_PKCE_COOKIE = "__Host-agentx_review_pkce";
 const REVIEW_SESSION_COOKIE = "__Host-agentx_review_session";
 /** The join page's own PKCE cookie: the browser that opened an invite is the only one that may read how its join ended. */

@@ -382,6 +382,7 @@ import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, orgRoleOf, type ProjectMembers } from "../agents/access.js";
 import { escalateOwnerRequests, requestForPausedTask, runLimitRequester, spendDecideKind, type SpendRequestHost } from "../spend/requests.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
+import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
@@ -601,7 +602,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; modelSources?: ModelSourceBrokerOptions; sessions?: Pick<SessionAccessDependencies, "chainReadAccess" | "chain"> } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -679,6 +680,8 @@ const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 /** The hosted app's routes (Plan 2): authorizer-free like /v1/dev, the broker verifies the same developer token itself. */
 const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
+/** A session's link (Plan 5, Task 5), served to a browser like the review pages. The API route for it is added with the web app (Plan 7). */
+const SESSION_LINK_ROUTE_KEY = "ANY /s/{proxy+}";
 
 /** The install's environment name: what its single org (ruling R3) and the default org resolver derive from. */
 function brokerEnvironmentName(dependencies: Pick<AwsBrokerDependencies, "environmentName" | "developer">): string {
@@ -1001,6 +1004,13 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   };
   // Plan 3, Task 22: what the agent-step engine needs of the broker, on the same dependencies (it reads the approvals through them).
   routeDependencies.agentRuns = agentRunHostOf(dependencies, tasks, routeDependencies);
+  // Plan 5, Task 5: what session levels, shares and reads need, on the same table and project members. Plan 4's readers of a chain are injected through
+  // `agents.sessions`; without them nobody reads a chain session through the project or the chain (only its owner, its shares and maintainers do): fail closed.
+  routeDependencies.agentSessions = {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: () => Date.now(), projectMembers, signInStore,
+    chainReadAccess: agents.sessions?.chainReadAccess ?? (async () => false),
+    ...(agents.sessions?.chain === undefined ? {} : { chain: agents.sessions.chain }),
+  };
   // Plan 3, Task 32: what an approved spend request does with its task (the owner's resume, continue-as-task) and what a task's keys have spent.
   routeDependencies.spendRequests = spendRequestHostOf(dependencies, tasks, routeDependencies);
   // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding
@@ -1681,8 +1691,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // The browser page uses its own opaque revocable session cookie and reauthorizes each
       // request. Only API Gateway's exact public review route may reach this branch.
       // The audit page (`/v1/app/audit/view`) is a browser page of the same kind: its own session cookie, no API Gateway authorizer.
-      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || isAuditViewPath(url.pathname)) {
-        if (!(url.pathname.startsWith("/review/") || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
+      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || event.routeKey === SESSION_LINK_ROUTE_KEY || isAuditViewPath(url.pathname)) {
+        if (!(url.pathname.startsWith("/review/") || (event.routeKey === SESSION_LINK_ROUTE_KEY && url.pathname.startsWith("/s/")) || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
@@ -1693,6 +1703,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...repositoriesGateRoute(dependencies),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+          ...(agents?.agentSessions === undefined ? {} : { agentSessions: agents.agentSessions }),
           refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url) as { statusCode: number; headers: Record<string, string>; body: string };
       }
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
@@ -7036,7 +7047,7 @@ async function authorizeSlackTaskAction(dependencies: AwsBrokerDependencies, tas
   // This signed UI port reports the current lifecycle state (for example, a retired button) after
   // a fresh read+role check. The separately invoked mutation route still requires an open task.
   const access = await resolveTaskAccess(routeDeps, caller, taskId, "read");
-  if (!can(access.role, event.taskAction)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  if (!can(access.role, event.taskAction, access.source)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   // The button's press is gated like the action behind it: a project viewer (an owner lowered to viewer included) is not offered work.
   if (WORK_ACTIONS.includes(event.taskAction)) await requireProjectWorkRole(routeDeps, access.task, caller);
   if (access.task.share?.teamId !== thread.teamId || access.task.share.channelId !== thread.channelId || access.task.share.threadTs !== thread.threadTs) {

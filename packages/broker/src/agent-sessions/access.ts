@@ -26,13 +26,28 @@ import {
   type AgentSessionRecord,
   type OrgId,
   type OrgRole,
+  type DeveloperTaskView,
   type ProjectRole,
+  type SessionAction,
   type SessionLevel,
 } from "@agentx/contracts";
 import type { ProjectMembers } from "../agents/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { taskKey } from "../developer/task-records.js";
 import { AgentSessionStore } from "./store.js";
+
+/** Who asks Plan 4 for a chain's view: the internal session actor Plan 5 passes after its own level check (Plan 4, M2). No route, header or body can set it. */
+export interface ChainSessionActor { kind: "session"; developerId: string }
+
+/**
+ * Plan 4's chain reads, injected where Plan 4 is merged: `chainRunView` and `chainStepTask` called with the session actor. `stepTask` keeps its own
+ * project-role requirement; Plan 5 checks the same one first, so the answer is the same without Plan 4's. Until they are supplied a chain session's
+ * body and step tasks answer `RUNTIME_UNAVAILABLE`.
+ */
+export interface ChainSessionReads {
+  runView(actor: ChainSessionActor, runId: string): Promise<unknown>;
+  stepTask(actor: ChainSessionActor, runId: string, seq: number): Promise<DeveloperTaskView>;
+}
 
 export interface SessionAccessDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -42,6 +57,8 @@ export interface SessionAccessDependencies {
   projectMembers: Pick<ProjectMembers, "roleOf">;
   /** Plan 4's readers of a chain run (the starter, the run's owner, `view` on the chain and the project, org owners and admins). Without it only the owner and shares see a chain session. */
   chainReadAccess?: (caller: { orgId: OrgId; developerId: string }, session: AgentSessionRecord) => Promise<boolean>;
+  /** Plan 4's chain reads (see `ChainSessionReads`). */
+  chain?: ChainSessionReads;
 }
 
 /** Who is asking: `DeveloperCaller` fits. Their org role is read from the org's member record, never taken from here. */
@@ -55,9 +72,11 @@ export interface SessionAccess {
   projectRole?: ProjectRole;
   /** An org owner or admin, on a task or chain session: they may stop it (`view` plus Stop). */
   orgAdmin: boolean;
+  /** The caller's role in the org, read from their member record with the rest of the access. */
+  orgRole: OrgRole;
 }
 
-export type SessionAction = "watch" | "comment" | "steer" | "stop" | "retry" | "take_over" | "share" | "handoff";
+export type { SessionAction };
 
 export interface SessionAccessOptions {
   /** The realtime authorizer's path: grant rows, shares and the Task People item are read directly, and no Slack call is made. */
@@ -124,7 +143,7 @@ async function peopleRoleOf(deps: SessionAccessDependencies, taskId: string, dev
 
 // ---- the level
 
-interface Computed { level: "none" | SessionLevel; owner: boolean; projectRole: ProjectRole | undefined; orgAdmin: boolean }
+interface Computed { level: "none" | SessionLevel; owner: boolean; projectRole: ProjectRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
 
 async function compute(deps: SessionAccessDependencies, caller: SessionCaller, orgRole: OrgRole, session: AgentSessionRecord, options: SessionAccessOptions): Promise<Computed> {
   const { orgId } = caller;
@@ -187,7 +206,7 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
 
   // A project viewer who isn't the owner only watches, whatever a share or a people entry says.
   if (!owner && projectRole === "viewer" && RANK[level] > RANK.view) level = "view";
-  return { level, owner, projectRole, orgAdmin };
+  return { level, owner, projectRole, orgAdmin, orgRole };
 }
 
 /**
@@ -215,7 +234,7 @@ export async function sessionLevelOf(deps: SessionAccessDependencies, caller: Se
 
 function finish(session: AgentSessionRecord, computed: Computed): SessionAccess {
   if (computed.level === "none") throw NOT_FOUND();
-  return { session, level: computed.level, owner: computed.owner, orgAdmin: computed.orgAdmin, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }) };
+  return { session, level: computed.level, owner: computed.owner, orgAdmin: computed.orgAdmin, orgRole: computed.orgRole, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }) };
 }
 
 export interface RequireOptions extends SessionAccessOptions {

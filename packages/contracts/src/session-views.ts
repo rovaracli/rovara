@@ -6,6 +6,10 @@
 import { z } from "zod";
 import {
   AGENT_SESSION_CONTRACT_VERSION,
+  SESSION_ACTIONS,
+  SESSION_SHARES_MAX,
+  LocalToolSchema,
+  SessionActionSchema,
   HOME_CARDS_MAX,
   HOME_CARD_BUTTONS_MAX,
   LIVE_PAGE_MAX,
@@ -19,12 +23,12 @@ import {
   SessionLegSchema,
   SessionOwnerSchema,
   SessionStartedBySchema,
-  SessionSubjectSchema,
   SessionSummarySchema,
   SessionWhereSchema,
   SESSION_LEGS_MAX,
 } from "./agent-sessions.js";
-import { WorkOriginSchema } from "./agent-run.js";
+import { AgentPrincipalSchema } from "./agent.js";
+import { DeveloperTaskViewSchema } from "./developer-tasks.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 
 const UNKNOWN = "unknown" as const;
@@ -96,38 +100,101 @@ function readerOf(schema: z.ZodType): z.ZodType {
 // ---- the session as one person reads it
 
 const LinkSchema = z.string().url().max(URL_MAX);
+const CountSchema = z.number().int().min(0);
 
-/** One person's reading of one session: the header, the summary, and what the caller may do and is doing. */
+/**
+ * What Plan 4's `chainRunView` answers for a chain session's body. Plan 4 is not on this branch, so the body is read as an object whose fields
+ * are kept as they come. TODO(Plan 4 merge): replace with `ChainRunViewSchema` from `packages/contracts/src/chain-session.ts`.
+ */
+export const ChainRunViewPlaceholderSchema = z.looseObject({});
+
+/** Who pays for a session: the kind and a name to show (a person, a project or an agent). */
+const PayerNameSchema = z.object({ kind: z.enum(["member", "project", "agent"]), name: z.string().min(1).max(200) }).strict();
+
+/**
+ * One person's reading of one session: the header, its cost, what they may do, and the work itself (`body`). `approvals` are the caller's own
+ * pending decisions on this session and `cost.paused.confirmUrl` is the link of a budget request they may decide: bare `/v1/app/approve/<id>`
+ * links, never present for a person who may not decide, and never holding what is being approved (the confirmation page shows that).
+ */
 export const SessionViewSchema = z
   .object({
     contractVersion: z.literal(AGENT_SESSION_CONTRACT_VERSION),
     sessionId: SessionIdSchema,
     kind: z.enum(SESSION_KINDS),
     mode: z.enum(SESSION_MODES),
-    subject: SessionSubjectSchema,
-    legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
-    where: SessionWhereSchema,
+    title: z.string().min(1),
     project: z.string().regex(AGENTX_NAME_PATTERN).optional(),
     agent: SessionAgentSchema.optional(),
-    title: z.string().min(1),
     owner: SessionOwnerSchema,
     startedBy: SessionStartedBySchema,
-    origin: z.union([WorkOriginSchema, z.literal("local")]),
-    retryOf: SessionIdSchema.optional(),
-    followerCount: z.number().int().min(0),
-    following: z.boolean(),
-    viewing: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().min(1) }).strict()).max(PRESENCE_VIEWERS_MAX),
-    level: z.enum(SESSION_LEVELS),
+    where: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("cloud") }).strict(),
+      z.object({ kind: z.literal("mac"), label: z.string().min(1).max(200), offline: z.boolean() }).strict(),
+    ]),
+    status: SessionSummarySchema.shape.status,
+    step: SessionSummarySchema.shape.step,
+    peek: SessionSummarySchema.shape.peek,
+    lastRunFailed: SessionSummarySchema.shape.lastRunFailed,
+    cost: z
+      .object({
+        spentUsd: z.number().min(0),
+        runLimitUsd: z.number().min(0).optional(),
+        stopAtUsd: z.number().min(0).optional(),
+        payer: PayerNameSchema,
+        paused: z.object({ scope: z.string().min(1).max(100), spendRequestId: z.string().min(1).max(100).optional(), confirmUrl: LinkSchema.optional() }).strict().optional(),
+      })
+      .strict(),
+    approvals: z.array(z.object({ approvalId: z.string().min(1).max(100), title: z.string().min(1).max(300), confirmUrl: LinkSchema }).strict()).max(50),
+    followers: CountSchema,
+    viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX),
+    you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length) }).strict(),
     link: LinkSchema,
-    revision: z.number().int().min(0),
-    summary: SessionSummarySchema,
+    bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue"]), url: LinkSchema }).strict()).max(2),
+    legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
+    retryOf: SessionIdSchema.optional(),
+    /** The session's revision: what a change to it (a take-over, a share) is asked against. */
+    revision: CountSchema,
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
     endedAt: InstantSchema.optional(),
+    body: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("task"), task: DeveloperTaskViewSchema }).strict(),
+      z.object({ kind: z.literal("chain"), chain: ChainRunViewPlaceholderSchema }).strict(),
+      z.object({ kind: z.literal("local"), tool: LocalToolSchema }).strict(),
+    ]),
   })
   .strict();
 export type SessionView = z.infer<typeof SessionViewSchema>;
 export const SessionViewReaderSchema = forwardReader(SessionViewSchema);
+
+/** `GET /v1/app/sessions/{id}`. */
+export const SessionResponseSchema = z.object({ session: SessionViewSchema }).strict();
+export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);
+
+/** `GET /v1/app/sessions/{id}/sections/{seq}/task`: a chain step's task, as the task view shows it. */
+export const SessionStepTaskResponseSchema = z.object({ task: DeveloperTaskViewSchema }).strict();
+export const SessionStepTaskResponseReaderSchema = forwardReader(SessionStepTaskResponseSchema);
+
+/** One share on a session, as `GET .../shares` lists it. */
+export const SessionShareSchema = z
+  .object({
+    principal: AgentPrincipalSchema,
+    level: z.enum(SESSION_LEVELS),
+    sharedBy: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().min(1) }).strict(),
+    sharedAt: InstantSchema,
+  })
+  .strict();
+export type SessionShare = z.infer<typeof SessionShareSchema>;
+export const SessionShareReaderSchema = forwardReader(SessionShareSchema);
+/** `GET /v1/app/sessions/{id}/shares`. */
+export const SessionSharesResponseSchema = z.object({ shares: z.array(SessionShareSchema).max(SESSION_SHARES_MAX) }).strict();
+export const SessionSharesResponseReaderSchema = forwardReader(SessionSharesResponseSchema);
+/** `PUT /v1/app/sessions/{id}/shares` when it applies at once (a person or a project); a company-wide share answers `NeedsConfirmationSchema` with 202. */
+export const SessionSharePutResponseSchema = z.object({ share: SessionShareSchema }).strict();
+export const SessionSharePutResponseReaderSchema = forwardReader(SessionSharePutResponseSchema);
+/** `DELETE /v1/app/sessions/{id}/shares/{principalKey}`. */
+export const SessionShareDeleteResponseSchema = z.object({ removed: z.boolean() }).strict();
+export const SessionShareDeleteResponseReaderSchema = forwardReader(SessionShareDeleteResponseSchema);
 
 /** One session on the Live wall, a project page or a Home card: the header's short form. */
 export const SessionTileSchema = z
@@ -150,6 +217,11 @@ export const SessionTileSchema = z
   .strict();
 export type SessionTile = z.infer<typeof SessionTileSchema>;
 export const SessionTileReaderSchema = forwardReader(SessionTileSchema);
+
+/** `GET /v1/app/sessions`: one page of sessions, newest first; `next` is opaque, passed back as `cursor`. */
+export const SessionListSchema = z.object({ sessions: z.array(SessionTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();
+export type SessionList = z.infer<typeof SessionListSchema>;
+export const SessionListReaderSchema = forwardReader(SessionListSchema);
 
 export const SessionEventReaderSchema = forwardReader(SessionEventSchema);
 

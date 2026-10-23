@@ -6,6 +6,8 @@ import { effectiveProjectRole, viewerCannotStartTasksMessage } from "./project-r
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
+import { resolveSessionAccess } from "../agent-sessions/access.js";
+import { AgentSessionStore } from "../agent-sessions/store.js";
 import { taskKey, taskOwnerKey, type DeveloperTaskRecord } from "./task-records.js";
 
 export type { TaskRole } from "./task-people.js";
@@ -83,7 +85,12 @@ export async function projectWorkAllowed(
   }
 }
 
-export function can(role: TaskRole, action: TaskAction): boolean {
+/** Where a reader's role came from, when it isn't the task's own rules: a session level (Plan 5) lets them read the task and nothing more. */
+export type TaskAccessSource = "session";
+
+export function can(role: TaskRole, action: TaskAction, source?: TaskAccessSource): boolean {
+  // A viewer through a session may read; `takeOwnership` is open to a viewer through Task People, but not to one who only holds a session level.
+  if (source === "session" && action !== "read" && action !== "peopleRead") return false;
   return TASK_ACTION_ROLES[action].includes(role);
 }
 
@@ -91,6 +98,8 @@ export function can(role: TaskRole, action: TaskAction): boolean {
 export interface TaskAccess {
   task: DeveloperTaskRecord;
   role: TaskRole;
+  /** Set when the access is a session level (Plan 5): a viewer who may only read. */
+  source?: TaskAccessSource;
   peopleRevision?: number;
   ownerActorIds: readonly string[];
 }
@@ -98,7 +107,7 @@ export interface TaskAccess {
 const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 type AccessDependencies = Pick<DeveloperTaskRouteDependencies,
-  "documentClient" | "tableName" | "checkAccess" | "channelMember" | "slackTeamId" | "log" | "now" | "taskPeopleConfiguration" | "checkTaskPerson">;
+  "documentClient" | "tableName" | "checkAccess" | "channelMember" | "slackTeamId" | "log" | "now" | "taskPeopleConfiguration" | "checkTaskPerson" | "agentSessions">;
 
 const log = (deps: Pick<DeveloperTaskRouteDependencies, "log">, entry: Record<string, unknown>) =>
   (deps.log ?? ((line) => console.log(JSON.stringify({ component: "broker", ...line }))))(entry);
@@ -116,7 +125,40 @@ export async function resolveTaskAccess(deps: AccessDependencies, caller: Develo
   return access;
 }
 
+/**
+ * The task's own rules first; a reader they refuse who holds a session level on the task's session (Plan 5, reconciliation 10) reads it as a
+ * `viewer` with source `session`: for `read` and `peopleRead` only, never for taking ownership or any work action.
+ */
 async function resolveTaskRole(deps: AccessDependencies, caller: DeveloperCaller, taskId: string, action?: TaskAction): Promise<TaskAccess> {
+  try {
+    return await resolveTaskRoleByTask(deps, caller, taskId, action);
+  } catch (error) {
+    if (action === undefined || action === "read" || action === "peopleRead") {
+      const viaSession = await sessionViewerAccess(deps, caller, taskId);
+      if (viaSession !== undefined) return viaSession;
+    }
+    throw error;
+  }
+}
+
+/** A reader whose session level lets them view the task's session: undefined when they have none or anything can't be checked (fail closed). */
+async function sessionViewerAccess(deps: AccessDependencies, caller: DeveloperCaller, taskId: string): Promise<TaskAccess | undefined> {
+  const sessions = deps.agentSessions;
+  if (sessions === undefined || !TASK_ID.test(taskId)) return undefined;
+  try {
+    const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
+    const task = response.Item;
+    if (task === undefined || task.orgId !== caller.orgId) return undefined;
+    const session = await new AgentSessionStore(sessions).getForTask(caller.orgId, task);
+    if (session === undefined) return undefined;
+    await resolveSessionAccess(sessions, caller, session.sessionId);
+    return { task, role: "viewer", source: "session", ownerActorIds: [] };
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveTaskRoleByTask(deps: AccessDependencies, caller: DeveloperCaller, taskId: string, action?: TaskAction): Promise<TaskAccess> {
   const notFound = () => agentXError("TASK_NOT_FOUND", "no task here that you can see");
   if (!TASK_ID.test(taskId)) throw notFound();
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true })) as { Item?: DeveloperTaskRecord };

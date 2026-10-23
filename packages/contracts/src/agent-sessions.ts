@@ -159,6 +159,11 @@ export const LOCAL_TOOLS = ["rovara", "claude-code", "codex", "gemini-cli", "cur
 export const SESSION_LEVELS = ["view", "use", "edit"] as const;
 export const LEVEL_WORDS = { view: "can view", use: "can use", edit: "can edit" } as const;
 
+/** What a person may do on a session (`sessionActionsFor` in the broker decides who gets which). */
+export const SESSION_ACTIONS = ["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff"] as const;
+export const SessionActionSchema = z.enum(SESSION_ACTIONS);
+export type SessionAction = z.infer<typeof SessionActionSchema>;
+
 export const SessionKindSchema = z.enum(SESSION_KINDS);
 export const SessionStatusSchema = z.enum(SESSION_STATUSES);
 export const SessionModeSchema = z.enum(SESSION_MODES);

@@ -239,7 +239,8 @@ import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { bindingItems } from "../agent-sessions/bindings.js";
-import { createTaskSessionItems, sessionStarterFor } from "../agent-sessions/create.js";
+import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
+import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { onTaskEnded, type TaskEndOutcome } from "../agents/task-end.js";
 
@@ -307,6 +308,8 @@ export interface DeveloperTaskRouteDependencies {
    * up: a start then names no agent, and the task is the plain task it always was, with no recipe stored.
    */
   agentRuns?: AgentRunDependencies;
+  /** Plan 5 Task 5: what a session's level needs. With it a person who can view a task's session reads the task page (read only), and a task from before sessions is given one when it is first read in full. */
+  agentSessions?: SessionAccessDependencies;
   /** Plan 3, Task 22: the agent-step engine's dependencies (the same object as `agentRuns` where agents are set up); a cancel of a run that waits ends the run through it. */
   agentEngine?: AgentRunEngineDependencies;
   /**
@@ -610,7 +613,7 @@ async function authorizeTaskActor(
   options: { readOnly?: boolean } = {},
 ): Promise<AuthorizedTask> {
   const access = await authorizeTaskAction(deps, caller, taskId, "read");
-  if (!can(access.role, action)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  if (!can(access.role, action, access.source)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   // The same gate resolveTaskAccess applies to its work actions: an answer that only reads a record (the feedback review page) is exempt.
   if (options.readOnly !== true && WORK_ACTIONS.includes(action)) await requireProjectWorkRole(deps, access.task, caller);
   return access;
@@ -1371,6 +1374,10 @@ export async function taskView(
       else workflow = { ...workflow, state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.documentUnverified };
     }
   }
+  // Plan 5, Task 5: a task started before sessions is given its session the first time it is read in full (once, even when two reads race; never an error).
+  const sessionId = task.sessionId ?? (options.details && deps.agentRuns !== undefined
+    ? await ensureTaskSession({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, { ownerName: task.developerName, title: inertTaskTitle(task.title) })
+    : undefined);
   let e2ePresentation: DeveloperTaskView["e2ePresentation"];
   if (options.details && task.workflow?.e2e?.required === true && deps.workflowE2EPresentation !== undefined) {
     try { e2ePresentation = await deps.workflowE2EPresentation({ task, operations, actor: options.actor ?? "owner" }); }
@@ -1394,7 +1401,7 @@ export async function taskView(
     ...(run === undefined ? {} : { run }),
     ...pausedView,
     ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate }),
-    ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId, ...(deps.issuer === undefined ? {} : { sessionUrl: sessionLink(new URL(deps.issuer).origin, task.sessionId) }) }),
+    ...(sessionId === undefined ? {} : { sessionId, ...(deps.issuer === undefined ? {} : { sessionUrl: sessionLink(new URL(deps.issuer).origin, sessionId) }) }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
     updatedAt: derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt,

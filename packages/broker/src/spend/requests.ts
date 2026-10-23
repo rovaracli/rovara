@@ -424,6 +424,16 @@ async function mayDecideNow(deps: SpendRequestDependencies, caller: Pick<AgentCa
   return answer(true);
 }
 
+/**
+ * Whether `caller` may decide the request now: it exists in their org, is still PENDING and not past its time, and they are one of its approvers
+ * (read live). For a session's view, which shows the budget link only to the people who can use it. A request that isn't there, or another org's, is false.
+ */
+export async function mayDecideSpendRequest(deps: SpendRequestDependencies, caller: Pick<AgentCaller, "orgId" | "developerId">, spendRequestId: string): Promise<boolean> {
+  const record = await getSpendRequest(deps, caller.orgId, spendRequestId);
+  if (record === undefined || record.status !== "PENDING" || Date.parse(record.expiresAt) <= deps.now()) return false;
+  return (await mayDecideNow(deps, caller, record)).allowed;
+}
+
 // ---- making a request
 
 export interface CreateSpendRequestInput {

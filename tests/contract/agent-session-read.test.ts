@@ -30,8 +30,9 @@ import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
 
-type Item = Record<string, unknown>;
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
+/** A route's answer without the envelope's request id. */
+const bodyOf = (reply: { body: Record<string, unknown> }) => { const { requestId: _id, ...rest } = reply.body; return rest; }; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
 const PLACEHOLDER_SPEND = "spr_0123456789abcdefghij";
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
@@ -58,18 +59,18 @@ function readWorld(extra: Partial<SessionReadDependencies> = {}, viewExtra: Reco
   };
   /** Writes the index rows a start writes for a session, and optionally changes its creation time. */
   const index = (sessionId: string, createdAt?: string) => {
-    const meta = w.db.get(agentSessionKey(ORG_A, sessionId as never, "META"))!;
+    const meta = w.db.get(agentSessionKey(ORG_A, sessionId, "META"))!;
     const created = createdAt ?? String(meta.createdAt);
     w.db.set({ ...meta, createdAt: created });
     const owner = (meta.owner as { developerId: string }).developerId;
-    w.db.set({ ...mySessionsKey(ORG_A, owner, created, sessionId as never), entityType: "MY_SESSION", orgId: ORG_A, sessionId, developerId: owner, createdAt: created });
-    if (meta.project !== undefined) w.db.set({ ...projectSessionsKey(ORG_A, String(meta.project), created, sessionId as never), entityType: "PROJECT_SESSION", orgId: ORG_A, sessionId, project: meta.project, createdAt: created });
+    w.db.set({ ...mySessionsKey(ORG_A, owner, created, sessionId), entityType: "MY_SESSION", orgId: ORG_A, sessionId, developerId: owner, createdAt: created });
+    if (meta.project !== undefined) w.db.set({ ...projectSessionsKey(ORG_A, (meta.project as string), created, sessionId), entityType: "PROJECT_SESSION", orgId: ORG_A, sessionId, project: meta.project, createdAt: created });
   };
   const shareWith = (sessionId: string, developerId: string, level: "view" | "use" | "edit" = "view") => {
     w.seedShare(ORG_A, sessionId, { kind: "member", developerId }, level);
-    w.db.set({ ...sharedSessionsKey(ORG_A, { kind: "member", developerId }, sessionId as never), entityType: "SHARED_SESSION", orgId: ORG_A, sessionId, principal: { kind: "member", developerId }, level, sharedAt: "2026-10-22T08:10:00.000Z" });
+    w.db.set({ ...sharedSessionsKey(ORG_A, { kind: "member", developerId }, sessionId), entityType: "SHARED_SESSION", orgId: ORG_A, sessionId, principal: { kind: "member", developerId }, level, sharedAt: "2026-10-22T08:10:00.000Z" });
   };
-  const patch = (sessionId: string, fields: Record<string, unknown>) => w.db.set({ ...w.db.get(agentSessionKey(ORG_A, sessionId as never, "META"))!, ...fields });
+  const patch = (sessionId: string, fields: Record<string, unknown>) => w.db.set({ ...w.db.get(agentSessionKey(ORG_A, sessionId, "META"))!, ...fields });
   return { w, deps, calls, index, shareWith, patch };
 }
 const view = (r: ReturnType<typeof readWorld>, who: string, sessionId: string, orgId: OrgId = ORG_A) => sessionView(r.deps, { ...r.w.caller(who, orgId) }, sessionId);
@@ -195,11 +196,11 @@ describe("reading a task session", () => {
     r.patch(sessionId, { followerCount: 3 });
     r.w.follower(ORG_A, sessionId, ARJUN);
     r.w.db.set({
-      ...agentSessionKey(ORG_A, sessionId as never, "BINDING#slack_thread"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
+      ...agentSessionKey(ORG_A, sessionId, "BINDING#slack_thread"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
       binding: { kind: "slack_thread", teamId: "T0123ABC", channelId: "C0123ABC", threadTs: "1760000000.123456" }, at: "2026-10-22T08:00:00.000Z",
     });
     r.w.db.set({
-      ...agentSessionKey(ORG_A, sessionId as never, "BINDING#linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
+      ...agentSessionKey(ORG_A, sessionId, "BINDING#linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
       binding: { kind: "linear_issue", issueId: "ENG-1", url: "https://linear.app/acme/issue/ENG-1" }, at: "2026-10-22T08:00:00.000Z",
     });
     const asArjun = await view(r, ARJUN, sessionId);
@@ -340,7 +341,7 @@ describe("listing sessions", () => {
     expect(ids(await listSessions(l.deps, l.w.caller(ZED), { shared: "me" }))).toEqual([]);
     expect(ids(await listSessions(l.deps, l.w.caller(BO, ORG_B), { shared: "me" }))).toEqual([]);
     // A share that was removed but whose index row stayed is dropped by the re-check.
-    l.w.db.delete(agentSessionKey(ORG_A, l.e as never, `SHARE#MEMBER#${ARJUN}`));
+    l.w.db.delete(agentSessionKey(ORG_A, l.e, `SHARE#MEMBER#${ARJUN}`));
     expect(ids(await listSessions(l.deps, l.w.caller(ARJUN), { shared: "me" }))).toEqual([]);
   });
 
@@ -395,7 +396,7 @@ describe("a task from before sessions", () => {
     const w = sessionWorld();
     const { sessionId: seeded, taskId } = w.seedSession();
     // Drop the session the seed made: this is a task started before the deploy.
-    w.db.delete(agentSessionKey(ORG_A, seeded as never, "META"));
+    w.db.delete(agentSessionKey(ORG_A, seeded, "META"));
     const task = w.db.get(taskKey(taskId))!;
     const { sessionId: _gone, ...rest } = task; // eslint-disable-line @typescript-eslint/no-unused-vars -- the point is that it has none
     const full = {
@@ -493,7 +494,7 @@ async function setup() {
   known(ZOE);
   known(BOB, ORG_B);
   const start = async (extra: Record<string, unknown> = {}) => {
-    const reply = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, ...extra });
+    const reply = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK", ...extra });
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
     const task = reply.body.task as { taskId: string; sessionId: string };
     return { taskId: task.taskId, sessionId: task.sessionId };
@@ -513,8 +514,8 @@ async function setup() {
         ...(extra.method === "POST" ? { origin: ORIGIN, "x-agentx-csrf": "c".repeat(43), "content-type": "application/json" } : {}),
       },
       ...(extra.body === undefined ? {} : { body: JSON.stringify(extra.body) }), requestContext: { requestId: randomUUID(), http: { method: extra.method ?? "GET" } },
-    } as never);
-    return { status: response.statusCode, headers: response.headers as Record<string, string>, body: response.body };
+    });
+    return { status: response.statusCode, headers: (response as unknown as { headers: Record<string, string> }).headers, body: response.body };
   };
   const sessions = new Map<string, string>();
   const browserSession = (who: Developer) => {
@@ -535,8 +536,8 @@ describe("the session routes", () => {
     const { taskId, sessionId } = await t.start();
     const reply = await t.dev(MAYA, "GET", `/v1/app/sessions/${sessionId}`);
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-    const parsed = SessionResponseSchema.parse(reply.body);
-    expect(SessionResponseReaderSchema.safeParse(reply.body).success).toBe(true);
+    const parsed = SessionResponseSchema.parse(bodyOf(reply));
+    expect(SessionResponseReaderSchema.safeParse(bodyOf(reply)).success).toBe(true);
     expect(parsed.session).toMatchObject({
       sessionId, kind: "task", project: "payments", owner: { developerId: MAYA.developerId }, link: `${ORIGIN}/s/${sessionId}`,
       you: { level: "edit", owner: true }, body: { kind: "task", task: { taskId, sessionId } },
@@ -552,10 +553,10 @@ describe("the session routes", () => {
     expect((await t.dev(OMAR, "GET", `/v1/app/sessions/${sessionId}/shares`)).status).toBe(404);
     const shared = await t.share(MAYA, sessionId, OMAR);
     expect(shared.status, JSON.stringify(shared.body)).toBe(200);
-    SessionSharePutResponseSchema.parse(shared.body);
+    SessionSharePutResponseSchema.parse(bodyOf(shared));
     const seen = await t.dev(OMAR, "GET", `/v1/app/sessions/${sessionId}`);
     expect(seen.status, JSON.stringify(seen.body)).toBe(200);
-    expect(SessionResponseSchema.parse(seen.body).session.you).toEqual({ level: "view", owner: false, following: false, actions: ["watch", "comment"] });
+    expect(SessionResponseSchema.parse(bodyOf(seen)).session.you).toEqual({ level: "view", owner: false, following: false, actions: ["watch", "comment"] });
     expect((await t.dev(BOB, "GET", `/v1/app/sessions/${sessionId}`)).status).toBe(404);
     expect((await t.dev(BOB, "GET", `/v1/app/sessions/${sessionId}/shares`)).status).toBe(404);
     expect((await t.dev(BOB, "PUT", `/v1/app/sessions/${sessionId}/shares`, { requestId: randomUUID(), principal: { kind: "member", developerId: BOB.developerId }, level: "edit" })).status).toBe(404);
@@ -569,7 +570,7 @@ describe("the session routes", () => {
     await t.share(MAYA, sessionId, OMAR);
     const shares = await t.dev(MAYA, "GET", `/v1/app/sessions/${sessionId}/shares`);
     expect(shares.status).toBe(200);
-    expect(SessionSharesResponseSchema.parse(shares.body).shares).toHaveLength(1);
+    expect(SessionSharesResponseSchema.parse(bodyOf(shares)).shares).toHaveLength(1);
     expect((await t.dev(OMAR, "GET", `/v1/app/sessions/${sessionId}/shares`)).status).toBe(200);
     // A viewer can't share.
     const denied = await t.share(OMAR, sessionId, ZOE);
@@ -577,18 +578,19 @@ describe("the session routes", () => {
     expect((denied.body.error as { code: string }).code).toBe("SESSION_LEVEL_REQUIRED");
     // Lists.
     const mine = await t.dev(MAYA, "GET", "/v1/app/sessions?owner=me");
-    expect(SessionListSchema.parse(mine.body).sessions.map((tile) => tile.sessionId)).toEqual([sessionId]);
-    expect(SessionListSchema.parse((await t.dev(OMAR, "GET", "/v1/app/sessions?shared=me")).body).sessions.map((tile) => tile.sessionId)).toEqual([sessionId]);
-    expect(SessionListSchema.parse((await t.dev(ZOE, "GET", "/v1/app/sessions?shared=me")).body).sessions).toEqual([]);
-    expect(SessionListSchema.parse((await t.dev(OMAR, "GET", "/v1/app/sessions?project=payments")).body).sessions).toEqual([]);
-    expect(SessionListSchema.parse((await t.dev(BOB, "GET", "/v1/app/sessions?project=payments")).body).sessions).toEqual([]);
+    expect(SessionListSchema.parse(bodyOf(mine)).sessions.map((tile) => tile.sessionId)).toEqual([sessionId]);
+    expect(SessionListSchema.parse(bodyOf(await t.dev(OMAR, "GET", "/v1/app/sessions?shared=me"))).sessions.map((tile) => tile.sessionId)).toEqual([sessionId]);
+    expect(SessionListSchema.parse(bodyOf(await t.dev(ZOE, "GET", "/v1/app/sessions?shared=me"))).sessions).toEqual([]);
+    expect(SessionListSchema.parse(bodyOf(await t.dev(OMAR, "GET", "/v1/app/sessions?project=payments"))).sessions.map((tile) => tile.sessionId)).toEqual([sessionId]);
+    expect(SessionListSchema.parse(bodyOf(await t.dev(ZOE, "GET", "/v1/app/sessions?project=payments"))).sessions).toEqual([]);
+    expect(SessionListSchema.parse(bodyOf(await t.dev(BOB, "GET", "/v1/app/sessions?project=payments"))).sessions).toEqual([]);
     expect((await t.dev(MAYA, "GET", "/v1/app/sessions")).status).toBe(400);
     // Delete, by the key the list gives, encoded.
     const key = encodeURIComponent(`MEMBER#${OMAR.developerId}`);
     const removed = await t.dev(MAYA, "DELETE", `/v1/app/sessions/${sessionId}/shares/${key}`);
-    expect(SessionShareDeleteResponseSchema.parse(removed.body)).toEqual({ removed: true });
+    expect(SessionShareDeleteResponseSchema.parse(bodyOf(removed))).toEqual({ removed: true });
     expect((await t.dev(OMAR, "GET", `/v1/app/sessions/${sessionId}`)).status).toBe(404);
-    expect(SessionShareDeleteResponseSchema.parse((await t.dev(MAYA, "DELETE", `/v1/app/sessions/${sessionId}/shares/${key}`)).body)).toEqual({ removed: false });
+    expect(SessionShareDeleteResponseSchema.parse(bodyOf(await t.dev(MAYA, "DELETE", `/v1/app/sessions/${sessionId}/shares/${key}`)))).toEqual({ removed: false });
     expect((await t.dev(MAYA, "GET", "/v1/app/sessions/ses_00000000000000000000")).status).toBe(404);
     expect((await t.dev(MAYA, "POST", `/v1/app/sessions/${sessionId}`)).status).toBe(404);
   });
@@ -598,7 +600,7 @@ describe("the session routes", () => {
     const { sessionId } = await t.start();
     const reply = await t.dev(MAYA, "PUT", `/v1/app/sessions/${sessionId}/shares`, { requestId: randomUUID(), principal: { kind: "org" }, level: "view" });
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
-    const needs = NeedsConfirmationSchema.parse(reply.body);
+    const needs = NeedsConfirmationSchema.parse(bodyOf(reply));
     expect(needs.confirmUrl).toContain("/v1/app/approve/apr_");
     expect((await t.dev(ZOE, "GET", `/v1/app/sessions/${sessionId}`)).status).toBe(404);
     // The wiring: the dependencies the broker built for the agent routes carry the session ones, and the handler works with them.
@@ -624,11 +626,11 @@ describe("the session routes", () => {
       argumentsHash: "c".repeat(64), summary: "Create a Linear issue", class: "consequential", approvers: { kind: "ids", ids: [MAYA.developerId] }, status: "PENDING", project: "payments",
       owner: { developerId: MAYA.developerId, name: MAYA.name }, attempts: 0, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     } as never;
-    expect(await createWriteApprovalRecord({ documentClient: t.db, tableName: "state", now: Date.now } as never, record, [], 8)).toBe("created");
+    expect(await createWriteApprovalRecord({ documentClient: t.db, tableName: "state", now: Date.now }, record, [], 8)).toBe("created");
     const owner = await t.dev(MAYA, "GET", `/v1/app/sessions/${sessionId}`);
-    expect(SessionResponseSchema.parse(owner.body).session.approvals).toEqual([{ approvalId, title: "Create a Linear issue", confirmUrl: `${ORIGIN}/v1/app/approve/${approvalId}` }]);
+    expect(SessionResponseSchema.parse(bodyOf(owner)).session.approvals).toEqual([{ approvalId, title: "Create a Linear issue", confirmUrl: `${ORIGIN}/v1/app/approve/${approvalId}` }]);
     const viewer = await t.dev(OMAR, "GET", `/v1/app/sessions/${sessionId}`);
-    expect(SessionResponseSchema.parse(viewer.body).session.approvals).toEqual([]);
+    expect(SessionResponseSchema.parse(bodyOf(viewer)).session.approvals).toEqual([]);
     expect(JSON.stringify(owner.body) + JSON.stringify(viewer.body)).not.toContain("SECRET-ARGUMENT-TEXT");
     expect(JSON.stringify(owner.body) + JSON.stringify(viewer.body)).not.toContain("\"arguments\"");
   });
@@ -668,12 +670,18 @@ describe("the link /s/<id>", () => {
     expect(JSON.parse(state.body)).toMatchObject({ canRead: true, canComment: false, canSuggest: false, canDecide: false, canAsk: false, canTakeOwnership: false, canManagePeople: false });
     expect((await t.browser(`/review/${taskId}/task/api/comments`, OMAR)).status).toBe(200);
     // Nothing that changes the task is open to them.
-    const comment = await t.browser(`/review/${taskId}/task/api/comments`, OMAR, { method: "POST", body: { requestId: randomUUID(), anchor: "plan", text: "hello" } });
-    expect(comment.status, comment.body).toBeGreaterThanOrEqual(400);
+    const comment = await t.browser(`/review/${taskId}/task/api/comments`, OMAR, { method: "POST", body: { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "hello", ask: false } });
+    expect(`${String(comment.status)} ${comment.body}`).toContain("not_allowed");
+    expect(comment.status).toBe(403);
     const take = await t.browser(`/review/${taskId}/task/api/people/take-ownership`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedPeopleRevision: 1 } });
-    expect(take.status, take.body).toBeGreaterThanOrEqual(400);
+    expect(take.status, take.body).toBe(404);
     const decide = await t.browser(`/review/${taskId}/task/api/decision`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedRevision: 1, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] } });
-    expect(decide.status, decide.body).toBeGreaterThanOrEqual(400);
+    expect(decide.status, decide.body).toBe(403);
+    expect(decide.body).toContain("owners_only");
+    // Retrying and continuing go through the task's own rules, which a session level never opens.
+    const retry = await t.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Try again", expectedRevision: 1 });
+    const carryOn = await t.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Go on" });
+    expect([retry.status, carryOn.status], JSON.stringify([retry.body, carryOn.body])).toEqual([404, 404]);
     expect(t.db.find((entry) => entry.entityType === "TASK_PEOPLE_EVENT")).toHaveLength(0);
     // A task nobody shared with them stays closed to them, and so does the link.
     expect((await t.browser(`/s/${sessionId}`, ZOE)).status).toBe(404);
@@ -682,7 +690,7 @@ describe("the link /s/<id>", () => {
     const real = await t.browser(`/s/${sessionId}`, BOB);
     const fake = await t.browser("/s/ses_00000000000000000000", BOB);
     expect(real.status).toBe(404);
-    expect(real.body).toBe(fake.body);
+    expect(real.body.replace(/nonce="[^"]+"/g, "")).toBe(fake.body.replace(/nonce="[^"]+"/g, ""));
   });
 
   it("sends a person who isn't signed in to sign in, and a malformed id nowhere", async () => {
@@ -707,7 +715,7 @@ describe("the link /s/<id>", () => {
     const t = await setup();
     const sessionId = "ses_0123456789abcdefghij";
     t.db.set({
-      ...agentSessionKey(TEST_ORG, sessionId as never, "META"), entityType: "AGENT_SESSION", orgId: TEST_ORG, sessionId, kind: "local", mode: "delegate",
+      ...agentSessionKey(TEST_ORG, sessionId, "META"), entityType: "AGENT_SESSION", orgId: TEST_ORG, sessionId, kind: "local", mode: "delegate",
       subject: { kind: "local", deviceId: "dvc_0123456789abcdefghij", tool: "claude-code" }, legs: [], where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Mac" },
       title: "Fix <b>it</b>", owner: { developerId: MAYA.developerId, name: "Maya <i>Chen</i>" }, startedBy: { kind: "local" }, origin: "local", followerCount: 0, summaryRevision: 2, revision: 1,
       createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:00:00.000Z",

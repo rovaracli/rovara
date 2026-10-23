@@ -111,10 +111,12 @@ import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeople, getTaskPeopleCapabilities, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startTask, submitWorkflowFeedbackDecision, taskPageUrl, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
+import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
+import type { SessionShareDependencies } from "../agent-sessions/shares.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
@@ -235,6 +237,11 @@ export interface DeveloperRouteDependencies {
   orgConnections?: OrgConnectionStore;
   /** Plan 3, Task 7: what the agent routes (`/v1/app/agents*` and the other Plan 3 paths) need. Without it they answer NOT_FOUND. */
   agents?: AgentRouteDependencies;
+  /**
+   * Plan 5, Task 5: what session levels, shares and reads need. The broker supplies it with `agents` (as `agents.agentSessions`) and on the browser pages
+   * (`/s/…`, `/review/…`), which don't carry `agents`. Without it the session routes answer NOT_FOUND and the task page admits nobody on a session level.
+   */
+  agentSessions?: SessionShareDependencies;
 }
 
 export { StatusReply };
@@ -1314,6 +1321,23 @@ async function startAppRun(
   return { task: await taskView(taskDeps, await loadOwnedTask(taskDeps, caller, started.taskId), { events: 0, details: false }) };
 }
 
+/** What session levels and reads need, from the route dependencies: the broker's own, or those it gave the agent routes. */
+function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionShareDependencies | undefined {
+  return deps.agentSessions ?? deps.agents?.agentSessions;
+}
+
+/** The session routes' dependencies for one caller: the task view is built with that caller's task dependencies, so the task's own rules apply inside the session. */
+function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: DeveloperCaller): SessionRouteDependencies {
+  const sessions = sessionDependenciesOf(deps);
+  if (sessions === undefined || deps.tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
+  const taskDeps = developerTaskRouteDependencies(deps, caller);
+  return {
+    ...sessions, origin: new URL(deps.developer.issuer).origin,
+    taskView: (task, options) => taskView(taskDeps, task, options),
+    ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
+  };
+}
+
 export function developerTaskRouteDependencies(
   deps: DeveloperRouteDependencies,
   caller: DeveloperCaller,
@@ -1366,10 +1390,12 @@ export function developerTaskRouteDependencies(
     };
   };
   const agents = deps.agents;
+  const agentSessions = sessionDependenciesOf(deps);
   return {
     documentClient: deps.documentClient,
     tableName: deps.tableName,
     orgId: caller.orgId,
+    ...(agentSessions === undefined ? {} : { agentSessions }),
     ...(deps.developer.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
     issuer: deps.developer.issuer,
     actions: deps.tasks!,
@@ -1458,6 +1484,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isAuditViewPath(url.pathname)) {
     return createAuditViewPage({ origin: new URL(deps.developer.issuer).origin, authenticateSession, ledger: deps.auditLedger })(request, url);
   }
+  // Plan 5, Task 5: a session's link, for a signed-in browser. Until the web app, a task session's goes to the task's page.
+  if (isSessionLinkPath(url.pathname)) {
+    if (deps.tasks === undefined || sessionDependenciesOf(deps) === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
+    return sessionRedirect({
+      authenticateSession, origin: new URL(deps.developer.issuer).origin, taskPageUrl,
+      read: (caller) => sessionReadDependencies(deps, caller),
+    }, request, url);
+  }
   if (url.pathname.startsWith("/review/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
     // Task 18: the read-only task page and its "moved on" check; every other /review/ path is the PR-feedback review.
@@ -1507,6 +1541,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
     return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);
   }
+  // Plan 5, Task 5: `/v1/app/sessions*`.
+  if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
