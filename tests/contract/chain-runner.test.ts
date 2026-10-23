@@ -1116,7 +1116,7 @@ describe("starting a step", () => {
     const chain = await w.publish(TWO_STEPS);
     const run = await startAs(w, PRIYA, chain.chainId);
     const { onStepTaskEnded, advanceChainRun } = await runner();
-    w.hooks.refuse.push(new Error("socket hang up"));
+    w.hooks.refuse.push(agentXError("RUNTIME_UNAVAILABLE", "socket hang up"));
     await expect(onStepTaskEnded(w.deps, w.endEvent("task-1", { finalReport: "one" }))).rejects.toThrow("socket hang up");
     expect(w.attempts(run.runId)[1]).toMatchObject({ seq: 2, status: "starting" });
     expect(w.attempts(run.runId)[1]).not.toHaveProperty("taskId");
@@ -1131,10 +1131,40 @@ describe("starting a step", () => {
     expect(new Set(w.starts.slice(1).map((start) => start.requestId)).size).toBe(1);
   });
 
+  it("fails the attempt and the run with a fixed message when the start throws anything but a refusal that may pass, and does not echo the error (review M-4)", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    w.hooks.refuse.push(new TypeError("Cannot read properties of undefined (reading 'secret-token-sk-live-abcdef0123456789')"));
+    const run = await startAs(w, PRIYA, chain.chainId);
+    expect(run.status).toBe("failed");
+    const failed = w.run(run.runId)!;
+    expect(failed).toMatchObject({ status: "failed", failure: { seq: 1, reason: "start_failed" } });
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "failed", failure: { reason: "start_failed" } });
+    expect(JSON.stringify([failed.failure, w.attempts(run.runId)[0]!.failure, w.events(run.runId)])).not.toMatch(/secret-token|undefined|TypeError|properties/u);
+    expect(failed.failure!.message).toBe('Step "Look into it" could not start because of an unexpected error. Nothing was started.');
+    expect((await w.chainOf(chain.chainId)).openRuns).toBe(0);
+    expect(w.openItems()).toEqual([]);
+    const { advanceChainRun } = await runner();
+    await advanceChainRun(w.deps, ORG_A, run.runId);
+    expect(w.starts).toHaveLength(1);
+  });
+
+  it("fails a later step the same way when its start throws a plain error, and starts nothing more (review M-4)", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    w.hooks.refuse.push(new Error("db exploded"));
+    await endTask(w, "task-1", { finalReport: "one" });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ seq: 2, status: "failed", failure: { reason: "start_failed" } });
+    expect(w.run(run.runId)).toMatchObject({ status: "failed", failure: { seq: 2, reason: "start_failed" } });
+    expect(JSON.stringify(w.run(run.runId))).not.toContain("exploded");
+    expect(w.starts).toHaveLength(2);
+  });
+
   it("re-drives a start that crashed after the attempt was written and the task started, and the attempt gets the one task", async () => {
     const w = setupWorld();
     const chain = await w.publish(ONE_STEP);
-    w.hooks.crashAfterStart.push(new Error("connection lost"));
+    w.hooks.crashAfterStart.push(agentXError("RUNTIME_UNAVAILABLE", "connection lost"));
     const run = await startAs(w, PRIYA, chain.chainId);
     // The start was left for the sweep: the run exists with its attempt written and no task named on it.
     expect(run.status).toBe("running");
@@ -1152,6 +1182,84 @@ describe("starting a step", () => {
 });
 
 // ---- pause is not a failure
+
+// Plan 4 Task 6 review I-1, M-2: the task of a step exists from Plan 3's start commit, but the attempt learns its id only when `startAgentRun` returns. An end or a pause told
+// in between (a crash after the task started, then a short run) must not be lost.
+describe("a step's task that ends or pauses while its attempt is still starting (review I-1, M-2)", () => {
+  it("takes the end of the one task the attempt was started with: the step ends once, the next step starts once, and the re-drive finds nothing left to do", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    w.hooks.crashAfterStart.push(agentXError("RUNTIME_UNAVAILABLE", "connection lost"));
+    const run = await startAs(w, PRIYA, chain.chainId);
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "starting" });
+    expect(w.attempts(run.runId)[0]).not.toHaveProperty("taskId");
+    await endTask(w, "task-1", { finalReport: "one", spentUsd: 1 });
+    expect(w.attempts(run.runId)[0]).toMatchObject({ seq: 1, status: "succeeded", taskId: "task-1", result: { report: "one" } });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ seq: 2, status: "running", taskId: "task-2" });
+    expect(w.run(run.runId)).toMatchObject({ status: "running", currentSeq: 2, spentUsd: 1 });
+    expect(w.starts).toHaveLength(2);
+    // The sweep's re-drive and a repeated end change nothing: no hang, no second next step.
+    const { advanceChainRun } = await runner();
+    await advanceChainRun(w.deps, ORG_A, run.runId);
+    await endTask(w, "task-1", { finalReport: "one", spentUsd: 1 });
+    expect(w.starts).toHaveLength(2);
+    expect(w.tasks.size).toBe(2);
+    expect(w.attempts(run.runId)).toHaveLength(2);
+    expect(w.events(run.runId).filter((event) => event.type === "step_ended")).toHaveLength(1);
+    await endTask(w, "task-2", { finalReport: "two" });
+    expect(w.run(run.runId)).toMatchObject({ status: "succeeded" });
+    expect((await w.chainOf(chain.chainId)).openRuns).toBe(0);
+  });
+
+  it("ends the run of a one-step chain whose task ended before the re-drive", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    w.hooks.crashAfterStart.push(agentXError("RUNTIME_UNAVAILABLE", "connection lost"));
+    const run = await startAs(w, PRIYA, chain.chainId);
+    await endTask(w, "task-1", { finalReport: "done" });
+    expect(w.run(run.runId)).toMatchObject({ status: "succeeded" });
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "succeeded", taskId: "task-1" });
+    expect(w.openItems()).toEqual([]);
+    expect(w.starts).toHaveLength(1);
+  });
+
+  it("does not take the end of another task for the attempt: another step id, another run, or an attempt that has a task already", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    w.hooks.crashAfterStart.push(agentXError("RUNTIME_UNAVAILABLE", "connection lost"));
+    const run = await startAs(w, PRIYA, chain.chainId);
+    const before = JSON.stringify([...w.db.items.entries()]);
+    const { onStepTaskEnded } = await runner();
+    await onStepTaskEnded(w.deps, { ...w.endEvent("task-1", { finalReport: "x" }), chain: { chainRunId: run.runId, stepId: "review" } });
+    expect(JSON.stringify([...w.db.items.entries()])).toBe(before);
+    // After the re-drive the attempt has its task: an end of another task of the step still finds nothing.
+    const { advanceChainRun } = await runner();
+    await advanceChainRun(w.deps, ORG_A, run.runId);
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "running", taskId: "task-1" });
+    const after = JSON.stringify([...w.db.items.entries()]);
+    await onStepTaskEnded(w.deps, { ...w.endEvent("task-1", { finalReport: "x" }), taskId: "task-other" });
+    expect(JSON.stringify([...w.db.items.entries()])).toBe(after);
+  });
+
+  it("makes the attempt and the run paused, with the task named, for a pause told before the attempt had it; the end afterwards continues the run once", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    w.hooks.crashAfterStart.push(agentXError("RUNTIME_UNAVAILABLE", "connection lost"));
+    const run = await startAs(w, PRIYA, chain.chainId);
+    const { onStepTaskPaused, advanceChainRun } = await runner();
+    await onStepTaskPaused(w.deps, w.pauseEvent("task-1", { spendRequestId: "spr_abc" }));
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "paused", taskId: "task-1" });
+    expect(w.run(run.runId)).toMatchObject({ status: "paused", currentSeq: 1 });
+    expect(w.events(run.runId).at(-1)).toMatchObject({ type: "paused", stepSeq: 1 });
+    // The re-drive has nothing to start any more.
+    await advanceChainRun(w.deps, ORG_A, run.runId);
+    expect(w.starts).toHaveLength(1);
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "paused", taskId: "task-1" });
+    await endTask(w, "task-1", { finalReport: "one" });
+    expect(w.run(run.runId)).toMatchObject({ status: "running", currentSeq: 2 });
+    expect(w.starts).toHaveLength(2);
+  });
+});
 
 describe("onStepTaskPaused", () => {
   it("makes the attempt and the run paused, with an event, and starts nothing; the task's end afterwards continues the run", async () => {
@@ -1282,7 +1390,7 @@ describe("through Plan 3's end and pause layer (the binding hand-offs)", () => {
     const { onStepTaskEnded } = await runner();
     unregister.push(registerTaskEndHandler((_deps, event) => onStepTaskEnded(w.deps, event)));
     const { agentRuns } = host(0.4);
-    w.hooks.refuse.push(new Error("socket hang up"));
+    w.hooks.refuse.push(agentXError("RUNTIME_UNAVAILABLE", "socket hang up"));
     await expect(onTaskEnded(taskDeps(w, agentRuns), taskRecord(w, "task-1"), "succeeded", { finalReport: "one" }, { record: true })).rejects.toThrow("socket hang up");
     expect(w.attempts(run.runId)[1]).toMatchObject({ status: "starting" });
     expect(await onTaskEnded(taskDeps(w, agentRuns), taskRecord(w, "task-1"), "succeeded", { finalReport: "one" }, { record: true })).toBe("called");
@@ -1620,7 +1728,7 @@ describe("recording where a step started", () => {
   it("lets two drivers of one start finish it once, with the one task", async () => {
     const w = setupWorld();
     const chain = await w.publish(ONE_STEP);
-    w.hooks.crashAfterStart.push(new Error("connection lost"));
+    w.hooks.crashAfterStart.push(agentXError("RUNTIME_UNAVAILABLE", "connection lost"));
     const run = await startAs(w, PRIYA, chain.chainId);
     const { advanceChainRun } = await runner();
     await Promise.all([advanceChainRun(w.deps, ORG_A, run.runId), advanceChainRun(w.deps, ORG_A, run.runId)]);
@@ -1667,7 +1775,7 @@ describe("recording where a step started", () => {
   it("re-drives a start with the limit it was first started with, not what the run has left now", async () => {
     const w = setupWorld();
     const chain = await w.publish(ONE_STEP);
-    w.hooks.crashAfterStart.push(new Error("connection lost"));
+    w.hooks.crashAfterStart.push(agentXError("RUNTIME_UNAVAILABLE", "connection lost"));
     const run = await startAs(w, PRIYA, chain.chainId);
     w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, spentUsd: 5 });
     const { advanceChainRun } = await runner();
@@ -1729,7 +1837,7 @@ describe("what a run is made of that is not in the worked example", () => {
     const w = setupWorld();
     const { run } = await atGate(w);
     const { recordGateDecision, advanceChainRun } = await runner();
-    w.hooks.refuse.push(new Error("socket hang up"));
+    w.hooks.refuse.push(agentXError("RUNTIME_UNAVAILABLE", "socket hang up"));
     await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved")).rejects.toThrow("socket hang up");
     expect(w.run(run.runId)!.status).toBe("running");
     expect(w.attempts(run.runId)[1]).toMatchObject({ status: "succeeded", decision: "approved" });
@@ -1881,7 +1989,7 @@ describe("what a run is made of that is not in the worked example", () => {
     const run = await startAs(w, PRIYA, chain.chainId);
     const { onStepTaskPaused } = await runner();
     await onStepTaskPaused(w.deps, w.pauseEvent("task-1"));
-    w.hooks.refuse.push(new Error("socket hang up"));
+    w.hooks.refuse.push(agentXError("RUNTIME_UNAVAILABLE", "socket hang up"));
     await expect(endTask(w, "task-1", { finalReport: "one" })).rejects.toThrow("socket hang up");
     expect(w.run(run.runId)!.status).toBe("running");
     const other = await startAs(w, PRIYA, chain.chainId);
@@ -2270,7 +2378,7 @@ describe("a request that comes again", () => {
     const chain = await w.publish(ONE_STEP);
     const requestId = randomUUID();
     await startedWithoutStep(w, chain.chainId, requestId);
-    w.hooks.refuse.push(new Error("socket hang up"));
+    w.hooks.refuse.push(agentXError("RUNTIME_UNAVAILABLE", "socket hang up"));
     const again = await startAs(w, PRIYA, chain.chainId, { requestId });
     expect(again.currentSeq).toBe(1);
     expect(w.attempts(again.runId)).toMatchObject([{ status: "starting" }]);

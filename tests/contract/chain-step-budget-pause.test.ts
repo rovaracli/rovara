@@ -69,11 +69,30 @@ describe("a chain step that is a plain coding task and stops on a budget (Plan 4
     await t.decide(DEB, request.spendRequestId, "APPROVE", { amountUsd: 10 });
     const operations = t.taskOps(task.workspaceId);
     expect(operations).toHaveLength(2);
-    expect(step.attempts()).toEqual([expect.objectContaining({ status: "paused" })]);
+    // Plan 4 Task 6 review M-1: the approved raise tells the runner the step went on, so the step and the run show running again before the task ends.
+    expect(step.attempts()).toEqual([expect.objectContaining({ status: "running" })]);
+    expect(step.runRow().status).toBe("running");
+    expect(step.events().filter((type) => type === "resumed")).toHaveLength(1);
     await t.finish(task.workspaceId, operations[1]!.id, "SUCCEEDED");
     expect(step.attempts()).toEqual([expect.objectContaining({ status: "succeeded" })]);
     expect(step.runRow().status).toBe("succeeded");
     expect(step.events().filter((type) => type === "step_ended")).toHaveLength(1);
+  });
+
+  it("handles a second budget stop of the same task after the first raise was approved: paused again, then the one end", async () => {
+    const t = await setup();
+    const w = setupWorld();
+    const task = await t.plainTask();
+    const step = await chainStepOn(w, t, task.taskId);
+    await t.pauseAndEnd(task, MEMBER);
+    const request = t.requests().find((record) => record.kind === "month")!;
+    await t.decide(DEB, request.spendRequestId, "APPROVE", { amountUsd: 10 });
+    expect(step.attempts()).toEqual([expect.objectContaining({ status: "running" })]);
+    await t.pauseAndEnd(task, MEMBER);
+    expect(step.attempts()).toEqual([expect.objectContaining({ status: "paused" })]);
+    expect(step.runRow().status).toBe("paused");
+    expect(step.events().filter((type) => type === "paused")).toHaveLength(2);
+    expect(step.events()).not.toContain("step_ended");
   });
 
   it("a stop with no pause that could not be worked out is still a failed step (the failure is real)", async () => {
