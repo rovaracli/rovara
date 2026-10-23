@@ -16,6 +16,7 @@ import {
   sessionEventId,
   spendRequestKey,
   spendRequestSlotKey,
+  planRunLimitSubject,
   taskSpendKey,
   PROJECTOR_CONCURRENCY,
 } from "../../packages/contracts/src/index.js";
@@ -317,6 +318,95 @@ describe("who is needed", () => {
     p.w.db.set({ ...p.w.db.get({ pk: `DEVTASK#${s.taskId}`, sk: "AGENT_RUN" })!, state: "RUNNING" });
     await p.refresh(s.sessionId);
     expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "running", pendingApprovals: 0, needsPeople: [] });
+  });
+});
+
+describe("a plan blocked on its run limit (Task 7a concern 2, Task 7b)", () => {
+  const BLOCKED = (text = "This plan's run limit is $12, which needs a project maintainer's approval. I've asked for it.") => workflow("IMPLEMENT", "BLOCKED", { blockReason: text });
+  const requestOf = (p: PW, taskId: string, patch: Item = {}, options: { subject?: string; slotOrg?: string } = {}) => {
+    const requestId = "spr_0123456789abcdefghij";
+    p.w.db.set({
+      ...spendRequestKey(ORG_A, requestId), entityType: "SPEND_REQUEST", orgId: ORG_A, spendRequestId: requestId, kind: "run_limit", taskId, status: "PENDING", approverIds: [ARJUN],
+      amountUsd: 12, reason: "x", requestedBy: PRIYA, createdAt: iso(T0), expiresAt: iso(T0 + 3_600_000), ...patch,
+    });
+    p.w.db.set({ ...spendRequestSlotKey(ORG_A, options.subject ?? planRunLimitSubject(taskId), "run_limit"), entityType: "SPEND_REQUEST_SLOT", orgId: options.slotOrg ?? ORG_A, spendRequestId: requestId, createdAt: iso(T0) });
+  };
+
+  it("shows the plan's run-limit request: its approvers are needed and one decision waits", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "SUCCEEDED");
+    p.patchTask(s.taskId, { workflow: BLOCKED() });
+    requestOf(p, s.taskId);
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "needs_person", needsPeople: [ARJUN], pendingApprovals: 1 });
+    expect(p.sessionOf(s.sessionId).endedAt).toBeUndefined();
+  });
+
+  it("also in the words used when the agent's owner or the project's maintainer pays", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.patchTask(s.taskId, { workflow: BLOCKED("Waiting for the agent's owner to accept the $12 run limit.") });
+    requestOf(p, s.taskId);
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "needs_person", needsPeople: [ARJUN], pendingApprovals: 1 });
+  });
+
+  it("does not list a request that is decided, out of time, another org's, or kept under another subject; the owner is needed instead", async () => {
+    const p = projectorWorld();
+    const cases: Array<[string, Item, { subject?: string; slotOrg?: string }]> = [
+      ["decided", { status: "APPROVED" }, {}],
+      ["out of time", { expiresAt: iso(T0 - 1) }, {}],
+      ["another org's", { orgId: ORG_B }, {}],
+      ["slot of another org", {}, { slotOrg: ORG_B }],
+      ["another subject", {}, { subject: "TASK#someone-else#IMPLEMENT" }],
+    ];
+    for (const [label, patch, options] of cases) {
+      const s = p.open();
+      p.patchTask(s.taskId, { workflow: BLOCKED() });
+      requestOf(p, s.taskId, patch, options);
+      await p.refresh(s.sessionId);
+      expect(p.sessionOf(s.sessionId).summary, label).toMatchObject({ status: "needs_person", needsPeople: [PRIYA], pendingApprovals: 0 });
+    }
+  });
+
+  it("looks for the request only while the plan is blocked on its run limit", async () => {
+    const p = projectorWorld();
+    const running = p.open();
+    p.operation(running.workspaceId, "task", "RUNNING");
+    p.patchTask(running.taskId, { workflow: workflow("IMPLEMENT", "RUNNING") });
+    requestOf(p, running.taskId);
+    await p.refresh(running.sessionId);
+    expect(p.sessionOf(running.sessionId).summary).toMatchObject({ status: "running", needsPeople: [], pendingApprovals: 0 });
+    const other = p.open();
+    p.patchTask(other.taskId, { workflow: BLOCKED("The checks could not run.") });
+    requestOf(p, other.taskId);
+    await p.refresh(other.sessionId);
+    expect(p.sessionOf(other.sessionId).summary).toMatchObject({ status: "needs_person", needsPeople: [PRIYA], pendingApprovals: 0 });
+  });
+
+  it("drops out of needsPeople when the request is decided and the plan moves on", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "SUCCEEDED");
+    p.patchTask(s.taskId, { workflow: BLOCKED() });
+    requestOf(p, s.taskId);
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary.needsPeople).toEqual([ARJUN]);
+    p.patchTask(s.taskId, { workflow: workflow("IMPLEMENT", "RUNNING") });
+    p.operation(s.workspaceId, "task", "RUNNING", 60_000);
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "running", needsPeople: [], pendingApprovals: 0 });
+  });
+
+  it("a paused task that is also blocked reads the plan's slot with its three", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "FAILED", 0, "RUNTIME_UNAVAILABLE: budget");
+    p.patchTask(s.taskId, { budgetPause: { scope: { kind: "task" }, at: iso(T0) }, workflow: BLOCKED() });
+    requestOf(p, s.taskId);
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "paused", needsPeople: [ARJUN], pendingApprovals: 1 });
   });
 });
 
