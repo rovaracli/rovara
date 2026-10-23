@@ -12,13 +12,13 @@
 //   - OPENING (`openGateApproval`): the approval is created before the attempt that waits on it, under an id that is a function of the run and the attempt, so a second try
 //     or one after a crash finds the same record.
 //
-// Nothing a step reports, a branch, an event or a trigger says can reach an approval record. Plan 4 makes no decide ticket and calls nothing that does (M12): every link
-// here is Plan 3's `confirmUrlFor`.
+// Nothing a step reports, a branch, an event or a trigger says can reach an approval record. Plan 4 makes no decide ticket and calls nothing that does (M12), and no event text carries a link
+// to the confirmation page (the log is read by people who may not decide: review I-1); whoever decides finds it from their own approvals.
 import { z } from "zod";
 import { ChainRunIdSchema, GATE_DEFAULT_TIMEOUT_HOURS, agentXError, projectAllows, type ApproverRule, type OrgId, type PinnedChainDefinition } from "@agentx/contracts";
 import { orgRoleOf } from "../agents/access.js";
 import {
-  confirmUrlFor, createStepApproval, registerApprovalSubjectHandler, registerApproverRefusal, registerApproverRule, shownText,
+  createStepApproval, registerApprovalSubjectHandler, registerApproverRefusal, registerApproverRule, shownText,
   type AnyApprovalRecord, type ApprovalCaller, type ApprovalDependencies, type ApproverRefusal, type StepApprovalRecord,
 } from "../agents/approvals.js";
 import { resolveMember, sameMember } from "../agents/lifecycle.js";
@@ -220,7 +220,7 @@ export async function openGateApproval(deps: Deps, run: ChainRunRecord, gate: Ga
     expiresAt: new Date(deps.now() + hours * HOUR_MS).toISOString(),
     project: run.project, owner: { developerId: run.owner.developerId, name: await displayNameOf(deps, run.owner.developerId) },
   });
-  const waitingText = `Waiting for ${await wordsFor(deps, run, gate)} to approve "${shownText(gate.name, NAME_MAX)}": ${confirmUrlFor(deps, record)}.`;
+  const waitingText = `Waiting for ${await wordsFor(deps, run, gate)} to approve "${shownText(gate.name, NAME_MAX)}".`;
   return { record, waitingText };
 }
 

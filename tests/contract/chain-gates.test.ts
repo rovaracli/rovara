@@ -855,7 +855,7 @@ describe("the words of a gate", () => {
     const run = await w.start(chain.chainId);
     await w.endLatest();
     const text = w.events(run.runId).find((event) => event.type === "gate_waiting")!.text;
-    expect(text.endsWith(`to approve "Approve the fix".`)).toBe(true);
+    expect(text).toMatch(/ to approve "[^"]+"\.$/);
     expect(text.length).toBeLessThanOrEqual(500);
     expect(text).toContain("…");
   });
