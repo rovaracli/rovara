@@ -45,6 +45,10 @@ export default tseslint.config(
     },
   },
   {
+    files: ["packages/web/vite.config.ts"],
+    languageOptions: { parserOptions: { projectService: false, project: "./packages/web/tsconfig.tools.json" } },
+  },
+  {
     files: ["packages/ui/src/**/*.{ts,tsx}", "packages/web/src/**/*.{ts,tsx}"],
     ignores: ["packages/web/src/server/**"],
     rules: { "no-restricted-imports": ["error", { paths: [{ name: "@agentx/contracts", message: "Use @agentx/contracts/web." }], patterns: ["**/packages/web/**", "@agentx/web"] }] },

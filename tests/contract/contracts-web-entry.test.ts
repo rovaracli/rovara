@@ -33,7 +33,7 @@ describe("browser contracts entry", () => {
     expect(results.flatMap(result => result.messages).some(message => message.ruleId === "no-restricted-imports")).toBe(true);
   });
   it("keeps schema fingerprints byte-compatible with stored Node hashes", () => {
-    for (const text of ["", "abc", "a".repeat(1000), "é 😀", "\\ud800", JSON.stringify({ repository: "acme/payments", revision: 1 })]) {
+    for (const text of ["", "abc", "a".repeat(1000), "é 😀", "\ud800", JSON.stringify({ repository: "acme/payments", revision: 1 })]) {
       expect(sha256Hex(text)).toBe(createHash("sha256").update(text, "utf8").digest("hex"));
     }
   });
@@ -52,6 +52,7 @@ describe("browser contracts entry", () => {
       expect(brotliDecompressSync(await readFile(path.join(directory, file + ".br")))).toEqual(original);
       expect(gunzipSync(await readFile(path.join(directory, file + ".gz")))).toEqual(original);
       const source = original.toString("utf8");
+      // RULING Q4: React DOM contains an ordinary node: object key.
       expect(/["'`]node:|ts\.createSourceFile/.test(source), file).toBe(false);
     }
   });
