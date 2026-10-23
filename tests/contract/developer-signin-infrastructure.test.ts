@@ -3,6 +3,7 @@ import { Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { evaluate } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -347,7 +348,17 @@ describe("developer sign-in infrastructure (named environments)", () => {
     const functions = Object.fromEntries(ofType(named, "AWS::Lambda::Function").map(([id, resource]) => [
       withoutHash(id), Object.keys((resource.Properties.Environment as { Variables?: Record<string, unknown> } | undefined)?.Variables ?? {}),
     ]));
-    expect(functions.Broker).toEqual(expect.arrayContaining(["DEVELOPER_TOKEN_ISSUER", "AGENTX_ENV", "DEVELOPER_SIGNIN_TABLE_NAME", "DEVELOPER_IDENTITY_FUNCTION_ARN", "SLACK_TEAM_ID", "DEVELOPER_SIGNIN_SLACK", "DEVELOPER_OIDC_ISSUER"]));
+    // The table, the sign-in function and the API are in the broker's one variable of names (its variables are held to Lambda's 4 KB), and the
+    // broker puts them back as DEVELOPER_SIGNIN_TABLE_NAME, DEVELOPER_IDENTITY_FUNCTION_NAME and DEVELOPER_TOKEN_ISSUER.
+    expect(functions.Broker).toEqual(expect.arrayContaining(["AGENTX_NAMES", "AGENTX_ENV", "SLACK_TEAM_ID", "DEVELOPER_SIGNIN_SLACK", "DEVELOPER_OIDC_ISSUER"]));
+    expect(functions.Broker).not.toEqual(expect.arrayContaining(["DEVELOPER_TOKEN_ISSUER"]));
+    expect(functions.Broker).not.toEqual(expect.arrayContaining(["DEVELOPER_SIGNIN_TABLE_NAME"]));
+    expect(functions.Broker).not.toEqual(expect.arrayContaining(["DEVELOPER_IDENTITY_FUNCTION_NAME"]));
+    const brokerVariables = (ofType(named, "AWS::Lambda::Function").find(([id]) => withoutHash(id) === "Broker")![1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    const brokerNames = brokerNamesIn(brokerVariables);
+    expect(brokerNames.signInTable).toEqual({ Ref: ofType(named, "AWS::DynamoDB::Table").find(([id]) => id.startsWith("DeveloperSignInTable"))![0] });
+    expect(brokerNames.identityFunction).toEqual({ Ref: ofType(named, "AWS::Lambda::Function").find(([id]) => withoutHash(id) === "DeveloperSignInFunction")![0] });
+    expect(brokerNames.signInApi).toEqual({ Ref: ofType(named, "AWS::ApiGatewayV2::Api")[0]![0] });
     expect(functions.Broker).not.toContain("SLACK_SECRET_ARN");
     expect(functions.DeveloperSignInFunction).toEqual(expect.arrayContaining([
       "AGENTX_ENV", "DEVELOPER_TOKEN_ISSUER", "DEVELOPER_SIGNIN_TABLE_NAME", "DEVELOPER_TOKEN_KEY_ARN", "SLACK_SECRET_ARN", "SLACK_TEAM_ID",
@@ -823,8 +834,9 @@ describe("the sign-in function asks the broker whether a member may decide (Plan
     const broker = cloud.Resources[functionId(cloud, "Broker")]!;
     expect(broker.Properties.FunctionName).toBe(BROKER_NAME);
     expect(variablesOf(cloud, "DeveloperSignInFunction").DECIDE_INSPECT_FUNCTION_NAME).toBe(BROKER_NAME);
-    // The broker still reaches the sign-in function by its ARN, as before.
-    expect(variablesOf(cloud, "Broker").DEVELOPER_IDENTITY_FUNCTION_ARN).toBeDefined();
+    // The broker reaches the sign-in function by its generated name (Lambda's Invoke takes a name), not its ARN: the variable is held to Lambda's 4 KB.
+    expect(brokerNamesIn(variablesOf(cloud, "Broker")).identityFunction).toBeDefined();
+    expect(variablesOf(cloud, "Broker").DEVELOPER_IDENTITY_FUNCTION_ARN).toBeUndefined();
   });
 
   it("has no circular dependency between the two functions, their roles and their policies", () => {

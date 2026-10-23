@@ -216,7 +216,7 @@ describe("ROVARA_WEB_ORIGIN", () => {
     });
 
   it("fails the developer configuration at startup, and carries a good origin into it", () => {
-    const env = { DEVELOPER_TOKEN_ISSUER: "https://abc.example/v1/auth", DEVELOPER_IDENTITY_FUNCTION_ARN: "identity", DEVELOPER_SIGNIN_TABLE_NAME: "signin", AGENTX_ENV: "staging" };
+    const env = { DEVELOPER_TOKEN_ISSUER: "https://abc.example/v1/auth", DEVELOPER_IDENTITY_FUNCTION_NAME: "identity", DEVELOPER_SIGNIN_TABLE_NAME: "signin", AGENTX_ENV: "staging" };
     const integrations = () => ({}) as never;
     expect(() => createDeveloperApiConfiguration({ ...env, ROVARA_WEB_ORIGIN: "http://rovara.dev" }, integrations)).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
     expect(createDeveloperApiConfiguration(env, integrations)?.webOrigin).toBe("https://rovara.dev");

@@ -2,6 +2,8 @@ import { Stack } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { evaluate } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -168,7 +170,15 @@ describe("cloud identity infrastructure", () => {
     expect(identity.DEVELOPER_CLOUD_SECRET_ID).toBe("agentx/staging/developer-cloud");
     expect(JSON.stringify(identity.DEVELOPER_CLOUD_ISSUER)).toContain("https://cognito-idp.");
     const broker = brokerEnvironment(template);
-    expect(broker.DEVELOPER_CLOUD_ISSUER).toEqual(identity.DEVELOPER_CLOUD_ISSUER);
+    // The broker is given the pool's id in its one variable of names (its variables are held to Lambda's 4 KB) and builds the issuer from
+    // it: to the text the sign-in function is given, which is the pool's issuer URL.
+    expect(broker.DEVELOPER_CLOUD_ISSUER).toBeUndefined();
+    const poolId = resourcesOf(template, "AWS::Cognito::UserPool").map(([id]) => id).find((id) => id.startsWith("DeveloperSignInCloudIdentity"))!;
+    expect(brokerNamesIn(broker).cloudUserPool).toEqual({ Ref: poolId });
+    expect(JSON.stringify(identity.DEVELOPER_CLOUD_ISSUER)).toContain(JSON.stringify({ Ref: poolId }));
+    const built: MutableEnvironment = { AGENTX_ENV: "staging", AGENTX_NAMES: JSON.stringify({ ci: "us-west-2_AbCdEfGhI" }), AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012" };
+    hydrateBrokerEnvironment(built);
+    expect(built.DEVELOPER_CLOUD_ISSUER).toBe(evaluate(identity.DEVELOPER_CLOUD_ISSUER, { parameters: { [poolId]: "us-west-2_AbCdEfGhI" }, conditions: {}, pseudo: { "AWS::Region": "us-west-2" } }));
     expect(broker.ROVARA_WEB_ORIGIN).toEqual({ Ref: "RovaraWebOrigin" });
     expect(broker.DEVELOPER_CLOUD_SECRET_ID).toBeUndefined();
   });
