@@ -47,6 +47,8 @@ export function connectorSecretsTrustPolicy(brokerRoleArn: string | Record<strin
  *   never calls it by itself. It is not denied anywhere: a Deny conditioned on an existing resource tag could also
  *   fire during a tagged create, and the Allow already confines tagging to the session's own org path.
  * - UntagResource is denied unconditionally: a create never needs it.
+ * - DeleteSecret is allowed (a removed connection's secret is scheduled for deletion), but denied with
+ *   ForceDeleteWithoutRecovery: a broker bug must not be able to skip the recovery window the CLI promises (final review M2).
  */
 export function connectorSecretsPolicyStatements(options: { secretArnPrefix: string; env: string }): PolicyStatementJson[] {
   const own = [
@@ -68,5 +70,12 @@ export function connectorSecretsPolicyStatements(options: { secretArnPrefix: str
     { Sid: "CreateOwnOrgSecrets", Effect: "Allow", Action: "secretsmanager:CreateSecret", Resource: own, Condition: tagged },
     { Sid: "TagOnlyWithCreate", Effect: "Allow", Action: "secretsmanager:TagResource", Resource: own, Condition: tagged },
     { Sid: "NeverUntag", Effect: "Deny", Action: "secretsmanager:UntagResource", Resource: "*" },
+    {
+      Sid: "NeverDeleteWithoutRecovery",
+      Effect: "Deny",
+      Action: "secretsmanager:DeleteSecret",
+      Resource: "*",
+      Condition: { Bool: { "secretsmanager:ForceDeleteWithoutRecovery": "true" } },
+    },
   ];
 }

@@ -334,6 +334,22 @@ describe("fix round 1 (the Task 33 review)", () => {
     expect(capture.flushed().filter((event) => event.action === "spend_request.rerouted").map((event) => JSON.stringify(event))).toEqual([expect.stringContaining("recounted")]);
   });
 
+  it("M-2: a month decision that is rerouted writes the decision's R18 mark, so a repeat of it answers the same and not FORBIDDEN", async () => {
+    const t = await setup();
+    const first = await t.budgeted(40);
+    await t.budgeted(40);
+    const request = await agentRequest(t, first, 10);
+    expect(request.approverRole).toBe("agent_owner");
+    const requestId = randomUUID();
+    const deps = afterFirstOwnerRead(t, () => t.budgeted(15));
+    const rerouted = await decideSpendRequest(deps, t.caller(MAYA, "member"), request.spendRequestId, { requestId, decision: "APPROVE" });
+    expect(rerouted).toMatchObject({ rerouted: true, spendRequest: { status: "PENDING", approverRole: "org_admin" } });
+    // The request is now the admins'; Maya's repeat of the same decision is not decided again against that route.
+    const repeat = await decideSpendRequest(t.deps(), t.caller(MAYA, "member"), request.spendRequestId, { requestId, decision: "APPROVE" });
+    expect(repeat).toEqual(rerouted);
+    expect(topUp(t, { kind: "agent", agentId: first })).toBe(0);
+  });
+
   it("M-9: an admin lowering the cap between the owner's read and the write re-routes the request", async () => {
     const t = await setup();
     const first = await t.budgeted(40);
@@ -597,6 +613,53 @@ describe("fix round 1 (the Task 33 review)", () => {
     expect(same.body).not.toHaveProperty("differs");
     expect(other.status).toBe(200);
     expect(other.body).toMatchObject({ differs: true, spendRequest: { amountUsd: 15 } });
+  });
+});
+
+// Final fix wave, money I-2, M-1, M-2.
+describe("final fix wave: the audit of a decision, and the R18 marks of a month's ask and a rerouted decision", () => {
+  const monthSetup = async () => {
+    const t = await setup();
+    const task = await t.plainTask();
+    await t.pauseAndEnd(task, MEMBER);
+    return { t, request: monthRequests(t)[0]! };
+  };
+
+  it("I-2: spend_request.decided records the amount approved and the limit applied, not the ones asked for, and the month topped up", async () => {
+    const { t, request } = await monthSetup();
+    const capture = capturingAuditDeps({ db: t.db });
+    // $10 was asked for; the admin approves $40.
+    await decideSpendRequest({ ...t.deps(), audit: capture.audit }, t.caller(DEB, "admin"), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE", amountUsd: 40 });
+    const [event] = capture.recordedBy("spend_request.decided");
+    expect(event?.facts).toMatchObject({
+      kind: "month", decision: "APPROVED", amountCents: 1000, newLimitCents: Math.round(request.newLimitUsd! * 100),
+      approvedAmountCents: 4000, appliedLimitCents: Math.round((request.newLimitUsd! - request.amountUsd + 40) * 100), topUpMonth: month(),
+    });
+  });
+
+  it("I-2: a denial records no approved amount and no applied limit", async () => {
+    const { t, request } = await monthSetup();
+    const capture = capturingAuditDeps({ db: t.db });
+    await decideSpendRequest({ ...t.deps(), audit: capture.audit }, t.caller(DEB, "admin"), request.spendRequestId, { requestId: randomUUID(), decision: "DENY" });
+    const [event] = capture.recordedBy("spend_request.decided");
+    expect(event?.facts).toMatchObject({ decision: "DENIED", amountCents: 1000 });
+    expect(event?.facts).not.toHaveProperty("approvedAmountCents");
+    expect(event?.facts).not.toHaveProperty("appliedLimitCents");
+  });
+
+  it("M-1: asking again while a request is open writes the repeat's R18 mark, so repeating it after the request is decided answers the same, not a new request", async () => {
+    const t = await setup();
+    const ask = { kind: "month", scope: MEMBER, amountUsd: 15, reason: "Mine." };
+    expect((await t.api(MAYA, "POST", "/v1/app/spend-requests", ask)).status).toBe(201);
+    const requestId = randomUUID();
+    const second = await t.api(MAYA, "POST", "/v1/app/spend-requests", { requestId, ...ask });
+    expect(second.status).toBe(200);
+    const [open] = monthRequests(t);
+    await t.decide(DEB, open!.spendRequestId, "DENY");
+    const repeat = await t.api(MAYA, "POST", "/v1/app/spend-requests", { requestId, ...ask });
+    expect(repeat.status).toBe(200);
+    expect(repeat.body).toEqual(second.body);
+    expect(monthRequests(t)).toHaveLength(1);
   });
 });
 

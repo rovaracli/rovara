@@ -184,6 +184,8 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
       repositoryGrant: z.string().min(1),
       /** An agent-step run that looks at pull requests: after cloning, the worker fetches each head, checks the commit out detached and verifies it (Plan 3, Task 22). Sent only to a worker that lists `task.agentRun`. */
       checkout: z.array(RunCheckoutSchema).max(10).optional(),
+      /** An agent-step run's preparation clones and checks out only: no devcontainer, no setup command, no readiness command (Plan 3 final fix wave). Sent only to a worker that lists `task.agentRun`. */
+      readOnly: z.literal(true).optional(),
     }).strict(),
   }).strict(),
   InvocationBaseSchema.extend({

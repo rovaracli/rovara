@@ -21,7 +21,7 @@ export interface ConfirmView {
   facts: Array<{ label: string; value: string }>;
   /** What the agent said it was doing (`summary`) and any other plain paragraphs. */
   paragraphs?: string[];
-  call?: { connector: string; tool: string; arguments: unknown };
+  call?: { connector: string; tool: string; /** The connector scope the call is made in (and for GitHub the repository): part of the call, so two calls that differ only by it read differently. */ scope?: string; repository?: string; arguments: unknown };
 }
 
 export type DecideInspection =

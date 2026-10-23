@@ -4,6 +4,7 @@
 import { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import {
   CreateSecretCommand,
+  DeleteSecretCommand,
   DescribeSecretCommand,
   GetSecretValueCommand,
   TagResourceCommand,
@@ -284,6 +285,22 @@ describe("the role's trust and permissions as the fake enforces them", () => {
     await expect(b.send(new TagResourceCommand({ SecretId: name, Tags: [{ Key: "rovara:org", Value: ORG_B }] }))).rejects.toMatchObject({ name: "AccessDeniedException" });
     await expect(b.send(new UntagResourceCommand({ SecretId: name, TagKeys: ["rovara:org"] }))).rejects.toMatchObject({ name: "AccessDeniedException" });
     expect(fake.stored(name)?.tags).toEqual({ "rovara:org": ORG_A });
+  });
+
+  it("refuses a delete that skips the recovery window, and a delete with one (the review's M2: a bug must not make a removal unrecoverable)", async () => {
+    const { fake } = setup();
+    const name = orgConnectorSecretName(ENV, ORG_A, "con_force");
+    fake.seed(name, "v", { "rovara:org": ORG_A });
+    const a = await fake.client(ORG_A);
+    await expect(a.send(new DeleteSecretCommand({ SecretId: name, ForceDeleteWithoutRecovery: true }))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    expect(fake.stored(name)?.deleteAt).toBeUndefined();
+    await a.send(new DeleteSecretCommand({ SecretId: name, RecoveryWindowInDays: 7 }));
+    expect(fake.stored(name)?.deleteAt).toBeDefined();
+    // The Deny is in the policy, not in the fake: without it the fake gets as far as the service's own refusal of a forced delete with a window.
+    const without = connectorSecretsPolicyStatements({ secretArnPrefix: "arn:aws:secretsmanager:us-west-2:111122223333:secret:", env: ENV }).filter((statement) => statement.Sid !== "NeverDeleteWithoutRecovery");
+    const unguarded = new FakeOrgSecrets({ env: ENV, policy: without });
+    unguarded.seed(name, "v", { "rovara:org": ORG_A });
+    await expect((await unguarded.client(ORG_A)).send(new DeleteSecretCommand({ SecretId: name, ForceDeleteWithoutRecovery: true }))).rejects.toMatchObject({ name: "InvalidParameterException" });
   });
 
   it("refuses to read a secret whose tag is another org's even under the session's own path", async () => {

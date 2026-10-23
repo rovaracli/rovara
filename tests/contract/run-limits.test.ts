@@ -531,6 +531,54 @@ describe("approving the plan", () => {
     expect(t.meta(taskId).workflow.revision).toBe(after.workflow.revision);
   });
 
+  describe("owner decision 3 (option E): when the project or an agent's owner pays", () => {
+    it("a project that pays: the member's approval of a $20 limit waits for a maintainer in the new words, and the block is still a run-limit block", async () => {
+      const t = await world();
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const { taskId, workspaceId, plan } = await t.planned("QUICK");
+      t.h.db.set({ ...t.meta(taskId), payer: { kind: "project", project: "payments" } });
+      const approved = await t.decide(taskId, plan);
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: "Waiting for a project maintainer to accept the $20 run limit." });
+      expect(t.requestRunLimit).toHaveBeenCalledTimes(1);
+      expect(t.requestRunLimit.mock.calls[0]![0]).toMatchObject({ kind: "run_limit", newLimitUsd: 20, approverRole: "project_maintainer" });
+      // Nothing restarts it but the approval of the request.
+      const before = t.meta(taskId);
+      const retried = await t.api(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { expectedRevision: before.workflow.revision, instructions: "Try again." });
+      expect(retried).toMatchObject({ status: 400, body: { error: { message: expect.stringContaining("Coding starts once the run limit is approved.") as unknown } } });
+      expect(t.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toEqual([]);
+    });
+
+    it("a project that pays and sets $25: the member's approval of the $20 limit is accepted and coding starts", async () => {
+      const t = await world();
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      t.h.db.set({ ...projectAiKey(TEST_ORG, "payments"), entityType: "PROJECT_AI", projectPays: true, memberAcceptRunLimitUpToUsd: 25, revision: 1 });
+      const { taskId, workspaceId, plan } = await t.planned("QUICK");
+      t.h.db.set({ ...t.meta(taskId), payer: { kind: "project", project: "payments" } });
+      expect((await t.decide(taskId, plan)).status).toBe(200);
+      expect(t.meta(taskId)).toMatchObject({ budgetUsd: 20, workflow: { stage: "IMPLEMENT", state: "RUNNING" } });
+      expect(t.requestRunLimit).not.toHaveBeenCalled();
+      expect(t.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
+    });
+
+    it("an agent's owner pays: within its max per run the approval is accepted, above it the plan waits for the agent's owner", async () => {
+      const within = await world();
+      seedCosts(within.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const first = await within.planned("QUICK");
+      within.h.db.set({ ...within.meta(first.taskId), payer: { kind: "agent", agentId: "agt_aaaaaaaaaaaaaaaaaaaa" }, maxPerRunUsd: 20 });
+      expect((await within.decide(first.taskId, first.plan)).status).toBe(200);
+      expect(within.meta(first.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+      const above = await world();
+      seedCosts(above.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const second = await above.planned("QUICK");
+      above.h.db.set({ ...above.meta(second.taskId), payer: { kind: "agent", agentId: "agt_aaaaaaaaaaaaaaaaaaaa" }, maxPerRunUsd: 19 });
+      above.setRole("admin");
+      expect((await above.decide(second.taskId, second.plan)).status).toBe(200);
+      expect(above.meta(second.taskId).workflow).toMatchObject({ state: "BLOCKED", blockReason: "Waiting for the agent's owner to accept the $20 run limit." });
+      expect(above.requestRunLimit.mock.calls[0]![0]).toMatchObject({ approverRole: "agent_owner", newLimitUsd: 20 });
+    });
+  });
+
   describe("a plan blocked on its run limit", () => {
     async function blocked() {
       const t = await world();

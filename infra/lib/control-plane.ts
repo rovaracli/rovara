@@ -37,13 +37,14 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { HEALTH_ALARM_SUFFIXES, brokerManagedPolicyPath, brokerManagedPolicyPrefix, connectorSecretsRoleName, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES, brokerManagedPolicyPath, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { TaskPersonProof } from "./task-person-proof.js";
 import { DeveloperTaskNotifier } from "./developer-task-notifier.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
 import { AuditLedger } from "./audit-ledger.js";
+import { BrokerNames } from "./broker-names.js";
 import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
 
@@ -102,8 +103,10 @@ export class ControlPlaneStack extends Stack {
   constructor(scope: Construct, id: string, props?: ControlPlaneStackProps) {
     super(scope, id, props);
     const naming = props?.naming ?? legacyNaming();
-    const projectSetupRuntimeCatalogId = `${naming.resourcePrefix}-project-setup-runtime-v1`;
-    const e2eFeatureRuntimeCatalogId = `${naming.resourcePrefix}-e2e-mock-runtime-v1`;
+    // The names the broker derives from the environment's name itself (@agentx/contracts), so a named environment's broker is not given them
+    // (its variables are held to Lambda's 4 KB); the legacy install's resourcePrefix is "agentx-production", which it is given.
+    const projectSetupRuntimeCatalogId = naming.env === undefined ? `${naming.resourcePrefix}-project-setup-runtime-v1` : environmentProjectSetupRuntimeCatalogId(naming.env);
+    const e2eFeatureRuntimeCatalogId = naming.env === undefined ? `${naming.resourcePrefix}-e2e-mock-runtime-v1` : environmentE2eFeatureRuntimeCatalogId(naming.env);
 
     const oidcIssuer = new CfnParameter(this, "OidcIssuer", { type: "String" });
     const oidcAudience = new CfnParameter(this, "OidcAudience", { type: "String" });
@@ -184,8 +187,7 @@ export class ControlPlaneStack extends Stack {
 
     const broker = packagedFunction(this, "Broker", "packages/broker/src/aws/broker.ts", {
       STATE_TABLE_NAME: state.tableName,
-      AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID: projectSetupRuntimeCatalogId,
-      AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: e2eFeatureRuntimeCatalogId,
+      ...(naming.env === undefined ? { AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID: projectSetupRuntimeCatalogId, AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: e2eFeatureRuntimeCatalogId } : {}),
       ARTIFACT_BUCKET_NAME: artifacts.bucketName,
       OIDC_ISSUER: oidcIssuer.valueAsString,
       ADMIN_CLAIM: adminClaim.valueAsString,
@@ -223,7 +225,7 @@ export class ControlPlaneStack extends Stack {
       actions: ["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
-    if (naming.env !== undefined) broker.addEnvironment("CONNECTOR_SECRET_PREFIX", naming.connectorSecretPrefix);
+    // A named environment's broker derives its connector secret prefix from AGENTX_ENV (broker-environment.ts), so it is not given it.
     // Plan 3, ruling R62: an org's connection keys and event hook secrets (agentx/<env>/org-connectors/<org>/... and
     // agentx/<env>/org-hooks/<org>/...) are readable only through this role, in a session the broker tags with the org.
     // The broker role may assume it and holds no Secrets Manager permission on those paths. Named environments only.
@@ -246,8 +248,10 @@ export class ControlPlaneStack extends Stack {
         actions: ["sts:AssumeRole", "sts:TagSession"],
         resources: [connectorSecretsRole.attrArn],
       }));
-      broker.addEnvironment("CONNECTOR_SECRETS_ROLE_ARN", connectorSecretsRole.attrArn);
+      // The role's ARN is not passed: the broker builds it from the environment, the region and the account, as the role's fixed name and path
+      // are derived from the environment too (connectorSecretsRoleName, environmentRolePath).
       broker.addEnvironment("AGENTX_ENV", naming.env);
+      broker.addEnvironment("AGENTX_ACCOUNT_ID", this.account);
     }
     // Plan 2, Task 19 (cloud installs): the broker keeps the DNS firewall's "ProjectAllowList" equal to the approved egress domains. The list lives
     // in the foundation stack; its id arrives the way the VPC's does, as a foundation output the deploy passes on as this parameter. The broker may
@@ -267,7 +271,7 @@ export class ControlPlaneStack extends Stack {
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
     // exist only once the eval stack is deployed, and until then a run is refused as not installed.
-    broker.addEnvironment("SWEBENCH_SETTINGS_PREFIX", naming.ec2.workerSettingsPrefix);
+    if (naming.env === undefined) broker.addEnvironment("SWEBENCH_SETTINGS_PREFIX", naming.ec2.workerSettingsPrefix);
     const swebenchParameterArns = [
       swebenchNames(naming).settingsParameterName,
       swebenchNames(naming).runnerImageParameterName,
@@ -332,7 +336,8 @@ export class ControlPlaneStack extends Stack {
       // The GitHub App's key, to read files as the broker does.
       planEvidence.addToRolePolicy(new iam.PolicyStatement({ sid: "GitHubAppKey", actions: ["secretsmanager:GetSecretValue"], resources: [githubAppPrivateKeySecretArn.valueAsString] }));
       planEvidence.grantInvoke(broker);
-      broker.addEnvironment("PLAN_EVIDENCE_FUNCTION_NAME", planEvidence.functionName);
+      if (naming.env === undefined) broker.addEnvironment("PLAN_EVIDENCE_FUNCTION_NAME", planEvidence.functionName);
+      else BrokerNames.of(broker).add("planEvidenceFunction", planEvidence.functionName);
     }
 
     const outboxPublisher = packagedFunction(
@@ -502,7 +507,9 @@ export class ControlPlaneStack extends Stack {
     slackRequestQueue.grantConsumeMessages(slackOrchestratorRole);
     // Spec 061 slice 2: "Ask AgentX to reply to this comment" on the task page queues the comment for the Slack service (send only).
     slackRequestQueue.grantSendMessages(broker);
-    broker.addEnvironment("SLACK_REQUEST_QUEUE_URL", slackRequestQueue.queueUrl);
+    // A named environment's broker is given the queue's name (BrokerNames), not its URL: its variables are held to Lambda's 4 KB.
+    if (naming.env === undefined) broker.addEnvironment("SLACK_REQUEST_QUEUE_URL", slackRequestQueue.queueUrl);
+    else BrokerNames.of(broker).add("slackRequestQueue", slackRequestQueue.queueName);
     slackThreads.grantReadWriteData(slackOrchestratorRole);
     threadSessions.grantReadWrite(slackOrchestratorRole);
     slackSecret.grantRead(slackOrchestratorRole);
@@ -544,7 +551,8 @@ export class ControlPlaneStack extends Stack {
       actions: ["dynamodb:Query"],
       resources: [turnRecords.tableArn, `${turnRecords.tableArn}/index/byTime`],
     }));
-    broker.addEnvironment("TURN_RECORDS_TABLE_NAME", turnRecords.tableName);
+    if (naming.env === undefined) broker.addEnvironment("TURN_RECORDS_TABLE_NAME", turnRecords.tableName);
+    else BrokerNames.of(broker).add("turnRecordsTable", turnRecords.tableName);
 
     // No subscription by default: the deployer subscribes an email address or connects AWS Chatbot.
     const operatorAlerts = new sns.Topic(this, "OperatorAlerts", {
@@ -615,7 +623,7 @@ export class ControlPlaneStack extends Stack {
     // per-connector one; the alarms read the dimensionless series, so they cover every connector.
     const agentxSum = (metricName: string, period: Duration) =>
       new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName, statistic: "Sum", period });
-    if (naming.env !== undefined) broker.addEnvironment("AGENTX_METRICS_NAMESPACE", naming.metricsNamespace);
+    // A named environment's broker derives its metrics namespace from AGENTX_ENV (broker-environment.ts), so it is not given it.
     new cloudwatch.Alarm(this, "ConnectorBrokenAlarm", {
       alarmName: naming.alarmName("ConnectorBroken"),
       alarmDescription: "A connector's discovery failed or a vendor changed an approved tool's schema. Check the broker logs for connector metrics and connector.* events.",
@@ -699,7 +707,9 @@ export class ControlPlaneStack extends Stack {
       }).addAlarmAction(notifyOperator);
     }
 
-    broker.addEnvironment("SLACK_ORCHESTRATOR_ROLE_ARN", slackOrchestratorRole.roleArn);
+    // A named environment's broker is given the role's name (BrokerNames): the role is under /agentx/<env>/, so the broker builds the ARN.
+    if (naming.env === undefined) broker.addEnvironment("SLACK_ORCHESTRATOR_ROLE_ARN", slackOrchestratorRole.roleArn);
+    else BrokerNames.of(broker).add("slackOrchestratorRole", slackOrchestratorRole.roleName);
     broker.addEnvironment("SLACK_MEMBER_WORKSPACE_LIMIT", memberWorkspaceLimit.valueAsString);
     broker.addEnvironment("SLACK_ORGANIZATION_WORKSPACE_LIMIT", organizationWorkspaceLimit.valueAsString);
 
@@ -1000,13 +1010,14 @@ export class ControlPlaneStack extends Stack {
         removalPolicy: RemovalPolicy.DESTROY,
       });
       chatGptConnectionKey.grant(broker, "kms:Encrypt", "kms:Decrypt");
-      broker.addEnvironment("CHATGPT_CONNECTION_KEY_ARN", chatGptConnectionKey.keyArn);
+      // The key's id, in the broker's names: the broker builds the ARN from the region and the account (broker-environment.ts), to the same text.
+      BrokerNames.of(broker).add("chatGptConnectionKey", chatGptConnectionKey.keyId);
       // Spec 025 phase 25c: sharing, named environments only (D14).
       const notifier = new DeveloperTaskNotifier(this, "DeveloperTaskNotifier", { naming, controlPlaneUrl: api.attrApiEndpoint, state, artifactBucket: artifacts, slackSecret, taskPeopleChangesEnabled: signInParameters.taskPeopleChangesEnabled, notifyOperator });
       // Spec 025 A13: the admin health route reads the environment's alarms, by name, and
       // the depths of its dead-letter queues. Read-only, and on exactly these resources.
       const alarmPrefix = naming.alarmName("");
-      broker.addEnvironment("AGENTX_ALARM_PREFIX", alarmPrefix);
+      // The broker derives the alarm prefix from AGENTX_ENV (environmentAlarmPrefix), so it is not given it.
       // Issue 206: the probe reads them by exact name (HEALTH_ALARM_SUFFIXES), since a prefix listing
       // is authorized against * while a call naming its alarms is authorized against each alarm's
       // ARN, which this grant covers. A CDK alarm missing from that list would go unreported, so the
@@ -1019,7 +1030,13 @@ export class ControlPlaneStack extends Stack {
         resources: [`arn:${this.partition}:cloudwatch:${this.region}:${this.account}:alarm:${alarmPrefix}*`],
       }));
       const deadLetterQueues = { dispatch: deadLetterQueue, "slack-requests": slackDeadLetterQueue, "developer-notices": notifier.deadLetters, "developer-notice-stream": notifier.streamFailures };
-      broker.addEnvironment("HEALTH_DEAD_LETTER_QUEUES", this.toJsonString(Object.fromEntries(Object.entries(deadLetterQueues).map(([name, queue]) => [name, queue.queueUrl]))));
+      // The queues' names, in the broker's names: the broker builds each URL from the region and the account and lists them for the health route
+      // (broker-environment.ts). Four URLs in a variable of their own came to 650 bytes of the 4 KB.
+      const brokerNames = BrokerNames.of(broker);
+      brokerNames.add("dispatchDeadLetters", deadLetterQueue.queueName);
+      brokerNames.add("slackRequestDeadLetters", slackDeadLetterQueue.queueName);
+      brokerNames.add("developerNoticeDeadLetters", notifier.deadLetters.queueName);
+      brokerNames.add("developerNoticeStreamFailures", notifier.streamFailures.queueName);
       broker.addToRolePolicy(new iam.PolicyStatement({
         actions: ["sqs:GetQueueAttributes"],
         resources: Object.values(deadLetterQueues).map((queue) => queue.queueArn),
@@ -1086,7 +1103,7 @@ export class ControlPlaneStack extends Stack {
         },
       }));
       // C14: TASK_BUSY counts the shared thread's waiting messages.
-      broker.addEnvironment("SLACK_THREADS_TABLE_NAME", slackThreads.tableName);
+      BrokerNames.of(broker).add("slackThreadsTable", slackThreads.tableName);
       broker.addToRolePolicy(new iam.PolicyStatement({
         actions: ["dynamodb:GetItem"],
         resources: [slackThreads.tableArn],
@@ -1158,7 +1175,7 @@ export class ControlPlaneStack extends Stack {
         handler: modelAccessFunction,
       });
       modelAccessFunction.grantInvoke(broker);
-      broker.addEnvironment("MODEL_ACCESS_FUNCTION_NAME", modelAccessFunction.functionName);
+      BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);
       // Ruling R29: the proxy's address, which the broker hands a task's worker together with its key.
       broker.addEnvironment("MODEL_PROXY_URL", modelProxy.url);
       // The worker asks for its key with the operation's callback capability, which the broker verifies; like the

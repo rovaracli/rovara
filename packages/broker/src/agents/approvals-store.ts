@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin } from "@agentx/contracts";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
 import { auditApprovalRequested } from "../audit/events.js";
@@ -43,6 +43,12 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   requireDecide?: DecideGuard;
   /** Task 21a-wiring: the confirmation link for a token's member, with a decide ticket minted for them (after the same live check as `mayDecideApproval`); only `POST /v1/app/approvals/{id}/confirm-link` mints, a read never does. */
   mintConfirmUrl?: (caller: AgentCaller, approvalId: string) => Promise<string>;
+  /**
+   * Owner decision 2026-10-22 (option D): starts the run an owner approved for an older, less safe version (`agent_run_version`), as `developerId`, exactly once
+   * (the run's own request id makes a redrive answer the first start), with the version check of the start waived. The broker supplies it; without it such a
+   * change can't be applied.
+   */
+  startApprovedRun?: (input: { orgId: OrgId; requestId: string; project: string; agent: { agentId: AgentId; version: number }; input: RunInput; origin: WorkOrigin; developerId: string }) => Promise<void>;
   /** Task 22: what the agent-step engine needs of the broker (dispatching a step's operation, the creator and recipe checks, the parts of a task's end). Without it a run cannot go on. */
   agentRuns?: AgentRunHost;
 }
@@ -70,7 +76,13 @@ export type AgentChangeSubject =
   /** Make `shares` the agent's share set (it includes a company-wide share), while it is still at `expectedSharesRevision`. */
   | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number }
   /** Make `next` the company's agent guardrails, while they are still at `expectedRevision`. */
-  | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number };
+  | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number }
+  /**
+   * Start the run `runRequestId` asked for on `version` of the agent (an older version than the one that runs now, `expectedCurrentVersion`; for a built-in the
+   * org's pin), which is less safe than it: only while the version that runs now and the recipe of `version` (`digest`) are still what was shown. Approving it
+   * starts the run once, as the person who asked (`requestedBy`); declining or expiry starts nothing.
+   */
+  | { kind: "agent_run_version"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number; project: string; runRequestId: string; origin: WorkOrigin; input: RunInput };
 
 /**
  * Make `connector` the connector called `name` on `project`: a tool newly approved as `write` (Task 13). It applies only while the project is still
@@ -181,6 +193,8 @@ export interface WriteApprovalRecord extends DecidedFields, ApprovalRun {
   tool: string;
   toolAccess: "read" | "write";
   scope: string;
+  /** For a GitHub connector, the repository the scope names as `owner/name` (the server binds it, so the arguments never carry it); the page shows it. Absent on other connectors and on records made before it was stored. */
+  repository?: string;
   schemaHash: string;
   /** The project revision it was asked under (for display; every check reads the current one). */
   projectRevision: number;
@@ -269,6 +283,10 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     kind: z.literal("chain_share"), chainId: ChainIdSchema, expectedSharesRevision: z.number().int(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
+  z.object({
+    kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
+    project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
+  }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   z.object({
     kind: z.literal("opt_out"), project: z.string(), repository: z.string(), expectedDigest: Hex64, files: z.array(z.string()), reason: z.string(),
@@ -331,6 +349,7 @@ const WriteApprovalRecordSchema = z.object({
   tool: z.string(),
   toolAccess: z.enum(["read", "write"]),
   scope: z.string(),
+  repository: z.string().optional(),
   schemaHash: Hex64,
   projectRevision: z.number().int(),
   credentialRef: z.string().optional(),
@@ -374,7 +393,16 @@ export async function getApproval(deps: Pick<ApprovalStoreDependencies, "documen
 }
 
 const namedPeople = (approvers: ApproverSpec): string[] => (approvers.kind === "ids" ? [...approvers.ids] : [...approvers.candidates]);
-const listedPeople = (approvers: ApproverSpec): string[] => [...new Set(namedPeople(approvers))].sort().slice(0, MAX_LISTED_APPROVERS);
+/**
+ * The people a change is listed for, cut to what a transaction holds. The cut never drops the first person named (the agent's owner, who the member
+ * movers find the approval through) or the person who asked; the rest are kept in id order.
+ */
+function listedPeople(approvers: ApproverSpec, requestedBy?: string): string[] {
+  const named = [...new Set(namedPeople(approvers))];
+  const first = [...new Set([named[0], requestedBy !== undefined && named.includes(requestedBy) ? requestedBy : undefined].filter((id): id is string => id !== undefined))];
+  const rest = named.filter((id) => !first.includes(id)).sort();
+  return [...first, ...rest].slice(0, MAX_LISTED_APPROVERS);
+}
 /** A step or write approval's transaction also holds its counter, its open item, its event and its audit item, so it lists fewer people. */
 const MAX_LISTED_RUN_APPROVERS = 88;
 
@@ -383,7 +411,7 @@ const MAX_LISTED_RUN_APPROVERS = 88;
  * cut to what a transaction can hold. Creating the record writes them; ending PENDING deletes the same ones.
  */
 export function listedFor(record: { kind: AnyApprovalRecord["kind"]; approvers: ApproverSpec; owner?: { developerId: string } | undefined }): string[] {
-  if (record.kind === "change") return listedPeople(record.approvers);
+  if (record.kind === "change") return listedPeople(record.approvers, (record as { requestedBy?: string }).requestedBy);
   const owner = record.owner?.developerId;
   const rest = [...new Set(namedPeople(record.approvers))].filter((id) => id !== owner).sort();
   return (owner === undefined ? rest : [owner, ...rest]).slice(0, MAX_LISTED_RUN_APPROVERS);
@@ -441,7 +469,7 @@ export async function createPendingChange(
       TransactItems: [
         put(approvalKey(input.orgId, approvalId), "APPROVAL", record as unknown as Item),
         put(openApprovalKey(expiresAt, input.orgId, approvalId), "OPEN_APPROVAL", { orgId: input.orgId, approvalId }),
-        ...listedPeople(input.approvers).map((developerId) => put(approverIndexKey(input.orgId, developerId, approvalId), "APPROVER_INDEX", { approvalId, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(expiresAt) })),
+        ...listedPeople(input.approvers, input.requestedBy).map((developerId) => put(approverIndexKey(input.orgId, developerId, approvalId), "APPROVER_INDEX", { approvalId, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(expiresAt) })),
       ],
     }));
   } catch (error) {

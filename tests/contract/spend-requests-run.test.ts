@@ -931,6 +931,39 @@ describe("fix round 1 (the Task 32 review)", () => {
       expect(t.ownerTotal(OMAR)).toBe(90);
     });
 
+    // Final fix wave, money M-3: the request was summed for one owner; it applies to nobody else.
+    it("M-3: a budget change held for one owner is not applied once the agent counts for another: the request ends with a clear refusal and nothing applies", async () => {
+      const t = await setup();
+      await t.budgeted(50);
+      await t.budgeted(50);
+      const third = await t.agentOf();
+      const asked = await t.setBudget(MAYA, third, { monthlyUsd: 1 });
+      expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+      const id = asked.body.spendRequestId as string;
+      expect(recordOf(t, id)).toMatchObject({ forOwner: MAYA.developerId });
+      // Before an admin answers, an admin gives the agent to Ben, whose total this request was never about.
+      const moved = await t.api(ADA, "PUT", `/v1/app/agents/${third}/owner`, { owner: { kind: "member", developerId: BEN.developerId } });
+      expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+      const refused = await refusal(t.decide(DEB, id));
+      expect(refused).toMatchObject({ code: "APPROVAL_CLOSED" });
+      expect(refused!.message).toMatch(/counts for someone else/);
+      expect(recordOf(t, id)).toMatchObject({ status: "EXPIRED", endedBecause: "owner_moved" });
+      expect(t.agentItem(third)!.monthlyBudgetUsd).toBeUndefined();
+      expect(t.ownerTotal(BEN)).toBe(0);
+      expect(t.openItems()).toEqual([]);
+    });
+
+    it("M-3: the same change still applies as asked while the agent counts for the owner it was summed for", async () => {
+      const t = await setup();
+      await t.budgeted(50);
+      await t.budgeted(50);
+      const third = await t.agentOf();
+      const id = (await t.setBudget(MAYA, third, { monthlyUsd: 1 })).body.spendRequestId as string;
+      await t.decide(DEB, id);
+      expect(t.agentItem(third)!.monthlyBudgetUsd).toBe(1);
+      expect(t.ownerTotal(MAYA)).toBe(101);
+    });
+
     it("a merge rewrites the ids inside the stored change, and the approval gives the agent to the survivor", async () => {
       const { t, agentId, id } = await heldTransfer();
       await onMembersMerged(t.deps(), { orgId: TEST_ORG, survivorId: CARL.developerId, duplicateId: OMAR.developerId });

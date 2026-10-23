@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { brokerNamesIn, takeBrokerNames } from "./broker-names-template.js";
 
 type Resource = { Type: string; Properties?: Record<string, unknown> };
 
@@ -45,7 +46,6 @@ export function withoutAuditLedger(template: unknown): unknown {
     "AWS::IAM::Role AuditLedgerAuditDrainSchedulerRole",
     "AWS::IAM::Role AuditLedgerAuditEpochSchedulerRole",
     "AWS::IAM::Role AuditLedgerAuditExportRole",
-    "AWS::KMS::Alias AuditLedgerAuditVaultKeyAlias",
     "AWS::KMS::Key AuditLedgerAuditVaultKey",
     "AWS::Lambda::EventInvokeConfig AuditLedgerAuditExportEventInvokeConfig",
     "AWS::Lambda::EventSourceMapping AuditLedgerAuditAppenderSqsEventSource",
@@ -88,9 +88,11 @@ export function withoutAuditLedger(template: unknown): unknown {
   const brokers = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && /^Broker[0-9A-F]{8}$/.test(id));
   expect(brokers).toHaveLength(1);
   const variables = (brokers[0]![1].Properties as { Environment: { Variables: Record<string, unknown> } }).Environment.Variables;
-  const added = ["AUDIT_INTAKE_QUEUE_URL", "AUDIT_LEDGER_TABLE_NAME", "AUDIT_SEALS_TABLE_NAME", "AUDIT_KEYS_TABLE_NAME", "AUDIT_EXPORT_FUNCTION_NAME", "AUDIT_EXPORTS_BUCKET_NAME", "AUDIT_VAULT_KEY_ARN"];
-  expect(Object.keys(variables).filter((name) => name.startsWith("AUDIT_")).sort()).toStrictEqual([...added].sort());
-  for (const name of added) delete variables[name];
+  // Since the final review's C1 they are names in the broker's one variable of names (the broker's variables are held to Lambda's 4 KB), not variables of their own.
+  const added = ["auditIntakeQueue", "auditLedgerTable", "auditSealsTable", "auditKeysTable", "auditExportFunction", "auditExportsBucket", "auditVaultKey"] as const;
+  expect(Object.keys(variables).filter((name) => name.startsWith("AUDIT_"))).toStrictEqual([]);
+  expect(Object.keys(brokerNamesIn(variables)).filter((key) => key.startsWith("audit")).sort()).toStrictEqual([...added].sort());
+  takeBrokerNames(variables, added);
   // Task 18: the sign-in function is given the intake queue's URL too (its grants are the policy removed above), and no other variable.
   const signIns = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && /^DeveloperSignInFunction[0-9A-F]{8}$/.test(id));
   expect(signIns).toHaveLength(1);

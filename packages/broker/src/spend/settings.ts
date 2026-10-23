@@ -70,8 +70,11 @@ const revisionOf = (item: Document): number | undefined => (typeof item["revisio
 export async function readProjectAiWithRevision(deps: SpendSettingsDependencies, orgId: OrgId, project: string): Promise<StoredProjectAi> {
   const item = await getItem(deps, projectAiKey(orgId, project));
   if (item === undefined) return { settings: defaultProjectAiSettings(), revision: 0 };
-  const { monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd } = item;
-  const parsed = ProjectAiSettingsSchema.safeParse({ projectPays, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(sourceOrder === undefined ? {} : { sourceOrder }), ...(planningLimitUsd === undefined ? {} : { planningLimitUsd }) });
+  const { monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd, memberAcceptRunLimitUpToUsd } = item;
+  const parsed = ProjectAiSettingsSchema.safeParse({
+    projectPays, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(sourceOrder === undefined ? {} : { sourceOrder }), ...(planningLimitUsd === undefined ? {} : { planningLimitUsd }),
+    ...(memberAcceptRunLimitUpToUsd === undefined ? {} : { memberAcceptRunLimitUpToUsd }),
+  });
   const revision = revisionOf(item);
   if (!parsed.success || revision === undefined) throw unreadable(`${project}'s AI settings`);
   return { settings: parsed.data, revision };
@@ -139,6 +142,7 @@ export interface ProjectAiChange {
   projectPays?: boolean;
   sourceOrder?: ProjectAiSettings["sourceOrder"] | null;
   planningLimitUsd?: { QUICK?: number | null; FULL?: number | null };
+  memberAcceptRunLimitUpToUsd?: number | null;
 }
 
 /** The settings with the change applied, checked against the schema (ranges, no repeated source). CONFIG_INVALID names the first field that is wrong. */
@@ -151,8 +155,10 @@ export function applyProjectAiChange(current: ProjectAiSettings, change: Project
     if (named === null) delete limits[path];
     else if (named !== undefined) limits[path] = named;
   }
+  const memberAccepts = change.memberAcceptRunLimitUpToUsd === undefined ? current.memberAcceptRunLimitUpToUsd : change.memberAcceptRunLimitUpToUsd ?? undefined;
   const parsed = ProjectAiSettingsSchema.safeParse({
     projectPays: change.projectPays ?? current.projectPays,
+    ...(memberAccepts === undefined ? {} : { memberAcceptRunLimitUpToUsd: memberAccepts }),
     ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }),
     ...(sourceOrder === undefined ? {} : { sourceOrder }),
     ...(Object.keys(limits).length === 0 ? {} : { planningLimitUsd: limits }),

@@ -41,7 +41,7 @@ export function approvalView(deps: Pick<ApprovalDependencies, "confirmOrigin">, 
   };
   if (record.kind === "write") {
     return {
-      ...common, summary: record.summary, class: record.class, connector: record.connector, tool: record.tool, scope: record.scope, project: record.project,
+      ...common, summary: record.summary, class: record.class, connector: record.connector, tool: record.tool, scope: record.scope, ...(record.repository === undefined ? {} : { repository: record.repository }), project: record.project,
       taskId: record.subject.taskId, stepId: record.subject.stepId, owner: { name: record.owner.name }, projectRevision: record.projectRevision, attempts: record.attempts ?? 0,
       ...(record.result === undefined ? {} : { result: record.result }),
       ...(includeArguments ? { arguments: record.arguments, argumentsHash: record.argumentsHash } : {}),

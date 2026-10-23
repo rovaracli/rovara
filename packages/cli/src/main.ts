@@ -1907,13 +1907,14 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command("ai")
     .description("a project's AI settings")
     .command("set")
-    .description("set a project's AI budget, whether it pays for its runs, and its planning limits (an org owner or admin)")
+    .description("set a project's AI budget, whether it pays for its runs, and its planning limits (an org owner or admin; a project maintainer may set only --member-accept-run-limit)")
     .argument("<project>", "the project's name")
     .option("--budget <usd|none>", "the project's monthly AI budget")
     .option("--project-pays <on|off>", "whether runs on the project are charged to it")
     .option("--planning-quick <usd|none>", "the most a quick plan may spend; none for the default")
     .option("--planning-full <usd|none>", "the most a full plan may spend; none for the default")
-    .action(async (project: string, options: { budget?: string; projectPays?: string; planningQuick?: string; planningFull?: string }, command: Command) =>
+    .option("--member-accept-run-limit <usd|none>", "the most a member may accept as a run limit when the project pays (a project maintainer, an org owner or admin); none for the default $10")
+    .action(async (project: string, options: { budget?: string; projectPays?: string; planningQuick?: string; planningFull?: string; memberAcceptRunLimit?: string }, command: Command) =>
       printResult(command, await projectAiSet(developerSession(), developerEnv(command), project, options)));
 
   const envCommand = program.command("env").description("AgentX environments in this AWS account and region");

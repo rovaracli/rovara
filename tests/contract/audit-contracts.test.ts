@@ -164,9 +164,11 @@ describe("the event catalog", () => {
     expect(AUDIT_FACT_KEYS["spend_request.rerouted"]).toEqual(["kind", "mode"]);
     expect(AUDIT_FACT_KEYS["spend_request.resume_dropped"]).toEqual(["kind", "cause"]);
     expect(AUDIT_FACT_KEYS["write.executed"]).toEqual(["connectorType", "tool", "status", "argumentsHash"]);
-    for (const action of ["spend_request.created", "spend_request.decided", "spend_request.expired", "spend_request.escalated"] as const) {
+    for (const action of ["spend_request.created", "spend_request.expired", "spend_request.escalated"] as const) {
       expect(AUDIT_FACT_KEYS[action]).toEqual(["kind", "scopeKind", "amountCents", "newLimitCents", "decision"]);
     }
+    // A decision also says what it applied, apart from what was asked (final review, money I-2).
+    expect(AUDIT_FACT_KEYS["spend_request.decided"]).toEqual(["kind", "scopeKind", "amountCents", "newLimitCents", "decision", "approvedAmountCents", "appliedLimitCents", "topUpMonth"]);
     expect(AUDIT_FACT_KEYS["budget.changed"]).toEqual(["scopeKind", "field", "fromCents", "toCents"]);
     expect(AUDIT_FACT_KEYS["spend_policy.changed"]).toEqual(["field", "from", "to"]);
     expect(AUDIT_FACT_KEYS["trigger.disabled"]).toEqual(["cause", "source", "type", "targetKind"]);

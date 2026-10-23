@@ -1966,8 +1966,9 @@ describe("startChainRun: the rest of the checks", () => {
     const real = w.agents.getVersion.bind(w.agents);
     w.agents.getVersion = (async (orgId: never, agentId: never, version: never) => { asked.push(version); return real(orgId, agentId, version); });
     await startAs(w, PRIYA, chain.chainId);
-    expect(asked.length).toBeGreaterThan(0);
-    expect(asked.every((version) => version === 1)).toBe(true);
+    expect(asked).toContain(1);
+    // Plan 3's older-version gate (D) also reads the version that runs now, to compare the pinned one against it; nothing else may be read, and what runs is the pin.
+    expect(asked.every((version) => version === 1 || version === 2)).toBe(true);
     expect(w.starts[0]!.agent).toEqual({ agentId: reviewer.agentId, version: 1 });
   });
 

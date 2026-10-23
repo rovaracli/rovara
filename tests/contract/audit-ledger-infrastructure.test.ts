@@ -13,6 +13,7 @@ import { auditLockSettings, auditTsaSettings } from "../../infra/lib/audit-setti
 import { evaluate } from "../support/cfn-evaluate.js";
 import { roleStatements, simulateIam, type IamStatement } from "../support/iam-simulate.js";
 import { lockedPutInput } from "../../packages/broker/src/audit/anchor.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -429,7 +430,7 @@ describe("the audit ledger in templates", () => {
       "ForAnyValue:StringEquals": { "kms:EncryptionContextKeys": ["rovara:org"] },
     };
 
-    it("is a symmetric rotating key with the alias and description of the plan, kept on delete", () => {
+    it("is a symmetric rotating key with the description of the plan, kept on delete", () => {
       const [, key] = keyOf(production);
       expect(key.Properties.EnableKeyRotation).toBe(true);
       expect(key.Properties.Description).toBe("Rovara audit ledger details, per org data keys");
@@ -437,10 +438,23 @@ describe("the audit ledger in templates", () => {
       expect(key.Properties.KeyUsage ?? "ENCRYPT_DECRYPT").toBe("ENCRYPT_DECRYPT");
       expect(KEEP).toContain(key.DeletionPolicy);
       expect(KEEP).toContain(key.UpdateReplacePolicy);
-      const [, alias] = one(production.template, "AWS::KMS::Alias", "AuditLedgerAuditVaultKey");
-      expect(alias.Properties.AliasName).toBe("alias/agentx/production/audit-vault");
-      expect(KEEP).toContain(alias.DeletionPolicy);
     });
+
+    // Final review I1: a fixed alias name that a rolled-back first create keeps (nobody the key policy allows can DeleteAlias) makes every
+    // retry of a failed first deploy fail with AlreadyExistsException. Nothing reads an alias (the key is addressed by its ARN), so there is none.
+    for (const env of ["production", "staging", "acme"]) {
+      it(`${env} has no KMS alias for the vault key, and nothing in its stack keeps one`, () => {
+        const synthesis = named(env);
+        const keyId = keyOf(synthesis)[0];
+        // The stack's other keys have aliases (the invoke signing key, the developer token key); the vault key has none.
+        expect(ofType(synthesis.template, "AWS::KMS::Alias").filter(([, alias]) => JSON.stringify(alias.Properties.TargetKeyId).includes(keyId)).map(([id]) => id)).toEqual([]);
+        expect(ofType(synthesis.template, "AWS::KMS::Alias").map(([id]) => id).filter((id) => id.startsWith("AuditLedger"))).toEqual([]);
+        expect(JSON.stringify(synthesis.template)).not.toMatch(/audit-vault|AuditVaultKeyAlias/);
+        // The key policy allows no DeleteAlias, so an alias would be one no one could remove: the policy has to stay as it is.
+        const admin = ((keyOf(synthesis)[1].Properties.KeyPolicy as { Statement: Statement[] }).Statement).find((statement) => statement.Sid === "AdminWithoutUse")!;
+        expect([admin.Action].flat()).not.toContain("kms:DeleteAlias");
+      });
+    }
 
     for (const env of ["production", "staging", "acme"]) {
       it(`${env} has the six statements exactly`, () => {
@@ -947,12 +961,13 @@ describe("the audit ledger in templates", () => {
           }
         });
 
-        it("gives the broker, the export function (which flushes its audit.exported item) and the sign-in function (Task 18) the intake queue's URL, and no other function", () => {
+        it("gives the export function (which flushes its audit.exported item) and the sign-in function (Task 18) the intake queue's URL, the broker its name (the broker builds the URL), and no other function", () => {
           const functions = ofType(synthesis.template, "AWS::Lambda::Function");
           const withUrl = functions.filter(([, fn]) => (fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables?.AUDIT_INTAKE_QUEUE_URL !== undefined);
-          expect(withUrl.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditExport", "Broker", "DeveloperSignInFunction"]);
-          const variables = (withUrl.find(([id]) => withoutHash(id) === "Broker")![1].Properties.Environment as { Variables: Json }).Variables;
-          expect(concreteAws(variables.AUDIT_INTAKE_QUEUE_URL)).toBe("Ref:AuditLedgerAuditIntakeQueue");
+          expect(withUrl.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditExport", "DeveloperSignInFunction"]);
+          const variables = (one(synthesis.template, "AWS::Lambda::Function", "Broker")[1].Properties.Environment as { Variables: Json }).Variables;
+          expect(variables.AUDIT_INTAKE_QUEUE_URL).toBeUndefined();
+          expect(brokerNamesIn(variables).auditIntakeQueue).toStrictEqual({ "Fn::GetAtt": [one(synthesis.template, "AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue")[0], "QueueName"] });
         });
 
         it("drains every minute: one schedule, invoking the broker through a scheduler role with { source: agentx.audit-drain }", () => {
@@ -1796,19 +1811,25 @@ describe("the audit ledger in templates", () => {
           ]);
         });
 
-        it("gives the broker the names it reads the ledger by, the export function's name and the vault key's ARN, and not the ledger bucket", () => {
+        it("gives the broker the names it reads the ledger by, the export function's name and the vault key's id, and not the ledger bucket, in its one variable of names (the broker's variables are held to Lambda's 4 KB)", () => {
           const [, broker] = one(synthesis.template, "AWS::Lambda::Function", "Broker");
           const variables = (broker.Properties.Environment as { Variables: Json }).Variables;
-          const audit = Object.fromEntries(Object.entries(variables).filter(([name]) => name.startsWith("AUDIT_")).map(([name, value]) => [name, concreteAws(value)]));
+          // No variable of its own: the 7 full names, a URL and an ARN came to 780 bytes of the 4,096.
+          expect(Object.keys(variables).filter((name) => name.startsWith("AUDIT_"))).toStrictEqual([]);
+          const id = (type: string, prefix: string) => one(synthesis.template, type, prefix)[0];
+          const names = brokerNamesIn(variables);
+          const audit = Object.fromEntries(Object.entries(names).filter(([key]) => key.startsWith("audit")));
           expect(audit).toStrictEqual({
-            AUDIT_INTAKE_QUEUE_URL: "Ref:AuditLedgerAuditIntakeQueue",
-            AUDIT_LEDGER_TABLE_NAME: "Ref:AuditLedgerAuditLedgerTable",
-            AUDIT_SEALS_TABLE_NAME: "Ref:AuditLedgerAuditSealsTable",
-            AUDIT_KEYS_TABLE_NAME: "Ref:AuditLedgerAuditKeysTable",
-            AUDIT_EXPORTS_BUCKET_NAME: "Ref:AuditLedgerAuditExportsBucket",
-            AUDIT_EXPORT_FUNCTION_NAME: "Ref:AuditLedgerAuditExport",
-            AUDIT_VAULT_KEY_ARN: "AuditLedgerAuditVaultKey.Arn",
+            auditLedgerTable: { Ref: id("AWS::DynamoDB::Table", "AuditLedgerAuditLedgerTable") },
+            auditSealsTable: { Ref: id("AWS::DynamoDB::Table", "AuditLedgerAuditSealsTable") },
+            auditKeysTable: { Ref: id("AWS::DynamoDB::Table", "AuditLedgerAuditKeysTable") },
+            auditExportsBucket: { Ref: id("AWS::S3::Bucket", "AuditLedgerAuditExportsBucket") },
+            auditExportFunction: { Ref: id("AWS::Lambda::Function", "AuditLedgerAuditExport") },
+            auditIntakeQueue: { "Fn::GetAtt": [id("AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue"), "QueueName"] },
+            // The key's id (a Ref), never its ARN or its alias: the broker builds the ARN.
+            auditVaultKey: { Ref: id("AWS::KMS::Key", "AuditLedgerAuditVaultKey") },
           });
+          expect(JSON.stringify(variables)).not.toContain("LedgerBucket");
         });
 
         describe("what IAM lets the broker do on the ledger (all of its policies simulated)", () => {

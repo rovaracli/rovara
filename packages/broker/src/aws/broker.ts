@@ -1,3 +1,6 @@
+// First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
+// (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
+import "./broker-environment-init.js";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { posix as posixPath } from "node:path";
 import { cancelCallbackForbidden, verifyCancelCallbackCapability } from "./cancel-callback-capability.js";
@@ -202,6 +205,7 @@ import {
   modelKey,
   ModelSelectionSchema,
   recipeDigest,
+  recipeRunner,
   type InvocationModelRoute,
   type ModelIdentifier,
   type ModelRef,
@@ -343,7 +347,7 @@ import {
 } from "./cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { driveAgentRun, giveUpAgentRun, type AgentRunHost } from "../agents/run-engine.js";
-import { END_LEASE_MS, hasTaskEndHandlers } from "../agents/task-end.js";
+import { END_LEASE_MS, hasTaskEndHandlers, hasTaskPauseHandlers } from "../agents/task-end.js";
 import { agentRunWakeItems } from "./agent-run-wakeup.js";
 import { requireRecipeAllowed } from "../agents/roster.js";
 import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
@@ -374,7 +378,7 @@ import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } 
 import type { settlementBudgets} from "../spend/settlement-job.js";
 import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
-import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
+import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { estimateRun } from "../spend/estimate.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
@@ -386,7 +390,7 @@ import { ChainStore } from "../chains/store.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
 import { chainRunPortsFor, chainRunSpendReader, type ChainRunnerDependencies } from "../chains/runner.js";
-import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
+import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
@@ -402,7 +406,7 @@ import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, continueAsTask, resumeTaskAfterSpendApproval, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, continueAsTask, resumeTaskAfterSpendApproval, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -1020,6 +1024,22 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding
   // (`resumeAfterRunLimitApproval`, through the host above). Without this a member's Full task would block with no request and no way to run.
   routeDependencies.requestRunLimit ??= runLimitRequester(routeDependencies);
+  // Owner decision 2026-10-22: an owner's approval of an older, less safe version starts the run that asked for it, once, as the person who asked, through the same
+  // start as any run (its request id makes a repeat answer the first start), with only the version check waived.
+  routeDependencies.startApprovedRun = async (approved) => {
+    const starter = agentRunStarterOf({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
+      ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+      ...(dependencies.cloud === true ? { cloud: true } : {}),
+      agents: routeDependencies,
+      ...repositoriesGateRoute(dependencies),
+    });
+    if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");
+    await startAgentRun(starter, {
+      requestId: approved.requestId, orgId: approved.orgId, project: approved.project, agent: approved.agent, input: approved.input, origin: approved.origin,
+      owner: { developerId: approved.developerId }, startedBy: { developerId: approved.developerId }, versionApproved: true,
+    });
+  };
   // Plan 3, Task 21a-wiring: decisions need a person present. The decide routes call this guard first (a token is sent to the page with a ticketed
   // confirmUrl), and `GET /v1/app/approvals/{id}` mints the same ticket for the person who may decide it. Both use the page's own context.
   if (dependencies.decide !== undefined) {
@@ -1945,6 +1965,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(agents)),
           // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
           ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
+          ...(agents === undefined ? {} : { projectMemberChanged: async (orgId: OrgId, project: string, developerId: string) => { await onProjectMemberChanged(agents, { orgId, project, developerId }); } }),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
@@ -3374,7 +3395,7 @@ async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[] } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean } = {},
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
@@ -3427,6 +3448,8 @@ async function newWorkspacePreparation(
       ),
       // An agent-step run that looks at a pull request: the worker checks each head out, read-only, after cloning (Plan 3, Task 22).
       ...(options.checkout === undefined || options.checkout.length === 0 ? {} : { checkout: [...options.checkout] }),
+      // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
+      ...(options.readOnly === true ? { readOnly: true as const } : {}),
     },
   };
   const outbox = outboxRecord(workspace, invocation, project.runtimeBinding);
@@ -3497,7 +3520,7 @@ function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: Develope
  */
 async function heldPreparationDispatch(
   dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string,
-  options: { checkout?: readonly RunCheckout[] } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean } = {},
 ): Promise<{ workspace: WorkspaceInstance; items: TransactItems }> {
   const workspace = await requireWorkspace(dependencies, workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
@@ -3511,6 +3534,8 @@ async function heldPreparationDispatch(
       project: workerProjectDefinition(project.definition),
       repositoryGrant: issueRepositoryGrant(dependencies, project, ownerKey, workspaceId, operationId),
       ...(options.checkout === undefined || options.checkout.length === 0 ? {} : { checkout: [...options.checkout] }),
+      // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
+      ...(options.readOnly === true ? { readOnly: true as const } : {}),
     },
   };
   return { workspace, items: [{ Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
@@ -5226,6 +5251,8 @@ async function dispatchAgentStep(
   const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
   // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
   if (frozen === undefined || recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  // A run of agent steps is driven by the engine alone: any other task operation (a legacy turn from whichever route) would run a full coding session in its workspace.
+  if (input.agentRun === undefined && recipeRunner(frozen.recipe) === "agent_steps") throw agentXError("CONFIG_INVALID", "an agent run takes no follow-up; start a new run instead");
   const guardrails = await readGuardrails(dependencies, orgId);
   const stepIds = priorStepIds({ recipe: frozen.recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails, agentRun: input.agentRun });
   const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, frozen.recipe, stepIds);
@@ -5735,6 +5762,10 @@ function agentRunHostOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTas
       const artifactId = await putArtifact(dependencies, operation, { name, mediaType: "text/markdown", content: text });
       return (await getItem<{ objectKey?: unknown }>(dependencies, { pk: `WORKSPACE#${task.workspaceId}`, sk: `ARTIFACT#${artifactId}` }))?.objectKey as string | undefined;
     },
+    // The pause (and the request) a budget stop of this operation stands for, when none was written (the proxy's mid-step stop): the sweep asks again through here.
+    askForPause: async (task, operationId) => {
+      if (await askForPausedTask(dependencies, task.taskId, { id: operationId }) === "failed") throw agentXError("RUNTIME_UNAVAILABLE", "the pause could not be asked for");
+    },
     ...(developer === undefined ? {} : { taskUrl: (taskId: string) => taskPageUrl(developer.issuer, taskId) }),
     ...(developer?.slackTeamId === undefined ? {} : {
       slackChannels: async (orgId: OrgId, project: string) => (await queryAllItems(dependencies, slackBindingPk(orgId, developer.slackTeamId!), SLACK_BINDING_SK_PREFIX))
@@ -5882,7 +5913,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
           planning: current.workflowMode === "PLAN",
           ...(testCapUsd === undefined ? {} : { testCapUsd }),
           ...(stepBudgetUsd === undefined ? {} : { stepBudgetUsd }),
-          pause: { taskId: task.taskId, key: taskKey(task.taskId) },
+          pause: { taskId: task.taskId, key: taskKey(task.taskId), operationId: current.id },
           recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }, { key: operationKey(current.workspaceId, current.id) }],
         }),
       };
@@ -11338,21 +11369,36 @@ async function runAgentRunDispatch(dependencies: AwsBrokerDependencies, item: Wo
  * is tried again with the row's backoff (Task 22 re-check, N1).
  */
 async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
-  const row = item as WorkflowDispatchRecord & { orgId?: unknown; workspaceId?: unknown; operationId?: unknown };
+  const row = item as WorkflowDispatchRecord & { orgId?: unknown; workspaceId?: unknown; operationId?: unknown; endOf?: unknown };
   const key = { pk: item.pk, sk: item.sk };
   try {
-    const operation = typeof row.workspaceId === "string" && typeof row.operationId === "string"
-      ? await getItem<OperationRecord>(dependencies, operationKey(row.workspaceId, row.operationId)) : undefined;
-    if (operation === undefined || !TERMINAL.has(operation.status) || operation.orgId === undefined || operation.orgId !== row.orgId) {
-      await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
-      return "STALE";
+    let told: EndTold;
+    let orgId: string;
+    if (row.endOf === "closed") {
+      // M-6 (m-2): the `closed` end of a plain task whose close could not finish telling it. The task, not an operation, is what is looked at.
+      const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
+      if (task === undefined || task.orgId === undefined || task.orgId !== row.orgId || task.closedAt === undefined) {
+        await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
+        return "STALE";
+      }
+      orgId = task.orgId;
+      told = await noteTaskEnded(dependencies, task, "closed");
+    } else {
+      const operation = typeof row.workspaceId === "string" && typeof row.operationId === "string"
+        ? await getItem<OperationRecord>(dependencies, operationKey(row.workspaceId, row.operationId)) : undefined;
+      if (operation === undefined || !TERMINAL.has(operation.status) || operation.orgId === undefined || operation.orgId !== row.orgId) {
+        await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
+        return "STALE";
+      }
+      await blockEndedOperationKeys(dependencies, operation);
+      orgId = operation.orgId;
+      told = await tellTaskStop(dependencies, operation, item.taskId, operation.status, operation.kind === "task" && operation.status === "FAILED" && operation.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE);
     }
-    await blockEndedOperationKeys(dependencies, operation);
-    const told = await tellTaskEnd(dependencies, operation, item.taskId, operation.status);
     if (told === "in_progress") {
       // Another call holds the end and may die with it: the row stays, due when its lease could have run out, so whoever looks then finishes the end.
       await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: (operationEndDispatchItem(dependencies.tableName, {
-        taskId: item.taskId, orgId: operation.orgId, workspaceId: operation.workspaceId, operationId: operation.id, now: new Date().toISOString(), dueAt: new Date(Date.now() + END_LEASE_MS + 5_000).toISOString(),
+        taskId: item.taskId, orgId, workspaceId: String(row.workspaceId), operationId: String(row.operationId), now: new Date().toISOString(), dueAt: new Date(Date.now() + END_LEASE_MS + 5_000).toISOString(),
+        ...(row.endOf === "closed" ? { endOf: "closed" as const } : {}),
       }) as { Put: { Item: Record<string, unknown> } }).Put.Item }));
       return "RETRY";
     }
@@ -12954,20 +13000,27 @@ async function recordTerminalResult(
     throw agentXError("STALE_FENCE", "terminal callback no longer owns the workspace");
   }
   if (closeCanFinish && taskPointer !== undefined) await finishDeveloperClose(dependencies, taskPointer, operation.id, operation.createdAt, operation.discardUnpublished === true && closePreflight?.safeToClose !== true);
+  // Plan 3 final fix wave (runs I-1): an agent-step run's budget stop with no pause yet (the proxy's mid-step "budget exceeded") is asked for BEFORE the engine is
+  // driven, so the engine tells the pause's real scope, once, instead of a made-up one that it then resumes at once. A stop an approval already answered is not asked again.
+  const budgetStoppedRun = taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
+  const stop = { asked: false };
+  const runStop = budgetStoppedRun && taskPointer !== undefined ? await agentRunStopAsk(dependencies, taskPointer.taskId, operation.id) : "not_run";
+  if (runStop !== "not_run") stop.asked = true;
+  if (runStop === "ask" && taskPointer !== undefined) await askForPausedTask(dependencies, taskPointer.taskId, operation);
   // Gap 6: start any step this result made due (its dispatch row committed above); a lost start is the sweep's.
   if (taskPointer !== undefined) await dispatchWorkflowContinuation(dependencies, taskPointer.taskId);
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
+  // Plan 3, Task 32: a task operation that ran out of budget is paused, and asks for the limit its pause names (an agent-step run's engine paused it above).
+  const budgetStopped = taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
   // Plan 3, Task 22 (G7): a workflow task that passed its sequence, and a plain task whose operation ended, tell the end handlers (an agent-step run's engine tells its own).
-  if (taskPointer !== undefined && !closeCanFinish && hasTaskEndHandlers()) {
-    const told = await tellTaskEnd(dependencies, operation, taskPointer.taskId, terminalStatus);
+  // Plan 3, M-6: a plain task that stopped on a budget is paused, not ended (Task 32 may resume it): the pause handlers hear that instead, before the ask below.
+  if (taskPointer !== undefined && !closeCanFinish && (hasTaskEndHandlers() || (budgetStopped && hasTaskPauseHandlers()))) {
+    const told = await tellTaskStop(dependencies, operation, taskPointer.taskId, terminalStatus, budgetStopped, stop);
     // An end that is not finished (a handler threw, or another call is telling it) is left to the recovery sweep through an `operation_end` row (Task 22 re-check, N1).
     if (told !== "told") await leaveOperationEndRow(dependencies, operation, taskPointer.taskId, told === "in_progress" ? END_LEASE_MS + 5_000 : 60_000);
   }
-  // Plan 3, Task 32: a task operation that ran out of budget asks for the limit its pause names (an agent-step run's engine paused it above).
-  if (taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
-    await askForPausedTask(dependencies, taskPointer.taskId, operation);
-  }
+  if (budgetStopped && !stop.asked && taskPointer !== undefined) await askForPausedTask(dependencies, taskPointer.taskId, operation);
   // Spec 061: read the code a new plan cites, in the background; a lost start is the sweep's.
   if (recordedStatus === terminalStatus) {
     await startPlanEvidenceJobs(dependencies, evidenceJobs);
@@ -12999,16 +13052,68 @@ async function recordTerminalResult(
 }
 
 /**
+ * How the budget stop of `operationId` is asked for before the engine is driven: "not_run" (the task is not an agent-step run: the ordinary ask follows), "skip" (a
+ * run whose stop an approval already answered: nothing is asked, or a second pause would be written for it) or "ask".
+ */
+async function agentRunStopAsk(dependencies: AwsBrokerDependencies, taskId: string, operationId: string): Promise<"not_run" | "skip" | "ask"> {
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task === undefined || task.agent === undefined || task.workflow !== undefined || await getItem(dependencies, taskAgentRunKey(taskId)) === undefined) return "not_run";
+    return task.budgetPause === undefined && task.budgetStopOf === operationId ? "skip" : "ask";
+  } catch {
+    return "not_run";
+  }
+}
+
+/**
  * Plan 3, Task 32: the spend request of a task whose operation ended out of budget. Never fails the worker's result: a request that can't be made now is logged,
  * and the task stays paused (the owner's Continue, or the next refusal, asks again).
  */
-async function askForPausedTask(dependencies: AwsBrokerDependencies, taskId: string, operation: OperationRecord): Promise<void> {
+async function askForPausedTask(dependencies: AwsBrokerDependencies, taskId: string, operation: Pick<OperationRecord, "id" | "workflowMode">): Promise<"asked" | "failed"> {
   const agents = agentRouteDependencies(dependencies, developerTaskActions(dependencies));
-  if (agents === undefined) return;
+  if (agents === undefined) return "asked";
   try {
-    await requestForPausedTask(agents, taskId, operation.workflowMode === undefined ? {} : { workflowMode: operation.workflowMode });
+    await requestForPausedTask(agents, taskId, { ...(operation.workflowMode === undefined ? {} : { workflowMode: operation.workflowMode }), operationId: operation.id });
+    return "asked";
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "spend_request.not_asked", taskId, errorName: error instanceof Error ? error.name : "unknown" }));
+    return "failed";
+  }
+}
+
+/**
+ * Plan 3, M-6: how a task's operation that ended is told. An operation that ran out of budget (`budgetStopped`) of a plain task that is paused (its `budgetPause`)
+ * is told to the pause handlers, once, and is not an end: Task 32 may resume the task, and an end would block its keys and release its workspace. Its end is told
+ * when it really ends (it finishes after the resume, is cancelled, fails for another reason, or is closed). A stop with no pause that was not resumed is a failure.
+ */
+async function tellTaskStop(dependencies: AwsBrokerDependencies, operation: OperationRecord, taskId: string, status: OperationStatus, budgetStopped: boolean, stop: { asked: boolean } = { asked: false }): Promise<EndTold> {
+  if (!budgetStopped) return tellTaskEnd(dependencies, operation, taskId, status);
+  try {
+    let task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task === undefined || task.orgId === undefined) return "told";
+    // A workflow task and an agent-step run keep their own ends (a budget stop is none of them).
+    if (task.workflow !== undefined || (task.agent !== undefined && await getItem(dependencies, taskAgentRunKey(taskId)) !== undefined)) return tellTaskEnd(dependencies, operation, taskId, status);
+    // A closed task has ended, whatever stopped its last operation (the first end it has is the one told).
+    if (task.closedAt !== undefined) return await noteTaskEnded(dependencies, task, "closed");
+    // Already told for this operation (a replay, the recovery sweep): nothing more, and not an end.
+    if (task.budgetPauseToldFor === operation.id) return "told";
+    // A later operation started (Task 32's approval resumed the task): this stop is stale, and is never the pause of that operation. Nothing ended.
+    const workspace = await getItem<{ fence?: number }>(dependencies, workspaceKey(operation.workspaceId));
+    if (workspace?.fence !== undefined && workspace.fence > operation.fence) return "told";
+    if (task.budgetPause !== undefined) return await noteTaskPaused(dependencies, task, operation.id);
+    // The refusal stopped this operation and an approval has since removed the pause (before the result came, or before the pause tell succeeded): a pause answered, not a failure.
+    if (task.budgetStopOf === operation.id) return "told";
+    // No pause was written: the ask works it out from the task's spend (Task 31's Minor 2), and comes first because the stop would otherwise read as a failure. If the ask could
+    // not run, the answer is not known: nothing is told and the sweep looks again (never a `failed` end on a transient error).
+    stop.asked = true;
+    if (await askForPausedTask(dependencies, taskId, operation) === "failed") return "failed";
+    task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task === undefined) return "told";
+    if (task.budgetPause !== undefined) return await noteTaskPaused(dependencies, task, operation.id);
+    return await tellTaskEnd(dependencies, operation, taskId, status);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "task_pause.not_told", taskId, error: error instanceof Error ? error.name : "unknown" }));
+    return "failed";
   }
 }
 

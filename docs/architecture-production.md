@@ -288,6 +288,11 @@ It also includes creating, reading, versioning and deleting the environment's ow
 `iam:ListEntitiesForPolicy` on `policy/agentx/<env>/agentx-<env>-broker-*`): the broker's grants live in
 `agentx-<env>-broker-state`, `-orchestration` and `-integrations` under the path `/agentx/<env>/`, because IAM caps a role's inline
 policies at 10,240 characters.
+It also includes `sts:AssumeRole` and `sts:TagSession` on the one role
+`arn:<partition>:iam::<account>:role/agentx/<env>/agentx-<env>-connector-secrets`: the broker assumes that role, tagged with an
+organization, to read and write that organization's connection and event hook secrets (it holds no Secrets Manager
+permission on those paths itself). The default boundary allows exactly these two actions on exactly that role. Without them in a
+company-supplied boundary, every organization connection save or read is refused as FORBIDDEN.
 
 What this does and does not protect, plainly:
 

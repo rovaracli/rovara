@@ -46,7 +46,9 @@ function callBlock(call: NonNullable<ConfirmView["call"]>): string {
   } catch {
     printed = "(the arguments could not be shown)";
   }
-  return `<h2>The exact call</h2><dl><dt>Connector</dt><dd>${text(call.connector)}</dd><dt>Tool</dt><dd>${text(call.tool)}</dd></dl><pre>${text(printed)}</pre>`;
+  return `<h2>The exact call</h2><dl><dt>Connector</dt><dd>${text(call.connector)}</dd>`
+    + `${call.scope === undefined ? "" : `<dt>Scope</dt><dd>${text(call.scope)}</dd>`}${call.repository === undefined ? "" : `<dt>Repository</dt><dd>${text(call.repository)}</dd>`}`
+    + `<dt>Tool</dt><dd>${text(call.tool)}</dd></dl><pre>${text(printed)}</pre>`;
 }
 
 /** An open approval: what will happen, then Approve and Decline in a POST form carrying the CSRF token. */

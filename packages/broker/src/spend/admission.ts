@@ -213,7 +213,7 @@ export interface MintOperationKeyInput {
   /** Ruling R38: what the task's keys had spent when its present cap window began. */
   budgetBaselineUsd?: number | undefined;
   /** The task a refusal pauses (the `budgetPause` is written on `key`); none for work with no task. */
-  pause?: { taskId: string; key: { pk: string; sk: string } } | undefined;
+  pause?: { taskId: string; key: { pk: string; sk: string }; operationId?: string | undefined } | undefined;
   /**
    * Where the minted key is recorded, in one write: the task (with how many keys it held when the caller read it, so two mints that raced cannot both be given
    * the whole remainder) and the operation. Nothing is recorded when absent.
@@ -235,9 +235,10 @@ async function writePause(deps: BudgetDependencies, pause: MintOperationKeyInput
   if (pause === undefined) return;
   try {
     await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: pause.key, UpdateExpression: "SET #pause = :pause",
+      // Plan 3, M-6 (I-1): the operation this refusal stopped is kept on the task (`budgetStopOf`) and stays when an approval removes the pause, so the stop is still known as a pause.
+      TableName: deps.tableName, Key: pause.key, UpdateExpression: pause.operationId === undefined ? "SET #pause = :pause" : "SET #pause = :pause, budgetStopOf = :operation",
       ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(#pause)", ExpressionAttributeNames: { "#pause": "budgetPause" },
-      ExpressionAttributeValues: { ":pause": { scope, at: new Date(now(deps)).toISOString() } },
+      ExpressionAttributeValues: { ":pause": { scope, at: new Date(now(deps)).toISOString() }, ...(pause.operationId === undefined ? {} : { ":operation": pause.operationId }) },
     }));
   } catch (error) {
     if (errorName(error) !== "ConditionalCheckFailedException") logLine({ event: "budget.pause_not_written", taskId: pause.taskId, errorName: errorName(error) });

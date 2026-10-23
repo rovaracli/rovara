@@ -6,6 +6,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { defaultBoundaryStatements } from "../../packages/contracts/src/access-policies.js";
+import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -108,8 +109,15 @@ describe("ConnectorSecretsRole (named environments)", () => {
     expect(untag[0]).toMatchObject({ Effect: "Deny", Action: "secretsmanager:UntagResource", Resource: "*" });
     expect(untag[0]!.Condition).toBeUndefined();
 
+    // Final review M2: DeleteSecret is allowed (a removed connection's secret is scheduled for deletion), but never with
+    // ForceDeleteWithoutRecovery: a broker bug could otherwise skip the 7-day recovery the CLI promises. A Deny, which wins over the Allow.
+    const forced = statements.filter((statement) => statement.Effect === "Deny" && asList(statement.Action).includes("secretsmanager:DeleteSecret"));
+    expect(forced).toHaveLength(1);
+    expect(forced[0]).toMatchObject({ Sid: "NeverDeleteWithoutRecovery", Effect: "Deny", Action: "secretsmanager:DeleteSecret", Resource: "*" });
+    expect(forced[0]!.Condition).toEqual({ Bool: { "secretsmanager:ForceDeleteWithoutRecovery": "true" } });
+
     // Nothing else: no other statement, no wildcard action, no other resource.
-    expect(statements).toHaveLength(4);
+    expect(statements).toHaveLength(5);
     expect(statements.flatMap((statement) => asList(statement.Action))).not.toContain("secretsmanager:*");
   });
 
@@ -157,11 +165,17 @@ describe("ConnectorSecretsRole (named environments)", () => {
     }
   });
 
-  it("tells the broker the role's ARN", () => {
+  it("does not tell the broker the role's ARN: the broker builds it, to the ARN the role has (the broker's variables are held to Lambda's 4 KB)", () => {
     const broker = Object.entries(resources).find(([id, resource]) => resource.Type === "AWS::Lambda::Function" && id.startsWith("Broker") && !id.startsWith("BrokerLogs"))!;
     const variables = (broker[1].Properties as { Environment: { Variables: Record<string, unknown> } }).Environment.Variables;
-    expect(variables.CONNECTOR_SECRETS_ROLE_ARN).toEqual({ "Fn::GetAtt": [roleId, "Arn"] });
+    expect(variables.CONNECTOR_SECRETS_ROLE_ARN).toBeUndefined();
     expect(variables.AGENTX_ENV).toBe("staging");
+    expect(variables.AGENTX_ACCOUNT_ID).toEqual({ Ref: "AWS::AccountId" });
+    // What it builds is `arn:<partition>:iam::<account>:role<path><name>` of this role: its fixed name, under its path.
+    const built: MutableEnvironment = { AGENTX_ENV: "staging", AGENTX_NAMES: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "111122223333" };
+    hydrateBrokerEnvironment(built);
+    expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::111122223333:role${String(role.Properties.Path)}${String(role.Properties.RoleName)}`);
+    expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe("arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets");
   });
 
   it("sits at the environment role path, because the permissions boundary names the role by that path", () => {

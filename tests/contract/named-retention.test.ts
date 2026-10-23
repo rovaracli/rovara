@@ -63,9 +63,9 @@ describe("retained resources in a named environment", () => {
       "agentx-staging-control-plane AuditLedgerAuditKeysTable AWS::DynamoDB::Table",
       "agentx-staging-control-plane AuditLedgerAuditLedgerTable AWS::DynamoDB::Table",
       "agentx-staging-control-plane AuditLedgerAuditSealsTable AWS::DynamoDB::Table",
-      // The vault key and alias: the key policy lets nobody ScheduleKeyDeletion or DeleteAlias, so a rollback could not delete them.
+      // The vault key: the key policy lets nobody ScheduleKeyDeletion, so a rollback could not delete it. It has no alias (a retained
+      // alias would make every retry of a failed first deploy fail), so no KMS alias is retained.
       "agentx-staging-control-plane AuditLedgerAuditVaultKey AWS::KMS::Key",
-      "agentx-staging-control-plane AuditLedgerAuditVaultKeyAlias AWS::KMS::Alias",
       "agentx-staging-identity UserPool AWS::Cognito::UserPool",
       "agentx-staging-slack ActionLogs AWS::Logs::LogGroup",
       "agentx-staging-slack ActionLogsKey AWS::KMS::Key",

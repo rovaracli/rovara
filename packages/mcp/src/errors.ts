@@ -8,6 +8,8 @@ export const TOOL_ERROR_CODES = [
   "UPGRADE_REQUIRED", "CONTROL_PLANE_UNAVAILABLE", "INVALID_REQUEST",
   // Rovara Cloud: a start refused before any work (the free trial is locked, or a budget is used up).
   "TRIAL_LOCKED", "BUDGET_REACHED", "MACHINE_TIME_REACHED",
+  // A run of an older version of an agent that is less safe than the one that runs now: nothing started, the agent's owner OKs it on the confirmation page.
+  "OWNER_APPROVAL_NEEDED",
 ] as const;
 export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
 
@@ -43,6 +45,7 @@ export const NEXT_STEPS: Record<ToolErrorCode, string> = {
   TRIAL_LOCKED: trialLockedStep(`npx ${CLI_PACKAGE_NAME} login <your AgentX URL>`),
   BUDGET_REACHED: "ask an AgentX admin to raise the monthly AI budget",
   MACHINE_TIME_REACHED: MACHINE_TIME_STEP,
+  OWNER_APPROVAL_NEEDED: "give the person the link in the message to pass to the agent's owner; the run starts once the owner approves it on that page. You cannot approve it",
 };
 /** BUDGET_REACHED's next steps: whose budget is used up decides who can raise it. */
 const MEMBER_BUDGET_STEP = "ask an AgentX admin to raise your monthly AI budget";

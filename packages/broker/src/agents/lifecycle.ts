@@ -15,12 +15,12 @@
 // deciders of approvals and spend requests use.
 import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  BUILTIN_AGENT_IDS, MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, orgMemberKey, orgPk, projectAgentKey,
+  BUILTIN_AGENT_IDS, MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, orgMemberKey, orgPk, projectAgentKey, projectAllows,
   type AgentId, type AgentPrincipal, type OrgId,
 } from "@agentx/contracts";
 import type { MemberRemovalHook } from "../org/store.js";
 import { checkOwnerBudget } from "../spend/settings.js";
-import { resolveSurvivor, type AgentAccessDeps } from "./access.js";
+import { orgRoleOf, resolveSurvivor, type AgentAccessDeps } from "./access.js";
 import type { MoveCause } from "./store.js";
 
 /** What the lifecycle hooks need: the agent routes' own dependencies (`AgentRouteDependencies` is one). */
@@ -236,8 +236,11 @@ async function moveShares(deps: LifecycleDeps, orgId: OrgId, from: string, to: s
   }
 }
 
-/** The accountable maintainer `from` of an agent becomes whoever `replacement` names for its project (a built-in has none). Answers who took over. */
-async function moveAccountable(deps: LifecycleDeps, orgId: OrgId, from: string, replacement: (project: string | undefined) => Promise<string>, cause: MoveCause): Promise<readonly string[]> {
+/**
+ * The accountable maintainer `from` of an agent becomes whoever `replacement` names for its project (a built-in has none). Answers who took over.
+ * With `onlyProject`, only that project's agents move (and no built-in): the person is still accountable elsewhere.
+ */
+async function moveAccountable(deps: LifecycleDeps, orgId: OrgId, from: string, replacement: (project: string | undefined) => Promise<string>, cause: MoveCause, onlyProject?: string): Promise<readonly string[]> {
   const took = new Set<string>();
   const give = async (agentId: AgentId, project: string | undefined, current: () => Promise<string | undefined>) => {
     await untilSettled(async () => {
@@ -249,10 +252,11 @@ async function moveAccountable(deps: LifecycleDeps, orgId: OrgId, from: string, 
   };
   for (const agent of await deps.store.list(orgId)) {
     if (agent.accountable?.developerId !== from) continue;
+    if (onlyProject !== undefined && !(agent.owner.kind === "project" && agent.owner.project === onlyProject)) continue;
     checkTime(deps);
     await give(agent.agentId, agent.owner.kind === "project" ? agent.owner.project : undefined, async () => (await deps.store.get(orgId, agent.agentId))?.accountable?.developerId);
   }
-  for (const builtin of BUILTIN_AGENT_IDS) {
+  for (const builtin of onlyProject === undefined ? BUILTIN_AGENT_IDS : []) {
     if ((await deps.store.getBuiltinSettings(orgId, builtin))?.accountable?.developerId !== from) continue;
     checkTime(deps);
     await give(builtin, undefined, async () => (await deps.store.getBuiltinSettings(orgId, builtin))?.accountable?.developerId);
@@ -279,19 +283,41 @@ registerMemberMover({
   removed: (deps, { orgId, developerId }) => moveShares(deps, orgId, developerId, undefined, { kind: "member_removed", developerId }),
 });
 
+/** Another maintainer of the project by grant, else `fallback` (the first owner of the org): who takes over what `leaving` is accountable for on the project. */
+async function otherMaintainer(deps: LifecycleDeps, orgId: OrgId, project: string | undefined, leaving: string, fallback: string): Promise<string> {
+  if (project !== undefined) {
+    for (const row of await deps.projectMembers.list(orgId, project)) {
+      if (row.role === "maintainer" && row.source === "grant" && row.developerId !== leaving) return row.developerId;
+    }
+  }
+  return fallback;
+}
+
 registerMemberMover({
   name: "accountable",
   merged: (deps, { orgId, survivorId, duplicateId }) => moveAccountable(deps, orgId, duplicateId, async () => survivorId, { kind: "member_merged", developerId: duplicateId }),
-  removed: (deps, { orgId, developerId, successorId }) => moveAccountable(deps, orgId, developerId, async (project) => {
-    // Another maintainer of the project by grant, else the first owner of the org.
-    if (project !== undefined) {
-      for (const row of await deps.projectMembers.list(orgId, project)) {
-        if (row.role === "maintainer" && row.source === "grant" && row.developerId !== developerId) return row.developerId;
-      }
-    }
-    return successorId;
-  }, { kind: "member_removed", developerId }),
+  removed: (deps, { orgId, developerId, successorId }) => moveAccountable(deps, orgId, developerId, (project) => otherMaintainer(deps, orgId, project, developerId, successorId), { kind: "member_removed", developerId }),
 });
+
+/**
+ * A person's role in a project changed or their grant was removed (final review, access m-2). When they no longer hold `manage_agents` on it (read now: an
+ * org owner or admin still does), the project's agents they were accountable for go to another maintainer of the project by grant, else the first owner
+ * of the org, as a removal from the org does, so the Task 6 invariant (accountable holds `manage_agents`) and the owner's budget total stay true. Repeatable;
+ * their other projects' agents and any built-in stay with them. The owner cap is looked at for whoever took over.
+ */
+export async function onProjectMemberChanged(deps: LifecycleDeps, change: { orgId: OrgId; project: string; developerId: string }): Promise<void> {
+  const { orgId, project, developerId } = change;
+  const orgRole = await orgRoleOf(deps, orgId, developerId);
+  const role = orgRole === undefined ? undefined : await deps.projectMembers.roleOf(orgId, project, { developerId, orgRole });
+  if (role !== undefined && projectAllows(role, "manage_agents")) return;
+  const successorId = await firstOwner(deps, orgId, developerId);
+  if (successorId === undefined) {
+    log(deps, "project_member.no_successor", { orgId, project, developerId });
+    return;
+  }
+  const took = await moveAccountable(deps, orgId, developerId, (agentProject) => otherMaintainer(deps, orgId, agentProject, developerId, successorId), { kind: "project_role_changed", developerId }, project);
+  for (const owner of took) await noteOwnerCap(deps, orgId, owner, "project_role_changed");
+}
 
 /**
  * Runs every registered mover with `run`, each even when another failed. Answers the people the movers gave budgeted things to (also when some

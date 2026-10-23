@@ -17,7 +17,7 @@ describe("workflow dependency runtime configuration", () => {
   it("composes the real developer route feature settings without changing People or invitations", () => {
     const build = (flag: string | undefined) => createDeveloperApiConfiguration({
       DEVELOPER_TOKEN_ISSUER: "https://issuer.example/v1/auth",
-      DEVELOPER_IDENTITY_FUNCTION_ARN: "developer-identity",
+      DEVELOPER_IDENTITY_FUNCTION_NAME: "developer-identity",
       DEVELOPER_SIGNIN_TABLE_NAME: "sign-ins",
       AGENTX_ENV: "agentxlivetest123",
       DEVELOPER_SIGNIN_SLACK: "enabled",
@@ -46,6 +46,19 @@ describe("workflow dependency runtime configuration", () => {
     expect(disabledRoutes.workflowDependenciesEnabled).toBe(false);
     expect(disabledRoutes.taskPeopleConfiguration).toEqual({ peopleChangesEnabled: true });
     expect(typeof disabledRoutes.inviteTaskPerson).toBe("undefined");
+  });
+
+  it("reaches the sign-in function by name (an ARN still works), and refuses to start without one", () => {
+    const base = { DEVELOPER_TOKEN_ISSUER: "https://issuer.example/v1/auth", DEVELOPER_SIGNIN_TABLE_NAME: "sign-ins", AGENTX_ENV: "staging" };
+    const seen: string[] = [];
+    const integrations = (_issuer: string, identityFunctionName: string) => {
+      seen.push(identityFunctionName);
+      return { channelMembers: async () => ({ ok: true as const, memberOf: [] as string[] }), verifyAccessToken: async () => ({}) };
+    };
+    createDeveloperApiConfiguration({ ...base, DEVELOPER_IDENTITY_FUNCTION_NAME: "agentx-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7" }, integrations);
+    createDeveloperApiConfiguration({ ...base, DEVELOPER_IDENTITY_FUNCTION_ARN: "arn:aws:lambda:us-west-2:123456789012:function:identity" }, integrations);
+    expect(seen).toEqual(["agentx-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7", "arn:aws:lambda:us-west-2:123456789012:function:identity"]);
+    expect(() => createDeveloperApiConfiguration(base, integrations)).toThrow("DEVELOPER_IDENTITY_FUNCTION_NAME is required");
   });
 
   it("adds canonical work-breakdown guidance only when the pinned task context is supplied", () => {

@@ -2,6 +2,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -130,7 +131,9 @@ describe("model access function infrastructure (named environments)", () => {
 
   it("is invoked by the broker through a grant on this function's ARN alone, and the broker is told its name", () => {
     const [brokerId, broker] = only(resources, "AWS::Lambda::Function", "Broker");
-    expect(broker.Properties.Environment!.Variables!.MODEL_ACCESS_FUNCTION_NAME).toEqual({ Ref: functionId });
+    // The name is in the broker's one variable of names (its variables are held to Lambda's 4 KB), and the broker puts it back as MODEL_ACCESS_FUNCTION_NAME.
+    expect(broker.Properties.Environment!.Variables!.MODEL_ACCESS_FUNCTION_NAME).toBeUndefined();
+    expect(brokerNamesIn(broker.Properties.Environment!.Variables).modelAccessFunction).toEqual({ Ref: functionId });
     const brokerRole = roleOf(broker.Properties.Role!);
     const invokes = statementsOf(brokerRole).filter((statement) => [statement.Action].flat().includes("lambda:InvokeFunction") && mentions(statement.Resource, functionId));
     // The broker's statements that share an action are merged into one resource list (the policy must stay under CDK's inline limit),

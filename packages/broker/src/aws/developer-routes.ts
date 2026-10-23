@@ -40,6 +40,7 @@ import {
   type AppProjectSummary,
   type AppProjectsResponse,
   type ProjectMember,
+  StartDeveloperTaskRequestSchema,
   type ProjectMemberChangeResponse,
   type ProjectMemberRemoveResponse,
   type ProjectMembersResponse,
@@ -119,7 +120,8 @@ import { isChainRoute, routeChainRequest } from "../chains/routes.js";
 import { chainRunPortsFor } from "../chains/runner.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
-import { requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
+import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
+import { pausedTaskGate, requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
@@ -237,6 +239,12 @@ export interface DeveloperRouteDependencies {
   orgConnections?: OrgConnectionStore;
   /** Plan 3, Task 7: what the agent routes (`/v1/app/agents*` and the other Plan 3 paths) need. Without it they answer NOT_FOUND. */
   agents?: AgentRouteDependencies;
+  /**
+   * Plan 3 final review (access m-2): what follows a person's project role changing or their grant being removed, on the agents platform (`onProjectMemberChanged`:
+   * the agents they were accountable for move when they no longer hold `manage_agents`). Called after the change applied, also on a replay (it is repeatable);
+   * a failure is logged and never undoes or fails the change. Absent where agents are not set up.
+   */
+  projectMemberChanged?: (orgId: OrgId, project: string, developerId: string) => Promise<void>;
 }
 
 export { StatusReply };
@@ -1070,6 +1078,16 @@ async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, row
   return { members };
 }
 
+/** Tells the agents platform a person's project role changed; what it fails with is logged, never raised (the change stands). */
+async function notifyProjectMemberChanged(deps: DeveloperRouteDependencies, orgId: OrgId, project: string, developerId: string): Promise<void> {
+  if (deps.projectMemberChanged === undefined) return;
+  try {
+    await deps.projectMemberChanged(orgId, project, developerId);
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.project_member_hook_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
 const MANAGE_MEMBERS_MESSAGE = "only a project maintainer can change who is in a project";
 
 /**
@@ -1086,6 +1104,7 @@ async function putProjectMember(deps: DeveloperRouteDependencies, caller: Develo
     requestId: parsed.data.requestId, developerId, role: parsed.data.role, actor: { developerId: caller.developerId },
   });
   logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role });
+  await notifyProjectMemberChanged(deps, caller.orgId, name, member.developerId);
   return { member };
 }
 
@@ -1099,6 +1118,7 @@ async function deleteProjectMember(deps: DeveloperRouteDependencies, caller: Dev
     requestId: parsed.data.requestId, developerId, actor: { developerId: caller.developerId },
   });
   logDeveloperEvent({ event: "developer.project_member_removed", orgId: caller.orgId, project: name, removed: String(removed.removed) });
+  await notifyProjectMemberChanged(deps, caller.orgId, name, removed.developerId);
   return removed;
 }
 
@@ -1300,6 +1320,25 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
   };
 }
 
+/**
+ * The start of an agent at a published version through `POST /v1/dev/tasks` (the CLI's and the AI tools' start): the same gate as the app route's. Only a plain
+ * start is gated (no sharing or workflow options, which a run started after approval would not carry); any other start of a less safe older version is refused
+ * by the start itself. Undefined when the start goes on as it is.
+ */
+async function gateDeveloperStart(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest): Promise<StatusReply | undefined> {
+  if (deps.agents === undefined) return undefined;
+  let value: unknown;
+  try { value = request.body === undefined || request.body === "" ? undefined : JSON.parse(request.body) as unknown; } catch { return undefined; }
+  const parsed = StartDeveloperTaskRequestSchema.safeParse(value);
+  if (!parsed.success || parsed.data.agent === undefined || typeof parsed.data.agent.version !== "number") return undefined;
+  const start = parsed.data;
+  if (start.shareToChannel !== undefined || start.shareMode !== undefined || start.channel !== undefined || start.workflow !== undefined || start.workflowPath !== undefined) return undefined;
+  const waiting = await gateRunVersion(deps.agents, caller, {
+    requestId: start.requestId, project: start.project, agent: { agentId: start.agent!.agentId, version: start.agent!.version! }, input: start.input ?? { text: start.instructions }, origin: "cli",
+  });
+  return waiting === undefined ? undefined : new StatusReply(202, { status: NEEDS_OWNER_APPROVAL, confirmUrl: waiting.confirmUrl, changes: waiting.changes });
+}
+
 /** The app route that starts a run (`POST /v1/app/agents/{id}/runs`): the person's own request, from their own session, through the run start. */
 async function startAppRun(
   deps: DeveloperRouteDependencies,
@@ -1381,7 +1420,7 @@ export function developerTaskRouteDependencies(
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
-    ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task) }),
+    ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task), pausedTaskGate: (who, task: DeveloperTaskRecord) => pausedTaskGate(agents, who, task) }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
     checkTaskPerson: async (task, developerId, admission) => {
@@ -1571,6 +1610,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "PUT" && url.pathname === "/v1/dev/org/budget") return putOrganizationBudget(deps, caller, jsonBody(request));
   if (url.pathname === "/v1/dev/tasks" || url.pathname.startsWith("/v1/dev/tasks/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
+    // An AI tool's start of an older version of an agent that is less safe than the current one waits for the agent's owner (owner decision 2026-10-22), as the app route's does.
+    const waitingForOwner = request.method === "POST" && url.pathname === "/v1/dev/tasks" ? await gateDeveloperStart(deps, caller, request) : undefined;
+    if (waitingForOwner !== undefined) return waitingForOwner;
     return routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url);
   }
   if (url.pathname === CHATGPT_CONNECTION_PATH || url.pathname === `${CHATGPT_CONNECTION_PATH}/finish`) {

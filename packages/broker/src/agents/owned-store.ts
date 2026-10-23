@@ -45,9 +45,9 @@ export interface AgentShareRecord {
  */
 export const MAX_SHARE_CHANGES_PER_SAVE = 48;
 
-/** Why Rovara moved something of a member's to someone else: the person was removed from the org, or merged into another member. */
+/** Why Rovara moved something of a member's to someone else: the person was removed from the org, merged into another member, or stopped being a maintainer of the project (accountable only). */
 export interface MoveCause {
-  kind: "member_removed" | "member_merged";
+  kind: "member_removed" | "member_merged" | "project_role_changed";
   developerId: string;
 }
 

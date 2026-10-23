@@ -84,6 +84,9 @@ function hostOf(url: string): string | undefined {
   }
 }
 
+/** A host as it is shown once its link is flattened: its dots in brackets, so Slack does not link it again (Task 22 M4, the one-line fix of the final fix wave). */
+const defanged = (host: string): string => host.replace(/\./gu, "[.]");
+
 /** Every link to a host that is neither the task's own nor one the org allows becomes plain text with its host after it. */
 function flattenLinks(text: string, allowed: (host: string) => boolean): string {
   return text.replace(LINK, (whole: string, slackUrl: string | undefined, label: string | undefined, bare: string | undefined, domain: string | undefined) => {
@@ -91,20 +94,20 @@ function flattenLinks(text: string, allowed: (host: string) => boolean): string 
       const host = hostOf(slackUrl);
       const shown = label === undefined || label.trim() === "" ? undefined : flattenLinks(label, allowed);
       if (host !== undefined && allowed(host)) return shown === undefined ? whole : `<${slackUrl}|${shown}>`;
-      return `${shown ?? "link"} (${host ?? "unknown site"})`;
+      return `${shown ?? "link"} (${host === undefined ? "unknown site" : defanged(host)})`;
     }
     if (bare !== undefined) {
       const trailing = TRAILING_PUNCTUATION.exec(bare)?.[0] ?? "";
       const address = trailing === "" ? bare : bare.slice(0, -trailing.length);
       const host = hostOf(address);
-      return host !== undefined && allowed(host) ? whole : `link (${host ?? "unknown site"})${trailing}`;
+      return host !== undefined && allowed(host) ? whole : `link (${host === undefined ? "unknown site" : defanged(host)})${trailing}`;
     }
     const trailing = TRAILING_PUNCTUATION.exec(domain!)?.[0] ?? "";
     const address = trailing === "" ? domain! : domain!.slice(0, -trailing.length);
     const authority = address.split("/")[0]!.toLowerCase();
     const host = authority.split(":")[0]!;
     if (!(address.includes("/") || host.startsWith("www.") || LINKED_TOP_LEVEL_DOMAINS.has(host.split(".").at(-1)!))) return whole;
-    return allowed(authority) ? whole : `link (${host.replace(/^www\./u, "")})${trailing}`;
+    return allowed(authority) ? whole : `link (${defanged(host.replace(/^www\./u, ""))})${trailing}`;
   });
 }
 

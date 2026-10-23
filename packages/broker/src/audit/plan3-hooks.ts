@@ -83,6 +83,7 @@ export function projectAiEvents(base: Base & { project: string; revision: number
     ["project_monthly_limit", before.monthlyBudgetUsd, after.monthlyBudgetUsd],
     ["project_planning_limit_quick", before.planningLimitUsd?.QUICK, after.planningLimitUsd?.QUICK],
     ["project_planning_limit_full", before.planningLimitUsd?.FULL, after.planningLimitUsd?.FULL],
+    ["project_member_accept_run_limit", before.memberAcceptRunLimitUpToUsd, after.memberAcceptRunLimitUpToUsd],
   ];
   return limits.filter(([, from, to]) => from !== to).map(([field, from, to]) =>
     budgetEvent(common, { occurrence: auditOccurrence(project, String(revision), field), target, scopeKind: "project", field, from, to }));

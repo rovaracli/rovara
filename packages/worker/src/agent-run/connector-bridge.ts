@@ -19,7 +19,7 @@ export type ConnectorBridgeCall = (input: ConnectorCallRequest & { workspaceId: 
 export function createConnectorBridgeTools(
   catalogs: readonly ConnectorCatalog[],
   call: ConnectorBridgeCall,
-  context: { workspaceId: string; conversationId: string },
+  context: { workspaceId: string; conversationId: string; operationId?: string },
   options: { requestId?: () => string } = {},
 ): ToolDefinition[] {
   const requestIds = new Map<string, string>();
@@ -40,7 +40,9 @@ export function createConnectorBridgeTools(
         const args = targeted ? rest : parameters;
         // A redelivered step regenerates model call ids; the same call id gives the same request id, so the broker's ledger replays it.
         const key = JSON.stringify([catalog.connector, tool.name, scope.alias, callId]);
-        const hash = createHash("sha256").update(JSON.stringify([context.workspaceId, context.conversationId, key])).digest("hex");
+        // The operation is part of it (every step of a task shares the workspace and conversation, and a model source may repeat call ids across sessions); a redelivered
+        // operation keeps its id, so the broker's ledger still replays it. Without one (the orchestrator's own tools) the id is what it always was.
+        const hash = createHash("sha256").update(JSON.stringify(context.operationId === undefined ? [context.workspaceId, context.conversationId, key] : [context.workspaceId, context.conversationId, key, context.operationId])).digest("hex");
         const requestId = requestIds.get(key) ?? options.requestId?.()
           ?? `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
         requestIds.set(key, requestId);

@@ -429,6 +429,16 @@ export async function saveSharesOf(deps: OwnedAccessDeps, orgId: OrgId, by: stri
   return wanted;
 }
 
+/** Whether the agent's stored shares are exactly `shares` (as `checkShares` would store them): a confirmed share that was applied before its record ended. */
+export async function sharesAlreadyStored(deps: AgentAccessDeps, orgId: OrgId, by: string, agentId: AgentId, shares: unknown): Promise<boolean> {
+  const wanted = await checkShares(deps, orgId, by, shares).catch(() => undefined);
+  if (wanted === undefined) return false;
+  const current = await validShares(deps, orgId, agentId);
+  const key = (share: AgentShare) => `${principalKey(share.principal)}|${share.level}`;
+  const have = new Set(current.map(key));
+  return have.size === current.length && wanted.length === current.length && wanted.every((share) => have.has(key(share)));
+}
+
 /**
  * The shares as they would be stored, or the refusal `saveShares` would give: well formed, at most 50, no person or group twice (after
  * naming each member by the developer they were merged into), and everyone named in the org. Nothing is written.

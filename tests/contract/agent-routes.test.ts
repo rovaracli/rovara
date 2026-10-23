@@ -6,6 +6,7 @@ import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store
 import type { ApprovalDependencies, ApprovalRecord, ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
 import { getApprovalSubjectHandler, getApproverRule } from "../../packages/broker/src/agents/approvals.js";
 import { isAgentRoute } from "../../packages/broker/src/agents/routes.js";
+import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
@@ -1111,5 +1112,169 @@ describe("Plan 3's paths and Plan 2's (PF24)", () => {
     const { handler } = await setup();
     const response = await handler({ version: "2.0", rawPath: "/v1/app/agents", rawQueryString: "", headers: {}, requestContext: { requestId: randomUUID(), http: { method: "GET" } } });
     expect(response.statusCode).toBe(401);
+  });
+});
+
+// Final fix wave, access I-2: a change approval's page names the agent and the versions it is about, read live, with the record's bound values.
+describe("the confirmation page for a change names the agent and the versions", () => {
+  const factsOf = async (deps: ApprovalDependencies, who: Developer, approvalId: string) => {
+    const inspected = await approvalDecideKind(deps).inspect({ orgId: TEST_ORG, developerId: who.developerId, approvalId });
+    if (inspected.status !== "open") throw new Error(`expected an open page, got ${JSON.stringify(inspected)}`);
+    return Object.fromEntries(inspected.view.facts.map((fact) => [fact.label, fact.value]));
+  };
+
+  it("a publish says which agent, from which version to which, the draft revision and a digest prefix", async () => {
+    const { create, seed, saveDraft, publish, approvals, deps, call } = await setup();
+    const sandbox = await create(MAYA, SAFE, { name: "Sandbox helper" });
+    const payments = await create(MAYA, SAFE, { name: "Payments ops" });
+    for (const agentId of [sandbox, payments]) {
+      await seed(agentId, SAFE);
+      await saveDraft(MAYA, agentId, withLinearWrite());
+      expect((await publish(MAYA, agentId)).status).toBe(202);
+    }
+    expect(approvals()).toHaveLength(2);
+    const pages = await Promise.all(approvals().map(async (record) => ({ record, facts: await factsOf(deps, MAYA, record.approvalId) })));
+    const forSandbox = pages.find(({ record }) => (record.subject as { agentId: string }).agentId === sandbox)!;
+    const forPayments = pages.find(({ record }) => (record.subject as { agentId: string }).agentId === payments)!;
+    expect(forSandbox.facts["Agent"]).toBe(`Sandbox helper (${sandbox})`);
+    expect(forPayments.facts["Agent"]).toBe(`Payments ops (${payments})`);
+    const digest = (forSandbox.record.subject as { digest: string }).digest;
+    expect(forSandbox.facts["Version"]).toBe(`Version 1 (running now) to version 2 (the draft, revision 3, digest ${digest.slice(0, 12)})`);
+    // A page that is for the other agent reads differently.
+    expect(JSON.stringify(forSandbox.facts)).not.toBe(JSON.stringify(forPayments.facts));
+    void call;
+  });
+
+  it("a first publish says there is no version yet", async () => {
+    const { create, saveDraft, publish, approvals, deps } = await setup();
+    const agentId = await create(MAYA, { ...SAFE, tools: [{ connector: { type: "linear" }, access: "read_write" }] });
+    expect((await publish(MAYA, agentId)).status).toBe(202);
+    void saveDraft;
+    const facts = await factsOf(deps, MAYA, approvals()[0]!.approvalId);
+    expect(facts["Version"]).toMatch(/^No version yet to version 1 \(the draft, revision 1, digest [0-9a-f]{12}\)$/);
+  });
+
+  it("a rollback says from which version to which", async () => {
+    const { call, create, seed, approvals, deps } = await setup();
+    const agentId = await create(MAYA, SAFE, { name: "Payments ops" });
+    await seed(agentId, { ...SAFE, tools: [{ connector: { type: "linear" }, access: "read_write" }] });
+    await seed(agentId, { ...SAFE, tools: [{ connector: { type: "linear" }, access: "read" }] });
+    expect((await call(MAYA, "POST", `/v1/app/agents/${agentId}/rollback`, { version: 1 })).status).toBe(202);
+    const facts = await factsOf(deps, MAYA, approvals()[0]!.approvalId);
+    expect(facts["Agent"]).toBe(`Payments ops (${agentId})`);
+    expect(facts["Version"]).toMatch(/^From version 2 \(running now\) to version 1 \(digest [0-9a-f]{12}\)$/);
+  });
+
+  it("an adoption names the built-in and the pinned version it moves from and to", async () => {
+    const shipped = BUILTIN_AGENTS["ticket-triage"].versions[0]!.recipe;
+    const widened: ResolvedRecipe = { ...structuredClone(shipped), tools: [...structuredClone(shipped.tools), { connector: { name: "docs" }, access: "read_write" }] };
+    const released = { latest: 1 };
+    const source = {
+      currentVersion: (id: string) => (id === "ticket-triage" ? released.latest : 1),
+      recipe: (id: string, version: number) => structuredClone(id === "ticket-triage" && version === 2 ? widened : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[0]!.recipe),
+      name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
+    };
+    const { call, store, approvals, deps } = await setup({ builtins: source });
+    await store.ensureBuiltinSettings(TEST_ORG, "ticket-triage");
+    released.latest = 2;
+    expect((await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { version: 2 })).status).toBe(202);
+    const facts = await factsOf(deps, DANA, approvals()[0]!.approvalId);
+    expect(facts["Agent"]).toBe(`${BUILTIN_AGENTS["ticket-triage"].name} (ticket-triage)`);
+    expect(facts["Version"]).toMatch(/^Your company uses version 1; this moves it to version 2 \(digest [0-9a-f]{12}\)$/);
+  });
+
+  it("a company-wide share names the agent, and a record the agent has moved past reads as out of date", async () => {
+    const { call, create, seed, saveDraft, publish, approvals, deps } = await setup();
+    const agentId = await create(MAYA, SAFE, { name: "Payments ops" });
+    await seed(agentId, SAFE);
+    expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "org" }, level: "use" }] })).status).toBe(202);
+    expect((await factsOf(deps, MAYA, approvals()[0]!.approvalId))["Agent"]).toBe(`Payments ops (${agentId})`);
+    await saveDraft(MAYA, agentId, withLinearWrite());
+    expect((await publish(MAYA, agentId)).status).toBe(202);
+    const publishRecord = approvals().find((record) => record.subject.kind === "agent_publish")!;
+    await seed(agentId, SAFE);
+    expect((await factsOf(deps, MAYA, publishRecord.approvalId))["Out of date"]).toMatch(/changed since this was asked/);
+  });
+});
+
+function withLinearWrite(): RecipeOverlay {
+  return { ...SAFE, tools: [{ connector: { type: "linear" }, access: "read_write" }] };
+}
+
+// Final fix wave, access m-1: a change handler driven again after it applied (the sweep redrives it when the broker died before the record ended) is done, not failed.
+describe("a confirmed change applied before its record ended is done when its handler is driven again", () => {
+  const twice = async (deps: ApprovalDependencies, kind: string, record: ApprovalRecord, by: string) => {
+    const handler = getApprovalSubjectHandler(kind)!;
+    await handler(deps, { ...record, decidedBy: by });
+    await handler(deps, { ...record, decidedBy: by });
+  };
+
+  it("publish: the second drive finds the version already published, and publishes nothing more", async () => {
+    const { create, seed, saveDraft, publish, approvals, deps, state, store } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await saveDraft(MAYA, agentId, withLinearWrite());
+    expect((await publish(MAYA, agentId)).status).toBe(202);
+    await twice(deps, "agent_publish", approvals()[0]!, DANA.developerId);
+    expect((await state(agentId)).currentVersion).toBe(2);
+    expect(await store.listVersions(TEST_ORG, agentId)).toHaveLength(2);
+  });
+
+  it("publish: still refuses a record whose version was not the one published", async () => {
+    const { create, seed, saveDraft, publish, approvals, deps } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await saveDraft(MAYA, agentId, withLinearWrite());
+    await publish(MAYA, agentId);
+    await seed(agentId, SAFE);
+    const refused = await getApprovalSubjectHandler("agent_publish")!(deps, { ...approvals()[0]!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown);
+    expect(refused?.message).toMatch(/^AGENT_REVISION_CONFLICT: /);
+  });
+
+  it("rollback: the second drive finds the version already current", async () => {
+    const { call, create, seed, approvals, deps, state } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, withLinearWrite());
+    await seed(agentId, SAFE);
+    expect((await call(MAYA, "POST", `/v1/app/agents/${agentId}/rollback`, { version: 1 })).status).toBe(202);
+    await twice(deps, "agent_rollback", approvals()[0]!, DANA.developerId);
+    expect((await state(agentId)).currentVersion).toBe(1);
+  });
+
+  it("adopt: the second drive finds the pin already moved to the version", async () => {
+    const shipped = BUILTIN_AGENTS["ticket-triage"].versions[0]!.recipe;
+    const widened: ResolvedRecipe = { ...structuredClone(shipped), tools: [...structuredClone(shipped.tools), { connector: { name: "docs" }, access: "read_write" }] };
+    const released = { latest: 1 };
+    const source = {
+      currentVersion: (id: string) => (id === "ticket-triage" ? released.latest : 1),
+      recipe: (id: string, version: number) => structuredClone(id === "ticket-triage" && version === 2 ? widened : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[0]!.recipe),
+      name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
+    };
+    const { call, store, approvals, deps } = await setup({ builtins: source });
+    await store.ensureBuiltinSettings(TEST_ORG, "ticket-triage");
+    released.latest = 2;
+    expect((await call(DANA, "POST", "/v1/app/agents/ticket-triage/adopt", { version: 2 })).status).toBe(202);
+    await twice(deps, "builtin_adopt", approvals()[0]!, DANA.developerId);
+    expect((await store.getBuiltinSettings(TEST_ORG, "ticket-triage"))?.pinnedVersion).toBe(2);
+  });
+
+  it("share: the second drive finds the shares as approved", async () => {
+    const { call, create, seed, approvals, deps } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "org" }, level: "use" }] })).status).toBe(202);
+    await twice(deps, "agent_share", approvals()[0]!, DANA.developerId);
+    const shared = await call(MAYA, "GET", `/v1/app/agents/${agentId}/shares`);
+    expect(shared.body.shares).toEqual([expect.objectContaining({ principal: { kind: "org" }, level: "use", grantedBy: DANA.developerId })]);
+  });
+
+  it("share: a different share set since is still a stale record", async () => {
+    const { call, create, seed, approvals, deps } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "org" }, level: "use" }] });
+    await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "view" }] });
+    const refused = await getApprovalSubjectHandler("agent_share")!(deps, { ...approvals()[0]!, decidedBy: DANA.developerId }).then(() => undefined, (thrown: Error) => thrown);
+    expect(refused?.message).toMatch(/^AGENT_REVISION_CONFLICT: Who this agent is shared with changed/);
   });
 });

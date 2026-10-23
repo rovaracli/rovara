@@ -133,4 +133,68 @@ describe("preparing a workspace for a run that looks at a pull request", () => {
     await expect(verifyCheckedOutHeads(root, manifest, checkout)).rejects.toThrow("pull request 12");
     await expect(verifyCheckedOutHeads(root, manifest, [{ repository: "other", pullRequest: 3, headSha: source.head }])).rejects.toThrow("pull request 3");
   });
+
+  // Final fix wave (runs I-2): the pull request's code is the contributor's. An agent run's preparation only clones and checks out.
+  describe("an agent run's preparation (readOnly) runs nothing of the repository", () => {
+    function hostile(): ProjectDefinition {
+      return {
+        ...project(),
+        setup: [{ cwd: "repo/demo", executable: "sh", args: ["-c", "echo ran > ../../setup-ran.marker"], timeoutSeconds: 10 }],
+        readiness: [{ cwd: "repo/demo", executable: "sh", args: ["-c", "echo ran > ../../readiness-ran.marker; exit 1"], timeoutSeconds: 10 }],
+        devcontainer: { repository: "demo" },
+      };
+    }
+    const withoutDevcontainer = (definition: ProjectDefinition): ProjectDefinition => { const { devcontainer: _devcontainer, ...rest } = definition; return rest; }; // eslint-disable-line @typescript-eslint/no-unused-vars -- taken out of the copy, not read
+    const exists = (path: string) => readFile(path, "utf8").then(() => true, () => false);
+
+    it("runs no setup command, starts no devcontainer, and a failing readiness does not fail it", async () => {
+      const source = await repositoryWithPullRequest();
+      await mkdir(join(source.directory, ".devcontainer"), { recursive: true });
+      await writeFile(join(source.directory, ".devcontainer/devcontainer.json"), "{\"image\":\"node:22\",\"postCreateCommand\":\"curl evil\"}\n");
+      await git(source.directory, "checkout", "--quiet", "feature");
+      await git(source.directory, "add", ".");
+      await git(source.directory, "commit", "--quiet", "-m", "devcontainer");
+      const head = await git(source.directory, "rev-parse", "HEAD");
+      await git(source.directory, "update-ref", "refs/pull/12/head", head);
+      await git(source.directory, "checkout", "--quiet", "main");
+      const root = await mkdtemp(join(tmpdir(), "agentx-pr-workspace-"));
+      const attempts: string[] = [];
+      const devcontainerCli = new Proxy({}, { get: (_target, name) => async () => { attempts.push(String(name)); throw new Error("the devcontainer CLI was called"); } }) as never;
+      const manifest = await prepareWorkspace({
+        rootPath: root, project: hostile(), materializer: materializer(source.directory), pullRequestRemote: () => pathToFileURL(source.directory).href,
+        checkout: [{ repository: "demo", pullRequest: 12, headSha: head }], readOnly: true, devcontainerCli,
+        taskShell: { kind: "local" },
+        commandRunner: async (command) => { attempts.push(`command ${command.executable}`); return { exitCode: 0, stdout: "", stderr: "" }; },
+      });
+      expect(attempts).toEqual([]);
+      expect(await exists(join(root, "setup-ran.marker"))).toBe(false);
+      expect(await exists(join(root, "readiness-ran.marker"))).toBe(false);
+      expect(await git(join(root, "repo", "demo"), "rev-parse", "HEAD")).toBe(head);
+      expect(manifest).toMatchObject({ complete: true, completedSetupSteps: [], readinessResults: [] });
+      expect(manifest.devcontainer).toBeUndefined();
+      expect(manifest.failure).toBeUndefined();
+    });
+
+    it("runs no project command with the real local shell either: a hostile setup and a failing readiness leave no marker", async () => {
+      const source = await repositoryWithPullRequest();
+      const root = await mkdtemp(join(tmpdir(), "agentx-pr-workspace-"));
+      const manifest = await prepareWorkspace({
+        rootPath: root, project: withoutDevcontainer(hostile()), materializer: materializer(source.directory), pullRequestRemote: () => pathToFileURL(source.directory).href,
+        checkout: [{ repository: "demo", pullRequest: 12, headSha: source.head }], readOnly: true, taskShell: { kind: "local" },
+      });
+      expect(manifest.complete).toBe(true);
+      expect(await exists(join(root, "setup-ran.marker"))).toBe(false);
+      expect(await exists(join(root, "readiness-ran.marker"))).toBe(false);
+    });
+
+    it("control: without readOnly the same project does run its setup (the marker proves the probe can see it)", async () => {
+      const source = await repositoryWithPullRequest();
+      const root = await mkdtemp(join(tmpdir(), "agentx-pr-workspace-"));
+      await prepareWorkspace({
+        rootPath: root, project: { ...withoutDevcontainer(hostile()), readiness: [] }, materializer: materializer(source.directory), pullRequestRemote: () => pathToFileURL(source.directory).href,
+        checkout: [{ repository: "demo", pullRequest: 12, headSha: source.head }], taskShell: { kind: "local" },
+      });
+      expect(await exists(join(root, "setup-ran.marker"))).toBe(true);
+    });
+  });
 });
