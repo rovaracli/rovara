@@ -1,0 +1,76 @@
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
+import type { OrgId } from "@agentx/contracts";
+import { DECIDE_COOKIE, DecideStore, csrfTokenFor, requireDecideNavigation, requireDecideSession, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
+import type { DecideKind } from "../../packages/broker/src/developer/decide-kinds.js";
+import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
+import { confirmPage, decidedPage, forbiddenPage, notFoundPage, reauthPage, refusedPage, resultPage } from "../../packages/broker/src/developer/confirm-page.js";
+import { createTaskWeb } from "../../packages/broker/src/aws/task-web.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { httpEvent, identityHarness } from "../support/developer-fakes.js";
+const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId, WHO = "a".repeat(64), APR = "apr_aaaaaaaaaaaaaaaaaaaa";
+const CELL = "https://cell.example", NOW = Date.parse("2026-10-23T12:00:00Z"), COOKIE = "test-only-decide-cookie-" + "a".repeat(32);
+const navigation = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+async function setup() {
+ const db = new FakeDynamoDb(), store = new DecideStore({ documentClient: db, tableName: "signin", now: () => NOW });
+ const inspect = vi.fn<DecideKind["inspect"]>(async () => ({ status: "open", view: { title: "Sensitive approval fixture", facts: [], call: { connector: "fixture", tool: "write", arguments: { secretArgumentFixture: "never disclose before navigation" } } } }));
+ const decide = vi.fn<DecideKind["decide"]>(async () => ({ message: "Approved." }));
+ const context: DecideRequestContext = { store, now: () => NOW, cellOrigin: CELL, kinds: { apr: { inspect, decide }, spr: { inspect, decide } }, authenticateBearer: async () => ({ orgId: ORG, developerId: WHO }) };
+ await store.putSession(COOKIE, { orgId: ORG, developerId: WHO, approvalId: APR, signedInAt: NOW / 1000, method: "email_code", csrfHash: createHash("sha256").update(csrfTokenFor(COOKIE)).digest("hex"), expiresAt: NOW / 1000 + 600 });
+ const path = "/v1/app/approve/" + APR;
+ const page = (method: string, headers: Record<string, string> = {}) => routeDecidePage(context, { method, path, requestId: "fixture", headers: { cookie: `${DECIDE_COOKIE}=${COOKIE}`, ...(method === "POST" ? { origin: CELL, "content-type": "application/x-www-form-urlencoded" } : {}), ...headers }, ...(method === "POST" ? { body: new URLSearchParams({ decision: "approve", csrf: csrfTokenFor(COOKIE) }).toString() } : {}) }, new URL(path, CELL));
+ return { db, store, inspect, decide, context, page, path };
+}
+describe("a person's own approval navigation", () => {
+ it("refuses every fetch and embedded document before exposing arguments or CSRF", async () => {
+  const s = await setup();
+  for (const headers of [{ "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "same-origin", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "no-cors", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" }, { "sec-fetch-site": "same-origin" }]) {
+   const response = await s.page("GET", headers);
+   expect(response.statusCode).toBe(403);expect(response.body).toContain("Open this approval from its link.");expect(response.body).not.toContain("secretArgumentFixture");expect(response.body).not.toContain('name="csrf"');expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
+  }
+  expect(s.inspect).not.toHaveBeenCalled();
+  const opened = await s.page("GET", navigation);expect(opened.statusCode).toBe(200);expect(opened.body).toContain("secretArgumentFixture");expect(opened.body).toContain(csrfTokenFor(COOKIE));
+ });
+ it("requires activated form navigation and claims the decision only once", async () => {
+  const s = await setup();
+  for (const headers of [{ "sec-fetch-mode": "same-origin", "sec-fetch-dest": "empty", "sec-fetch-user": "?1" }, navigation, { ...navigation, "sec-fetch-user": "?0" }]) {
+   expect((await s.page("POST", headers)).statusCode).toBe(403);expect(s.decide).not.toHaveBeenCalled();expect((await s.store.getSession(COOKIE))?.usedAt).toBeUndefined();
+  }
+  expect((await s.page("POST", { ...navigation, "sec-fetch-user": "?1" })).statusCode).toBe(200);expect(s.decide).toHaveBeenCalledTimes(1);
+  expect((await s.page("POST", { ...navigation, "sec-fetch-user": "?1" })).statusCode).toBe(401);expect(s.decide).toHaveBeenCalledTimes(1);
+ });
+ it("keeps older browser navigation and forms working without fetch metadata", async () => {
+  const s = await setup();expect((await s.page("GET")).statusCode).toBe(200);expect((await s.page("POST")).statusCode).toBe(200);expect(s.decide).toHaveBeenCalledTimes(1);
+ });
+ it("refuses scripted JSON decisions before minting a token's confirmation ticket", async () => {
+  const s = await setup();
+  for (const id of [APR, "spr_aaaaaaaaaaaaaaaaaaaa"]) for (const mode of ["cors", "same-origin", "no-cors"]) {
+   const before = s.db.commandNames().length;
+   await expect(requireDecideSession(s.context, { method: "POST", path: `/v1/app/${id.startsWith("apr") ? "approvals" : "spend-requests"}/${id}/decide`, headers: { authorization: "Bearer fixture", "sec-fetch-mode": mode } })).rejects.toMatchObject({ code: "FORBIDDEN", statusCode: 403, message: expect.stringContaining("Open this approval from its link.") });
+   expect(s.db.commandNames().slice(before)).toEqual([]);
+  }
+  await expect(requireDecideSession(s.context, { method: "POST", path: `/v1/app/approvals/${APR}/decide`, headers: { authorization: "Bearer fixture" } })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
+  expect(s.db.find(item => String(item.pk).startsWith("DECIDE_TICKET#"))).toHaveLength(1);
+ });
+ it("exposes the same explicit navigation guard to callers", () => {
+  expect(() => requireDecideNavigation({ method: "GET", path: "/v1/app/approve/" + APR, headers: navigation })).not.toThrow();
+  expect(() => requireDecideNavigation({ method: "GET", path: "/v1/app/approve/" + APR, headers: { "sec-fetch-user": "?1" } })).toThrow("Open this approval from its link.");
+ });
+ it("isolates every rendered confirmation state and a missing-session redirect", async () => {
+  const pages = [confirmPage({ title: "Fixture", facts: [] }, { approvalId: APR, csrf: "fixture" }), decidedPage("Already done"), forbiddenPage("No access"), notFoundPage(), reauthPage("/v1/auth/decide/start"), refusedPage(403, "Refused", "Open again"), resultPage("Approved", "Done")];
+  for (const page of pages) expect(page.headers["cross-origin-opener-policy"]).toBe("same-origin");
+  const s = await setup();await s.store.deleteSession(COOKIE);expect((await s.page("GET", navigation)).headers["cross-origin-opener-policy"]).toBe("same-origin");
+ });
+ it("isolates decide sign-in error and chooser pages", async () => {
+  const h = identityHarness({ slackUsers: [], cloud: {}, decide: {} });
+  for (const path of ["/v1/auth/decide/start?ticket=invalid", "/v1/auth/decide/identify?return=invalid", `/v1/auth/decide/identify?return=${encodeURIComponent('/v1/app/approve/' + APR)}`]) {
+   const response = await h.http(httpEvent("GET", path));expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
+  }
+ });
+ it("isolates task-page errors and sign-in redirects", async () => {
+  const task = createTaskWeb({ authenticateSession: async () => undefined, getTaskDocumentView: async () => { throw new Error("Unexpected task read"); } });
+  for (const path of ["/review/not-an-id/task", "/review/11111111-1111-4111-8111-111111111111/task"]) {
+   const response = await task({ method: "GET", path, requestId: "fixture", headers: {} }, new URL(path, CELL));expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
+  }
+ });
+});
