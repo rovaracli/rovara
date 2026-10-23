@@ -83,9 +83,10 @@ export type ConnectionLookup = ReturnType<typeof pinnedLookup>;
 /**
  * A `fetch` that connects through `lookup` whatever name the URL holds, opens a connection per request, never follows a redirect and ends with the caller's
  * signal. `pinnedFetch` gives it a lookup that answers a fixed set of addresses; the native connectors' (`vendor-fetch.ts`) a lookup that resolves the name
- * and refuses any address that is not public, at connect time.
+ * and refuses any address that is not public, at connect time. A redirect is refused unless `returnRedirects` is set (Plan 4 Task 17): then its status and
+ * headers come back, with no body, for the caller to read; it is still never followed.
  */
-export function lookupFetch(lookup: ConnectionLookup, options: { request?: RequestFunction; origin?: string } = {}): typeof fetch {
+export function lookupFetch(lookup: ConnectionLookup, options: { request?: RequestFunction; origin?: string; returnRedirects?: boolean } = {}): typeof fetch {
   return async (input, init) => {
     const original = input instanceof Request ? input : undefined;
     const url = new URL(original?.url ?? (input instanceof URL ? input.href : input));
@@ -110,9 +111,11 @@ export function lookupFetch(lookup: ConnectionLookup, options: { request?: Reque
         request = send(url, { method, headers, lookup: lookup as RequestOptions["lookup"], agent: false }, (response) => {
           signal?.removeEventListener("abort", onAbort);
           const status = response.statusCode ?? 502;
-          if (REDIRECTS.has(status)) { response.destroy(); reject(new TypeError("fetch failed: a redirect was refused")); return; }
+          const redirected = REDIRECTS.has(status);
+          if (redirected && options.returnRedirects !== true) { response.destroy(); reject(new TypeError("fetch failed: a redirect was refused")); return; }
           const responseHeaders = new Headers();
           for (const [key, value] of Object.entries(response.headers)) for (const entry of Array.isArray(value) ? value : value === undefined ? [] : [value]) responseHeaders.append(key, entry);
+          if (redirected) { response.destroy(); resolve(new Response(null, { status, statusText: response.statusMessage ?? "", headers: responseHeaders })); return; }
           const bodyless = BODYLESS.has(status) || method === "HEAD";
           if (bodyless) response.resume();
           resolve(new Response(bodyless ? null : Readable.toWeb(response) as ReadableStream<Uint8Array>, { status, statusText: response.statusMessage ?? "", headers: responseHeaders }));

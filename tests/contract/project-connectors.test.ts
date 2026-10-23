@@ -2070,6 +2070,41 @@ describe("Plan 4 Task 16: cloudwatch on the project connectors", () => {
   });
 });
 
+describe("Plan 4 Task 17: github-actions on the project connectors", () => {
+  const TOOLS = ["list_workflow_runs", "get_workflow_execution", "list_execution_jobs", "get_job_log", "list_deployments", "list_deployment_statuses"];
+  const gha = (tools: unknown[]) => ({ name: "gha", type: "github-actions", scopes: ["web"], tools });
+
+  it("lists the six tools GitHub Actions' connector offers, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS["github-actions"]).toEqual(TOOLS);
+  });
+
+  it("accepts a github-actions connector approving list_workflow_runs, and refuses cancel_workflow_run and any other unlisted tool with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    for (const name of ["cancel_workflow_run", "rerun_workflow", "run_workflow", "create_deployment", "get_secret", "list_secrets"]) {
+      const refused = await s.put(MIA, "gha", gha([{ name: "list_workflow_runs", access: "read" }, { name, access: "read" }]));
+      expect(refused.status, name).toBe(400);
+      expect(refused.body.error, name).toEqual({ code: "CONFIG_INVALID", message: `tools.1: ${name} is not a github-actions tool` });
+    }
+    expect(s.revisions()).toHaveLength(1);
+    expect(s.approvals()).toHaveLength(0);
+    const saved = await s.put(MIA, "gha", gha([{ name: "list_workflow_runs", access: "read" }, { name: "get_job_log", access: "read" }]));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ revision: 2, connector: { name: "gha", type: "github-actions", scopes: ["web"] } });
+    await s.fakeLinear.close();
+  });
+
+  it("refuses a github-actions tool approved to write, and keeps the connector read-only", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const refused = await s.put(MIA, "gha", gha([{ name: "list_workflow_runs", access: "write" }]));
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: github-actions connectors are read-only" });
+    expect(s.revisions()).toHaveLength(1);
+    await s.fakeLinear.close();
+  });
+});
+
 describe("Plan 4 Task 15: pagerduty and vercel on the project connectors", () => {
   it("lists each type's tools, all reads", () => {
     expect(PROJECT_CONNECTOR_TOOLS.pagerduty).toEqual(["list_incidents", "get_incident", "list_incident_log_entries", "list_oncalls"]);

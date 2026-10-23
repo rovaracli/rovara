@@ -1,6 +1,7 @@
 // Plan 3 Task 14b (PF10, PF16): the tokens an agent's GitHub work is done with, and the reads made with them. Everything runs against a fake GitHub that
 // records every request, so "no token was minted" and "exactly these permissions" are read off the record rather than assumed.
 import { generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { agentXError, type OrgId } from "@agentx/contracts";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
@@ -70,6 +71,28 @@ describe("createAgentInstallationToken", () => {
     ]);
   });
 
+  it("mints `actions` and `deployments` at read, one repository at a time, for Plan 4's GitHub Actions connector, and only at read", async () => {
+    const github = fakeGithub();
+    const provider = providerOf(github);
+    await provider.createAgentInstallationToken(REPOSITORY, { actions: "read" }, { orgId: TEST_ORG });
+    await provider.createAgentInstallationToken(REPOSITORY, { deployments: "read" }, { orgId: TEST_ORG });
+    await provider.createAgentInstallationToken(REPOSITORY, { actions: "read", deployments: "read" }, { orgId: TEST_ORG });
+    expect(github.minted().map((request) => request.body)).toEqual([
+      { repositories: ["demo"], permissions: { actions: "read", metadata: "read" } },
+      { repositories: ["demo"], permissions: { deployments: "read", metadata: "read" } },
+      { repositories: ["demo"], permissions: { actions: "read", deployments: "read", metadata: "read" } },
+    ]);
+  });
+
+  it("keeps the one other way a token is minted exactly as it was: no narrowing option, and no `actions` or `deployments` key (R63)", () => {
+    const mint = (GitHubAppCredentialProvider.prototype as unknown as Record<string, (...args: never[]) => unknown>)["createInstallationToken"]!;
+    // (repository, permissions, scope, retried = false): three required parameters, as in Plan 2.
+    expect(mint.length).toBe(3);
+    const source = mint.toString();
+    for (const word of ["narrow", "actions", "deployments"]) expect(source, word).not.toContain(word);
+    expect(readFileSync(new URL("../../packages/broker/src/github-app.ts", import.meta.url), "utf8")).not.toMatch(/narrow\??:/u);
+  });
+
   it("returns the token GitHub minted, and nothing else is asked for", async () => {
     const github = fakeGithub();
     const token = await providerOf(github).createAgentInstallationToken({ owner: "example", name: "demo" }, { issues: "write" }, { orgId: TEST_ORG });
@@ -82,7 +105,10 @@ describe("createAgentInstallationToken", () => {
     ["workflows: read", { workflows: "read" }],
     ["administration", { administration: "write" }],
     ["actions: write", { actions: "write" }],
-    ["actions: read", { actions: "read" }],
+    ["deployments: write", { deployments: "write" }],
+    ["actions: write beside deployments: read", { actions: "write", deployments: "read" }],
+    ["deployments: write beside actions: read", { actions: "read", deployments: "write" }],
+    ["an actions level that is not a level", { actions: "admin" }],
     ["a permission nobody listed", { statuses: "write" }],
     ["metadata: write", { metadata: "write" }],
     ["a level that is not a level", { issues: "admin" }],

@@ -1,6 +1,7 @@
 import { GitHubConnectorSchema, githubConnectorOf, type CredentialType, type OrgId, type ProjectDefinition, type RepositoryDefinition } from "@agentx/contracts";
 import { githubConnector, type ConnectorDefinition, type ConnectorPolicy, type PresentationApproval, type connectMcp } from "@agentx/gateway";
 import type { CloudWatchAws } from "../connectors/native/cloudwatch.js";
+import type { GitHubActionsTokens } from "../connectors/native/github-actions.js";
 import type { McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import type { GitHubMcpDependencies } from "../github-mcp.js";
 import { GITHUB_LEDGER } from "./connector-ledger.js";
@@ -8,6 +9,7 @@ import { asanaConnectorType } from "./asana-connector-type.js";
 import { mcpConnectorType } from "./connector-presets.js";
 import { cloudwatchConnectorType } from "./cloudwatch-connector-type.js";
 import { datadogConnectorType } from "./datadog-connector-type.js";
+import { githubActionsConnectorType } from "./github-actions-connector-type.js";
 import { grafanaConnectorType } from "./grafana-connector-type.js";
 import { pagerdutyConnectorType } from "./pagerduty-connector-type.js";
 import { sentryConnectorType } from "./sentry-connector-type.js";
@@ -65,6 +67,11 @@ export interface ConnectorTypeContext {
   orgId?: OrgId;
   /** Plan 4 Task 16: the AWS access the CloudWatch connector assumes a customer's role through. Absent where the deployment has none. */
   cloudwatchAws?: CloudWatchAws;
+  /**
+   * Plan 4 Task 17: Plan 3's guarded way to mint an agent's GitHub token (`createAgentInstallationToken`), which the GitHub Actions connector mints from for every
+   * call, with the permissions of the tool and for `orgId` above. Absent where the deployment has no GitHub App; the connector is then not connected.
+   */
+  githubAgentTokens?: GitHubActionsTokens;
 }
 
 /** A stored connectors entry. Only its name and type are known before its type validates the rest. */
@@ -124,7 +131,7 @@ export const BUILT_IN_CONNECTOR_TYPES: Readonly<Record<string, ConnectorType>> =
   github: githubConnectorType, linear: linearConnectorType, jira: jiraConnectorType, asana: asanaConnectorType, mcp: mcpConnectorType,
   // Plan 4: the native read-only connectors, as their tasks land.
   sentry: sentryConnectorType, datadog: datadogConnectorType, grafana: grafanaConnectorType,
-  pagerduty: pagerdutyConnectorType, vercel: vercelConnectorType, cloudwatch: cloudwatchConnectorType,
+  pagerduty: pagerdutyConnectorType, vercel: vercelConnectorType, cloudwatch: cloudwatchConnectorType, "github-actions": githubActionsConnectorType,
 };
 
 /**
