@@ -77,6 +77,9 @@ describe("a recipe's trigger specs", () => {
     expect(TriggerSpecSchema.safeParse(event({ filter: { label: Array.from({ length: 11 }, (_, i) => `l${String(i)}`) } })).success).toBe(false);
     expect(TriggerSpecSchema.safeParse(event({ filter: { label: ["x".repeat(101)] } })).success).toBe(false);
     expect(TriggerSpecSchema.safeParse(event({ extra: 1 })).success).toBe(false);
+    expect(TriggerSpecSchema.safeParse(event({ filter: { label: ["bug\u202e"] } })).success).toBe(false);
+    expect(TriggerSpecSchema.safeParse(event({ filter: { label: ["bu\ng"] } })).success).toBe(false);
+    expect(TriggerSpecSchema.safeParse(event({ filter: { label: Array.from({ length: 10 }, (_, i) => `l${String(i)}`) } })).success).toBe(true);
   });
 
   it("takes authorAssociation on pull_request.opened and issues.opened and refuses it on workflow_run.completed", () => {

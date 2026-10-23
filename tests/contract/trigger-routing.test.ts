@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { agentGuardrailsKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
+import { TriggerStore } from "../../packages/broker/src/triggers/store.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
@@ -60,5 +61,22 @@ describe("the trigger routes through the broker", () => {
     expect(generic.status).toBe(400);
     expect((generic.body.error as { message: string }).message).toContain("use the project's built-in trigger switch");
     expect((await call(OMAR, "GET", "/v1/app/projects/payments/builtin-triggers")).status).toBe(404);
+  });
+
+  it("turns a chain's trigger off when its budget goes, and a built-in's when the company turns the built-in off, through the hooks the broker builds", async () => {
+    const { h, call, chainId } = await setup();
+    const triggers = new TriggerStore({ documentClient: h.db, tableName: "state", now: Date.now });
+    expect((await call(MAYA, "PUT", `/v1/app/chains/${chainId}/budget`, { monthlyUsd: 20 })).status).toBe(200);
+    const onChain = await triggers.create({ record: { orgId: TEST_ORG, triggerId: TRIGGER, target: { kind: "chain", chainId }, project: "payments", spec: { kind: "event", source: "github", type: "pull_request.opened" }, enabled: true, maxRunsPerHour: 30, createdBy: MAYA.developerId } });
+    const removed = await call(MAYA, "PUT", `/v1/app/chains/${chainId}/budget`, { monthlyUsd: null });
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect((removed.body.disabledTriggers as Array<{ triggerId: string }>).map((entry) => entry.triggerId)).toEqual([onChain.triggerId]);
+    expect((await triggers.get(TEST_ORG, TRIGGER))?.enabled).toBe(false);
+    const onBuiltin = await triggers.create({ record: { orgId: TEST_ORG, triggerId: `ctr_${"b".repeat(20)}`, target: { kind: "agent", agentId: "code-reviewer" }, project: "payments", spec: { kind: "event", source: "github", type: "pull_request.opened" }, enabled: true, maxRunsPerHour: 30, createdBy: MAYA.developerId } });
+    seedMembership(h.db, MAYA.developerId, { orgId: TEST_ORG, role: "owner" });
+    const guardrails = await call(MAYA, "GET", "/v1/app/org/agent-guardrails");
+    const turnedOff = await call(MAYA, "PUT", "/v1/app/org/agent-guardrails", { expectedRevision: guardrails.body.revision, guardrails: { ...(guardrails.body.guardrails as object), disabledBuiltins: ["code-reviewer"] } });
+    expect(turnedOff.status, JSON.stringify(turnedOff.body)).toBe(200);
+    expect((turnedOff.body.disabledTriggers as Array<{ triggerId: string }>).map((entry) => entry.triggerId)).toEqual([onBuiltin.triggerId]);
   });
 });

@@ -947,6 +947,9 @@ describe("no confirm link reaches a session viewer", () => {
     const at = (url: string) => v.w.db.set({ ...meta, startedBy: { ...(meta["startedBy"] as object), title: "Refund\u202e errors\u0007\n  now", url } });
     at("https://sentry.example.com/issues/1");
     expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).toMatchObject({ title: "Refund errors now", url: "https://sentry.example.com/issues/1" });
+    const long = `https://sentry.example.com/issues/${"a".repeat(150)}`;
+    at(long);
+    expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).toMatchObject({ url: long });
     for (const bad of ["https://sentry.example.com/issues/1?x=\u0007y", "not a link", `https://sentry.example.com/${"a".repeat(2100)}`]) {
       at(bad);
       expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).not.toHaveProperty("url");
