@@ -17,7 +17,6 @@ import type { AgentOwner } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import type { ChainRunId } from "../../packages/contracts/src/chains.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
 import { chainRunKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
