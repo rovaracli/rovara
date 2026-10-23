@@ -923,16 +923,28 @@ describe("telling the session, at the edges", () => {
   });
 
   it("settles only a task that is the session's own, or its chain's step", async () => {
+    const at = new Date(T0).toISOString();
+    const queued = (f: ReturnType<typeof steerWorld>, taskId: string, messageId: string) => {
+      f.w.db.set({ ...agentSessionKey(ORG_A, f.sid, `MESSAGE#${messageId}`), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: f.sid, messageId, kind: "steer", source: "app", author: { developerId: MAX, name: "Max" }, text: "x", createdAt: at, rev: 1, delivery: { state: "queued", at } });
+      f.w.db.set({ pk: `DEVTASK#${taskId}`, sk: `NOTE#${messageId}`, entityType: "WORKFLOW_THREAD_NOTE", schemaVersion: 1, source: "app", taskId, developerId: MAX, name: "Max", isOwner: false, sessionId: f.sid, messageId, text: "x", truncated: false, receivedAt: at, workflowRevision: 3 });
+    };
+    // A task session is given another task's id: that task holds a note of this session, and is still not this session's.
     const f = steerWorld();
-    seedQueued(f, 2);
     const other = f.w.seedSession({ kind: "task" });
-    f.w.db.set({ ...f.w.db.get(taskKey(other.taskId))!, orgId: ORG_A, threadNoteCount: 1, threadNotesFedThrough: new Date(T0).toISOString() });
+    f.w.db.set({ ...f.w.db.get(taskKey(other.taskId))!, threadNoteCount: 1, threadNotesFedThrough: at });
+    queued(f, other.taskId, "msg_00000000000000000001");
     expect(await settleSteerDeliveries(f.deps, f.session(), other.taskId)).toBe(0);
+    expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "queued" } });
+    // A chain session is given a step task of another chain.
     const chain = steerWorld({ kind: "chain" });
     const step = chain.w.seedSession({ kind: "task" });
-    chain.w.db.set({ ...chain.w.db.get(taskKey(step.taskId))!, workflow: WORKFLOW, chain: { chainRunId: "crn_00000000000000000099", stepId: "s" }, threadNoteCount: 1, threadNotesFedThrough: new Date(T0).toISOString() });
-    chain.w.db.set({ pk: `DEVTASK#${step.taskId}`, sk: "NOTE#msg_00000000000000000001", entityType: "WORKFLOW_THREAD_NOTE", schemaVersion: 1, source: "app", taskId: step.taskId, developerId: MAX, name: "Max", isOwner: false, sessionId: chain.sid, messageId: "msg_00000000000000000001", text: "x", truncated: false, receivedAt: new Date(T0).toISOString(), workflowRevision: 3 });
+    chain.w.db.set({ ...chain.w.db.get(taskKey(step.taskId))!, workflow: WORKFLOW, chain: { chainRunId: "crn_00000000000000000099", stepId: "s" }, threadNoteCount: 1, threadNotesFedThrough: at });
+    queued(chain, step.taskId, "msg_00000000000000000001");
     expect(await settleSteerDeliveries(chain.deps, chain.session(), step.taskId)).toBe(0);
+    expect(chain.messageItems()[0]).toMatchObject({ delivery: { state: "queued" } });
+    // And its own step is settled.
+    chain.w.db.set({ ...chain.w.db.get(taskKey(step.taskId))!, chain: { chainRunId: chain.sid, stepId: "s" } });
+    expect(await settleSteerDeliveries(chain.deps, chain.session(), step.taskId)).toBe(1);
   });
 
   it("settles a note whose message is gone or answered otherwise, so it is not looked at again", async () => {
