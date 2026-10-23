@@ -5,11 +5,11 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, builtinSettingsKey, agentRunsKey, ledgerKey, orgProjectCatalogKey, projectAgentKey, projectMemberKey, projectMetaKey, projectRevisionKey, sourceAlias, spendCounterKey,
+  DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, approvalKey, defaultSpendPolicy, openApprovalKey, openSpendRequestDueKey, builtinSettingsKey, agentRunsKey, ledgerKey, orgProjectCatalogKey, projectAgentKey, projectMemberKey, projectMetaKey, projectRevisionKey, sourceAlias, spendCounterKey,
   type OrgId,
 } from "@agentx/contracts";
 import { decideSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
-import { createStepApproval, createWriteApprovalRecord, decideApproval, getAnyApproval, type ApprovalDependencies, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
+import { createStepApproval, createWriteApprovalRecord, decideApproval, getAnyApproval, runApprovalSweep, type ApprovalDependencies, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { decideWriteApproval } from "../../packages/broker/src/agents/write-gate.js";
 import { approvalTaskEventKey } from "../../packages/broker/src/agents/approvals.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
@@ -22,7 +22,7 @@ import { DECIDE_COOKIE, DecideStore, csrfTokenFor, decideProofOf } from "../../p
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
-import { MAYA, OMAR, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, bearerFor, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "../support/fake-linear-mcp.js";
 import { call as callBroker } from "../support/slack-broker.js";
@@ -245,6 +245,10 @@ async function world() {
   db.set({ ...spendCounterKey(TEST_ORG, thisMonth, agentUsageCounter("ticket-triage")), entityType: "SPEND_COUNTER", spentUsd: 5.55 });
   db.set({ ...agentRunsKey(TEST_ORG, thisMonth, "ticket-triage", U.taskId), entityType: "AGENT_RUN_COST", orgId: TEST_ORG, taskId: U.taskId, project: "payments", origin: "app", usd: 5.55, lastAt: at });
 
+  // A's spend policy is not the default: a multiplier of 3 and a testing allowance of $77.
+  const policy = await api(DEB, "PUT", "/v1/app/org/spend-policy", { runLimitMultiplier: 3, testingAllowanceUsd: 77 });
+  expect(policy.status, JSON.stringify(policy.body)).toBe(200);
+
   // ---- B's own things, so B's answers are B's and not merely empty.
   const BX = ((await created(api(OMAR, "POST", "/v1/app/agents", { name: "B looker", overlay: TRIAGE }))).agent as { agentId: string }).agentId;
   const BS = ((await created(api(BETH, "POST", "/v1/app/skills", { content: skillFile("b-skill", "# B\n\nB-ONLY\n") }))).skill as { skillId: string }).skillId;
@@ -280,11 +284,13 @@ async function world() {
   const ids = {
     X, S, C, SRC, T: T.taskId, U: U.taskId, P, Q, changeId, runLimit: runLimit.spendRequestId, maxPerRun: maxPerRun.spendRequestId, planning: planning.spendRequestId,
     month: monthly.spendRequestId, ownerCap: ownerCap.spendRequestId, held: heldRequest.spendRequestId, BX, BS, BC,
+    /** A person of A's. */
+    maya: MAYA.developerId,
   };
   /** The same ids with every object of A replaced by one of the right shape that no org has. */
   const twin: typeof ids = {
     ...ids, X: MISSING.agent, S: MISSING.skill, C: MISSING.connection, SRC: MISSING.source, T: randomUUID(), U: randomUUID(), P: MISSING.approval, Q: MISSING.approval, changeId: MISSING.approval,
-    runLimit: MISSING.spend, maxPerRun: MISSING.spend, planning: MISSING.spend, month: MISSING.spend, ownerCap: MISSING.spend, held: MISSING.spend,
+    runLimit: MISSING.spend, maxPerRun: MISSING.spend, planning: MISSING.spend, month: MISSING.spend, ownerCap: MISSING.spend, held: MISSING.spend, maya: "a".repeat(64),
   };
   return {
     ...t, fake, fakeLinear, twin, secrets, api, ids, bRun, bDraftRevision, sent, stateFingerprint, tasks: { T, U, run, maxRun, planRun, monthRun, held: started }, requestsOf: { runLimit, maxPerRun, planning, monthly, ownerCap, heldRequest },
@@ -309,7 +315,7 @@ function needlesOf(w: World): string[] {
 
 /** A reply with every id of A's that it echoes read as its twin, so an answer that repeats what the caller typed compares with the one for an id no org has. */
 /** A's figures: no number of a B answer equals one (a timestamp's digits are not a number). */
-const A_FIGURES = [12.34, 5.55];
+const A_FIGURES = [12.34, 5.55, 77];
 const numbersIn = (value: unknown): number[] => (typeof value === "number" ? [value] : Array.isArray(value) ? value.flatMap(numbersIn) : typeof value === "object" && value !== null ? Object.values(value).flatMap(numbersIn) : []);
 const holdsFigureOfA = (value: unknown): boolean => numbersIn(value).some((number) => A_FIGURES.includes(number));
 
@@ -423,7 +429,7 @@ describe("the controls: org A's own people reach every object the suite asks B f
     await control(shared, DEB, "/v1/app/org/spend");
     await control(shared, DEB, "/v1/app/org/spend/ledger");
     await control(shared, DEB, "/v1/app/org/agent-guardrails");
-    await control(shared, DEB, "/v1/app/org/spend-policy");
+    expect(((await control(shared, DEB, "/v1/app/org/spend-policy")).body as { policy: { testingAllowanceUsd: number } }).policy.testingAllowanceUsd).toBe(77);
     // A spend request is read by someone who may decide it or who asked for it.
     await control(shared, BEN, `/v1/app/spend-requests/${ids.runLimit}`);
     await control(shared, MAYA, `/v1/app/spend-requests/${ids.maxPerRun}`);
@@ -472,6 +478,19 @@ describe("org B's member and owner ask for org A's agent X", () => {
       { name: "DELETE X from B's web roster", request: ({ X }) => ["DELETE", `/v1/app/projects/web/agents/${X}`, {}], status: 200, code: "", requestItem: true },
       { name: "task start naming X", request: ({ X }) => ["POST", "/v1/dev/tasks", { project: "payments", instructions: "Look", agent: { agentId: X }, input: { text: "Look" }, client: "test-client" }], ...NO_AGENT },
       { name: "task start naming X's draft", request: ({ X }) => ["POST", "/v1/dev/tasks", { project: "payments", instructions: "Look", agent: { agentId: X, version: "draft" }, input: { text: "Look" }, client: "test-client" }], ...NO_AGENT },
+    ]);
+  });
+});
+
+describe("org B's agents name nobody of org A's", () => {
+  it("refuses A's person as an owner, an accountable person or a share on B's agent, and as the owner of a new one, as it refuses a person no org has", async () => {
+    const invalid = { status: 400, code: "CONFIG_INVALID" } as const;
+    await runCases(shared, [
+      { name: "PUT shares naming A's person", request: ({ BX, maya }) => ["PUT", `/v1/app/agents/${BX}/shares`, { shares: [{ principal: { kind: "member", developerId: maya }, level: "use" }] }], ...invalid },
+      { name: "PUT owner naming A's person", request: ({ BX, maya }) => ["PUT", `/v1/app/agents/${BX}/owner`, { owner: { kind: "member", developerId: maya } }], adminOnly: true, ...invalid },
+      { name: "PUT accountable naming A's person", request: ({ BX, maya }) => ["PUT", `/v1/app/agents/${BX}/accountable`, { accountable: { developerId: maya } }], ...invalid },
+      { name: "POST agents owned by A's person", request: ({ maya }) => ["POST", "/v1/app/agents", { name: "Owned by a stranger", owner: { kind: "member", developerId: maya } }], adminOnly: true, ...invalid },
+      { name: "PUT shares naming a project of A's that B has no project of", request: ({ BX }) => ["PUT", `/v1/app/agents/${BX}/shares`, { shares: [{ principal: { kind: "project", project: "billing" }, level: "use" }] }], ...invalid },
     ]);
   });
 });
@@ -600,6 +619,10 @@ describe("org B's lists, counts and money hold only org B's", () => {
       // The people B sees are B's, and B's guardrails and spend policy are B's own (A raised its autonomy ceiling and set its own budgets).
       const members = (await read("/v1/app/org/members")).body.members as Array<{ developerId: string }>;
       expect(members.map((member) => member.developerId).sort()).toEqual([BETH.developerId, OMAR.developerId].sort());
+      if (who === BETH) {
+        const policy = (await read("/v1/app/org/spend-policy")).body as { policy?: Record<string, number>; revision?: number };
+        expect(policy.policy).toEqual(defaultSpendPolicy());
+      }
       const guardrails = await read("/v1/app/org/agent-guardrails");
       expect((guardrails.body.guardrails as { maxAutonomy: string }).maxAutonomy).toBe("prepare");
       expect(guardrails.body.revision).toBe(0);
@@ -709,6 +732,7 @@ describe("org B tries to decide org A's requests and approvals", () => {
     for (const who of B_PEOPLE) {
       const orgRole = who === BETH ? "owner" : "member";
       for (const key of decidable) {
+        const answers: Reply[] = [];
         for (const target of [w.ids[key], w.twin[key]]) {
           const { proof } = await sessionFor(w, who, ORG_B, target);
           const caller = { orgId: ORG_B, developerId: who.developerId, orgRole, decideProof: proof } as const;
@@ -716,8 +740,9 @@ describe("org B tries to decide org A's requests and approvals", () => {
           const body = { requestId: randomUUID(), decision: key === "P" || key === "Q" || key === "changeId" ? "APPROVE" : "APPROVE" };
           const run = target.startsWith("spr_") ? () => decideSpendRequest(deps, caller, target, body)
             : key === "P" ? () => decideWriteApproval(deps, caller, target, body) : () => decideApproval(deps, caller, target, body);
-          await refused(w, `${who.name} decides ${key} as B's ${orgRole}`, () => thrown(run), { status: 404, code: "NOT_FOUND" }, { sessions: true, supplied: target });
+          answers.push(await refused(w, `${who.name} decides ${key} as B's ${orgRole}`, () => thrown(run), { status: 404, code: "NOT_FOUND" }, { sessions: true, supplied: target }));
         }
+        expect(bodyOf(w, answers[0]!), `${who.name} decides ${key}`).toEqual(bodyOf(w, answers[1]!));
       }
     }
     // A's requests are all still pending, and A's held start is still there: nothing of the above reached them.
@@ -952,11 +977,22 @@ describe("the settlement run keeps an item to its own org", () => {
       plant(w, `${at}#${ORG_B}#${aTask}#${String(index)}`, { orgId: ORG_B, taskId: aTask, spendRequestId: w.ids.held, ...extra });
       plant(w, `${at}#${TEST_ORG}#${bTask}#${String(index)}`, { orgId: TEST_ORG, taskId: bTask, spendRequestId: w.ids.held, ...extra });
     }
+    // A request's and an approval's due items that name org B and an id of A's.
+    const past = new Date(Date.now() - 86_400_000).toISOString();
+    w.db.set({ ...openSpendRequestDueKey(past, ORG_B, w.ids.runLimit), entityType: "SPEND_REQUEST_DUE", orgId: ORG_B, spendRequestId: w.ids.runLimit, dueAt: past });
+    w.db.set({ ...openApprovalKey(past, ORG_B, w.ids.P as never), entityType: "OPEN_APPROVAL", orgId: ORG_B, approvalId: w.ids.P });
+    const requestsBefore = JSON.stringify(w.requests(), stable);
+    const approvalsBefore = JSON.stringify([w.ids.P, w.ids.Q, w.ids.changeId].map((id) => w.db.get(approvalKey(TEST_ORG, id as never))), stable);
     const aBeforeTask = taskState(w, aTask);
     const bBeforeTask = taskState(w, bTask);
     const outbox = outboxCount(w);
     const report = await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 });
     expect(report).toMatchObject({ heldStarts: 0 });
+    await runApprovalSweep(w.deps(), { budgetMs: 5_000 });
+    expect(JSON.stringify(w.requests(), stable), "A's spend requests").toBe(requestsBefore);
+    expect(JSON.stringify([w.ids.P, w.ids.Q, w.ids.changeId].map((id) => w.db.get(approvalKey(TEST_ORG, id as never))), stable), "A's approvals").toBe(approvalsBefore);
+    expect(w.db.get(openSpendRequestDueKey(past, ORG_B, w.ids.runLimit)), "the planted due item is dropped").toBeUndefined();
+    expect(w.db.get(openApprovalKey(past, ORG_B, w.ids.P as never)), "the planted open approval is dropped").toBeUndefined();
     expect(taskState(w, aTask), "A's held task").toBe(aBeforeTask);
     expect(taskState(w, bTask), "B's task").toBe(bBeforeTask);
     expect(outboxCount(w), "no operation was dispatched").toBe(outbox);
@@ -996,6 +1032,61 @@ describe("a request id used in two orgs is two requests", () => {
     // And A reading its own request again by the same id still gets A's answer.
     const again = await post(MAYA, "/v1/app/agents", agentBody);
     expect(idOf(again, "agent")).toBe(idOf(a.agent, "agent"));
+  });
+});
+
+describe("two orgs add a company AI source with one request id", () => {
+  it("gives each its own source, its own credential and its own aliases in the proxy, and registers nothing of A's for B", async () => {
+    const w = await worldQuiet();
+    const requestId = randomUUID();
+    const body = { requestId, source: { kind: "anthropic", label: "Same label", models: [{ catalog: SONNET }] }, apiKey: SOURCE_KEY };
+    const before = aState(w);
+    const calls = w.access.upsertSource.mock.calls.length;
+    const added = await w.dev(DEB, "POST", "/v1/app/org/model-sources", body);
+    const addedByB = await w.dev(BETH, "POST", "/v1/app/org/model-sources", body);
+    expect(added.status, JSON.stringify(added.body)).toBe(201);
+    expect(addedByB.status, JSON.stringify(addedByB.body)).toBe(201);
+    expect(addedByB.body.sourceId).not.toBe(added.body.sourceId);
+    // The proxy was told of one source per org, each under its own org.
+    const told = w.access.upsertSource.mock.calls.slice(calls).map(([input]) => ({ orgId: input.orgId, sourceId: input.source.sourceId }));
+    expect(told).toEqual([{ orgId: TEST_ORG, sourceId: added.body.sourceId }, { orgId: ORG_B, sourceId: addedByB.body.sourceId }]);
+    // B's list holds B's source only; A's list holds its two.
+    const listed = async (who: Developer) => ((await w.api(who, "GET", "/v1/app/org/model-sources")).body.sources as Array<{ sourceId: string }>).map((source) => source.sourceId);
+    expect(await listed(BETH)).toEqual([String(addedByB.body.sourceId)]);
+    expect((await listed(DEB)).sort()).toEqual([w.ids.SRC, String(added.body.sourceId)].sort());
+    // A's records are as they were, apart from the source A itself just added.
+    expect(aState(w)).not.toBe(before);
+    expect(JSON.stringify(w.db.find((item) => String(item.pk).includes(ORG_B)), stable)).not.toContain(String(added.body.sourceId));
+  });
+});
+
+describe("a person who moves to org B and repeats a request id of org A's", () => {
+  it("makes a new request in B, and is not answered with what A stored, nor does the repeat touch A's agent or skill", async () => {
+    const w = await worldQuiet();
+    const ids = { "/v1/app/agents": randomUUID(), "/v1/app/skills": randomUUID() };
+    const bodies = { "/v1/app/agents": { name: "Moving agent", overlay: TRIAGE }, "/v1/app/skills": { content: skillFile("moving-skill", "# Moving\n") } } as const;
+    const inA = async (path: keyof typeof ids) => w.dev(MAYA, "POST", path, { requestId: ids[path], ...bodies[path] });
+    const made = { agent: await inA("/v1/app/agents"), skill: await inA("/v1/app/skills") };
+    expect(made.agent.status).toBe(201);
+    expect(made.skill.status).toBe(201);
+    // Maya's membership moves to B (the same developer, now in another org), and she signs in there.
+    seedMembership(w.db, MAYA.developerId, { orgId: ORG_B, role: "member" });
+    const before = aState(w);
+    const inB = async (path: keyof typeof ids) => {
+      const response = await w.handler({
+        version: "2.0", rawPath: path, rawQueryString: "", headers: { authorization: await bearerFor(MAYA, { orgId: ORG_B, role: "member" }) },
+        body: JSON.stringify({ requestId: ids[path], ...bodies[path] }), requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      });
+      return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, Record<string, string>> };
+    };
+    const moved = { agent: await inB("/v1/app/agents"), skill: await inB("/v1/app/skills") };
+    expect(moved.agent.status, JSON.stringify(moved.agent.body)).toBe(201);
+    expect(moved.skill.status, JSON.stringify(moved.skill.body)).toBe(201);
+    expect(moved.agent.body.agent!.agentId).not.toBe((made.agent.body.agent as { agentId: string }).agentId);
+    expect(moved.skill.body.skill!.skillId).not.toBe((made.skill.body.skill as { skillId: string }).skillId);
+    // The new ones are B's, under B's keys, and A's are as they were (the journal of the moved person's turns apart).
+    expect(w.db.get(`ORG#${ORG_B}#AGENT#${moved.agent.body.agent!.agentId}`, "META")).toMatchObject({ orgId: ORG_B });
+    expect(aState(w), "A's items").toBe(before);
   });
 });
 
