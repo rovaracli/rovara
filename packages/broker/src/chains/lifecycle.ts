@@ -411,10 +411,6 @@ async function watchStep(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRe
     await markClock(deps, run, attempt, now);
     return;
   }
-  if (attempt.timedOutAt !== undefined) {
-    await cancelStepTask(deps, run, attempt);
-    return;
-  }
   const minutes = stepMinutes(definition, attempt.stepId);
   if (now - clockStart(attempt) < minutes * MINUTE) return;
   if (!await flagTimedOut(deps, run, attempt, minutes, now)) return;
@@ -430,7 +426,10 @@ async function markClock(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRe
   }
 }
 
-/** Records that the attempt ran past its time, once. False when it is no longer running (it ended or was paused meanwhile): nothing is cancelled then. */
+/**
+ * Records that the attempt ran past its time, once. True when it is flagged, by this call or an earlier one (so the cancel is asked again, with the same request id, until
+ * the task ends); false when it is no longer running (it ended or was paused meanwhile): nothing is cancelled then.
+ */
 async function flagTimedOut(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, minutes: number, now: number): Promise<boolean> {
   try {
     await transact(deps, [update(deps, attemptKey(run, attempt.seq), { timedOutAt: new Date(now).toISOString(), timeoutMinutes: minutes }, (aliases) => `${aliases.name("status")} = ${aliases.value("running")} AND attribute_not_exists(${aliases.name("timedOutAt")})`)]);

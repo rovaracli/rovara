@@ -53,6 +53,8 @@ describe("the chain's cancel port, through Plan 3's cancel", () => {
     // The same request again is the same cancel: no second one is asked for.
     await t.ports.cancelTask({ orgId: TEST_ORG, taskId: t.taskId, owner: { developerId: MAYA.developerId }, requestId });
     expect(t.operations().filter((operation) => operation.kind === "cancel")).toHaveLength(1);
+    // It is the owner's own request that was made, under the id the chain gave.
+    expect(t.h.db.find((item) => item.sk === `REQUEST#${requestId}`)).toHaveLength(1);
     await t.h.finish(t.meta.workspaceId, cancel!.id, "SUCCEEDED");
     expect(t.runState()).toMatchObject({ state: "CANCELLED" });
     expect(t.ended).toEqual([expect.objectContaining({ outcome: "cancelled", taskId: t.taskId, chain: CHAIN })]);
@@ -111,6 +113,14 @@ describe("the chain sweep, through the deployed broker's handler", () => {
     h.db.set({ ...later, entityType: "OPEN_CHAIN_RUN", orgId: TEST_ORG, runId: "crn_aaaaaaaaaaaaaaaaaaaa" });
     expect(bodyOf(await h.handler(event))).toEqual({ examined: 0, failed: 0 });
     expect(h.db.get(later)).toBeDefined();
+  });
+
+  it("answers 500 when the sweep can't read the open items, and drops nothing", async () => {
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    h.db.injectFault({ command: "QueryCommand", match: (input) => JSON.stringify(input).includes("OPEN_CHAIN_RUNS"), error: { name: "ProvisionedThroughputExceededException" } });
+    const reply = await h.handler(event);
+    expect(reply).toMatchObject({ statusCode: 500 });
+    expect(bodyOf(reply)).toEqual({ error: "sweep_failed" });
   });
 
   it("says it was skipped where agents are not set up", async () => {

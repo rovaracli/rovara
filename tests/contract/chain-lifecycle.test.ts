@@ -146,7 +146,7 @@ describe("a step's retries", () => {
     expect(w.attempts(run.runId)[2]).toMatchObject({ seq: 3, attempt: 3, status: "running" });
     expect(w.attempts(run.runId)[2]!.retriesUsed ?? 0).toBe(0);
     await failTask(w, "task-3");
-    expect(w.run(run.runId)).toMatchObject({ status: "running", currentSeq: 4 });
+    expect(w.run(run.runId)).toMatchObject({ status: "running", currentSeq: 4, traversals: { "look>look": 1 } });
     expect(w.attempts(run.runId)[3]).toMatchObject({ attempt: 4, retriesUsed: 1 });
   });
 
@@ -866,6 +866,7 @@ describe("cancelling a run", () => {
     expect(again).toMatchObject({ status: "cancelled" });
     expect(w.run(run.runId)!.version).toBe(version);
     expect(await openRunsOf(w, chain.chainId)).toBe(1);
+    expect(w.cancels).toHaveLength(1);
     // Another request for a run that has ended is refused.
     expect(await refusal(cancelAs(w, PRIYA, run.runId))).toEqual({ code: "CHAIN_RUN_CLOSED", message: "This chain run has already ended." });
   });
@@ -1239,5 +1240,369 @@ describe("the cancel port", () => {
     await expect(gone.cancelTask({ orgId: ORG_A, taskId: "task-9", owner: { developerId: PRIYA }, requestId: "r-1" })).resolves.toBeUndefined();
     const none = chainRunPortsFor({ callerFor: async (_orgId: string, developerId: string) => ({ developerId, orgId: ORG_A, orgRole: "member" }) } as never);
     expect((await refusal(none.cancelTask({ orgId: ORG_A, taskId: "task-9", owner: { developerId: PRIYA }, requestId: "r-1" })))?.code).toBe("RUNTIME_UNAVAILABLE");
+  });
+});
+
+// ---- what the first mutation pass found unpinned
+
+describe("an attempt that timed out is told apart from one that failed, and is told in its own words", () => {
+  it("keeps a task's own failure as its own when the cancel was not what ended it", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId);
+    w.clock.now += 121 * MIN;
+    await sweep(w);
+    await failTask(w, "task-1", "The tool broke first");
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "failed", failure: { reason: "step_failed", message: "The tool broke first" } });
+    expect(w.run(run.runId)).toMatchObject({ status: "failed", failure: { message: 'Step "Look into it" failed: The tool broke first.' } });
+  });
+
+  it("says the step's own limit in its words", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps({ timeoutMinutes: 30 }));
+    const run = await w.start(chain.chainId);
+    w.clock.now += 31 * MIN;
+    await sweep(w);
+    await endTask(w, "task-1", { outcome: "cancelled" });
+    expect(w.run(run.runId)!.failure!.message).toBe('Step "Look into it" failed: it ran longer than 30 minutes.');
+  });
+
+  it("asks for the cancel of each attempt under its own request id", async () => {
+    const w = setupGateWorld();
+    const { cancelRequestId } = await lifecycle();
+    const chain = await w.publish(twoSteps({ retries: 1 }));
+    const run = await w.start(chain.chainId);
+    w.clock.now += 121 * MIN;
+    await sweep(w);
+    await endTask(w, "task-1", { outcome: "cancelled" });
+    w.clock.now += 121 * MIN;
+    await sweep(w);
+    expect(w.cancels.map((cancel) => cancel.requestId)).toEqual([cancelRequestId(run.runId, 1), cancelRequestId(run.runId, 2)]);
+    expect(cancelRequestId(run.runId, 1)).not.toBe(cancelRequestId(run.runId, 2));
+  });
+
+  it("does not cancel a task that ended between the sweep's read and its flag, and does not flag one that was paused meanwhile", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const ended = await w.start(chain.chainId);
+    w.clock.now += 121 * MIN;
+    w.beforeTransaction("timedOutAt", async () => { await endTask(w, "task-1", { finalReport: "Just in time." }); });
+    await sweep(w);
+    expect(w.cancels).toEqual([]);
+    expect(w.attempts(ended.runId)[0]).toMatchObject({ status: "succeeded" });
+    expect(w.attempts(ended.runId)[0]!.timedOutAt).toBeUndefined();
+    const paused = await w.start(chain.chainId);
+    w.clock.now += 121 * MIN;
+    const { onStepTaskPaused } = await runner();
+    w.beforeTransaction("timedOutAt", async () => { await onStepTaskPaused(w.deps, w.pauseEvent("task-3")); });
+    await sweep(w);
+    // (The first run's next step has been going 121 minutes too, and is asked to stop; the paused one is not.)
+    expect(w.cancels.map((cancel) => cancel.taskId)).toEqual(["task-2"]);
+    expect(w.attempts(paused.runId)[0]).toMatchObject({ status: "paused" });
+    expect(w.attempts(paused.runId)[0]!.timedOutAt).toBeUndefined();
+  });
+
+  it("goes on when the attempt it was marking the clock of ended meanwhile, and when the run moved as it was rescheduled", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId);
+    const { onStepTaskPaused } = await runner();
+    await onStepTaskPaused(w.deps, w.pauseEvent("task-1"));
+    w.clock.now += 6 * MIN;
+    w.beforeTransaction("timeoutBase", async () => { await endTask(w, "task-1", { finalReport: "Done." }); });
+    expect(await sweep(w)).toEqual({ examined: 1, failed: 0 });
+    const other = await w.start(chain.chainId);
+    w.clock.now += 6 * MIN;
+    w.beforeTransaction("OPEN_CHAIN_RUN", () => { w.touchRun(other.runId); });
+    expect((await sweep(w)).failed).toBe(0);
+    expect(w.logs.map((line) => line.event)).not.toContain("chain_sweep.reschedule_failed");
+    expect(w.run(run.runId)).toBeDefined();
+  });
+});
+
+describe("a run that drifted when a gate times out", () => {
+  it("still marks the gate's attempt timed out when the chain's count is already 0", async () => {
+    const w = setupGateWorld();
+    const { run, chain } = await w.runAtGate();
+    w.db.set({ ...w.db.get(chainKey(ORG_A, chain.chainId, "META"))!, openRuns: 0 });
+    w.clock.now += 73 * HOUR;
+    await expireApprovals(w.deps, w.clock.now);
+    expect(w.run(run.runId)).toMatchObject({ status: "timed_out" });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ status: "timed_out" });
+    expect(await openRunsOf(w, chain.chainId)).toBe(0);
+  });
+});
+
+describe("a task started for a run that was stopped meanwhile", () => {
+  const stopDuringStart = async (w: GateWorld, stop: () => Promise<unknown>) => {
+    const chain = await w.publish(twoSteps());
+    w.beforeTransaction("taskId", async () => { await stop(); });
+    return { chain, run: await w.start(chain.chainId, PRIYA) };
+  };
+
+  it("is asked to stop under the attempt's own cancel request id, also when the run timed out", async () => {
+    const w = setupGateWorld();
+    const { cancelRequestId } = await lifecycle();
+    const { run } = await stopDuringStart(w, async () => { w.clock.now += 169 * HOUR; await sweep(w); });
+    expect(w.run(run.runId)).toMatchObject({ status: "timed_out" });
+    expect(w.cancels).toEqual([expect.objectContaining({ taskId: "task-1", requestId: cancelRequestId(run.runId, 1) })]);
+  });
+
+  it("is left to answer for itself when it can't be asked: the start still finishes", async () => {
+    const w = setupGateWorld();
+    const { run } = await stopDuringStart(w, async () => {
+      const id = w.db.find((item) => item.entityType === "CHAIN_RUN")[0]!.runId as string;
+      await (await lifecycle()).cancelChainRun(w.deps, callerOf(PRIYA), id, { requestId: randomUUID() });
+      w.hooks.cancelFails.push(new Error("the worker is not reachable"));
+    });
+    expect(w.run(run.runId)).toMatchObject({ status: "cancelled" });
+    expect(w.logs.map((line) => line.event)).toContain("chain_run.abandoned_task_not_cancelled");
+  });
+});
+
+describe("an approval made for a gate the run did not enter, in more detail", () => {
+  const raceWith = async (w: GateWorld, then: (runId: string) => void) => {
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const run = await w.start(chain.chainId, PRIYA);
+    w.beforeTransaction("gate_waiting", () => { then(run.runId); });
+    await w.endLatest({ branch: "fix" });
+    const approval = w.db.find((item) => item.entityType === "APPROVAL" && (item.subject as { kind?: string } | undefined)?.kind === "chain_gate")[0]!;
+    return { run, approval };
+  };
+
+  it("is closed, with the words of why, when the run moved on to another step in the gate's place", async () => {
+    const w = setupGateWorld();
+    const { approval } = await raceWith(w, (runId) => {
+      const meta = runItem(w, runId);
+      w.db.set({ ...meta, currentSeq: 2, version: (meta.version as number) + 1 });
+      w.db.set({ ...chainRunKey(ORG_A, runId, stepSk(2)), entityType: "CHAIN_RUN_STEP", orgId: ORG_A, runId, seq: 2, stepId: "fix", stepName: "Fix it", kind: "agent", attempt: 1, status: "running", inputDigest: "x", startedAt: new Date(w.clock.now).toISOString() });
+    });
+    expect(approval).toMatchObject({ status: "EXPIRED", closedReason: "The run moved on before this gate opened." });
+  });
+
+  it("is kept when the run moved on to this very gate, entered by someone else under the same approval", async () => {
+    const w = setupGateWorld();
+    const { approval } = await raceWith(w, (runId) => {
+      const meta = runItem(w, runId);
+      const approvalId = w.db.find((item) => item.entityType === "APPROVAL")[0]!.approvalId as string;
+      w.db.set({ ...meta, currentSeq: 2, status: "waiting", version: (meta.version as number) + 1 });
+      w.db.set({ ...chainRunKey(ORG_A, runId, stepSk(2)), entityType: "CHAIN_RUN_STEP", orgId: ORG_A, runId, seq: 2, stepId: "approve_fix", stepName: "Approve the fix", kind: "gate", attempt: 1, status: "waiting", approvalId, inputDigest: "x", startedAt: new Date(w.clock.now).toISOString() });
+    });
+    expect(approval).toMatchObject({ status: "PENDING" });
+  });
+
+  it("does not make the lost race an error when it can't be closed", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const run = await w.start(chain.chainId, PRIYA);
+    const { cancelChainRun } = await lifecycle();
+    w.beforeTransaction("gate_waiting", async () => { await cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId: randomUUID() }); });
+    w.beforeTransaction("closedReason", () => { throw new Error("the table is unavailable"); });
+    await expect(w.endLatest({ branch: "fix" })).resolves.toBeUndefined();
+    expect(w.logs.map((line) => line.event)).toContain("chain_run.abandoned_gate_not_closed");
+  });
+});
+
+describe("closing an approval, when the record changes under the close", () => {
+  it.each([
+    ["is no longer a step approval", { kind: "write" }],
+    ["is another run's gate", { subject: { kind: "chain_gate", chainRunId: "crn_zzzzzzzzzzzzzzzzzzzz", seq: 2 } }],
+    ["is another org's", { orgId: ORG_B }],
+  ])("leaves a record that %s between its read and its write", async (_name, change) => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate(PRIYA);
+    const { closeStepApproval } = await lifecycle();
+    w.beforeTransaction("closedReason", () => { w.db.set({ ...w.db.get(approvalKey(ORG_A, approvalId))!, ...change }); });
+    expect(await closeStepApproval(w.deps, ORG_A, run.runId, approvalId, "x")).toBe(false);
+    expect(w.db.get(approvalKey(ORG_A, approvalId))!.closedBy).toBeUndefined();
+    expect(w.db.get(approvalKey(ORG_A, approvalId))!.status).toBe("PENDING");
+  });
+});
+
+describe("finishing an ending, in more detail", () => {
+  it("does not ask for a cancel again when the ending is already finished", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    const requestId = randomUUID();
+    const { cancelChainRun } = await lifecycle();
+    await cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId });
+    await cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId });
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(w.cancels).toHaveLength(1);
+  });
+
+  it("drops an item that is not the run's own, when the run has ended and its own item is gone, and when both are there", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const one = await w.start(chain.chainId);
+    const two = await w.start(chain.chainId);
+    for (const run of [one, two]) w.db.set({ ...runItem(w, run.runId), status: "failed", endedAt: new Date(w.clock.now).toISOString() });
+    const staleKey = (runId: string) => openChainRunKey(new Date(w.clock.now - MIN).toISOString(), ORG_A, runId);
+    const ownOne = openChainRunKey(one.dueAt, ORG_A, one.runId);
+    w.db.delete(ownOne.pk, ownOne.sk);
+    for (const run of [one, two]) w.db.set({ ...staleKey(run.runId), entityType: "OPEN_CHAIN_RUN", orgId: ORG_A, runId: run.runId });
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(w.openItems()).toEqual([]);
+    // Only the run that still had its own item gave a place back.
+    expect(await openRunsOf(w, chain.chainId)).toBe(1);
+  });
+
+  it("gives one place back when another finisher gets in first, whichever of the two is quicker", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    await w.start(chain.chainId, PRIYA);
+    const { cancelChainRun } = await lifecycle();
+    w.hooks.cancelFails.push(agentXError("RUNTIME_UNAVAILABLE", "the worker is not reachable"));
+    const requestId = randomUUID();
+    await refusal(cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId }));
+    expect(await openRunsOf(w, chain.chainId)).toBe(2);
+    // The sweep's finishing is about to commit when the same request finishes it first.
+    w.beforeTransaction('"openRuns"', async () => { await cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId }); });
+    await sweep(w);
+    expect(await openRunsOf(w, chain.chainId)).toBe(1);
+  });
+});
+
+describe("cancelling, in more detail", () => {
+  const cancelAs = async (w: GateWorld, developerId: string, runId: string, requestId: string = randomUUID()) => (await lifecycle()).cancelChainRun(w.deps, callerOf(developerId), runId, { requestId });
+
+  it("stops a paused step too", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    const { onStepTaskPaused } = await runner();
+    await onStepTaskPaused(w.deps, w.pauseEvent("task-1"));
+    await cancelAs(w, PRIYA, run.runId);
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "cancelled" });
+    expect(w.run(run.runId)).toMatchObject({ status: "cancelled" });
+  });
+
+  it("answers CHAIN_RUN_CLOSED, and does not end it again, when the run ended while the cancel was written", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    w.beforeTransaction("cancelledBy", async () => { await failTask(w, "task-1", "Broke"); });
+    expect((await refusal(cancelAs(w, PRIYA, run.runId)))?.code).toBe("CHAIN_RUN_CLOSED");
+    expect(w.run(run.runId)).toMatchObject({ status: "failed" });
+    expect(w.cancels).toEqual([]);
+  });
+
+  it("gives up with a busy answer when the run keeps changing under the cancel, and leaves it running", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    w.beforeTransaction("cancelledBy", () => { w.touchRun(run.runId); }, 3);
+    expect((await refusal(cancelAs(w, PRIYA, run.runId)))?.code).toBe("WORKSPACE_BUSY");
+    expect(w.run(run.runId)).toMatchObject({ status: "running" });
+  });
+
+  it("answers a request that is already being answered with its outcome, once", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    const requestId = randomUUID();
+    w.beforeTransaction("cancelledBy", async () => { await cancelAs(w, PRIYA, run.runId, requestId); });
+    expect((await cancelAs(w, PRIYA, run.runId, requestId)).status).toBe("cancelled");
+    expect(w.cancels).toHaveLength(1);
+    expect(await openRunsOf(w, chain.chainId)).toBe(0);
+  });
+
+  it("wants a request id that is a UUID", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    expect((await refusal(cancelAs(w, PRIYA, run.runId, "not-a-uuid")))?.code).toBe("CONFIG_INVALID");
+    expect(w.run(run.runId)).toMatchObject({ status: "running" });
+  });
+
+  it("lets a maintainer, and not the person nobody sees, stop a run that an event started", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const { startChainRun } = await runner();
+    const started = await startChainRun(w.deps, { system: "event", owner: { developerId: PRIYA } }, {
+      orgId: ORG_A, chainId: chain.chainId, project: "web", origin: "event",
+      startedBy: { kind: "event", triggerId: "ctr_aaaaaaaaaaaaaaaaaaaa", eventKey: "sentry:evt-1", source: "sentry", type: "issue.created", title: "Refund errors" },
+      trigger: { eventKey: "sentry:evt-1", source: "sentry", type: "issue.created", subject: { kind: "alert", title: "Refund errors" } }, requestId: randomUUID(),
+    } as never);
+    expect((await refusal(cancelAs(w, CARL, started.runId)))?.code).toBe("FORBIDDEN");
+    expect((await cancelAs(w, MAX, started.runId)).status).toBe("cancelled");
+    expect(w.cancels.map((cancel) => cancel.owner.developerId)).toEqual([PRIYA]);
+  });
+});
+
+describe("the sweep recovers a lost end, in more detail", () => {
+  it("takes the branch the task chose, not only its report", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const run = await w.start(chain.chainId, PRIYA);
+    w.db.set({ ...taskEndKey("task-1"), entityType: "TASK_END", orgId: ORG_A, outcome: "succeeded", handlersTold: 0, done: false });
+    setAgentRun(w, "task-1", { state: "COMPLETE", finalReport: "The cause is in our code.", branch: "fix" });
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "succeeded", branch: { id: "fix", fellBack: false } });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ kind: "gate", status: "waiting" });
+  });
+
+  it("does nothing for an end record with no outcome, or for a task that is another org's", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    w.db.set({ ...taskEndKey("task-1"), entityType: "TASK_END", orgId: ORG_A, handlersTold: 0, done: false });
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(w.attempts(run.runId)).toMatchObject([{ status: "running" }]);
+    w.db.set({ ...taskEndKey("task-1"), entityType: "TASK_END", orgId: ORG_A, outcome: "succeeded", handlersTold: 0, done: false });
+    w.db.set({ ...w.db.get({ pk: "DEVTASK#task-1", sk: "META" })!, orgId: ORG_B });
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(w.attempts(run.runId)).toMatchObject([{ status: "running" }]);
+  });
+});
+
+describe("how often a gate is looked at", () => {
+  it("looks at a gate with the default time every half hour, however long since it opened", async () => {
+    const w = setupGateWorld();
+    const { run } = await w.runAtGate();
+    const start = w.clock.now;
+    w.clock.now = start + 6 * MIN;
+    await sweep(w);
+    w.clock.now = start + 40 * MIN;
+    await sweep(w);
+    expect(w.run(run.runId)!.dueAt).toBe(new Date(start + 70 * MIN).toISOString());
+  });
+});
+
+describe("POST /v1/app/chain-runs/{id}/cancel, in more detail", () => {
+  const request = (path: string, body: unknown) => ({ method: "POST", path, requestId: "r", headers: {}, body: JSON.stringify(body) });
+  const call = (deps: GateWorld["deps"], developerId: string, path: string, body: unknown) => routeChainRequest(deps, callerOf(developerId), request(path, body), new URL(`https://cell.example.com${path}`)) as Promise<{ run: Record<string, unknown> }>;
+
+  it("is not a route with more in its path", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    expect((await refusal(call(w.deps, PRIYA, `/v1/app/chain-runs/${run.runId}/cancel/now`, { requestId: randomUUID() })))?.code).toBe("NOT_FOUND");
+    expect(w.run(run.runId)).toMatchObject({ status: "running" });
+  });
+
+  it("answers 'not set up' where there are no chain runs, and an id that is no run's before the body is read", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    const bare = { ...w.deps } as Record<string, unknown>;
+    delete bare["chainRuns"];
+    expect(await refusal(call(bare as never, PRIYA, `/v1/app/chain-runs/${run.runId}/cancel`, { requestId: randomUUID() }))).toEqual({ code: "NOT_FOUND", message: "chain runs are not set up in this deployment" });
+    expect((await refusal(call(w.deps, PRIYA, "/v1/app/chain-runs/nope/cancel", {})))?.code).toBe("NOT_FOUND");
+  });
+
+  it("shows the run as its starter is shown it, with the end", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    const reply = await call(w.deps, PRIYA, `/v1/app/chain-runs/${run.runId}/cancel`, { requestId: randomUUID() });
+    expect(reply.run).toMatchObject({ runId: run.runId, chainId: chain.chainId, project: "web", status: "cancelled", startedBy: { kind: "member", developerId: PRIYA }, endedAt: new Date(w.clock.now).toISOString() });
   });
 });
