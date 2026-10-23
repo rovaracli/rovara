@@ -90,7 +90,7 @@ export const withoutExcerpt = (anchor: SessionAnchor): SessionAnchor => ({ targe
  * it). The view is built once, and only when some message is pinned; pass `targets` when they were read already.
  */
 export async function presentMessages(
-  deps: AnchorDependencies, session: AgentSessionRecord, caller: { owner: boolean }, messages: readonly SessionMessage[], targets?: readonly SessionAnchorRef[] | undefined,
+  deps: AnchorDependencies, session: AgentSessionRecord, caller: { owner: boolean }, messages: readonly SessionMessage[], targets?: readonly SessionAnchorRef[],
 ): Promise<SessionMessage[]> {
   if (!messages.some((message) => message.anchor !== undefined)) return [...messages];
   const now = targets ?? await anchorTargetsFor(deps, session, caller);
