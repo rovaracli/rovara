@@ -49,6 +49,7 @@ import { monthSlots, taskPageStep } from "../aws/developer-tasks.js";
 import { deriveTaskStatus, recentTaskEvents, taskKey, taskPointerKey, type DeveloperTaskRecord, type OperationFacts, type StoredEvent } from "../developer/task-records.js";
 import { effectiveOwnerId } from "./access.js";
 import { notifySessionChange } from "./notice-sink.js";
+import { settleSteerDeliveriesFor } from "./steer.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
 type Item = Record<string, unknown>;
@@ -478,6 +479,13 @@ async function ensureDrainCursor(deps: SummaryDependencies, day: string): Promis
  * never reopens, and keeps the status it ended with while its cost catches up.
  */
 export async function refreshSessionSummary(deps: SummaryDependencies, orgId: OrgId, sessionId: SessionId): Promise<"unchanged" | "updated"> {
+  const result = await refreshSummaryOnly(deps, orgId, sessionId);
+  // A step may have taken a message a person sent to the agent since the last look (Task 11a): the session is told, once. Never a reason for a refresh to fail.
+  await settleSteerDeliveriesFor(deps, orgId, sessionId);
+  return result;
+}
+
+async function refreshSummaryOnly(deps: SummaryDependencies, orgId: OrgId, sessionId: SessionId): Promise<"unchanged" | "updated"> {
   const store = new AgentSessionStore(deps);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const session = await store.get(orgId, sessionId);

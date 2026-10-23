@@ -219,8 +219,8 @@ describe("a comment on a session", () => {
     expect(f.w.db.find((item) => /NOTE#|COMMENT#/.test(String(item.sk)))).toHaveLength(0);
     const keys = f.w.db.transactions().flatMap((entries) => entries.map((entry) => JSON.stringify(entry)));
     expect(keys.some((entry) => entry.includes("DEVTASK#"))).toBe(false);
-    // Steering is Task 11a's: asking for it here is not a comment.
-    expect(await code(sendSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "steer", text: "Use v2" }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // A message to the agent is not a comment: it needs "can use" (Task 11a), which a commenter at view does not have.
+    expect(await code(sendSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "steer", text: "Use v2" }))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
     expect(f.messageItems()).toHaveLength(1);
   });
 
@@ -790,7 +790,7 @@ describe("the routes", () => {
     expect(await code(call(ARJUN, "POST", base, { ...good, kind: "shout" }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(call(ARJUN, "POST", base, { ...good, requestId: "nope" }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(call(ARJUN, "POST", base, { ...good, text: 5 }))).toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await code(call(ARJUN, "POST", base, { ...good, kind: "steer" }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(await code(call(ARJUN, "POST", base, { ...good, kind: "steer" }))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
     expect(await code(call(ARJUN, "PUT", base, good))).toMatchObject({ code: "NOT_FOUND" });
     expect(await code(call(ARJUN, "POST", `${base}/msg_00000000000000000000`, good))).toMatchObject({ code: "NOT_FOUND" });
     expect(await code(call(ARJUN, "PATCH", base, { rev: 1, text: "x" }))).toMatchObject({ code: "NOT_FOUND" });

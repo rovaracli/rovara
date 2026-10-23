@@ -509,8 +509,11 @@ export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: 
   return { pk: orgScoped(orgId, `SESSION_REQUEST#${keyPart(developerId, "a developer id")}`), sk: keyPart(requestId, "a request id") };
 }
 
-/** The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window: `<kind>#<developerId>` in the session's rate partition. */
-export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change"): OrgKey {
+/**
+ * The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window, or their messages to the agent
+ * ("steer") in the current hour: `<kind>#<developerId>` in the session's rate partition. `steer_all` counts every person's messages to the agent on the session (its `developerId` is the word `session`).
+ */
+export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all"): OrgKey {
   return { pk: orgScoped(orgId, `SESSION_RATE#${keyPart(sessionId, "a session id")}`), sk: `${kind}#${keyPart(developerId, "a developer id")}` };
 }
 

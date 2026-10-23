@@ -14,6 +14,7 @@ import { readSessionEvents } from "./events.js";
 import { followSession, recordPresence, unfollowSession } from "./followers.js";
 import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage, editSessionMessage, listSessionMessages, parseMessageBody, sendSessionMessage } from "./messages.js";
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadDependencies } from "./read.js";
+import type { ChainSteerReads } from "./steer.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
 import { readChanges } from "../realtime/changes.js";
 import type { RealtimeConfig } from "../realtime/publish.js";
@@ -26,6 +27,8 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
   realtime?: RealtimeTokenDependencies;
   /** The events API a presence notice is posted to (Task 9); without it a heartbeat is kept and nothing is posted. */
   realtimePublish?: RealtimeConfig | undefined;
+  /** PLAN4: what a chain run is doing now, for a message to a chain (Task 11a). Without it a message to a chain session is refused before it is written. */
+  chainSteer?: ChainSteerReads | undefined;
 }
 
 /** The caller of a route. */
@@ -125,8 +128,8 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     return readSessionEvents(read, caller, sessionId, { after: url.searchParams.get("after") ?? undefined });
   }
   if (messages !== undefined) {
-    // Comments (Task 10). A message to the agent is not a comment: it is refused here until Task 11a.
-    const messageDeps = { ...read, realtimePublish: deps.realtimePublish };
+    // Comments (Task 10) and messages to the agent (Task 11a: `kind: "steer"`, which needs "can use").
+    const messageDeps = { ...read, realtimePublish: deps.realtimePublish, chainSteer: deps.chainSteer };
     if (rawMessageId === undefined) {
       if (method === "GET") return listSessionMessages(messageDeps, caller, sessionId, { after: url.searchParams.get("after") ?? undefined });
       if (method === "POST") return sendSessionMessage(messageDeps, caller, sessionId, parseMessageBody(SendBodySchema, jsonBody(request)));

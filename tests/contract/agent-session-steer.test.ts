@@ -3,6 +3,7 @@
 // A message never decides an approval or a gate, never changes tools, permissions or budget, is redacted before it is stored, is delivered once (a repeated request is the same
 // message), and is answered with a clear code when the session has ended or is paused. Nothing the person wrote goes into a log.
 import { randomUUID } from "node:crypto";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   AppNoteSchema,
@@ -17,10 +18,13 @@ import {
   type AgentSessionRecord,
 } from "../../packages/contracts/src/index.js";
 import { sendSessionMessage, editSessionMessage, deleteSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
-import { settleSteerDeliveries } from "../../packages/broker/src/agent-sessions/steer.js";
+import { deliverSteer, settleSteerDeliveries } from "../../packages/broker/src/agent-sessions/steer.js";
+import { projectSessions } from "../../packages/broker/src/agent-sessions/projector.js";
+import { marshall } from "@aws-sdk/util-dynamodb";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { classifyWrite, type ClassifyWriteInput } from "../../packages/broker/src/agents/write-class.js";
 import { readWorkflowThreadNotes, recordSessionNote, recordWorkflowThreadNote, threadNotesPromptSection } from "../../packages/broker/src/aws/developer-tasks.js";
+import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
@@ -173,7 +177,10 @@ describe("a message to the agent on a Rovara Code workflow task", () => {
   it("writes no log line holding the message when the write fails, and never fails the message over its event", async () => {
     const f = steerWorld();
     f.w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("NOTE#msg_"), error: { name: "InternalServerError", message: "use the v2 endpoint failed" }, times: 10 });
-    await code(f.send(ARJUN, "use the v2 endpoint"));
+    const refused = await code(f.send(ARJUN, "use the v2 endpoint"));
+    expect(refused).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "Your message was saved but is not with the agent yet. Send it again to finish." });
+    // The failure was logged (so the check below means something), with the ids and the error's name, and none of the message or the error's words.
+    expect(f.logs).toContainEqual({ event: "agent_session.steer_delivery_failed", orgId: ORG_A, sessionId: f.sid, messageId: String(f.messageItems()[0]!.messageId), error: "InternalServerError" });
     expect(JSON.stringify(f.logs)).not.toContain("v2 endpoint");
   });
 
@@ -183,12 +190,16 @@ describe("a message to the agent on a Rovara Code workflow task", () => {
     expect(await code(f.send(ARJUN, "x".repeat(2_001)))).toEqual({ code: "CONFIG_INVALID", message: "Keep messages to the agent under 2,000 characters." });
     expect(f.messageItems()).toHaveLength(0);
     expect(f.notes()).toHaveLength(0);
-    // An emoji pair is two UTF-16 units: the note keeps the message whole or marks it cut, never splits a pair.
-    const long = await f.send(ARJUN, "😀".repeat(1_500));
+    // A message that fits as written but grows when redacted, with emoji in it (two UTF-16 units each): the note is cut to its limit without splitting a pair, and marked.
+    const raw = Array.from({ length: 250 }, () => "😀pwd=x").join("\n");
+    expect(raw.length).toBeLessThanOrEqual(2_000);
+    const long = await f.send(ARJUN, raw);
+    expect([...long.text]).toHaveLength(2_000);
     const note = f.notes()[0]!;
-    expect(long.text).toBe("😀".repeat(1_500));
-    expect(String(note.text)).toMatch(/^(?:😀)+$/u);
-    expect(note.truncated).toBe(String(note.text).length < long.text.length);
+    expect(String(note.text).length).toBeLessThanOrEqual(2_000);
+    expect(String(note.text)).not.toMatch(/[\uD800-\uDBFF]$/u);
+    expect(note.truncated).toBe(true);
+    expect(long.text.startsWith(String(note.text))).toBe(true);
   });
 });
 
@@ -223,7 +234,7 @@ describe("who may send a message to the agent", () => {
   it("takes the level live on every call: a share taken back stops the next message", async () => {
     const f = steerWorld();
     await f.send(ARJUN, "first");
-    f.w.db.delete(agentSessionKey(ORG_A, f.sid, "SHARE#MEMBER#" + ARJUN));
+    f.w.db.delete(agentSessionKey(ORG_A, f.sid, `SHARE#MEMBER#${ARJUN}`));
     expect(await code(f.send(ARJUN, "second"))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
     expect(f.notes()).toHaveLength(1);
   });
@@ -351,7 +362,7 @@ describe("what a message cannot do", () => {
 
   it("leaves the write class of the agent's own next call alone: a comment copying the command is still consequential", () => {
     const tool = { connector: "linear", type: "linear", upstreamName: "create_comment", presentedName: "linear__create_comment", access: "write", facts: { connector: "linear", upstreamName: "create_comment", access: "write", itemArguments: [] } } as unknown as ClassifyWriteInput["tool"];
-    const classify = (body: string) => classifyWrite({ tool, args: { issueId: "1", body }, rules: { alwaysAsk: [] }, autonomy: "run", allowMentions: false, ownItems: new Set<string>(), labelNames: new Map(), repositoryRule: { consequential: false } } as ClassifyWriteInput).class;
+    const classify = (body: string) => classifyWrite({ tool, args: { issueId: "1", body }, rules: { alwaysAsk: [] }, autonomy: "run", allowMentions: false, ownItems: new Set<string>(), labelNames: new Map(), repositoryRule: { consequential: false } }).class;
     expect(classify("/deploy production")).toBe("consequential");
     expect(classify(`Noted: ${ATTACK}`)).toBe("consequential");
     expect(classify("Looks good to me, thanks for the report.")).not.toBe("consequential");
@@ -412,7 +423,7 @@ describe("a task that cannot take a message", () => {
     const f = steerWorld();
     f.w.db.set({ ...f.task(), threadNoteCount: WORKFLOW_THREAD_NOTES_MAX - 1, share: { teamId: "T0TEAM001", channelId: "C0CHAN001", threadTs: "1695500000.000021", mode: "continue", sharedAt: "2026-10-22T08:00:00.000Z" } });
     await f.send(ARJUN, "the last place");
-    const reply = await recordWorkflowThreadNote({ documentClient: f.w.db, tableName: "state", actions: { transact: async () => undefined } as never, now: () => f.w.clock.now }, {
+    const reply = await recordWorkflowThreadNote({ documentClient: f.w.db, tableName: "state", actions: { transact: async (items: unknown[]) => { await f.w.db.send(new TransactWriteCommand({ TransactItems: items as never })); } } as never, now: () => f.w.clock.now }, {
       taskId: f.made.taskId, thread: { teamId: "T0TEAM001", channelId: "C0CHAN001", threadTs: "1695500000.000021" }, userId: "U0TEAMMATE1", messageTs: "1695500009.000001", eventId: "EvX", text: "one too many",
     });
     expect(reply).toEqual({ outcome: "refused" });
@@ -442,7 +453,8 @@ describe("a message to a chain", () => {
     const { f, calls } = chain({ kind: "gate" });
     const message = await f.send(MAX, "hold on");
     expect(message.delivery).toMatchObject({ state: "not_delivered", reason: GATE_REASON });
-    expect(calls).toEqual([{ orgId: ORG_A, chainRunId: f.sid }]);
+    // Asked before the message is written and again to deliver it, each time for this chain run of this org.
+    expect(calls).toEqual([{ orgId: ORG_A, chainRunId: f.sid }, { orgId: ORG_A, chainRunId: f.sid }]);
     expect(f.events().find((item) => item.type === "steer_not_delivered")).toMatchObject({ text: `The agent can't take messages right now: ${GATE_REASON}.` });
   });
 
@@ -482,6 +494,17 @@ describe("a message to a chain", () => {
     const foreign = f.w.seedSession({ kind: "task", taskOrgId: ORG_B });
     f.w.db.set({ ...f.w.db.get(taskKey(foreign.taskId))!, workflow: WORKFLOW, chain: { chainRunId: f.sid, stepId: "s" }, sessionId: undefined });
     await check(foreign.taskId);
+  });
+
+  it("is not delivered to a step that has just ended, and is refused before anything is written for a step that is an agent run", async () => {
+    const holder = { taskId: "" };
+    const f = steerWorld({ kind: "chain", chainSteer: { current: async () => ({ kind: "step", taskId: holder.taskId }) } });
+    const step = f.w.seedSession({ kind: "task" });
+    f.w.db.set({ ...f.w.db.get(taskKey(step.taskId))!, workflow: WORKFLOW, closedAt: "2026-10-22T09:00:00.000Z", chain: { chainRunId: f.sid, stepId: "step-1" }, sessionId: undefined });
+    holder.taskId = step.taskId;
+    expect((await f.send(MAX, "too late")).delivery).toMatchObject({ state: "not_delivered" });
+    f.w.db.set({ ...f.w.db.get(taskKey(step.taskId))!, closedAt: undefined, workflow: undefined, agent: { agentId: "ticket-triage", name: "Ticket triage", version: 1 } });
+    expect(await code(f.send(MAX, "go"))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "Messages to this kind of session aren't available yet." });
   });
 
   it("is refused before anything is written until Plan 4's chain reads are wired", async () => {
@@ -547,9 +570,48 @@ describe("telling the session that a step took a message", () => {
     const f = steerWorld();
     const { note } = await sent(f);
     f.w.db.set({ ...f.task(), threadNotesFedThrough: note.receivedAt });
-    await refreshSessionSummary({ documentClient: f.w.db, tableName: "state", now: () => f.w.clock.now }, ORG_A, f.sid as never);
+    await refreshSessionSummary({ documentClient: f.w.db, tableName: "state", now: () => f.w.clock.now }, ORG_A, f.sid);
     expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "delivered" } });
     expect(f.events().filter((item) => item.type === "steer_delivered")).toHaveLength(1);
+  });
+
+  it("tells a chain's message as taken when its step's task changes, through the projector", async () => {
+    const holder = { taskId: "" };
+    const f = steerWorld({ kind: "chain", chainSteer: { current: async () => ({ kind: "step", taskId: holder.taskId }) } });
+    const step = f.w.seedSession({ kind: "task" });
+    f.w.db.set({ ...f.w.db.get(taskKey(step.taskId))!, workflow: WORKFLOW, chain: { chainRunId: f.sid, stepId: "step-1" }, sessionId: undefined });
+    holder.taskId = step.taskId;
+    const message = await f.send(MAX, "use the v2 endpoint");
+    const note = f.w.db.get({ pk: `DEVTASK#${step.taskId}`, sk: `NOTE#${message.messageId}` }) as { receivedAt: string };
+    f.w.db.set({ ...f.w.db.get(taskKey(step.taskId))!, threadNotesFedThrough: note.receivedAt });
+    const image = marshall(f.w.db.get(taskKey(step.taskId))!, { removeUndefinedValues: true });
+    await projectSessions([{ eventName: "MODIFY", dynamodb: { NewImage: image } }] as never, { documentClient: f.w.db, tableName: "state", now: () => f.w.clock.now, refresh: async () => "unchanged" }, { deadline: f.w.clock.now + 60_000 });
+    expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "delivered" } });
+    expect(f.events().filter((item) => item.type === "steer_delivered")).toHaveLength(1);
+  });
+
+  it("leaves a message whose note is saved as it is when the session ends, and marks one with no note not delivered", async () => {
+    const f = steerWorld();
+    const message = await f.send(ARJUN, "use the v2 endpoint");
+    f.w.db.set({ ...f.w.db.get(f.metaKey)!, endedAt: "2026-10-22T09:30:00.000Z" });
+    expect((await deliverSteer(f.deps, f.session(), message, { isOwner: false })).delivery).toMatchObject({ state: "queued" });
+    // A queued message with no note (its first try died before the note) is told it was not delivered when the session has ended.
+    f.w.db.delete({ pk: `DEVTASK#${f.made.taskId}`, sk: `NOTE#${message.messageId}` });
+    const answered = await deliverSteer(f.deps, f.session(), message, { isOwner: false });
+    expect(answered.delivery).toMatchObject({ state: "not_delivered", reason: "the session has ended" });
+    expect(f.events().find((item) => item.type === "steer_not_delivered")).toMatchObject({ text: "The agent can't take messages right now: the session has ended." });
+  });
+
+  it("answers nothing twice: a message already answered is left as it is, and a lost race for the answer returns what is stored", async () => {
+    const f = steerWorld({ workflow: false });
+    const first = await f.send(ARJUN, "hello");
+    expect(first.delivery).toMatchObject({ state: "not_delivered" });
+    // Delivering it again, from the queued copy a slow caller still holds, writes nothing new.
+    const stale = { ...first, delivery: { state: "queued" as const, at: first.createdAt } };
+    const before = f.events().length;
+    expect(await deliverSteer(f.deps, f.session(), stale, { isOwner: false })).toMatchObject({ delivery: { state: "not_delivered", reason: PLAIN_REASON } });
+    expect(f.events()).toHaveLength(before);
+    expect(await deliverSteer(f.deps, f.session(), first, { isOwner: false })).toEqual(first);
   });
 
   it("ignores a note of another session or another org's task, and a task that is not the session's", async () => {
@@ -649,6 +711,28 @@ describe("the task's notes", () => {
   });
 });
 
+describe("the route", () => {
+  it("sends a message to the agent by POST .../messages with kind steer, from the app only, and passes a chain's seam through", async () => {
+    const holder = { taskId: "" };
+    const f = steerWorld({ agentName: "Rovara Code" });
+    const deps = { ...f.deps, signInStore: f.w.signInStore, origin: "https://cell.example.com", taskView: async () => ({}) as never, chainSteer: { current: async () => ({ kind: "step" as const, taskId: holder.taskId }) } };
+    const call = (who: string, sid: string, body: unknown) => routeAgentSessionRequest(
+      deps, f.w.caller(who), { method: "POST", path: `/v1/app/sessions/${sid}/messages`, headers: {}, requestId: "r", body: JSON.stringify(body) }, new URL(`https://cell.example.com/v1/app/sessions/${sid}/messages`),
+    );
+    const sent = SessionMessageSchema.parse(await call(ARJUN, f.sid, { requestId: randomUUID(), kind: "steer", text: "Via the route" }));
+    expect(sent).toMatchObject({ kind: "steer", source: "app", delivery: { state: "queued" } });
+    expect(f.notes()).toHaveLength(1);
+    // The route takes no source: the body is strict.
+    expect(await code(call(ARJUN, f.sid, { requestId: randomUUID(), kind: "steer", text: "x", source: "linear" }))).toMatchObject({ code: "CONFIG_INVALID" });
+    const chain = f.w.seedSession({ kind: "chain" });
+    const step = f.w.seedSession({ kind: "task" });
+    f.w.db.set({ ...f.w.db.get(taskKey(step.taskId))!, workflow: WORKFLOW, chain: { chainRunId: chain.sessionId, stepId: "s" }, sessionId: undefined });
+    holder.taskId = step.taskId;
+    expect(await call(PRIYA, chain.sessionId, { requestId: randomUUID(), kind: "steer", text: "To the step" })).toMatchObject({ delivery: { state: "queued" } });
+    expect(f.w.db.find((item) => item.pk === `DEVTASK#${step.taskId}` && String(item.sk).startsWith("NOTE#"))).toHaveLength(1);
+  });
+});
+
 // ---- through the real broker: the step's own prompt
 
 describe("through the real broker", () => {
@@ -663,19 +747,18 @@ describe("through the real broker", () => {
     const begun = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     const taskId = String((begun.body.task as { taskId: string }).taskId);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string };
-    const stored = { ...record, agent: { agentId: "rovara-code", name: "Rovara Code", version: 3 }, origin: "app", startedBy: { developerId: MAYA.developerId } };
-    harness.db.set(stored);
-    const sessionId = String(await ensureTaskSession({ documentClient: harness.db, tableName: "state", now: Date.now }, stored as never, { ownerName: "Maya Chen", title: "Fix the retry bug" }));
+    const workspaceId = record.workspaceId;
+    await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
+    // The harness has no agents set up, so the task has no session yet: it gets one as a read would give it (the agent is named on the session only, never saved on the task).
+    const sessionId = String(await ensureTaskSession({ documentClient: harness.db, tableName: "state", now: Date.now }, { ...(harness.db.get(`DEVTASK#${taskId}`, "META") as object), agent: { agentId: "rovara-code", name: "Rovara Code", version: 3 }, origin: "app", startedBy: { developerId: MAYA.developerId } } as never, { ownerName: "Maya Chen", title: "Fix the retry bug" }));
     // Omar is in the org (the harness put him there); Maya gave him "can use".
-    harness.db.set({ ...agentSessionKey(TEST_ORG, sessionId, "SHARE#MEMBER#" + OMAR.developerId), entityType: "AGENT_SESSION_SHARE", orgId: TEST_ORG, sessionId, principal: { kind: "member", developerId: OMAR.developerId }, level: "use", sharedBy: { developerId: MAYA.developerId, name: "Maya Chen" }, sharedAt: "2026-10-22T08:10:00.000Z" });
+    harness.db.set({ ...agentSessionKey(TEST_ORG, sessionId, `SHARE#MEMBER#${OMAR.developerId}`), entityType: "AGENT_SESSION_SHARE", orgId: TEST_ORG, sessionId, principal: { kind: "member", developerId: OMAR.developerId }, level: "use", sharedBy: { developerId: MAYA.developerId, name: "Maya Chen" }, sharedAt: "2026-10-22T08:10:00.000Z" });
     harness.db.set({ ...orgMemberKey(TEST_ORG, OMAR.developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: OMAR.developerId, role: "member", joinedAt: "2026-10-01T00:00:00.000Z" });
     const members = new FakeProjectMembers();
     members.addProject(TEST_ORG, "payments");
     const logs: Array<Record<string, unknown>> = [];
     const deps: SessionMessageDependencies = { documentClient: harness.db, tableName: "state", now: Date.now, projectMembers: members, log: (entry) => logs.push(entry) };
     const caller = (who: { developerId: string; name: string }) => ({ developerId: who.developerId, sessionId: `s-${who.name}`, amr: "oidc", name: who.name, orgId: TEST_ORG, orgRole: "member" as const });
-    const workspaceId = record.workspaceId;
-    await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
     return { harness, taskId, sessionId, deps, caller, workspaceId, logs };
   }
 
@@ -700,7 +783,7 @@ describe("through the real broker", () => {
     expect(prompt.startsWith("You are one step inside AgentX's gated task workflow.")).toBe(true);
     // The step took it: its mark passed the note, and the session is told the next time it is refreshed.
     expect(t.harness.db.get(`DEVTASK#${t.taskId}`, "META")).toMatchObject({ threadNotesFedThrough: note.receivedAt });
-    await refreshSessionSummary({ documentClient: t.harness.db, tableName: "state", now: Date.now }, TEST_ORG, t.sessionId as never);
+    await refreshSessionSummary({ documentClient: t.harness.db, tableName: "state", now: Date.now }, TEST_ORG, t.sessionId);
     const stored = t.harness.db.get(agentSessionKey(TEST_ORG, t.sessionId, `MESSAGE#${message.messageId}`)) as { delivery: { state: string } };
     expect(stored.delivery.state).toBe("delivered");
     const events = t.harness.db.find((item) => item.pk === agentSessionKey(TEST_ORG, t.sessionId, "META").pk && item.type === "steer_delivered");
