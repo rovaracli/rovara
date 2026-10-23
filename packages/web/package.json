@@ -6,7 +6,7 @@
   "exports": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "vite build"
+    "build": "npm run build --workspace @agentx/ui && vite build"
   },
   "dependencies": {
     "@agentx/ui": "0.1.0",

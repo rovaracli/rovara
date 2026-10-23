@@ -1,0 +1,3 @@
+import type { ReactNode } from "react";
+export interface Column<Row> { key: string; title: string; render: (row: Row) => ReactNode }
+export function DataTable<Row>({ caption, columns, rows, rowKey }: { caption: string; columns: readonly Column<Row>[]; rows: readonly Row[]; rowKey: (row: Row) => string }) { return <div className="rv-table-wrap"><table className="rv-table"><caption>{caption}</caption><thead><tr>{columns.map(column => <th key={column.key} scope="col">{column.title}</th>)}</tr></thead><tbody>{rows.map(row => <tr key={rowKey(row)}>{columns.map(column => <td key={column.key}>{column.render(row)}</td>)}</tr>)}</tbody></table></div>; }

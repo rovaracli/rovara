@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor, act } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { userEvent } from "@testing-library/user-event";
+import { Select, Checkbox, Switch, TextField, TextArea, Tooltip, Card, Banner, EmptyState, Skeleton, DataTable, RelativeTime, Toast, VisuallyHidden } from "../../packages/ui/src/index.js";
 import { Button } from "../../packages/ui/src/design/Button.js";
 import { IconButton } from "../../packages/ui/src/design/IconButton.js";
 import { Dialog } from "../../packages/ui/src/design/Dialog.js";
@@ -51,10 +52,34 @@ for (const theme of ["light", "dark"] as const) {
    await user.keyboard("{Home}"); expect(screen.getByRole("tabpanel").textContent).toBe("Plan evidence");
    await expectNoAxeViolations(document.body);
   });
+  it("provides named form controls, readable tables and quiet feedback", async () => {
+   const onChoice = vi.fn(), onChecked = vi.fn(), onSwitch = vi.fn();
+   renderUi(h(Announcer, { children: h("section", { "aria-label": "Shared controls" },
+    h(TextField, { label: "Workflow name", defaultValue: "Payments expert", hint: "Name the shared method" }),
+    h(TextArea, { label: "Instructions", defaultValue: "Use the existing tests" }),
+    h(Select, { label: "Project", options: [{ value: "payments", label: "Payments" }], onValueChange: onChoice }),
+    h(Checkbox, { label: "Ask before external writes", checked: false, onCheckedChange: onChecked }),
+    h(Switch, { label: "Allow comments", checked: false, onCheckedChange: onSwitch }),
+    h(Tooltip, { text: "Permission details", children: h(Button, null, "More information") }),
+    h(Card, null, h("p", null, "A scoped work surface")), h(Banner, { title: "Waiting for review" }),
+    h(EmptyState, { title: "No work needs you", description: "You can return when a decision is needed" }),
+    h(Skeleton, { label: "Loading session" }),
+    h(DataTable<{ name: string }>, { caption: "Shared workflows", columns: [{ key: "name", title: "Name", render: row => row.name }], rows: [{ name: "Payments expert" }], rowKey: row => row.name }),
+    h(RelativeTime, { at: "2026-10-23T12:00:00Z" }), h(Toast, { message: "Draft saved", onDismiss: vi.fn() }), h(VisuallyHidden, null, "Additional context")
+   ) }), { theme });
+   const user = userEvent.setup();
+   await user.click(screen.getByRole("checkbox", { name: "Ask before external writes" }));expect(onChecked).toHaveBeenCalledWith(true);
+   await user.click(screen.getByRole("switch", { name: "Allow comments" }));expect(onSwitch).toHaveBeenCalledWith(true);
+   screen.getByRole("combobox", { name: "Project" }).focus();await user.keyboard("{ArrowDown}{Enter}");expect(onChoice).toHaveBeenCalledWith("payments");
+   expect(screen.getByRole("table", { name: "Shared workflows" })).toBeTruthy();
+   expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+   await expectNoAxeViolations(document.body);
+  });
   it("names statuses, exposes busy state and limits the participant stack", async () => {
    renderUi(h("section", null, h(Button, { busy: true }, "Saving"), h(StatusDot, { status: "needs_person", words: "Needs your decision" }), h(AvatarStack, { people: Array.from({ length: 8 }, (_, index) => ({ name: `Person ${String(index)}`, developerId: String(index) })), total: 8 })), { theme });
    expect(screen.getByRole("button").getAttribute("aria-busy")).toBe("true");
-   expect(screen.getByRole("status", { name: "Needs your decision" })).toBeTruthy();
+   expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+   expect(screen.getByRole("img", { name: "Needs your decision" })).toBeTruthy();
    expect(document.querySelectorAll("[data-avatar]")).toHaveLength(5);
    expect(screen.getByText("+3")).toBeTruthy();
    await expectNoAxeViolations(document.body);
@@ -63,16 +88,20 @@ for (const theme of ["light", "dark"] as const) {
 }
 it("coalesces announcements and enforces the five-second quiet interval", async () => {
  vi.useFakeTimers();
- function Sender() { const announce = useAnnounce(); return h(Button, { onClick: () => { announce("Task updated"); announce("Comment sent"); announce("Review ready"); } }, "Send updates"); }
+ let burst = 0;
+ function Sender() { const announce = useAnnounce(); return h(Button, { onClick: () => { burst++; announce(`Task updated ${String(burst)}`); announce(`Comment sent ${String(burst)}`); announce(`Review ready ${String(burst)}`); } }, "Send updates"); }
  renderUi(h(Announcer, null, h(Sender)));
  screen.getByRole("button").click();
  await act(() => vi.advanceTimersByTimeAsync(1000));
  expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
  const region = document.querySelector('[aria-live="polite"]')!;
- expect(region.textContent).toContain("Review ready");
+ expect(region.textContent).toContain("Review ready 1");
  screen.getByRole("button").click();
  await act(() => vi.advanceTimersByTimeAsync(1000));
- expect(region.textContent).toContain("Review ready");
+ expect(region.textContent).toContain("Review ready 1");
+ expect(region.textContent).not.toContain("Review ready 2");
+ await act(() => vi.advanceTimersByTimeAsync(4000));
+ expect(region.textContent).toContain("Review ready 2");
 });
 it("stores the explicit theme through the host and updates the root", async () => {
  const storage = { get: vi.fn(() => undefined), set: vi.fn() };
@@ -85,7 +114,7 @@ it("stores the explicit theme through the host and updates the root", async () =
 it("clears secret input after submission without displaying or persisting its value", async () => {
  const submit = vi.fn(async () => undefined);
  renderUi(h(SecretField, { label: "Provider key", onSubmit: submit, submitLabel: "Save key" }));
- const input = screen.getByLabelText("Provider key") as HTMLInputElement;
+ const input = screen.getByLabelText<HTMLInputElement>("Provider key");
  const user = userEvent.setup(); await user.type(input, "test-only-private-value"); await user.click(screen.getByRole("button", { name: "Save key" }));
  await waitFor(() => expect(input.value).toBe(""));
  expect(input.type).toBe("password"); expect(document.body.textContent).not.toContain("test-only-private-value");
@@ -94,4 +123,18 @@ it("clears secret input after submission without displaying or persisting its va
 it("formats only finite actual amounts and identifies estimated usage", () => {
  renderUi(h("div", null, h(Money, { usd: 12.5 }), h(Money, { usd: 1, estimated: true }), h(Money, { usd: NaN })));
  expect(screen.getByText("$12.50")).toBeTruthy(); expect(screen.getByText(/Estimated/)).toBeTruthy(); expect(screen.getByText("Unavailable")).toBeTruthy();
+});
+
+it("restores a saved theme and ignores malformed stored preferences", () => {
+ const storage = { get: () => "dark", set: vi.fn() };
+ renderUi(h(ThemeProvider, { host: { storage }, children: h("p", null, "Stored theme") }));
+ expect(document.documentElement.dataset.theme).toBe("dark");cleanup();
+ renderUi(h(ThemeProvider, { host: { storage: { get: () => "invalid", set: vi.fn() } }, children: h("p", null, "System theme") }));
+ expect(document.documentElement.dataset.theme).toBeUndefined();
+});
+it("also clears a secret after a rejected submission and hides internal errors", async () => {
+ renderUi(h(SecretField, { label: "Secret value", onSubmit: async () => { throw new Error("internal details"); } }));
+ const input = screen.getByLabelText<HTMLInputElement>("Secret value");const user = userEvent.setup();
+ await user.type(input, "test-only-value");await user.click(screen.getByRole("button", { name: "Save" }));
+ await waitFor(() => expect(input.value).toBe(""));expect(screen.getByRole("alert").textContent).not.toContain("internal details");
 });
