@@ -3330,7 +3330,7 @@ async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[] } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean } = {},
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
@@ -3383,6 +3383,8 @@ async function newWorkspacePreparation(
       ),
       // An agent-step run that looks at a pull request: the worker checks each head out, read-only, after cloning (Plan 3, Task 22).
       ...(options.checkout === undefined || options.checkout.length === 0 ? {} : { checkout: [...options.checkout] }),
+      // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
+      ...(options.readOnly === true ? { readOnly: true as const } : {}),
     },
   };
   const outbox = outboxRecord(workspace, invocation, project.runtimeBinding);
@@ -3453,7 +3455,7 @@ function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: Develope
  */
 async function heldPreparationDispatch(
   dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string,
-  options: { checkout?: readonly RunCheckout[] } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean } = {},
 ): Promise<{ workspace: WorkspaceInstance; items: TransactItems }> {
   const workspace = await requireWorkspace(dependencies, workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
@@ -3467,6 +3469,8 @@ async function heldPreparationDispatch(
       project: workerProjectDefinition(project.definition),
       repositoryGrant: issueRepositoryGrant(dependencies, project, ownerKey, workspaceId, operationId),
       ...(options.checkout === undefined || options.checkout.length === 0 ? {} : { checkout: [...options.checkout] }),
+      // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
+      ...(options.readOnly === true ? { readOnly: true as const } : {}),
     },
   };
   return { workspace, items: [{ Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };

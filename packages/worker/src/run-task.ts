@@ -189,9 +189,9 @@ async function runTask(
   // The agent's shell runs in the project's devcontainer (#121), started first: on a resumed
   // instance its containers are stopped.
   const canonicalRoot = await realpath(resolve(dependencies.rootPath));
-  // A step that reads no files does not start the project's devcontainer (its lifecycle commands are the repository's): it runs
-  // in the task sandbox, which also keeps R56's file-tool containment for it.
-  const devcontainer = step?.kind === "agent" && step.workspace === "none" ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
+  // No agent step starts the project's devcontainer (its lifecycle commands are the repository's, and a read step's checkout may be a
+  // contributor's pull request head): it runs in the task sandbox, which also keeps R56's file-tool containment for it.
+  const devcontainer = step?.kind === "agent" ? undefined : preparedDevcontainerTarget(canonicalRoot, manifest);
   let bashOperations: BashOperations | undefined;
   let containerPaths: DevcontainerPaths | undefined;
   let devcontainerCli: DevcontainerCli | undefined;

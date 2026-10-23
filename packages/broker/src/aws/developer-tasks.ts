@@ -1687,7 +1687,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
-  const preparation = await deps.actions.preparation(identity, project, request.requestId, prepared === undefined || prepared.checkout.length === 0 ? undefined : { checkout: prepared.checkout });
+  const preparation = await deps.actions.preparation(identity, project, request.requestId, prepared?.runner !== "agent_steps" ? undefined : { ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }), readOnly: true });
   const workspaceId = preparation.workspace.id;
   const conversationId = randomUUID();
   const revision = project.definition.revision;
@@ -1714,7 +1714,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
       // The pull requests the held preparation checks out are kept with the pause: its dispatch is built again when the run limit is raised (Task 32).
-      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }) } } } : {}),
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }), ...(prepared.runner === "agent_steps" ? { readOnly: true as const } : {}) } } } : {}),
     }),
   };
   const index: DeveloperTaskIndexRecord = {
@@ -2096,7 +2096,7 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
   if (held === undefined) return;
   const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
   if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${task.project}\` revision ${task.startingRevision} is no longer registered`);
-  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, held.checkout === undefined ? {} : { checkout: held.checkout });
+  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, { ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true } : {}) });
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
   const items: TransactItems = [

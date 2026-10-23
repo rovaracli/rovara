@@ -546,6 +546,24 @@ describe("a pull request in the run's context (PF16)", () => {
     expect(AgentRunStateSchema.parse(t.agentRunItem(t.taskOf(reply).taskId)).checkout).toEqual([{ repository: "demo", pullRequest: 12, headSha: HEAD }]);
   });
 
+  it("sends the run's preparation read-only (clone and checkout, none of the repository's code), with and without a pull request; a coding run's preparation is the usual one (runs I-2)", async () => {
+    const pullRequestHead = vi.fn(async () => ({ headSha: HEAD }));
+    const t = await setup({ agents: { pullRequestHead }, memberLimit: 10 });
+    const prepares = () => t.outboxes().map((item) => item.invocation as { kind: string; payload: { checkout?: unknown; readOnly?: unknown } }).filter((invocation) => invocation.kind === "prepare");
+    const withPullRequest = await t.run(MAYA, "code-reviewer", { input: review("example/demo#12") });
+    expect(withPullRequest.status, JSON.stringify(withPullRequest.body)).toBe(202);
+    expect(prepares()).toHaveLength(1);
+    expect(prepares()[0]!.payload).toMatchObject({ readOnly: true, checkout: [{ repository: "demo", pullRequest: 12, headSha: HEAD }] });
+    const withoutPullRequest = await t.run(MAYA, "code-reviewer", { input: { text: "Review the default branch" } });
+    expect(withoutPullRequest.status, JSON.stringify(withoutPullRequest.body)).toBe(202);
+    expect(prepares()).toHaveLength(2);
+    expect(prepares()[1]!.payload.readOnly).toBe(true);
+    const coding = await t.run(MAYA, "rovara-code", { input: { text: "Fix the retry bug" } });
+    expect(coding.status, JSON.stringify(coding.body)).toBe(202);
+    expect(prepares()).toHaveLength(3);
+    expect(prepares()[2]!.payload.readOnly).toBeUndefined();
+  });
+
   it("reads nothing for a repository that is not the project's, or for a reference that is not a pull request", async () => {
     const pullRequestHead = vi.fn(async () => ({ headSha: HEAD }));
     const t = await setup({ agents: { pullRequestHead }, memberLimit: 10 });
