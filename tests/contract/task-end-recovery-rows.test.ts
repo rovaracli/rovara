@@ -8,6 +8,7 @@ import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
 import { registerTaskEndHandler, type TaskEndEvent, taskEndKey } from "../../packages/broker/src/agents/task-end.js";
+import { taskAgentRunKey } from "../../packages/broker/src/developer/task-records.js";
 import { operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { releaseFinishedTaskQuietly } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -258,6 +259,61 @@ describe("a row is told only for the end its task is owed", () => {
     unregister.push(registerTaskEndHandler(async (_deps, event) => { heard.push(event); }));
     const taskId = await t.plainTask();
     putRow(t, taskId, "creator_removed");
+    await t.recover(taskId);
+    expect(heard).toEqual([]);
+    expect(t.rows(taskId)).toEqual([]);
+  });
+});
+
+// Plan 5 Task 8 step 0 (Task 7b review, Minors 2 and 3).
+describe("a task end row never replaces an operation's own end row", () => {
+  const realRow = (t: Awaited<ReturnType<typeof setup>>, taskId: string) => {
+    const record = t.meta(taskId);
+    t.db.set((operationEndDispatchItem("state", { taskId, orgId: TEST_ORG, workspaceId: String(record.workspaceId), operationId: "op_real_one", now: new Date().toISOString() }) as { Put: { Item: Item } }).Put.Item);
+  };
+
+  it("a workflow end left beside an operation's row keeps both, and the sweep clears each", async () => {
+    const t = await setup();
+    const { up, heard } = flakyHandler();
+    const taskId = await t.plainTask();
+    realRow(t, taskId);
+    t.finishWorkflow(taskId, "MERGED");
+    await t.release(taskId);
+    expect(t.rows(taskId)).toHaveLength(2);
+    expect(t.rows(taskId)).toContainEqual(expect.objectContaining({ operationId: "op_real_one" }));
+    expect(t.rows(taskId)).toContainEqual(expect.objectContaining({ endOf: "workflow" }));
+    expect(t.rows(taskId).find((row) => row.operationId === "op_real_one")).not.toHaveProperty("endOf");
+    up.now = true;
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(heard).toHaveLength(1);
+  });
+
+  it("a creator_removed end left beside an operation's row keeps both", async () => {
+    const t = await setup();
+    flakyHandler();
+    const taskId = await t.plainTask();
+    realRow(t, taskId);
+    await Promise.all([
+      t.db.send(new DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, MAYA.developerId) })),
+      Promise.resolve(t.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-21T00:00:00.000Z" })),
+    ]);
+    await expect(requireCreatorStillMember({ documentClient: t.db, tableName: "state", orgId: TEST_ORG }, t.meta(taskId) as never)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(t.rows(taskId)).toHaveLength(2);
+    expect(t.rows(taskId)).toContainEqual(expect.objectContaining({ operationId: "op_real_one" }));
+    expect(t.rows(taskId)).toContainEqual(expect.objectContaining({ endOf: "creator_removed" }));
+  });
+});
+
+describe("a creator_removed row of an agent-step run's task is the engine's to tell", () => {
+  it("tells nothing (the engine tells that end) and the row goes", async () => {
+    const t = await setup();
+    const heard: TaskEndEvent[] = [];
+    unregister.push(registerTaskEndHandler(async (_deps, event) => { heard.push(event); }));
+    const taskId = await t.plainTask();
+    t.db.set({ ...t.meta(taskId), agent: { agentId: "agt_x" }, outcome: "creator_removed", outcomeReason: "x", outcomeAt: new Date().toISOString() });
+    t.db.set({ ...taskAgentRunKey(taskId), orgId: TEST_ORG, revision: 1 });
+    const record = t.meta(taskId);
+    t.db.set((operationEndDispatchItem("state", { taskId, orgId: TEST_ORG, workspaceId: String(record.workspaceId), operationId: "creator_removed", now: new Date().toISOString(), endOf: "creator_removed" }) as { Put: { Item: Item } }).Put.Item);
     await t.recover(taskId);
     expect(heard).toEqual([]);
     expect(t.rows(taskId)).toEqual([]);
