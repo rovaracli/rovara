@@ -374,7 +374,7 @@ import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } 
 import type { settlementBudgets} from "../spend/settlement-job.js";
 import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
-import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
+import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { estimateRun } from "../spend/estimate.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
@@ -1901,6 +1901,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(agents)),
           // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
           ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
+          ...(agents === undefined ? {} : { projectMemberChanged: async (orgId: OrgId, project: string, developerId: string) => { await onProjectMemberChanged(agents, { orgId, project, developerId }); } }),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),

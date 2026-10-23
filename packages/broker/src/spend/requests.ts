@@ -910,7 +910,7 @@ function canonicalJson(value: unknown): string {
  * Rovara's own move left `owner` over the cap (Task 11's seam): the move already applied and counted, so an `owner_cap` request asks an org admin to confirm it.
  * Once per person while one is open; nothing when the total is within the cap.
  */
-export async function confirmOwnerMove(deps: SpendRequestDependencies, orgId: OrgId, owner: string, cause: "member_merged" | "member_removed", totals: { totalUsd: number; capUsd: number }): Promise<SpendRequestRecord | undefined> {
+export async function confirmOwnerMove(deps: SpendRequestDependencies, orgId: OrgId, owner: string, cause: "member_merged" | "member_removed" | "project_role_changed", totals: { totalUsd: number; capUsd: number }): Promise<SpendRequestRecord | undefined> {
   if (totals.totalUsd <= totals.capUsd) return undefined;
   const made = await createSpendRequest(deps, {
     orgId, kind: "owner_cap", subject: `OWNER#${owner}`, amountUsd: cleanUsd(totals.totalUsd - totals.capUsd), newLimitUsd: totals.totalUsd,

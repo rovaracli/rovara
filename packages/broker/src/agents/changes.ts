@@ -95,12 +95,12 @@ export async function orgAdmins(deps: ApprovalDependencies, orgId: OrgId): Promi
  * maintainer with `manage_agents`) and the org's owners and admins. It decides only who is shown it; the rule decides who may decide.
  */
 export async function agentApprovers(deps: ApprovalDependencies, agent: AgentRecord, rule: "agent_publish" | "agent_manager"): Promise<ApproverSpec> {
-  const candidates = new Set(await orgAdmins(deps, agent.orgId));
+  // The owner (a project's accountable maintainer) is named first, so the approver list's cap never drops the person the member movers find it through (m-3).
+  const candidates = new Set<string>();
   if (agent.owner.kind === "member") candidates.add(await resolveSurvivor(deps, agent.orgId, agent.owner.developerId));
-  else {
-    for (const member of await deps.projectMembers.list(agent.orgId, agent.owner.project)) if (projectAllows(member.role, "manage_agents")) candidates.add(member.developerId);
-    if (agent.accountable !== undefined) candidates.add(await resolveSurvivor(deps, agent.orgId, agent.accountable.developerId));
-  }
+  else if (agent.accountable !== undefined) candidates.add(await resolveSurvivor(deps, agent.orgId, agent.accountable.developerId));
+  for (const id of await orgAdmins(deps, agent.orgId)) candidates.add(id);
+  if (agent.owner.kind === "project") for (const member of await deps.projectMembers.list(agent.orgId, agent.owner.project)) if (projectAllows(member.role, "manage_agents")) candidates.add(member.developerId);
   return { kind: "rule", rule, candidates: [...candidates] };
 }
 

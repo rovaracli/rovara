@@ -360,7 +360,16 @@ export async function getApproval(deps: Pick<ApprovalStoreDependencies, "documen
 }
 
 const namedPeople = (approvers: ApproverSpec): string[] => (approvers.kind === "ids" ? [...approvers.ids] : [...approvers.candidates]);
-const listedPeople = (approvers: ApproverSpec): string[] => [...new Set(namedPeople(approvers))].sort().slice(0, MAX_LISTED_APPROVERS);
+/**
+ * The people a change is listed for, cut to what a transaction holds. The cut never drops the first person named (the agent's owner, who the member
+ * movers find the approval through) or the person who asked; the rest are kept in id order.
+ */
+function listedPeople(approvers: ApproverSpec, requestedBy?: string): string[] {
+  const named = [...new Set(namedPeople(approvers))];
+  const first = [...new Set([named[0], requestedBy !== undefined && named.includes(requestedBy) ? requestedBy : undefined].filter((id): id is string => id !== undefined))];
+  const rest = named.filter((id) => !first.includes(id)).sort();
+  return [...first, ...rest].slice(0, MAX_LISTED_APPROVERS);
+}
 /** A step or write approval's transaction also holds its counter, its open item, its event and its audit item, so it lists fewer people. */
 const MAX_LISTED_RUN_APPROVERS = 88;
 
@@ -369,7 +378,7 @@ const MAX_LISTED_RUN_APPROVERS = 88;
  * cut to what a transaction can hold. Creating the record writes them; ending PENDING deletes the same ones.
  */
 export function listedFor(record: { kind: AnyApprovalRecord["kind"]; approvers: ApproverSpec; owner?: { developerId: string } | undefined }): string[] {
-  if (record.kind === "change") return listedPeople(record.approvers);
+  if (record.kind === "change") return listedPeople(record.approvers, (record as { requestedBy?: string }).requestedBy);
   const owner = record.owner?.developerId;
   const rest = [...new Set(namedPeople(record.approvers))].filter((id) => id !== owner).sort();
   return (owner === undefined ? rest : [owner, ...rest]).slice(0, MAX_LISTED_RUN_APPROVERS);
@@ -427,7 +436,7 @@ export async function createPendingChange(
       TransactItems: [
         put(approvalKey(input.orgId, approvalId), "APPROVAL", record as unknown as Item),
         put(openApprovalKey(expiresAt, input.orgId, approvalId), "OPEN_APPROVAL", { orgId: input.orgId, approvalId }),
-        ...listedPeople(input.approvers).map((developerId) => put(approverIndexKey(input.orgId, developerId, approvalId), "APPROVER_INDEX", { approvalId, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(expiresAt) })),
+        ...listedPeople(input.approvers, input.requestedBy).map((developerId) => put(approverIndexKey(input.orgId, developerId, approvalId), "APPROVER_INDEX", { approvalId, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(expiresAt) })),
       ],
     }));
   } catch (error) {

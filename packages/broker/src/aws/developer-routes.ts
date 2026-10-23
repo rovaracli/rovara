@@ -235,6 +235,12 @@ export interface DeveloperRouteDependencies {
   orgConnections?: OrgConnectionStore;
   /** Plan 3, Task 7: what the agent routes (`/v1/app/agents*` and the other Plan 3 paths) need. Without it they answer NOT_FOUND. */
   agents?: AgentRouteDependencies;
+  /**
+   * Plan 3 final review (access m-2): what follows a person's project role changing or their grant being removed, on the agents platform (`onProjectMemberChanged`:
+   * the agents they were accountable for move when they no longer hold `manage_agents`). Called after the change applied, also on a replay (it is repeatable);
+   * a failure is logged and never undoes or fails the change. Absent where agents are not set up.
+   */
+  projectMemberChanged?: (orgId: OrgId, project: string, developerId: string) => Promise<void>;
 }
 
 export { StatusReply };
@@ -1068,6 +1074,16 @@ async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, row
   return { members };
 }
 
+/** Tells the agents platform a person's project role changed; what it fails with is logged, never raised (the change stands). */
+async function notifyProjectMemberChanged(deps: DeveloperRouteDependencies, orgId: OrgId, project: string, developerId: string): Promise<void> {
+  if (deps.projectMemberChanged === undefined) return;
+  try {
+    await deps.projectMemberChanged(orgId, project, developerId);
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.project_member_hook_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
 const MANAGE_MEMBERS_MESSAGE = "only a project maintainer can change who is in a project";
 
 /**
@@ -1084,6 +1100,7 @@ async function putProjectMember(deps: DeveloperRouteDependencies, caller: Develo
     requestId: parsed.data.requestId, developerId, role: parsed.data.role, actor: { developerId: caller.developerId },
   });
   logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role });
+  await notifyProjectMemberChanged(deps, caller.orgId, name, member.developerId);
   return { member };
 }
 
@@ -1097,6 +1114,7 @@ async function deleteProjectMember(deps: DeveloperRouteDependencies, caller: Dev
     requestId: parsed.data.requestId, developerId, actor: { developerId: caller.developerId },
   });
   logDeveloperEvent({ event: "developer.project_member_removed", orgId: caller.orgId, project: name, removed: String(removed.removed) });
+  await notifyProjectMemberChanged(deps, caller.orgId, name, removed.developerId);
   return removed;
 }
 

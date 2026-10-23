@@ -46,6 +46,11 @@ export class FakeProjectMembers implements ProjectMembers {
     this.grants.set(`${orgId}|${project}|${developerId}`, role);
   }
 
+  /** Takes a developer's grant on a project away. */
+  revoke(orgId: OrgId, project: string, developerId: string): void {
+    this.grants.delete(`${orgId}|${project}|${developerId}`);
+  }
+
   roleOf = (orgId: OrgId, project: string, caller: Caller): Promise<ProjectRole | undefined> => {
     this.calls.push(`roleOf ${project}`);
     if (!this.projects.get(orgId)?.has(project)) return Promise.resolve(undefined);

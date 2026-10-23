@@ -247,14 +247,14 @@ export const SPEND_RESUME_INSTRUCTIONS = "Your AI budget was raised. Continue wh
 
 /**
  * The change an `owner_cap` request holds until an admin decides: nothing changes while it is PENDING, and approving applies exactly this, as an override of the
- * cap. `confirm_move` is Rovara's own move (a member merged or removed), which already applied: approving it only records that an admin saw it.
+ * cap. `confirm_move` is Rovara's own move (a member merged, removed or no longer a project maintainer), which already applied: approving it only records that an admin saw it.
  */
 export type OwnerCapChange =
   | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null } }
   | { op: "set_owner"; owner: { kind: "member"; developerId: string } | { kind: "project"; project: string }; accountable?: { developerId: string } }
   | { op: "set_accountable"; accountable: { developerId: string } }
   | { op: "unarchive" }
-  | { op: "confirm_move"; owner: string; cause: "member_merged" | "member_removed" };
+  | { op: "confirm_move"; owner: string; cause: "member_merged" | "member_removed" | "project_role_changed" };
 
 /** A request for more spend, at `spendRequestKey(orgId, spendRequestId)`; the open ones are listed at `openSpendRequestsKey`. */
 export interface SpendRequestRecord {
