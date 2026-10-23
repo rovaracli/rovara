@@ -2083,3 +2083,48 @@ describe("the audit ledger in templates", () => {
     expect(text).not.toContain("—");
   });
 });
+
+describe("the agentxReservedConcurrency context flag", () => {
+  const reservedIn = (synthesis: Synth) => ofType(synthesis.template, "AWS::Lambda::Function")
+    .filter(([, fn]) => fn.Properties.ReservedConcurrentExecutions !== undefined)
+    .map(([id, fn]) => [withoutHash(id), fn.Properties.ReservedConcurrentExecutions] as const)
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  it("keeps both reservations, with their values, when the flag is not given", () => {
+    expect(reservedIn(named("staging"))).toStrictEqual([["AuditLedgerAuditAnchor", 1], ["AuditLedgerAuditExport", 5]]);
+  });
+
+  it("keeps both reservations when the flag is true, as a boolean or as the string the CLI passes", () => {
+    for (const value of [true, "true"]) {
+      expect(reservedIn(named("staging", { agentxReservedConcurrency: value }))).toStrictEqual([["AuditLedgerAuditAnchor", 1], ["AuditLedgerAuditExport", 5]]);
+    }
+  });
+
+  it("sets no ReservedConcurrentExecutions on any function of any stack when the flag is false, as a boolean or as a string", () => {
+    for (const value of [false, "false"]) {
+      const app = buildAgentXApp({ agentxEnv: "staging", agentxReservedConcurrency: value });
+      const stacks = app.node.children.filter((child): child is Stack => Stack.isStack(child));
+      expect(stacks.length).toBeGreaterThan(1);
+      let functions = 0;
+      for (const stack of stacks) {
+        const template = Template.fromStack(stack).toJSON() as TemplateJson;
+        for (const [id, fn] of ofType(template, "AWS::Lambda::Function")) {
+          functions += 1;
+          expect(fn.Properties.ReservedConcurrentExecutions, `${stack.stackName} ${id}`).toBeUndefined();
+        }
+      }
+      expect(functions).toBeGreaterThan(0);
+      // The functions are still there: only the reservation is gone.
+      const ledger = named("staging", { agentxReservedConcurrency: value });
+      expect(one(ledger.template, "AWS::Lambda::Function", "AuditLedgerAuditAnchor")[1].Properties).toMatchObject({ Timeout: 300, MemorySize: 512 });
+      expect(one(ledger.template, "AWS::Lambda::Function", "AuditLedgerAuditExport")[1].Properties).toMatchObject({ Timeout: 900, MemorySize: 1024 });
+    }
+  });
+
+  it("refuses any other value, naming the flag and the value", () => {
+    for (const value of ["off", "0", 0, 1, "FALSE", "", null]) {
+      expect(() => buildAgentXApp({ agentxEnv: "staging", agentxReservedConcurrency: value }), JSON.stringify(value)).toThrow(/agentxReservedConcurrency/);
+    }
+    expect(() => buildAgentXApp({ agentxEnv: "staging", agentxReservedConcurrency: "off" })).toThrow(/"off"/);
+  });
+});

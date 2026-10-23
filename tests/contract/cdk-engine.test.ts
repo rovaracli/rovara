@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentXError } from "@agentx/contracts";
 import type { DeployEvent } from "../../packages/cli/src/deploy/deployer.js";
-import { CDK_CONSTRUCT_IDS, assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkDeployer, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
+import { CDK_CONSTRUCT_IDS, assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkAppArguments, cdkDeployer, cdkDiff, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
 import { sourceReleaseVersion, synthDeclaredParameters } from "../../packages/cli/src/deploy/cdk-source.js";
 import type { ParameterStore } from "../../packages/cli/src/environments/parameter-store.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
@@ -476,6 +476,26 @@ describe("the cdk source (issue 152)", () => {
     const deployArgs = deployRunner.calls[0]!.args;
     const context = (args: string[]) => args.slice(args.indexOf("--app"), args.indexOf("--app") + 8);
     expect(context(call!.args)).toEqual(context(deployArgs));
+  });
+
+  it("passes agentxReservedConcurrency=false only when reserved concurrency is turned off, to the synth, diff and deploy alike", async () => {
+    const off = cdkAppArguments({ env: "staging", region: "us-east-1", identityMode: "cognito", reservedConcurrency: false });
+    expect(off).toEqual(["--app", "node infra/dist/bin/agentx.js", "-c", "agentxEnv=staging", "-c", "agentxRegion=us-east-1", "-c", "agentxReservedConcurrency=false"]);
+    expect(cdkAppArguments({ env: "staging", region: "us-east-1", identityMode: "cognito" }).join(" ")).not.toContain("agentxReservedConcurrency");
+
+    const runner = synthRunner({});
+    await synthDeclaredParameters({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", reservedConcurrency: false });
+    expect(runner.calls[0]!.args).toContain("agentxReservedConcurrency=false");
+
+    const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
+    const deployRunner = recordingRunner(dir, { "agentx-staging-slack": {} });
+    await cdkDeployer({ runner: deployRunner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", reservedConcurrency: false, outputsDir: dir, outputs: async () => undefined })
+      .deploy({ part: "slack", stackName: "agentx-staging-slack", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false });
+    expect(deployRunner.calls[0]!.args).toContain("agentxReservedConcurrency=false");
+
+    const diffRunner = recordingRunner(dir, {});
+    await cdkDiff({ runner: diffRunner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", reservedConcurrency: false, request: { part: "slack", stackName: "agentx-staging-slack", parameters: {}, terminationProtection: false } });
+    expect(diffRunner.calls[0]!.args).toContain("agentxReservedConcurrency=false");
   });
 
   it("refuses when the assembly has no stack for a part, naming it", async () => {
