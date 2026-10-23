@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgMemberKey, orgRemovedKey } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { BROWSER_RETURN_TO } from "../../packages/broker/src/developer/server.js";
 import { createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
@@ -57,6 +57,10 @@ describe("browser API boundary", () => {
   const stale = await h.call("POST", "/v1/web/org/invites", { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor("old-session") }, body);
   expect(stale.status).toBe(403);expect(errorOf(stale.body)).toEqual({ code: "CSRF_STALE", message: "Your sign-in changed in another tab. Trying again." });
   expect(h.db.commandNames().slice(start).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);
+  for (const token of ["", "short", "😀".repeat(43)]) {
+   const bad = await h.call("POST", "/v1/web/org/invites", { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: token }, body);
+   expect(bad.status).toBe(403);expect(errorOf(bad.body).code).toBe("CSRF_STALE");
+  }
   const good = await h.call("POST", "/v1/web/org/invites", { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body);
   expect(good.status).toBe(200);expect(h.db.commandNames().slice(start)).toContain("TransactWriteCommand");
  });
@@ -92,6 +96,7 @@ describe("browser sign-in returns and sign-out", () => {
    const membership = (await h.orgs.orgForDeveloper(id))!;
    const pointer = developerOrgKey(id), member = orgMemberKey(membership.orgId, id);
    h.state.delete(pointer.pk, pointer.sk);h.state.delete(member.pk, member.sk);h.state.set({ ...orgRemovedKey(membership.orgId, id), entityType: "ORG_REMOVED", orgId: membership.orgId, developerId: id, removedAt: new Date(h.now()).toISOString() });
+   h.state.set({ ...orgBanKey(membership.orgId, id), entityType: "ORG_BAN", orgId: membership.orgId, developerId: id, bannedAt: new Date(h.now()).toISOString() });
    const start = await h.http(httpEvent("GET", "/v1/auth/browser/authorize?return_to=" + encodeURIComponent(target)));
    expect(start.statusCode).toBe(302);
    const event = httpEvent("GET", h.slack.approve(start.headers.location!, PERSON.userId));event.headers = { cookie: start.cookies!.find(value => value.startsWith("__Host-agentx_review_pkce="))!.split(";", 1)[0] };
@@ -104,13 +109,40 @@ describe("browser sign-in returns and sign-out", () => {
   const event = httpEvent("GET", h.slack.approve(start.headers.location!, PERSON.userId));event.headers = { cookie: start.cookies!.find(value => value.startsWith("__Host-agentx_review_pkce="))!.split(";", 1)[0] };
   const done = await h.http(event);const cookie = done.cookies!.find(value => value.startsWith("__Host-agentx_review_session="))!.split(";", 1)[0]!;
   const session = cookie.split("=")[1]!;
-  const signOut = (headers: Record<string, string>) => h.http({ ...httpEvent("POST", "/v1/auth/browser/sign-out"), headers: { cookie, ...headers } });
-  expect((await signOut({ origin: new URL(h.deps.config.issuer).origin })).statusCode).toBe(403);
-  expect((await h.deps.store.getSession(session))?.revokedAt).toBeUndefined();
-  const ended = await signOut({ origin: new URL(h.deps.config.issuer).origin, [APP_CSRF_HEADER]: appCsrfTokenFor(session) });
+  const signOut = (headers: Record<string, string | undefined>) => h.http({ ...httpEvent("POST", "/v1/auth/browser/sign-out"), headers: { cookie, ...headers } });
+  const origin = new URL(h.deps.config.issuer).origin, csrf = appCsrfTokenFor(session);
+  for (const headers of [{}, { origin }, { origin: "https://evil.example", [APP_CSRF_HEADER]: csrf }, { origin: "null", [APP_CSRF_HEADER]: csrf }, { [APP_CSRF_HEADER]: csrf }, { origin, [APP_CSRF_HEADER]: "wrong" }]) {
+   const before = h.db.commandNames().length;
+   expect((await signOut(headers)).statusCode).toBe(403);
+   expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);
+   expect((await h.deps.store.getSession(session))?.revokedAt).toBeUndefined();
+  }
+  const stored = h.db.get(`SESSION#${session}`, "META")!;
+  for (const changed of [{ endsAt: 1 }, { reviewExpiresAt: 1 }, { revokedAt: new Date(h.now()).toISOString() }]) {
+   h.db.set({ ...stored, ...changed });expect((await signOut({ origin, [APP_CSRF_HEADER]: csrf })).statusCode).toBe(403);
+  }
+  h.db.set(stored);
+  const ended = await signOut({ origin, [APP_CSRF_HEADER]: csrf });
   expect(ended.statusCode).toBe(204);expect((await h.deps.store.getSession(session))?.revokedAt).toBeDefined();
   expect(ended.cookies?.some(value => value.startsWith("__Host-agentx_review_session=;") && value.includes("Max-Age=0"))).toBe(true);
   expect(h.logs.some(line => JSON.stringify(line).includes(session))).toBe(false);
+ });
+ it("maps cancelled, failed and ended app callbacks to fixed recovery reasons", async () => {
+  for (const reason of ["cancelled", "failed", "ended"] as const) {
+   const h = identityHarness({ slackUsers: [PERSON] });
+   if (reason === "ended") {
+    await h.signIn("slack", PERSON.userId);
+    const id = (await import("../../packages/broker/src/aws/lambda.js")).ownerKeyForSubject("https://slack.com", PERSON.userId);
+    h.db.set({ ...h.db.get(`DEVELOPER#${id}`, "META")!, revoked: true });
+   }
+   const start = await h.http(httpEvent("GET", "/v1/auth/browser/authorize?return_to=%2Fapp%2Flive"));
+   const target = new URL(h.slack.approve(start.headers.location!, PERSON.userId));
+   if (reason === "cancelled") target.searchParams.delete("code");
+   if (reason === "failed") target.searchParams.set("code", "invalid-fixture-code");
+   const callback = httpEvent("GET", target.toString());callback.headers = { cookie: start.cookies!.find(value => value.startsWith("__Host-agentx_review_pkce="))!.split(";", 1)[0] };
+   const response = await h.http(callback);expect(response.headers.location).toBe(`/app/signed-out?reason=${reason}`);
+   expect(response.cookies?.some(value => value.startsWith("__Host-agentx_review_session="))).toBe(false);
+  }
  });
  it("lets a task-page comment use the app session's CSRF header", async () => {
   const createComment = vi.fn(async () => ({ comment: {} as never }));
@@ -118,7 +150,11 @@ describe("browser sign-in returns and sign-out", () => {
   const api = createTaskWebApi({ origin: CELL, authenticateSession: async () => caller, createComment } as TaskWebApiDependencies);
   const path = "/review/11111111-1111-4111-8111-111111111111/task/api/comments";
   const body = { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "claim", id: "2.1" }, text: "A comment", ask: false };
+  for (const headers of [{ origin: CELL }, { origin: CELL, [APP_CSRF_HEADER]: "wrong" }, { origin: "https://evil.example", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }]) {
+   const refused = await api({ method: "POST", path, requestId: "fixture", headers: { cookie: COOKIE, "content-type": "application/json", ...headers }, body: JSON.stringify(body) }, new URL(path, CELL));
+   expect(refused.statusCode).toBe(403);expect(createComment).not.toHaveBeenCalled();
+  }
   const response = await api({ method: "POST", path, requestId: "fixture", headers: { cookie: COOKIE, origin: CELL, "content-type": "application/json", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body: JSON.stringify(body) }, new URL(path, CELL));
-  expect(response.statusCode).toBe(200);expect(createComment).toHaveBeenCalledTimes(1);
+  expect(response.statusCode).toBe(201);expect(createComment).toHaveBeenCalledTimes(1);
  });
 });

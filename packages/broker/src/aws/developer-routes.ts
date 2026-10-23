@@ -1603,7 +1603,7 @@ export function developerTaskRouteDependencies(
   };
 }
 
-export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
   // The browser pages sign in with the opaque review session cookie, re-read (with the membership) on every request.
   const authenticateSession = async (sessionId: string) => {
     try { return await authenticateDeveloperSessionId(deps, sessionId); }
@@ -1664,7 +1664,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return web(request, url);
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
-  const caller = await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  const caller = authenticated?.caller ?? await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
   if (isAgentRoute(url.pathname)) {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
@@ -1672,7 +1672,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
-  if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
+  if (request.method === "GET" && url.pathname === "/v1/app/me") {
+    const me = await getAppMe(deps, caller);
+    return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };
+  }
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
   const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);

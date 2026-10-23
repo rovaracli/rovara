@@ -102,6 +102,7 @@ export type LinkedIdentity = z.infer<typeof LinkedIdentitySchema>;
 
 /** `GET /v1/app/me`: who the signed-in developer is, their org, and every sign-in method linked to them. */
 export const AppMeResponseSchema = z.object({
+  csrf: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
   developer: z.object({
     id: z.string().regex(/^[a-f0-9]{64}$/),
     name: z.string().min(1).max(200),

@@ -1,0 +1,36 @@
+import { AgentXError, agentXError, CSRF_STALE_MESSAGE } from "@agentx/contracts";
+import { APP_CSRF_HEADER, appCsrfMatches } from "../developer/app-csrf.js";
+import { authenticateDeveloperSessionId, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import type { AdaptedHttpRequest } from "./lambda.js";
+import { SESSION_COOKIE, parseCookie } from "./web-session.js";
+export const WEB_ROUTE_FAMILIES = ["me", "nav", "home", "live", "changes", "realtime", "sessions", "projects", "agents", "models", "skills", "approvals", "spend-requests", "connections", "org", "github", "budget", "usage", "notices", "chains", "chain-runs", "tasks/{id}/continue-as-task", "trash", "devices"] as const;
+export const WEB_REQUEST_REFUSED = "This request didn't come from Rovara's app.";
+export function webRouteAllowed(method: string, pathname: string): boolean {
+ if (!pathname.startsWith("/v1/web/")) return false;
+ const relative = pathname.slice("/v1/web/".length), family = relative.split("/")[0]!;
+ const read = method === "GET" || method === "HEAD";
+ if (family === "tasks") return method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue-as-task$/i.test(relative);
+ if (!(WEB_ROUTE_FAMILIES as readonly string[]).includes(family)) return false;
+ // RULING Q9: identity linking/unlinking stays in the CLI fresh-session flow; a browser may read only /me.
+ if (family === "me") return read && relative === "me";
+ if (family === "approvals" || family === "devices") return read && !relative.endsWith("/decide");
+ if (family === "spend-requests") return relative === "spend-requests" && (read || method === "POST");
+ return true;
+}
+export async function authenticateWebRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest): Promise<DeveloperCaller> {
+ if (request.headers.authorization !== undefined) throw agentXError("AUTH_REQUIRED", "Use the /v1/app routes with a token.");
+ const cookie = parseCookie(request.headers, SESSION_COOKIE);
+ if (cookie === undefined || cookie === "") throw agentXError("AUTH_REQUIRED", "Sign in to continue.");
+ let caller: DeveloperCaller;
+ try { caller = await authenticateDeveloperSessionId(deps, cookie); }
+ catch (error) { if (error instanceof AgentXError && error.code === "AUTH_REQUIRED") throw agentXError("AUTH_REQUIRED", "Sign in to continue.");throw error; }
+ if (deps.developer.methods[caller.amr] !== true) throw agentXError("AUTH_REQUIRED", "Sign in to continue.");
+ const site = request.headers["sec-fetch-site"];
+ if (site !== undefined && site !== "same-origin") throw agentXError("FORBIDDEN", WEB_REQUEST_REFUSED);
+ if (request.method !== "GET" && request.method !== "HEAD") {
+  const csrf = request.headers[APP_CSRF_HEADER];
+  if (request.headers.origin !== new URL(deps.developer.issuer).origin || csrf === undefined) throw agentXError("FORBIDDEN", WEB_REQUEST_REFUSED);
+  if (!appCsrfMatches(cookie, csrf)) throw agentXError("CSRF_STALE", CSRF_STALE_MESSAGE);
+ }
+ return caller;
+}

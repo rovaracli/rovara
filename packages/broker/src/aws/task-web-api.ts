@@ -1,3 +1,4 @@
+import { APP_CSRF_HEADER, appCsrfMatches } from "../developer/app-csrf.js";
 // Spec 061 slice 2: the task page's JSON API under `/review/<task ID>/task/api/*`. Every request needs the review
 // session; every POST also needs this origin, the CSRF header matching its cookie, a JSON body of at most 16 KB and a
 // strict schema. Whoever acts is the session's caller, never anything in the body. Not yours and no such task answer
@@ -190,7 +191,7 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         return response;
       }
       const csrf = parseCookie(request.headers, CSRF_COOKIE);
-      if (request.headers.origin !== origin || !isCsrfToken(csrf) || request.headers["x-agentx-csrf"] !== csrf) return json(403, { error: "request_refused" });
+      if (request.headers.origin !== origin || !((isCsrfToken(csrf) && request.headers["x-agentx-csrf"] === csrf) || (sessionId !== undefined && appCsrfMatches(sessionId, request.headers[APP_CSRF_HEADER])))) return json(403, { error: "request_refused" });
       if (!isJson(request.headers["content-type"])) return invalid("Send this as JSON.");
       const body = request.body ?? "";
       if (Buffer.byteLength(body, "utf8") > PAGE_API_BODY_MAX_BYTES) return invalid("That is too long to send.");

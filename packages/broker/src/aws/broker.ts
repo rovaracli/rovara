@@ -1,3 +1,5 @@
+import { authenticateWebRequest, webRouteAllowed } from "./web-auth.js";
+import { appCsrfTokenFor } from "../developer/app-csrf.js";
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
@@ -689,6 +691,7 @@ const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?:\/|$)/i;
 const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 /** The hosted app's routes (Plan 2): authorizer-free like /v1/dev, the broker verifies the same developer token itself. */
 const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
+export const WEB_ROUTE_KEY = "ANY /v1/web/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
 /** A session's link (Plan 5, Task 5), served to a browser like the review pages. Its API Gateway route (`ANY /s/{proxy+}`) is in the infrastructure; the web app (Plan 7) adds the page. */
 const SESSION_LINK_ROUTE_KEY = "ANY /s/{proxy+}";
@@ -1754,6 +1757,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // The /v1/dev route has no API Gateway authorizer, so what it carries goes to the developer API or nowhere.
       if (event.routeKey === DEVELOPER_ROUTE_KEY && !url.pathname.startsWith("/v1/dev/")) throw agentXError("NOT_FOUND", "route not found");
       if (event.routeKey === APP_ROUTE_KEY && !url.pathname.startsWith("/v1/app/")) throw agentXError("NOT_FOUND", "route not found");
+      if (event.routeKey === WEB_ROUTE_KEY && !url.pathname.startsWith("/v1/web/")) throw agentXError("NOT_FOUND", "route not found");
+      if (url.pathname.startsWith("/v1/web/") && (event.routeKey !== WEB_ROUTE_KEY || !webRouteAllowed(request.method, url.pathname))) throw agentXError("NOT_FOUND", "route not found");
       // Plan 2, Task 13: the GitHub install flow's callback and the confirm page's form post. No token here: see github-install-web.ts.
       if (isGithubInstallPath(url.pathname)) return await routeGithubInstall(githubConnectionOf(dependencies), request, url);
       // Plan 3, Task 21a-presence: the confirmation page. A browser's decide cookie, CSRF field and Origin authorize it, never a bearer token.
@@ -1950,10 +1955,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       // Spec 025: the developer API. /v1/dev/* has no API Gateway authorizer (D17): the broker
       // verifies the developer token, then checks the method and session (FR-009).
-      if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/")) {
+      if (url.pathname.startsWith("/v1/dev/") || url.pathname.startsWith("/v1/app/") || url.pathname.startsWith("/v1/web/")) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
         const orgConnections = orgConnectionStoreOf(dependencies);
-        const answer = await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+        const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
           orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(agents)),
           // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
           ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
@@ -1984,7 +1989,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               repositoryIdentity: (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
             }),
           },
-          refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) }, request, url);
+          refreshTaskFeedback: taskId => refreshTaskFeedbackForOwnerDecision(dependencies, taskId) };
+        let authenticated: { caller: DeveloperCaller; csrf: string } | undefined;
+        if (url.pathname.startsWith("/v1/web/")) {
+          const caller = await authenticateWebRequest(routeDependencies, request);
+          authenticated = { caller, csrf: appCsrfTokenFor(caller.sessionId) };
+          url.pathname = "/v1/app/" + url.pathname.slice("/v1/web/".length);
+        }
+        const answer = await routeDeveloperRequest(routeDependencies, request, url, authenticated);
         return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
       }
 
