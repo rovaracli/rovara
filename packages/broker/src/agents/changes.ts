@@ -19,7 +19,7 @@ import {
   type OrgId,
   type ResolvedRecipe,
 } from "@agentx/contracts";
-import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, type AgentCaller, type AgentShare } from "./access.js";
+import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, sharesAlreadyStored, type AgentCaller, type AgentShare } from "./access.js";
 import {
   confirmUrlFor,
   createPendingChange,
@@ -267,7 +267,11 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   const agent = await liveAgent(deps, record, subject.agentId);
   const draft = await deps.store.getDraft(record.orgId, subject.agentId);
   if (draft === undefined || draft.revision !== subject.draftRevision || agent.draftRevision !== subject.draftRevision) throw stale(STALE_DRAFT);
-  if (agent.currentVersion !== subject.expectedCurrentVersion) throw stale("The published version changed after this was asked. Publish again.");
+  if (agent.currentVersion !== subject.expectedCurrentVersion) {
+    // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
+    if (agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) && (await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion))?.digest === subject.digest) return;
+    throw stale("The published version changed after this was asked. Publish again.");
+  }
   // The draft's base is pinned, so its content can't move under the same revision; the digest still catches a changed skill.
   const draftRecipe = await resolveRecipe(deps, record.orgId, subject.agentId, "draft");
   if (recipeDigest(draftRecipe) !== subject.digest) throw stale(STALE_DRAFT);
@@ -284,7 +288,11 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "agent_rollback" }>;
   const agent = await liveAgent(deps, record, subject.agentId);
-  if (agent.currentVersion !== subject.expectedCurrentVersion) throw stale("The published version changed after this was asked. Roll back again.");
+  if (agent.currentVersion !== subject.expectedCurrentVersion) {
+    // Already rolled back to it (a redrive after a crash, m-1): the version that is current is the approved one.
+    if (agent.currentVersion === subject.version && recipeDigest(await resolveRecipe(deps, record.orgId, subject.agentId, subject.version)) === subject.digest) return;
+    throw stale("The published version changed after this was asked. Roll back again.");
+  }
   const target = await resolveRecipe(deps, record.orgId, subject.agentId, subject.version);
   if (recipeDigest(target) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
   await requireWithinGuardrails(deps, record.orgId, target);
@@ -296,7 +304,11 @@ async function confirmAdopt(deps: ApprovalDependencies, record: ApprovalRecord):
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "builtin_adopt" }>;
   await requireAgentEnabled(deps, record.orgId, subject.agentId);
   const pinned = await deps.store.pinnedBuiltinVersion(record.orgId, subject.agentId);
-  if (pinned !== subject.expectedPinnedVersion) throw stale("The version your company uses changed after this was asked. Adopt again.");
+  if (pinned !== subject.expectedPinnedVersion) {
+    // Already pinned to it (a redrive after a crash, m-1), and it is the release that was shown.
+    if (pinned === subject.version && recipeDigest(deps.store.builtinRecipe(subject.agentId, subject.version)) === subject.digest) return;
+    throw stale("The version your company uses changed after this was asked. Adopt again.");
+  }
   if (recipeDigest(deps.store.builtinRecipe(subject.agentId, subject.version)) !== subject.digest) throw stale("That version changed after this was asked. Adopt again.");
   await deps.store.adoptBuiltinVersion({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedPinnedVersion: subject.expectedPinnedVersion, by });
 }
@@ -305,7 +317,11 @@ async function confirmShare(deps: ApprovalDependencies, record: ApprovalRecord):
   const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "agent_share" }>;
   const agent = await liveAgent(deps, record, subject.agentId);
-  if ((agent.sharesRevision ?? 0) !== subject.expectedSharesRevision) throw stale("Who this agent is shared with changed after this was asked. Share again.");
+  if ((agent.sharesRevision ?? 0) !== subject.expectedSharesRevision) {
+    // The shares are already what was approved (a redrive after a crash, m-1).
+    if (await sharesAlreadyStored(deps, record.orgId, by, subject.agentId, subject.shares)) return;
+    throw stale("Who this agent is shared with changed after this was asked. Share again.");
+  }
   await saveShares(deps, record.orgId, by, agent, subject.shares);
 }
 
@@ -313,7 +329,11 @@ async function confirmGuardrails(deps: ApprovalDependencies, record: ApprovalRec
   const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "guardrails" }>;
   const current = await readGuardrailsWithRevision(deps, record.orgId);
-  if (current.revision !== subject.expectedRevision) throw stale("The company's agent guardrails changed after this was asked. Ask again.");
+  if (current.revision !== subject.expectedRevision) {
+    // The guardrails are already what was approved (a redrive after a crash, m-1).
+    if (canonicalJson(current.guardrails) === canonicalJson(subject.next)) return;
+    throw stale("The company's agent guardrails changed after this was asked. Ask again.");
+  }
   await writeGuardrails(deps, record.orgId, subject.next, by, { expectedRevision: subject.expectedRevision, widened: true });
 }
 

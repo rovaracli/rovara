@@ -170,6 +170,8 @@ export interface WriteApprovalRecord extends DecidedFields, ApprovalRun {
   tool: string;
   toolAccess: "read" | "write";
   scope: string;
+  /** For a GitHub connector, the repository the scope names as `owner/name` (the server binds it, so the arguments never carry it); the page shows it. Absent on other connectors and on records made before it was stored. */
+  repository?: string;
   schemaHash: string;
   /** The project revision it was asked under (for display; every check reads the current one). */
   projectRevision: number;
@@ -314,6 +316,7 @@ const WriteApprovalRecordSchema = z.object({
   tool: z.string(),
   toolAccess: z.enum(["read", "write"]),
   scope: z.string(),
+  repository: z.string().optional(),
   schemaHash: Hex64,
   projectRevision: z.number().int(),
   credentialRef: z.string().optional(),

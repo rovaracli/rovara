@@ -6,10 +6,10 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, agentXError, type AuditProof } from "@agentx/contracts";
+import { ApprovalIdSchema, agentXError, isBuiltinAgentId, type AuditProof, type OrgId } from "@agentx/contracts";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
-import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
+import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 
 const NAME_MAX = 80;
@@ -55,6 +55,37 @@ const TITLES: Record<string, string> = {
 };
 
 const fact = (label: string, value: string) => ({ label, value });
+const prefix = (digest: string) => digest.slice(0, 12);
+
+/**
+ * The facts that say which agent a change is about and which versions it moves between (final review, access I-2). The agent is read now (its name
+ * may have changed since it was asked); the versions are the ones the record is bound to, and `Out of date` is added when the agent has moved past
+ * them, so a stale record reads as stale and confirming it would be refused.
+ */
+async function agentChangeFacts(deps: ApprovalDependencies, orgId: OrgId, subject: AgentChangeSubject): Promise<Array<{ label: string; value: string }>> {
+  if (subject.kind === "guardrails") return [];
+  const agentId = subject.agentId;
+  const builtin = isBuiltinAgentId(agentId);
+  const live = builtin ? undefined : await deps.store.get(orgId, agentId).catch(() => undefined);
+  const name = builtin ? deps.store.builtinName(agentId) : live === undefined ? "an agent that can't be found" : shownText(live.name, NAME_MAX);
+  const facts = [fact("Agent", `${name} (${agentId})`)];
+  let outOfDate = false;
+  if (subject.kind === "agent_publish") {
+    const was = subject.expectedCurrentVersion;
+    facts.push(fact("Version", `${was === undefined ? "No version yet" : `Version ${String(was)} (running now)`} to version ${String((live?.latestVersion ?? (was ?? 0)) + 1)} (the draft, revision ${String(subject.draftRevision)}, digest ${prefix(subject.digest)})`));
+    outOfDate = live !== undefined && (live.currentVersion !== was || live.draftRevision !== subject.draftRevision);
+  } else if (subject.kind === "agent_rollback") {
+    facts.push(fact("Version", `From version ${String(subject.expectedCurrentVersion)} (running now) to version ${String(subject.version)} (digest ${prefix(subject.digest)})`));
+    outOfDate = live !== undefined && live.currentVersion !== subject.expectedCurrentVersion;
+  } else if (subject.kind === "builtin_adopt") {
+    facts.push(fact("Version", `Your company uses version ${String(subject.expectedPinnedVersion)}; this moves it to version ${String(subject.version)} (digest ${prefix(subject.digest)})`));
+    outOfDate = await deps.store.pinnedBuiltinVersion(orgId, agentId).then((pinned) => pinned !== subject.expectedPinnedVersion, () => false);
+  } else if (subject.kind === "agent_share") {
+    outOfDate = live !== undefined && (live.sharesRevision ?? 0) !== subject.expectedSharesRevision;
+  }
+  if (outOfDate) facts.push(fact("Out of date", "The agent has changed since this was asked, so approving it will be refused. Ask again."));
+  return facts;
+}
 
 /** What the page shows for an open record: the people and project it concerns, the words of what it does, and for a write the exact call. */
 async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<ConfirmView> {
@@ -65,10 +96,12 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
       facts: [
         ...(record.agent === undefined ? [] : [fact("Agent", record.agent.name)]),
         fact("Project", record.project), fact("Run", record.subject.taskId), fact("Step", record.subject.stepId), fact("Run owner", record.owner.name),
-        fact("Connector", `${record.connector} (${record.connectorType})`), fact("Kind of action", record.class === "merge" ? "Merge" : "Change"), expires,
+        fact("Connector", `${record.connector} (${record.connectorType})`), fact("Scope", shownText(record.scope, NAME_MAX)),
+        ...(record.repository === undefined ? [] : [fact("Repository", shownText(record.repository, NAME_MAX))]),
+        fact("Kind of action", record.class === "merge" ? "Merge" : "Change"), expires,
       ],
       paragraphs: [record.summary],
-      call: { connector: record.connector, tool: record.tool, arguments: record.arguments },
+      call: { connector: record.connector, tool: record.tool, scope: record.scope, ...(record.repository === undefined ? {} : { repository: record.repository }), arguments: record.arguments },
     };
   }
   if (record.kind === "step") {
@@ -81,6 +114,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen") facts.push(...await agentChangeFacts(deps, record.orgId, subject));
   if (subject.kind === "opt_out") {
     facts.push(fact("Project", subject.project), fact("Repository", subject.repository), fact("Reviewed workflows", subject.files.join("\n")), fact("Digest of what was reviewed", subject.expectedDigest), fact("Reason", subject.reason));
   } else if (subject.kind === "connector_widen") {

@@ -115,7 +115,7 @@ export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 /** An approval as the approval routes show it; `arguments` only when one approval is read. */
 const ApprovalSummarySchema = z.object({
   approvalId: z.string(), kind: z.string(), status: z.string(), confirmUrl: z.string(), summary: z.string().optional(), prompt: z.string().optional(),
-  changes: z.array(z.string()).optional(), project: z.string().optional(), connector: z.string().optional(), tool: z.string().optional(),
+  changes: z.array(z.string()).optional(), project: z.string().optional(), connector: z.string().optional(), tool: z.string().optional(), scope: z.string().optional(), repository: z.string().optional(),
   expiresAt: z.string().optional(), arguments: z.unknown().optional(),
 }).passthrough();
 export type ApprovalSummary = z.infer<typeof ApprovalSummarySchema>;
