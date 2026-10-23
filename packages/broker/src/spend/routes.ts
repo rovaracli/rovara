@@ -119,7 +119,7 @@ async function getOrgSpend(deps: Deps, caller: AgentCaller, month: string): Prom
 }
 
 /** The fields of a ledger line the routes show; the key's id, the table's keys and the org are left out. */
-const LINE_FIELDS = ["at", "usd", "settledUsd", "finalized", "model", "taskId", "operationId", "stepId", "agentId", "project", "payerKind", "payerId", "source", "origin"] as const;
+const LINE_FIELDS = ["at", "usd", "settledUsd", "finalized", "model", "taskId", "operationId", "stepId", "agentId", "chainId", "chainRunId", "project", "payerKind", "payerId", "source", "origin"] as const;
 
 function decodeCursor(raw: string | null): { sk: string } | undefined {
   if (raw === null) return undefined;

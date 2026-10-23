@@ -47,6 +47,8 @@ export const PayerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("member"), developerId: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal("project"), project: z.string().regex(AGENTX_NAME_PATTERN) }).strict(),
   z.object({ kind: z.literal("agent"), agentId: AgentIdSchema }).strict(),
+  // Plan 4: a chain that pays for the runs its triggers start. The id is `ChainIdSchema`'s form (chains.ts imports this module, so it is spelled out here).
+  z.object({ kind: z.literal("chain"), chainId: z.string().regex(/^chn_[0-9a-z]{20}$/) }).strict(),
 ]);
 export type Payer = z.infer<typeof PayerSchema>;
 

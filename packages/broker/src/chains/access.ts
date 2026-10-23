@@ -2,6 +2,7 @@
 // themselves are `evaluateOwned`, `checkShares`, `saveSharesOf` and `requireOwnerAllowed` in agents/access.ts, one implementation for both; this
 // file reads a chain's record and its shares from the chain store and words the refusals for a chain.
 import {
+  TRIAL_LIMITS_R49,
   agentXError,
   atLeast,
   projectAllows,
@@ -24,6 +25,7 @@ import {
   type Evaluation,
   type OwnedAccessDeps,
 } from "../agents/access.js";
+import { readGuardrails } from "../agents/guardrails.js";
 import type { RequestMark } from "../agents/table-writes.js";
 import type { ChainRecord, ChainStore } from "./store.js";
 
@@ -123,4 +125,23 @@ export async function requireChainAccountable(deps: OwnedAccessDeps, orgId: OrgI
   const role = await deps.projectMembers.roleOf(orgId, project, { developerId: survivor, orgRole });
   if (role === undefined || !projectAllows(role, "manage_agents")) throw agentXError("CONFIG_INVALID", `accountable: that person needs to be a maintainer of ${project}`);
   return { developerId: survivor };
+}
+
+/**
+ * Refuses a chain budget the company's guardrails (the most one agent or chain may be given a month) or a trial org's limits (R49) don't allow: checked when the
+ * change is asked for, and again when an admin approves it over the owner cap, since either may have changed meanwhile.
+ */
+export async function requireChainBudgetAllowed(
+  deps: Parameters<typeof readGuardrails>[0] & { orgs?: { getOrg(orgId: OrgId): Promise<{ plan?: string } | undefined> } },
+  orgId: OrgId, monthlyUsd: number | null | undefined,
+): Promise<void> {
+  if (typeof monthlyUsd !== "number") return;
+  const guardrails = await readGuardrails(deps, orgId);
+  if (monthlyUsd > guardrails.maxAgentMonthlyUsd) {
+    throw agentXError("CONFIG_INVALID", `monthlyUsd: your company's guardrails allow at most $${String(guardrails.maxAgentMonthlyUsd)} a month for one chain`);
+  }
+  const trialCap = TRIAL_LIMITS_R49.agentMonthlyUsd;
+  if (monthlyUsd > trialCap && (await deps.orgs?.getOrg(orgId))?.plan === "trial") {
+    throw agentXError("CONFIG_INVALID", `monthlyUsd: a trial organization's chain budget is at most $${String(trialCap)} a month; upgrade the plan to raise it`);
+  }
 }

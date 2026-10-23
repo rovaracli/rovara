@@ -66,12 +66,13 @@ describe("the levels' names", () => {
     expect(MINIMUM_REMAINING_USD).toEqual({ QUICK: 0.5, FULL: 2, CHAT: 0.05, TASK: 0.5, AGENT: 0.1 });
   });
 
-  it("each scope kind has the error it refuses with, and only the agent has a required one", () => {
+  it("each scope kind has the error it refuses with, and only the agent and the chain (Plan 4) have a required one", () => {
     expect(SCOPE_ERRORS).toEqual({
       org: { exceeded: "ORG_BUDGET_EXCEEDED" },
       member: { exceeded: "BUDGET_EXCEEDED" },
       project: { exceeded: "PROJECT_BUDGET_EXCEEDED" },
       agent: { required: "AGENT_BUDGET_REQUIRED", exceeded: "AGENT_BUDGET_EXCEEDED" },
+      chain: { required: "CHAIN_BUDGET_REQUIRED", exceeded: "CHAIN_BUDGET_EXCEEDED" },
       testing: { exceeded: "TEST_ALLOWANCE_USED" },
     });
     expect([errorStatus("PROJECT_BUDGET_EXCEEDED"), errorStatus("AGENT_BUDGET_EXCEEDED"), errorStatus("TEST_ALLOWANCE_USED"), errorStatus("AGENT_BUDGET_REQUIRED")]).toEqual([402, 402, 402, 409]);

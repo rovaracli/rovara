@@ -1477,7 +1477,7 @@ async function shareFor(
 
 /** What admission refuses a start with (the trial, the month's machine time, a budget): each is a recorded refusal, not a failure. */
 export const ADMISSION_REFUSALS: ReadonlySet<string> = new Set([
-  "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED", "BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED",
+  "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED", "BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED",
 ]);
 
 /** What a start needs left to be admitted: an agent-step run, a coding workflow (quick or full), a coding run an agent was chosen for, or a plain task. */

@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { ModelSourceIdSchema, type AgentId } from "./agent.js";
 import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "./org-budget.js";
+import type { ChainId } from "./chains.js";
 import type { OrgId } from "./org.js";
 
 /** A run's limit is its estimate's high end times this. */
@@ -77,14 +78,15 @@ export const APPROVAL_EXECUTING_RETRY_MINUTES = 5;
 // ---- budget scopes (Task 28)
 
 /**
- * What a limit applies to: the whole org, one member, one project, one agent, or one member's test runs of draft agents. The visibility
- * counter `AGENT_USAGE#<agentId>` has no limit and is not a scope. Plan 4 adds `chain`.
+ * What a limit applies to: the whole org, one member, one project, one agent, one chain, or one member's test runs of draft agents. The visibility
+ * counter `AGENT_USAGE#<agentId>` has no limit and is not a scope. A chain's steps count against the chain and not against the agent that runs them.
  */
 export type BudgetScope =
   | { kind: "org" }
   | { kind: "member"; developerId: string }
   | { kind: "project"; project: string }
   | { kind: "agent"; agentId: AgentId }
+  | { kind: "chain"; chainId: ChainId }
   | { kind: "testing"; developerId: string };
 
 /** The name a scope has in a map of limits and in a top-up item's sort key. */
@@ -94,6 +96,7 @@ export function scopeKey(scope: BudgetScope): string {
     case "member": return `MEMBER#${scope.developerId}`;
     case "project": return `PROJECT#${scope.project}`;
     case "agent": return `AGENT#${scope.agentId}`;
+    case "chain": return `CHAIN#${scope.chainId}`;
     case "testing": return `TESTING#${scope.developerId}`;
   }
 }
@@ -221,8 +224,8 @@ export const SPEND_REQUEST_KINDS = ["run_limit", "max_per_run", "planning", "mon
 export type SpendRequestKind = (typeof SPEND_REQUEST_KINDS)[number];
 export const SPEND_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "EXPIRED"] as const;
 export type SpendRequestStatus = (typeof SPEND_REQUEST_STATUSES)[number];
-/** Who a request was routed to: the payer, the project's maintainers, the agent's owner, or the org's owners and admins. */
-export const SPEND_APPROVER_ROLES = ["payer", "project_maintainer", "agent_owner", "org_admin"] as const;
+/** Who a request was routed to: the payer, the project's maintainers, the agent's owner, the chain's owner (Plan 4), or the org's owners and admins. */
+export const SPEND_APPROVER_ROLES = ["payer", "project_maintainer", "agent_owner", "chain_owner", "org_admin"] as const;
 export type SpendApproverRole = (typeof SPEND_APPROVER_ROLES)[number];
 /** The longest reason a request carries, in code points. */
 export const SPEND_REQUEST_REASON_MAX = 300;
@@ -274,6 +277,8 @@ export interface SpendRequestRecord {
   change?: OwnerCapChange;
   /** The agent an `owner_cap` request is about. */
   agentId?: AgentId;
+  /** The chain an `owner_cap` request is about (Plan 4): the person's agent and chain budgets are one total. */
+  chainId?: ChainId;
   createdAt: string;
   expiresAt: string;
   /** When the settlement run next looks at it (`openSpendRequestDueKey`): an unanswered owner's escalation, else its expiry. */

@@ -7,6 +7,7 @@ import {
   CHAIN_REVISION_CONFLICT_MESSAGE,
   ChainIdSchema,
   AgentOwnerSchema,
+  MAX_SPEND_SETTING_USD,
   agentXError,
   atLeast,
   isBuiltinAgentId,
@@ -14,6 +15,7 @@ import {
   type AgentAccessLevel,
   type ChainDefinitionInput,
   type OrgId,
+  type OwnerCapChange,
 } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
@@ -24,12 +26,13 @@ import {
 } from "../agents/approvals.js";
 import { orgAdmins } from "../agents/changes.js";
 import { lessSafeChanges } from "../agents/less-safe.js";
-import { jsonBody, markRequest, parseBody } from "../agents/routes.js";
+import { holdingOwnerCap, jsonBody, markRequest, parseBody, waitingReplay, type AgentRouteDependencies } from "../agents/routes.js";
 import { resolveAgent, type RecipeProblemsError } from "../agents/store.js";
 import {
-  chainAccess, listVisibleChains, requireChainAccess, requireChainAccountable, requireChainOwnerAllowed, setChainShares,
+  chainAccess, listVisibleChains, requireChainAccess, requireChainAccountable, requireChainBudgetAllowed, requireChainOwnerAllowed, setChainShares,
   type ChainAccessDeps,
 } from "./access.js";
+import { withBudgetFields } from "../spend/owner-total.js";
 import { chainLessSafeChanges, type ChainLessSafeLookups } from "./less-safe.js";
 import { chainDigest, type ChainRecord, type ChainStore, type ChainVersion } from "./store.js";
 import { chainGraphProblems, formatChainProblem, validateChainForPublish, validatePinnedChainForOrg, type ChainProblem } from "./validate.js";
@@ -44,8 +47,11 @@ export interface ChainTriggerHooks {
   disableTriggersForTarget(orgId: OrgId, target: { kind: "chain"; chainId: string }): Promise<void>;
 }
 
-/** What every chain route needs: Plan 3's approval dependencies (access, the agent store, where the page lives) and the chain store. */
-export interface ChainRouteDependencies extends ApprovalDependencies {
+/**
+ * What every chain route needs: Plan 3's route dependencies (access, the agent store, where the page lives, and what the owner total and spend requests read)
+ * and the chain store.
+ */
+export interface ChainRouteDependencies extends AgentRouteDependencies {
   chains: ChainStore;
   chainTriggers?: ChainTriggerHooks;
 }
@@ -74,6 +80,9 @@ const RollbackBodySchema = z.object({ requestId: RequestIdSchema, version: z.num
 const RequestOnlySchema = z.object({ requestId: RequestIdSchema }).strict();
 const SharesBodySchema = z.object({ requestId: RequestIdSchema, shares: z.array(z.unknown()) }).strict();
 const OwnerBodySchema = z.object({ requestId: RequestIdSchema, owner: AgentOwnerSchema, accountable: DeveloperRefSchema.optional() }).strict();
+const AccountableBodySchema = z.object({ requestId: RequestIdSchema, accountable: DeveloperRefSchema }).strict();
+/** A chain's monthly budget in dollars, or `null` to clear it. */
+const BudgetBodySchema = z.object({ requestId: RequestIdSchema, monthlyUsd: z.number().finite().min(0).max(MAX_SPEND_SETTING_USD).nullable() }).strict();
 
 const SHARE_RANK = { view: 0, use: 1, edit: 2 } as const;
 
@@ -339,15 +348,24 @@ async function rollbackChain(deps: ChainRouteDependencies, caller: AgentCaller, 
   return { chain: chainView(rolled, access), disabledTriggers: await recheck(deps, chain) };
 }
 
-async function setArchived(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown, archive: boolean): Promise<Shown> {
+async function setArchived(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown, archive: boolean): Promise<Shown | StatusReply> {
   const input = parseBody(RequestOnlySchema, body);
   const { chain, access } = await requireChainAccess(accessOf(deps), caller, chainId, "manage");
   const { mark, replay } = await markRequest(deps, caller, archive ? "chain-archive" : "chain-unarchive", chainId, input);
-  if (replay !== undefined) return { chain: chainView(replay.result as ChainRecord, access) };
+  if (replay !== undefined) return waitingReplay(replay.result) ?? { chain: chainView(replay.result as ChainRecord, access) };
   // An archived chain starts nothing, so its triggers go off with it. Unarchiving turns none back on: a person does that.
-  const changed = archive ? await deps.chains.archive(chain.orgId, chain.chainId, caller.developerId, mark) : await deps.chains.unarchive(chain.orgId, chain.chainId, caller.developerId, mark);
-  if (archive) await deps.chainTriggers?.disableTriggersForTarget(chain.orgId, { kind: "chain", chainId: chain.chainId });
-  return { chain: chainView(changed, access) };
+  if (archive) {
+    const archived = await deps.chains.archive(chain.orgId, chain.chainId, caller.developerId, mark);
+    await deps.chainTriggers?.disableTriggersForTarget(chain.orgId, { kind: "chain", chainId: chain.chainId });
+    return { chain: chainView(archived, access) };
+  }
+  // Unarchiving puts the chain's budget back in its owner's one monthly total, held to the cap like any other raise of it.
+  const unarchived = chain.status !== "archived"
+    ? await deps.chains.unarchive(chain.orgId, chain.chainId, caller.developerId, mark)
+    : await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { status: "active" }), { op: "unarchive" }, mark,
+      (options) => deps.chains.unarchive(chain.orgId, chain.chainId, caller.developerId, mark, options));
+  if (unarchived instanceof StatusReply) return unarchived;
+  return { chain: chainView(unarchived, access) };
 }
 
 async function putShares(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown): Promise<unknown> {
@@ -369,15 +387,54 @@ async function putShares(deps: ChainRouteDependencies, caller: AgentCaller, chai
   return { shares: await setChainShares(accessOf(deps), { orgId: chain.orgId, chainId: chain.chainId, shares, by: caller.developerId, request: mark }) };
 }
 
-async function putOwner(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown): Promise<Shown> {
+async function putOwner(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown): Promise<Shown | StatusReply> {
   const input = parseBody(OwnerBodySchema, body);
   const { chain, access } = await requireChainAccess(accessOf(deps), caller, chainId, "manage");
   const { mark, replay } = await markRequest(deps, caller, "chain-owner", chainId, input);
-  if (replay !== undefined) return { chain: chainView(replay.result as ChainRecord, access) };
+  if (replay !== undefined) return waitingReplay(replay.result) ?? { chain: chainView(replay.result as ChainRecord, access) };
   // Store the owner this returns, not the one asked for: a member who was merged into another is named by the survivor.
   const owner = await requireChainOwnerAllowed(deps, caller, input.owner, chain.owner);
   const accountable = input.accountable === undefined ? undefined : owner.kind === "project" ? await requireChainAccountable(deps, caller.orgId, owner.project, input.accountable.developerId) : input.accountable;
-  return { chain: chainView(await deps.chains.setOwner(chain.orgId, chain.chainId, owner, caller.developerId, accountable, mark), access) };
+  // The chain's budget leaves its owner's total and joins the new owner's (the maintainer accountable for a project's chain), which the cap holds.
+  const { accountable: _before, ...kept } = chain; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
+  const change: OwnerCapChange = { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
+  const moved = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, { ...kept, owner, ...(accountable === undefined ? {} : { accountable }) }, change, mark,
+    (options) => deps.chains.setOwner(chain.orgId, chain.chainId, owner, caller.developerId, accountable, mark, options));
+  if (moved instanceof StatusReply) return moved;
+  return { chain: chainView(moved, access) };
+}
+
+/** `PUT /v1/app/chains/{id}/accountable` [manage]: another maintainer answers for a project's chain; its budget moves to their total, which the cap holds. */
+async function putAccountable(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown): Promise<Shown | StatusReply> {
+  const input = parseBody(AccountableBodySchema, body);
+  const { chain } = await requireChainAccess(accessOf(deps), caller, chainId, "manage");
+  const { mark, replay } = await markRequest(deps, caller, "chain-accountable", chainId, input);
+  if (replay !== undefined) return waitingReplay(replay.result) ?? replay.result as Shown;
+  if (chain.owner.kind !== "project") throw agentXError("CONFIG_INVALID", "accountable: only a project's chain has an accountable maintainer");
+  const accountable = await requireChainAccountable(deps, caller.orgId, chain.owner.project, input.accountable.developerId);
+  const done = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { accountable }), { op: "set_accountable", accountable }, mark,
+    (options) => deps.chains.setAccountable(chain.orgId, chain.chainId, accountable, caller.developerId, mark, options));
+  if (done instanceof StatusReply) return done;
+  return { accountable };
+}
+
+/**
+ * `PUT /v1/app/chains/{id}/budget` [manage]: `{ requestId, monthlyUsd: number | null }`. The budget is refused above the company's guardrail for one agent or
+ * chain, and counted in its owner's one monthly total with their agents' budgets: a change that would take that total's effective sum (with this month's
+ * top-ups) past `ownerAgentBudgetCapUsd` is not made; an org admin is asked (`202 NEEDS_ADMIN_APPROVAL`), and the budget stays as it was until they approve it.
+ */
+async function putBudget(deps: ChainRouteDependencies, caller: AgentCaller, chainId: string, body: unknown): Promise<Shown | StatusReply> {
+  const input = parseBody(BudgetBodySchema, body);
+  const { chain, access } = await requireChainAccess(accessOf(deps), caller, chainId, "manage");
+  const { mark, replay } = await markRequest(deps, caller, "chain-budget", chainId, input);
+  if (replay !== undefined) return waitingReplay(replay.result) ?? { chain: chainView(replay.result as ChainRecord, access) };
+  // Checked now, and again when an admin approves it over the owner cap: either may have changed meanwhile.
+  await requireChainBudgetAllowed(deps, caller.orgId, input.monthlyUsd);
+  const monthlyUsd = input.monthlyUsd === null ? undefined : input.monthlyUsd;
+  const written = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { monthlyBudgetUsd: monthlyUsd }), { op: "set_budget", budget: { monthlyUsd: input.monthlyUsd } }, mark,
+    (options) => deps.chains.setBudget(chain.orgId, chain.chainId, monthlyUsd, caller.developerId, mark, options));
+  if (written instanceof StatusReply) return written;
+  return { chain: chainView(written, access) };
 }
 
 // ---- routing
@@ -417,6 +474,8 @@ export async function routeChainRequest(deps: ChainRouteDependencies, caller: Ag
     if (sub === "shares" && method === "GET") return getShares(deps, caller, chainId);
     if (sub === "shares" && method === "PUT") return putShares(deps, caller, chainId, body());
     if (sub === "owner" && method === "PUT") return putOwner(deps, caller, chainId, body());
+    if (sub === "accountable" && method === "PUT") return putAccountable(deps, caller, chainId, body());
+    if (sub === "budget" && method === "PUT") return putBudget(deps, caller, chainId, body());
   }
   throw agentXError("NOT_FOUND", "route not found");
 }

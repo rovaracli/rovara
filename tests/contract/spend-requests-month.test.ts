@@ -148,8 +148,8 @@ describe("a pause on a month's budget", () => {
 });
 
 describe("an agent's month (MONTH_APPROVERS)", () => {
-  it("routes every scope kind: an agent's to its owner or the admins, every other to the admins", () => {
-    expect(Object.keys(MONTH_APPROVERS).sort()).toEqual(["agent", "member", "org", "project", "testing"]);
+  it("routes every scope kind: an agent's (and, from Plan 4, a chain's) to its owner or the admins, every other to the admins", () => {
+    expect(Object.keys(MONTH_APPROVERS).sort()).toEqual(["agent", "chain", "member", "org", "project", "testing"]);
   });
 
   it("an agent-scope request for $40 on a $30 limit goes to its owner, one for $60 to the admins", async () => {

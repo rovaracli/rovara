@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, ownerBudgetKey, scopeKey, spendCounterKey, topUpKey, chainKey, agentGuardrailsKey,
-  type BudgetScope, type OrgId, type Payer, type SpendRequestRecord,
+  type BudgetScope, type Payer, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { PayerSchema } from "../../packages/contracts/src/agent-run.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
@@ -26,7 +26,6 @@ import { TEST_ORG } from "../support/orgs.js";
 const budget = () => import("../../packages/broker/src/chains/budget.js");
 
 const CHAIN = "chn_aaaaaaaaaaaaaaaaaaaa";
-const OTHER_CHAIN = "chn_bbbbbbbbbbbbbbbbbbbb";
 const RUN = "crn_aaaaaaaaaaaaaaaaaaaa";
 const AGENT = "agt_aaaaaaaaaaaaaaaaaaaaaaaa";
 const KIT = "7".repeat(64);
@@ -44,11 +43,11 @@ beforeAll(async () => { await import("../support/slack-broker.js").then((module)
 // ---- payers and scopes
 
 describe("resolvePayer and the chain payer", () => {
-  const base = (extra: Partial<ResolvePayerInput> = {}): ResolvePayerInput => ({ origin: "app", project: "web", projectPays: false, agentId: AGENT as never, startedBy: { developerId: MAYA.developerId }, ...extra });
+  const base = (extra: Partial<ResolvePayerInput> = {}): ResolvePayerInput => ({ origin: "app", project: "web", projectPays: false, agentId: AGENT, startedBy: { developerId: MAYA.developerId }, ...extra });
 
   it("an event or a schedule that names a chain is paid by the chain, and one that names only an agent by the agent", () => {
     for (const origin of ["event", "schedule"] as const) {
-      expect(resolvePayer(base({ origin, chainId: CHAIN as never })), origin).toEqual({ kind: "chain", chainId: CHAIN });
+      expect(resolvePayer(base({ origin, chainId: CHAIN })), origin).toEqual({ kind: "chain", chainId: CHAIN });
       expect(resolvePayer(base({ origin })), origin).toEqual({ kind: "agent", agentId: AGENT });
     }
   });
@@ -62,8 +61,8 @@ describe("resolvePayer and the chain payer", () => {
 
   it("a project that pays pays for every origin a person starts, and a chain id means nothing to them", () => {
     for (const origin of ["app", "cli", "mcp", "slack"] as const) {
-      expect(resolvePayer(base({ origin, projectPays: true, chainId: CHAIN as never })), origin).toEqual({ kind: "project", project: "web" });
-      expect(resolvePayer(base({ origin, chainId: CHAIN as never })), origin).toEqual({ kind: "member", developerId: MAYA.developerId });
+      expect(resolvePayer(base({ origin, projectPays: true, chainId: CHAIN })), origin).toEqual({ kind: "project", project: "web" });
+      expect(resolvePayer(base({ origin, chainId: CHAIN })), origin).toEqual({ kind: "member", developerId: MAYA.developerId });
     }
   });
 
@@ -87,11 +86,11 @@ describe("resolvePayer and the chain payer", () => {
 describe("budgetScopesFor with a chain payer", () => {
   it("a person-started run on a member-paid project is the org, the member and the project", () => {
     const payer: Payer = { kind: "member", developerId: MAYA.developerId };
-    expect(budgetScopesFor(payer, WEB_PLACE, { agentId: AGENT as never })).toEqual([{ kind: "org" }, { kind: "project", project: "web" }, { kind: "member", developerId: MAYA.developerId }]);
+    expect(budgetScopesFor(payer, WEB_PLACE, { agentId: AGENT })).toEqual([{ kind: "org" }, { kind: "project", project: "web" }, { kind: "member", developerId: MAYA.developerId }]);
   });
 
   it("an event-started run is the org, the project and the chain, and never the agent (no double counting)", () => {
-    const scopes = budgetScopesFor({ kind: "chain", chainId: CHAIN }, WEB_PLACE, { agentId: AGENT as never });
+    const scopes = budgetScopesFor({ kind: "chain", chainId: CHAIN }, WEB_PLACE, { agentId: AGENT });
     expect(scopes).toEqual([{ kind: "org" }, { kind: "project", project: "web" }, { kind: "chain", chainId: CHAIN }]);
     expect(scopes.map(scopeKey)).toEqual(["ORG", "PROJECT#web", `CHAIN#${CHAIN}`]);
     expect(scopes.some((scope) => scope.kind === "agent" || scope.kind === "member")).toBe(false);
@@ -111,8 +110,8 @@ function setup() {
   const deps = { documentClient: db, tableName: "state", access, now: () => T0, cloud: true };
   const ledger: LedgerDependencies = { documentClient: db, tableName: "state", access, now: () => T0, cloud: true };
   const counter = (scope: BudgetScope) => db.get(spendCounterKey(TEST_ORG, MONTH, scopeKey(scope))) as { spentUsd?: number; committedUsd?: number } | undefined;
-  const limitChain = (limitUsd: number, chainId = CHAIN) => db.set({ ...chainKey(TEST_ORG, chainId as never, "META"), entityType: "CHAIN_META", monthlyBudgetUsd: limitUsd });
-  const topUp = (usd: number, chainId = CHAIN) => db.set({ ...topUpKey(TEST_ORG, MONTH, { kind: "chain", chainId } as BudgetScope), entityType: "TOPUP", amountUsd: usd });
+  const limitChain = (limitUsd: number, chainId = CHAIN) => db.set({ ...chainKey(TEST_ORG, chainId, "META"), entityType: "CHAIN_META", monthlyBudgetUsd: limitUsd });
+  const topUp = (usd: number, chainId = CHAIN) => db.set({ ...topUpKey(TEST_ORG, MONTH, { kind: "chain", chainId }), entityType: "TOPUP", amountUsd: usd });
   return { db, access, deps, ledger, counter, limitChain, topUp };
 }
 
@@ -124,7 +123,7 @@ function stepInput(extra: Partial<MintOperationKeyInput> = {}, taskId = "task-1"
     tags: mintTagsFor({ payer: chainPayer, place: WEB_PLACE, agentId: "root-cause-analyst", origin: "chain", taskId, operationId: "op-1", chain: { chainId: CHAIN, chainRunId: RUN } }),
     runLimitUsd: 2, stopAtUsd: 2, taskKeyIds: [], pause: { taskId, key: taskKey(taskId) },
     ...extra,
-  } as MintOperationKeyInput;
+  };
 }
 const minted = (outcome: Awaited<ReturnType<typeof mintOperationKey>>) => {
   if (outcome.outcome !== "minted") throw new Error("expected a minted key");
@@ -201,7 +200,7 @@ describe("chainRunPayer", () => {
 
   it("refuses a person's run that names nobody who started it", async () => {
     const { chainRunPayer } = await budget();
-    expect(() => chainRunPayer({ project: "web", projectPays: false, chainId: CHAIN as never, origin: "app" })).toThrow(/needs the person who started it/);
+    expect(() => chainRunPayer({ project: "web", projectPays: false, chainId: CHAIN, origin: "app" })).toThrow(/needs the person who started it/);
   });
 });
 
@@ -232,7 +231,7 @@ describe("stepRunLimitUsd and settleStepSpend", () => {
     const { settleStepSpend, stepRunLimitUsd } = await budget();
     const run = { runLimitUsd: 3, spentUsd: 2.8 };
     const attempt = { remainingAtStartUsd: stepRunLimitUsd(run) };
-    const settled = await settleStepSpend(run, attempt, { runLimitUsd: 5.2, spentUsd: 5.2 } as never);
+    const settled = settleStepSpend(run, attempt, { runLimitUsd: 5.2, spentUsd: 5.2 });
     expect(settled.spentUsd).toBe(5.2);
     near(settled.raisedUsd, 5);
     near(settled.run.runLimitUsd, 8);
@@ -245,7 +244,7 @@ describe("stepRunLimitUsd and settleStepSpend", () => {
     let run = { runLimitUsd: 10, spentUsd: 0 };
     for (const spent of [5, 3, 2]) {
       const attempt = { remainingAtStartUsd: stepRunLimitUsd(run) };
-      const settled = await settleStepSpend(run, attempt, { runLimitUsd: Math.min(5, attempt.remainingAtStartUsd), spentUsd: spent } as never);
+      const settled = settleStepSpend(run, attempt, { runLimitUsd: Math.min(5, attempt.remainingAtStartUsd), spentUsd: spent });
       expect(settled.raisedUsd).toBe(0);
       run = settled.run;
       expect(run.runLimitUsd).toBe(10);
@@ -257,7 +256,7 @@ describe("stepRunLimitUsd and settleStepSpend", () => {
 
   it("a step that asks for $12 against $10 remaining is a raise of 2 once a person approved it", async () => {
     const { settleStepSpend } = await budget();
-    const settled = await settleStepSpend({ runLimitUsd: 10, spentUsd: 0 }, { remainingAtStartUsd: 10 }, { runLimitUsd: 12, spentUsd: 12 } as never);
+    const settled = settleStepSpend({ runLimitUsd: 10, spentUsd: 0 }, { remainingAtStartUsd: 10 }, { runLimitUsd: 12, spentUsd: 12 });
     expect(settled.raisedUsd).toBe(2);
     expect(settled.run).toEqual({ runLimitUsd: 12, spentUsd: 12 });
   });
@@ -285,7 +284,7 @@ describe("admitChainRun", () => {
     const t = setup();
     t.limitChain(5);
     await expect(admitChainRun(t.deps, { orgId: TEST_ORG, chain: { chainId: CHAIN, name: "Investigate" }, project: "web", payer: chainPayer, firstAgent: first })).resolves.toBeUndefined();
-    t.db.set({ ...spendCounterKey(TEST_ORG, MONTH, `CHAIN#${CHAIN}`), entityType: "SPEND_COUNTER", spentUsd: 4.9, committedUsd: 4.9 });
+    t.db.set({ ...spendCounterKey(TEST_ORG, MONTH, `CHAIN#${CHAIN}`), entityType: "SPEND_COUNTER", spentUsd: 4.95, committedUsd: 4.95 });
     expect(await rejection(admitChainRun(t.deps, { orgId: TEST_ORG, chain: { chainId: CHAIN, name: "Investigate" }, project: "web", payer: chainPayer, firstAgent: first }))).toMatchObject({ code: "CHAIN_BUDGET_EXCEEDED" });
   });
 
@@ -296,7 +295,7 @@ describe("admitChainRun", () => {
       orgId: TEST_ORG, chain: { chainId: CHAIN, name: "Investigate" }, project: "web", payer: { kind: "member", developerId: MAYA.developerId }, firstAgent: first,
     })).resolves.toBeUndefined();
     // admitWork itself answers the room, the same one.
-    expect(await admitWork(t.deps, { orgId: TEST_ORG, payer: { kind: "member", developerId: MAYA.developerId }, project: "web", agentId: "root-cause-analyst" as never, agentName: "x", path: "AGENT" })).toHaveProperty("maxBudgetUsd");
+    expect(await admitWork(t.deps, { orgId: TEST_ORG, payer: { kind: "member", developerId: MAYA.developerId }, project: "web", agentId: "root-cause-analyst", agentName: "x", path: "AGENT" })).toHaveProperty("maxBudgetUsd");
   });
 });
 
@@ -314,6 +313,9 @@ const chainRecord = (t: World, chainId: string) => t.db.get(`ORG#${TEST_ORG}#CHA
 const ownerCapRequests = (t: World) => t.requests().filter((record) => record.kind === "owner_cap");
 const OVER = (name: string, total: number) => `${name}'s agent and chain budgets would total $${String(total)} a month, over the $100 limit for one person. I asked an org admin to approve it.`;
 
+/** What a chain run says about a step: the chain it belongs to and what the run had left when the step started. */
+const reader = (chainId: string, remainingAtStartUsd: number) => ({ stepLimits: async () => ({ chainId, remainingAtStartUsd }) });
+
 /** A task of Maya's chain-paid, as a chain step's start leaves it: the chain payer and the step it belongs to. */
 async function chainTask(t: World, chainId: string, run = RUN) {
   const agentId = await t.agentOf();
@@ -324,14 +326,14 @@ async function chainTask(t: World, chainId: string, run = RUN) {
 const runLimitRequest = (taskId: string, amountUsd: number, newLimitUsd: number): SpendRequestRecord => ({
   orgId: TEST_ORG, spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", kind: "run_limit", scope: { kind: "task", taskId }, taskId, amountUsd, newLimitUsd, reason: "x",
   requestedBy: { kind: "system" }, requestedFor: { developerId: MAYA.developerId }, approverRole: "org_admin", approverIds: [], status: "PENDING", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1e9).toISOString(),
-} as SpendRequestRecord);
+});
 
 describe("who approves a chain's run limit", () => {
   it("a raise within the lead threshold goes to the chain's owner, a raise within the admin threshold to the owning project's maintainers, above it to the admins", async () => {
     const t = await setupWorld();
     const chainId = await chainOf(t);
     const task = await chainTask(t, chainId);
-    const deps = { ...t.deps(), chainRunBudgets: { remainingAtStartUsd: async () => 1000 } };
+    const deps = { ...t.deps(), chainRunBudgets: reader(chainId, 1000) };
     expect(await spendApprovers(deps, runLimitRequest(task.taskId, 4, 8))).toMatchObject({ role: "chain_owner", ids: [MAYA.developerId] });
     // Maya is the starter and the owner: a member-owned chain's owner is the payer tier, so she may approve her own chain's raise only as Plan 3's rule allows it.
     const project = await spendApprovers(deps, runLimitRequest(task.taskId, 4, 40));
@@ -344,7 +346,7 @@ describe("who approves a chain's run limit", () => {
     const t = await setupWorld();
     const chainId = await chainOf(t, BEN, { owner: { kind: "project", project: "payments" }, accountable: { developerId: BEN.developerId } });
     const task = await chainTask(t, chainId);
-    const deps = { ...t.deps(), chainRunBudgets: { remainingAtStartUsd: async () => 1000 } };
+    const deps = { ...t.deps(), chainRunBudgets: reader(chainId, 1000) };
     expect(await spendApprovers(deps, runLimitRequest(task.taskId, 3, 6))).toMatchObject({ role: "chain_owner", ids: [BEN.developerId] });
   });
 
@@ -353,14 +355,14 @@ describe("who approves a chain's run limit", () => {
     const chainId = await chainOf(t);
     const task = await chainTask(t, chainId);
     // The step started with $10 left on the run; a new limit of $40 goes past it.
-    const deps = { ...t.deps(), chainRunBudgets: { remainingAtStartUsd: async () => 10 } };
+    const deps = { ...t.deps(), chainRunBudgets: reader(chainId, 10) };
     const runLevel = await spendApprovers(deps, runLimitRequest(task.taskId, 4, 40));
     expect(runLevel.role).toBe("chain_owner");
     expect(runLevel.ids).toEqual([MAYA.developerId]);
     expect((await spendApprovers(deps, runLimitRequest(task.taskId, 4, 400))).role).toBe("org_admin");
     // Within what the run had left it is an ordinary raise, with the maintainer tier.
     expect((await spendApprovers(deps, runLimitRequest(task.taskId, 4, 10))).role).toBe("chain_owner");
-    const within = { ...t.deps(), chainRunBudgets: { remainingAtStartUsd: async () => 100 } };
+    const within = { ...t.deps(), chainRunBudgets: reader(chainId, 100) };
     expect((await spendApprovers(within, runLimitRequest(task.taskId, 4, 40))).role).toBe("project_maintainer");
   });
 
@@ -368,8 +370,8 @@ describe("who approves a chain's run limit", () => {
     const t = await setupWorld();
     const chainId = await chainOf(t);
     const task = await chainTask(t, chainId);
-    for (const reader of [undefined, { remainingAtStartUsd: async () => undefined }]) {
-      const deps = { ...t.deps(), ...(reader === undefined ? {} : { chainRunBudgets: reader }) };
+    for (const unreadable of [undefined, { stepLimits: async () => undefined }]) {
+      const deps = { ...t.deps(), ...(unreadable === undefined ? {} : { chainRunBudgets: unreadable }) };
       expect((await spendApprovers(deps, runLimitRequest(task.taskId, 4, 40))).role).toBe("chain_owner");
     }
   });
@@ -378,7 +380,7 @@ describe("who approves a chain's run limit", () => {
     const t = await setupWorld();
     const agentId = await t.agentOf();
     const task = await t.runOf(agentId);
-    const deps = { ...t.deps(), chainRunBudgets: { remainingAtStartUsd: async () => 1 } };
+    const deps = { ...t.deps(), chainRunBudgets: reader("chn_cccccccccccccccccccc", 1) };
     expect((await spendApprovers(deps, runLimitRequest(task.taskId, 4, 40))).role).toBe("project_maintainer");
   });
 });
@@ -387,7 +389,7 @@ describe("who approves a chain's month", () => {
   const monthRequest = (chainId: string, amountUsd: number, asker = CARL): SpendRequestRecord => ({
     orgId: TEST_ORG, spendRequestId: "spr_bbbbbbbbbbbbbbbbbbbb", kind: "month", scope: { kind: "chain", chainId }, amountUsd, reason: "x", requestedBy: { kind: "member", developerId: asker.developerId },
     requestedFor: { developerId: asker.developerId }, approverRole: "org_admin", approverIds: [], status: "PENDING", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1e9).toISOString(),
-  } as SpendRequestRecord);
+  });
 
   it("has a rule for the chain scope", () => {
     expect(typeof MONTH_APPROVERS.chain).toBe("function");
@@ -403,8 +405,8 @@ describe("who approves a chain's month", () => {
     // $20 + $40 is past the $50 an agent or chain may have.
     expect((await spendApprovers(t.deps(), monthRequest(chainId, 40))).role).toBe("org_admin");
     // The owner's effective total with the top-up past $100.
-    await t.budgeted(40);
-    await t.budgeted(40);
+    await t.budgeted(30);
+    await t.budgeted(30);
     expect(await spendApprovers(t.deps(), monthRequest(chainId, 25))).toMatchObject({ role: "org_admin" });
     expect((await spendApprovers(t.deps(), monthRequest(chainId, 15))).role).toBe("chain_owner");
   });
@@ -498,16 +500,19 @@ describe("PUT /v1/app/chains/{id}/budget", () => {
     }
   });
 
-  it("refuses a budget above the guardrail's maximum, and checks it again as the guardrail is now", async () => {
+  it("refuses a budget above the guardrail's maximum, and reads the guardrail as it is now", async () => {
     const t = await setupWorld();
     const chainId = await chainOf(t);
     const refused = await setChainBudget(t, MAYA, chainId, 300);
     expect(refused.status).toBe(400);
-    expect(String(refused.body.message ?? (refused.body.error as { message?: string } | undefined)?.message)).toContain("guardrails allow at most $50 a month for one chain");
-    t.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: ADA.developerId, updatedAt: "2026-10-21T00:00:00.000Z", guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 200 } });
-    expect((await setChainBudget(t, MAYA, chainId, 300)).status).toBe(400);
-    expect((await setChainBudget(t, ADA, chainId, 150)).status).toBe(404);
-    expect((await setChainBudget(t, MAYA, chainId, 150)).status).toBe(200);
+    expect(JSON.stringify(refused.body)).toContain("guardrails allow at most $50 a month for one chain");
+    expect(chainRecord(t, chainId)?.monthlyBudgetUsd).toBeUndefined();
+    t.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: ADA.developerId, updatedAt: "2026-10-21T00:00:00.000Z", guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 70 } });
+    expect((await setChainBudget(t, MAYA, chainId, 60)).status).toBe(200);
+    const again = await setChainBudget(t, MAYA, chainId, 80);
+    expect(again.status).toBe(400);
+    expect(JSON.stringify(again.body)).toContain("at most $70 a month");
+    expect(chainRecord(t, chainId)?.monthlyBudgetUsd).toBe(60);
   });
 
   it("replays a repeated request id without doing it again", async () => {
@@ -518,7 +523,7 @@ describe("PUT /v1/app/chains/{id}/budget", () => {
     const again = await t.api(MAYA, "PUT", `/v1/app/chains/${chainId}/budget`, { requestId, monthlyUsd: 9 });
     expect([first.status, again.status]).toEqual([200, 200]);
     expect(counterOf(t, MAYA)?.totalUsd).toBe(9);
-    expect((await t.api(MAYA, "PUT", `/v1/app/chains/${chainId}/budget`, { requestId, monthlyUsd: 10 })).status).toBe(409);
+    expect((await t.api(MAYA, "PUT", `/v1/app/chains/${chainId}/budget`, { requestId, monthlyUsd: 10 })).status).toBe(400);
   });
 });
 
@@ -530,7 +535,7 @@ describe("one monthly total for an owner's agent and chain budgets (R65)", () =>
     const chainId = await chainOf(t);
     const reply = await setChainBudget(t, MAYA, chainId, 30);
     expect(reply.status).toBe(202);
-    expect(reply.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL", message: OVER("Maya", 110) });
+    expect(reply.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL", message: OVER("Maya Chen", 110) });
     expect(typeof reply.body.spendRequestId).toBe("string");
     expect(chainRecord(t, chainId)?.monthlyBudgetUsd).toBeUndefined();
     expect(t.ownerTotal(MAYA)).toBe(80);
@@ -584,9 +589,10 @@ describe("one monthly total for an owner's agent and chain budgets (R65)", () =>
   it("a raise on a chain and a raise on an agent for one owner that together pass the cap: exactly one applies (the counter's version)", async () => {
     const t = await setupWorld();
     const agentA = await t.budgeted(40);
-    await t.budgeted(30);
+    await t.budgeted(40);
     const chainId = await chainOf(t);
-    const replies = await Promise.all([setChainBudget(t, MAYA, chainId, 20), t.setBudget(MAYA, agentA, { monthlyUsd: 50 })]);
+    // $80 of agents: a chain at $15 (95) and an agent raised by $10 (90) each fit, but not together (105).
+    const replies = await Promise.all([setChainBudget(t, MAYA, chainId, 15), t.setBudget(MAYA, agentA, { monthlyUsd: 50 })]);
     expect(replies.map((reply) => reply.status).sort()).toEqual([200, 202]);
     expect(ownerCapRequests(t)).toHaveLength(1);
     expect(t.ownerTotal(MAYA)).toBeLessThanOrEqual(100);
@@ -606,7 +612,7 @@ describe("one monthly total for an owner's agent and chain budgets (R65)", () =>
     expect((await ownerEffectiveTotal(t.deps(), { orgId: TEST_ORG, owner: MAYA.developerId, month: month() })).totalUsd).toBe(90);
     const reply = await setChainBudget(t, MAYA, chainId, 20);
     expect(reply.status).toBe(202);
-    expect(reply.body.message).toBe(OVER("Maya", 105));
+    expect(reply.body.message).toBe(OVER("Maya Chen", 105));
     expect(chainRecord(t, chainId)?.monthlyBudgetUsd).toBe(5);
   });
 
@@ -635,7 +641,7 @@ describe("one monthly total for an owner's agent and chain budgets (R65)", () =>
     expect(t.ownerTotal(BEN)).toBe(30);
     const reply = await t.api(BEN, "PUT", `/v1/app/chains/${chainId}/accountable`, { accountable: { developerId: MAYA.developerId } });
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
-    expect(reply.body.message).toBe(OVER("Maya", 110));
+    expect(reply.body.message).toBe(OVER("Maya Chen", 110));
     expect(chainRecord(t, chainId)?.accountable?.developerId).toBe(BEN.developerId);
     expect(t.ownerTotal(BEN)).toBe(30);
     expect(t.ownerTotal(MAYA)).toBe(80);
@@ -654,7 +660,7 @@ describe("one monthly total for an owner's agent and chain budgets (R65)", () =>
     await t.budgeted(40);
     const reply = await t.api(MAYA, "POST", `/v1/app/chains/${chainId}/unarchive`, {});
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
-    expect(reply.body.message).toBe(OVER("Maya", 110));
+    expect(reply.body.message).toBe(OVER("Maya Chen", 110));
     expect(chainRecord(t, chainId)?.status).toBe("archived");
     await t.decide(ADA, String(reply.body.spendRequestId));
     expect(chainRecord(t, chainId)?.status).toBe("active");
@@ -667,12 +673,13 @@ describe("one monthly total for an owner's agent and chain budgets (R65)", () =>
     await t.budgeted(40, CARL);
     const chainId = await chainOf(t);
     expect((await setChainBudget(t, MAYA, chainId, 30)).status).toBe(200);
-    const reply = await t.api(MAYA, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "member", developerId: CARL.developerId } });
+    // Handing a chain to another member is an admin's to do (as for an agent).
+    const reply = await t.api(DEB, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "member", developerId: CARL.developerId } });
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
-    expect(reply.body.message).toBe(OVER("Carl", 110));
+    expect(reply.body.message).toBe(OVER("Carl Contributor", 110));
     expect(chainRecord(t, chainId)?.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect(t.ownerTotal(MAYA)).toBe(30);
-    await t.decide(DEB, String(reply.body.spendRequestId));
+    await t.decide(ADA, String(reply.body.spendRequestId));
     expect(chainRecord(t, chainId)?.owner).toEqual({ kind: "member", developerId: CARL.developerId });
     expect(t.ownerTotal(MAYA)).toBe(0);
     expect(t.ownerTotal(CARL)).toBe(110);

@@ -30,7 +30,9 @@ import {
   type AgentId,
   type AgentOwner,
   type BaseRef,
+  type BudgetScope,
   type BuiltinAgentId,
+  type ChainId,
   type OrgId,
   type OwnerCapChange,
   type ProjectAiSettings,
@@ -65,6 +67,7 @@ import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import type { ChainStore } from "../chains/store.js";
+import type { ChainRunSpendReader } from "../spend/chain-run-spend.js";
 import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { readTopUp } from "../spend/top-ups.js";
@@ -85,6 +88,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   chains?: ChainStore;
   /** Plan 4 Tasks 18 and 20: what the chain routes ask of the trigger code. Absent until it exists: a chain then has no triggers. */
   chainTriggers?: ChainTriggerHooks;
+  /** Plan 4 Task 6: what a chain run says about one of its steps (the chain, and the limit the run had left at the step's start), for who approves a step's raise. Absent: every chain step's raise is read as a run-level raise. */
+  chainRunBudgets?: ChainRunSpendReader;
   /** Where the org's plan is read (Task 28): a trial org keeps the placeholder limits (R49). Without it no org is a trial. */
   orgs?: Pick<OrgStore, "getOrg">;
   /** Whether the install is a cloud one, whose orgs start with the placeholder monthly limits (R47); the spend routes show limits accordingly. */
@@ -720,22 +725,35 @@ async function requireWithinTrial(deps: AgentRouteDependencies, orgId: OrgId, la
  * request holding `change`, and the answer is `202 { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }` (PF27). The same happens when the store
  * refuses it for the cap (the total moved after this read), with the figures as they are now. The request's R18 item is `mark`, so a repeat answers 202 again.
  */
-async function holdingCap<T>(
+function holdingCap<T>(
   deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, before: Parameters<typeof ownerShare>[0], after: Parameters<typeof ownerShare>[0],
+  change: OwnerCapChange, mark: RequestMark, run: (options: { ownerCap: OwnerCap }) => Promise<T>,
+): Promise<T | StatusReply> {
+  return holdingOwnerCap(deps, caller, { kind: "agent", agentId }, before, after, change, mark, run);
+}
+
+/**
+ * `holdingCap` for an agent or a chain (Plan 4 Task 5): the two kinds of budget are one monthly total, so a chain's change is held to the same effective
+ * total, at the same counter version, and asks the admin with the same `owner_cap` request, with its own words ("agent and chain budgets") and its own scope.
+ */
+export async function holdingOwnerCap<T>(
+  deps: AgentRouteDependencies, caller: AgentCaller, subject: { kind: "agent"; agentId: AgentId } | { kind: "chain"; chainId: ChainId },
+  before: Parameters<typeof ownerShare>[0], after: Parameters<typeof ownerShare>[0],
   change: OwnerCapChange, mark: RequestMark, run: (options: { ownerCap: OwnerCap }) => Promise<T>,
 ): Promise<T | StatusReply> {
   const shares = async () => {
     const survivor = async (share: ReturnType<typeof ownerShare>) => (share === undefined ? undefined : { ...share, owner: await resolveSurvivor(deps, caller.orgId, share.owner) });
     const [from, to] = [await survivor(ownerShare(before)), await survivor(ownerShare(after))];
-    // Fix round 2 (N-1): the agent's top-up for the month goes with it to an owner it newly counts for.
-    const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), { kind: "agent", agentId }) : 0;
+    // Fix round 2 (N-1): its top-up for the month goes with it to an owner it newly counts for.
+    const topUpScope: BudgetScope = subject.kind === "agent" ? { kind: "agent", agentId: subject.agentId } : { kind: "chain", chainId: subject.chainId };
+    const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), topUpScope) : 0;
     return ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
   };
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
     const monthly = ownerShare(after)?.usd;
     const { record, message } = await requestOwnerCap(deps, {
-      orgId: caller.orgId, agentId, requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
+      orgId: caller.orgId, ...(subject.kind === "agent" ? { agentId: subject.agentId } : { chainId: subject.chainId }), requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
       ...(monthly === undefined ? {} : { newLimitUsd: monthly }), ...(newOwner === undefined ? {} : { newOwner }),
     });
     return new StatusReply(202, { status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message });
@@ -754,7 +772,7 @@ async function holdingCap<T>(
 }
 
 /** A request whose first answer was a 202 (it waits for an org admin) answers 202 again (R18). */
-const waitingReplay = (result: unknown): StatusReply | undefined =>
+export const waitingReplay = (result: unknown): StatusReply | undefined =>
   (typeof result === "object" && result !== null && (result as { status?: unknown }).status === "NEEDS_ADMIN_APPROVAL" ? new StatusReply(202, result) : undefined);
 
 async function projectAiView(deps: AgentRouteDependencies, orgId: OrgId, stored: { settings: ProjectAiSettings; revision: number }): Promise<Shown> {
