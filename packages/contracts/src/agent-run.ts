@@ -159,6 +159,8 @@ export const AgentRunStateSchema = z.object({
     told: z.array(z.string()).optional(),
     /** The branch the worker chose when the step reported while its write approvals were still open: kept for the end of the step (Task 22 review, M3). */
     pendingBranch: z.string().max(200).optional(),
+    /** How many times the step was handed the outcomes of its approved actions (a continuation); a rerun after a budget pause is not one. Absent on older runs. */
+    continuations: z.number().int().min(0).optional(),
   }).strict()),
   reports: z.array(z.object({ stepId: StepIdSchema, name: z.string(), text: z.string() }).strict()),
   finalReport: z.string().optional(),
@@ -174,6 +176,15 @@ export const AgentRunStateSchema = z.object({
   endReason: z.string().max(1000).optional(),
   endedAt: z.string().optional(),
   /** The limit that paused the run (a `PauseScope`) and when; `notifiedAt` is when the pause handlers were told. */
-  pause: z.object({ scope: z.unknown(), at: z.string(), notifiedAt: z.string().optional() }).strict().optional(),
+  pause: z.object({
+    scope: z.unknown(), at: z.string(), notifiedAt: z.string().optional(),
+    /** The operation whose budget stop this is: the key that tells whether a pause was already answered (the task's `budgetStopOf`). */
+    operationId: z.string().optional(),
+    /**
+     * The stop is known but its pause is not (the proxy's mid-step "budget exceeded": the broker had written none yet). The scope is a placeholder, nothing was told, and the
+     * run waits for the real pause for a bounded time, then ends FAILED (final fix wave, runs I-1).
+     */
+    unconfirmed: z.literal(true).optional(),
+  }).strict().optional(),
 }).strict();
 export type AgentRunState = z.infer<typeof AgentRunStateSchema>;

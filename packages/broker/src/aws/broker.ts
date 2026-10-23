@@ -5698,6 +5698,10 @@ function agentRunHostOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTas
       const artifactId = await putArtifact(dependencies, operation, { name, mediaType: "text/markdown", content: text });
       return (await getItem<{ objectKey?: unknown }>(dependencies, { pk: `WORKSPACE#${task.workspaceId}`, sk: `ARTIFACT#${artifactId}` }))?.objectKey as string | undefined;
     },
+    // The pause (and the request) a budget stop of this operation stands for, when none was written (the proxy's mid-step stop): the sweep asks again through here.
+    askForPause: async (task, operationId) => {
+      if (await askForPausedTask(dependencies, task.taskId, { id: operationId }) === "failed") throw agentXError("RUNTIME_UNAVAILABLE", "the pause could not be asked for");
+    },
     ...(developer === undefined ? {} : { taskUrl: (taskId: string) => taskPageUrl(developer.issuer, taskId) }),
     ...(developer?.slackTeamId === undefined ? {} : {
       slackChannels: async (orgId: OrgId, project: string) => (await queryAllItems(dependencies, slackBindingPk(orgId, developer.slackTeamId!), SLACK_BINDING_SK_PREFIX))
@@ -12932,13 +12936,19 @@ async function recordTerminalResult(
     throw agentXError("STALE_FENCE", "terminal callback no longer owns the workspace");
   }
   if (closeCanFinish && taskPointer !== undefined) await finishDeveloperClose(dependencies, taskPointer, operation.id, operation.createdAt, operation.discardUnpublished === true && closePreflight?.safeToClose !== true);
+  // Plan 3 final fix wave (runs I-1): an agent-step run's budget stop with no pause yet (the proxy's mid-step "budget exceeded") is asked for BEFORE the engine is
+  // driven, so the engine tells the pause's real scope, once, instead of a made-up one that it then resumes at once. A stop an approval already answered is not asked again.
+  const budgetStoppedRun = taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
+  const stop = { asked: false };
+  const runStop = budgetStoppedRun && taskPointer !== undefined ? await agentRunStopAsk(dependencies, taskPointer.taskId, operation.id) : "not_run";
+  if (runStop !== "not_run") stop.asked = true;
+  if (runStop === "ask" && taskPointer !== undefined) await askForPausedTask(dependencies, taskPointer.taskId, operation);
   // Gap 6: start any step this result made due (its dispatch row committed above); a lost start is the sweep's.
   if (taskPointer !== undefined) await dispatchWorkflowContinuation(dependencies, taskPointer.taskId);
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
   // Plan 3, Task 32: a task operation that ran out of budget is paused, and asks for the limit its pause names (an agent-step run's engine paused it above).
   const budgetStopped = taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
-  const stop = { asked: false };
   // Plan 3, Task 22 (G7): a workflow task that passed its sequence, and a plain task whose operation ended, tell the end handlers (an agent-step run's engine tells its own).
   // Plan 3, M-6: a plain task that stopped on a budget is paused, not ended (Task 32 may resume it): the pause handlers hear that instead, before the ask below.
   if (taskPointer !== undefined && !closeCanFinish && (hasTaskEndHandlers() || (budgetStopped && hasTaskPauseHandlers()))) {
@@ -12978,10 +12988,24 @@ async function recordTerminalResult(
 }
 
 /**
+ * How the budget stop of `operationId` is asked for before the engine is driven: "not_run" (the task is not an agent-step run: the ordinary ask follows), "skip" (a
+ * run whose stop an approval already answered: nothing is asked, or a second pause would be written for it) or "ask".
+ */
+async function agentRunStopAsk(dependencies: AwsBrokerDependencies, taskId: string, operationId: string): Promise<"not_run" | "skip" | "ask"> {
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task === undefined || task.agent === undefined || task.workflow !== undefined || await getItem(dependencies, taskAgentRunKey(taskId)) === undefined) return "not_run";
+    return task.budgetPause === undefined && task.budgetStopOf === operationId ? "skip" : "ask";
+  } catch {
+    return "not_run";
+  }
+}
+
+/**
  * Plan 3, Task 32: the spend request of a task whose operation ended out of budget. Never fails the worker's result: a request that can't be made now is logged,
  * and the task stays paused (the owner's Continue, or the next refusal, asks again).
  */
-async function askForPausedTask(dependencies: AwsBrokerDependencies, taskId: string, operation: OperationRecord): Promise<"asked" | "failed"> {
+async function askForPausedTask(dependencies: AwsBrokerDependencies, taskId: string, operation: Pick<OperationRecord, "id" | "workflowMode">): Promise<"asked" | "failed"> {
   const agents = agentRouteDependencies(dependencies, developerTaskActions(dependencies));
   if (agents === undefined) return "asked";
   try {
