@@ -104,6 +104,8 @@ describe("turning a trigger on needs a person", () => {
     v.hook("sentry", HOOK_A2);
     v.hook("linear", HOOK_B);
     const other = await v.budgetedChain(undefined, {});
+    // The chain runs as its member owner, who must be able to start tasks on the project a trigger is moved to.
+    v.projectMembers.grant(ORG_A, "api", PRIYA, "contributor");
     const changes: Array<[string, Record<string, unknown>, string?]> = [
       ["type", { project: "web", spec: { ...PR_OPENED, type: "issues.opened" } }],
       ["source", { project: "web", spec: { kind: "event", source: "linear", type: "issue.created" }, hookId: HOOK_B }],

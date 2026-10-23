@@ -307,4 +307,16 @@ describe("the event hook route", () => {
   it("is not in the legacy template", () => {
     expect(routes({}).filter(([, route]) => String(route.Properties["RouteKey"]).includes("/v1/hooks/"))).toStrictEqual([]);
   });
+
+  it("never exists without its throttle: where the stage has a bucket for it the route is there, and where the route is absent the stage has none", () => {
+    const key = "POST /v1/hooks/{source}/{hookId}";
+    for (const context of [{ agentxEnv: "staging" }, {}]) {
+      const stack = buildAgentXApp(context).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+      const resources = Template.fromStack(stack!).toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>;
+      const route = Object.values(resources).some((resource) => resource.Type === "AWS::ApiGatewayV2::Route" && resource.Properties["RouteKey"] === key);
+      const stage = Object.values(resources).find((resource) => resource.Type === "AWS::ApiGatewayV2::Stage")!;
+      const throttled = Object.hasOwn(stage.Properties["RouteSettings"] ?? {}, key);
+      expect(route, JSON.stringify(context)).toBe(throttled);
+    }
+  });
 });

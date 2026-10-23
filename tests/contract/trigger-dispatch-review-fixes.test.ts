@@ -49,6 +49,9 @@ async function customAgent(v: TriggerWorld, owner: { member: string } | { projec
   return created;
 }
 
+/** A stored item with one attribute missing, as a damaged or foreign record would be. */
+const without = (item: Record<string, unknown>, field: string) => Object.fromEntries(Object.entries(item).filter(([key]) => key !== field)) as typeof item & { pk: string; sk: string };
+
 const merge = (v: TriggerWorld, duplicate: string, survivor: string) => v.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, mergedInto: survivor });
 
 describe("I-1: the run owner", () => {
@@ -109,8 +112,7 @@ describe("I-1: the run owner", () => {
     const { v, deps } = setup();
     const agent = await customAgent(v, { project: "web", accountable: MAX });
     const [record] = v.db.find((item) => item["agentId"] === agent.agentId && item["accountable"] !== undefined);
-    const { accountable: _accountable, ...withoutAccountable } = record!;
-    v.db.set(withoutAccountable);
+    v.db.set(without(record!, "accountable"));
     const trigger = await v.seed({ target: { kind: "agent", agentId: agent.agentId }, createdBy: DANA });
     expect((await triggerProblems(deps, trigger)).map((problem) => problem.path)).toEqual(["owner"]);
   });
@@ -123,10 +125,8 @@ describe("I-2: one unreadable trigger does not block the hook", () => {
     const good = await v.seed({ target: { kind: "chain", chainId: chain.chainId } });
     const noTime = await v.seed({ target: { kind: "chain", chainId: chain.chainId } });
     const noSpec = await v.seed({ target: { kind: "chain", chainId: chain.chainId } });
-    const { createdAt: _createdAt, ...withoutTime } = v.db.get(triggerKey(ORG_A, noTime.triggerId))!;
-    v.db.set(withoutTime);
-    const { spec: _spec, ...withoutSpec } = v.db.get(triggerKey(ORG_A, noSpec.triggerId))!;
-    v.db.set(withoutSpec);
+    v.db.set(without(v.db.get(triggerKey(ORG_A, noTime.triggerId))!, "createdAt"));
+    v.db.set(without(v.db.get(triggerKey(ORG_A, noSpec.triggerId))!, "spec"));
     const outcomes = await dispatch(prEvent());
     expect(outcomes.map((entry) => [entry.triggerId, entry.outcome])).toEqual([[good.triggerId, "started"]]);
     const broken = logs.filter((entry) => entry.event === "trigger_dispatch.record_unreadable").map((entry) => entry.fields["triggerId"]);
@@ -168,8 +168,18 @@ describe("the subject loop guard", () => {
     expect(new Map(both.map((entry) => [entry.triggerId, entry.outcome]))).toEqual(new Map([[first.triggerId, "skipped"], [second.triggerId, "started"]]));
     // The same number in another repository is another subject.
     expect((await dispatch(prEvent({ subject: { kind: "pull_request", id: "42", title: "Same number", url: "https://github.com/acme/api/pull/42" } })))[0]).toMatchObject({ triggerId: first.triggerId, outcome: "started" });
-    v.clock.now += 31 * 60_000;
-    expect((await dispatch(prEvent({ occurredAt: new Date(v.clock.now - 60_000).toISOString() })))[0]).toMatchObject({ triggerId: first.triggerId, outcome: "started" });
+  });
+
+  it("starts again for the same subject once 30 minutes have passed", async () => {
+    const { v, dispatch } = setup();
+    const chain = await v.budgetedChain(ONE_STEP);
+    const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId } });
+    const subject = { kind: "pull_request" as const, id: "42", title: "Fix", url: "https://github.com/acme/web/pull/42" };
+    expect((await dispatch(prEvent({ subject })))[0]).toMatchObject({ outcome: "started" });
+    v.clock.now += 29 * 60_000;
+    expect((await dispatch(prEvent({ subject })))[0]).toMatchObject({ outcome: "skipped", reason: "recent_subject" });
+    v.clock.now += 2 * 60_000;
+    expect((await dispatch(prEvent({ subject })))[0]).toMatchObject({ triggerId: trigger.triggerId, outcome: "started" });
   });
 
   it("does not count a skipped or refused event as a start, and uses no allowance for it", async () => {

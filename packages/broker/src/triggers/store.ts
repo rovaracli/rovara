@@ -3,9 +3,13 @@
 // the request item (R18) when the request has one, so a repeat is answered from it and writes nothing. A write that depends on what it read is conditional on the
 // record's `revision`: a lost race is a conflict, never an overwrite.
 import { DeleteCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { z } from "zod";
 import {
+  EventTriggerSpecSchema,
   INDEX_EXPIRY_ATTRIBUTE,
   MAX_TRIGGERS_PER_TARGET,
+  ScheduleTriggerSpecSchema,
+  TriggerTargetSchema,
   TRIGGER_ACTIVITY_TTL_DAYS,
   newPrefixedId,
   orgScoped,
@@ -53,6 +57,25 @@ export interface TriggerRecord {
   updatedAt: string;
   revision: number;
 }
+
+/**
+ * What a stored trigger must hold to be acted on. The lists parse with it, so a record that was damaged or written by something else is left out (and reported to a caller that asks)
+ * instead of failing the read of every other trigger beside it. Fields it does not name are kept.
+ */
+const TriggerRecordSchema = z.object({
+  orgId: z.string().min(1),
+  triggerId: z.string().min(1),
+  target: TriggerTargetSchema,
+  project: z.string().min(1),
+  spec: z.union([EventTriggerSpecSchema, ScheduleTriggerSpecSchema]),
+  hookId: z.string().optional(),
+  enabled: z.boolean(),
+  maxRunsPerHour: z.number(),
+  createdBy: z.string().min(1),
+  createdAt: z.string().min(1),
+  updatedAt: z.string(),
+  revision: z.number(),
+}).passthrough();
 
 export interface TriggerActivityEntry {
   at: string;
@@ -141,9 +164,23 @@ export class TriggerStore {
     return item === undefined || item["orgId"] !== orgId ? undefined : (strip(item) as unknown as TriggerRecord);
   }
 
-  private async recordsOf(orgId: OrgId, index: Item[]): Promise<TriggerRecord[]> {
-    const records = await Promise.all(index.map((entry) => this.get(orgId, String(entry["sk"]))));
-    return records.filter((record): record is TriggerRecord => record !== undefined).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.triggerId.localeCompare(b.triggerId));
+  /**
+   * The records the index names, oldest first. One that is not there (or is another org's) is left out; one that does not parse is left out too and handed to `onUnreadable`
+   * by its id, so a caller that can log does.
+   */
+  private async recordsOf(orgId: OrgId, index: Item[], onUnreadable?: (triggerId: string) => void): Promise<TriggerRecord[]> {
+    const found = await Promise.all(index.map(async (entry) => {
+      const triggerId = String(entry["sk"]);
+      return { triggerId, item: await this.read(triggerKey(orgId, triggerId)) };
+    }));
+    const records: TriggerRecord[] = [];
+    for (const { triggerId, item } of found) {
+      if (item === undefined || item["orgId"] !== orgId) continue;
+      const parsed = TriggerRecordSchema.safeParse(strip(item));
+      if (parsed.success) records.push(parsed.data as unknown as TriggerRecord);
+      else onUnreadable?.(triggerId);
+    }
+    return records.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.triggerId.localeCompare(b.triggerId));
   }
 
   async listForTarget(orgId: OrgId, target: TriggerTarget): Promise<TriggerRecord[]> {
@@ -155,8 +192,8 @@ export class TriggerStore {
   }
 
   /** The triggers of the receiving hook (`hookId` undefined for GitHub's): what dispatch reads, and no other hook's. */
-  async listForMatch(orgId: OrgId, source: EventTriggerSpec["source"], project: string, hookId: string | undefined): Promise<TriggerRecord[]> {
-    return this.recordsOf(orgId, await this.queryAll(triggerMatchKey(orgId, source, project, hookId ?? "github", "x").pk));
+  async listForMatch(orgId: OrgId, source: EventTriggerSpec["source"], project: string, hookId: string | undefined, onUnreadable?: (triggerId: string) => void): Promise<TriggerRecord[]> {
+    return this.recordsOf(orgId, await this.queryAll(triggerMatchKey(orgId, source, project, hookId ?? "github", "x").pk), onUnreadable);
   }
 
   /** Every trigger of the org, from its directory. */

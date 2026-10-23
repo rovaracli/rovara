@@ -35,7 +35,8 @@ const prEvent = (over: Partial<TriggerEvent> = {}): TriggerEvent => {
   counter += 1;
   return {
     source: "github", type: "pull_request.opened", eventKey: `gh:pr:1:${String(counter)}:opened`, occurredAt: "2026-10-22T08:59:00.000Z", project: "web",
-    subject: { kind: "pull_request", id: "42", title: "Fix the login redirect", url: "https://github.com/acme/web/pull/42" },
+    // Each event is for a pull request of its own: one trigger does not start twice for the same subject within 30 minutes (the subject guard has its own tests).
+    subject: { kind: "pull_request", id: String(counter), title: "Fix the login redirect", url: `https://github.com/acme/web/pull/${String(counter)}` },
     fields: { label: ["bug"], baseBranch: ["main"], authorAssociation: ["MEMBER"] }, actor: { kind: "external", id: "alice" }, ...over,
   };
 };
@@ -77,7 +78,7 @@ describe("matching an event to triggers", () => {
     const docs = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { ...PR, filter: { label: ["docs"] } } });
     const missingKey = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { ...PR, filter: { authorAssociation: ["OWNER"] } } });
     const wrongType = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { ...PR, type: "pull_request.ready_for_review" } });
-    const outcomes = await dispatch(prEvent({ fields: { label: ["bug", "p1"], baseBranch: ["main"] } }));
+    const outcomes = await dispatch(prEvent({ fields: { label: ["bug", "p1"], baseBranch: ["main"] }, subject: { kind: "pull_request", id: "42", title: "Fix the login redirect", url: "https://github.com/acme/web/pull/42" } }));
     expect(outcomes.map((entry) => [entry.triggerId, entry.outcome])).toEqual([[bug.triggerId, "started"]]);
     expect(outcomes[0]!.runId).toMatch(/^crn_[0-9a-z]{20}$/);
     for (const other of [docs, missingKey, wrongType]) expect(await activity(v, other.triggerId)).toEqual([]);
@@ -226,10 +227,11 @@ describe("the agent target", () => {
     expect(builtin.createdBy).toBe(MAX);
   });
 
-  it("refuses to pick an owner for a project's agent that has no accountable maintainer", () => {
-    expect(() => runOwnerFor({ owner: { kind: "project", project: "web" } } as never)).toThrow(/no accountable maintainer/);
-    expect(runOwnerFor({ owner: { kind: "member", developerId: PRIYA } } as never)).toEqual({ developerId: PRIYA });
-    expect(runOwnerFor({ owner: { kind: "project", project: "web" }, accountable: { developerId: MAX } } as never)).toEqual({ developerId: MAX });
+  it("refuses to pick an owner for a project's agent that has no accountable maintainer", async () => {
+    const { deps } = setup();
+    await expect(runOwnerFor(deps, { orgId: ORG_A, owner: { kind: "project", project: "web" } } as never)).rejects.toThrow(/no accountable maintainer/);
+    expect(await runOwnerFor(deps, { orgId: ORG_A, owner: { kind: "member", developerId: PRIYA } } as never)).toEqual({ developerId: PRIYA });
+    expect(await runOwnerFor(deps, { orgId: ORG_A, owner: { kind: "project", project: "web" }, accountable: { developerId: MAX } } as never)).toEqual({ developerId: MAX });
   });
 
   it("cuts a 300-character title to 200 for the context and sorts the subject into the kind a context item has", async () => {

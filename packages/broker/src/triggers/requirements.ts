@@ -15,7 +15,7 @@ import {
   type ResolvedRecipe,
   type TriggerTarget,
 } from "@agentx/contracts";
-import { orgRoleOf, requireAgentAccess, type AgentCaller } from "../agents/access.js";
+import { orgRoleOf, requireAgentAccess, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import { shownText } from "../agents/approvals.js";
 import { resolveRecipe } from "../agents/changes.js";
 import { resolveAgentForAutonomousRun, type RosterDependencies } from "../agents/roster.js";
@@ -67,10 +67,44 @@ export function triggerWords(trigger: Pick<TriggerRecord, "spec">): string {
   return `weekly on ${schedule.day} at ${schedule.at}`;
 }
 
-/** The person who owns a trigger's runs, as the member they are now. Undefined when they are no longer in the org. */
+/** The person who owns a trigger's runs, as the member they are now (a merged developer is read as who they became). Undefined when they are no longer in the org. */
 export async function ownerOf(deps: Deps, orgId: OrgId, developerId: string): Promise<AgentCaller | undefined> {
-  const orgRole = await orgRoleOf(deps, orgId, developerId);
-  return orgRole === undefined ? undefined : { orgId, developerId, orgRole };
+  const survivor = await resolveSurvivor(deps, orgId, developerId);
+  const orgRole = await orgRoleOf(deps, orgId, survivor);
+  return orgRole === undefined ? undefined : { orgId, developerId: survivor, orgRole };
+}
+
+/**
+ * Who a custom agent's runs are owned by: its member owner, or the accountable maintainer of a project's agent, each read as whoever a merged developer became. A project's agent
+ * with none has no one to run as, so nothing runs.
+ */
+export async function runOwnerFor(deps: Pick<Deps, "signInStore" | "resolveDeveloper">, agent: Pick<AgentRecord, "orgId" | "owner" | "accountable">): Promise<{ developerId: string }> {
+  const named = agent.owner.kind === "member" ? agent.owner.developerId : agent.accountable?.developerId;
+  if (named === undefined) throw agentXError("AGENT_UNAVAILABLE", "This agent has no accountable maintainer, so it can't run work that no person started.");
+  return { developerId: await resolveSurvivor(deps, agent.orgId, named) };
+}
+
+type RunOwner = { id: string } | { problem: TriggerProblem };
+
+/**
+ * Who a start by this trigger runs as, which is the person whose standing the start needs: a member's chain runs as its member, a project's chain as the trigger's creator; a
+ * built-in as the creator; a custom agent as `runOwnerFor`. A target that is gone is the target checks' to report, so the creator stands in.
+ */
+async function runOwnerOf(deps: Deps, trigger: TriggerRecord, creatorId: string): Promise<RunOwner> {
+  const { orgId, target } = trigger;
+  if (target.kind === "chain") {
+    const chain = await deps.chains?.get(orgId, target.chainId);
+    return { id: chain?.owner.kind === "member" ? await resolveSurvivor(deps, orgId, chain.owner.developerId) : creatorId };
+  }
+  if (isBuiltinAgentId(target.agentId)) return { id: creatorId };
+  const record = await deps.store.get(orgId, target.agentId);
+  if (record === undefined) return { id: creatorId };
+  try {
+    return { id: (await runOwnerFor(deps, record)).developerId };
+  } catch (error) {
+    if (!(error instanceof AgentXError)) throw error;
+    return { problem: { path: "owner", message: "it has no accountable maintainer to run as, so nobody can run it" } };
+  }
 }
 
 const unavailable = (chain: string, step: string, agent: string, version: number, reason: string): TriggerProblem => ({
@@ -212,10 +246,19 @@ async function lostAgentAccess(deps: Deps, owner: AgentCaller, trigger: TriggerR
  */
 export async function triggerProblems(deps: Deps, trigger: TriggerRecord): Promise<TriggerProblem[]> {
   const { orgId } = trigger;
-  const owner = await ownerOf(deps, orgId, trigger.createdBy);
+  const creatorId = await resolveSurvivor(deps, orgId, trigger.createdBy);
+  const owner = await ownerOf(deps, orgId, creatorId);
+  // The run owner is who the start acts for: usually the creator, but a member's chain and a custom agent run as their own owner, whose standing the start needs as much.
+  const run = await runOwnerOf(deps, trigger, creatorId);
+  const runCaller = "id" in run ? (run.id === creatorId ? owner : await ownerOf(deps, orgId, run.id)) : undefined;
   const problems: TriggerProblem[] = [];
-  if (trigger.target.kind === "chain") problems.push(...await chainProblems(deps, trigger, owner));
-  else problems.push(...await agentProblems(deps, trigger));
+  if (trigger.target.kind === "chain") {
+    problems.push(...await chainProblems(deps, trigger, owner));
+    // The start checks the run owner's use of every step's agent too; a problem both would report is reported once.
+    if (runCaller !== undefined && runCaller !== owner) {
+      for (const problem of await chainProblems(deps, trigger, runCaller)) if (!problems.some((known) => known.message === problem.message)) problems.push(problem);
+    }
+  } else problems.push(...await agentProblems(deps, trigger));
   problems.push(...await eventProblems(deps, trigger));
   if (owner === undefined) {
     problems.push({ path: "createdBy", message: "its owner is no longer a member of your company, so nobody can run it" });
@@ -225,6 +268,19 @@ export async function triggerProblems(deps: Deps, trigger: TriggerRecord): Promi
     if (lost !== undefined) problems.push({ path: "createdBy", message: `its owner can no longer use ${lost}, so nobody can run it` });
     const role = await deps.projectMembers.roleOf(orgId, trigger.project, { developerId: owner.developerId, orgRole: owner.orgRole });
     if (role === undefined || !projectAllows(role, "start_tasks")) problems.push({ path: "createdBy", message: `its owner can no longer start tasks on ${trigger.project}, so nobody can run it` });
+  }
+  if ("problem" in run) problems.push(run.problem);
+  else if (run.id !== creatorId) {
+    // One problem at most for the run owner: not a member, else no standing on the project, else no use of the agent.
+    if (runCaller === undefined) problems.push({ path: "owner", message: "its run owner is no longer a member of your company, so nobody can run it" });
+    else {
+      const role = await deps.projectMembers.roleOf(orgId, trigger.project, { developerId: runCaller.developerId, orgRole: runCaller.orgRole });
+      if (role === undefined || !projectAllows(role, "start_tasks")) problems.push({ path: "owner", message: `its run owner can no longer start tasks on ${trigger.project}, so nobody can run it` });
+      else {
+        const lost = await lostAgentAccess(deps, runCaller, trigger);
+        if (lost !== undefined) problems.push({ path: "owner", message: `its run owner can no longer use ${lost}, so nobody can run it` });
+      }
+    }
   }
   return problems;
 }

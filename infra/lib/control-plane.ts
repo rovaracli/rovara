@@ -847,8 +847,9 @@ export class ControlPlaneStack extends Stack {
       authorizationType: "NONE",
     });
     // Plan 4 Task 19: the endpoint vendors post events to. No authorizer: each delivery proves itself with its signature or token over its own bytes, checked by the broker
-    // before anything is written (triggers/ingress.ts). A named environment only: the legacy templates stay as they were.
-    const eventHookRoute = naming.env === undefined ? undefined : new apigwv2.CfnRoute(this, "EventHookRoute", {
+    // before anything is written (triggers/ingress.ts). A named environment only: the legacy templates stay as they were. The route exists only where the stage throttles it
+    // (`DeveloperSignIn`, built from `signInParameters`), so a public route is never left without its bucket.
+    const eventHookRoute = naming.env === undefined || signInParameters === undefined ? undefined : new apigwv2.CfnRoute(this, "EventHookRoute", {
       apiId: api.ref,
       routeKey: "POST /v1/hooks/{source}/{hookId}",
       target: `integrations/${integration.ref}`,

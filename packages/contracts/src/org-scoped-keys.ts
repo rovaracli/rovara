@@ -1,6 +1,7 @@
 // Multi-tenancy: the DynamoDB keys whose names two orgs can share (a project called "web", a member
 // grant on it, the workspace limits) or that list across tenants (the usage and failure indexes).
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
+import { createHash } from "node:crypto";
 import { canonicalInstant, indexDay } from "./admin.js";
 import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
 import type { ChainId, ChainRunId } from "./chains.js";
@@ -582,4 +583,12 @@ export function triggerRateKey(orgId: OrgId, triggerId: string, hour: string): O
 /** The count of runs events and schedules started for the whole org in one UTC day (`day` is `YYYY-MM-DD`); it expires after two days. */
 export function orgAutonomousKey(orgId: OrgId, day: string): OrgKey {
   return { pk: orgScoped(orgId, "ORG_AUTONOMOUS"), sk: day };
+}
+
+/**
+ * The note that one trigger started a run for one subject (a pull request, an issue, an incident...) and when: the sort key is the SHA-256 of what names the subject. Dispatch
+ * reads it so that an event on the subject the trigger's own run may have caused is not started again within `TRIGGER_SUBJECT_GUARD_MINUTES`; it expires after two hours.
+ */
+export function triggerSubjectKey(orgId: OrgId, triggerId: string, subject: { kind: string; id: string; url?: string | undefined }): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER_SUBJECT#${triggerId}`), sk: createHash("sha256").update(`${subject.kind}\0${subject.id}\0${subject.url ?? ""}`, "utf8").digest("hex") };
 }

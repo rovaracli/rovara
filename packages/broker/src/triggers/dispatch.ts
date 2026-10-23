@@ -5,18 +5,20 @@
 //   its words; a fault that may pass is thrown after the other triggers have been tried, so the vendor sends the event again and the identity makes the repeat harmless.
 // Nothing in a log line is text the sender wrote: only ids, an outcome and a code.
 import { createHash } from "node:crypto";
-import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError,
   CHAIN_MAX_CONCURRENT_RUNS,
   INDEX_EXPIRY_ATTRIBUTE,
   ORG_MAX_AUTONOMOUS_RUNS_PER_DAY,
+  TRIGGER_SUBJECT_GUARD_MINUTES,
   TRIGGER_MAX_RUNS_PER_HOUR,
   TriggerEventSchema,
   agentXError,
   isBuiltinAgentId,
   orgAutonomousKey,
   triggerRateKey,
+  triggerSubjectKey,
   triggerSummary as eventSummary,
   type AgentId,
   type EventSource,
@@ -26,13 +28,13 @@ import {
 } from "@agentx/contracts";
 import { readRunRequest } from "../agents/runs.js";
 import { resolveAgentForAutonomousRun } from "../agents/roster.js";
-import type { AgentRecord } from "../agents/store.js";
+import { resolveSurvivor } from "../agents/access.js";
 import { buildHandoff, type HandoffTrigger } from "../chains/handoff.js";
 import { readChainRun, startChainRun, type ChainRunnerDependencies } from "../chains/runner.js";
 import { connectionActorIds } from "../connections/store.js";
 import { resolvePayer } from "../spend/payer.js";
 import { disableTrigger } from "./lifecycle.js";
-import { triggerProblems } from "./requirements.js";
+import { runOwnerFor, triggerProblems } from "./requirements.js";
 import type { TriggerRecord } from "./store.js";
 
 export type TriggerDispatchDependencies = ChainRunnerDependencies & {
@@ -89,12 +91,7 @@ export async function rovaraActorIds(deps: Pick<TriggerDispatchDependencies, "do
   return new Set();
 }
 
-/** Who a custom agent's runs are owned by: its member owner, or the accountable maintainer of a project's agent. A project's agent with none has no one to run as, so nothing runs. */
-export function runOwnerFor(agent: Pick<AgentRecord, "owner" | "accountable">): { developerId: string } {
-  if (agent.owner.kind === "member") return { developerId: agent.owner.developerId };
-  if (agent.accountable === undefined) throw agentXError("AGENT_UNAVAILABLE", "This agent has no accountable maintainer, so it can't run work that no person started.");
-  return { developerId: agent.accountable.developerId };
-}
+export { runOwnerFor };
 
 /** Whether every key of the trigger's filter has one of its values among the event's, without regard to case. A key the event does not have, or a filter with no values, does not match. */
 function meetsFilter(filter: Record<string, string[]> | undefined, fields: TriggerEvent["fields"]): boolean {
@@ -209,7 +206,8 @@ async function startChain(work: Work, trigger: TriggerRecord, identity: string):
   const chain = await deps.chains.get(orgId, trigger.target.chainId);
   if (chain === undefined) throw agentXError("NOT_FOUND", "no chain has that ID");
   // A member's chain runs as its member; a project's, as the maintainer who turned the trigger on (who answers for what it does).
-  const developerId = chain.owner.kind === "member" ? chain.owner.developerId : trigger.createdBy;
+  // Either is read as whoever a merged developer became.
+  const developerId = await resolveSurvivor(deps, orgId, chain.owner.kind === "member" ? chain.owner.developerId : trigger.createdBy);
   const run = await startChainRun(deps, { system: "event", owner: { developerId } }, {
     orgId, chainId: chain.chainId, project: event.project, origin: "event",
     startedBy: { kind: "event", triggerId: trigger.triggerId, eventKey: event.eventKey, source: event.source, type: event.type, title: event.subject.title, ...(event.subject.url === undefined ? {} : { url: event.subject.url }) },
@@ -228,7 +226,7 @@ async function startAgent(work: Work, trigger: TriggerRecord, identity: string):
   const { ref } = await resolveAgentForAutonomousRun(deps, { orgId, project: event.project, agentId });
   if (ref.version === "draft") throw agentXError("AGENT_UNAVAILABLE", "an autonomous run uses a published version");
   // A built-in has no owner of its own: the maintainer who turned the trigger on is who its runs act for.
-  const owner = isBuiltinAgentId(agentId) ? { developerId: trigger.createdBy } : runOwnerFor(record as AgentRecord);
+  const owner = isBuiltinAgentId(agentId) ? { developerId: await resolveSurvivor(deps, orgId, trigger.createdBy) } : await runOwnerFor(deps, record as Parameters<typeof runOwnerFor>[1]);
   const context = buildHandoff({ runId: identity.slice(0, 20), trigger: handoffOf(event), earlier: [], mode: "previous" });
   // `resolvePayer` names the agent for an event whatever the project's setting says, so `projectPays` is not read here.
   const payer = resolvePayer({ origin: "event", project: event.project, projectPays: false, agentId });
@@ -239,6 +237,27 @@ async function startAgent(work: Work, trigger: TriggerRecord, identity: string):
   return { taskId: started.taskId };
 }
 
+const subjectKeyOf = (work: Work, trigger: TriggerRecord) => triggerSubjectKey(work.orgId, trigger.triggerId, work.event.subject);
+
+/** Whether this trigger started a run for the event's subject less than `TRIGGER_SUBJECT_GUARD_MINUTES` ago. */
+async function recentlyStarted(work: Work, trigger: TriggerRecord): Promise<boolean> {
+  const found = (await work.deps.documentClient.send(new GetCommand({ TableName: work.deps.tableName, Key: subjectKeyOf(work, trigger), ConsistentRead: true }))) as { Item?: { at?: unknown } };
+  const at = typeof found.Item?.at === "string" ? Date.parse(found.Item.at) : Number.NaN;
+  return Number.isFinite(at) && work.deps.now() - at < TRIGGER_SUBJECT_GUARD_MINUTES * 60_000;
+}
+
+/** Notes that this trigger started a run for the event's subject now. Best effort, like `noteFired`: the run exists, and a note that is lost only lets one more event through. */
+async function noteSubject(work: Work, trigger: TriggerRecord): Promise<void> {
+  try {
+    await work.deps.documentClient.send(new PutCommand({
+      TableName: work.deps.tableName,
+      Item: { ...subjectKeyOf(work, trigger), entityType: "TRIGGER_SUBJECT", orgId: work.orgId, at: new Date(work.deps.now()).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(work.deps.now() / 1000) + 2 * HOUR_SECONDS },
+    }));
+  } catch (error) {
+    work.log("trigger_dispatch.bookkeeping_failed", { orgId: work.orgId, triggerId: trigger.triggerId, error: errorName(error) });
+  }
+}
+
 /** One trigger, one event. Returns its outcome, or throws what may pass so that the event is sent again. */
 async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcome: DispatchOutcome } | { transient: unknown }> {
   const { deps, orgId, event } = work;
@@ -246,6 +265,11 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
   if (await causedByRovara(work)) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "caused_by_rovara" }) };
   // 2. What the trigger needs, read now. Any problem turns it off, tells its owners and starts nothing; no allowance is used.
   const problems = await triggerProblems(deps, trigger);
+  // A service of ours that is away is not the trigger's fault: it stays on, the event is skipped and the fault is logged for us.
+  if (problems.some((problem) => problem.code === "RUNTIME_UNAVAILABLE")) {
+    work.log("trigger_dispatch.runtime_unavailable", { orgId, triggerId: trigger.triggerId });
+    return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "runtime_unavailable" }) };
+  }
   if (problems.length > 0) {
     await disableTrigger(deps, trigger, problems);
     return { outcome: await settle(work, trigger, { outcome: "failed", reason: "trigger_invalid" }) };
@@ -259,6 +283,8 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
     const existing = await readRunRequest(deps, orgId, requestIdFor(identity));
     if (existing !== undefined) return { outcome: await settle(work, trigger, { outcome: "duplicate", taskId: existing.taskId }) };
   }
+  // The subject this trigger just started a run for: what that run did to it may be what this event is, so it is not started again at once. No allowance is used.
+  if (await recentlyStarted(work, trigger)) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "recent_subject" }) };
   // 4 and 5. The trigger's allowance for the hour (never above the platform's), then the org's for the day.
   const now = new Date(deps.now()).toISOString();
   const allowed = Number.isInteger(trigger.maxRunsPerHour) ? Math.min(trigger.maxRunsPerHour, TRIGGER_MAX_RUNS_PER_HOUR) : 0;
@@ -280,9 +306,13 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
     }
     return { outcome: await settle(work, trigger, { outcome: "failed", reason: refusal.reason }) };
   }
-  const outcome = await settle(work, trigger, { outcome: "started", ...started });
-  await noteFired(work, trigger, started);
-  return { outcome };
+  // The start happened: whatever goes wrong in writing it down, the run is noted on the trigger and its subject, and the fault is the event's to be sent again for.
+  try {
+    return { outcome: await settle(work, trigger, { outcome: "started", ...started }) };
+  } finally {
+    await noteSubject(work, trigger);
+    await noteFired(work, trigger, started);
+  }
 }
 
 /**
@@ -307,9 +337,15 @@ export async function dispatchTriggerEvent(deps: TriggerDispatchDependencies, or
   const work: Work = { deps, orgId, event, log, actors: new Map() };
   const outcomes: DispatchOutcome[] = [];
   let transient: { error: unknown } | undefined;
-  for (const trigger of await deps.triggers.listForMatch(orgId, event.source, event.project, event.hookId)) {
-    if (!isFor(trigger, orgId, event)) continue;
+  let unreadable = 0;
+  const found = await deps.triggers.listForMatch(orgId, event.source, event.project, event.hookId, (triggerId) => {
+    unreadable += 1;
+    log("trigger_dispatch.record_unreadable", { orgId, triggerId });
+  });
+  if (unreadable > 0) log("trigger_dispatch.records_skipped", { orgId, count: unreadable });
+  for (const trigger of found) {
     try {
+      if (!isFor(trigger, orgId, event)) continue;
       const done = await dispatchOne(work, trigger);
       if ("outcome" in done) outcomes.push(done.outcome);
       else transient ??= { error: done.transient };

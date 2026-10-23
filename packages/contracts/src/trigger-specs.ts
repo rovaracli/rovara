@@ -13,6 +13,8 @@ export const MAX_TRIGGERS_PER_TARGET = 10;
 export const SCHEDULE_INTERVAL_MINUTES = [15, 30, 60, 120, 240, 360, 720, 1440] as const;
 export const SCHEDULE_MISSED_GRACE_MINUTES = 30;
 export const TRIGGER_ACTIVITY_TTL_DAYS = 30;
+/** How long after a trigger started a run for a subject an event on the same subject is skipped, as one the run may have caused. */
+export const TRIGGER_SUBJECT_GUARD_MINUTES = 30;
 export const TRIGGER_FILTER_VALUES_MAX = 10;
 export const TRIGGER_FILTER_VALUE_MAX_CHARS = 100;
 
