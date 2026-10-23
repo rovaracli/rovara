@@ -5,7 +5,7 @@ import {
   AgentSessionRecordSchema,
   SESSION_TITLE_MAX,
   agentSessionKey,
-  cleanDisplayName,
+  cleanSessionName,
   liveSessionKey,
   mySessionsKey,
   openAgentSessionKey,
@@ -16,6 +16,7 @@ import {
   type AgentSessionRecord,
   type OrgId,
   type Payer,
+  type SessionTrigger,
   type SessionEvent,
   type SessionLeg,
   type WorkOrigin,
@@ -36,6 +37,21 @@ export function sessionTitle(title: string): string {
   return cut === "" ? UNTITLED : cut;
 }
 
+/**
+ * Who a task session names as its starter: the trigger that started a run no person started, else the person who did. Nothing for a chain step's task
+ * (its chain run is the session) and for a run with neither, so the start, and a later lazy creation for a task from before sessions, skip those
+ * instead of guessing or throwing.
+ */
+export function sessionStarterFor(input: {
+  trigger: SessionTrigger | undefined;
+  startedBy: { developerId: string } | undefined;
+  chain: { chainRunId: string; stepId: string } | undefined;
+}): AgentSessionRecord["startedBy"] | undefined {
+  if (input.chain !== undefined) return undefined;
+  if (input.trigger !== undefined) return { kind: input.trigger.kind, triggerId: input.trigger.triggerId };
+  return input.startedBy === undefined ? undefined : { kind: "member", developerId: input.startedBy.developerId };
+}
+
 export interface TaskSessionInput {
   orgId: OrgId;
   sessionId: string;
@@ -45,6 +61,8 @@ export interface TaskSessionInput {
   title: string;
   owner: { developerId: string; name: string };
   startedBy: AgentSessionRecord["startedBy"];
+  /** The name of the member who started the run, when it isn't the owner (the start reads it); without it the event says "Someone". */
+  startedByName?: string | undefined;
   origin: WorkOrigin;
   payer: Payer;
   /** The start's time (an instant): the session, its leg, its event and its index entries are all stamped with it. */
@@ -53,10 +71,12 @@ export interface TaskSessionInput {
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 
-/** What the started event says: who or what began the work. */
-function startedText(input: TaskSessionInput, owner: string, agent: string, title: string): string {
-  const by = input.startedBy.kind === "event" ? "An event" : input.startedBy.kind === "schedule" ? "A schedule" : owner;
-  return `${by} started ${agent}: ${title}`;
+/** What the started event says: who or what began the work, and for whom when another member started it on the owner's behalf. */
+function startedText(input: TaskSessionInput, owner: string, starter: string | undefined, agent: string, title: string): string {
+  if (input.startedBy.kind === "event") return `An event started ${agent}: ${title}`;
+  if (input.startedBy.kind === "schedule") return `A schedule started ${agent}: ${title}`;
+  if (input.startedBy.kind === "member" && input.startedBy.developerId !== input.owner.developerId) return `${starter ?? "Someone"} started ${agent} for ${owner}: ${title}`;
+  return `${owner} started ${agent}: ${title}`;
 }
 
 /**
@@ -65,8 +85,9 @@ function startedText(input: TaskSessionInput, owner: string, agent: string, titl
  * The task's own record carries the `sessionId` (the caller writes that).
  */
 export function createTaskSessionItems(table: TableInput, input: TaskSessionInput): TransactItem[] {
-  const owner = cleanDisplayName(input.owner.name) ?? "Someone";
-  const agentName = cleanDisplayName(input.agent.name) ?? input.agent.agentId;
+  const owner = cleanSessionName(input.owner.name) ?? "Someone";
+  const agentName = cleanSessionName(input.agent.name) ?? input.agent.agentId;
+  const starterName = input.startedByName === undefined ? undefined : cleanSessionName(input.startedByName);
   const title = sessionTitle(input.title);
   const subject = { kind: "task" as const, taskId: input.taskId };
   const where = { kind: "cloud" as const };
@@ -82,8 +103,9 @@ export function createTaskSessionItems(table: TableInput, input: TaskSessionInpu
   const startedByOwner = input.startedBy.kind === "member" && input.startedBy.developerId === input.owner.developerId;
   const event: SessionEvent = {
     eventId: sessionEventId("started", sessionId), at: input.now, type: "started",
-    actor: startedByOwner ? { kind: "member", developerId: input.owner.developerId, name: owner } : { kind: "system" },
-    text: startedText(input, owner, agentName, title),
+    actor: startedByOwner ? { kind: "member", developerId: input.owner.developerId, name: owner }
+      : input.startedBy.kind === "member" && starterName !== undefined ? { kind: "member", developerId: input.startedBy.developerId, name: starterName } : { kind: "system" },
+    text: startedText(input, owner, starterName, agentName, title),
   };
   const listed = (developerId: string) => putNew(table, mySessionsKey(orgId, developerId, input.now, sessionId), "MY_SESSION", { orgId, sessionId, developerId, createdAt: input.now });
   return [

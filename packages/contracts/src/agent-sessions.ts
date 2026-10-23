@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AgentIdSchema } from "./agent.js";
+import { cleanDisplayName } from "./display-name.js";
 import { PayerSchema, WorkOriginSchema } from "./agent-run.js";
 import { OrgIdSchema } from "./org.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
@@ -87,7 +88,24 @@ function blockText(max: number, min = 0) {
 
 const InstantSchema = z.string().datetime();
 const DeveloperIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const PersonNameSchema = lineText(NAME_MAX_CHARS);
+/** Control and format characters, except the two joiners that real names and emoji need (ZWNJ U+200C, ZWJ U+200D). The variation selectors (U+FE0E, U+FE0F) are not format characters, so they stay too. */
+const NAME_UNSAFE = /(?![\u200C\u200D])[\p{Cc}\p{Cf}]/u;
+
+/**
+ * A person's or an agent's name as a session keeps it: control characters become spaces, every format character other than ZWNJ and ZWJ (bidi
+ * controls, tag characters, soft hyphens, zero-width spaces) is dropped, and the rest is cleaned and cut to 80 characters between whole character
+ * clusters. A ZWJ emoji, a Persian name with ZWNJ and a flag keep their meaning. `undefined` when nothing is left. The session schemas accept exactly
+ * what this leaves alone, so a start that builds a record with this never fails on a name.
+ */
+export function cleanSessionName(name: string): string | undefined {
+  return cleanDisplayName(name.replace(/\p{Cc}+/gu, " ").replace(/(?![\u200C\u200D])\p{Cf}/gu, ""));
+}
+
+const PersonNameSchema = z
+  .string()
+  .min(1)
+  .refine((value) => [...value].length <= NAME_MAX_CHARS, `must be at most ${String(NAME_MAX_CHARS)} characters`)
+  .refine((value) => !NAME_UNSAFE.test(value), "must not contain control characters");
 const ProjectNameSchema = z.string().regex(AGENTX_NAME_PATTERN);
 const CountSchema = z.number().int().min(0);
 

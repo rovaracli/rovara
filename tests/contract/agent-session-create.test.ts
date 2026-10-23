@@ -23,6 +23,7 @@ import {
   liveSessionKey,
   mySessionsKey,
   openAgentSessionKey,
+  projectAgentKey,
   projectMemberKey,
   projectSessionsKey,
   runRequestKey,
@@ -82,7 +83,7 @@ async function setup(options: { brokerExtra?: Record<string, unknown>; memberLim
     return found[0]!.flatMap((entry) => ((entry.Put as { Item?: Item } | undefined)?.Item === undefined ? [] : [(entry.Put as { Item: Item }).Item]));
   };
   /** A custom agent made by Maya, published and (unless told otherwise) not on the payments roster. */
-  const agentOf = async (name = `Agent ${randomUUID().slice(0, 8)}`): Promise<string> => {
+  const agentOf = async (name = `Agent ${randomUUID().slice(0, 8)}`, onRoster = false): Promise<string> => {
     const overlay = { instructions: "Summarise the open tickets.", sequence: [{ id: "work", name: "work", kind: "agent" as const, workspace: "none" as const }] };
     const created = await h.dev(MAYA, "POST", "/v1/app/agents", { requestId: randomUUID(), name, overlay });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
@@ -91,6 +92,7 @@ async function setup(options: { brokerExtra?: Record<string, unknown>; memberLim
     await store.saveDraft({ orgId: TEST_ORG, agentId, overlay, expectedRevision: draft.revision, by: MAYA.developerId });
     const agent = (await store.get(TEST_ORG, agentId))!;
     await store.publish({ orgId: TEST_ORG, agentId, expectedDraftRevision: agent.draftRevision, digest: recipeDigest(await resolveAgent(store, TEST_ORG, agentId, "draft")), by: MAYA.developerId });
+    if (onRoster) h.db.set({ ...projectAgentKey(TEST_ORG, "payments", agentId), entityType: "PROJECT_AGENT", orgId: TEST_ORG, project: "payments", agentId, addedBy: MAYA.developerId, addedAt: "2026-10-01T00:00:00.000Z" });
     return agentId;
   };
   /** A member of the org with a contributor role on payments. */
@@ -465,7 +467,7 @@ describe("names a start never refuses", () => {
 
   it("starts a run whose agent's name holds a ZWJ emoji, for a caller whose name does", async () => {
     const t = await setup();
-    const agentId = await t.agentOf("Fixer \u{1F9D1}\u200D\u{1F527}");
+    const agentId = await t.agentOf("Fixer \u{1F9D1}\u200D\u{1F527}", true);
     const started = await t.start(MAYA, { agent: { agentId }, input: { text: "Fix the retry bug" } });
     expect(started.status, JSON.stringify(started.body)).toBe(200);
     expect(t.sessionOf(started.task.sessionId!)).toMatchObject({ agent: { agentId, name: "Fixer \u{1F9D1}\u200D\u{1F527}" } });

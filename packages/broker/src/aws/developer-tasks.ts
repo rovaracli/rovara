@@ -239,7 +239,7 @@ import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { bindingItems } from "../agent-sessions/bindings.js";
-import { createTaskSessionItems } from "../agent-sessions/create.js";
+import { createTaskSessionItems, sessionStarterFor } from "../agent-sessions/create.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { onTaskEnded, type TaskEndOutcome } from "../agents/task-end.js";
 
@@ -1648,10 +1648,11 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const startedBy = run === undefined ? { developerId: caller.developerId } : run.startedBy;
   // Plan 5, Task 2: every run is a session, created in this start transaction. A chain step's task is not (its chain run is the session), and a
   // run no person started and no trigger names has no starter to record, so it has none either.
-  const sessionStartedBy = prepared === undefined || prepared.chain !== undefined ? undefined
-    : run?.trigger !== undefined ? { kind: run.trigger.kind, triggerId: run.trigger.triggerId }
-    : startedBy === undefined ? undefined : { kind: "member" as const, developerId: startedBy.developerId };
+  const sessionStartedBy = prepared === undefined ? undefined : sessionStarterFor({ trigger: run?.trigger, startedBy, chain: prepared.chain });
   const sessionId = sessionStartedBy === undefined ? undefined : newPrefixedId("ses");
+  // When another member started the run on the owner's behalf, the session's first event names them; a name that can't be read is left out, never an error.
+  const starterName = sessionStartedBy?.kind === "member" && sessionStartedBy.developerId !== caller.developerId
+    ? await deps.agentRuns?.signInStore.getDeveloper(sessionStartedBy.developerId).then((developer) => developer?.displayName, () => undefined) : undefined;
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
   const asWorkflow = request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding");
   const workflowPath = request.workflowPath ?? "QUICK";
@@ -1776,7 +1777,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(prepared === undefined || sessionId === undefined || sessionStartedBy === undefined ? [] : [
       ...createTaskSessionItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {
         orgId: deps.orgId, sessionId, taskId, project: request.project, agent: { agentId: prepared.ref.agentId, name: prepared.ref.name, version: prepared.ref.version },
-        title: inertTaskTitle(title), owner: { developerId: caller.developerId, name: caller.name }, startedBy: sessionStartedBy, origin: prepared.origin, payer: prepared.payer, now: receivedAt,
+        title: inertTaskTitle(title), owner: { developerId: caller.developerId, name: caller.name }, startedBy: sessionStartedBy, ...(starterName === undefined ? {} : { startedByName: starterName }), origin: prepared.origin, payer: prepared.payer, now: receivedAt,
       }),
       ...threadBinding(deps.tableName, deps.orgId, sessionId, share, receivedAt),
     ]),
