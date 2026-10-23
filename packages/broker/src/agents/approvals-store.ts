@@ -252,9 +252,9 @@ export function registerApprovalGaveUpHandler(kind: ApprovalSubject["kind"], han
 
 /**
  * What a rule says to someone it refuses: `text` is the whole sentence the decide API answers `FORBIDDEN` with, `who` the words the confirmation page puts in
- * "Only <who> can decide this." A rule that can name its people (Plan 4's chain gates) registers it; Plan 3's own rules keep their fixed words.
+ * "Only <who> can decide this." `code`, when the rule gives one, is the error code of a record that can't be decided because it is closed (default `FORBIDDEN`). A rule that can name its people (Plan 4's chain gates) registers it; Plan 3's own rules keep their fixed words.
  */
-export interface ApproverRefusal { text: string; who: string }
+export interface ApproverRefusal { text: string; who: string; code?: "APPROVAL_CLOSED" | "CHAIN_RUN_CLOSED" }
 export type ApproverRefusalFor = (deps: ApprovalDependencies, record: AnyApprovalRecord) => Promise<ApproverRefusal | undefined>;
 const refusals = new Map<string, ApproverRefusalFor>();
 

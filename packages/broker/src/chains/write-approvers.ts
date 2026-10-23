@@ -67,7 +67,10 @@ export async function chainWriteApprovers(deps: ApprovalDependencies, task: Writ
   const runId = ChainRunIdSchema.safeParse(task.chain.chainRunId);
   if (!runId.success) return undefined;
   const chainRun = await readChainRun(deps, run.orgId, runId.data);
-  if (chainRun === undefined || (chainRun.startedBy.kind !== "event" && chainRun.startedBy.kind !== "schedule") || chainRun.chainOwner.kind !== "project") return undefined;
+  // The task says it belongs to a run that can't be read (corrupt or missing): that is a failure, not "not mine". Throwing makes Plan 3 log `write_approver_selector.failed`, which
+  // the alarm reads, and the write still falls back to `write_approver`.
+  if (chainRun === undefined) throw new Error("the chain run of this task can't be read");
+  if ((chainRun.startedBy.kind !== "event" && chainRun.startedBy.kind !== "schedule") || chainRun.chainOwner.kind !== "project") return undefined;
   return { kind: "rule", rule: CHAIN_WRITER_RULE, candidates: await writeApproversFor(deps, run) };
 }
 

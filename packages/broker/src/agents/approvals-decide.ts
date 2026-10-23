@@ -190,7 +190,10 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
   if (record.status !== "PENDING" && record.decisionRequestId === body.requestId && record.decidedBy !== undefined && await sameMember(deps, record.orgId, record.decidedBy, caller.developerId)) {
     return { status: record.status };
   }
-  if (!await mayDecideApproval(deps, caller, record)) throw agentXError("FORBIDDEN", (await approverRefusalFor(deps, record))?.text ?? forbiddenText(record));
+  if (!await mayDecideApproval(deps, caller, record)) {
+    const refusal = await approverRefusalFor(deps, record);
+    throw agentXError(refusal?.code ?? "FORBIDDEN", refusal?.text ?? forbiddenText(record));
+  }
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   // The sweep ends an approval whose time ran out only when it reaches it; until then the record is still PENDING, but it can no longer be decided (re-check N1).
   if (Date.parse(record.expiresAt) <= deps.now()) throw agentXError("APPROVAL_CLOSED", "this request has expired");

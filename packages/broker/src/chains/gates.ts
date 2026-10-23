@@ -23,6 +23,7 @@ import {
 } from "../agents/approvals.js";
 import { resolveMember, sameMember } from "../agents/lifecycle.js";
 import { failedIndexes } from "../agents/table-writes.js";
+import type { ChainRecord } from "./store.js";
 import { readChainRun, readStepAttempt, recordGateDecision, recordGateExpiry, advanceChainRun, isTerminalStatus, type ChainRunRecord, type ChainRunnerDependencies, type StepAttemptRecord } from "./runner.js";
 import { neutralText } from "./run-events.js";
 
@@ -78,15 +79,19 @@ async function maintainersOf(deps: Deps, orgId: OrgId, project: string): Promise
   return [...found];
 }
 
-/** Whether `rule` names the caller, who has `role` on the run's project (the caller already holds `start_tasks` there). */
-async function ruleMatches(deps: Deps, rule: ApproverRule, run: ChainRunRecord, caller: ApprovalCaller, member: string, role: string): Promise<boolean> {
+/**
+ * Whether `rule` names the caller, who has `role` on the run's project (the caller already holds `start_tasks` there). `owner` is the chain's owner as the chain has it
+ * now (R68), never the one the run copied when it started: a transfer takes the gate away from the old owner. A chain that is gone has no owner, so `chain_owner` names no one.
+ */
+async function ruleMatches(deps: Deps, rule: ApproverRule, run: ChainRunRecord, caller: ApprovalCaller, member: string, role: string, owner: ChainRecord["owner"] | undefined): Promise<boolean> {
   switch (rule.kind) {
     // The member who started the run. A run an event or a schedule started has no such person, so this matches no one, whoever asks.
     case "starter": return run.startedBy.kind === "member" && await sameMember(deps, run.orgId, run.startedBy.developerId, caller.developerId);
     case "project_maintainers": return role === "maintainer";
     case "chain_owner": {
-      if (run.chainOwner.kind === "member") return sameMember(deps, run.orgId, run.chainOwner.developerId, caller.developerId);
-      const ownerRole = await deps.projectMembers.roleOf(run.orgId, run.chainOwner.project, { developerId: member, orgRole: caller.orgRole });
+      if (owner === undefined) return false;
+      if (owner.kind === "member") return sameMember(deps, run.orgId, owner.developerId, caller.developerId);
+      const ownerRole = await deps.projectMembers.roleOf(run.orgId, owner.project, { developerId: member, orgRole: caller.orgRole });
       return ownerRole === "maintainer";
     }
     case "members": {
@@ -101,20 +106,23 @@ async function ruleMatches(deps: Deps, rule: ApproverRule, run: ChainRunRecord, 
 /**
  * Whether `caller` may decide the gate `record` is about, read now: they are a member of the run's org with `start_tasks` on the run's project, and one of the gate's
  * rules matches them. A pending approval whose gate is not the run's live, waiting gate (the run ended, moved on, or it is an older attempt in a loop) can't be decided
- * by anyone; once it has been decided the rule still answers by who, so the people it concerned can read what became of it.
+ * by anyone; once it has been decided the rule still answers by who, so the people it concerned can read what became of it. The chain is read now too: a pending gate of
+ * a chain that is gone can't be decided, and `chain_owner` is the chain's owner now, not the run's copy from when it started.
  */
 export async function gateEligible(deps: Deps, record: AnyApprovalRecord, caller: ApprovalCaller): Promise<boolean> {
   if (record.kind !== "step" || caller.orgId !== record.orgId) return false;
   const found = await locate(deps, record);
   if (found === undefined || found.run.orgId !== caller.orgId) return false;
   if (record.status === "PENDING" && !found.live) return false;
+  const chain = await deps.chains?.get(record.orgId, found.run.chainId);
+  if (chain === undefined && record.status === "PENDING") return false;
   const orgRole = await orgRoleOf(deps, record.orgId, caller.developerId);
   if (orgRole === undefined) return false;
   const member = await resolveMember(deps, record.orgId, caller.developerId);
   const role = await deps.projectMembers.roleOf(record.orgId, found.run.project, { developerId: member, orgRole });
   if (role === undefined || !projectAllows(role, "start_tasks")) return false;
   for (const rule of found.gate.approvers) {
-    if (await ruleMatches(deps, rule, found.run, { ...caller, orgRole }, member, role)) return true;
+    if (await ruleMatches(deps, rule, found.run, { ...caller, orgRole }, member, role, chain?.owner)) return true;
   }
   return false;
 }
@@ -166,7 +174,10 @@ registerApproverRefusal(CHAIN_GATE_RULE, async (deps, record): Promise<ApproverR
   const name = shownText(found.attempt.stepName, NAME_MAX);
   const who = await wordsFor(deps, found.run, found.gate);
   if (record.status === "PENDING" && !found.live) {
-    return { who, text: isTerminalStatus(found.run.status) ? `This run has ended, so "${name}" can't be approved.` : `"${name}" is not waiting for approval any more.` };
+    // A closed gate is answered with a closed code, so a client says "closed" and not "you are not allowed".
+    return isTerminalStatus(found.run.status)
+      ? { who, text: `This run has ended, so "${name}" can't be approved.`, code: "CHAIN_RUN_CLOSED" }
+      : { who, text: `"${name}" is not waiting for approval any more.`, code: "APPROVAL_CLOSED" };
   }
   return { who, text: `Only ${who} can approve "${name}".` };
 });
@@ -179,6 +190,7 @@ export interface OpenedGate { record: StepApprovalRecord; waitingText: string }
 /** Every person the gate's rules name now: the starter, the project's maintainers, the chain's owner, the people listed. They only decide who sees the gate listed. */
 async function candidatesOf(deps: Deps, run: ChainRunRecord, gate: GateStep): Promise<string[]> {
   const people = new Set<string>();
+  const owner = gate.approvers.some((rule) => rule.kind === "chain_owner") ? (await deps.chains?.get(run.orgId, run.chainId))?.owner : undefined;
   const add = async (developerId: string) => { people.add(await resolveMember(deps, run.orgId, developerId)); };
   for (const rule of gate.approvers) {
     if (rule.kind === "starter") {
@@ -186,8 +198,9 @@ async function candidatesOf(deps: Deps, run: ChainRunRecord, gate: GateStep): Pr
     } else if (rule.kind === "project_maintainers") {
       for (const id of await maintainersOf(deps, run.orgId, run.project)) await add(id);
     } else if (rule.kind === "chain_owner") {
-      if (run.chainOwner.kind === "member") await add(run.chainOwner.developerId);
-      else for (const id of await maintainersOf(deps, run.orgId, run.chainOwner.project)) await add(id);
+      // The owner as the chain has it now; a chain that is gone lists no one.
+      if (owner?.kind === "member") await add(owner.developerId);
+      else if (owner !== undefined) for (const id of await maintainersOf(deps, run.orgId, owner.project)) await add(id);
     } else {
       for (const id of rule.developerIds) await add(id);
     }

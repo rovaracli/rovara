@@ -280,7 +280,7 @@ describe("who may decide a gate (checked when they decide)", () => {
   it("lists a gate for the chain's owner now, and for the old owner never again, when the gate is opened after the owner moved", async () => {
     const w = setupGateWorld();
     const chain = await w.publish(gated([{ kind: "chain_owner" }]));
-    const run = await w.start(chain.chainId, MAX);
+    const run = await w.start(chain.chainId, PRIYA);
     await w.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: CARL }, MAX);
     await w.endLatest();
     const gate = w.attempts(run.runId).find((attempt) => attempt.kind === "gate")!;
@@ -405,7 +405,7 @@ describe("what passes a gate", () => {
     w.db.set({ ...meta, status: "cancelled", endedAt: new Date(w.clock.now).toISOString(), version: (meta.version as number) + 1 });
     expect(await refusal(w.decideRoute(PRIYA, approvalId))).toMatchObject({ code: "CHAIN_RUN_CLOSED" });
     const page = await w.decideAs(MAX, approvalId);
-    expect(page.statusCode).toBe(409);
+    expect(page.statusCode).toBe(403);
     expect(await w.approval(approvalId)).toMatchObject({ status: "PENDING" });
     expect(w.starts).toHaveLength(1);
     expect(w.decidedEvents(run.runId)).toEqual([]);
