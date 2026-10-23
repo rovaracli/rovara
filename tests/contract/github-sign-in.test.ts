@@ -164,7 +164,7 @@ describe("the github method is only offered when it is configured", () => {
 });
 
 describe("the broker accepts GitHub tokens only while the method is on", () => {
-  const env = { DEVELOPER_TOKEN_ISSUER: ISSUER, DEVELOPER_IDENTITY_FUNCTION_ARN: "identity", DEVELOPER_SIGNIN_TABLE_NAME: "signin", AGENTX_ENV: "staging" };
+  const env = { DEVELOPER_TOKEN_ISSUER: ISSUER, DEVELOPER_IDENTITY_FUNCTION_NAME: "identity", DEVELOPER_SIGNIN_TABLE_NAME: "signin", AGENTX_ENV: "staging" };
   const configurationFor = (extra: Record<string, string>) => createDeveloperApiConfiguration({ ...env, ...extra }, () => ({}) as never)!;
   const cloud = { DEVELOPER_CLOUD_ISSUER: "https://cloud.example.test" };
 

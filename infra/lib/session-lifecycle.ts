@@ -21,6 +21,7 @@ import {
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
+import { BrokerNames } from "./broker-names.js";
 import { packagedFunction } from "./control-plane.js";
 import { EC2_WORKER_AMI_PARAMETER } from "./ec2-workers.js";
 import type { AgentXNaming } from "./naming.js";
@@ -371,7 +372,15 @@ export class SessionLifecycle extends Construct {
 
   /** The broker starts the deleter when an ec2-ebs workspace closes (#84). */
   connectBroker(broker: lambda.Function): void {
-    this.connectExecutions(broker);
+    // A named environment's broker is given the state machines' names (BrokerNames), not their ARNs: its variables are held to Lambda's 4 KB,
+    // and it builds the ARNs from the region and the account. The legacy install's broker keeps the ARNs.
+    if (this.naming.env === undefined) {
+      this.connectExecutions(broker);
+    } else {
+      const names = BrokerNames.of(broker);
+      names.add("provisionerStateMachine", this.provisioner.stateMachineName);
+      names.add("deleterStateMachine", this.deleter.stateMachineName);
+    }
     this.deleter.grantStartExecution(broker);
   }
 

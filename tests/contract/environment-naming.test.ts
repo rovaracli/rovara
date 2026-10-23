@@ -5,6 +5,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { operatorRoleStatements } from "../../infra/lib/access-policies.js";
 import { environmentNaming, legacyNaming, namingFromContext } from "../../infra/lib/naming.js";
 import { ProductionFoundationStack } from "../../infra/lib/production-foundation.js";
+import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -184,9 +185,17 @@ describe("environment naming", () => {
     expect(JSON.stringify(Template.fromStack(foundation).toJSON())).toContain('"Key":"Environment","Value":"staging"');
   }, 120_000);
 
-  it("tells the environment's broker its connector secret prefix, and leaves legacy unchanged", () => {
+  it("gives the environment's broker its connector secret prefix, by the environment name it derives it from, and leaves legacy unchanged", () => {
     const stagingControl = productionStacks(buildAgentXApp({ agentxEnv: "staging" })).find((stack) => stack.stackName === "agentx-staging-control-plane")!;
-    expect(JSON.stringify(Template.fromStack(stagingControl).toJSON())).toContain("\"CONNECTOR_SECRET_PREFIX\":\"agentx/staging/connectors/\"");
+    // Not as a variable (the broker's variables are held to Lambda's 4 KB): the broker derives it from AGENTX_ENV (broker-environment.ts), to the
+    // prefix the environment's secrets are named with (naming.connectorSecretPrefix).
+    const stagingTemplate = JSON.stringify(Template.fromStack(stagingControl).toJSON());
+    expect(stagingTemplate).not.toContain("CONNECTOR_SECRET_PREFIX");
+    expect(stagingTemplate).toContain("\"AGENTX_ENV\":\"staging\"");
+    const derived: MutableEnvironment = { AGENTX_ENV: "staging", AGENTX_NAMES: "{}", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
+    hydrateBrokerEnvironment(derived);
+    expect(derived.CONNECTOR_SECRET_PREFIX).toBe(environmentNaming("staging").connectorSecretPrefix);
+    expect(derived.CONNECTOR_SECRET_PREFIX).toBe("agentx/staging/connectors/");
     const legacyControl = productionStacks(buildAgentXApp()).find((stack) => stack.stackName === "AgentXControlPlane")!;
     expect(JSON.stringify(Template.fromStack(legacyControl).toJSON())).not.toContain("CONNECTOR_SECRET_PREFIX");
   }, 240_000);

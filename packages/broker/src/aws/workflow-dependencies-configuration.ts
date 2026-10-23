@@ -20,8 +20,10 @@ export function createDeveloperApiConfiguration(
 ): DeveloperApiConfiguration | undefined {
   const issuer = environment.DEVELOPER_TOKEN_ISSUER;
   if (!issuer) return undefined;
-  const identityFunctionName = environment.DEVELOPER_IDENTITY_FUNCTION_ARN;
-  if (!identityFunctionName) throw new Error("DEVELOPER_IDENTITY_FUNCTION_ARN is required");
+  // The sign-in function by name (Lambda's Invoke takes a name as it takes an ARN): the variable is held to Lambda's 4 KB with the rest
+  // of the broker's. An ARN still works, for an environment that gives one.
+  const identityFunctionName = environment.DEVELOPER_IDENTITY_FUNCTION_NAME || environment.DEVELOPER_IDENTITY_FUNCTION_ARN;
+  if (!identityFunctionName) throw new Error("DEVELOPER_IDENTITY_FUNCTION_NAME is required");
   const signInTableName = environment.DEVELOPER_SIGNIN_TABLE_NAME;
   if (!signInTableName) throw new Error("DEVELOPER_SIGNIN_TABLE_NAME is required");
   const env = environment.AGENTX_ENV;

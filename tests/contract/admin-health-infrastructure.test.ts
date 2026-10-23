@@ -10,6 +10,8 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
+import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -37,7 +39,14 @@ describe("the health route's grants (A13)", () => {
     const describe = brokerStatements(named).filter((statement) => statement.Action === "cloudwatch:DescribeAlarms");
     expect(describe).toHaveLength(1);
     expect(JSON.stringify(describe[0]?.Resource)).toContain(":alarm:agentx-live25d-*");
-    expect(brokerEnvironment(named).AGENTX_ALARM_PREFIX).toBe("agentx-live25d-");
+    // The prefix is not a variable of the broker's (its variables are held to Lambda's 4 KB): the broker derives it from AGENTX_ENV, and
+    // what it derives is the prefix every alarm of the environment is named with.
+    expect(brokerEnvironment(named).AGENTX_ALARM_PREFIX).toBeUndefined();
+    expect(brokerEnvironment(named).AGENTX_ENV).toBe("live25d");
+    const derived: MutableEnvironment = { AGENTX_ENV: "live25d", AGENTX_NAMES: "{}", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
+    hydrateBrokerEnvironment(derived);
+    expect(derived.AGENTX_ALARM_PREFIX).toBe(environmentNaming("live25d").alarmName(""));
+    expect(derived.AGENTX_ALARM_PREFIX).toBe("agentx-live25d-");
   });
 
   // Issue 206: a DescribeAlarms call by name prefix is authorized against *, so the probe asks for
@@ -84,8 +93,19 @@ describe("the health route's grants (A13)", () => {
       expect(Object.keys(named.findResources("AWS::SQS::Queue"))).toContain(resource["Fn::GetAtt"]?.[0]);
     }
     for (const id of queueIds) expect(resources.filter((resource) => id.test(resource["Fn::GetAtt"]?.[0] ?? ""))).toHaveLength(1);
-    const listed = JSON.stringify(brokerEnvironment(named).HEALTH_DEAD_LETTER_QUEUES);
-    for (const queue of ["DispatchDeadLetterQueue", "SlackRequestDeadLetterQueue", "NoticeDeadLetterQueue", "StreamFailureQueue"]) expect(listed).toContain(queue);
+    // The broker is given the four queues' names (in its one variable of names), and lists them for the route under the labels it always has.
+    const names = brokerNamesIn(brokerEnvironment(named));
+    const queueNameOf = (key: keyof typeof names) => (names[key] as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"];
+    const labelled = [["dispatchDeadLetters", queueIds[0]!], ["slackRequestDeadLetters", queueIds[1]!], ["developerNoticeDeadLetters", queueIds[2]!], ["developerNoticeStreamFailures", queueIds[3]!]] as const;
+    for (const [key, id] of labelled) {
+      const [logicalId, attribute] = queueNameOf(key);
+      expect(attribute, key).toBe("QueueName");
+      expect(id.test(logicalId), `${key} is ${logicalId}`).toBe(true);
+    }
+    expect(brokerEnvironment(named).HEALTH_DEAD_LETTER_QUEUES).toBeUndefined();
+    const derived: MutableEnvironment = { AGENTX_ENV: "live25d", AGENTX_NAMES: JSON.stringify({ dq: "a", sr: "b", dn: "c", ds: "d" }), AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
+    hydrateBrokerEnvironment(derived);
+    expect(Object.keys(JSON.parse(derived.HEALTH_DEAD_LETTER_QUEUES!) as object)).toEqual(["dispatch", "slack-requests", "developer-notices", "developer-notice-stream"]);
   });
 
   it("expires index items by TTL on indexExpiresAt in a named environment, and tells the reconciler so (A6, Q5)", () => {
