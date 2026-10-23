@@ -55,6 +55,7 @@ import {
   projectMonthStatsKey,
   projectSessionsKey,
   sessionEventSk,
+  sessionRateKey,
   sessionRequestKey,
   sessionSurfaceKey,
   sharedSessionsKey,
@@ -575,6 +576,7 @@ describe("session keys", () => {
     ["sharedSessionsKey project", (org) => sharedSessionsKey(org, { kind: "project", project: "web" }, SESSION)],
     ["sharedSessionsKey org", (org) => sharedSessionsKey(org, { kind: "org" }, SESSION)],
     ["sessionRequestKey", (org) => sessionRequestKey(org, DEV, "req-1")],
+    ["sessionRateKey", (org) => sessionRateKey(org, SESSION, DEV, "comment")],
     ["taskSpendKey", (org) => taskSpendKey(org, TASK)],
     ["sessionSurfaceKey slack", (org) => sessionSurfaceKey(org, { kind: "slack_thread", teamId: "T0123ABC", channelId: "C0123ABC", threadTs: "1760000000.123456" })],
     ["sessionSurfaceKey linear", (org) => sessionSurfaceKey(org, { kind: "linear_issue", issueId: "abc", url: "https://linear.app/acme/issue/ENG-1" })],
@@ -602,6 +604,7 @@ describe("session keys", () => {
     expect(projectSessionsKey(ORG_A, "web", NOW, SESSION)).toEqual({ pk: `ORG#${ORG_A}#PROJECT_SESSIONS#web`, sk: `${NOW}#${SESSION}` });
     expect(sharedSessionsKey(ORG_A, { kind: "member", developerId: DEV }, SESSION)).toEqual({ pk: `ORG#${ORG_A}#SHARED_SESSIONS#MEMBER#${DEV}`, sk: SESSION });
     expect(sessionRequestKey(ORG_A, DEV, "req-1")).toEqual({ pk: `ORG#${ORG_A}#SESSION_REQUEST#${DEV}`, sk: "req-1" });
+    expect(sessionRateKey(ORG_A, SESSION, DEV, "change")).toEqual({ pk: `ORG#${ORG_A}#SESSION_RATE#${SESSION}`, sk: `change#${DEV}` });
     expect(taskSpendKey(ORG_A, TASK).pk).toBe(`ORG#${ORG_A}#TASK_SPENT#${TASK}`);
     expect(deviceKey(ORG_A, DEVICE).pk).toBe(`ORG#${ORG_A}#DEVICE#${DEVICE}`);
     expect(memberDevicesKey(ORG_A, DEV, DEVICE)).toEqual({ pk: `ORG#${ORG_A}#MEMBER_DEVICES#${DEV}`, sk: DEVICE });
