@@ -9,8 +9,9 @@ import { h } from "./support/h.js";
 import { renderUi } from "./support/render.js";
 afterEach(cleanup);
 it("never renders HTML, images, executable links or approval links from Markdown", () => {
- renderUi(h(SafeMarkdown, { markdown: '<script>alert(1)</script>\n\n<iframe src="x"></iframe>\n\n![image](https://example.com/a.png)\n\n[bad](javascript:alert(1)) [data](data:text/html,x) [decision](/v1/app/approve/apr_x?ticket=y) [foreign](//evil.example)' }));
+ renderUi(h(SafeMarkdown, { markdown: '<script>alert(1)</script>\n\n<iframe src="x"></iframe>\n\n![image](https://example.com/a.png)\n\n[bad](javascript:alert(1)) [data](data:text/html,x) [decision](/v1/app/approve/apr_x?ticket=y) [foreign](//evil.example) [escaped](/app/%2e%2e/v1/app/approve/apr_x)' }));
  expect(document.querySelectorAll("script,iframe,img,a")).toHaveLength(0);
+ expect(document.body.textContent).not.toContain("<script>");
  expect(screen.getByText(/decision/)).toBeTruthy();
 });
 it("links HTTPS safely and keeps permitted session links in the app", () => {
@@ -34,5 +35,5 @@ it("refuses unsafe external and confirmation destinations", () => {
  expect(isGithubUrl("https://github.com.evil.example/acme/repo")).toBe(false);
  const origin = "https://cell.example";
  expect(isConfirmUrl(origin + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", origin)).toBe(true);
- for (const url of ["https://evil.example/v1/app/approve/a", origin + "/v1/app/approve/a?ticket=x", origin + "/v1/app/approve/../other", origin + "/v1/app/approve/%2fother"]) expect(isConfirmUrl(url, origin)).toBe(false);
+ for (const url of ["https://evil.example/v1/app/approve/a", origin + "/v1/app/approve/a?ticket=x", origin + "/v1/app/approve/../other", origin + "/v1/app/approve/%2fother", origin + "/v1/app/approve/a/%2e%2e/apr_aaaaaaaaaaaaaaaaaaaa", origin + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa#details"]) expect(isConfirmUrl(url, origin)).toBe(false);
 });
