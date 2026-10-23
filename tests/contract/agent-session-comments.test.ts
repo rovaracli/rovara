@@ -292,6 +292,92 @@ describe("a comment on a session", () => {
   });
 });
 
+describe("a comment, when the table is not quiet", () => {
+  /** A table that runs `before` once, just before the first transaction, as another request might. */
+  const interfering = (f: ReturnType<typeof world>, before: () => Promise<void>) => {
+    let done = false;
+    return {
+      send: async (command: { constructor: { name: string } }) => {
+        if (!done && command.constructor.name === "TransactWriteCommand") { done = true; await before(); }
+        return f.w.db.send(command as never);
+      },
+    };
+  };
+  const cancelled = (...codes: string[]) => ({ name: "TransactionCanceledException", cancellationReasons: codes.map((Code) => ({ Code })) });
+
+  it("answers the first message when the same request is made twice at once, and writes one", async () => {
+    const f = world();
+    const requestId = randomUUID();
+    const racing = interfering(f, async () => { await f.send(ARJUN, "Twice", { requestId }); });
+    const message = await sendSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, { requestId, kind: "comment", text: "Twice" });
+    expect(f.messageItems().map((item) => item.sk)).toEqual([`MESSAGE#${message.messageId}`]);
+    expect(f.counter()).toMatchObject({ count: 1 });
+    expect(f.eventItems()).toHaveLength(1);
+  });
+
+  it("reads the person's count again when another comment of theirs took a place in between, and counts both", async () => {
+    const f = world();
+    const racing = interfering(f, async () => { await f.send(ARJUN, "The other one"); });
+    await sendSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "comment", text: "Mine" });
+    expect(f.messageItems()).toHaveLength(2);
+    expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "comment"))).toMatchObject({ count: 2 });
+    expect(f.counter()).toMatchObject({ count: 2 });
+  });
+
+  it("gives up with a retryable answer when the count keeps changing under it, and writes nothing", async () => {
+    const f = world();
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: cancelled("ConditionalCheckFailed", "None", "None", "None", "None", "None"), times: 50 });
+    expect(await code(f.send(ARJUN, "Never"))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(f.messageItems()).toHaveLength(0);
+    expect(f.w.db.commandNames().filter((name) => name === "TransactWriteCommand")).toHaveLength(4);
+  });
+
+  it("refuses the same request id on another session, with other words, not an answer from the first", async () => {
+    const f = world();
+    const requestId = randomUUID();
+    await f.send(ARJUN, "Same words", { requestId });
+    const other = f.w.seedSession().record as unknown as AgentSessionRecord;
+    expect(await code(f.send(ARJUN, "Same words", { requestId }, other.sessionId))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(f.messageItems(other.sessionId)).toHaveLength(0);
+  });
+
+  it("fails closed on a rate item it can't read, and on a request item whose message is gone", async () => {
+    const f = world();
+    f.w.db.set({ ...sessionRateKey(ORG_A, f.sid, ARJUN, "comment"), entityType: "SESSION_RATE", count: "many" });
+    expect(await code(f.send(ARJUN, "Hello"))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(f.messageItems()).toHaveLength(0);
+    const g = world();
+    const requestId = randomUUID();
+    const made = await g.send(ARJUN, "Hello", { requestId });
+    g.w.db.delete(agentSessionKey(ORG_A, g.sid, `MESSAGE#${made.messageId}`));
+    expect(await code(g.send(ARJUN, "Hello", { requestId }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("starts the rate again in a new window and counts a new window from one", async () => {
+    const f = world();
+    await f.send(ARJUN, "One");
+    f.w.clock.now += COMMENT_RATE.windowMs;
+    await f.send(ARJUN, "Two");
+    expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "comment"))).toMatchObject({ count: 1, windowStart: T0 + COMMENT_RATE.windowMs });
+    expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "comment"))!.indexExpiresAt).toBe(Math.floor((T0 + 3 * COMMENT_RATE.windowMs) / 1000));
+  });
+
+  it("does not read a message that belongs to another company or has expired", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Visible");
+    const row = (id: string, fields: Item) => f.w.db.set({
+      ...agentSessionKey(ORG_A, f.sid, `MESSAGE#${id}`), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: f.sid, messageId: id, kind: "comment", source: "app",
+      author: { developerId: PRIYA, name: "Priya" }, text: "Hidden", createdAt: new Date(T0 + 1_000).toISOString(), rev: 1, ...fields,
+    });
+    row("msg_foreignorg000000000", { orgId: ORG_B });
+    row("msg_otherssession000000", { sessionId: "ses_other000000000000000" });
+    row("msg_expiredmessage00000", { indexExpiresAt: Math.floor(T0 / 1000) });
+    row("msg_notamessage00000000", { text: "" });
+    expect((await f.list(ARJUN)).messages.map((message) => message.messageId)).toEqual([mine.messageId]);
+    expect(await code(editSessionMessage(f.deps, f.w.caller(PRIYA), f.sid, "msg_expiredmessage00000", { rev: 1, text: "Revive" }))).toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
 describe("changing a comment", () => {
   it("lets its author edit it with the revision they saw, redacted and cleaned like a new one, and keeps its place and expiry", async () => {
     const f = world();
@@ -393,6 +479,57 @@ describe("changing a comment", () => {
   });
 });
 
+describe("changing a comment, when the table is not quiet", () => {
+  const interfering = (f: ReturnType<typeof world>, before: () => Promise<void>) => {
+    let done = false;
+    return {
+      send: async (command: { constructor: { name: string } }) => {
+        if (!done && command.constructor.name === "TransactWriteCommand") { done = true; await before(); }
+        return f.w.db.send(command as never);
+      },
+    };
+  };
+
+  it("says the comment changed when another change landed between the look and the write, and writes nothing over it", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Mine");
+    const racing = interfering(f, async () => { await editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1, text: "First change" }); });
+    expect(await code(editSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1, text: "Second change" }))).toMatchObject({ code: "SESSION_REVISION_CONFLICT" });
+    expect(f.messageItems()[0]).toMatchObject({ text: "First change", rev: 2 });
+  });
+
+  it("says it was deleted when the comment was taken back between the look and the write", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Mine");
+    const racing = interfering(f, async () => { await deleteSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1 }); });
+    expect(await code(editSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1, text: "Too late" }))).toEqual({ code: "IDEMPOTENCY_CONFLICT", message: "This comment was deleted." });
+    expect(f.messageItems()[0]).toMatchObject({ text: "[deleted]" });
+  });
+
+  it("tries again after a conflict with another transaction, and gives up with a retryable answer if it never ends", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Mine");
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] } });
+    expect(await editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1, text: "Changed" })).toMatchObject({ rev: 2 });
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] }, times: 50 });
+    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 2, text: "Never" }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(f.messageItems()[0]).toMatchObject({ text: "Changed", rev: 2 });
+  });
+
+  it("is refused, writing nothing, when the session is gone by the time of the write; and gives up when the rate item keeps changing", async () => {
+    const f = world();
+    const mine = await f.send(ARJUN, "Mine");
+    const racing = { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "TransactWriteCommand") f.w.db.delete(f.metaKey); return f.w.db.send(command as never); } };
+    expect(await code(editSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1, text: "Too late" }))).toMatchObject({ code: "NOT_FOUND" });
+    const g = world();
+    const theirs = await g.send(ARJUN, "Mine");
+    g.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }, { Code: "None" }] }, times: 50 });
+    expect(await code(editSessionMessage(g.deps, g.w.caller(ARJUN), g.sid, theirs.messageId, { rev: 1, text: "Never" }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    g.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "ConditionalCheckFailed" }, { Code: "None" }] }, times: 50 });
+    expect(await code(deleteSessionMessage(g.deps, g.w.caller(ARJUN), g.sid, theirs.messageId, { rev: 1 }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+});
+
 describe("the conversation", () => {
   it("lists a session's comments and the task page's comments together, oldest first, the page's with source page", async () => {
     const f = world();
@@ -426,6 +563,16 @@ describe("the conversation", () => {
     foreign.w.db.set({ ...foreign.w.db.get({ pk: `DEVTASK#${foreign.made.taskId}`, sk: "META" })!, orgId: ORG_B });
     foreign.pageComment({ text: "Another company's task" });
     expect((await foreign.list(ARJUN)).messages).toEqual([]);
+  });
+
+  it("shows the page's edits and long text as the session's messages would hold them, and leaves out a comment of someone with no name", async () => {
+    const f = world();
+    const id = randomUUID();
+    f.pageComment({ id, text: "é".repeat(3000), createdAt: "2026-10-22T09:00:10Z", author: { kind: "person", developerId: MAX, name: "Max\u202E", owner: true } });
+    f.w.db.set({ ...f.w.db.get({ pk: `DEVTASK#${f.made.taskId}`, sk: `COMMENT#${id}` })!, editedAt: "2026-10-22T09:01:00Z", rev: 3 });
+    const [message] = (await f.list(ARJUN)).messages;
+    expect(message).toMatchObject({ source: "page", author: { name: "Max" }, createdAt: "2026-10-22T09:00:10.000Z", editedAt: "2026-10-22T09:01:00.000Z", rev: 3 });
+    expect([...message!.text]).toHaveLength(SESSION_MESSAGE_MAX_CHARS);
   });
 
   it("is for people who can view the session, project viewers included; others get NOT_FOUND, and nothing is written", async () => {
