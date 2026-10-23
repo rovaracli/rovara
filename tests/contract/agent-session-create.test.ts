@@ -293,6 +293,7 @@ describe("an autonomous run with a trigger", () => {
     });
     const event = t.sessionPartitions().find((item) => (item.sk as string).startsWith("EVENT#"))!;
     expect(event).toMatchObject({ type: "started", actor: { kind: "system" } });
+    expect(event.text).toBe(`A schedule started Rovara Code: ${String(t.sessionOf(sessionId)!.title)}`);
     expect(t.db.get(runRequestKey(TEST_ORG, request.requestId))).toMatchObject({ sessionId });
     // The schedule's run is listed for its owner, as an owner's session is.
     expect(t.indexItems().filter((item) => String(item.pk).includes("MY_SESSIONS#"))).toHaveLength(1);
@@ -301,7 +302,10 @@ describe("an autonomous run with a trigger", () => {
   it("is started by an event when the trigger says so", async () => {
     const t = await setup();
     const result = await startAgentRun(t.starter(), t.autonomous({ origin: "event", trigger: { kind: "event", triggerId: TRIGGER } }));
-    expect(t.sessionOf(t.meta(result.taskId)!.sessionId!)).toMatchObject({ startedBy: { kind: "event", triggerId: TRIGGER }, origin: "event" });
+    const sessionId = t.meta(result.taskId)!.sessionId!;
+    expect(t.sessionOf(sessionId)).toMatchObject({ startedBy: { kind: "event", triggerId: TRIGGER }, origin: "event" });
+    const event = t.sessionPartitions().find((item) => String(item.sk).startsWith("EVENT#"))!;
+    expect(event.text).toBe(`An event started Rovara Code: ${String(t.sessionOf(sessionId)!.title)}`);
   });
 
   it("refuses a trigger on a run a person started, and a trigger that is not an id, before writing anything", async () => {
@@ -417,6 +421,9 @@ describe("AgentSessionStore", () => {
     const store = new AgentSessionStore({ documentClient: t.db, tableName: "state", now: Date.now });
     expect((await store.get(TEST_ORG, task.sessionId!))?.sessionId).toBe(task.sessionId);
     expect(await store.get(ORG_B, task.sessionId!)).toBeUndefined();
+    // An item under this org's key that says it belongs to another org is not read.
+    t.db.set({ ...t.sessionOf(task.sessionId!)!, orgId: ORG_B });
+    expect(await store.get(TEST_ORG, task.sessionId!)).toBeUndefined();
     expect(await store.get(TEST_ORG, "ses_aaaaaaaaaaaaaaaaaaaa")).toBeUndefined();
   });
 
@@ -436,6 +443,10 @@ describe("AgentSessionStore", () => {
     const step = { taskId: randomUUID(), orgId: TEST_ORG, chain: { chainRunId, stepId: "triage" } };
     expect((await store.getForTask(TEST_ORG, step))?.sessionId).toBe(chainRunId);
     expect(await store.getForTask(TEST_ORG, { ...step, chain: { chainRunId: "crn_aaaaaaaaaaaaaaaaaaaa", stepId: "x" } })).toBeUndefined();
+    // A session at the chain run's id whose subject is something else is not the chain's session.
+    const other = "crn_bbbbbbbbbbbbbbbbbbbb";
+    t.db.set({ ...agentSessionKey(TEST_ORG, other, "META"), entityType: "AGENT_SESSION", ...chainRecord(other), kind: "task", subject: { kind: "task", taskId: randomUUID() } });
+    expect(await store.getForTask(TEST_ORG, { ...step, chain: { chainRunId: other, stepId: "x" } })).toBeUndefined();
   });
 
   it("refuses a record that doesn't parse, instead of reading it", async () => {
