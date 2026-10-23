@@ -234,7 +234,7 @@ export async function sendSessionMessage(
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     const nowMs = deps.now();
     const rate = await rateStep(deps, session, caller.developerId, "comment", COMMENT_RATE.comments, nowMs);
-    if (!rate.room) throw agentXError("CONFIG_INVALID", RATE_TEXT);
+    if (!rate.room) throw agentXError("TOO_MANY_REQUESTS", RATE_TEXT);
     const name = cleanSessionName(caller.name) ?? "Someone";
     const message = SessionMessageSchema.parse({
       messageId: newMessageId(nowMs, caller.developerId, input.requestId), sessionId: session.sessionId, kind: "comment", source: "app", author: { developerId: caller.developerId, name }, text, createdAt: isoOf(nowMs), rev: 1,
@@ -321,7 +321,7 @@ async function changeMessage(deps: SessionMessageDependencies, caller: MessageCa
     }
     if (current.rev !== change.rev) throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
     const rate = await rateStep(deps, session, caller.developerId, "change", COMMENT_RATE.changes, nowMs);
-    if (!rate.room) throw agentXError("CONFIG_INVALID", RATE_TEXT);
+    if (!rate.room) throw agentXError("TOO_MANY_REQUESTS", RATE_TEXT);
     const at = isoOf(nowMs);
     const next: SessionMessage = SessionMessageSchema.parse({ ...current, text, rev: current.rev + 1, ...(change.kind === "edit" ? { editedAt: at } : { deletedAt: at }) });
     const RATE = 0, MESSAGE = 1, SESSION = 2;
