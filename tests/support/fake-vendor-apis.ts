@@ -368,6 +368,10 @@ export interface FakeGitHubActionsOptions {
   ignoreFilters?: boolean;
   /** The status the log request is redirected with (default 302). */
   logRedirectStatus?: number;
+  /** How GitHub spells the owner in the addresses it answers with (default `example`; GitHub answers with the account's own capitals). */
+  ownerCase?: string;
+  /** The Actions and deployments endpoints answer 200 with text that is not JSON. */
+  plainText?: boolean;
 }
 
 export interface RecordedGitHubRequest { method: string; url: string; authorization: string | undefined; body: unknown }
@@ -385,7 +389,7 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
   const requests: RecordedGitHubRequest[] = [];
   const tokens: string[] = [];
   const grants = new Map<string, { repositories: string[]; permissions: Record<string, string> }>();
-  const api = (repository: string) => `https://api.github.com/repos/example/${repository}`;
+  const api = (repository: string) => `https://api.github.com/repos/${options.ownerCase ?? "example"}/${repository}`;
   const run = (id: number, repository: keyof typeof FAKE_GITHUB_REPOSITORIES, over: Record<string, unknown> = {}) => ({
     id, name: "CI", display_title: `run ${String(id)}`, head_branch: "main", head_sha: "a".repeat(40), status: "completed", conclusion: "success", event: "push", run_number: id - 9000,
     created_at: "2026-10-22T09:00:00Z", updated_at: "2026-10-22T09:05:00Z", html_url: `https://github.com/example/${repository}/actions/runs/${String(id)}`,
@@ -443,6 +447,7 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
     const needed = rest.startsWith("actions/") ? "actions" : rest.startsWith("deployments") ? "deployments" : "contents";
     if (grant.permissions[needed] !== "read") return json({ message: "Resource not accessible by integration" }, 403);
     if (options.status !== undefined) return json({ message: "fake outage with secret-detail-xyz" }, options.status);
+    if (options.plainText === true && !rest.includes("/logs")) return new Response("not json at all", { status: 200 });
     const limit = options.ignoreFilters === true ? 100 : Number(url.searchParams.get("per_page") ?? "30");
     const known = (id: number) => name === "demo" && id > 0;
     if (rest === "actions/runs") {

@@ -11,11 +11,19 @@ import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { githubActionsConnectorType } from "../../packages/broker/src/aws/github-actions-connector-type.js";
 import { PROJECT_CONNECTOR_TOOLS } from "../../packages/broker/src/connections/project-connectors.js";
+import type * as VendorFetchModule from "../../packages/broker/src/connectors/native/vendor-fetch.js";
 import { GITHUB_ACTIONS_TOOLS, GITHUB_ACTIONS_TOOL_NAMES, isLogStorageUrl, logDownloader, mintActionsToken, type GitHubActionsEngineScope } from "../../packages/broker/src/connectors/native/github-actions.js";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { routeFetch } from "../support/developer-fakes.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { FAKE_GITHUB_REPOSITORIES, FAKE_GITHUB_STORAGE_HOST, fakeGitHubActions, type FakeGitHubActionsOptions } from "../support/fake-vendor-apis.js";
+
+// The real `safeVendorFetch`, watched: a deployment (no `nativeFetch`) must get the one that hands a redirect back.
+const watched = vi.hoisted(() => ({ calls: [] as unknown[] }));
+vi.mock("../../packages/broker/src/connectors/native/vendor-fetch.js", async (importOriginal) => {
+  const original = await importOriginal<typeof VendorFetchModule>();
+  return { ...original, safeVendorFetch: (options?: Parameters<typeof original.safeVendorFetch>[0]) => { watched.calls.push(options); return original.safeVendorFetch(options); } };
+});
 
 const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
@@ -629,6 +637,30 @@ describe("what the server binds", () => {
       .toMatchObject({ repositoryId: "9", installationId: "" });
   });
 
+  it("takes its fetch from the pinned, public-address-only one that hands a redirect back, when the deployment gives none", async () => {
+    const w = await world();
+    const bare = resolveConnectors(project([connectorConfig()]), { githubAgentTokens: w.provider, orgId: ORG_A }, { "github-actions": githubActionsConnectorType })[0]!;
+    watched.calls.length = 0;
+    await (await bare.connect!({ endpoint: new URL("https://api.github.com/"), token: "x", tools: ["get_job_log"] } as never)).close();
+    expect(watched.calls).toEqual([{ returnRedirects: true }]);
+    // A deployment's own `nativeFetch` (a test's) is used as it is.
+    watched.calls.length = 0;
+    await (await w.connector.connect!({ endpoint: new URL("https://api.github.com/"), token: "x", tools: ["get_job_log"] } as never)).close();
+    expect(watched.calls).toEqual([]);
+  });
+
+  it("holds an owner to GitHub's 39 characters and a repository name to 100", async () => {
+    const outcome = async (values: Record<string, string>) => {
+      try { return (await direct(values)).result; } catch (error) { return error; }
+    };
+    expect(await outcome({ owner: "a".repeat(40) })).toMatchObject({ isError: true });
+    expect(await outcome({ owner: "a".repeat(39) })).not.toMatchObject({ isError: true });
+    expect(await outcome({ repo: "a".repeat(101) })).toMatchObject({ isError: true });
+    expect(await outcome({ repo: "a".repeat(100) })).not.toMatchObject({ isError: true });
+    expect(await outcome({ owner: "-a" })).toMatchObject({ isError: true });
+    expect(await outcome({ owner: "a-" })).toMatchObject({ isError: true });
+  });
+
   it("serves api.github.com only", async () => {
     const w = await world();
     await expect(w.connector.connect!({ endpoint: new URL("https://evil.example/"), token: "x", tools: ["list_workflow_runs"] } as never)).rejects.toThrow("api.github.com only");
@@ -690,6 +722,31 @@ describe("deployments", () => {
     expect(await run(w, "list_deployments", { environment: "a&b=c" })).toMatchObject({ status: "FAILED", reason: "policy_denied" });
     expect(await run(w, "list_deployments", { environment: "x".repeat(300) })).toMatchObject({ status: "FAILED", reason: "policy_denied" });
     expect(w.fake.minted()).toHaveLength(before);
+  });
+});
+
+describe("what GitHub spells and sends", () => {
+  it("matches an item to its repository however GitHub spells the account", async () => {
+    const w = await world({ fake: { ownerCase: "Example" } });
+    expect((await run(w, "list_execution_jobs", { workflowRunId: 9001 })).text).toContain("7001");
+    expect((await run(w, "list_deployments", {})).text).toContain("5001");
+    expect((await run(w, "list_deployment_statuses", { deploymentId: 5001 })).text).toContain("success");
+  });
+
+  it("answers fixed words for a 200 that is not JSON", async () => {
+    const w = await world({ fake: { plainText: true } });
+    for (const [tool, args] of [["list_workflow_runs", {}], ["get_workflow_execution", { workflowRunId: 9001 }], ["list_execution_jobs", { workflowRunId: 9001 }], ["list_deployments", {}], ["list_deployment_statuses", { deploymentId: 5001 }]] as const) {
+      expect(await run(w, tool, args), tool).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "GitHub answered something this connector cannot read" });
+    }
+  });
+
+  it("reads a log with Windows line ends as lines, and keeps no carriage return", async () => {
+    const w = await world({ fake: { logText: `${Array.from({ length: 80 }, (_unused, index) => `row ${String(index + 1)}`).join("\r\n")}\r\n` } });
+    const result = await run(w, "get_job_log", { jobId: 7001, tailLines: 50 });
+    expect(result.text).not.toContain("\r");
+    expect(result.text.split("\n").filter((line) => line.startsWith("row "))).toHaveLength(50);
+    expect(result.text.endsWith("row 80")).toBe(true);
+    expect(result.text).toContain("(30 earlier lines are not shown)");
   });
 });
 
