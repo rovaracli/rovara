@@ -1631,6 +1631,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         ...(run?.chain === undefined ? {} : { chain: run.chain }),
         ...(run?.runLimitUsd === undefined ? {} : { runLimitUsd: run.runLimitUsd }),
         ...(run?.resultContract === undefined ? {} : { resultContract: run.resultContract }),
+        ...(run?.versionApproved === true ? { versionApproved: true as const } : {}),
         repositories: project.definition.repositories.map((repository) => ({ name: repository.name, url: repository.url, ...(repository.installationId === undefined ? {} : { installationId: repository.installationId }) })),
         ...(project.definition.models === undefined ? {} : { projectApproved: project.definition.models.approved }),
       });

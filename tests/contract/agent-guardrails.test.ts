@@ -441,6 +441,23 @@ describe("relaxations wait for the confirmation page (R9-3, R69)", () => {
     expect(db.get(agentGuardrailsKey(TEST_ORG))?.updatedBy).toBe(OWEN.developerId);
   });
 
+  it("is applied once when its handler is driven again after it applied (the sweep redrives it), and still refuses guardrails that differ", async () => {
+    const { put, current, approvals, deps, db } = await stricter();
+    await put(DANA, { ...strict, maxAutonomy: "prepare" });
+    const [record] = approvals();
+    const handler = getApprovalSubjectHandler("guardrails")!;
+    await handler(deps, { ...record!, decidedBy: OWEN.developerId });
+    expect((await current()).revision).toBe(2);
+    // The broker died before the record ended: the sweep runs the handler again and finds the guardrails as approved.
+    await handler(deps, { ...record!, decidedBy: OWEN.developerId });
+    expect(await current()).toEqual({ guardrails: { ...strict, maxAutonomy: "prepare" }, revision: 2 });
+    expect(db.get(agentGuardrailsKey(TEST_ORG))?.updatedBy).toBe(OWEN.developerId);
+    // Someone else's change to other guardrails since is still a stale record.
+    expect((await put(OWEN, { ...strict, maxAutonomy: "prepare", forbiddenModels: [OPUS, GPT] })).status).toBe(200);
+    const stale = await handler(deps, { ...record!, decidedBy: OWEN.developerId }).then(() => undefined, (thrown: Error) => thrown);
+    expect(stale?.message).toMatch(/^AGENT_REVISION_CONFLICT: /);
+  });
+
   it("is not applied if the guardrails changed after it was asked, and not without a person who decided it", async () => {
     const { put, current, approvals, deps } = await stricter();
     await put(DANA, { ...strict, maxAutonomy: "run" });

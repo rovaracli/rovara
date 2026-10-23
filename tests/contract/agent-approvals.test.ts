@@ -14,6 +14,7 @@ import {
   type ApproverSpec,
   type ChangeSubject,
 } from "../../packages/broker/src/agents/approvals.js";
+import { listedFor } from "../../packages/broker/src/agents/approvals-store.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { approvalKey, approverIndexKey, openApprovalKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { CHANGE_APPROVAL_TTL_DAYS } from "../../packages/contracts/src/spend.js";
@@ -109,6 +110,35 @@ describe("createPendingChange", () => {
     expect(record.expiresAt).toBe("2026-10-21T00:00:00.000Z");
     // The record still names every candidate: the index only decides who sees it listed.
     expect((record.approvers as Extract<ApproverSpec, { kind: "rule" }>).candidates).toHaveLength(120);
+  });
+});
+
+// Final fix wave, access m-3: the cap of 90 listed approvers never drops the person the approval is about.
+describe("the cap on listed approvers keeps the people a mover finds an approval through", () => {
+  const many = Array.from({ length: 120 }, (_, index) => index.toString(16).padStart(64, "0"));
+
+  it("a change keeps its first candidate (the agent's owner) and its requester, whatever their ids sort to", async () => {
+    const { db, deps } = setup();
+    const owner = many[119]!;
+    const requester = many[118]!;
+    const candidates = [owner, ...many.slice(0, 119)];
+    const record = await createPendingChange(deps, input({ requestedBy: requester, approvers: { kind: "rule", rule: "test_rule", candidates } }));
+    const indexed = db.find((item) => item.entityType === "APPROVER_INDEX").map((item) => item.pk);
+    expect(indexed).toHaveLength(90);
+    expect(indexed).toContain(approverIndexKey(ORG_A, owner, record.approvalId).pk);
+    expect(indexed).toContain(approverIndexKey(ORG_A, requester, record.approvalId).pk);
+    // Ending the approval drops exactly the items that were written.
+    expect(listedFor(record)).toHaveLength(90);
+    expect(listedFor(record)).toEqual(expect.arrayContaining([owner, requester]));
+  });
+
+  it("a write or a step keeps the run's owner first, though the owner sorts after everyone else", () => {
+    const owner = many[119]!;
+    for (const kind of ["write", "step"] as const) {
+      const listed = listedFor({ kind, approvers: { kind: "rule", rule: "test_rule", candidates: many }, owner: { developerId: owner } });
+      expect(listed[0], kind).toBe(owner);
+      expect(listed.length, kind).toBeLessThanOrEqual(88);
+    }
   });
 });
 

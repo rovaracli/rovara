@@ -19,7 +19,7 @@ import {
   type OrgId,
   type ResolvedRecipe,
 } from "@agentx/contracts";
-import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, type AgentCaller, type AgentShare } from "./access.js";
+import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, sharesAlreadyStored, type AgentCaller, type AgentShare } from "./access.js";
 import {
   confirmUrlFor,
   createPendingChange,
@@ -95,12 +95,12 @@ export async function orgAdmins(deps: ApprovalDependencies, orgId: OrgId): Promi
  * maintainer with `manage_agents`) and the org's owners and admins. It decides only who is shown it; the rule decides who may decide.
  */
 export async function agentApprovers(deps: ApprovalDependencies, agent: AgentRecord, rule: "agent_publish" | "agent_manager"): Promise<ApproverSpec> {
-  const candidates = new Set(await orgAdmins(deps, agent.orgId));
+  // The owner (a project's accountable maintainer) is named first, so the approver list's cap never drops the person the member movers find it through (m-3).
+  const candidates = new Set<string>();
   if (agent.owner.kind === "member") candidates.add(await resolveSurvivor(deps, agent.orgId, agent.owner.developerId));
-  else {
-    for (const member of await deps.projectMembers.list(agent.orgId, agent.owner.project)) if (projectAllows(member.role, "manage_agents")) candidates.add(member.developerId);
-    if (agent.accountable !== undefined) candidates.add(await resolveSurvivor(deps, agent.orgId, agent.accountable.developerId));
-  }
+  else if (agent.accountable !== undefined) candidates.add(await resolveSurvivor(deps, agent.orgId, agent.accountable.developerId));
+  for (const id of await orgAdmins(deps, agent.orgId)) candidates.add(id);
+  if (agent.owner.kind === "project") for (const member of await deps.projectMembers.list(agent.orgId, agent.owner.project)) if (projectAllows(member.role, "manage_agents")) candidates.add(member.developerId);
   return { kind: "rule", rule, candidates: [...candidates] };
 }
 
@@ -108,7 +108,7 @@ export async function orgAdminApprovers(deps: ApprovalDependencies, orgId: OrgId
   return { kind: "rule", rule: "org_admin", candidates: await orgAdmins(deps, orgId) };
 }
 
-async function waitForPerson(
+export async function waitForPerson(
   deps: ApprovalDependencies, caller: AgentCaller, requestId: string, subject: AgentChangeSubject, changes: string[], approvers: ApproverSpec,
 ): Promise<ChangeResult<never>> {
   const record = await createPendingChange(deps, { orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject, changes, approvers });
@@ -118,8 +118,38 @@ async function waitForPerson(
 }
 
 /** A change that needs a person can't be confirmed on an archived agent, so it is not asked for. */
-function requireActiveForConfirmation(agent: AgentRecord): void {
+export function requireActiveForConfirmation(agent: AgentRecord): void {
   if (agent.status === "archived") throw agentXError("AGENT_UNAVAILABLE", `${agent.name} is archived, so a change that needs confirmation can't be made. Unarchive it first, then ask again.`);
+}
+
+// ---- running an older version (owner decision 2026-10-22, option D)
+
+/**
+ * How a version compares with the one that runs now: the same, no looser (`same_or_safer`, by the comparison a publish makes), or looser (`less_safe`, with
+ * what it loosens, in words). A run may use any version that is not looser than the current one without asking anyone; a looser one needs the agent's owner.
+ */
+export type VersionSafety = { kind: "current" } | { kind: "same_or_safer" } | { kind: "less_safe"; changes: string[] };
+
+/**
+ * `version` of an agent against what runs now: the published version of a custom agent (`agent`), or the org's pin of a built-in (`agent` absent). A version
+ * that can't be compared (the version that runs now can't be resolved) reads as less safe: nothing is waved through that was not looked at.
+ */
+export async function versionSafety(
+  deps: ApprovalDependencies, orgId: OrgId, agentId: AgentId, version: number, agent: AgentRecord | undefined,
+): Promise<{ current: number | undefined; safety: VersionSafety }> {
+  const builtin = agent === undefined;
+  // Read only: a version list must not make the org's settings for a built-in (the start does, `ensureBuiltinSettings`, before it asks).
+  const current = builtin ? (await deps.store.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId) : agent.currentVersion;
+  if (current === undefined || version === current) return { current, safety: { kind: "current" } };
+  const target = builtin ? deps.store.builtinRecipe(agentId, version) : await resolveRecipe(deps, orgId, agentId, version);
+  let now: ResolvedRecipe;
+  try {
+    now = builtin ? deps.store.builtinRecipe(agentId, current) : await resolveRecipe(deps, orgId, agentId, current);
+  } catch {
+    return { current, safety: { kind: "less_safe", changes: [`Version ${String(current)}, which runs now, can't be read to compare with it`] } };
+  }
+  const changes = lessSafeChanges(now, target);
+  return { current, safety: changes.length === 0 ? { kind: "same_or_safer" } : { kind: "less_safe", changes } };
 }
 
 // ---- publish, rollback, adopt, share
@@ -267,7 +297,11 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   const agent = await liveAgent(deps, record, subject.agentId);
   const draft = await deps.store.getDraft(record.orgId, subject.agentId);
   if (draft === undefined || draft.revision !== subject.draftRevision || agent.draftRevision !== subject.draftRevision) throw stale(STALE_DRAFT);
-  if (agent.currentVersion !== subject.expectedCurrentVersion) throw stale("The published version changed after this was asked. Publish again.");
+  if (agent.currentVersion !== subject.expectedCurrentVersion) {
+    // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
+    if (agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) && (await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion))?.digest === subject.digest) return;
+    throw stale("The published version changed after this was asked. Publish again.");
+  }
   // The draft's base is pinned, so its content can't move under the same revision; the digest still catches a changed skill.
   const draftRecipe = await resolveRecipe(deps, record.orgId, subject.agentId, "draft");
   if (recipeDigest(draftRecipe) !== subject.digest) throw stale(STALE_DRAFT);
@@ -284,7 +318,11 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "agent_rollback" }>;
   const agent = await liveAgent(deps, record, subject.agentId);
-  if (agent.currentVersion !== subject.expectedCurrentVersion) throw stale("The published version changed after this was asked. Roll back again.");
+  if (agent.currentVersion !== subject.expectedCurrentVersion) {
+    // Already rolled back to it (a redrive after a crash, m-1): the version that is current is the approved one.
+    if (agent.currentVersion === subject.version && recipeDigest(await resolveRecipe(deps, record.orgId, subject.agentId, subject.version)) === subject.digest) return;
+    throw stale("The published version changed after this was asked. Roll back again.");
+  }
   const target = await resolveRecipe(deps, record.orgId, subject.agentId, subject.version);
   if (recipeDigest(target) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
   await requireWithinGuardrails(deps, record.orgId, target);
@@ -296,7 +334,11 @@ async function confirmAdopt(deps: ApprovalDependencies, record: ApprovalRecord):
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "builtin_adopt" }>;
   await requireAgentEnabled(deps, record.orgId, subject.agentId);
   const pinned = await deps.store.pinnedBuiltinVersion(record.orgId, subject.agentId);
-  if (pinned !== subject.expectedPinnedVersion) throw stale("The version your company uses changed after this was asked. Adopt again.");
+  if (pinned !== subject.expectedPinnedVersion) {
+    // Already pinned to it (a redrive after a crash, m-1), and it is the release that was shown.
+    if (pinned === subject.version && recipeDigest(deps.store.builtinRecipe(subject.agentId, subject.version)) === subject.digest) return;
+    throw stale("The version your company uses changed after this was asked. Adopt again.");
+  }
   if (recipeDigest(deps.store.builtinRecipe(subject.agentId, subject.version)) !== subject.digest) throw stale("That version changed after this was asked. Adopt again.");
   await deps.store.adoptBuiltinVersion({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedPinnedVersion: subject.expectedPinnedVersion, by });
 }
@@ -305,7 +347,11 @@ async function confirmShare(deps: ApprovalDependencies, record: ApprovalRecord):
   const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "agent_share" }>;
   const agent = await liveAgent(deps, record, subject.agentId);
-  if ((agent.sharesRevision ?? 0) !== subject.expectedSharesRevision) throw stale("Who this agent is shared with changed after this was asked. Share again.");
+  if ((agent.sharesRevision ?? 0) !== subject.expectedSharesRevision) {
+    // The shares are already what was approved (a redrive after a crash, m-1).
+    if (await sharesAlreadyStored(deps, record.orgId, by, subject.agentId, subject.shares)) return;
+    throw stale("Who this agent is shared with changed after this was asked. Share again.");
+  }
   await saveShares(deps, record.orgId, by, agent, subject.shares);
 }
 
@@ -313,7 +359,11 @@ async function confirmGuardrails(deps: ApprovalDependencies, record: ApprovalRec
   const by = decider(record);
   const subject = record.subject as Extract<AgentChangeSubject, { kind: "guardrails" }>;
   const current = await readGuardrailsWithRevision(deps, record.orgId);
-  if (current.revision !== subject.expectedRevision) throw stale("The company's agent guardrails changed after this was asked. Ask again.");
+  if (current.revision !== subject.expectedRevision) {
+    // The guardrails are already what was approved (a redrive after a crash, m-1).
+    if (canonicalJson(current.guardrails) === canonicalJson(subject.next)) return;
+    throw stale("The company's agent guardrails changed after this was asked. Ask again.");
+  }
   await writeGuardrails(deps, record.orgId, subject.next, by, { expectedRevision: subject.expectedRevision, widened: true });
 }
 

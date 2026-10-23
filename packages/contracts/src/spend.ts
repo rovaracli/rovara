@@ -247,14 +247,14 @@ export const SPEND_RESUME_INSTRUCTIONS = "Your AI budget was raised. Continue wh
 
 /**
  * The change an `owner_cap` request holds until an admin decides: nothing changes while it is PENDING, and approving applies exactly this, as an override of the
- * cap. `confirm_move` is Rovara's own move (a member merged or removed), which already applied: approving it only records that an admin saw it.
+ * cap. `confirm_move` is Rovara's own move (a member merged, removed or no longer a project maintainer), which already applied: approving it only records that an admin saw it.
  */
 export type OwnerCapChange =
   | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null } }
   | { op: "set_owner"; owner: { kind: "member"; developerId: string } | { kind: "project"; project: string }; accountable?: { developerId: string } }
   | { op: "set_accountable"; accountable: { developerId: string } }
   | { op: "unarchive" }
-  | { op: "confirm_move"; owner: string; cause: "member_merged" | "member_removed" };
+  | { op: "confirm_move"; owner: string; cause: "member_merged" | "member_removed" | "project_role_changed" };
 
 /** A request for more spend, at `spendRequestKey(orgId, spendRequestId)`; the open ones are listed at `openSpendRequestsKey`. */
 export interface SpendRequestRecord {
@@ -290,12 +290,14 @@ export interface SpendRequestRecord {
   change?: OwnerCapChange;
   /** The agent an `owner_cap` request is about. */
   agentId?: AgentId;
+  /** For `owner_cap`: the person whose total the change was summed against (the figures in `reason`). It applies only while the change still counts for them. */
+  forOwner?: string;
   createdAt: string;
   expiresAt: string;
   /** When the settlement run next looks at it (`openSpendRequestDueKey`): an unanswered owner's escalation, else its expiry. */
   dueAt?: string;
-  /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, or the person its change names left. */
-  endedBecause?: "continued" | "task_closed" | "target_left";
+  /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, the person its change names left, or the agent came to count for another owner than the one the change was summed for. */
+  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved";
 }
 
 /** What a paused run asks for by default: half its limit again, rounded up to whole dollars, and never less than $5. */

@@ -377,7 +377,7 @@ import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } 
 import type { settlementBudgets} from "../spend/settlement-job.js";
 import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
-import { memberRemovalHook, onProjectArchived, runMemberMergeDrain } from "../agents/lifecycle.js";
+import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { estimateRun } from "../spend/estimate.js";
 import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
@@ -385,7 +385,7 @@ import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, orgRoleOf, type ProjectMembers } from "../agents/access.js";
 import { escalateOwnerRequests, requestForPausedTask, runLimitRequester, spendDecideKind, type SpendRequestHost } from "../spend/requests.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
-import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
+import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
@@ -1009,6 +1009,22 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding
   // (`resumeAfterRunLimitApproval`, through the host above). Without this a member's Full task would block with no request and no way to run.
   routeDependencies.requestRunLimit ??= runLimitRequester(routeDependencies);
+  // Owner decision 2026-10-22: an owner's approval of an older, less safe version starts the run that asked for it, once, as the person who asked, through the same
+  // start as any run (its request id makes a repeat answer the first start), with only the version check waived.
+  routeDependencies.startApprovedRun = async (approved) => {
+    const starter = agentRunStarterOf({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
+      ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+      ...(dependencies.cloud === true ? { cloud: true } : {}),
+      agents: routeDependencies,
+      ...repositoriesGateRoute(dependencies),
+    });
+    if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");
+    await startAgentRun(starter, {
+      requestId: approved.requestId, orgId: approved.orgId, project: approved.project, agent: approved.agent, input: approved.input, origin: approved.origin,
+      owner: { developerId: approved.developerId }, startedBy: { developerId: approved.developerId }, versionApproved: true,
+    });
+  };
   // Plan 3, Task 21a-wiring: decisions need a person present. The decide routes call this guard first (a token is sent to the page with a ticketed
   // confirmUrl), and `GET /v1/app/approvals/{id}` mints the same ticket for the person who may decide it. Both use the page's own context.
   if (dependencies.decide !== undefined) {
@@ -1904,6 +1920,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(agents)),
           // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
           ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
+          ...(agents === undefined ? {} : { projectMemberChanged: async (orgId: OrgId, project: string, developerId: string) => { await onProjectMemberChanged(agents, { orgId, project, developerId }); } }),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
