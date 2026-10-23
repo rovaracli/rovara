@@ -524,7 +524,7 @@ describe("the projector's budget", () => {
       seen.push(id);
       return "updated" as const;
     };
-    const result = await projectSessions([one, two, three].map((s) => p.stream(taskOf(p, s.taskId))), { ...p.deps, refresh } as never, { deadline: Date.now() + 60_000 });
+    const result = await projectSessions([one, two, three].map((s) => p.stream(taskOf(p, s.taskId))), { ...p.deps, refresh }, { deadline: Date.now() + 60_000 });
     expect(result).toMatchObject({ refreshed: 2, failed: 1 });
     expect(seen.sort()).toEqual([one.sessionId, three.sessionId].sort());
     expect(p.logs).toContainEqual(expect.objectContaining({ event: "agent_session.projector_refresh_failed", error: "ThrottlingException" }));

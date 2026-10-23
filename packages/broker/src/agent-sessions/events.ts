@@ -11,6 +11,7 @@ import {
   agentSessionKey,
   agentXError,
   cleanSessionName,
+  redactText,
   sessionEventId,
   type OrgId,
   type SessionEvent,
@@ -18,6 +19,8 @@ import {
   type SessionId,
 } from "@agentx/contracts";
 import { failedIndexes, type TableInput, type TransactItem } from "../agents/table-writes.js";
+import { followMerges } from "../agents/access.js";
+import type { DeveloperSignInStore } from "../developer/store.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { AgentSessionStore, sessionEventItem, type SessionRef, type SessionTaskRef } from "./store.js";
 
@@ -62,7 +65,8 @@ export function slackReplyEventItem(
   const name = cleanSessionName(reply.actor?.name ?? "") ?? "Someone";
   const base = {
     eventId: sessionEventId("steer", reply.slackEventId), at: reply.receivedAt, type: "steer" as const, source: "slack" as const,
-    text: `${name} in Slack: ${[...reply.text].slice(0, REPLY_PREVIEW_CHARS).join("")}`,
+    // Redacted before the cut, so a token the cut would have halved is still seen whole.
+    text: `${name} in Slack: ${[...redactText(reply.text)].slice(0, REPLY_PREVIEW_CHARS).join("")}`,
   };
   const candidates: SessionEvent[] = reply.actor === undefined ? [base] : [{ ...base, actor: { kind: "member", developerId: reply.actor.developerId, name } }, base];
   for (const candidate of candidates) {
@@ -76,25 +80,26 @@ export function slackReplyEventItem(
 }
 
 /**
- * Who wrote a reply in a task's thread, for the session's timeline. The id is the task's owner's when the Slack user is the owner, else the Slack caller's.
- * The name is their developer record's display name, else the name the task's Task People list holds for their Slack id, else (the owner) the name the task
- * keeps, else what the Slack caller is called. Never throws: the name is for the timeline only.
+ * Who wrote a reply in a task's thread, for the session's timeline. The id is the task's owner's when the Slack user is the owner, else the Slack caller's,
+ * followed through any member merge. The name is their developer record's display name (read through the sign-in table, not the state table), else the name
+ * the task's Task People list holds for their Slack id, else (the owner) the name the task keeps, else what the Slack caller is called. Never throws: the
+ * name is for the timeline only.
  */
 export async function slackReplyAuthor(
   table: Pick<TableInput, "documentClient" | "tableName">,
+  signInStore: Pick<DeveloperSignInStore, "getDeveloper">,
   task: { taskId: string; developerId: string; developerName: string; slackUserId?: string | undefined },
   slackUserId: string,
   caller: { developerId: string; name: string },
 ): Promise<{ developerId: string; name: string }> {
   const owner = task.slackUserId === slackUserId;
-  const developerId = owner ? task.developerId : caller.developerId;
+  let developerId = owner ? task.developerId : caller.developerId;
   const known = (value: unknown): value is string => typeof value === "string" && value !== "";
-  const read = async (key: { pk: string; sk: string }) =>
-    ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
   try {
-    const record = await read({ pk: `DEVELOPER#${developerId}`, sk: "META" });
-    if (known(record?.["displayName"])) return { developerId, name: record["displayName"] };
-    const people = (await read({ pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" }))?.["people"];
+    developerId = await followMerges(signInStore, developerId);
+    const record = await signInStore.getDeveloper(developerId);
+    if (known(record?.displayName)) return { developerId, name: record.displayName };
+    const people = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" }, ConsistentRead: true }))) as { Item?: Item }).Item?.["people"];
     const listed = Array.isArray(people) ? (people as Array<{ slackUserId?: unknown; name?: unknown } | null>).find((person) => person?.slackUserId === slackUserId) : undefined;
     if (known(listed?.name)) return { developerId, name: listed.name };
   } catch {

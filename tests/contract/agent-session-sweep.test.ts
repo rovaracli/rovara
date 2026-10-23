@@ -71,8 +71,8 @@ describe("the session sweep", () => {
     openList(w, 50);
     const limits: unknown[] = [];
     const base = w.db.send.bind(w.db);
-    const spy = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => { if (command.constructor.name === "QueryCommand") limits.push(command.input.Limit); return base(command as never); } };
-    await sweepAgentSessions({ documentClient: spy, tableName: "state", now: () => T0, log: () => undefined, refresh: async () => "unchanged" as const } as never, T0);
+    const spy = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => { if (command.constructor.name === "QueryCommand") limits.push(command.input.Limit); return base(command); } };
+    await sweepAgentSessions({ documentClient: spy, tableName: "state", now: () => T0, log: () => undefined, refresh: async () => "unchanged" as const }, T0);
     expect(limits[0]).toBe(SESSION_SWEEP_PAGE);
   });
 
@@ -225,7 +225,7 @@ describe("retention: drainEndedSessions", () => {
     p.w.db.set({ ...agentSessionKey(ORG_A, s.sessionId, "SHARE#MEMBER#y"), orgId: ORG_A, sessionId: s.sessionId, principal: { kind: "member", developerId: "y".repeat(64) }, level: "view" });
     const before = p.w.db.find(() => true).length;
     p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
-    await drainEndedSessions(p.deps as never, p.w.clock.now);
+    await drainEndedSessions(p.deps, p.w.clock.now);
     // The work item is gone; nothing was made (no list entry for the owner, the project or the share, no surface key).
     expect(p.w.db.find(() => true).length).toBe(before - 1);
   });

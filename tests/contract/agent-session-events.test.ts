@@ -457,8 +457,8 @@ describe("through the real broker", () => {
       const stateDb = new FakeDynamoDb();
       stateDb.set(record("f".repeat(64), "Fay from the state table"));
       const caller = (developerId: string) => ({ developerId, name: "Slack user U0X" });
-      expect(await slackReplyAuthor({ documentClient: stateDb, tableName: "state" } as never, signInOf(signin), task, "U0TEAM", caller("e".repeat(64)))).toEqual({ developerId: "e".repeat(64), name: "Eve from sign-in" });
-      expect(await slackReplyAuthor({ documentClient: stateDb, tableName: "state" } as never, signInOf(signin), task, "U0TEAM", caller("f".repeat(64)))).toEqual({ developerId: "f".repeat(64), name: "Slack user U0X" });
+      expect(await slackReplyAuthor({ documentClient: stateDb, tableName: "state" }, signInOf(signin), task, "U0TEAM", caller("e".repeat(64)))).toEqual({ developerId: "e".repeat(64), name: "Eve from sign-in" });
+      expect(await slackReplyAuthor({ documentClient: stateDb, tableName: "state" }, signInOf(signin), task, "U0TEAM", caller("f".repeat(64)))).toEqual({ developerId: "f".repeat(64), name: "Slack user U0X" });
     });
 
     it("follows a merge: a duplicate's replies are the survivor's", async () => {
@@ -474,8 +474,8 @@ describe("through the real broker", () => {
       const base = t.harness.db.send.bind(t.harness.db);
       t.harness.db.send = (async (command: { constructor: { name: string }; input: { TableName?: unknown; Key?: { pk?: unknown } } }) => {
         if (command.constructor.name === "GetCommand" && String(command.input.Key?.pk).startsWith("DEVELOPER#")) reads.push({ table: command.input.TableName, pk: command.input.Key?.pk });
-        return base(command as never);
-      }) as never;
+        return base(command);
+      });
       expect(await t.send(MAYA.slackUserId!, "1695500002.000007", "EvA", "Keep the old flag.")).toEqual({ outcome: "captured" });
       expect(reads.length).toBeGreaterThan(0);
       expect(reads.every((read) => read.table === "signin")).toBe(true);
