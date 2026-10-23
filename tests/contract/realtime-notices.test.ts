@@ -461,12 +461,13 @@ describe("what the sink does with its time and its readers", () => {
   it("does not look at followers, or drop any, for a change they would not be told of", async () => {
     const p = projectorWorld();
     const session = p.w.seedSession().record as unknown as AgentSessionRecord;
-    p.w.follower(ORG_A, session.sessionId, ZED);
+    const GONE = hex("8"); // left the company: positively without access
+    p.w.follower(ORG_A, session.sessionId, GONE);
     await createRealtimeSink({ realtime: undefined })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now }, changeOf(session, { statusChanged: true, summary: { status: "running", needsPeople: [] } }));
-    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${ZED}`))).toBeDefined();
+    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${GONE}`))).toBeDefined();
     // The same follower is dropped by a change they would be told of.
     await createRealtimeSink({ realtime: undefined })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now }, changeOf(session, needsPerson));
-    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${ZED}`))).toBeUndefined();
+    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${GONE}`))).toBeUndefined();
   });
 
   it("does not check the owner when the owner follows their own session", async () => {

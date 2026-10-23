@@ -260,7 +260,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 },
                 {
                   "Action": [
-                    "appsync:CreateApi",
                     "appsync:GetApi",
                     "appsync:UpdateApi",
                     "appsync:DeleteApi",
@@ -294,6 +293,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     ],
                   },
                   "Sid": "AppSyncEvents",
+                },
+                {
+                  "Action": [
+                    "appsync:CreateApi",
+                    "appsync:ListApis",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestedRegion": {
+                        "Ref": "AWS::Region",
+                      },
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "AppSyncEventsCreate",
                 },
                 {
                   "Action": [
@@ -694,7 +709,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
             },
             {
               "Action": [
-                "appsync:CreateApi",
                 "appsync:GetApi",
                 "appsync:UpdateApi",
                 "appsync:DeleteApi",
@@ -728,6 +742,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 ],
               },
               "Sid": "AppSyncEvents",
+            },
+            {
+              "Action": [
+                "appsync:CreateApi",
+                "appsync:ListApis",
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:RequestedRegion": {
+                    "Ref": "AWS::Region",
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Resource": "*",
+              "Sid": "AppSyncEventsCreate",
             },
             {
               "Action": [

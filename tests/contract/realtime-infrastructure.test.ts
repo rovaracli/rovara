@@ -5,7 +5,7 @@
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import { APPSYNC_EVENTS_ACTIONS, BROKER_NAMES } from "../../packages/contracts/src/index.js";
+import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, BROKER_NAMES } from "../../packages/contracts/src/index.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
 import { DEPLOY_PARAMETER_VALUES, LAMBDA_ENVIRONMENT_LIMIT_BYTES, lambdaEnvironments, type Template as ResolvableTemplate } from "../support/lambda-environment-size.js";
@@ -165,14 +165,15 @@ describe("the access policies", () => {
   const scope = { env: "staging", partition: "aws", region: "us-east-1", account: "123456789012", artifactBucketArn: "arn:aws:s3:::b", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation" };
 
   it("list the AppSync Events create, update, delete, get and tag actions for the API and its namespaces, and nothing wider", () => {
-    expect([...APPSYNC_EVENTS_ACTIONS].sort()).toEqual([
+    // CreateApi and ListApis take no resource type: their own statement on "*" in the deploy region (access-policies.test.ts).
+    expect([...APPSYNC_EVENTS_ACTIONS, ...APPSYNC_EVENTS_UNSCOPED_ACTIONS].sort()).toEqual([
       "appsync:CreateApi", "appsync:CreateChannelNamespace", "appsync:DeleteApi", "appsync:DeleteChannelNamespace", "appsync:GetApi", "appsync:GetChannelNamespace",
-      "appsync:ListTagsForResource", "appsync:TagResource", "appsync:UntagResource", "appsync:UpdateApi", "appsync:UpdateChannelNamespace",
+      "appsync:ListApis", "appsync:ListTagsForResource", "appsync:TagResource", "appsync:UntagResource", "appsync:UpdateApi", "appsync:UpdateChannelNamespace",
     ]);
     for (const statements of [serviceRoleStatements(scope), defaultBoundaryStatements(scope)]) {
       const statement = statements.find((st) => st.Sid === "AppSyncEvents")!;
       expect(statement).toEqual({ Sid: "AppSyncEvents", Effect: "Allow", Action: [...APPSYNC_EVENTS_ACTIONS], Resource: "arn:aws:appsync:us-east-1:123456789012:apis/*" });
-      expect(statements.flatMap((st) => st.Action).filter((action) => action.startsWith("appsync:") && action !== "appsync:EventPublish").sort()).toEqual([...APPSYNC_EVENTS_ACTIONS].sort());
+      expect(statements.flatMap((st) => st.Action).filter((action) => action.startsWith("appsync:") && action !== "appsync:EventPublish").sort()).toEqual([...APPSYNC_EVENTS_ACTIONS, ...APPSYNC_EVENTS_UNSCOPED_ACTIONS].sort());
     }
     // The boundary lets the broker and the outbox publisher publish to the namespace and nothing else; the service role does not publish.
     expect(defaultBoundaryStatements(scope).find((st) => st.Sid === "AppSyncEventsPublish")).toEqual({

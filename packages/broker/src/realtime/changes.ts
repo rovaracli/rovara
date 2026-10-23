@@ -5,6 +5,7 @@ import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   CHANGES_FEED_DAYS,
   CHANGES_PAGE_MAX,
+  CHANGES_SETTLE_MS,
   INDEX_EXPIRY_ATTRIBUTE,
   RealtimeNoticeSchema,
   SessionSharedNoticeSchema,
@@ -69,35 +70,43 @@ const refuseCursor = () => agentXError("CONFIG_INVALID", "since: is not a cursor
  * `GET /v1/app/changes?since=<cursor>`: the caller's own notices after the cursor, oldest first, at most `CHANGES_PAGE_MAX`; `next` is the cursor to ask with next time.
  * Only notices from the last `CHANGES_FEED_DAYS` are given: the read starts at that age, since a notice past its expiry can still be in the table (deletion lags). A cursor from before that window
  * answers `reset: true` and no notices: the client reloads what it shows and carries on from `next`. No cursor starts at the oldest notice kept.
+ *
+ * An item's `at` is the summary's `computedAt`, taken before the follower checks and the write, and two writers (the broker and the outbox publisher) write items, so an item can be
+ * committed after a newer one was read. `next` is therefore held back: never newer than `CHANGES_SETTLE_MS` before now (and never behind the cursor given, nor past the page's last
+ * item), so an item written late is still found by the next read. The cost is repeats: a notice inside the window comes again, with the same `sk`, and the client drops repeats by `sk`.
+ * A full page is the exception: its cursor is its last item, or a feed with a burst of `CHANGES_PAGE_MAX` notices in the window could never move on.
  */
 export async function readChanges(deps: ChangesDependencies, caller: { orgId: OrgId; developerId: string }, since: string | undefined): Promise<ChangesFeedPage> {
   const now = deps.now();
   const oldest = new Date(now - CHANGES_FEED_DAYS * DAY_MS).toISOString();
   if (since !== undefined && !CURSOR.test(since)) throw refuseCursor();
-  const fresh = `${new Date(now).toISOString()}#`;
-  if (since !== undefined && since.slice(0, 24) < oldest) return { notices: [], next: fresh, reset: true };
+  const settled = `${new Date(now - CHANGES_SETTLE_MS).toISOString()}#`;
+  if (since !== undefined && since.slice(0, 24) < oldest) return { notices: [], next: settled, reset: true };
   const key = changesKey(caller.orgId, caller.developerId, oldest, 0);
   const page = await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND sk > :from", ConsistentRead: true, Limit: CHANGES_PAGE_MAX,
     ExpressionAttributeValues: { ":pk": key.pk, ":from": since ?? `${oldest}#` },
   })) as { Items?: Array<Record<string, unknown>> };
   const notices: ChangesFeedEntry[] = [];
-  let next = since ?? fresh;
+  let last: string | undefined;
   for (const item of page.Items ?? []) {
     const sk = item["sk"];
     const at = item["at"];
     if (typeof sk !== "string" || typeof at !== "string") continue;
-    next = sk;
-    const entry = entryOf(item, at);
+    last = sk;
+    const entry = entryOf(item, at, sk);
     if (entry !== undefined) notices.push(entry);
   }
-  return { notices, next };
+  if ((page.Items?.length ?? 0) >= CHANGES_PAGE_MAX && last !== undefined) return { notices, next: last };
+  // Nothing came after the cursor: the cursor stands (a feed with no cursor starts at the window's edge). Otherwise the page's last item, held back to the window's edge.
+  const held = last === undefined ? since ?? settled : last > settled ? settled : last;
+  return { notices, next: since !== undefined && since > held ? since : held };
 }
 
 /** A stored item as the feed gives it: a realtime notice, or a share notice, with when it was made. An item that is neither is skipped. */
-function entryOf(item: Record<string, unknown>, at: string): ChangesFeedEntry | undefined {
+function entryOf(item: Record<string, unknown>, at: string, sk: string): ChangesFeedEntry | undefined {
   const stored = RealtimeNoticeSchema.safeParse(item["notice"]);
-  if (stored.success) return { ...stored.data, at };
+  if (stored.success) return { ...stored.data, at, sk };
   const shared = SessionSharedNoticeSchema.safeParse({ type: item["type"], sessionId: item["sessionId"], revision: item["revision"], by: item["by"], undo: item["undo"] });
-  return shared.success ? { ...shared.data, at } : undefined;
+  return shared.success ? { ...shared.data, at, sk } : undefined;
 }

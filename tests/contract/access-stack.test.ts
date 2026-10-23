@@ -1,7 +1,7 @@
 import { Stack, type App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { APPSYNC_EVENTS_ACTIONS, ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
+import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -144,7 +144,7 @@ describe("access stack", () => {
     const neededServices = new Set([...resourceTypeServices(), ...Object.values(MANAGED_POLICY_SERVICES).flat()].filter((s) => s !== "iam"));
     // AppSync is allowed by name (Events APIs and their namespaces only, Plan 5 Task 8), never by wildcard.
     expect(allowedServices.has("appsync")).toBe(false);
-    expect(APPSYNC_EVENTS_ACTIONS.filter((action) => !allowed.has(action))).toEqual([]);
+    expect([...APPSYNC_EVENTS_ACTIONS, ...APPSYNC_EVENTS_UNSCOPED_ACTIONS].filter((action) => !allowed.has(action))).toEqual([]);
     expect([...neededServices].filter((service) => !allowedServices.has(service) && !(service === "events" && allowed.has("events:*")) && service !== "appsync")).toEqual([]);
     // Every action a role uses is allowed by its service's wildcard or by name (IAM, STS and
     // Service Quotas only by name: servicequotas:GetServiceQuota is the operator's one scoped
@@ -214,6 +214,11 @@ describe("access stack", () => {
     // AppSync (Events APIs and namespaces, Plan 5 Task 8) is created through its named actions, never `appsync:*`.
     const created = roleStatements(template.toJSON().Resources as Record<string, Resource>).find((st) => st.Sid === "AppSyncEvents")!;
     expect([...(created.Action as string[])].sort()).toEqual([...APPSYNC_EVENTS_ACTIONS].sort());
+    // CreateApi and ListApis take no resource type: their own statement, "*" held to the deploy region.
+    const createApi = roleStatements(template.toJSON().Resources as Record<string, Resource>).find((st) => st.Sid === "AppSyncEventsCreate")!;
+    expect([...(createApi.Action as string[])].sort()).toEqual([...APPSYNC_EVENTS_UNSCOPED_ACTIONS].sort());
+    expect(createApi.Resource).toBe("*");
+    expect(JSON.stringify(createApi.Condition)).toContain("aws:RequestedRegion");
     expect(SERVICE_ROLE_SERVICES).not.toContain("appsync");
     // The reverse: every wildcard service is created by some resource type or called by some role.
     const used = new Set([...needed, ...[...usedActions()].map((a) => a.split(":")[0]!)]);

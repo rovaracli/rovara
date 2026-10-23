@@ -114,11 +114,15 @@ export const SessionSharedNoticeSchema = z.object({
 }).strict();
 export type SessionSharedNotice = z.infer<typeof SessionSharedNoticeSchema>;
 
-/** What `GET /v1/app/changes` gives for one notice: the notice and when it was made. */
-export type ChangesFeedEntry = (RealtimeNotice | SessionSharedNotice) & { at: string };
+/**
+ * What `GET /v1/app/changes` gives for one notice: the notice, when it was made, and its `sk`, the notice's own place in the feed (it is also a cursor).
+ * The feed holds its cursor back by `CHANGES_SETTLE_MS`, so a notice made in the last 30 seconds can be given more than once: **a client drops repeats by `sk`**
+ * (the same notice always has the same `sk`, so keeping the first or the last copy gives the same result).
+ */
+export type ChangesFeedEntry = (RealtimeNotice | SessionSharedNotice) & { at: string; sk: string };
 export interface ChangesFeedPage {
   notices: ChangesFeedEntry[];
-  /** The cursor to ask with next time. */
+  /** The cursor to ask with next time: never newer than `CHANGES_SETTLE_MS` behind now, so what it leaves out of the next page is given again (see `ChangesFeedEntry`). */
   next: string;
   /** The cursor was older than the feed keeps: reload what you show, then carry on from `next`. */
   reset?: true;

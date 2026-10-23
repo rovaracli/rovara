@@ -4,7 +4,7 @@
 import { DeleteCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { SESSION_FOLLOWERS_MAX, agentSessionKey, orgMemberKey, projectMemberKey, type AgentSessionRecord } from "@agentx/contracts";
 import { grantRoleOf } from "../developer/project-roles.js";
-import { NO_SLACK_PROJECT_MEMBERS, readSessionShares, readTaskPeople, effectiveOwnerOf, sessionLevelOf, type SessionAccessDependencies } from "../agent-sessions/access.js";
+import { NO_SLACK_PROJECT_MEMBERS, readSessionShares, readTaskPeople, effectiveOwnerOf, followerStanding, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { registerSessionNoticeSink, type NoticeSinkDependencies, type SessionChange, type SessionNoticeSink } from "../agent-sessions/notice-sink.js";
 import { writeChanges } from "./changes.js";
 import { environmentCredentials, followersHear, noticesFor, publishNotices, type RealtimeConfig } from "./publish.js";
@@ -45,7 +45,8 @@ async function followerIds(deps: NoticeSinkDependencies, session: AgentSessionRe
 /**
  * The followers who may still see the session, judged now on the read-only path (no Slack call). A task session's followers are grouped by the facts that decide
  * their level (their org role, their grant on the project, their Task People entry and their own shares); each group is resolved once and the answer used for every
- * member. A follower with no level is dropped and their follow deleted. When the deadline passes, the followers not yet judged are left out of this change (and left
+ * member. A follower the check positively says has no access (left the company, denied on the task) is dropped and their follow deleted. One the read-only path can't
+ * decide (their only access could be the project's Slack channel, which it does not ask) is not told this time and keeps their follow. When the deadline passes, the followers not yet judged are left out of this change (and left
  * alone). A chain session's followers are judged by Plan 4's readers, or not at all without them.
  */
 async function checkedFollowers(deps: NoticeSinkDependencies, access: SessionAccessDependencies, session: AgentSessionRecord, owner: string): Promise<string[]> {
@@ -61,22 +62,31 @@ async function checkedFollowers(deps: NoticeSinkDependencies, access: SessionAcc
     const own = shares.filter((share) => share.principal.kind === "member" && share.principal.developerId === developerId).map((share) => share.level).sort();
     return JSON.stringify([member?.["role"], grant, entry, own]);
   };
-  const levels = new Map<string, Promise<boolean>>();
+  const standings = new Map<string, Promise<Awaited<ReturnType<typeof followerStanding>>>>();
   const allowed: string[] = [];
   let unjudged = 0;
+  let undecided = 0;
   for (const developerId of ids) {
     if (deps.deadline !== undefined && deps.now() >= deps.deadline) { unjudged += 1; continue; }
     // A chain session's level isn't decided by these facts (Plan 4's readers look at the person), so each follower is judged alone.
     const group = session.kind === "task" ? await factsOf(developerId) : developerId;
-    let visible = levels.get(group);
-    if (visible === undefined) {
-      visible = sessionLevelOf(access, { orgId: session.orgId, developerId }, session, { readOnlyPath: true }).then((level) => level !== "none");
-      levels.set(group, visible);
+    let standing = standings.get(group);
+    if (standing === undefined) {
+      standing = followerStanding(access, { orgId: session.orgId, developerId }, session);
+      standings.set(group, standing);
     }
-    if (await visible) { allowed.push(developerId); continue; }
+    const found = await standing;
+    if (found === "unknown") {
+      // TASK20: real support for a follower whose only access is the project's Slack channel (the broker's sink has the channel; the outbox publisher does not). Until then
+      // such a follower is skipped, never dropped: a lost follow can't be told apart from a person who was never asked about.
+      undecided += 1;
+      continue;
+    }
+    if (found !== "lost") { allowed.push(developerId); continue; }
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, `${FOLLOWER_PREFIX}${developerId}`) }));
   }
   if (unjudged > 0) log({ event: "realtime.followers_unchecked", sessionId: session.sessionId, unchecked: unjudged });
+  if (undecided > 0) log({ event: "realtime.followers_undecided", sessionId: session.sessionId, undecided });
   return allowed;
 }
 

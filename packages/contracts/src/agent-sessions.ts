@@ -42,6 +42,12 @@ export const HOME_FAILURE_DAYS = 7;
 /** How long a session's own records stay (owner answer 8, 2026-10-22; a placeholder constant). */
 export const SESSION_RETENTION_DAYS = 365;
 export const CHANGES_FEED_DAYS = 7;
+/**
+ * How long the changes feed holds its cursor back (milliseconds). A feed item is stamped with the summary's `computedAt`, which is taken before the follower checks and the
+ * write, and two writers (the broker and the outbox publisher) write it, so an item can land after a newer one was already read. `GET /v1/app/changes` therefore never
+ * hands out a cursor newer than this far behind now: items inside the window come again on the next read.
+ */
+export const CHANGES_SETTLE_MS = 30_000;
 export const CHANGES_PAGE_MAX = 500;
 export const SESSION_SWEEP_PAGE = 100;
 export const SESSION_SWEEP_BUDGET_MS = 20_000;
