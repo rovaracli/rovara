@@ -194,6 +194,15 @@ describe("a message to the agent on a Rovara Code workflow task", () => {
     expect(JSON.stringify(f.logs)).not.toContain(TOKEN);
   });
 
+  it("catches a secret split by an invisible character, in the message, its note and everywhere else", async () => {
+    const f = steerWorld();
+    const message = await f.send(ARJUN, `use ${TOKEN.slice(0, 8)}\u200b${TOKEN.slice(8, 20)}\u2060${TOKEN.slice(20)} for it`);
+    expect(message.text).toContain("[REDACTED]");
+    expect(message.text).not.toContain(TOKEN.slice(0, 8));
+    expect(f.notes()[0]!.text).toBe(message.text);
+    expect(f.everything()).not.toContain(TOKEN.slice(0, 8));
+  });
+
   it("saves nothing and logs nothing of the message when the write fails for any other reason", async () => {
     const f = steerWorld();
     f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError", message: "use the v2 endpoint failed" }, times: 10 });

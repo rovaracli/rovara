@@ -223,6 +223,22 @@ describe("sending a pinned comment", () => {
     expect(blank.anchor).toEqual(PLAN);
   });
 
+  it("catches a secret split by an invisible character, in the text and in the excerpt", async () => {
+    const t = world();
+    const split = `${TOKEN.slice(0, 8)}\u200b${TOKEN.slice(8, 20)}\u2060${TOKEN.slice(20)}`;
+    const message = await t.send(PRIYA, `key ${split} done`, { anchor: { ...PLAN, excerpt: `quoted ${TOKEN.slice(0, 6)}\u200d${TOKEN.slice(6)}` } });
+    expect(message.text).toContain("[REDACTED]");
+    expect(message.text).not.toContain(TOKEN.slice(0, 8));
+    expect(message.anchor?.excerpt).toContain("[REDACTED]");
+    expect(message.anchor?.excerpt).not.toContain(TOKEN.slice(0, 6));
+    expect(t.everything()).not.toContain(TOKEN.slice(0, 8));
+    // An edit is the same, and a line break survives.
+    const edited = await editSessionMessage(t.deps, t.w.caller(PRIYA), t.sid, message.messageId, { rev: 1, text: `again ${TOKEN.slice(0, 10)}\u00ad${TOKEN.slice(10)}\nsecond line` });
+    expect(edited.text).toContain("[REDACTED]");
+    expect(edited.text).toContain("\nsecond line");
+    expect(edited.text).not.toContain(TOKEN.slice(0, 10));
+  });
+
   it("never lets the excerpt decide anything: a wrong one changes neither the state nor the target, and a long text is still cut as before", async () => {
     const t = world();
     const message = await t.send(PRIYA, "x", { anchor: { ...PLAN, excerpt: "Something the plan never said." } });
@@ -320,9 +336,9 @@ describe("reading pinned comments", () => {
     t.state.view = { ...baseView(), workflow: { artifacts: [{ id: "p", type: "plan", version: 4 }], planContent: "Only one." } };
     const gone = (await t.list(PRIYA)).messages;
     expect(gone.map((m) => m.anchorState)).toEqual(["gone", "gone", undefined]);
-    // A gone part keeps its ids and loses its excerpt.
-    expect(gone[0]!.anchor).toEqual(PLAN);
-    expect(gone[1]!.anchor).toEqual(PLAN);
+    // A gone part keeps only its kind: no id, no revision, no excerpt.
+    expect(gone[0]!.anchor).toEqual({ target: "plan_block" });
+    expect(gone[1]!.anchor).toEqual({ target: "plan_block" });
     expect(t.state.calls.slice(-3).every((call) => call.actor === "owner")).toBe(true);
   });
 
@@ -346,9 +362,27 @@ describe("reading pinned comments", () => {
     const mine = (await t.list(PRIYA)).messages[0]!;
     expect(mine).toMatchObject({ anchorState: "current", anchor: { excerpt: "the file's first lines" } });
     const theirs = (await t.list(ARJUN)).messages[0]!;
-    expect(theirs).toMatchObject({ anchorState: "gone", anchor: FILE });
-    expect(theirs.anchor).not.toHaveProperty("excerpt");
-    expect(JSON.stringify(theirs)).not.toContain("first lines");
+    expect(theirs).toMatchObject({ anchorState: "gone" });
+    // A viewer who can't see the file learns only that the comment is on a file: not its path, not its counts, not what was quoted.
+    expect(theirs.anchor).toEqual({ target: "change_file" });
+    expect(JSON.stringify(theirs)).not.toMatch(/first lines|src\/a\.ts|web:|\+12-3/u);
+    expect(SessionMessageSchema.parse(theirs).anchor).toEqual({ target: "change_file" });
+    // Nor can they list the part by its id: the list of a part they can't see is empty, and says nothing more.
+    expect((await t.list(ARJUN, { anchor: "change_file:web:src/a.ts" })).messages).toEqual([]);
+    expect((await t.list(PRIYA, { anchor: "change_file:web:src/a.ts" })).messages.map((m) => m.text)).toEqual(["about the file"]);
+    // A reply (which holds the thread's anchor) hides it the same way.
+    t.state.hideFor = undefined;
+    const reply = await t.send(PRIYA, "and a reply", { threadId: (await t.list(PRIYA)).messages[0]!.messageId });
+    t.state.hideFor = (actor) => (actor === "viewer" ? { changedFiles: [] } : {});
+    expect((await t.list(ARJUN)).messages.find((m) => m.messageId === reply.messageId)?.anchor).toEqual({ target: "change_file" });
+    expect(JSON.stringify(await t.list(ARJUN))).not.toMatch(/src\/a\.ts/u);
+  });
+
+  it("reads a gone anchor that carries only its kind, and no other shape without an id", () => {
+    const stored = { messageId: "msg_00000000000000000001", sessionId: "ses_00000000000000000001", kind: "comment", source: "app", author: { developerId: PRIYA, name: "Priya" }, text: "hi", createdAt: "2026-10-22T09:00:00.000Z", rev: 1 };
+    expect(SessionMessageSchema.parse({ ...stored, anchor: { target: "change_file" }, anchorState: "gone" }).anchor).toEqual({ target: "change_file" });
+    expect(SessionMessageSchema.safeParse({ ...stored, anchor: { target: "change_file", extra: 1 }, anchorState: "gone" }).success).toBe(false);
+    expect(SessionMessageSchema.safeParse({ ...stored, anchor: { target: "section" }, anchorState: "gone" }).success).toBe(false);
   });
 
   it("hides the excerpt and says gone when the view can't be built, and logs only ids", async () => {
