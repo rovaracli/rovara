@@ -727,7 +727,7 @@ async function holdingCap<T>(
   };
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
-    const monthly = ownerShare(after)?.usd;
+    const monthly = ownerShare(after)?.usd || undefined; // a $0 base has no new limit to name
     const { record, message } = await requestOwnerCap(deps, {
       orgId: caller.orgId, agentId, requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
       ...(monthly === undefined ? {} : { newLimitUsd: monthly }), ...(newOwner === undefined ? {} : { newOwner }),
