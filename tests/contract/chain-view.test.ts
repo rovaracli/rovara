@@ -246,6 +246,19 @@ describe("who reads a run", () => {
     expect(await refused(chainRunEvents(v.deps, callerOf(STRANGER, ORG_B), run.runId, 0))).toBe("NOT_FOUND");
   });
 
+  it("never puts a confirmation link in the event log, which a reader who may not decide the gate reads too (review I-1)", async () => {
+    const v = world();
+    const { run, approvalId } = await v.w.runAtGate(PRIYA);
+    await share(v, run.chainId, CARL, "view");
+    for (const who of [CARL, PRIYA]) {
+      const page = await chainRunEvents(v.deps, callerOf(who), run.runId, 0);
+      const waiting = page.events.filter((event) => event.type === "gate_waiting");
+      expect(waiting, who).toHaveLength(1);
+      for (const event of page.events) expect(event.text, `${who} ${event.type}`).not.toMatch(/https?:|\/approve\/|apr_/i);
+      expect(JSON.stringify(page)).not.toContain(approvalId);
+    }
+  });
+
   it("takes the live chain: a chain that is gone leaves only the starter, the owner and admins", async () => {
     const v = world();
     const chain = await v.w.publish(twoSteps());

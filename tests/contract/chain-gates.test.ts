@@ -74,13 +74,14 @@ describe("opening a gate", () => {
     expect(w.db.find((item) => String(item.pk).includes("APPROVER#") || String(item.sk).includes(approvalId)).length).toBeGreaterThan(0);
   });
 
-  it("says who it waits for, the gate's name and Plan 3's plain link in the gate_waiting event, with no ticket in it", async () => {
+  it("says who it waits for and the gate's name in the gate_waiting event, with no link and no ticket in it (review I-1: the log is read by people who may not decide)", async () => {
     const w = setupGateWorld();
     const { run, approvalId } = await w.runAtGate();
     const waiting = w.events(run.runId).filter((event) => event.type === "gate_waiting");
     expect(waiting).toHaveLength(1);
-    expect(waiting[0]).toMatchObject({ stepSeq: 2, text: `Waiting for the person who started this run or a maintainer of web to approve "Approve the fix": ${confirmUrl(approvalId)}.` });
-    expect(waiting[0]!.text).not.toMatch(/ticket/i);
+    expect(waiting[0]).toMatchObject({ stepSeq: 2, text: `Waiting for the person who started this run or a maintainer of web to approve "Approve the fix".` });
+    expect(waiting[0]!.text).not.toMatch(/ticket|https?:|approve\/|apr_/i);
+    expect(waiting[0]!.text).not.toContain(approvalId);
   });
 
   it("takes the timeout from the gate's own hours", async () => {
@@ -846,16 +847,15 @@ describe("the words of a gate", () => {
     expect(w.events(run.runId).find((event) => event.type === "gate_waiting")!.text).toContain("Waiting for a teammate to approve");
   });
 
-  it("are cut so the link at the end of the event is never cut", async () => {
+  it("are cut to the event's limit, and the cut leaves the closing words of the sentence", async () => {
     const w = setupGateWorld();
     const ids = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map((digit) => digit.repeat(64));
     ids.forEach((id, index) => w.db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: `${String(index)}${"n".repeat(79)}`, revoked: false }));
     const chain = await w.publish(gated([{ kind: "members", developerIds: ids }]));
     const run = await w.start(chain.chainId);
     await w.endLatest();
-    const gate = waitingGate(w, run.runId);
     const text = w.events(run.runId).find((event) => event.type === "gate_waiting")!.text;
-    expect(text.endsWith(`${confirmUrl(gate.approvalId!)}.`)).toBe(true);
+    expect(text.endsWith(`to approve "Approve the fix".`)).toBe(true);
     expect(text.length).toBeLessThanOrEqual(500);
     expect(text).toContain("…");
   });
