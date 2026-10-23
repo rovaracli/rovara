@@ -144,7 +144,7 @@ describe("what dispatch refuses to read or trust", () => {
     const { v, deps, dispatch } = setup();
     await v.seed({ target: BUILTIN, createdBy: DANA });
     expect(await dispatch({ ...prEvent(), type: "no.such.type" })).toEqual([]);
-    await expect(dispatchTriggerEvent({ ...deps, triggers: undefined } as TriggerDispatchDependencies, ORG_A, prEvent())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(dispatchTriggerEvent({ ...deps, triggers: undefined } as unknown as TriggerDispatchDependencies, ORG_A, prEvent())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
   it("reads a hook event only from the hook's index and a GitHub event only from GitHub's, even when a stored trigger says otherwise", async () => {
@@ -153,7 +153,7 @@ describe("what dispatch refuses to read or trust", () => {
     // A Linear trigger stored with no hook sits in GitHub's index; a GitHub trigger stored with a hook sits in that hook's.
     await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { kind: "event", source: "linear", type: "issue.created" } });
     await v.seed({ target: { kind: "chain", chainId: chain.chainId }, hookId: HOOK_A });
-    expect(await dispatch(linearEvent(HOOK_A, { hookId: undefined } as never))).toEqual([]);
+    expect(await dispatch(linearEvent(HOOK_A, { hookId: undefined }))).toEqual([]);
     expect(await dispatch(prEvent({ hookId: HOOK_A }))).toEqual([]);
   });
 
@@ -428,7 +428,7 @@ describe("the loop guard", () => {
     expect(outcomes[0]).toMatchObject({ outcome: "skipped", reason: "caused_by_rovara" });
     expect(await rovaraActorIds(withSlug, ORG_A, "github")).toEqual(new Set(["rovara-app[bot]"]));
     expect(await rovaraActorIds(deps, ORG_A, "github")).toEqual(new Set());
-    expect(await rovaraActorIds({ ...deps, githubAppSlug: async () => "" } as TriggerDispatchDependencies, ORG_A, "github")).toEqual(new Set());
+    expect(await rovaraActorIds({ ...deps, githubAppSlug: async () => "" }, ORG_A, "github")).toEqual(new Set());
     expect(await rovaraActorIds(deps, ORG_A, "sentry")).toEqual(new Set());
   });
 
