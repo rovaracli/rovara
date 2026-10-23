@@ -474,7 +474,7 @@ export const WRITE_VERBS: readonly string[] = [
   "create", "add", "update", "edit", "set", "delete", "remove", "close", "merge", "send", "post", "reply", "assign", "transition", "move", "archive",
   "publish", "invite", "notify", "write", "push", "cancel", "reopen", "resolve", "approve", "run", "execute", "trigger", "dispatch", "apply", "rotate",
   "refund", "charge", "pay", "grant", "revoke", "restart", "rollback", "deploy", "start", "stop", "enable", "disable", "submit", "upsert", "save", "sync",
-  "import", "transfer", "reset", "purge", "kill",
+  "import", "transfer", "reset", "purge", "kill", "rerun", "retry", "redeploy", "rebuild", "replay",
 ];
 export const OUTWARD_WORDS: readonly string[] = ["email", "message", "post", "notify", "publish", "sms", "invite", "send", "reply"];
 export const OUTWARD_KEYS: readonly string[] = ["to", "cc", "bcc", "recipient", "recipients", "email", "emails", "phone", "url", "webhook", "endpoint"];
