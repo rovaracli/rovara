@@ -257,8 +257,8 @@ describe("the read-only path", () => {
     expect(await read(PRIYA)).toBe("edit");
     expect(await read(ARJUN)).toBe("view");
     expect(await read(MAX)).toBe("edit");
-    // An org admin has a role on every project, so the project share reaches them.
-    expect(await read(OLA)).toBe("use");
+    // A project share reaches a person only through a grant row or the channel, never an org admin's maintainership of every project (review I-2).
+    expect(await read(OLA)).toBe("view");
     expect(await read(ZED)).toBe("use");
     expect(await read(MIA)).toBe("view");
   });

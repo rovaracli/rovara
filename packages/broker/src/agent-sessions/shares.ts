@@ -48,7 +48,7 @@ import {
   type SessionShareOrgSubject,
 } from "../agents/approvals.js";
 import { failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
-import { readSessionShares, requireSessionLevel, resolveSessionAccess, sessionLevelOf, type SessionAccessDependencies, type SessionCaller, type SessionShareRow } from "./access.js";
+import { effectiveOwnerOf, readSessionShares, requireSessionLevel, resolveSessionAccess, sessionLevelOf, type SessionAccessDependencies, type SessionCaller, type SessionShareRow } from "./access.js";
 import { sessionEventItem } from "./store.js";
 
 export interface SessionShareDependencies extends SessionAccessDependencies {
@@ -124,7 +124,8 @@ async function checkPrincipal(deps: SessionShareDependencies, orgId: OrgId, sess
     if (role === undefined) throw agentXError("CONFIG_INVALID", NOT_A_MEMBER);
     if (level !== "view" && session.project !== undefined) {
       const grant = grantRoleOf(await getItem(deps, projectMemberKey(orgId, principal.developerId, session.project)));
-      const effective = grant ?? (role === "owner" || role === "admin" ? "maintainer" : await deps.projectMembers.roleOf(orgId, session.project, { developerId: principal.developerId, orgRole: role }));
+      // An org owner or admin is a maintainer whatever grant they hold (m-1).
+      const effective = role === "owner" || role === "admin" ? "maintainer" : grant ?? await deps.projectMembers.roleOf(orgId, session.project, { developerId: principal.developerId, orgRole: role });
       if (effective === "viewer") throw agentXError("SESSION_LEVEL_REQUIRED", sessionViewerOnlyMessage(session.project));
     }
   } else if (principal.kind === "project" && await getItem(deps, orgProjectCatalogKey(orgId, principal.project)) === undefined) {
@@ -200,10 +201,12 @@ async function applyShare(deps: SessionShareDependencies, input: ApplyInput): Pr
       text: `${cleanSessionName(input.sharer.name) ?? "Someone"} shared this session with ${who} (${LEVEL_WORDS[level]})`,
     }),
   ];
-  if (input.sharer.developerId !== session.owner.developerId) {
+  // The owner who is told is the effective one, who may be the person that took the session over (m-2).
+  const ownerId = await effectiveOwnerOf(deps, session);
+  if (input.sharer.developerId !== ownerId) {
     // Ids, a kind and a revision only: a notice never carries a name or a title. `undo` is `DELETE …/shares/<principalKey>`.
     items.push(put({
-      ...changesKey(orgId, session.owner.developerId, at, noticeNumber(`${session.sessionId}|${input.requestId}`)), entityType: "CHANGE_NOTICE", orgId, type: "session_shared",
+      ...changesKey(orgId, ownerId, at, noticeNumber(`${session.sessionId}|${input.requestId}`)), entityType: "CHANGE_NOTICE", orgId, type: "session_shared",
       sessionId: session.sessionId, revision: session.revision + 1, by: input.sharer.developerId, undo: { principalKey: key }, at,
       [INDEX_EXPIRY_ATTRIBUTE]: secondsOf(nowMs) + CHANGES_FEED_DAYS * DAY_SECONDS,
     }));
@@ -337,13 +340,27 @@ export async function deleteSessionShare(deps: SessionShareDependencies, caller:
     if (failed.has(0)) throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
     throw error;
   }
-  await dropFollowersWithoutAccess(deps, session);
+  await dropFollowersWithoutAccess(deps, session, existing.principal);
   return { removed: true };
 }
 
-/** Deletes the `FOLLOWER#` items of people who can no longer see the session, judged through the read-only path (m6). */
-async function dropFollowersWithoutAccess(deps: SessionShareDependencies, session: AgentSessionRecord): Promise<void> {
+/**
+ * Deletes the `FOLLOWER#` items of people who can no longer see the session (m6). Only the people the removed share could have covered are looked at:
+ * the member of a member share, else every follower. Each is judged on the full path, so a person who reaches the project through its Slack channel
+ * keeps their follow (I-1); the read-only path is for the realtime authorizer, which makes no Slack call.
+ */
+async function dropFollowersWithoutAccess(deps: SessionShareDependencies, session: AgentSessionRecord, removed: AgentPrincipal): Promise<void> {
   const prefix = "FOLLOWER#";
+  const judge = async (sk: string): Promise<void> => {
+    const developerId = sk.slice(prefix.length);
+    if (await sessionLevelOf(deps, { orgId: session.orgId, developerId }, session, {}) !== "none") return;
+    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, sk as `FOLLOWER#${string}`) }));
+  };
+  if (removed.kind === "member") {
+    const sk = `${prefix}${removed.developerId}`;
+    if (await getItem(deps, agentSessionKey(session.orgId, session.sessionId, sk as `FOLLOWER#${string}`)) !== undefined) await judge(sk);
+    return;
+  }
   let start: Record<string, unknown> | undefined;
   do {
     const page = await deps.documentClient.send(new QueryCommand({
@@ -352,10 +369,7 @@ async function dropFollowersWithoutAccess(deps: SessionShareDependencies, sessio
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
     })) as { Items?: Array<{ sk?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
     for (const item of page.Items ?? []) {
-      if (typeof item.sk !== "string" || !item.sk.startsWith(prefix)) continue;
-      const developerId = item.sk.slice(prefix.length);
-      if (await sessionLevelOf(deps, { orgId: session.orgId, developerId }, session) !== "none") continue;
-      await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, item.sk as `FOLLOWER#${string}`) }));
+      if (typeof item.sk === "string" && item.sk.startsWith(prefix)) await judge(item.sk);
     }
     start = page.LastEvaluatedKey;
   } while (start !== undefined);

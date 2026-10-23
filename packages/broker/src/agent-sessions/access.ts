@@ -141,6 +141,28 @@ async function peopleRoleOf(deps: SessionAccessDependencies, taskId: string, dev
   return found;
 }
 
+// ---- the effective owner
+
+const takenBy = (taskItem: Item | undefined): string | undefined => {
+  const taken = (taskItem?.["currentOwner"] as { developerId?: unknown } | undefined)?.developerId;
+  return typeof taken === "string" ? taken : undefined;
+};
+
+/**
+ * The person who owns the session now: the task's `currentOwner` once someone took it over, else the session's own owner. The one place that says so
+ * (Task 12a's `effectiveTaskOwner` replaces this line): access and the share notice both read it.
+ */
+export function effectiveOwnerId(session: AgentSessionRecord, taskItem: Item | undefined): string {
+  return takenBy(taskItem) ?? session.owner.developerId;
+}
+
+/** `effectiveOwnerId`, reading the task of a task session (a task of another org is no task). */
+export async function effectiveOwnerOf(deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, session: AgentSessionRecord): Promise<string> {
+  if (session.subject.kind !== "task") return session.owner.developerId;
+  const found = await getItem(deps, taskKey(session.subject.taskId));
+  return effectiveOwnerId(session, found?.["orgId"] === session.orgId ? found : undefined);
+}
+
 // ---- the level
 
 interface Computed { level: "none" | SessionLevel; owner: boolean; projectRole: ProjectRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
@@ -156,13 +178,25 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
     if (known !== undefined) return known;
     const read = (async () => {
       const grant = grantRoleOf(await getItem(deps, projectMemberKey(orgId, caller.developerId, project)));
-      if (grant !== undefined) return { grant, effective: grant };
+      // An org owner or admin is a maintainer of every project whatever grant they hold; the grant only decides between `edit` and `view` (m-1).
       if (isAdmin) return { grant, effective: "maintainer" as ProjectRole };
+      if (grant !== undefined) return { grant, effective: grant };
       if (readOnly) return { grant, effective: undefined };
       return { grant, effective: await deps.projectMembers.roleOf(orgId, project, { developerId: caller.developerId, orgRole }) };
     })();
     roles.set(project, read);
     return read;
+  };
+
+  /**
+   * The caller's role on a project for a share to it: their own grant row, or (off the read-only path) the project's Slack channel. An org owner's or
+   * admin's maintainership does not count, so a project share never reaches an admin who isn't in the project (answer 2, I5, m7).
+   */
+  const shareRoleOn = async (project: string): Promise<ProjectRole | undefined> => {
+    const { grant, effective } = await roleOn(project);
+    if (!isAdmin) return effective;
+    if (grant !== undefined || readOnly) return grant;
+    return deps.projectMembers.roleOf(orgId, project, { developerId: caller.developerId, orgRole: "member" });
   };
 
   // The task, for a task session. A task of another org is not this session's task (m15), and counts as no task.
@@ -171,9 +205,8 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
     const found = await getItem(deps, taskKey(session.subject.taskId));
     if (found?.["orgId"] === session.orgId) taskItem = found;
   }
-  const taken = (taskItem?.["currentOwner"] as { developerId?: unknown } | undefined)?.developerId;
-  const effectiveOwner = typeof taken === "string" ? taken : session.owner.developerId;
-  const owner = caller.developerId === effectiveOwner;
+  const taken = takenBy(taskItem);
+  const owner = caller.developerId === effectiveOwnerId(session, taskItem);
 
   const projectRole = session.project === undefined ? undefined : (await roleOn(session.project)).effective;
   const grantRole = session.project === undefined ? undefined : (await roleOn(session.project)).grant;
@@ -192,7 +225,7 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
     const principal = share.principal;
     const applies = principal.kind === "org"
       || (principal.kind === "member" && principal.developerId === caller.developerId)
-      || (principal.kind === "project" && (await roleOn(principal.project)).effective !== undefined);
+      || (principal.kind === "project" && await shareRoleOn(principal.project) !== undefined);
     if (applies) level = best(level, share.level);
   }
 
@@ -224,12 +257,12 @@ export async function resolveSessionAccess(deps: SessionAccessDependencies, call
   return finish(session, await compute(deps, caller, role.data, session, options));
 }
 
-/** The level of a person already known to be a member (a follower's re-check), through the read-only path. */
-export async function sessionLevelOf(deps: SessionAccessDependencies, caller: SessionCaller, session: AgentSessionRecord): Promise<"none" | SessionLevel> {
+/** The level of a person already known to be a member (a follower's re-check). The read-only path unless `options` say otherwise; a follower the Slack channel covers needs the full one. */
+export async function sessionLevelOf(deps: SessionAccessDependencies, caller: SessionCaller, session: AgentSessionRecord, options: SessionAccessOptions = { readOnlyPath: true }): Promise<"none" | SessionLevel> {
   const member = await getItem(deps, orgMemberKey(caller.orgId, caller.developerId));
   const role = OrgRoleSchema.safeParse(member?.["role"]);
   if (!role.success) return "none";
-  return (await compute(deps, caller, role.data, session, { readOnlyPath: true })).level;
+  return (await compute(deps, caller, role.data, session, options)).level;
 }
 
 function finish(session: AgentSessionRecord, computed: Computed): SessionAccess {
