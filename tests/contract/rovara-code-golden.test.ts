@@ -194,7 +194,7 @@ describe("Rovara Code with agents switched on", () => {
   const latest = BUILTIN_AGENTS["rovara-code"].versions.at(-1)!;
 
   for (const scenario of STARTS) {
-    it(`${scenario} differs from its golden fixture only by the task's agent, origin, payer, place, the keys' tags, the operation's key ids, the RECIPE item and change 1 and 4`, async () => {
+    it(`${scenario} differs from its golden fixture only by the task's agent, origin, payer, place, session id, the keys' tags, the operation's key ids, the RECIPE item and change 1 and 4`, async () => {
       if (updatingGolden()) return;
       const record = await recordGolden(scenario, { brokerExtra: { agents: {} } });
       const items = record.taskItems as Array<Record<string, unknown>>;
@@ -214,9 +214,13 @@ describe("Rovara Code with agents switched on", () => {
       // Every task payload names the model its key allows: one that lost it would match the fixture (which has none) and go unlisted otherwise.
       // (The one scenario without a model proxy chooses no route.)
       if (scenario !== "task-no-workflow-no-proxy") expect(payloadModelPaths(record), "every task payload names its model").toHaveLength(taskPayloadCount(record));
+      // Plan 5 Task 2: the start also writes the task's session, so the task carries its id (a random one: its shape is the check, and the record's own value is listed).
+      const sessionId = (kept[meta] as { sessionId?: string }).sessionId;
+      expect(sessionId, `${scenario}'s task names its session`).toMatch(/^ses_[0-9a-z]{20}$/);
       const recorded = { ...record, taskItems: kept };
       expectGolden(scenario, recorded, [
         ...runLimitChanges(scenario, recorded),
+        { path: `taskItems[${String(meta)}].sessionId`, expected: sessionId, change: 5 },
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },
         { path: `taskItems[${String(meta)}].payer`, expected: payer, change: 5 },
