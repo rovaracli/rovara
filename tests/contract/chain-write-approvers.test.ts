@@ -150,12 +150,26 @@ describe("selecting the rule", () => {
     expect(record.approvers).toMatchObject({ kind: "rule", rule: WRITE_APPROVER_RULE });
   });
 
-  it("answers only when all three hold: a chain run that is missing leaves the default", async () => {
+  it("answers only when all three hold: a task with no chain, or with a chain run that is not an autonomous project-owned one, leaves the default", async () => {
+    const w = setup();
+    const { chainWriteApprovers } = await writers();
+    expect(await chainWriteApprovers(w.deps, { taskId: "t" }, { orgId: ORG_A, project: "web", owner: { developerId: PRIYA, name: "Priya" } })).toBeUndefined();
+  });
+
+  it("fails loudly when the task names a chain run that can't be read, so the fallback is counted: the selector throws and the write logs the line the alarm reads (M-3)", async () => {
     const w = setup();
     const { chainWriteApprovers } = await writers();
     const task = { taskId: "task-x", chain: { chainRunId: "crn_aaaaaaaaaaaaaaaaaaaa", stepId: "look" } };
-    expect(await chainWriteApprovers(w.deps, task, { orgId: ORG_A, project: "web", owner: { developerId: PRIYA, name: "Priya" } })).toBeUndefined();
-    expect(await chainWriteApprovers(w.deps, { taskId: "t" }, { orgId: ORG_A, project: "web", owner: { developerId: PRIYA, name: "Priya" } })).toBeUndefined();
+    await expect(chainWriteApprovers(w.deps, task, { orgId: ORG_A, project: "web", owner: { developerId: PRIYA, name: "Priya" } })).rejects.toThrow();
+    // End to end: the run's META is gone (corrupt or missing), the write still waits on Plan 3's `write_approver`, and the alarm's line is written with the task id.
+    const chain = await w.publish(ONE_STEP, PROJECT_OWNED);
+    const run = await w.startAsSystem(chain.chainId, EVENT());
+    const real = w.taskOfRun(run.runId);
+    for (const item of w.db.find((entry) => entry.entityType === "CHAIN_RUN" && entry.runId === run.runId)) w.db.delete(String(item.pk), String(item.sk));
+    const record = await w.ask(w.gateInput(real));
+    expect(record.approvers).toEqual({ kind: "rule", rule: WRITE_APPROVER_RULE, candidates: await writeApproversFor(w.deps, { orgId: ORG_A, project: "web", owner: { developerId: PRIYA } }) });
+    expect(record.status).toBe("PENDING");
+    expect(w.logs.filter((line) => line.event === "write_approver_selector.failed")).toMatchObject([{ fields: { taskId: real.taskId } }]);
   });
 
   it("names the creator in the approval's task event (the run's owner when it started)", async () => {
