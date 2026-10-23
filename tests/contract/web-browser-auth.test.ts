@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { BROWSER_RETURN_TO } from "../../packages/broker/src/developer/server.js";
-import { createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
+import { createTaskWebApi } from "../../packages/broker/src/aws/task-web-api.js";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import { httpEvent, identityHarness } from "../support/developer-fakes.js";
@@ -14,7 +14,7 @@ const COOKIE = `__Host-agentx_review_session=${SID}`;
 const PERSON = { userId: "U0WEB001", name: "Web member", email: "web-fixture@example.test" };
 const errorOf = (body: Record<string, unknown>) => body.error as { code: string; message: string };
 async function broker(extra: Record<string, unknown> = {}) {
- const verify = vi.fn(async (authorization: string | undefined) => authorization === "Bearer test-only-bearer" ? { iss: CELL + "/v1/auth", aud: "agentx-developer", sub: WHO, sid: SID, amr: "cloud", env: "staging", org: TEST_ORG, org_role: "owner" } : undefined);
+ const verify = vi.fn(async (authorization: string | undefined) => authorization === "Bearer test-only-bearer" ? { iss: CELL + "/v1/auth", aud: "agentx-developer", sub: WHO, sid: SID, amr: "cloud", env: "staging", org: TEST_ORG, org_role: "owner" } : {});
  const methods = { slack: false, oidc: false, cloud: true };
  const h = await createAdminBroker({ developer: { issuer: CELL + "/v1/auth", env: "staging", signInTableName: "signin", methods, verifyAccessToken: verify, channelMembers: async () => ({ ok: true, memberOf: [] }) }, extra });
  seedMembership(h.db, WHO, { orgId: TEST_ORG, role: "owner" });
@@ -147,7 +147,8 @@ describe("browser sign-in returns and sign-out", () => {
  it("lets a task-page comment use the app session's CSRF header", async () => {
   const createComment = vi.fn(async () => ({ comment: {} as never }));
   const caller = { developerId: WHO, sessionId: SID, amr: "cloud" as const, orgId: TEST_ORG, orgRole: "owner" as const, name: "Web member" };
-  const api = createTaskWebApi({ origin: CELL, authenticateSession: async () => caller, createComment } as TaskWebApiDependencies);
+  const unused = async (): Promise<never> => { throw new Error("Unexpected fixture route"); };
+  const api = createTaskWebApi({ origin: CELL, authenticateSession: async () => caller, createComment, taskState: unused, listComments: unused, editComment: unused, deleteComment: unused, setSuggestion: unused, decide: unused });
   const path = "/review/11111111-1111-4111-8111-111111111111/task/api/comments";
   const body = { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "claim", id: "2.1" }, text: "A comment", ask: false };
   for (const headers of [{ origin: CELL }, { origin: CELL, [APP_CSRF_HEADER]: "wrong" }, { origin: "https://evil.example", [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }]) {

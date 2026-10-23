@@ -1,8 +1,8 @@
-import { authenticateWebRequest, webRouteAllowed } from "./web-auth.js";
-import { appCsrfTokenFor } from "../developer/app-csrf.js";
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
+import { authenticateWebRequest, webRouteAllowed } from "./web-auth.js";
+import { appCsrfTokenFor } from "../developer/app-csrf.js";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { posix as posixPath } from "node:path";
 import { cancelCallbackForbidden, verifyCancelCallbackCapability } from "./cancel-callback-capability.js";
