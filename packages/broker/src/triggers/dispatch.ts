@@ -51,8 +51,6 @@ export interface DispatchOutcome {
 const HOUR_SECONDS = 3600;
 const DAY_SECONDS = 86_400;
 const EVENT_TEXT = "Do your job for this event.";
-/** Plan 3's codes for "the system is busy or a service is away": the start may work later, so the event is sent again. */
-const RETRY_LATER_CODES: ReadonlySet<string> = new Set(["RUNTIME_UNAVAILABLE", "MODEL_PROXY_UNAVAILABLE", "SLACK_UNAVAILABLE", "AUDIT_UNAVAILABLE"]);
 const BUSY_CODES: ReadonlySet<string> = new Set(["WORKSPACE_BUSY", "TOO_MANY_REQUESTS"]);
 const BOOKKEEPING_TRIES = 5;
 const REQUEST_NAMESPACE = Buffer.from("a1d6f7c2e0b34e5c8f4a2b9d7c6e5f31", "hex");
@@ -194,7 +192,8 @@ async function noteFired(work: Work, trigger: TriggerRecord, started: { runId?: 
 /** What went wrong at the start, as the outcome: a code, `busy`, or (for a fault that may pass) the error itself to throw. */
 async function refusalOf(work: Work, trigger: TriggerRecord, error: unknown): Promise<{ reason: string } | { transient: unknown }> {
   if (!(error instanceof AgentXError)) return { transient: error };
-  if (error.statusCode >= 500 || RETRY_LATER_CODES.has(error.code)) return { transient: error };
+  // A service that is away (`RUNTIME_UNAVAILABLE` and its kind answer 503) may be back when the vendor sends the event again.
+  if (error.statusCode >= 500) return { transient: error };
   if (BUSY_CODES.has(error.code)) return { reason: "busy" };
   if (error.code === "FORBIDDEN" && trigger.target.kind === "chain") {
     // The chain's concurrency refusal has no code of its own: it is the one that leaves the chain with its most runs open.
