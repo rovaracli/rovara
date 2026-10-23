@@ -378,7 +378,10 @@ describe("selectors (M3)", () => {
   });
 
   it("falls back the same way when a selector answers `{ kind: \"ids\", ids: [] }` or anything that is not a rule", async () => {
-    for (const answer of [{ kind: "ids", ids: [] }, { kind: "ids", ids: [CARL] }, "yes", { kind: "rule", rule: 7, candidates: [] }, { kind: "rule", rule: WRITER_RULE, candidates: "all" }, null] as unknown[]) {
+    for (const answer of [
+      { kind: "ids", ids: [] }, { kind: "ids", ids: [CARL] }, "yes", { kind: "rule", rule: 7, candidates: [] }, { kind: "rule", rule: WRITER_RULE, candidates: "all" }, null,
+      { kind: "rule", rule: "", candidates: [] }, { rule: WRITER_RULE, candidates: [] }, { kind: "rule", rule: WRITER_RULE, candidates: [1, 2] }, { kind: "rule", rule: WRITER_RULE },
+    ] as unknown[]) {
       const w = setup();
       const task = await running(w);
       disposeGateWorlds();
@@ -387,7 +390,7 @@ describe("selectors (M3)", () => {
       const record = await w.ask(input(w, task));
       offBad(); offChain();
       expect(record.approvers, JSON.stringify(answer)).toEqual(await defaultSpec(w));
-      expect(w.logs.filter((line) => line.event === "write_approver_selector.failed"), JSON.stringify(answer)).toHaveLength(1);
+      expect(w.logs.filter((line) => line.event === "write_approver_selector.failed"), JSON.stringify(answer)).toMatchObject([{ fields: { taskId: task.taskId } }]);
     }
   });
 
@@ -429,6 +432,99 @@ describe("selectors (M3)", () => {
     expect(asked).toBe(0);
     expect(record.approvers).toEqual(await defaultSpec(w));
     expect(w.logs.filter((line) => line.event === "write_approver_selector.failed")).toEqual([]);
+  });
+});
+
+describe("the rule reads what is stored and fails closed", () => {
+  it("is false for the creator when there is no trigger store at all, and still true for a maintainer", async () => {
+    const w = setup();
+    const { record } = await w.autonomousWrite();
+    const { writerEligible } = await writers();
+    expect(await writerEligible({ ...w.deps, triggers: undefined } as never, record, callerOf(PRIYA))).toBe(false);
+    expect(await writerEligible({ ...w.deps, triggers: undefined } as never, record, callerOf(MAX))).toBe(true);
+  });
+
+  it("takes the trigger's creator only for a run an event or a schedule started: a person's run has no trigger, whoever the store would name", async () => {
+    const w = setup();
+    const chain = await w.publish(ONE_STEP, PROJECT_OWNED);
+    const person = await w.start(chain.chainId, CARL);
+    const record = { ...(await w.ask(w.gateInput(w.taskOfRun(person.runId)))), approvers: { kind: "rule" as const, rule: WRITER_RULE, candidates: [] } };
+    const { writerEligible } = await writers();
+    const everyone = { ...w.deps, triggers: { get: async () => ({ createdBy: PRIYA }) } };
+    expect(await writerEligible(everyone, record, callerOf(PRIYA))).toBe(false);
+    expect(await writerEligible(everyone, record, callerOf(MAX))).toBe(true);
+  });
+
+  it("reads the trigger of the task's own organization: a task item that belongs to another organization names no creator", async () => {
+    const w = setup();
+    const { record, task } = await w.autonomousWrite();
+    const { writerEligible } = await writers();
+    expect(await writerEligible(w.deps, record, callerOf(PRIYA))).toBe(true);
+    const item = w.db.find((entry) => entry.entityType === "DEVELOPER_TASK" && entry.taskId === task.taskId)[0]!;
+    w.db.set({ ...item, orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
+    expect(await writerEligible(w.deps, record, callerOf(PRIYA))).toBe(false);
+    expect(await writerEligible(w.deps, record, callerOf(MAX))).toBe(true);
+  });
+
+  it("refuses a caller who is no member of the organization even when they hold a grant on the project", async () => {
+    const w = setup();
+    const { record } = await w.autonomousWrite();
+    const { writerEligible } = await writers();
+    w.db.find((item) => item.entityType === "ORG_MEMBER" && item.developerId === MAX).forEach((item) => w.db.delete(String(item.pk), String(item.sk)));
+    expect(await writerEligible(w.deps, record, callerOf(MAX))).toBe(false);
+  });
+
+  it("counts a person merged into another as the same person: the duplicate's id is the creator and the maintainer", async () => {
+    const w = setup();
+    const OLD = "9".repeat(64);
+    const { record } = await w.autonomousWrite();
+    const { writerEligible } = await writers();
+    w.db.set({ pk: `DEVELOPER#${OLD}`, sk: "META", developerId: OLD, mergedInto: PRIYA });
+    expect(await writerEligible(w.deps, record, callerOf(OLD))).toBe(true);
+    w.triggers.set(TRIGGER_ID, { createdBy: OLD });
+    expect(await writerEligible(w.deps, record, callerOf(PRIYA))).toBe(true);
+    w.db.set({ pk: `DEVELOPER#${OLD}`, sk: "META", developerId: OLD, mergedInto: MAX });
+    expect(await writerEligible(w.deps, record, callerOf(PRIYA))).toBe(false);
+  });
+
+  it("answers a selector for a task whose chain run is not a valid id with nothing", async () => {
+    const w = setup();
+    const { chainWriteApprovers } = await writers();
+    expect(await chainWriteApprovers(w.deps, { taskId: "t", chain: { chainRunId: "garbage", stepId: "x" } }, { orgId: ORG_A, project: "web", owner: { developerId: PRIYA, name: "Priya" } })).toBeUndefined();
+  });
+});
+
+describe("selecting when the call is a merge, and unregistering twice", () => {
+  it("asks the selectors about a merge as it does about any change that waits", async () => {
+    const w = setup();
+    const chain = await w.publish(ONE_STEP, PROJECT_OWNED);
+    const task = w.taskOfRun((await w.startAsSystem(chain.chainId, EVENT())).runId);
+    const record = await w.ask(w.gateInput(task, { classify: async () => ({ class: "merge", reason: "a merge", ignoredRules: [] }) }));
+    expect(record).toMatchObject({ class: "merge", approvers: { rule: WRITER_RULE } });
+  });
+
+  it("removes only its own selector, once: taking it off again takes no other", async () => {
+    const w = setup();
+    const chain = await w.publish(ONE_STEP, PROJECT_OWNED);
+    const task = w.taskOfRun((await w.startAsSystem(chain.chainId, EVENT())).runId);
+    disposeGateWorlds();
+    let asked = 0;
+    const first = registerWriteApproverSelector(async () => undefined);
+    const second = registerWriteApproverSelector(async () => { asked += 1; return undefined; });
+    first();
+    first();
+    await w.ask(w.gateInput(task));
+    second();
+    expect(asked).toBe(1);
+  });
+
+  it("clears the selector's timer once it has answered", async () => {
+    const w = setup();
+    const chain = await w.publish(ONE_STEP, PROJECT_OWNED);
+    const task = w.taskOfRun((await w.startAsSystem(chain.chainId, EVENT())).runId);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await w.ask(w.gateInput(task));
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

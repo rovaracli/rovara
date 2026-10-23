@@ -900,6 +900,19 @@ describe("POST /v1/internal/agent-tools/call", () => {
   });
 
   describe("the write gate seam", () => {
+    it("hands the gate the chain step that started the task (Plan 4's write approver selectors read it), and nothing for any other task", async () => {
+      const w = await world();
+      const { gate, seen } = recordingGate(() => ({ decision: "run" }));
+      w.configure((base) => ({ ...base, gate }));
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")], approvals: { alwaysAsk: ["save_comment"] }, autonomy: "run" });
+      await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "one" });
+      expect(seen[0]).not.toHaveProperty("chain");
+      const task = w.db.get(`DEVTASK#${run.taskId}`, "META") as Record<string, unknown>;
+      w.db.set({ ...task, chain: { chainRunId: "crn_aaaaaaaaaaaaaaaaaaaa", stepId: "look" } });
+      await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "two" });
+      expect(seen[1]).toMatchObject({ chain: { chainRunId: "crn_aaaaaaaaaaaaaaaaaaaa", stepId: "look" } });
+    });
+
     it("is handed the prepared call and the grant, and a run decision sends it to the vendor", async () => {
       const w = await world();
       const { gate, seen } = recordingGate(() => ({ decision: "run" }));

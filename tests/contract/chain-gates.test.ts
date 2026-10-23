@@ -6,10 +6,12 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { expireApprovals } from "../../packages/broker/src/agents/approvals.js";
+import { createStepApproval, expireApprovals, registerApprovalSubjectHandler, registerApproverRule } from "../../packages/broker/src/agents/approvals.js";
+import { registerChainRunner } from "../../packages/broker/src/chains/index.js";
 import { GATE_DEFAULT_TIMEOUT_HOURS, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { openChainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { createAgentXMcpServer, type ControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
+import { agentXError } from "@agentx/contracts";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { ARJUN, CARL, CELL, DANA, MAX, ORG_A, PRIYA, STRANGER, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "../support/chain-gate-world.js";
 
@@ -642,5 +644,409 @@ describe("Plan 4 adds no way to decide a gate (R66)", () => {
     const read = (await w.route(callerOf(MAX), "GET", `/v1/app/approvals/${approvalId}`)) as { approval: { confirmUrl: string } };
     expect(read.approval.confirmUrl).toBe(confirmUrl(approvalId));
     expect(w.db.find((item) => String(item.pk).startsWith("DECIDE_TICKET#"))).toEqual([]);
+  });
+});
+
+// ---- the rule reads the gate as it is stored, and fails closed on anything that does not fit
+
+describe("the gate's rule reads what is stored and fails closed on anything that does not fit", () => {
+  const stored = (w: GateWorld, runId: string) => ({
+    run: w.db.find((item) => item.entityType === "CHAIN_RUN" && item.runId === runId)[0]!,
+    attempt: w.db.find((item) => item.entityType === "CHAIN_RUN_STEP" && item.runId === runId && item.seq === 2)[0]!,
+  });
+  const eligible = async (w: GateWorld, approvalId: string, who: string = PRIYA, orgId = ORG_A) => {
+    const { gateEligible } = await gates();
+    return gateEligible(w.deps, await w.approval(approvalId), callerOf(who, orgId));
+  };
+
+  it("answers true for the starter on the gate it was opened for (the baseline of the cases below)", async () => {
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate();
+    expect(await eligible(w, approvalId)).toBe(true);
+    expect(await eligible(w, approvalId, CARL)).toBe(false);
+  });
+
+  it("refuses, without throwing, when the run, the attempt or the design is gone", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    const { run: meta, attempt } = stored(w, run.runId);
+    w.db.delete(String(attempt.pk), String(attempt.sk));
+    expect(await eligible(w, approvalId)).toBe(false);
+    w.db.set(attempt);
+    w.db.delete(String(meta.pk), String(meta.sk));
+    expect(await eligible(w, approvalId)).toBe(false);
+  });
+
+  it("refuses an attempt that is not a gate, or whose step the design does not have as a gate", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    const { attempt } = stored(w, run.runId);
+    w.db.set({ ...attempt, kind: "agent" });
+    expect(await eligible(w, approvalId)).toBe(false);
+    w.db.set({ ...attempt, stepId: "investigate" });
+    expect(await eligible(w, approvalId)).toBe(false);
+    w.db.set({ ...attempt, stepId: "no_such_step" });
+    expect(await eligible(w, approvalId)).toBe(false);
+  });
+
+  it("refuses a record that is not a gate's: a step approval of another subject that names the rule", async () => {
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate();
+    const { gateEligible } = await gates();
+    const record = { ...(await w.stepApproval(approvalId)), subject: { kind: "agent_run" as const, taskId: "task-1", stepId: "work" } };
+    expect(await gateEligible(w.deps, record, callerOf(PRIYA))).toBe(false);
+  });
+
+  it("can't be decided while pending unless the gate is the run's live, waiting gate on this approval", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    const { run: meta, attempt } = stored(w, run.runId);
+    w.db.set({ ...meta, currentSeq: 3 });
+    expect(await eligible(w, approvalId)).toBe(false);
+    expect(await refusal(w.decideRoute(PRIYA, approvalId))).toEqual({ code: "FORBIDDEN", message: '"Approve the fix" is not waiting for approval any more.' });
+    w.db.set(meta);
+    w.db.set({ ...attempt, status: "succeeded" });
+    expect(await eligible(w, approvalId)).toBe(false);
+    w.db.set(attempt);
+    expect(await eligible(w, approvalId)).toBe(true);
+    w.db.set({ ...meta, status: "cancelled" });
+    expect(await refusal(w.decideRoute(PRIYA, approvalId))).toEqual({ code: "FORBIDDEN", message: 'This run has ended, so "Approve the fix" can\'t be approved.' });
+  });
+
+  it("answers a decided gate by who, whether or not the run is still at it", async () => {
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate();
+    expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(200);
+    expect(await eligible(w, approvalId, PRIYA)).toBe(true);
+    expect(await eligible(w, approvalId, MAX)).toBe(true);
+    expect(await eligible(w, approvalId, CARL)).toBe(false);
+  });
+
+  it("never takes a caller of another organization, even with the id of a member of this one", async () => {
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate();
+    expect(await eligible(w, approvalId, PRIYA, "org_bbbbbbbbbbbbbbbbbbbb")).toBe(false);
+  });
+
+  it("refuses a caller who is no member of the organization even when a rule names them", async () => {
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate(PRIYA, gated([{ kind: "members", developerIds: [CARL] }]));
+    w.db.find((item) => item.entityType === "ORG_MEMBER" && item.developerId === CARL).forEach((item) => w.db.delete(String(item.pk), String(item.sk)));
+    w.projectMembers.grant(ORG_A, "web", CARL, "contributor");
+    expect(await eligible(w, approvalId, CARL)).toBe(false);
+  });
+
+  it("reads the project's roles for the run's own project, not another", async () => {
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate();
+    w.projectMembers.grant(ORG_A, "api", ARJUN, "maintainer");
+    expect(await eligible(w, approvalId, ARJUN)).toBe(false);
+  });
+});
+
+describe("the words of a gate", () => {
+  it("name a person who has no sign-in record a teammate, and show a name safely", async () => {
+    const w = setupGateWorld();
+    w.db.set({ pk: `DEVELOPER#${CARL}`, sk: "META", developerId: CARL, displayName: "Carl‮<b>Evil</b>", revoked: false });
+    const { run } = await w.runAtGate(PRIYA, gated([{ kind: "members", developerIds: [CARL, VIV] }]));
+    w.db.delete(`DEVELOPER#${VIV}`, "META");
+    const { approvalId } = { approvalId: waitingGate(w, run.runId).approvalId! };
+    const text = w.events(run.runId).find((event) => event.type === "gate_waiting")!.text;
+    expect(text).not.toContain("‮");
+    expect(text).toContain("Carl");
+    void approvalId;
+  });
+
+  it("say `a teammate` for a listed person nobody can name", async () => {
+    const w = setupGateWorld();
+    w.db.delete(`DEVELOPER#${VIV}`, "META");
+    const chain = await w.publish(gated([{ kind: "members", developerIds: [VIV] }]));
+    const run = await w.start(chain.chainId);
+    await w.endLatest();
+    expect(w.events(run.runId).find((event) => event.type === "gate_waiting")!.text).toContain("Waiting for a teammate to approve");
+  });
+
+  it("are cut so the link at the end of the event is never cut", async () => {
+    const w = setupGateWorld();
+    const ids = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map((digit) => digit.repeat(64));
+    ids.forEach((id, index) => w.db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: `${String(index)}${"n".repeat(79)}`, revoked: false }));
+    const chain = await w.publish(gated([{ kind: "members", developerIds: ids }]));
+    const run = await w.start(chain.chainId);
+    await w.endLatest();
+    const gate = waitingGate(w, run.runId);
+    const text = w.events(run.runId).find((event) => event.type === "gate_waiting")!.text;
+    expect(text.endsWith(`${confirmUrl(gate.approvalId!)}.`)).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(500);
+    expect(text).toContain("…");
+  });
+});
+
+describe("the handler", () => {
+  it("tries again when the run moved while the decision was written, and passes the gate without the sweep", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    w.beforeTransaction("gate_decided", () => w.touchRun(run.runId));
+    expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(200);
+    expect(await w.approval(approvalId)).toMatchObject({ status: "APPROVED", handlerDone: true });
+    expect(w.run(run.runId)).toMatchObject({ currentSeq: 3 });
+    expect(w.decidedEvents(run.runId)).toHaveLength(1);
+  });
+
+  it("gives up after three tries and leaves the decision for the sweep, which then applies it", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    w.beforeTransaction("gate_decided", () => w.touchRun(run.runId), 3);
+    expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(200);
+    expect(await w.approval(approvalId)).toMatchObject({ status: "APPROVED", handlerDone: false });
+    expect(w.run(run.runId)).toMatchObject({ currentSeq: 2 });
+    w.clock.now += 10 * 60_000;
+    expect((await expireApprovals(w.deps, w.clock.now)).handled).toBe(1);
+    expect(w.run(run.runId)).toMatchObject({ currentSeq: 3 });
+  });
+
+  it("finds the runner through the provider the broker sets, when the approvals' own dependencies have none, and stops when it is taken off", async () => {
+    const { onChainGateDecided, registerChainGates } = await gates();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    disposeGateWorlds();
+    const bare = { documentClient: w.deps.documentClient, tableName: "T", now: w.deps.now, signInStore: w.deps.signInStore, projectMembers: w.deps.projectMembers, store: w.deps.store, confirmOrigin: CELL };
+    const decided = { ...(await w.stepApproval(approvalId)), status: "APPROVED" as const, decidedBy: PRIYA, decision: "APPROVE" as const };
+    const first = registerChainGates(() => w.deps);
+    const second = registerChainGates(() => w.deps);
+    first();
+    // Taking an older registration off leaves the newer one.
+    await onChainGateDecided(bare, decided);
+    expect(w.run(run.runId)).toMatchObject({ currentSeq: 3 });
+    second();
+    await expect(onChainGateDecided(bare as never, decided)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("needs both the chain store and the run starter in the dependencies it is handed, or refuses before changing anything", async () => {
+    const { onChainGateDecided } = await gates();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    disposeGateWorlds();
+    const decided = { ...(await w.stepApproval(approvalId)), status: "APPROVED" as const, decidedBy: PRIYA, decision: "APPROVE" as const };
+    await expect(onChainGateDecided({ ...w.deps, chainRuns: undefined } as never, decided)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ status: "waiting" });
+  });
+
+  it("names who decided from the approval, and `a teammate` when it names no one", async () => {
+    const { onChainGateDecided } = await gates();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    const { decidedBy: _unused, ...rest } = { ...(await w.stepApproval(approvalId)), status: "DECLINED" as const, decision: "DECLINE" as const, decidedBy: PRIYA };
+    void _unused;
+    await onChainGateDecided(w.deps, rest);
+    expect(w.decidedEvents(run.runId)).toMatchObject([{ text: 'a teammate sent "Approve the fix" back' }]);
+  });
+
+  it("ignores an approval that is neither decided nor expired", async () => {
+    const { onChainGateDecided } = await gates();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    await onChainGateDecided(w.deps, await w.stepApproval(approvalId));
+    await onChainGateDecided(w.deps, { ...(await w.stepApproval(approvalId)), status: "EXECUTING" as never });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ status: "waiting" });
+    expect(w.run(run.runId)).toMatchObject({ status: "waiting" });
+  });
+
+  it("ends only the gate it is told about when its approval expires, and says one hour in the singular", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate(PRIYA, gated([{ kind: "project_maintainers" }], { timeoutHours: 1 }));
+    w.clock.now += 2 * HOUR;
+    await expireApprovals(w.deps, w.clock.now);
+    expect(w.run(run.runId)).toMatchObject({ status: "timed_out", failure: { message: 'No one approved "Approve it" within 1 hour, so the chain stopped.' } });
+    expect(await w.approval(approvalId)).toMatchObject({ status: "EXPIRED" });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ status: "timed_out" });
+  });
+
+  it("uses the gate's own hours when it names them", async () => {
+    const w = setupGateWorld();
+    const { run } = await w.runAtGate(PRIYA, gated([{ kind: "project_maintainers" }], { timeoutHours: 6 }));
+    w.clock.now += 7 * HOUR;
+    await expireApprovals(w.deps, w.clock.now);
+    expect(w.run(run.runId)!.failure).toMatchObject({ message: 'No one approved "Approve it" within 6 hours, so the chain stopped.' });
+  });
+
+  it("is not ended by an expired approval that no live gate waits on (an older attempt, or a run that moved on)", async () => {
+    const { onChainGateDecided } = await gates();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    await onChainGateDecided(w.deps, { ...(await w.stepApproval(approvalId)), approvalId: "apr_zzzzzzzzzzzzzzzzzzzz", status: "EXPIRED" as const });
+    expect(w.run(run.runId)).toMatchObject({ status: "waiting" });
+    const meta = w.db.find((item) => item.entityType === "CHAIN_RUN" && item.runId === run.runId)[0]!;
+    w.db.set({ ...meta, currentSeq: 3 });
+    await onChainGateDecided(w.deps, { ...(await w.stepApproval(approvalId)), status: "EXPIRED" as const });
+    expect(w.run(run.runId)).toMatchObject({ status: "waiting" });
+  });
+});
+
+describe("the people a gate is listed for, and how a merged person counts", () => {
+  const OLD_PRIYA = "9".repeat(64);
+  const candidatesOfGate = async (w: GateWorld, approvalId: string) => new Set((await w.stepApproval(approvalId)).approvers.kind === "rule" ? ((await w.stepApproval(approvalId)).approvers as { candidates: readonly string[] }).candidates : []);
+
+  it("lists the chain's member owner for `chain_owner`, the owning project's maintainers for a project-owned chain, and every person a `members` rule names", async () => {
+    const own = setupGateWorld();
+    expect(await candidatesOfGate(own, (await own.runAtGate(PRIYA, gated([{ kind: "chain_owner" }]))).approvalId)).toEqual(new Set([PRIYA]));
+    const owned = setupGateWorld();
+    const chain = await owned.publish(gated([{ kind: "chain_owner" }]), { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX } });
+    const run = await owned.start(chain.chainId, CARL);
+    await owned.endLatest();
+    expect(await candidatesOfGate(owned, waitingGate(owned, run.runId).approvalId!)).toEqual(new Set([MAX, DANA]));
+    const listed = setupGateWorld();
+    expect(await candidatesOfGate(listed, (await listed.runAtGate(PRIYA, gated([{ kind: "members", developerIds: [CARL, VIV, ARJUN] }]))).approvalId)).toEqual(new Set([CARL, VIV, ARJUN]));
+  });
+
+  it("lists nobody for `starter` alone in a run an event started", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(gated([{ kind: "starter" }]));
+    const run = await startAsEvent(w, chain.chainId);
+    await w.endLatest();
+    expect(await candidatesOfGate(w, waitingGate(w, run.runId).approvalId!)).toEqual(new Set());
+  });
+
+  it("takes a chain owned by another project for `chain_owner`: that project's maintainers decide, not the run's", async () => {
+    const w = setupGateWorld();
+    w.projectMembers.grant(ORG_A, "api", ARJUN, "maintainer");
+    w.projectMembers.grant(ORG_A, "web", ARJUN, "contributor");
+    w.projectMembers.grant(ORG_A, "api", PRIYA, "contributor");
+    const chain = await w.publish(gated([{ kind: "chain_owner" }]), { owner: { kind: "project", project: "api" }, accountable: { developerId: ARJUN } });
+    const run = await w.start(chain.chainId, PRIYA);
+    await w.endLatest();
+    const approvalId = waitingGate(w, run.runId).approvalId!;
+    expect(await refusal(w.decideRoute(MAX, approvalId))).toMatchObject({ code: "FORBIDDEN" });
+    expect((await w.decideAs(ARJUN, approvalId)).statusCode).toBe(200);
+  });
+
+  it("counts a person merged into another as the same person, for the starter, the caller and the list", async () => {
+    const { gateEligible } = await gates();
+    const w = setupGateWorld();
+    w.db.set({ pk: `DEVELOPER#${OLD_PRIYA}`, sk: "META", developerId: OLD_PRIYA, mergedInto: PRIYA });
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const run = await w.start(chain.chainId, PRIYA);
+    const meta = w.db.find((item) => item.entityType === "CHAIN_RUN" && item.runId === run.runId)[0]!;
+    // The run was started under the duplicate's id, before the merge.
+    w.db.set({ ...meta, startedBy: { kind: "member", developerId: OLD_PRIYA } });
+    await w.endLatest({ branch: "fix" });
+    const gate = waitingGate(w, run.runId);
+    expect(await candidatesOfGate(w, gate.approvalId!)).toEqual(new Set([PRIYA, MAX, DANA]));
+    const record = await w.approval(gate.approvalId!);
+    expect(await gateEligible(w.deps, record, callerOf(PRIYA))).toBe(true);
+    // And the duplicate's id, as a caller, is the survivor: their role and their start.
+    expect(await gateEligible(w.deps, record, callerOf(OLD_PRIYA))).toBe(true);
+    expect(await gateEligible(w.deps, record, callerOf(CARL))).toBe(false);
+  });
+});
+
+describe("what a decision does to a run that moves under it", () => {
+  it("finishes a decision whose next step could not start: the sweep's second telling starts it, once", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    w.hooks.refuse.push(agentXError("RUNTIME_UNAVAILABLE", "socket hang up"));
+    expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(200);
+    expect(await w.approval(approvalId)).toMatchObject({ status: "APPROVED", handlerDone: false });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ status: "succeeded", decision: "approved" });
+    expect(w.tasks.size).toBe(1);
+    w.clock.now += 10 * 60_000;
+    expect((await expireApprovals(w.deps, w.clock.now)).handled).toBe(1);
+    expect(w.tasks.size).toBe(2);
+    expect(w.attempts(run.runId)[2]).toMatchObject({ stepId: "fix", status: "running" });
+    expect(w.decidedEvents(run.runId)).toHaveLength(1);
+  });
+
+  it("ends a gate whose approval expired before its attempt existed, as soon as the attempt does", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const run = await w.start(chain.chainId);
+    w.beforeTransaction("gate_waiting", () => { throw new Error("the process died"); });
+    await expect(w.endLatest({ branch: "fix" })).rejects.toThrow("the process died");
+    w.clock.now += 73 * HOUR;
+    await expireApprovals(w.deps, w.clock.now);
+    expect(w.run(run.runId)).toMatchObject({ status: "running", currentSeq: 1 });
+    const { advanceChainRun } = await runner();
+    await advanceChainRun(w.deps, ORG_A, run.runId);
+    expect(w.run(run.runId)).toMatchObject({ status: "timed_out" });
+    expect(w.run(run.runId)!.failure).toMatchObject({ message: 'No one approved "Approve the fix" within 72 hours, so the chain stopped.' });
+  });
+
+  it("tries again when the run moved while an expiry was written", async () => {
+    const w = setupGateWorld();
+    const { run } = await w.runAtGate();
+    w.beforeTransaction('"timed_out"', () => w.touchRun(run.runId));
+    w.clock.now += 73 * HOUR;
+    await expireApprovals(w.deps, w.clock.now);
+    expect(w.run(run.runId)).toMatchObject({ status: "timed_out" });
+  });
+
+  it("does nothing for a run, an attempt or an approval that does not fit", async () => {
+    const { recordGateDecision } = await runner();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    const by = { approvalId, name: "Priya" };
+    await recordGateDecision(w.deps, ORG_A, "crn_zzzzzzzzzzzzzzzzzzzz", 2, "approved", by);
+    const attempt = w.db.find((item) => item.entityType === "CHAIN_RUN_STEP" && item.runId === run.runId && item.seq === 2)[0]!;
+    w.db.set({ ...attempt, kind: "agent" });
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", by);
+    w.db.delete(String(attempt.pk), String(attempt.sk));
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", by);
+    expect(w.decidedEvents(run.runId)).toEqual([]);
+    expect(w.starts).toHaveLength(1);
+  });
+
+  it("does not pass a gate whose attempt left `waiting` between the read and the write", async () => {
+    const { recordGateDecision } = await runner();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    const attempt = w.db.find((item) => item.entityType === "CHAIN_RUN_STEP" && item.runId === run.runId && item.seq === 2)[0]!;
+    w.beforeTransaction("gate_decided", () => { w.db.set({ ...attempt, status: "cancelled" }); });
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", { approvalId, name: "Priya" });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ status: "cancelled" });
+    expect(w.decidedEvents(run.runId)).toEqual([]);
+  });
+
+  it("ignores a record that is not a chain gate's, without needing the chain runner", async () => {
+    const { onChainGateDecided } = await gates();
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate();
+    disposeGateWorlds();
+    const bare = { documentClient: w.deps.documentClient, tableName: "T", now: w.deps.now };
+    await expect(onChainGateDecided(bare as never, { ...(await w.stepApproval(approvalId)), subject: { kind: "agent_run", taskId: "t", stepId: "s" }, status: "APPROVED" })).resolves.toBeUndefined();
+  });
+});
+
+describe("registration at broker start", () => {
+  it("lets the broker's provider reach the runner for a decision, and takes it away again", async () => {
+    const { onChainGateDecided } = await gates();
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate();
+    disposeGateWorlds();
+    const bare = { documentClient: w.deps.documentClient, tableName: "T", now: w.deps.now, signInStore: w.deps.signInStore, projectMembers: w.deps.projectMembers, store: w.deps.store, confirmOrigin: CELL };
+    const decided = { ...(await w.stepApproval(approvalId)), status: "APPROVED" as const, decidedBy: PRIYA, decision: "APPROVE" as const };
+    const off = registerChainRunner(() => w.deps);
+    await onChainGateDecided(bare, decided);
+    expect(w.run(run.runId)).toMatchObject({ currentSeq: 3 });
+    off();
+    await expect(onChainGateDecided(bare as never, decided)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+});
+
+describe("a rule's words are Plan 3's to show", () => {
+  it("falls back to the generic words when a rule's own wording fails, and to the people it names when it has none", async () => {
+    const { registerApproverRefusal } = await import("../../packages/broker/src/agents/approvals.js");
+    const w = setupGateWorld();
+    registerApprovalSubjectHandler("agent_run", async () => undefined);
+    registerApproverRule("test_rule_no_words", async () => false);
+    registerApproverRule("test_rule_bad_words", async () => false);
+    registerApproverRefusal("test_rule_bad_words", async () => { throw new Error("the lookup broke"); });
+    for (const rule of ["test_rule_no_words", "test_rule_bad_words"]) {
+      const record = await createStepApproval(w.deps, {
+        orgId: ORG_A, subject: { kind: "agent_run", taskId: `task-${rule}`, stepId: "gate" }, prompt: "Go on?", approvers: { kind: "rule", rule, candidates: [MAX] }, project: "web", owner: { developerId: PRIYA, name: "Priya" },
+      });
+      expect(await refusal(w.decideRoute(MAX, record.approvalId)), rule).toEqual({ code: "FORBIDDEN", message: "You can't decide this." });
+      const page = await w.page(record.approvalId, { cookie: await w.session(MAX, record.approvalId) });
+      expect(page.statusCode, rule).toBe(403);
+      expect(page.body, rule).toContain("Only the people it was asked of can decide this.");
+    }
   });
 });
