@@ -1414,3 +1414,36 @@ describe("fix round 2: N4, a merge set by an argument is a merge", () => {
     expect(classOf(grant("mcp", "list_pull_requests", { access: "read" }), { auto_merge: true, method: "merge" })).toBe("read");
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Hardening 1 (review task-17-review.md M-2): a word for re-running something is a write word
+// ---------------------------------------------------------------------------------------------
+
+describe("hardening 1: rerun, retry, redeploy, rebuild and replay are write verbs", () => {
+  const NAMES = ["rerun_failed_jobs", "retry_failed_jobs", "redeploy_service", "rebuild_project", "replay_webhook_delivery", "rerunFailedJobs", "retry-deployment"];
+
+  it("makes a tool the project approved only for reading, whose name says one of them, wait", () => {
+    for (const name of NAMES) {
+      const tool = mcp(name, { access: "read" });
+      expect(isReadByName(tool), name).toBe(false);
+      expect(classOf(tool, {}), name).toBe("consequential");
+      expect(classify(tool, {}).reason, name).toContain("approved this tool only for reading");
+    }
+  });
+
+  it("does the same on a vendor connector, and keeps a hint that says read-only from lifting it", () => {
+    for (const name of NAMES) {
+      expect(classOf(grant("github", name, { access: "read", hints: { readOnlyHint: true } }), {}), name).toBe("consequential");
+    }
+  });
+
+  it("makes the same tools, approved for writing, consequential too", () => {
+    for (const name of NAMES) expect(classOf(mcp(name), { target: "x" }), name).toBe("consequential");
+  });
+
+  it("leaves ordinary reads alone, including names that only share letters with these verbs", () => {
+    for (const name of ["list_failed_jobs", "get_workflow_status", "list_deployments", "list_replays_of_tests"]) {
+      expect(classOf(mcp(name, { access: "read" }), {}), name).toBe("read");
+    }
+  });
+});

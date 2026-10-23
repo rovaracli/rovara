@@ -18,6 +18,7 @@ describe("the write-classification constants", () => {
       "publish", "invite", "notify", "write", "push", "cancel", "reopen", "resolve", "approve", "run", "execute", "trigger", "dispatch", "apply", "rotate",
       "refund", "charge", "pay", "grant", "revoke", "restart", "rollback", "deploy", "start", "stop", "enable", "disable", "submit", "upsert", "save", "sync",
       "import", "transfer", "reset", "purge", "kill",
+      "rerun", "retry", "redeploy", "rebuild", "replay",
     ]);
     expect(OUTWARD_WORDS).toEqual(["email", "message", "post", "notify", "publish", "sms", "invite", "send", "reply"]);
     expect(OUTWARD_KEYS).toEqual(["to", "cc", "bcc", "recipient", "recipients", "email", "emails", "phone", "url", "webhook", "endpoint"]);
