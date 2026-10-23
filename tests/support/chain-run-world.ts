@@ -18,7 +18,8 @@ import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
 import { chainRunKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { agentXError, type AgentXError } from "../../packages/contracts/src/errors.js";
+// The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
+import { agentXError, type AgentXError } from "@agentx/contracts";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
 import { fakeModelAccess } from "./fake-model-access.js";
 import { FakeProjectMembers } from "./fake-project-members.js";

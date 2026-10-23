@@ -12,8 +12,9 @@ import { BUILTIN_AGENTS, currentBuiltinVersion } from "../../packages/contracts/
 import {
   CHAIN_MAX_STEP_RUNS, CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, type ChainDefinitionInput, type StepResult,
 } from "../../packages/contracts/src/chains.js";
-import { agentXError } from "../../packages/contracts/src/errors.js";
-import { chainKey, chainRunKey, openChainRunKey, projectAiKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
+// The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
+import { agentXError } from "@agentx/contracts";
+import { chainKey, chainRunKey, openChainRunKey, projectAiKey, projectMetaKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, START, STRANGER, VIV, callerOf, setupWorld, type ChainWorld } from "../support/chain-run-world.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -252,7 +253,7 @@ describe("buildHandoff", () => {
 describe("run events", () => {
   it("numbers an event after the run's last one, in the run's own partition", async () => {
     const { runEventItem } = await runEvents();
-    const item = runEventItem({ orgId: ORG_A, runId: "crn_aaaaaaaaaaaaaaaaaaaa", eventSeq: 6 }, { type: "step_started", stepSeq: 2, text: "Step started." }, "2026-10-22T09:00:00.000Z") as { Put: { Item: Record<string, unknown>; ConditionExpression: string } };
+    const item = runEventItem("T", { orgId: ORG_A, runId: "crn_aaaaaaaaaaaaaaaaaaaa", eventSeq: 6 }, { type: "step_started", stepSeq: 2, text: "Step started." }, "2026-10-22T09:00:00.000Z") as { Put: { Item: Record<string, unknown>; ConditionExpression: string } };
     expect(item.Put.Item).toMatchObject({ ...chainRunKey(ORG_A, "crn_aaaaaaaaaaaaaaaaaaaa", runEventSk(7)), orgId: ORG_A, seq: 7, type: "step_started", stepSeq: 2, text: "Step started.", at: "2026-10-22T09:00:00.000Z" });
     expect(item.Put.ConditionExpression).toBe("attribute_not_exists(pk)");
   });
@@ -526,7 +527,9 @@ describe("startChainRun refusals", () => {
     await setChainShares({ ...w.deps, store: w.chains }, { orgId: ORG_A, chainId: chain.chainId, shares: [{ principal: { kind: "org" }, level: "use" }], by: DANA });
     expect(await fail(startAs(w, VIV, chain.chainId))).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
     expect(await fail(startAs(w, ARJUN, chain.chainId))).toMatchObject({ code: "PROJECT_NOT_FOUND" });
-    w.db.set({ pk: `ORG#${ORG_A}#PROJECT#web`, sk: "META", status: "archived" });
+    nothingWritten(w);
+    w.db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", status: "archived" });
+    expect(await fail(startAs(w, PRIYA, chain.chainId))).toMatchObject({ code: "PROJECT_ARCHIVED" });
     nothingWritten(w);
   });
 
@@ -693,6 +696,50 @@ describe("startChainRun payers and owners", () => {
     const chain = await w.publish({ ...ONE_STEP, start: "r", steps: [agentStep("r", "Review", reviewer.agentId, { kind: "end" })] }, { name: "Triage", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, by: DANA });
     // Carl can't use the agent, so the owner check refuses first; a roster-only failure is covered above for a person.
     expect(await fail(startAsEvent(w, chain.chainId, CARL))).toMatchObject({ code: "CHAIN_UNAVAILABLE" });
+  });
+});
+
+describe("startChainRun and the event that started it", () => {
+  it("starts the first step with a 200-character title ending in an ellipsis from a Sentry event whose title is 300 characters", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, by: DANA });
+    const title = `${"E".repeat(299)}!`;
+    const run = await startAsEvent(w, chain.chainId, CARL, { startedBy: EVENT_STARTED({ title }), trigger: SENTRY({ subject: { kind: "alert", title } }) });
+    expect(run.startedBy).toMatchObject({ title });
+    const [start] = (w.starts[0]!.input.context ?? []) as Array<{ title?: string; kind: string }>;
+    expect(start!.title).toHaveLength(200);
+    expect(start!.title).toBe(`${"E".repeat(199)}…`);
+  });
+
+  it.each([
+    ["pull_request", "pull_request"], ["issue", "ticket"], ["incident", "alert"], ["alert", "alert"], ["deployment", "deploy"], ["workflow_run", "deploy"],
+  ])("makes the start item of a %s event a %s item, in every later step too", async (subject, kind) => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, by: DANA });
+    const run = await startAsEvent(w, chain.chainId, CARL, { trigger: SENTRY({ subject: { kind: subject, title: "Something happened" } }) });
+    expect(((w.starts[0]!.input.context ?? []) as Array<{ kind: string; ref: string }>).map((item) => [item.kind, item.ref])).toEqual([[kind, "sentry:evt-1"]]);
+    await endTask(w, "task-1", { finalReport: "one" });
+    expect(((w.starts[1]!.input.context ?? []) as Array<{ kind: string; ref: string }>).map((item) => [item.kind, item.ref])).toEqual([[kind, "sentry:evt-1"], ["report", `chain:${run.runId}:1`]]);
+  });
+
+  it("refuses an event whose shape is not an event's, and an event that is not the run's own kind of start", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, by: DANA });
+    expect(await fail(startAsEvent(w, chain.chainId, CARL, { trigger: SENTRY({ subject: { kind: "robot", title: "x" } }) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await fail(startAsEvent(w, chain.chainId, CARL, { trigger: SENTRY({ eventKey: "" }) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await fail(startAsEvent(w, chain.chainId, CARL, { startedBy: { kind: "schedule", triggerId: TRIGGER_ID, scheduledAt: "2026-10-22T08:00:00.000Z" } }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(w.starts).toEqual([]);
+  });
+
+  it("writes nothing when the start's transaction fails: no run, no index, no open item, no count", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "None" }, { Code: "None" }, { Code: "None" }, { Code: "None" }, { Code: "None" }] } });
+    await expect(startAs(w, PRIYA, chain.chainId)).rejects.toThrow();
+    expect(w.db.find((item) => String(item.pk).includes("CHAIN_RUN"))).toEqual([]);
+    expect(w.openItems()).toEqual([]);
+    expect((await w.chainOf(chain.chainId)).openRuns).toBe(0);
+    expect(w.starts).toEqual([]);
   });
 });
 

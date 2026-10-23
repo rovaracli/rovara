@@ -384,6 +384,8 @@ import { escalateOwnerRequests, requestForPausedTask, runLimitRequester, spendDe
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { ChainStore } from "../chains/store.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
+import { registerChainRunner } from "../chains/index.js";
+import { chainRunPortsFor, chainRunSpendReader, type ChainRunnerDependencies } from "../chains/runner.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
@@ -603,7 +605,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -945,6 +947,9 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     }),
     ...(agents.chainTriggers === undefined ? {} : { chainTriggers: agents.chainTriggers }),
+    // Plan 4 Task 6: what the spend requests ask of a chain run (the chain, and what the run had left when a step started), answered from the run's own records.
+    chainRunBudgets: agents.chainRunBudgets ?? chainRunSpendReader({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
+    ...(agents.chainRuns === undefined ? {} : { chainRuns: agents.chainRuns }),
     projectMembers,
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
@@ -1207,10 +1212,13 @@ export function createAgentRouteDependencies(input: AwsBrokerInput): AgentRouteD
  */
 export function createAgentRunStarter(input: AwsBrokerInput): AgentRunStarter | undefined {
   const dependencies = brokerDependencies(input);
+  const tasks = developerTaskActions(dependencies);
+  return agentRunStarterFrom(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
+}
+
+function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): AgentRunStarter | undefined {
   const developer = dependencies.developer;
   if (developer === undefined) return undefined;
-  const tasks = developerTaskActions(dependencies);
-  const agents = agentRouteDependencies(dependencies, tasks);
   return agentRunStarterOf({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
@@ -1218,6 +1226,26 @@ export function createAgentRunStarter(input: AwsBrokerInput): AgentRunStarter | 
     ...(agents === undefined ? {} : { agents }),
     ...repositoriesGateRoute(dependencies),
   });
+}
+
+/** The latest broker's chain runner dependencies, which the one registration of the chain runner's end and pause handlers reads (Plan 4 Task 6). */
+let chainRunnerDependencies: ChainRunnerDependencies | undefined;
+let chainRunnerRegistered = false;
+
+/**
+ * Plan 4 Task 6, at broker start: a chain step is an ordinary task, so the runner hears that it ended or was paused through Plan 3's handlers. They are registered
+ * once per process and read the dependencies of the latest broker built; they do nothing where there are no agents or chains.
+ */
+function installChainRunner(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): void {
+  const starter = agentRunStarterFrom(dependencies, tasks, agents);
+  if (agents?.chains === undefined || starter === undefined) return;
+  const admission = dependencies.modelAccess === undefined ? undefined
+    : { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, now: Date.now, cloud: dependencies.cloud === true };
+  chainRunnerDependencies = { ...agents, chains: agents.chains, chainRuns: agents.chainRuns ?? chainRunPortsFor(starter, admission) };
+  if (!chainRunnerRegistered) {
+    registerChainRunner(() => chainRunnerDependencies);
+    chainRunnerRegistered = true;
+  }
 }
 
 /** Spec 025 phase 25d: what the admin read routes need, from the broker's own dependencies. */
@@ -1459,6 +1487,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   // Spec 025: the broker actions the developer task routes call, built once per handler.
   const tasks = developerTaskActions(dependencies);
   const agents = agentRouteDependencies(dependencies, tasks);
+  installChainRunner(dependencies, tasks, agents);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {

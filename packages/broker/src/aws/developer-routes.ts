@@ -116,6 +116,7 @@ import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { isChainRoute, routeChainRequest } from "../chains/routes.js";
+import { chainRunPortsFor } from "../chains/runner.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
@@ -1511,7 +1512,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Plan 4's chains (`/v1/app/chains*`, `/v1/app/chain-runs*`), beside Plan 3's agents.
   if (isChainRoute(url.pathname)) {
     if (deps.agents?.chains === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
-    return routeChainRequest({ ...deps.agents, chains: deps.agents.chains }, caller, request, url);
+    // The chain runner starts each step through Plan 3's run start, which this API holds (the task start); a test may bring its own.
+    const starter = deps.agents.chainRuns === undefined ? agentRunStarterOf(deps) : undefined;
+    const admission = deps.modelAccess === undefined ? undefined : { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: deps.now, cloud: deps.cloud === true };
+    return routeChainRequest({ ...deps.agents, chains: deps.agents.chains, ...(starter === undefined ? {} : { chainRuns: chainRunPortsFor(starter, admission) }) }, caller, request, url);
   }
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);

@@ -4,7 +4,9 @@
 // and changes nothing until a person confirms it on the page (R66), as Plan 3's agent changes do.
 import { z } from "zod";
 import {
+  AGENTX_NAME_PATTERN,
   CHAIN_REVISION_CONFLICT_MESSAGE,
+  CHAIN_START_INPUT_MAX,
   ChainIdSchema,
   AgentOwnerSchema,
   MAX_SPEND_SETTING_USD,
@@ -14,6 +16,7 @@ import {
   projectAllows,
   type AgentAccessLevel,
   type ChainDefinitionInput,
+  type ChainId,
   type OrgId,
   type OwnerCapChange,
 } from "@agentx/contracts";
@@ -35,6 +38,7 @@ import {
 import { withBudgetFields } from "../spend/owner-total.js";
 import { chainLessSafeChanges, type ChainLessSafeLookups } from "./less-safe.js";
 import { chainDigest, type ChainRecord, type ChainStore, type ChainVersion } from "./store.js";
+import { startChainRun, type ChainRunRecord, type ChainRunnerDependencies } from "./runner.js";
 import { chainGraphProblems, formatChainProblem, validateChainForPublish, validatePinnedChainForOrg, type ChainProblem } from "./validate.js";
 
 /** What the chain routes ask of the trigger code (Plan 4 Tasks 18 and 20), which builds it: until then there are no triggers and all three do nothing. */
@@ -83,6 +87,13 @@ const OwnerBodySchema = z.object({ requestId: RequestIdSchema, owner: AgentOwner
 const AccountableBodySchema = z.object({ requestId: RequestIdSchema, accountable: DeveloperRefSchema }).strict();
 /** A chain's monthly budget in dollars, or `null` to clear it. */
 const BudgetBodySchema = z.object({ requestId: RequestIdSchema, monthlyUsd: z.number().finite().min(0).max(MAX_SPEND_SETTING_USD).nullable() }).strict();
+
+/** `POST /v1/app/chains/{id}/runs`: what the person says to start a run. The input is counted in characters, as Plan 3's context items are cut. */
+const StartRunBodySchema = z.object({
+  requestId: RequestIdSchema,
+  project: z.string().regex(AGENTX_NAME_PATTERN),
+  input: z.string().refine((text) => [...text].length <= CHAIN_START_INPUT_MAX, `must be at most ${String(CHAIN_START_INPUT_MAX)} characters`).optional(),
+}).strict();
 
 const SHARE_RANK = { view: 0, use: 1, edit: 2 } as const;
 
@@ -437,6 +448,27 @@ async function putBudget(deps: ChainRouteDependencies, caller: AgentCaller, chai
   return { chain: chainView(written, access) };
 }
 
+// ---- starting a run
+
+/** A run as the person who started it is shown it: where it stands, what it has cost and why it ended. The full view of a run is Task 10's. */
+function runStartView(run: ChainRunRecord): Shown {
+  return {
+    runId: run.runId, chainId: run.chainId, chainName: run.chainName, chainVersion: run.chainVersion, project: run.project, status: run.status, owner: run.owner, startedBy: run.startedBy,
+    origin: run.origin, ...(run.input === undefined ? {} : { input: run.input }), runLimitUsd: run.runLimitUsd, spentUsd: run.spentUsd, currentSeq: run.currentSeq,
+    createdAt: run.createdAt, updatedAt: run.updatedAt, ...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }), ...(run.failure === undefined ? {} : { failure: run.failure }),
+  };
+}
+
+async function startRun(deps: ChainRouteDependencies, caller: AgentCaller, chainId: ChainId, body: unknown): Promise<StatusReply> {
+  if (deps.chainRuns === undefined) throw agentXError("NOT_FOUND", "chain runs are not set up in this deployment");
+  const input = parseBody(StartRunBodySchema, body);
+  const run = await startChainRun({ ...deps, chainRuns: deps.chainRuns } as ChainRunnerDependencies, caller, {
+    orgId: caller.orgId, chainId, project: input.project, origin: "app", startedBy: { kind: "member", developerId: caller.developerId }, requestId: input.requestId,
+    ...(input.input === undefined ? {} : { input: input.input }),
+  });
+  return new StatusReply(202, { run: runStartView(run) });
+}
+
 // ---- routing
 
 const CHAIN_PATH = /^\/v1\/app\/chains(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
@@ -466,6 +498,7 @@ export async function routeChainRequest(deps: ChainRouteDependencies, caller: Ag
     const body = () => jsonBody(request);
     if (sub === "draft" && method === "GET") return getDraft(deps, caller, chainId);
     if (sub === "draft" && method === "PUT") return putDraft(deps, caller, chainId, body());
+    if (sub === "runs" && method === "POST") return startRun(deps, caller, chainId, body());
     if (sub === "publish" && method === "POST") return publishChain(deps, caller, chainId, body());
     if (sub === "versions" && method === "GET") return listVersions(deps, caller, chainId);
     if (sub === "rollback" && method === "POST") return rollbackChain(deps, caller, chainId, body());
