@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
-import { runCostKey, spendRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentRequestKey, runCostKey, spendRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { BEN, CARL, PREPARED, setup, type World } from "../support/spend-world.js";
@@ -138,6 +138,28 @@ describe("asking while a request is open, and asking twice", () => {
     const repeat = await ask(MAYA, { requestId });
     expect(repeat.body.spendRequestId).toBe(first.body.spendRequestId);
     expect(requestsOfTask()).toHaveLength(2);
+  });
+});
+
+describe("a repeat of a request ID", () => {
+  it("answers what an ask that found a request open first did, after that request was denied", async () => {
+    const { w, requestsOfTask, ask } = await blockedPlan();
+    const open = requestsOfTask()[0]!.spendRequestId;
+    const requestId = randomUUID();
+    expect(await ask(MAYA, { requestId })).toMatchObject({ status: 200, body: { spendRequestId: open, created: false } });
+    await w.decide(BEN, open, "DENY");
+    // The repeat is not a new ask: it answers the same, and makes nothing.
+    expect(await ask(MAYA, { requestId })).toMatchObject({ status: 200, body: { spendRequestId: open, created: false } });
+    expect(requestsOfTask()).toHaveLength(1);
+  });
+
+  it("is refused when the ID was already used for a different request", async () => {
+    const { w, requestsOfTask, ask } = await blockedPlan();
+    await w.decide(BEN, requestsOfTask()[0]!.spendRequestId, "DENY");
+    const requestId = randomUUID();
+    w.db.set({ ...agentRequestKey(TEST_ORG, MAYA.developerId, requestId), entityType: "AGENT_REQUEST", fingerprint: "another-request", result: {}, at: new Date().toISOString() });
+    expect(await ask(MAYA, { requestId })).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID", message: expect.stringContaining("already used") as unknown } } });
+    expect(requestsOfTask().filter((record) => record.status === "PENDING")).toEqual([]);
   });
 });
 
