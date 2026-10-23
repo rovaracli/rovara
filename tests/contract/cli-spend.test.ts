@@ -68,6 +68,16 @@ describe("agentx project ai set", () => {
     expect(h.calls[0]!.body).toEqual({ requestId: expect.stringMatching(UUID) as string, planningLimitUsd: { QUICK: null, FULL: 4 } });
   });
 
+  it("sends what a member may accept as a run limit when the project pays (owner decision 3), and none resets it to the default", async () => {
+    const answer = { settings: { projectPays: true, memberAcceptRunLimitUpToUsd: 25 }, revision: 6, effective: { sourceOrder: [], planningLimitUsd: { QUICK: 1, FULL: 3 }, memberAcceptRunLimitUpToUsd: 25 } };
+    const h = await agentsCli({ "PUT /v1/app/projects/payments/ai": Response.json(answer) });
+    expect(await h.run(["project", "ai", "set", "payments", "--member-accept-run-limit", "25"])).toBe(0);
+    expect(h.calls[0]!.body).toEqual({ requestId: expect.stringMatching(UUID) as string, memberAcceptRunLimitUpToUsd: 25 });
+    expect(h.stdout()).toContain("a member accepts a run limit up to $25");
+    expect(await h.run(["project", "ai", "set", "payments", "--member-accept-run-limit", "none"])).toBe(0);
+    expect(h.calls[1]!.body).toEqual({ requestId: expect.stringMatching(UUID) as string, memberAcceptRunLimitUpToUsd: null });
+  });
+
   it("refuses no setting, or --project-pays other than on or off, before sending", async () => {
     const h = await agentsCli({});
     expect(await h.run(["project", "ai", "set", "payments"])).not.toBe(0);
