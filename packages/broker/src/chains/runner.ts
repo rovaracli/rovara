@@ -550,9 +550,10 @@ async function afterAttempt(deps: Deps, run: ChainRunRecord, ended: StepAttemptR
       });
     }
   }
-  const taken = takeEdge(run, step.id, edge);
-  if (!taken.ok) return endRun(deps, run, { status: "failed", failure: { seq: ended.seq, reason: "loop_limit", message: taken.message } });
+  // The pick is recorded whether or not the edge it names may be taken: a run that stops at a bound still shows what the agent chose.
   const branchUpdate = branch === undefined ? undefined : moveAttempt(deps, run, ended.seq, { branch }, ["succeeded"]);
+  const taken = takeEdge(run, step.id, edge);
+  if (!taken.ok) return endRun(deps, run, { status: "failed", failure: { seq: ended.seq, reason: "loop_limit", message: taken.message }, events, ...(branchUpdate === undefined ? {} : { attemptUpdate: branchUpdate }) });
   if (edge.to === "$end") return endRun(deps, run, { status: "succeeded", events, fields: { traversals: taken.traversals }, ...(branchUpdate === undefined ? {} : { attemptUpdate: branchUpdate }) });
   return enterStep(deps, run, attempts, definition, edge.to, { ended, traversals: taken.traversals, events, ...(branchUpdate === undefined ? {} : { branchUpdate }) });
 }
@@ -564,7 +565,10 @@ async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptR
   const target = stepOf(definition, targetId);
   if (target === undefined) return endRun(deps, run, { status: "failed", failure: { ...(via === undefined ? {} : { seq: via.ended.seq }), reason: "design_invalid", message: `This chain has no step "${targetId}".` } });
   if (target.kind === "agent" && run.stepRuns + 1 > CHAIN_MAX_STEP_RUNS) {
-    return endRun(deps, run, { status: "failed", failure: { ...(via === undefined ? {} : { seq: via.ended.seq }), reason: "step_limit", message: `This run reached ${String(CHAIN_MAX_STEP_RUNS)} steps, the most a chain run may take.` } });
+    return endRun(deps, run, {
+      status: "failed", failure: { ...(via === undefined ? {} : { seq: via.ended.seq }), reason: "step_limit", message: `This run reached ${String(CHAIN_MAX_STEP_RUNS)} steps, the most a chain run may take.` },
+      ...(via === undefined ? {} : { events: via.events }), ...(via?.branchUpdate === undefined ? {} : { attemptUpdate: via.branchUpdate }),
+    });
   }
   const seq = run.currentSeq + 1;
   const attempt = attempts.filter((existing) => existing.stepId === target.id).length + 1;

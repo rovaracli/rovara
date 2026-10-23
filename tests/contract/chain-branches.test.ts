@@ -341,7 +341,7 @@ describe("a loop stops at the bound of its edge", () => {
       start: "draft", limits: { maxRunUsd: 30 },
       steps: [
         agentStep("draft", "Draft", "root-cause-analyst", { kind: "go", to: "approve" }),
-        { kind: "gate", id: "approve", name: "Approve", prompt: "Good enough?", approvers: [{ kind: "starter" }], onApprove: { to: "$end" }, onReject: { to: "draft", maxTraversals: 2 } } as Step,
+        { kind: "gate", id: "approve", name: "Approve", prompt: "Good enough?", approvers: [{ kind: "starter" }], onApprove: { to: "$end" }, onReject: { to: "draft", maxTraversals: 2 } },
       ],
     });
     const run = await startAs(w, chain.chainId);

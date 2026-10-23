@@ -1,4 +1,4 @@
-// Plan 4 Task 6 (the part of Task 7 the runner can't start without): which edge a finished step takes, and how often an edge may be taken. An agent picks only among
+// Plan 4 Task 7 (written with the runner in Task 6): which edge a finished step takes, and how often an edge may be taken. An agent picks only among
 // the branch ids the design lists; a pick that is not one of them takes the design's default, and with no default there is no way on. A loop is bounded by the
 // `maxTraversals` of an edge on it, which the run counts as `traversals["<from>><to>"]`.
 import type { BranchId, ChainStepId, Edge, Next, StepResult } from "@agentx/contracts";
