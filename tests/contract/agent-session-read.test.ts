@@ -466,6 +466,15 @@ describe("listing sessions", () => {
       expect(await code(listSessions({ ...l.deps, cursorKey: "z".repeat(64) }, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor }))).toMatchObject({ code: "CONFIG_INVALID" });
     });
 
+    it("never gives the same cursor twice for the same place (a fresh nonce each time)", async () => {
+      const l = listWorld();
+      const one = (await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2 })).next!;
+      const two = (await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2 })).next!;
+      expect(one).not.toBe(two);
+      // Both open to the same place.
+      expect(ids(await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor: one }))).toEqual(ids(await listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor: two })));
+    });
+
     it("answers RUNTIME_UNAVAILABLE rather than a list it can't sign, when no cursor key is set", async () => {
       const l = listWorld();
       const { cursorKey: _key, ...without } = l.deps; // eslint-disable-line @typescript-eslint/no-unused-vars -- removed on purpose

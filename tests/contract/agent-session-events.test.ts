@@ -15,6 +15,8 @@ import {
   type SessionEvent,
 } from "../../packages/contracts/src/index.js";
 import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
+import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { appendSessionEvent, readSessionEvents, slackReplyAuthor } from "../../packages/broker/src/agent-sessions/events.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -24,6 +26,7 @@ import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broke
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { ARJUN, BO, CELL, MIA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
 
+const signInOf = (db: FakeDynamoDb) => new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: Date.now });
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 const GITHUB_TOKEN = `ghp_${"a1B2c3D4e5".repeat(4).slice(0, 36)}`;
 const AT = "2026-10-22T10:00:00.000Z";
@@ -278,6 +281,15 @@ describe("a Slack thread reply on a task's session", () => {
     expect(n.notes()[0]!.text).toBe(text);
   });
 
+  it("redacts a token before the 200-character cut, so a token cut in half is not left half readable", async () => {
+    const n = noteWorld();
+    // The token begins 190 characters in: a cut first would leave `ghp_` and a few characters, which no pattern matches.
+    const text = `${"w".repeat(184)} ${GITHUB_TOKEN} and then some more words`;
+    await n.note({ text });
+    expect(String(n.rows()[0]!.text)).not.toMatch(/ghp_[A-Za-z0-9]/);
+    expect(String(n.rows()[0]!.text)).toContain("[REDACTED]");
+  });
+
   it("stores a token in the reply redacted in the event", async () => {
     const n = noteWorld();
     await n.note({ text: `Try ${GITHUB_TOKEN}` });
@@ -348,6 +360,16 @@ describe("a Slack thread reply on a task's session", () => {
       expect(n.rows()).toHaveLength(0);
     });
 
+    it("writes no event for a chain step's task: it has no session of its own, and its chain run's is not told", async () => {
+      const n = noteWorld({ sessionId: "none" });
+      const chain = n.w.seedSession({ kind: "chain" });
+      n.w.db.set({ ...n.w.db.get(taskKey(n.taskId))!, chain: { chainRunId: chain.sessionId, stepId: "step-1" } });
+      expect(await n.note()).toEqual({ outcome: "captured" });
+      expect(n.transacts[0]).toHaveLength(2);
+      expect(n.rows()).toHaveLength(0);
+      expect(n.rows(chain.sessionId)).toHaveLength(0);
+    });
+
     it("writes no event on a session that isn't this task's", async () => {
       const n = noteWorld({ sessionId: "other-task" });
       expect(await n.note()).toEqual({ outcome: "captured" });
@@ -409,18 +431,56 @@ describe("through the real broker", () => {
     const task = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as never as { taskId: string; developerId: string; developerName: string; slackUserId?: string };
     const caller = { developerId: teammate, name: "Slack user U0TEAMMATE1" } as never;
     const deps = { documentClient: t.harness.db, tableName: "state" } as never;
-    expect(await slackReplyAuthor(deps, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Slack user U0TEAMMATE1" });
+    const signIn = signInOf(new FakeDynamoDb());
+    expect(await slackReplyAuthor(deps, signIn, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Slack user U0TEAMMATE1" });
     t.harness.db.set({
       pk: `DEVTASK#${t.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false,
       people: [{ developerId: teammate, slackUserId: "U0TEAMMATE1", name: "Tess Teammate", role: "commenter" }],
     });
-    expect(await slackReplyAuthor(deps, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Tess Teammate" });
+    expect(await slackReplyAuthor(deps, signIn, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Tess Teammate" });
     // The owner is the task's own developer, by the name the task keeps (the caller's is a placeholder).
-    expect(await slackReplyAuthor(deps, { ...task, developerId: "o".repeat(64), developerName: "Maya on the task", slackUserId: "U0OWNER001" }, "U0OWNER001", { developerId: "c".repeat(64), name: "Slack user U0OWNER001" }))
+    expect(await slackReplyAuthor(deps, signIn, { ...task, developerId: "o".repeat(64), developerName: "Maya on the task", slackUserId: "U0OWNER001" }, "U0OWNER001", { developerId: "c".repeat(64), name: "Slack user U0OWNER001" }))
       .toEqual({ developerId: "o".repeat(64), name: "Maya on the task" });
     // A table that is down leaves the caller's own name.
     const down = { documentClient: { send: async () => { throw new Error("down"); } }, tableName: "state" } as never;
-    expect(await slackReplyAuthor(down, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Slack user U0TEAMMATE1" });
+    expect(await slackReplyAuthor(down, { getDeveloper: async () => { throw new Error("down"); } }, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Slack user U0TEAMMATE1" });
   });
+
+  describe("the developer record is read through the sign-in table (review I-1)", () => {
+    const task = { taskId: "00000000-0000-4000-8000-0000000000aa", developerId: "d".repeat(64), developerName: "Name on the task", slackUserId: "U0OWNER001" };
+    const record = (developerId: string, displayName: string, extra: Record<string, unknown> = {}) => ({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", displayName, firstSignInAt: "x", lastSignInAt: "x", revoked: false, ...extra });
+    const state = () => ({ documentClient: new FakeDynamoDb(), tableName: "state" }) as never;
+
+    it("finds the name in the sign-in table, and a record in the state table is not it", async () => {
+      const signin = new FakeDynamoDb();
+      signin.set(record("e".repeat(64), "Eve from sign-in"));
+      const stateDb = new FakeDynamoDb();
+      stateDb.set(record("f".repeat(64), "Fay from the state table"));
+      const caller = (developerId: string) => ({ developerId, name: "Slack user U0X" });
+      expect(await slackReplyAuthor({ documentClient: stateDb, tableName: "state" } as never, signInOf(signin), task, "U0TEAM", caller("e".repeat(64)))).toEqual({ developerId: "e".repeat(64), name: "Eve from sign-in" });
+      expect(await slackReplyAuthor({ documentClient: stateDb, tableName: "state" } as never, signInOf(signin), task, "U0TEAM", caller("f".repeat(64)))).toEqual({ developerId: "f".repeat(64), name: "Slack user U0X" });
+    });
+
+    it("follows a merge: a duplicate's replies are the survivor's", async () => {
+      const signin = new FakeDynamoDb();
+      signin.set(record("a".repeat(64), "Old duplicate", { mergedInto: "b".repeat(64) }));
+      signin.set(record("b".repeat(64), "The survivor"));
+      expect(await slackReplyAuthor(state(), signInOf(signin), task, "U0TEAM", { developerId: "a".repeat(64), name: "Slack user U0X" })).toEqual({ developerId: "b".repeat(64), name: "The survivor" });
+    });
+
+    it("asks the broker's sign-in table when a reply is told (the wiring)", async () => {
+      const t = await started({ developerRecord: true });
+      const reads: Array<{ table: unknown; pk: unknown }> = [];
+      const base = t.harness.db.send.bind(t.harness.db);
+      t.harness.db.send = (async (command: { constructor: { name: string }; input: { TableName?: unknown; Key?: { pk?: unknown } } }) => {
+        if (command.constructor.name === "GetCommand" && String(command.input.Key?.pk).startsWith("DEVELOPER#")) reads.push({ table: command.input.TableName, pk: command.input.Key?.pk });
+        return base(command as never);
+      }) as never;
+      expect(await t.send(MAYA.slackUserId!, "1695500002.000007", "EvA", "Keep the old flag.")).toEqual({ outcome: "captured" });
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.every((read) => read.table === "signin")).toBe(true);
+    });
+  });
+
 });
 
