@@ -13,6 +13,7 @@ import {
   CHAIN_RUN_LIST_PAGE_MAX,
   CHAIN_RUN_STATUSES,
   CHAIN_SESSION_CONTRACT_VERSION,
+  STEP_LINK_URL_MAX,
   ChainIdSchema,
   ChainRunEventPageSchema,
   ChainRunIdSchema,
@@ -39,7 +40,7 @@ import {
   type PinnedChainDefinition,
 } from "@agentx/contracts";
 import { orgRoleOf, type AgentCaller } from "../agents/access.js";
-import { confirmUrlFor, getAnyApproval, shownText, type AnyApprovalRecord } from "../agents/approvals.js";
+import { confirmUrlFor, getAnyApproval, mayDecideApproval, shownText, type AnyApprovalRecord } from "../agents/approvals.js";
 import { sameMember } from "../agents/lifecycle.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { taskKey } from "../developer/task-records.js";
@@ -126,12 +127,19 @@ async function readableRun(deps: Deps, caller: AgentCaller, rawRunId: string, op
 // ---- the view
 
 const clean = (text: string): string => shownText(text, NAME_MAX);
+/** A vendor's link, neutralised like any text but never cut short (half a link is another link): one that changes under cleaning, or is no link, is left out. */
+function cleanUrl(url: string | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  const shown = shownText(url, STEP_LINK_URL_MAX);
+  return shown === url && URL.canParse(shown) ? shown : undefined;
+}
 
 function startedByOf(deps: Deps, run: ChainRunRecord): Promise<ChainRunView["startedBy"]> | ChainRunView["startedBy"] {
   const started = run.startedBy;
   if (started.kind === "member") return displayNameOf(deps, started.developerId).then((name) => ({ kind: "member" as const, developerId: started.developerId, name }));
   if (started.kind === "event") {
-    return { kind: "event", triggerId: started.triggerId, source: started.source, type: started.type, title: started.title, ...(started.url === undefined ? {} : { url: started.url }) };
+    const url = cleanUrl(started.url);
+    return { kind: "event", triggerId: started.triggerId, source: started.source, type: started.type, title: clean(started.title), ...(url === undefined ? {} : { url }) };
   }
   return { kind: "schedule", triggerId: started.triggerId, scheduledAt: started.scheduledAt };
 }
@@ -155,7 +163,7 @@ function gateStatusOf(record: AnyApprovalRecord | undefined, attempt: StepAttemp
   return attempt.status === "waiting" ? "PENDING" : "EXPIRED";
 }
 
-async function gateSection(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined, withLink: boolean): Promise<ChainRunSection["gate"]> {
+async function gateSection(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined, reader: AgentCaller | undefined): Promise<ChainRunSection["gate"]> {
   if (attempt.approvalId === undefined) return undefined;
   const step = definition?.steps.find((candidate) => candidate.id === attempt.stepId);
   if (step === undefined || step.kind !== "gate") return undefined;
@@ -165,8 +173,8 @@ async function gateSection(deps: Deps, run: ChainRunRecord, attempt: StepAttempt
     prompt: clean(step.prompt),
     status: gateStatusOf(record, attempt),
     approvers: await wordsFor(deps, run, step),
-    // A session viewer never gets a confirm link: only the run's own route (a reader of the run) shows the gate's page.
-    ...(withLink ? { confirmUrl: confirmUrlFor(deps, { approvalId: attempt.approvalId }) } : {}),
+    // Only a person who may decide this gate, reading the run's own route, is given its page: a session viewer and any other reader are not.
+    ...(reader !== undefined && record !== undefined && await mayDecideApproval(deps, reader, record).catch(() => false) ? { confirmUrl: confirmUrlFor(deps, { approvalId: attempt.approvalId }) } : {}),
     ...(decidedBy === undefined || record?.decidedAt === undefined ? {} : { decidedBy: { developerId: decidedBy, name: await displayNameOf(deps, decidedBy) }, decidedAt: record.decidedAt }),
   };
 }
@@ -188,10 +196,10 @@ async function taskFactsOf(deps: Deps, run: ChainRunRecord, attempt: StepAttempt
   }
 }
 
-async function sectionOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined, withLink: boolean): Promise<ChainRunSection> {
+async function sectionOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined, reader: AgentCaller | undefined): Promise<ChainRunSection> {
   const isGate = attempt.kind === "gate";
   const facts = isGate ? undefined : await taskFactsOf(deps, run, attempt);
-  const gate = isGate ? await gateSection(deps, run, attempt, definition, withLink) : undefined;
+  const gate = isGate ? await gateSection(deps, run, attempt, definition, reader) : undefined;
   const branchTaken = branchSection(attempt, definition);
   const links: Link[] | undefined = attempt.result?.links;
   return {
@@ -238,10 +246,10 @@ async function summaryParts(deps: Deps, run: ChainRunRecord) {
 
 /** `GET /v1/app/chain-runs/{id}`: the run, one section per step attempt in `seq` order. */
 export async function chainRunView(deps: Deps, caller: AgentCaller, runId: string, options: ChainViewOptions = {}): Promise<ChainRunView> {
-  const { run } = await readableRun(deps, caller, runId, options);
+  const { run, reader } = await readableRun(deps, caller, runId, options);
   const [attempts, definition] = await Promise.all([readStepAttempts(deps, run.orgId, run.runId), definitionOf(deps, run)]);
   const [header, startedBy, chainOwner, sections] = await Promise.all([
-    summaryParts(deps, run), startedByOf(deps, run), chainOwnerOf(deps, run.chainOwner), Promise.all(attempts.map((attempt) => sectionOf(deps, run, attempt, definition, options.actor === undefined))),
+    summaryParts(deps, run), startedByOf(deps, run), chainOwnerOf(deps, run.chainOwner), Promise.all(attempts.map((attempt) => sectionOf(deps, run, attempt, definition, options.actor === undefined ? reader : undefined))),
   ]);
   return ChainRunViewSchema.parse({
     ...header, chainOwner, startedBy,
