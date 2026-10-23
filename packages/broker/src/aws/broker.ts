@@ -11391,7 +11391,10 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
       // M-6 (m-2): the `closed` end of a plain task whose close could not finish telling it; Plan 5 Task 7b (the Task 22 hand-off): the end of a workflow task that merged
       // or closed, and of a task whose creator was removed. The task, not an operation, is what is looked at, and the end it is owed is worked out from it now.
       const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
-      const outcome = task === undefined || task.orgId === undefined || task.orgId !== row.orgId ? undefined : taskEndOwed(task, row.endOf);
+      let outcome = task === undefined || task.orgId === undefined || task.orgId !== row.orgId ? undefined : taskEndOwed(task, row.endOf);
+      // A removed creator's agent-step run is ended, and its end told, by its engine (the check that refuses it ends the run): a row left because the run could not be read
+      // is not told here. A read that fails here throws, and the row is tried again.
+      if (outcome === "creator_removed" && task?.agent !== undefined && await getItem(dependencies, taskAgentRunKey(item.taskId)) !== undefined) outcome = undefined;
       if (task === undefined || task.orgId === undefined || outcome === undefined) {
         await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
         return "STALE";

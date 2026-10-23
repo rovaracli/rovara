@@ -284,8 +284,10 @@ describe("a task end row never replaces an operation's own end row", () => {
     expect(t.rows(taskId)).toContainEqual(expect.objectContaining({ endOf: "workflow" }));
     expect(t.rows(taskId).find((row) => row.operationId === "op_real_one")).not.toHaveProperty("endOf");
     up.now = true;
+    for (const row of t.rows(taskId)) t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
     await t.handler({ source: "agentx.workflow-dispatch-recovery" });
     expect(heard).toHaveLength(1);
+    expect(t.rows(taskId)).toEqual([]);
   });
 
   it("a creator_removed end left beside an operation's row keeps both", async () => {
