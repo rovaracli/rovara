@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentXError } from "@agentx/contracts";
-import { approvalKey, approverIndexKey, chainKey, openApprovalKey, openChainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { approvalKey, approverIndexKey, chainKey, chainRunKey, openApprovalKey, openChainRunKey, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { decideApproval, expireApprovals, registerApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { routeChainRequest } from "../../packages/broker/src/chains/routes.js";
@@ -390,6 +390,177 @@ describe("a run's time", () => {
     await sweep(w);
     expect(w.run(run.runId)).toMatchObject({ status: "timed_out", failure: { reason: "run_timeout" } });
     expect((await w.approval(approvalId)).status).toBe("EXPIRED");
+  });
+});
+
+
+describe("the sweep: what it looks at and when it looks again", () => {
+  const dueAtOf = (w: GateWorld, runId: string) => w.run(runId)!.dueAt;
+  const at = (w: GateWorld, minutes: number) => new Date(w.clock.now + minutes * MIN).toISOString();
+
+  it("looks at a run that is due exactly now, and at nothing before", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId);
+    w.clock.now += 5 * MIN - 1;
+    expect((await sweep(w)).examined).toBe(0);
+    w.clock.now += 1;
+    expect((await sweep(w)).examined).toBe(1);
+    expect(dueAtOf(w, run.runId)).toBe(at(w, 5));
+  });
+
+  it("looks again in 5 minutes at a run with a step going", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId);
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(dueAtOf(w, run.runId)).toBe(at(w, 5));
+  });
+
+  it("looks again when the step is due to run out, if that comes first", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps({ timeoutMinutes: 7 }));
+    const start = w.clock.now;
+    const run = await w.start(chain.chainId);
+    w.clock.now += 5 * MIN;
+    await sweep(w);
+    expect(dueAtOf(w, run.runId)).toBe(new Date(start + 7 * MIN).toISOString());
+  });
+
+  it("never looks later than the run's own time", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps({ timeoutMinutes: 600 }, { maxRunUsd: 30, maxRunHours: 1 }));
+    const start = w.clock.now;
+    const run = await w.start(chain.chainId);
+    w.clock.now += 58 * MIN;
+    await sweep(w);
+    expect(dueAtOf(w, run.runId)).toBe(new Date(start + 60 * MIN).toISOString());
+  });
+
+  it("looks at a gate every half hour, and when it expires if that comes first", async () => {
+    const w = setupGateWorld();
+    const { run } = await w.runAtGate();
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(dueAtOf(w, run.runId)).toBe(at(w, 30));
+    const hourly = setupGateWorld();
+    const chain = await hourly.publish({
+      start: "look", limits: { maxRunUsd: 30 },
+      steps: [agentStep("look", "Look into it", "root-cause-analyst", { kind: "go", to: "approve" }), { kind: "gate", id: "approve", name: "Approve it", prompt: "Go ahead?", approvers: [{ kind: "starter" }], timeoutHours: 1, onApprove: { to: "$end" }, onReject: { to: "$end" } }],
+    });
+    const start = hourly.clock.now;
+    const gated = await hourly.start(chain.chainId);
+    await hourly.endLatest();
+    // The gate's own time is sooner than the first look; the run is looked at then, and again when it expires.
+    hourly.clock.now = start + 40 * MIN;
+    await sweep(hourly);
+    expect(hourly.run(gated.runId)!.dueAt).toBe(new Date(start + 60 * MIN).toISOString());
+  });
+
+  it("looks again in 5 minutes at a gate whose approval is past its time and still PENDING", async () => {
+    const w = setupGateWorld();
+    const { run } = await w.runAtGate();
+    w.clock.now += 73 * HOUR;
+    await sweep(w);
+    expect(dueAtOf(w, run.runId)).toBe(at(w, 5));
+  });
+
+  it("deletes an item it can't read, and stops when it has no time left", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId);
+    w.db.set({ pk: "OPEN_CHAIN_RUNS", sk: `${new Date(w.clock.now - MIN).toISOString()}#junk`, entityType: "OPEN_CHAIN_RUN" });
+    const report = await sweep(w);
+    expect(report).toEqual({ examined: 1, failed: 0 });
+    expect(w.openItems()).toHaveLength(1);
+    w.clock.now += 6 * MIN;
+    expect(await (await lifecycle()).sweepChainRuns(w.deps, w.clock.now, { budgetMs: -1 })).toEqual({ examined: 0, failed: 0 });
+    expect(w.run(run.runId)!.version).toBe(2);
+  });
+
+  it("ends a run exactly at its time, and cancels a step exactly at its time", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps({ timeoutMinutes: 30 }, { maxRunUsd: 30, maxRunHours: 1 }));
+    const run = await w.start(chain.chainId);
+    w.clock.now += 30 * MIN;
+    await sweep(w);
+    expect(w.cancels.map((cancel) => cancel.taskId)).toEqual(["task-1"]);
+    w.clock.now += 30 * MIN;
+    await sweep(w);
+    expect(w.run(run.runId)).toMatchObject({ status: "timed_out", failure: { reason: "run_timeout" } });
+  });
+
+  it("starts the first step of a run that has none yet, because the process died after the run was made", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    w.beforeTransaction("step_started", () => { throw new Error("the process died"); });
+    const run = await w.start(chain.chainId);
+    expect(w.run(run.runId)).toMatchObject({ currentSeq: 0 });
+    expect(startedAgain(w)).toBe(0);
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(w.attempts(run.runId)).toMatchObject([{ seq: 1, status: "running", taskId: "task-1" }]);
+    expect(startedAgain(w)).toBe(1);
+  });
+
+  it("moves a run on whose attempt ended without the run hearing of it", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId);
+    w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, stepSk(1)))!, status: "succeeded", result: { report: "Found it." }, endedAt: new Date(w.clock.now).toISOString() });
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(w.attempts(run.runId)).toMatchObject([{ status: "succeeded" }, { stepId: "act", status: "running" }]);
+    expect(w.starts[1]!.input.context).toEqual(expect.arrayContaining([expect.objectContaining({ body: expect.stringContaining("Found it.") as string })]));
+  });
+
+  it("does not take a lost end's report from another org's agent run", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId);
+    w.db.set({ ...taskEndKey("task-1"), entityType: "TASK_END", orgId: ORG_A, outcome: "succeeded", handlersTold: 0, done: false });
+    setAgentRun(w, "task-1", { orgId: ORG_B, state: "COMPLETE", finalReport: "from another org" });
+    w.clock.now += 6 * MIN;
+    await sweep(w);
+    expect(JSON.stringify(w.attempts(run.runId)[0])).not.toContain("from another org");
+  });
+
+  it("finishes an ending whose chain count has drifted to 0, and leaves it at 0", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const dead = await w.start(chain.chainId);
+    w.db.set({ ...runItem(w, dead.runId), status: "failed", endedAt: new Date(w.clock.now).toISOString() });
+    w.db.set({ ...w.db.get(chainKey(ORG_A, chain.chainId, "META"))!, openRuns: 0 });
+    w.clock.now += 6 * MIN;
+    expect((await sweep(w)).failed).toBe(0);
+    expect(w.openItems()).toEqual([]);
+    expect(await openRunsOf(w, chain.chainId)).toBe(0);
+    expect(w.logs.map((line) => line.event)).toContain("chain_run.open_runs_drifted");
+  });
+
+  it("gives one place back when two finishers meet", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    await w.start(chain.chainId, PRIYA);
+    const requestId = randomUUID();
+    w.hooks.cancelFails.push(agentXError("RUNTIME_UNAVAILABLE", "the worker is not reachable"));
+    await refusal((await lifecycle()).cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId }));
+    expect(await openRunsOf(w, chain.chainId)).toBe(2);
+    // The sweep is about to give the place back when the same request arrives again and finishes it first.
+    w.beforeTransaction("attribute_exists", async () => { await (await lifecycle()).cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId }); });
+    await sweep(w);
+    expect(await openRunsOf(w, chain.chainId)).toBe(1);
+    expect(w.openItems()).toHaveLength(1);
+  });
+
+  it("does not say where the cancel's request id comes from: it is not the step's own start request id", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps());
+    const run = await w.start(chain.chainId, PRIYA);
+    await (await lifecycle()).cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId: randomUUID() });
+    expect(w.cancels[0]!.requestId).not.toBe(w.starts[0]!.requestId);
   });
 });
 
@@ -877,6 +1048,19 @@ describe("cancelling a run", () => {
   });
 });
 
+
+describe("who may stop a run on a project's chain", () => {
+  it("lets a contributor who started the run stop it, and refuses another contributor", async () => {
+    const w = setupGateWorld();
+    const chain = await w.publish(twoSteps(), { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX } });
+    const run = await w.start(chain.chainId, CARL);
+    const { cancelChainRun } = await lifecycle();
+    expect((await refusal(cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId: randomUUID() })))?.code).toBe("FORBIDDEN");
+    expect(w.run(run.runId)).toMatchObject({ status: "running" });
+    expect((await cancelChainRun(w.deps, callerOf(CARL), run.runId, { requestId: randomUUID() })).status).toBe("cancelled");
+  });
+});
+
 // ---- the approval of a gate that never became live (Task 8, M-2)
 
 describe("an approval made for a gate the run never entered", () => {
@@ -958,6 +1142,16 @@ describe("closeStepApproval", () => {
     const { closeStepApproval } = await lifecycle();
     expect(await closeStepApproval(w.deps, ORG_A, run.runId, approvalId, "Late.")).toBe(false);
     expect((await w.approval(approvalId)).status).toBe("APPROVED");
+  });
+
+  it("does not overwrite a record that was decided between its read and its write", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate(PRIYA);
+    const { closeStepApproval } = await lifecycle();
+    w.beforeTransaction("closedReason", () => { w.db.set({ ...w.db.get(approvalKey(ORG_A, approvalId))!, status: "APPROVED", decidedBy: PRIYA }); });
+    expect(await closeStepApproval(w.deps, ORG_A, run.runId, approvalId, "The run was cancelled.")).toBe(false);
+    expect(w.db.get(approvalKey(ORG_A, approvalId))).toMatchObject({ status: "APPROVED" });
+    expect(w.db.get(approvalKey(ORG_A, approvalId))!.closedBy).toBeUndefined();
   });
 
   it("leaves a write approval alone, and an approval that is not there", async () => {

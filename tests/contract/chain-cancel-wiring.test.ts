@@ -8,6 +8,7 @@ import { registerTaskEndHandler, type TaskEndEvent } from "../../packages/broker
 import { chainRunPortsFor } from "../../packages/broker/src/chains/runner.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { openChainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -83,5 +84,39 @@ describe("the chain's cancel port, through Plan 3's cancel", () => {
     expect(answer).toBe("TASK_NOT_FOUND");
     expect(t.operations().find((operation) => operation.kind === "cancel")).toBeUndefined();
     expect(t.runState()).toMatchObject({ state: "RUNNING" });
+  });
+});
+
+describe("the chain sweep, through the deployed broker's handler", () => {
+  const event = { source: "agentx.chain-sweep" };
+  /** The answer without the envelope's own request id. */
+  const bodyOf = (reply: unknown) => {
+    const { requestId: _requestId, ...rest } = JSON.parse((reply as { body: string }).body) as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- only the envelope's id is dropped
+    return rest;
+  };
+
+  it("runs the sweep with the broker's own dependencies: a due item for a run that is not there is dropped and counted", async () => {
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    const due = openChainRunKey(new Date(Date.now() - 60_000).toISOString(), TEST_ORG, "crn_aaaaaaaaaaaaaaaaaaaa");
+    h.db.set({ ...due, entityType: "OPEN_CHAIN_RUN", orgId: TEST_ORG, runId: "crn_aaaaaaaaaaaaaaaaaaaa" });
+    const reply = await h.handler(event);
+    expect(reply).toMatchObject({ statusCode: 200 });
+    expect(bodyOf(reply)).toEqual({ examined: 1, failed: 0 });
+    expect(h.db.get(due)).toBeUndefined();
+  });
+
+  it("leaves an item that is not due yet alone", async () => {
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    const later = openChainRunKey(new Date(Date.now() + 3_600_000).toISOString(), TEST_ORG, "crn_aaaaaaaaaaaaaaaaaaaa");
+    h.db.set({ ...later, entityType: "OPEN_CHAIN_RUN", orgId: TEST_ORG, runId: "crn_aaaaaaaaaaaaaaaaaaaa" });
+    expect(bodyOf(await h.handler(event))).toEqual({ examined: 0, failed: 0 });
+    expect(h.db.get(later)).toBeDefined();
+  });
+
+  it("says it was skipped where agents are not set up", async () => {
+    const h = await createDeveloperTaskBroker({});
+    const reply = await h.handler(event);
+    expect(reply).toMatchObject({ statusCode: 200 });
+    expect(bodyOf(reply)).toEqual({ skipped: true });
   });
 });
