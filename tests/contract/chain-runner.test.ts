@@ -122,6 +122,15 @@ describe("redactSecrets", () => {
     expect(redactSecrets("Bug in refund retry: see sk and ghp and AKIA-short")).toBe("Bug in refund retry: see sk and ghp and AKIA-short");
   });
 
+  it.each([
+    ["xoxb- with 10 characters", "xoxb-1234567890"], ["sntrys_ with 20 characters", `sntrys_${"a".repeat(20)}`], ["glsa_ with 20 characters", `glsa_${"a".repeat(20)}`],
+    ["lin_api_ with 20 characters", `lin_api_${"a".repeat(20)}`], ["Bearer with 20 characters", `Bearer ${"a".repeat(20)}`], ["xapp- with 10 characters", "xapp-1234567890"],
+    ["glc_ with 20 characters", `glc_${"a".repeat(20)}`], ["ATATT with 20 characters", `ATATT${"a".repeat(20)}`], ["github_pat_ with 20 characters", `github_pat_${"a".repeat(20)}`],
+  ])("replaces the shortest %s", async (_label, token) => {
+    const { redactSecrets } = await handoff();
+    expect(redactSecrets(`k ${token} z`)).toBe("k [redacted] z");
+  });
+
   it("does not touch tokens that are too short to be one", async () => {
     const { redactSecrets } = await handoff();
     for (const text of [`ghp_${"a".repeat(19)}`, `sk-${"a".repeat(19)}`, "AKIAABCDEFGHIJKLMNO", "xoxb-123456789", `sntrys_${"a".repeat(19)}`, `glsa_${"a".repeat(19)}`, `lin_api_${"a".repeat(19)}`]) {
@@ -242,6 +251,34 @@ describe("buildHandoff", () => {
     expect(items.slice(1).map((item) => item.ref)).toEqual([6, 5, 4, 3].map((seq) => `chain:crn_aaaaaaaaaaaaaaaaaaaa:${String(seq)}`));
   });
 
+  it("leaves out the vendor's summary when it is empty, with no blank lines after the subject", async () => {
+    const { triggerSummary } = await handoff();
+    expect(triggerSummary(SENTRY({ summary: "" }) as never)).toBe("Event: sentry issue.created\nalert: Refund errors\nLink: https://sentry.example.com/issues/1");
+  });
+
+  it("keeps a whole character that ends exactly at the cut, and a title that is empty has no title", async () => {
+    const { buildHandoff } = await handoff();
+    const title = `${"a".repeat(197)}😀${"b".repeat(20)}`;
+    const cut = buildHandoff(input({ trigger: SENTRY({ subject: { kind: "alert", title } }) }) as never)![0]!.title!;
+    expect(cut).toBe(`${"a".repeat(197)}😀…`);
+    const [bare] = buildHandoff(input({ trigger: SENTRY({ subject: { kind: "alert", title: "" } }) }) as never)!;
+    expect(bare).not.toHaveProperty("title");
+  });
+
+  it("has no start item for an empty start input, and a report with only links has no blank line before them", async () => {
+    const { buildHandoff } = await handoff();
+    expect(buildHandoff(input({ startInput: "" }) as never)).toEqual([]);
+    const [item] = buildHandoff(input({ earlier: [report(1, "", { result: { report: "", links: [{ label: "PR", url: "https://github.com/a/b/pull/1" }] } })] }) as never)!;
+    expect(item!.body).toBe("Links:\n- PR: https://github.com/a/b/pull/1");
+  });
+
+  it("stops at the first report that does not fit, so a smaller, older report is not let in past it", async () => {
+    const { buildHandoff } = await handoff();
+    const earlier = [...Array.from({ length: 5 }, (_unused, at) => report(at + 2, `${String(at + 2)}`.repeat(16_000))), report(1, "tiny")];
+    const items = buildHandoff(input({ mode: "all", earlier }) as never)!;
+    expect(items.map((item) => item.ref)).toEqual([6, 5, 4, 3].map((seq) => `chain:crn_aaaaaaaaaaaaaaaaaaaa:${String(seq)}`));
+  });
+
   it("leaves a report with no text without a body, which Plan 3's context item does not accept empty", async () => {
     const { buildHandoff } = await handoff();
     const [item] = buildHandoff(input({ earlier: [report(1, "")] }));
@@ -257,6 +294,38 @@ describe("run events", () => {
     const item = runEventItem("T", { orgId: ORG_A, runId: "crn_aaaaaaaaaaaaaaaaaaaa", eventSeq: 6 }, { type: "step_started", stepSeq: 2, text: "Step started." }, "2026-10-22T09:00:00.000Z") as { Put: { Item: Record<string, unknown>; ConditionExpression: string } };
     expect(item.Put.Item).toMatchObject({ ...chainRunKey(ORG_A, "crn_aaaaaaaaaaaaaaaaaaaa", runEventSk(7)), orgId: ORG_A, seq: 7, type: "step_started", stepSeq: 2, text: "Step started.", at: "2026-10-22T09:00:00.000Z" });
     expect(item.Put.ConditionExpression).toBe("attribute_not_exists(pk)");
+  });
+
+  it("neutralises the line and paragraph separators too, and leaves a text of exactly the limit whole", async () => {
+    const { neutralText, runEventItem } = await runEvents();
+    expect(neutralText("a\u2028b\u2029c")).toBe("a[U+2028]b[U+2029]c");
+    expect(neutralText("x".repeat(500), 500)).toBe("x".repeat(500));
+    const item = runEventItem("T", { orgId: ORG_A, runId: "crn_aaaaaaaaaaaaaaaaaaaa", eventSeq: 0 }, { type: "started", text: "a\u0007b" }, "2026-10-22T09:00:00.000Z") as { Put: { Item: { text: string } } };
+    expect(item.Put.Item.text).toBe("a[U+0007]b");
+  });
+
+  it("does not let an appended event overwrite a change that landed after it read the run", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    const { appendRunEvent } = await runEvents();
+    const real = w.db.send;
+    let fired = false;
+    (w.deps.documentClient as { send: unknown }).send = async (command: { constructor: { name: string } }) => {
+      if (!fired && command.constructor.name === "TransactWriteCommand") {
+        fired = true;
+        const meta = w.db.get(chainRunKey(ORG_A, run.runId, "META"))!;
+        w.db.set({ ...meta, version: (meta["version"] as number) + 1 });
+      }
+      return real(command as never);
+    };
+    const before = w.run(run.runId)!;
+    await appendRunEvent(w.deps, ORG_A, run.runId, { type: "resumed", text: "A note." });
+    (w.deps.documentClient as { send: unknown }).send = real;
+    expect(fired).toBe(true);
+    // The first try lost to the change; the second read it and moved the version once more.
+    expect(w.run(run.runId)!.version).toBe(before.version + 2);
+    expect(w.run(run.runId)!.eventSeq).toBe(before.eventSeq + 1);
   });
 
   it("neutralises control, invisible and direction characters and cuts to 500 characters", async () => {
@@ -1251,6 +1320,28 @@ describe("registerChainRunner", () => {
     available = w.deps;
     await onTaskPaused(deps, record, { kind: "task", taskId: "task-1" });
     expect(w.run(run.runId)!.status).toBe("paused");
+  });
+
+  it("asks for dependencies only for a task that has a chain, and takes both handlers off again", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    const { registerChainRunner } = await index();
+    let asked = 0;
+    const off = registerChainRunner(() => { asked += 1; return w.deps; });
+    const host: TaskEndHost = { releaseWorkspace: async () => undefined, blockKeys: async () => undefined, spentUsd: async () => 0 };
+    const deps = { documentClient: w.db, tableName: "T", now: () => w.clock.now, agentRuns: host };
+    const record = w.db.get(taskKey("task-1")) as unknown as DeveloperTaskRecord;
+    w.db.set({ ...record, ...taskKey("plain-9"), taskId: "plain-9", chain: undefined });
+    const plain = w.db.get(taskKey("plain-9")) as unknown as DeveloperTaskRecord;
+    delete (plain as { chain?: unknown }).chain;
+    await onTaskPaused(deps, plain, { kind: "task", taskId: "plain-9" });
+    await onTaskEnded(deps, plain, "succeeded", {}, { record: true });
+    expect(asked).toBe(0);
+    off();
+    await onTaskPaused(deps, record, { kind: "task", taskId: "task-1" });
+    expect(w.run(run.runId)!.status).toBe("running");
+    expect(asked).toBe(0);
   });
 
   it("is removed again by the function it returns, so the handlers it added are gone", async () => {
