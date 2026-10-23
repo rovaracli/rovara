@@ -133,6 +133,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/model-sources/store.ts",
       // A run's cost item (Plan 3, Task 34): kept a year for the max-per-run suggestion, then deleted by the TTL.
       "packages/broker/src/spend/estimate.ts",
+      // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
+      "packages/broker/src/spend/requests.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
