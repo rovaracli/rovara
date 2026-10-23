@@ -47,9 +47,9 @@ describe("Plan 4 mints no decide tickets (M12)", () => {
     }
   });
 
-  it("builds every link to a decision with Plan 3's `confirmUrlFor`", () => {
+  it("builds every link to a decision with Plan 3's `confirmUrlFor`, and the gate's event text, which every reader of the run sees, has none (review I-1)", () => {
     const gates = readFileSync(join(SOURCE, "chains/gates.ts"), "utf8");
-    expect(gates).toContain("confirmUrlFor");
+    expect(gates.replace(/^\s*\/\/.*$/gmu, "")).not.toContain("confirmUrlFor");
     for (const file of files) expect(readFileSync(file, "utf8"), file).not.toMatch(/\/v1\/app\/approve\//);
   });
 });

@@ -162,11 +162,22 @@ describe("turning a trigger on needs a person", () => {
   it("refuses to turn on a spec that was edited after it was asked, and turns on nothing", async () => {
     const { v, path } = await chainWorld();
     const asked = await v.chainCall(DANA, "PUT", path(ID("a")), { project: "web", spec: PR_OPENED });
-    await v.chainCall(DANA, "PUT", path(ID("a")), { project: "web", spec: { ...PR_OPENED, filter: { label: ["bug"] } }, enabled: false });
+    // Edited in the store, so that nothing closes the request: the digest it was bound to is what refuses it.
+    await v.triggers.update({ trigger: await stored(v, ID("a")), patch: { spec: TriggerSpecSchema.parse({ ...PR_OPENED, filter: { label: ["bug"] } }) as never } });
     const decided = await confirm(v, DANA, confirmUrlOf(asked));
     const approvalId = confirmUrlOf(asked).split("/").pop()!;
     expect((await v.approval(approvalId)).status).toBe("APPROVED_FAILED");
     expect(JSON.stringify(decided.body)).toContain("did not go through");
+    expect((await stored(v, ID("a"))).enabled).toBe(false);
+  });
+
+  it("closes the request when the route edits the spec after it was asked, so the confirmation page says it is closed (review I-3)", async () => {
+    const { v, path } = await chainWorld();
+    const asked = await v.chainCall(DANA, "PUT", path(ID("a")), { project: "web", spec: PR_OPENED });
+    await v.chainCall(DANA, "PUT", path(ID("a")), { project: "web", spec: { ...PR_OPENED, filter: { label: ["bug"] } }, enabled: false });
+    const approvalId = confirmUrlOf(asked).split("/").pop()!;
+    expect((await v.approval(approvalId)).status).toBe("EXPIRED");
+    await confirm(v, DANA, confirmUrlOf(asked));
     expect((await stored(v, ID("a"))).enabled).toBe(false);
   });
 

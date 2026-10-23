@@ -213,12 +213,13 @@ describe("what a confirmation is bound to", () => {
     v.hook("sentry", HOOK_A2);
     const path = (id: string) => `/v1/app/chains/${chain.chainId}/triggers/${id}`;
     const hooked = await v.chainCall(DANA, "PUT", path(ID("a")), { project: "web", spec: SENTRY, hookId: HOOK_A });
-    await v.chainCall(DANA, "PUT", path(ID("a")), { project: "web", spec: SENTRY, hookId: HOOK_A2, enabled: false });
+    // Changed in the store, so that nothing closes the request: what it was bound to is what refuses it.
+    await v.triggers.update({ trigger: await stored(v, ID("a")), patch: { hookId: HOOK_A2 } });
     await v.decideAs(DANA, approvalOf(hooked.body["confirmUrl"]));
     expect((await v.approval(approvalOf(hooked.body["confirmUrl"]))).status).toBe("APPROVED_FAILED");
     expect((await stored(v, ID("a"))).enabled).toBe(false);
     const rated = await v.chainCall(DANA, "PUT", path(ID("b")), { project: "web", spec: PR });
-    await v.chainCall(DANA, "PUT", path(ID("b")), { project: "web", spec: PR, maxRunsPerHour: 5 });
+    await v.triggers.update({ trigger: await stored(v, ID("b")), patch: { maxRunsPerHour: 5 } });
     await v.decideAs(DANA, approvalOf(rated.body["confirmUrl"]));
     expect((await v.approval(approvalOf(rated.body["confirmUrl"]))).status).toBe("APPROVED_FAILED");
     const budgeted = await v.chainCall(DANA, "PUT", path(ID("c")), { project: "web", spec: PR });
@@ -228,12 +229,18 @@ describe("what a confirmation is bound to", () => {
     expect((await stored(v, ID("c"))).enabled).toBe(false);
   });
 
-  it("makes the person who asked the creator even if the trigger was handed on in between, and does nothing twice when told twice", async () => {
+  it("refuses a confirmation after the trigger was handed on in between (it moved on from what was shown), and does nothing twice when told twice", async () => {
     const v = setupTriggerWorld();
     const chain = await v.budgetedChain();
-    const asked = await v.chainCall(DANA, "PUT", `/v1/app/chains/${chain.chainId}/triggers/${ID("a")}`, { project: "web", spec: PR });
+    const path = `/v1/app/chains/${chain.chainId}/triggers/${ID("a")}`;
+    const asked = await v.chainCall(DANA, "PUT", path, { project: "web", spec: PR });
     await v.triggers.update({ trigger: await stored(v, ID("a")), patch: { createdBy: MAX } });
-    const id = approvalOf(asked.body["confirmUrl"]);
+    await v.decideAs(DANA, approvalOf(asked.body["confirmUrl"]));
+    expect(await stored(v, ID("a"))).toMatchObject({ enabled: false, createdBy: MAX });
+    expect((await v.approval(approvalOf(asked.body["confirmUrl"]))).status).toBe("APPROVED_FAILED");
+    // Asked again, the person who asked is the creator, and a repeat of the handler changes nothing.
+    const again = await v.chainCall(DANA, "PUT", path, { project: "web", spec: PR, enabled: true });
+    const id = approvalOf(again.body["confirmUrl"]);
     await v.decideAs(DANA, id);
     expect(await stored(v, ID("a"))).toMatchObject({ enabled: true, createdBy: DANA });
     const once = await stored(v, ID("a"));

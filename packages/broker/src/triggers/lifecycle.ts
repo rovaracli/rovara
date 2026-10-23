@@ -4,8 +4,10 @@
 import { randomBytes } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  ApprovalIdSchema,
   BUILTIN_AGENT_IDS,
   agentKey,
+  approvalKey,
   chainKey,
   isBuiltinAgentId,
   orgPk,
@@ -13,7 +15,13 @@ import {
   type TriggerTarget,
 } from "@agentx/contracts";
 import { shownText } from "../agents/approvals.js";
-import type { TransactItem } from "../agents/table-writes.js";
+import { approverDrops, commitOrLost, dueItems, getAnyApproval, type ApprovalDependencies } from "../agents/approvals-store.js";
+import { Aliases, type TransactItem } from "../agents/table-writes.js";
+import { auditApprovalExpired } from "../audit/events.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import { auditPending, tryAuditEvents } from "../audit/outbox.js";
+import { auditActorOf } from "../audit/plan3-hooks.js";
+import { neutralText } from "../chains/run-events.js";
 import { checkTime, registerMemberMover, resolveMember } from "../agents/lifecycle.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { displayNameOf } from "../chains/gates.js";
@@ -281,3 +289,39 @@ export function registerTriggerMovers(): () => void {
 }
 
 registerTriggerMovers();
+
+// ---- closing a request to turn a trigger on
+
+/**
+ * Closes a PENDING request to turn `triggerId` on (review I-3, M-3): one conditional update, `PENDING` to `EXPIRED`, that holds only for a change approval whose subject is
+ * this trigger's turn-on in this org, so a wrong id can't close another approval. The record's open item and its approver items go in the same transaction, and it keeps who
+ * closed it and why. A confirmation that comes later finds it closed and answers `APPROVAL_CLOSED`. True when this call closed it.
+ */
+export async function closeTriggerEnableApproval(deps: ApprovalDependencies, orgId: OrgId, triggerId: string, approvalId: string, reason: string): Promise<boolean> {
+  const id = ApprovalIdSchema.safeParse(approvalId);
+  if (!id.success) return false;
+  const record = await getAnyApproval(deps, orgId, id.data);
+  if (record === undefined || record.kind !== "change" || record.status !== "PENDING") return false;
+  const subject = record.subject as { kind?: unknown; triggerId?: unknown };
+  if (subject.kind !== "trigger_enable" || subject.triggerId !== triggerId) return false;
+  const at = new Date(deps.now()).toISOString();
+  const events = await tryAuditEvents(deps, () => [auditApprovalExpired({
+    orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.approvalId, approvalId: record.approvalId, kind: record.kind, subjectKind: record.subject.kind,
+  })]);
+  const aliases = new Aliases();
+  const condition = [
+    `${aliases.name("status")} = ${aliases.value("PENDING")}`, `${aliases.name("kind")} = ${aliases.value("change")}`, `${aliases.name("orgId")} = ${aliases.value(orgId)}`,
+    `${aliases.name("subject")}.${aliases.name("kind")} = ${aliases.value("trigger_enable")}`, `${aliases.name("subject")}.${aliases.name("triggerId")} = ${aliases.value(triggerId)}`,
+  ].join(" AND ");
+  const fields = { status: "EXPIRED", closedBy: "system", closedReason: neutralText(reason, REASON_MAX), closedAt: at };
+  const sets = Object.entries(fields).map(([name, value]) => `${aliases.name(name)} = ${aliases.value(value)}`);
+  const items: TransactItem[] = [
+    { Update: { TableName: deps.tableName, Key: approvalKey(record.orgId, record.approvalId), UpdateExpression: `SET ${sets.join(", ")}`, ConditionExpression: condition, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values } },
+    ...dueItems(deps, record, [record.expiresAt], undefined),
+    ...approverDrops(deps, record),
+    ...events.flatMap((event) => auditPending(deps, event)),
+  ];
+  if (!await commitOrLost(deps, items)) return false;
+  await flushAuditEvents(deps, events);
+  return true;
+}

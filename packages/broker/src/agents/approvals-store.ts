@@ -118,9 +118,9 @@ export type ChainChangeSubject =
 
 /**
  * Plan 4 Task 18: turning a trigger on is a person's decision (N6). The approval is bound to the digest of the spec the person was shown, so a trigger edited in between
- * does not turn on under it.
+ * does not turn on under it, and to the revision of the trigger it was made for, so a request that outlived a turn-off or a newer request turns nothing on.
  */
-export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string };
+export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string; triggerRevision: number };
 
 export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject;
 
@@ -332,7 +332,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
     project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
   }).strict(),
-  z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64 }).strict(),
+  z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64, triggerRevision: z.number().int().min(1) }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   z.object({
     kind: z.literal("opt_out"), project: z.string(), repository: z.string(), expectedDigest: Hex64, files: z.array(z.string()), reason: z.string(),
@@ -475,7 +475,7 @@ export function pendingChangeFor(deps: Pick<ApprovalStoreDependencies, "document
 }
 
 /** The same request always names the same approval, so a replay finds the record it made (R18). */
-function approvalIdFor(orgId: OrgId, requestedBy: string, requestId: string): ApprovalId {
+export function approvalIdFor(orgId: OrgId, requestedBy: string, requestId: string): ApprovalId {
   return newPrefixedId("apr", () => createHash("sha256").update(`${orgId}|${requestedBy}|${requestId}`, "utf8").digest());
 }
 

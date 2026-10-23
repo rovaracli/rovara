@@ -28,7 +28,7 @@ import { type AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { agentAccess, orgRoleOf, requireAgentAccess, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import {
-  confirmUrlFor, createPendingChange, pendingChangeFor, registerApprovalSubjectHandler, registerApproverRule, shownText,
+  approvalIdFor, confirmUrlFor, createPendingChange, pendingChangeFor, registerApprovalSubjectHandler, registerApproverRule, shownText,
   type ApprovalRecord, type ApproverSpec, type ApprovalDependencies,
 } from "../agents/approvals.js";
 import { orgAdmins } from "../agents/changes.js";
@@ -36,7 +36,7 @@ import { readGuardrails } from "../agents/guardrails.js";
 import { jsonBody, markRequest, parseBody, type AgentRouteDependencies } from "../agents/routes.js";
 import { requireChainAccess, chainAccess, type ChainAccessDeps } from "../chains/access.js";
 import { displayNameOf } from "../chains/gates.js";
-import { targetEventItem } from "./lifecycle.js";
+import { closeTriggerEnableApproval, targetEventItem } from "./lifecycle.js";
 import { triggerProblemError, triggerProblems, triggerWords, type TriggerProblem } from "./requirements.js";
 import { isTriggerConflict, type TriggerRecord, type TriggerSpec, type TriggerStore } from "./store.js";
 
@@ -177,7 +177,7 @@ async function approversFor(deps: Deps, trigger: TriggerRecord): Promise<Approve
 
 async function waitForPerson(deps: Deps, caller: AgentCaller, requestId: string, trigger: TriggerRecord): Promise<StatusReply> {
   const record = await createPendingChange(deps, {
-    orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject: { kind: "trigger_enable", triggerId: trigger.triggerId, specDigest: specDigestOf(trigger) },
+    orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject: { kind: "trigger_enable", triggerId: trigger.triggerId, specDigest: specDigestOf(trigger), triggerRevision: trigger.revision },
     changes: [`turn on ${triggerWords(trigger)} for ${shownText(trigger.project, NAME_MAX)}`], approvers: await approversFor(deps, trigger),
   });
   // A replay of a request that was decided since is not waiting any more.
@@ -233,8 +233,10 @@ async function change(deps: Deps, caller: AgentCaller, wanted: Wanted, requestId
   const problems = await triggerProblems(deps, candidate);
   const refused = enabled ? problems[0] : problems.find(structural);
   if (refused !== undefined) throw triggerProblemError(refused);
+  // The request this one makes is the only one that may turn the trigger on from here: the earlier one, if there is one, is closed once this is written.
+  const pendingApprovalId = enabled && confirm ? approvalIdFor(caller.orgId, caller.developerId, requestId) : undefined;
   const stored: Omit<TriggerRecord, "revision" | "updatedAt"> = {
-    ...candidate, enabled: enabled && !confirm,
+    ...candidate, enabled: enabled && !confirm, ...(pendingApprovalId === undefined ? {} : { pendingApprovalId }),
     ...(enabled && confirm ? { disabledReason: WAITING_REASON } : existing?.disabledReason !== undefined && !enabled ? { disabledReason: existing.disabledReason } : {}),
     // A schedule is the scheduler's once the trigger is on; until then it is not there, or is `DISABLED`.
     ...(candidate.spec.kind === "schedule" ? { scheduleStatus: existing?.scheduleStatus ?? "pending" as const } : {}),
@@ -248,6 +250,13 @@ async function change(deps: Deps, caller: AgentCaller, wanted: Wanted, requestId
       extra: targetEventItem(deps, caller.orgId, wanted.target, "trigger_changed", { triggerId: wanted.triggerId, by: caller.developerId }),
     });
   const settled = await syncSchedule(deps, written, existing?.enabled === true);
+  // A turn-off, a change of what the trigger is and a newer request each end the request that was waiting. A close that does not happen leaves it bound to a revision that is
+  // gone, so confirming it is refused all the same.
+  if (existing?.pendingApprovalId !== undefined && existing.pendingApprovalId !== pendingApprovalId) {
+    await closeTriggerEnableApproval(deps, caller.orgId, existing.triggerId, existing.pendingApprovalId, "The trigger was turned off, changed or asked for again after this request.").catch((error: unknown) => {
+      (deps.log ?? ((event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))))("trigger_enable.close_failed", { orgId: caller.orgId, triggerId: existing.triggerId, error: error instanceof Error ? error.name : "unknown" });
+    });
+  }
   if (confirm) return waitForPerson(deps, caller, requestId, settled);
   return new StatusReply(status === "created" ? 201 : 200, { trigger: await viewOf(deps, settled) });
 }
@@ -258,7 +267,7 @@ function patchOf(next: Omit<TriggerRecord, "revision" | "updatedAt">): Patch {
   return rest;
 }
 function clearOf(before: TriggerRecord, next: Omit<TriggerRecord, "revision" | "updatedAt">): NonNullable<Parameters<TriggerStore["update"]>[0]["clear"]> {
-  const fields = ["hookId", "disabledReason", "scheduleStatus", "lastFiredAt", "lastRunId", "lastTaskId"] as const;
+  const fields = ["hookId", "disabledReason", "scheduleStatus", "lastFiredAt", "lastRunId", "lastTaskId", "pendingApprovalId"] as const;
   return fields.filter((field) => before[field] !== undefined && next[field] === undefined);
 }
 
@@ -267,7 +276,10 @@ async function answerReplay(deps: Deps, caller: AgentCaller, requestId: string, 
   if (trigger === undefined) return new StatusReply(200, { deleted: true });
   if (stored.waiting) {
     const approval = await pendingChangeFor(deps, caller.orgId, caller.developerId, requestId);
-    if (approval === undefined || approval.status === "PENDING") return waitForPerson(deps, caller, requestId, trigger);
+    if (approval === undefined) return waitForPerson(deps, caller, requestId, trigger);
+    // The request as it was made (the trigger may have been written since): its own link, and a closed one says so.
+    if (approval.status === "PENDING") return new StatusReply(202, { status: "NEEDS_CONFIRMATION", confirmUrl: confirmUrlFor(deps, approval), changes: approval.changes });
+    if (approval.status === "EXPIRED") throw agentXError("APPROVAL_CLOSED", "this request was closed: the trigger was turned off, changed or asked for again");
   }
   return new StatusReply(stored.created ? 201 : 200, { trigger: await viewOf(deps, trigger) });
 }
@@ -475,13 +487,15 @@ async function confirmEnable(deps: ApprovalDependencies, record: ApprovalRecord)
     await syncSchedule(routeDeps, trigger, false);
     return;
   }
+  // Only the latest request, made for the revision the trigger is at, turns it on (a turn-off or a newer request moved it on, whether or not the close was written).
+  if (trigger.pendingApprovalId !== record.approvalId || trigger.revision !== subject.triggerRevision) throw stale();
   const next: TriggerRecord = { ...trigger, createdBy: record.requestedBy, enabled: true };
   const [problem] = await triggerProblems(routeDeps, next);
   if (problem !== undefined) throw triggerProblemError(problem);
   let written: TriggerRecord;
   try {
     written = await store.update({
-      trigger, patch: { enabled: true, createdBy: record.requestedBy }, clear: ["disabledReason"],
+      trigger, patch: { enabled: true, createdBy: record.requestedBy }, clear: ["disabledReason", "pendingApprovalId"],
       extra: targetEventItem(routeDeps, record.orgId, trigger.target, "trigger_enabled", { triggerId: trigger.triggerId, by }),
     });
   } catch (error) {

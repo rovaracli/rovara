@@ -106,7 +106,9 @@ describe("I-3 and M-3: a request to turn a trigger on dies with the state it was
     const asked = await v.chainCall(DANA, "PUT", path, { project: "web", spec: PR_OPENED });
     // A write to the trigger that the close does not see (what a repair or a recheck would do): the approval was bound to the revision it was shown.
     await v.triggers.update({ trigger: await stored(v, ID("a")), patch: { disabledReason: "waiting for someone to confirm turning it on (again)" } });
-    expect(await confirmed(v, DANA, approvalOf(asked))).toBe("CONFIG_INVALID");
+    // The decision is recorded and applying it is refused (the page says it did not go through).
+    await confirmed(v, DANA, approvalOf(asked));
+    expect((await v.approval(approvalOf(asked))).status).toBe("APPROVED_FAILED");
     expect((await stored(v, ID("a"))).enabled).toBe(false);
   });
 
@@ -115,7 +117,7 @@ describe("I-3 and M-3: a request to turn a trigger on dies with the state it was
     const asked = await v.chainCall(DANA, "PUT", path, { project: "web", spec: PR_OPENED });
     expect(await confirmed(v, DANA, approvalOf(asked))).toBe("went through");
     // The sweep tells the handler again (it did not hear the first time): the trigger has moved on since, and the handler still finishes quietly.
-    await getApprovalSubjectHandler("trigger_enable")!(v.routeDeps, await v.approval(approvalOf(asked)) as never);
+    await getApprovalSubjectHandler("trigger_enable")!(v.routeDeps, await v.approval(approvalOf(asked)));
     expect((await stored(v, ID("a"))).enabled).toBe(true);
   });
 });
