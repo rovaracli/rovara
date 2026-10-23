@@ -1308,7 +1308,7 @@ async function clearHeldStart(deps: SpendRequestDependencies, key: { pk: string;
   return true;
 }
 
-/** The refusals of a resume that no later try can change: the task's creator was removed (R60), or its owner can no longer act in the org. */
+/** The refusals a resume gives when its creator was removed (R60) or its owner can't act in the org. They are also what an unreadable access proof gives, so `creatorGone` confirms before an item is dropped. */
 const MEMBER_LEFT_CODES = new Set(["TASK_ACCESS_DENIED", "FORBIDDEN"]);
 const memberLeft = (error: unknown): boolean => MEMBER_LEFT_CODES.has(String((error as { code?: unknown } | undefined)?.code));
 
@@ -1366,7 +1366,8 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
           await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: false, firstDispatch: false });
           if (await clearHeldStart(deps, key, orgId, taskId, true)) dispatched += 1;
         } catch (error) {
-          if (memberLeft(error)) await dropMonthResume(deps, key, orgId, taskId, spendRequestId).catch(() => undefined);
+          // Dropped only when the creator is really gone (as for a plan's run-limit start): a refusal of access that could not be verified keeps the item until it expires.
+          if (memberLeft(error) && await creatorGone(deps, orgId, task)) await dropMonthResume(deps, key, orgId, taskId, spendRequestId).catch(() => undefined);
           else logLine(deps, "spend_request.month_resume_failed", { spendRequestId, taskId, error: errorName(error) });
         }
         continue;

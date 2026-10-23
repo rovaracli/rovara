@@ -686,7 +686,7 @@ describe("fix round 2 (the Task 32/33 re-check)", () => {
     expect(swept).toMatchObject({ heldStarts: 0, complete: true });
     expect(resumeItems(t)).toEqual([]);
     expect(capture.recordedBy("spend_request.resume_dropped")).toEqual([
-      expect.objectContaining({ actor: expect.objectContaining({ kind: "system" }), target: { kind: "task", id: task.taskId }, facts: { kind: "month", cause: "member_left" } }),
+      expect.objectContaining({ actor: expect.objectContaining({ kind: "system" }) as unknown, target: { kind: "task", id: task.taskId }, facts: { kind: "month", cause: "member_left" } }),
     ]);
   });
 
