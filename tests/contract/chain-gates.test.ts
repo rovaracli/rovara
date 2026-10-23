@@ -744,6 +744,42 @@ describe("the gate's rule reads what is stored and fails closed on anything that
   });
 });
 
+describe("the words of a gate, more", () => {
+  it("lets any listed person decide, not only the first", async () => {
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate(PRIYA, gated([{ kind: "members", developerIds: [VIV, CARL] }]));
+    expect((await w.decideAs(CARL, approvalId)).statusCode).toBe(200);
+  });
+
+  it("says a person nobody can name is a teammate, and a person once", async () => {
+    const { approverWords } = await gates();
+    const context = { project: "web", chainName: "Fix flow", memberNames: new Map([[CARL, "Carl"]]) };
+    expect(approverWords([{ kind: "members", developerIds: [VIV] }], context)).toBe("a teammate");
+    expect(approverWords([{ kind: "members", developerIds: [CARL] }, { kind: "members", developerIds: [CARL] }], context)).toBe("Carl");
+    expect(approverWords([{ kind: "starter" }, { kind: "starter" }], context)).toBe("the person who started this run");
+    expect(approverWords([], context)).toBe("");
+  });
+
+  it("answers someone who may not decide an approval that was already decided with who may, not with `not waiting`", async () => {
+    const w = setupGateWorld();
+    const { approvalId } = await w.runAtGate();
+    expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(200);
+    expect(await refusal(w.decideRoute(CARL, approvalId))).toEqual({ code: "FORBIDDEN", message: FORBIDDEN_TEXT });
+  });
+
+  it("opens a gate whose people can't be named: a record with no usable name makes them teammates", async () => {
+    const { openGateApproval } = await gates();
+    const w = setupGateWorld();
+    const { chain, run } = await w.runAtGate(PRIYA, gated([{ kind: "members", developerIds: [CARL] }]));
+    const version = (await w.chains.getVersion(ORG_A, chain.chainId, 1))!;
+    const gate = version.definition.steps.find((step) => step.kind === "gate")!;
+    const nameless = { ...w.deps, signInStore: { getDeveloper: async (id: string) => ({ developerId: id, displayName: 7 }) } };
+    const opened = await openGateApproval(nameless as never, w.run(run.runId)!, gate, 9);
+    expect(opened.record.owner).toEqual({ developerId: PRIYA, name: "a teammate" });
+    expect(opened.waitingText).toContain("Waiting for a teammate to approve");
+  });
+});
+
 describe("the words of a gate", () => {
   it("name a person who has no sign-in record a teammate, and show a name safely", async () => {
     const w = setupGateWorld();
