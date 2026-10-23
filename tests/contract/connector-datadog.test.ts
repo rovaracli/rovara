@@ -232,6 +232,32 @@ describe("running the tools", () => {
     expect(r.api.requests).toHaveLength(1);
   });
 
+  // Task 14-16 re-check, minor hardening: look-alikes of the three syntax characters. Datadog is not known to read them as syntax, but the guard should not rest on that.
+  const LOOKALIKES = [
+    ["U+201C left double quotation mark", "\u201C"],
+    ["U+201D right double quotation mark", "\u201D"],
+    ["U+FF02 fullwidth quotation mark", "\uFF02"],
+    ["U+FF08 fullwidth left parenthesis", "\uFF08"],
+    ["U+FF09 fullwidth right parenthesis", "\uFF09"],
+    ["U+FF3C fullwidth reverse solidus", "\uFF3C"],
+  ] as const;
+
+  for (const [label, char] of LOOKALIKES) {
+    it(`refuses ${label}, alone, inside a word, inside quotes and inside brackets, in a log or monitor search, in fixed words, making no request`, async () => {
+      for (const query of [char, `a${char}b`, `"a${char}b"`, `(a${char}b)`, `${char}) OR (x`, `x ${char}`]) expect(isContainedQuery(query), query).toBe(false);
+      const r = await resolved();
+      const connection = await r.connector.connect!({ endpoint: r.definition.endpoint, token: await tokenOf(r), tools: [...TOOLS], signal: AbortSignal.timeout(5_000) });
+      const query = `status:error ${char}x`;
+      await expect(connection.call("search_logs", { ...ROUTING, query, fromMinutesAgo: 5 }), query).rejects.toMatchObject({ name: "ToolRefusal", message: "search_logs: query is not allowed", reason: "policy_denied" });
+      await expect(connection.call("search_monitors", { ...ROUTING, query }), query).rejects.toMatchObject({ name: "ToolRefusal", message: "search_monitors: query is not allowed", reason: "policy_denied" });
+      expect(r.api.requests).toEqual([]);
+    });
+  }
+
+  it("still accepts other non-ASCII text, and the ASCII quote, bracket and backslash it always read", () => {
+    for (const query of ["message:caf\u00E9", "message:\u65E5\u672C\u8A9E", '(a OR b) AND "c (d"', "a\\(b", "\u2018single\u2019"]) expect(isContainedQuery(query), query).toBe(true);
+  });
+
   it("reads a backslash as an escape outside quotes as well as inside, as Datadog does (review C-1)", () => {
     // The two queries the review sent: `\(` and `\"` are literal characters to Datadog, so neither opens a bracket or a quote there.
     expect(isContainedQuery("x\\( ) OR * OR (x \\)")).toBe(false);

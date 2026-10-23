@@ -66,15 +66,19 @@ async function ddRequest(
   throw new NativeToolRefusal(`Datadog answered HTTP ${String(response.status)}`, "vendor_error");
 }
 
+/** Characters that look like a quote, a bracket or a backslash and are none of them. */
+const SYNTAX_LOOKALIKES = /[\u201C\u201D\uFF02\uFF08\uFF09\uFF3C]/u;
+
 /**
  * Whether a search the model wrote can sit inside a group of its own: no control characters, quotes that balance, and brackets that balance outside quotes and
  * never close more than were opened, so it cannot close the group the scope's tags are put around and add terms outside it. A backslash escapes the character
  * after it, inside quotes and outside them, because Datadog reads it that way: `\(` and `\"` are plain characters there, so counting them as a bracket or a quote
  * here would let a query close the group from inside (Task 14 review C-1). A query that ends in a backslash is refused, since it would escape the bracket the
- * scope puts after it.
+ * scope puts after it. The look-alikes of those three characters are refused outright, so the guard does not rest on Datadog ignoring them: the curly double
+ * quotes U+201C and U+201D, the fullwidth quote U+FF02, the fullwidth brackets U+FF08 and U+FF09 and the fullwidth backslash U+FF3C (Task 14-16 re-check).
  */
 export function isContainedQuery(query: string): boolean {
-  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(query)) return false;
+  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(query) || SYNTAX_LOOKALIKES.test(query)) return false;
   let inQuote = false;
   let depth = 0;
   for (let index = 0; index < query.length; index += 1) {
