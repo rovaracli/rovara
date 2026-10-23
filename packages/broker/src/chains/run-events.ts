@@ -3,11 +3,11 @@
 // (`appendRunEvent`), by the same rule. Event text is shown to people and may come from a task's failure, so it is neutralised before it is written: control,
 // invisible and direction characters become `[U+XXXX]` markers, and the text is cut.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, chainRunKey, runEventSk, type ChainRunId, type OrgId } from "@agentx/contracts";
+import { agentXError, chainRunKey, runEventSk, type ChainRunEventType, type ChainRunId, type OrgId } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, failedIndexes, type TransactItem } from "../agents/table-writes.js";
 
 /** The kinds of event a run records (the plan's list for the session view, Task 10). */
-export type RunEventType = "started" | "step_started" | "step_ended" | "branch" | "gate_waiting" | "gate_decided" | "retrying" | "paused" | "resumed" | "ended";
+export type RunEventType = ChainRunEventType;
 
 export interface RunEventInput { type: RunEventType; stepSeq?: number; text: string }
 

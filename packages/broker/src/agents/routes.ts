@@ -71,6 +71,7 @@ import type { ChainTriggerHooks } from "../chains/routes.js";
 import type { ChainStore } from "../chains/store.js";
 import type { ChainRunSpendReader } from "../spend/chain-run-spend.js";
 import type { ChainRunPorts } from "../chains/runner.js";
+import type { ChainViewPorts } from "../chains/view.js";
 import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { readTopUp } from "../spend/top-ups.js";
@@ -95,6 +96,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   chainRunBudgets?: ChainRunSpendReader;
   /** Plan 4 Task 6: what the chain runner asks of Plan 3's run start and of the people a run names. Absent: chain runs can't be started and the routes answer NOT_FOUND. */
   chainRuns?: ChainRunPorts;
+  /** Plan 4 Task 10: what the chain-run view asks of the task layer (a step task's view, its cost and open approvals). Absent: the view has no cost and a step's task can't be read. */
+  chainView?: ChainViewPorts;
   /** Where the org's plan is read (Task 28): a trial org keeps the placeholder limits (R49). Without it no org is a trial. */
   orgs?: Pick<OrgStore, "getOrg">;
   /** Whether the install is a cloud one, whose orgs start with the placeholder monthly limits (R47); the spend routes show limits accordingly. */

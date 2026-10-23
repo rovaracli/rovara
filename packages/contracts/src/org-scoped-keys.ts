@@ -502,12 +502,22 @@ export function runEventSk(seq: number): `EVENT#${string}` {
 
 /** The index item that lists a chain's runs, newest last; `createdAt` is an instant. */
 export function chainRunsByChainKey(orgId: OrgId, chainId: ChainId, createdAt: string, runId: ChainRunId): OrgKey {
-  return { pk: orgScoped(orgId, `CHAIN_RUNS#${chainId}`), sk: `${canonicalInstant(createdAt)}#${runId}` };
+  return { pk: chainRunsByChainPk(orgId, chainId), sk: `${canonicalInstant(createdAt)}#${runId}` };
+}
+
+/** The partition of a chain's run index: a list of the chain's runs queries it. */
+export function chainRunsByChainPk(orgId: OrgId, chainId: ChainId): string {
+  return orgScoped(orgId, `CHAIN_RUNS#${chainId}`);
 }
 
 /** The index item that lists a project's chain runs, newest last; `createdAt` is an instant. */
 export function chainRunsByProjectKey(orgId: OrgId, project: string, createdAt: string, runId: ChainRunId): OrgKey {
-  return { pk: orgScoped(orgId, `CHAIN_RUNS_P#${project}`), sk: `${canonicalInstant(createdAt)}#${runId}` };
+  return { pk: chainRunsByProjectPk(orgId, project), sk: `${canonicalInstant(createdAt)}#${runId}` };
+}
+
+/** The partition of a project's chain-run index: a list of the project's runs queries it. */
+export function chainRunsByProjectPk(orgId: OrgId, project: string): string {
+  return orgScoped(orgId, `CHAIN_RUNS_P#${project}`);
 }
 
 /**

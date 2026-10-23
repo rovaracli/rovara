@@ -40,6 +40,7 @@ import { withBudgetFields } from "../spend/owner-total.js";
 import { chainLessSafeChanges, type ChainLessSafeLookups } from "./less-safe.js";
 import { chainDigest, type ChainRecord, type ChainStore, type ChainVersion } from "./store.js";
 import { cancelChainRun } from "./lifecycle.js";
+import { chainRunEvents, chainRunView, chainStepTask, listChainRuns } from "./view.js";
 import { startChainRun, type ChainRunRecord } from "./runner.js";
 import { chainGraphProblems, formatChainProblem, validateChainForPublish, validatePinnedChainForOrg, type ChainProblem } from "./validate.js";
 
@@ -480,20 +481,56 @@ async function cancelRun(deps: ChainRouteDependencies, caller: AgentCaller, rawI
   return { run: runStartView(run) };
 }
 
+// ---- reading a run (Task 10)
+
+const CHAIN_RUN_READ_PATH = /^\/v1\/app\/chain-runs(?:\/([^/]+)(?:\/(events)|\/sections\/([^/]+)\/task)?)?$/;
+
+/** One query value that may appear once at most; a repeat is refused rather than read as the first. */
+function oneParam(url: URL, name: string): string | undefined {
+  const all = url.searchParams.getAll(name);
+  if (all.length > 1) throw agentXError("CONFIG_INVALID", `${name}: give it once`);
+  return all[0];
+}
+
+/**
+ * `GET /v1/app/chain-runs*` (Task 10): the list, a run's view, its events and a step's task. Nothing a query parameter, a header or a body holds changes who the caller is or
+ * what they may read: the functions read the caller's own org and rules, and the session actor Plan 5 uses is an argument they take, never a field of a request.
+ */
+async function readRuns(deps: ChainRouteDependencies, caller: AgentCaller, matched: RegExpExecArray, url: URL): Promise<Shown> {
+  const [, rawId, events, rawSeq] = matched;
+  if (rawId === undefined) {
+    return listChainRuns(deps, caller, { chain: oneParam(url, "chain"), project: oneParam(url, "project"), status: oneParam(url, "status"), cursor: oneParam(url, "cursor") });
+  }
+  if (events !== undefined) {
+    const after = oneParam(url, "after");
+    if (after !== undefined && !/^\d{1,7}$/.test(after)) throw agentXError("CONFIG_INVALID", "after: must be a whole number from 0 to 999999");
+    return chainRunEvents(deps, caller, rawId, after === undefined ? 0 : Number(after));
+  }
+  if (rawSeq !== undefined) {
+    if (!/^\d{1,4}$/.test(rawSeq)) throw agentXError("NOT_FOUND", "no chain run has that ID");
+    return chainStepTask(deps, caller, rawId, Number(rawSeq));
+  }
+  return chainRunView(deps, caller, rawId);
+}
+
 // ---- routing
 
 const CHAIN_RUN_CANCEL_PATH = /^\/v1\/app\/chain-runs\/([^/]+)\/cancel$/;
 const CHAIN_PATH = /^\/v1\/app\/chains(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
 
 /**
- * `routeChainRequest(deps, caller, request, url)`: the chain routes. A path under Plan 4's prefixes that no task has built yet (the chain runs, Task 10)
- * answers 404 `"that isn't available yet"`.
+ * `routeChainRequest(deps, caller, request, url)`: the chain routes. A path under Plan 4's prefixes that no task has built yet answers 404 `"that isn't available yet"`.
  */
 export async function routeChainRequest(deps: ChainRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   const cancelling = CHAIN_RUN_CANCEL_PATH.exec(url.pathname);
   if (cancelling !== null) {
     if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
     return cancelRun(deps, caller, cancelling[1]!, jsonBody(request));
+  }
+  const reading = CHAIN_RUN_READ_PATH.exec(url.pathname);
+  if (reading !== null) {
+    if (request.method !== "GET") throw agentXError("NOT_FOUND", "route not found");
+    return readRuns(deps, caller, reading, url);
   }
   const matched = CHAIN_PATH.exec(url.pathname);
   if (matched === null) throw agentXError("NOT_FOUND", "that isn't available yet");

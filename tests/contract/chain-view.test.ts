@@ -17,7 +17,6 @@ import {
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "../support/chain-gate-world.js";
 
 afterEach(() => disposeGateWorlds());
@@ -105,9 +104,9 @@ describe("the view of a run", () => {
     ]);
     expect(shown.sections[1]!.gate).toEqual({
       prompt: "Should Rovara Code fix this?", status: "APPROVED", approvers: "the person who started this run or a maintainer of web",
-      confirmUrl: `https://cell.example.com/v1/app/approve/${approvalId}`, decidedBy: { developerId: MAX, name: "Max" }, decidedAt: expect.any(String),
+      confirmUrl: `https://cell.example.com/v1/app/approve/${approvalId}`, decidedBy: { developerId: MAX, name: "Max" }, decidedAt: (expect.any(String) as string),
     });
-    expect(shown.sections[2]).toMatchObject({ name: "Fix it", detail: { kind: "task", taskId: "task-2", rovaraCode: true }, agent: { agentId: "rovara-code", name: "Rovara Code", version: expect.any(Number) } });
+    expect(shown.sections[2]).toMatchObject({ name: "Fix it", detail: { kind: "task", taskId: "task-2", rovaraCode: true }, agent: { agentId: "rovara-code", name: "Rovara Code", version: (expect.any(Number) as number) } });
     expect(shown.sections[0]).toMatchObject({ detail: { kind: "task", taskId: "task-1", rovaraCode: false }, report: "the report", branchTaken: { id: "fix", description: "The cause is in our code and a code change fixes it", fellBack: false } });
     expect(shown.sections[1]).not.toHaveProperty("detail");
     expect(shown.sections[0]).not.toHaveProperty("gate");
@@ -164,7 +163,7 @@ describe("the view of a run", () => {
     const run = await v.w.start(chain.chainId);
     await end(v.w, "task-1", { outcome: "failed", spentUsd: 1.25 });
     const shown = await chainRunView(v.deps, callerOf(PRIYA), run.runId);
-    expect(shown).toMatchObject({ status: "failed", cost: { spentUsd: 1.25, runLimitUsd: 30 }, failure: { reason: "step_failed", message: expect.stringContaining("Look into it") }, endedAt: expect.any(String) });
+    expect(shown).toMatchObject({ status: "failed", cost: { spentUsd: 1.25, runLimitUsd: 30 }, failure: { reason: "step_failed", message: (expect.stringContaining("Look into it") as string) }, endedAt: (expect.any(String) as string) });
     expect(shown.failure).not.toHaveProperty("seq");
     expect(ChainRunViewSchema.parse(shown)).toEqual(shown);
   });
@@ -192,7 +191,7 @@ describe("the view of a run", () => {
     const run = await v.w.start(chain.chainId);
     v.w.db.set({ pk: `DEVELOPER#${PRIYA}`, sk: "META", developerId: PRIYA, provider: "oidc", displayName: "Priya‮evil\u0007", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
     const shown = await chainRunView(v.deps, callerOf(PRIYA), run.runId);
-    expect(shown.owner.name).not.toMatch(/[‮\u0007]/u);
+    expect(shown.owner.name).not.toMatch(/[\p{Cc}\p{Cf}]/u);
   });
 });
 
@@ -314,11 +313,14 @@ describe("the chain-scoped read of a step's task", () => {
     expect((await chainRunView(v.deps, callerOf(VIV), run.runId)).sections[2]).toMatchObject({ detail: { taskId: "task-2" } });
   });
 
-  it("lets the starter, a maintainer who started, an org admin read it, and refuses a reader with no project role", async () => {
+  it("lets the starter, a maintainer with view on the chain and an org admin read it, and refuses a reader with no project role", async () => {
     const v = world();
-    const { chain, run } = await reachReview(v, MAX);
-    expect(await refused(chainStepTask(v.deps, callerOf(MAX), run.runId, 1))).toBeUndefined();
+    const { chain, run } = await reachReview(v, PRIYA);
+    expect(await refused(chainStepTask(v.deps, callerOf(PRIYA), run.runId, 1))).toBeUndefined();
     expect(await refused(chainStepTask(v.deps, callerOf(DANA), run.runId, 1))).toBeUndefined();
+    expect(await refused(chainStepTask(v.deps, callerOf(MAX), run.runId, 1))).toBe("NOT_FOUND");
+    await share(v, chain.chainId, MAX, "view");
+    expect(await refused(chainStepTask(v.deps, callerOf(MAX), run.runId, 1))).toBeUndefined();
     await share(v, chain.chainId, ARJUN, "view");
     expect(await refused(chainStepTask(v.deps, callerOf(ARJUN), run.runId, 1))).toBe("NOT_FOUND");
   });
@@ -366,7 +368,7 @@ describe("the chain-scoped read of a step's task", () => {
 
 describe("the routes", () => {
   const call = (v: ViewWorld, who: string, path: string, init: { method?: string; headers?: Record<string, string>; body?: unknown } = {}, caller = callerOf(who)) =>
-    routeChainRequest(v.deps, caller, { method: init.method ?? "GET", path: path.split("?")[0]!, requestId: "r", headers: init.headers ?? {}, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) } as never, new URL(`https://cell.example.com${path}`));
+    routeChainRequest(v.deps, caller, { method: init.method ?? "GET", path: path.split("?")[0]!, requestId: "r", headers: init.headers ?? {}, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) }, new URL(`https://cell.example.com${path}`));
 
   it("serves the view, the events, a step's task and the list, each parsing with its schema", async () => {
     const v = world();
@@ -452,7 +454,7 @@ describe("the routes", () => {
     }
     const first = (await call(v, PRIYA, `/v1/app/chain-runs?chain=${chain.chainId}`)) as { runs: Array<{ sessionId: string }>; next?: string };
     expect(first.runs).toHaveLength(50);
-    expect(first.next).toEqual(expect.any(String));
+    expect(first.next).toEqual((expect.any(String) as string));
     const second = (await call(v, PRIYA, `/v1/app/chain-runs?chain=${chain.chainId}&cursor=${encodeURIComponent(first.next!)}`)) as { runs: Array<{ sessionId: string }>; next?: string };
     expect(second).not.toHaveProperty("next");
     const all = [...first.runs, ...second.runs].map((entry) => entry.sessionId);
@@ -534,7 +536,7 @@ describe("the seams Plan 5's sessions read a chain through", () => {
     expect(await chainSessionSource(v.deps).read(ORG_A, run.runId)).toMatchObject({ status: "paused", stepTaskId: "task-1" });
     await end(v.w, "task-1", { outcome: "failed", spentUsd: 0.75 });
     const failed = await chainSessionSource(v.deps).read(ORG_A, run.runId);
-    expect(Plan5ChainFactsSchema.parse(failed)).toMatchObject({ status: "failed", spentUsd: 0.75, endedAt: expect.any(String) });
+    expect(Plan5ChainFactsSchema.parse(failed)).toMatchObject({ status: "failed", spentUsd: 0.75, endedAt: (expect.any(String) as string) });
     expect(failed).not.toHaveProperty("stepTaskId");
   });
 
@@ -582,7 +584,7 @@ describe("the seams Plan 5's sessions read a chain through", () => {
     expect(source.targetOf({ pk: `ORG#${ORG_A}#CHAIN#${chain.chainId}`, sk: "META", orgId: ORG_A })).toBeUndefined();
     expect(source.targetOf({ pk: `ORG#${ORG_A}#CHAIN_RUN#nope`, sk: "META", orgId: ORG_A })).toBeUndefined();
     expect(source.targetOf({ pk: "OPEN_CHAIN_RUNS", sk: "x", orgId: ORG_A })).toBeUndefined();
-    expect(source.targetOf({ pk: 7, sk: "META" } as never)).toBeUndefined();
+    expect(source.targetOf({ pk: 7, sk: "META" })).toBeUndefined();
   });
 
   it("answers Plan 5's read check: the readers of a run are in, the others are out, an unreadable run is out", async () => {

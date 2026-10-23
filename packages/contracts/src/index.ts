@@ -96,3 +96,4 @@ export * from "./default-allow-domains.js";
 export * from "./egress.js";
 export * from "./refusal-words.js";
 export * from "./chains.js";
+export * from "./chain-session.js";

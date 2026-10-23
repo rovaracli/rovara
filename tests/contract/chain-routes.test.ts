@@ -279,7 +279,9 @@ describe("who can see and change a chain", () => {
     expect((await call(OMAR, "GET", `/v1/app/chains/${chainId}/draft`)).status).toBe(404);
     expect((await call(MAYA, "GET", "/v1/app/chains/not-a-chain")).status).toBe(404);
     expect((await call(MAYA, "GET", "/v1/app/chains/chn_zzzzzzzzzzzzzzzzzzzz")).status).toBe(404);
-    expect((await call(MAYA, "GET", "/v1/app/chain-runs")).status).toBe(404);
+    // The run list (Task 10) needs a chain or a project to list.
+    expect(errorOf(await call(MAYA, "GET", "/v1/app/chain-runs"))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await call(MAYA, "GET", "/v1/app/chain-runs/not-a-run")).status).toBe(404);
 
     const shared = await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: EVE.developerId }, level: "view" }] });
     expect(shared.status, JSON.stringify(shared.body)).toBe(200);

@@ -119,6 +119,7 @@ import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { isChainRoute, routeChainRequest } from "../chains/routes.js";
 import { chainRunPortsFor } from "../chains/runner.js";
+import { chainViewPortsFor } from "../chains/view-ports.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
@@ -1565,7 +1566,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     // The chain runner starts each step through Plan 3's run start, which this API holds (the task start); a test may bring its own.
     const starter = deps.agents.chainRuns === undefined ? agentRunStarterOf(deps) : undefined;
     const admission = deps.modelAccess === undefined ? undefined : { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: deps.now, cloud: deps.cloud === true };
-    return routeChainRequest({ ...deps.agents, chains: deps.agents.chains, ...(starter === undefined ? {} : { chainRuns: chainRunPortsFor(starter, admission) }) }, caller, request, url);
+    const agentDeps = deps.agents;
+    const chainView = agentDeps.chainView ?? chainViewPortsFor({
+      approvals: agentDeps, keySpend: deps.modelAccess === undefined ? undefined : (keyIds) => deps.modelAccess!.keySpend(keyIds), confirmOrigin: agentDeps.confirmOrigin,
+      taskView: (task) => taskView(developerTaskRouteDependencies(deps, caller), task, { events: 20, details: true, actor: "viewer" }),
+    });
+    return routeChainRequest({ ...agentDeps, chains: deps.agents.chains, chainView, ...(starter === undefined ? {} : { chainRuns: chainRunPortsFor(starter, admission) }) }, caller, request, url);
   }
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);

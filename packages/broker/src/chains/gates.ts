@@ -150,7 +150,7 @@ export function approverWords(rules: readonly ApproverRule[], context: ApproverW
 }
 
 /** A person's name as the sign-in store holds it, made safe to show; a missing or unreadable record is a teammate. */
-async function displayNameOf(deps: Deps, developerId: string): Promise<string> {
+export async function displayNameOf(deps: Deps, developerId: string): Promise<string> {
   try {
     const record = await deps.signInStore.getDeveloper(developerId) as { displayName?: unknown } | undefined;
     const name = typeof record?.displayName === "string" ? shownText(record.displayName, NAME_MAX) : "";
@@ -160,7 +160,7 @@ async function displayNameOf(deps: Deps, developerId: string): Promise<string> {
   }
 }
 
-async function wordsFor(deps: Deps, run: Pick<ChainRunRecord, "project" | "chainName">, gate: GateStep): Promise<string> {
+export async function wordsFor(deps: Deps, run: Pick<ChainRunRecord, "project" | "chainName">, gate: GateStep): Promise<string> {
   const memberNames = new Map<string, string>();
   for (const rule of gate.approvers) {
     if (rule.kind === "members") for (const id of rule.developerIds) memberNames.set(id, await displayNameOf(deps, id));
