@@ -1166,6 +1166,12 @@ describe("the notes, at the edges", () => {
     expect(late).toEqual({ outcome: "captured", receivedAt: new Date(T0 + 60_001).toISOString() });
   });
 
+  it("stamps a note one millisecond after a mark that equals the moment it is saved (the mark must be strictly before it)", async () => {
+    const f = steerWorld();
+    f.w.db.set({ ...f.task(), threadNotesFedThrough: new Date(T0).toISOString() });
+    expect(await recordSessionNote(deps(f), input(f))).toEqual({ outcome: "captured", receivedAt: new Date(T0 + 1).toISOString() });
+  });
+
   it("refuses a message for a task that is not there, as closed", async () => {
     const f = steerWorld();
     f.w.db.delete(taskKey(f.made.taskId));
