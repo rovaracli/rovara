@@ -1,6 +1,6 @@
 // Plan 4 Task 18 (Review Focus 8): a target changes after its trigger was saved. A publish, a rollback, a budget change, an archive, a roster change or a guardrail change that takes
 // away what a trigger needs turns the trigger off, tells its owners and leaves the change itself made; a change that takes nothing away leaves every trigger as it was.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 // The package the broker imports, not its source: the test changes the very table the broker reads.
 import { BUILTIN_TRIGGER_SUGGESTIONS } from "@agentx/contracts";
 import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
@@ -269,5 +269,66 @@ describe("what a trigger's owner must be", () => {
     expect((await triggerProblems(v.routeDeps, stranger))[0]).toMatchObject({ path: "createdBy", message: expect.stringContaining("no longer a member") as string });
     const contributor = await v.seed({ ...base, createdBy: PRIYA });
     expect(await triggerProblems(v.routeDeps, contributor)).toEqual([]);
+  });
+});
+
+describe("a change that waits for a person turns triggers off when it is confirmed, not before", () => {
+  const SCHEDULE = TriggerSpecSchema.parse({ kind: "schedule", schedule: { kind: "interval", minutes: 60 }, timezone: "UTC" });
+  const scheduleOverlay = (draft: { overlay: Record<string, unknown> }) => ({ ...draft.overlay, triggers: [{ kind: "person" }, SCHEDULE] });
+  const draftOf = async (v: TriggerWorld, base: string) => (await v.agentCall(DANA, "GET", `${base}/draft`)).body["draft"] as { revision: number; overlay: Record<string, unknown> };
+
+  it("does it for a publish that turns on a schedule and drops the event kind", async () => {
+    const v = setupTriggerWorld();
+    const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, ISSUE], { budgetUsd: 20 });
+    const trigger = await v.seed({ target: { kind: "agent", agentId: agent.agentId }, createdBy: DANA, spec: TriggerSpecSchema.parse(ISSUE) as never });
+    const base = `/v1/app/agents/${agent.agentId}`;
+    const draft = await draftOf(v, base);
+    await v.agentCall(DANA, "PUT", `${base}/draft`, { expectedRevision: draft.revision, overlay: scheduleOverlay(draft) });
+    const waiting = await v.agentCall(DANA, "POST", `${base}/publish`, { expectedRevision: draft.revision + 1 });
+    expect(waiting.status, JSON.stringify(waiting.body)).toBe(202);
+    expect((await stored(v, trigger.triggerId)).enabled).toBe(true);
+    await v.decideAs(DANA, confirmId(waiting.body["confirmUrl"]));
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false });
+  });
+
+  it("does it for a rollback that turns on a schedule and drops the event kind", async () => {
+    const v = setupTriggerWorld();
+    const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, SCHEDULE as never], { budgetUsd: 20 });
+    const base = `/v1/app/agents/${agent.agentId}`;
+    // The second version is published straight to the store: a version that turns on a new way to start the agent would wait for a person itself.
+    const draft = await draftOf(v, base);
+    await v.agents.saveDraft({ orgId: ORG_A, agentId: agent.agentId, overlay: { ...draft.overlay, triggers: [{ kind: "person" }, ISSUE] } as never, expectedRevision: draft.revision, by: DANA });
+    await v.agents.publish({ orgId: ORG_A, agentId: agent.agentId, expectedDraftRevision: draft.revision + 1, digest: "e".repeat(64), by: DANA });
+    const trigger = await v.seed({ target: { kind: "agent", agentId: agent.agentId }, createdBy: DANA, spec: TriggerSpecSchema.parse(ISSUE) as never });
+    const waiting = await v.agentCall(DANA, "POST", `${base}/rollback`, { version: 1 });
+    expect(waiting.status, JSON.stringify(waiting.body)).toBe(202);
+    expect((await stored(v, trigger.triggerId)).enabled).toBe(true);
+    await v.decideAs(DANA, confirmId(waiting.body["confirmUrl"]));
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false });
+  });
+
+  it("does it for a change to the company's guardrails that turns a built-in off and relaxes another limit", async () => {
+    const v = setupTriggerWorld();
+    await v.builtinBudget("code-reviewer");
+    const trigger = await v.seed({ target: { kind: "agent", agentId: "code-reviewer" }, createdBy: DANA, spec: TriggerSpecSchema.parse(PR) as never });
+    const current = (await v.agentCall(DANA, "GET", "/v1/app/org/agent-guardrails")).body as { revision: number; guardrails: { maxAgentMonthlyUsd: number } };
+    const waiting = await v.agentCall(DANA, "PUT", "/v1/app/org/agent-guardrails", {
+      expectedRevision: current.revision, guardrails: { ...current.guardrails, maxAgentMonthlyUsd: current.guardrails.maxAgentMonthlyUsd + 100, disabledBuiltins: ["code-reviewer"] },
+    });
+    expect(waiting.status, JSON.stringify(waiting.body)).toBe(202);
+    expect((await stored(v, trigger.triggerId)).enabled).toBe(true);
+    await v.decideAs(DANA, confirmId(waiting.body["confirmUrl"]));
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false });
+  });
+
+  it("looks at a built-in's triggers again when its version is adopted, and for a custom agent's roster, publish and rollback", async () => {
+    const v = setupTriggerWorld();
+    const seen: string[] = [];
+    const hooks = v.routeDeps.triggerHooks!;
+    const spy = vi.spyOn(hooks, "recheckTriggersForTarget").mockImplementation(async (_org, target) => { seen.push(target.kind === "agent" ? target.agentId : target.chainId); return []; });
+    const adopted = await v.agentCall(DANA, "POST", "/v1/app/agents/code-reviewer/adopt", { version: 1 });
+    expect(adopted.status, JSON.stringify(adopted.body)).toBe(200);
+    expect(seen).toEqual(["code-reviewer"]);
+    spy.mockRestore();
   });
 });
