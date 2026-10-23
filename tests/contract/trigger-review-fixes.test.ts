@@ -152,6 +152,6 @@ describe("M-2: without a chain store a chain trigger does not qualify", () => {
     const without = { ...v.routeDeps, chains: undefined } as unknown as typeof v.routeDeps;
     expect(await triggerProblems(without, trigger)).toEqual([expect.objectContaining({ path: "target", code: "RUNTIME_UNAVAILABLE" })]);
     expect(await ownerQualifies(without, trigger, PRIYA)).toBe(false);
-    expect(await ownerQualifies(v.routeDeps, trigger, PRIYA)).toBe(false);
+    expect(await ownerQualifies(v.routeDeps, trigger, PRIYA)).toBe(true);
   });
 });

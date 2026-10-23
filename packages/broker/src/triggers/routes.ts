@@ -77,10 +77,21 @@ export function specDigestOf(trigger: Pick<TriggerRecord, "target" | "project" |
   return createHash("sha256").update(canonicalJson({ target: trigger.target, project: trigger.project, spec: trigger.spec, hookId: trigger.hookId ?? null, maxRunsPerHour: trigger.maxRunsPerHour }), "utf8").digest("hex");
 }
 
+/** Every id the project's switch derives starts with this, and no id a person puts a trigger under may (the ids are guessable, so the marker is what keeps them the switch's own). */
+const BUILTIN_ID_MARKER = "bi0";
+const ID_PREFIX = "ctr_";
+
+/** Whether `triggerId` is of the kind the project's switch derives. */
+export const isBuiltinTriggerId = (triggerId: string): boolean => triggerId.startsWith(`${ID_PREFIX}${BUILTIN_ID_MARKER}`);
+
 /** The id of the trigger a project's switch for a built-in's suggestion keeps: the same on every call, so turning the row on twice is one trigger. */
 export function builtinTriggerIdFor(orgId: OrgId, project: string, agentId: string, index: number): string {
-  return newPrefixedId("ctr", () => createHash("sha256").update(`builtin-trigger|${orgId}|${project}|${agentId}|${String(index)}`, "utf8").digest());
+  const derived = newPrefixedId("ctr", () => createHash("sha256").update(`builtin-trigger|${orgId}|${project}|${agentId}|${String(index)}`, "utf8").digest());
+  return `${ID_PREFIX}${BUILTIN_ID_MARKER}${derived.slice(ID_PREFIX.length + BUILTIN_ID_MARKER.length)}`;
 }
+
+/** Whether a stored record is the one the switch keeps for this built-in on this project (and not another trigger that sits under its id). */
+const isRowOf = (trigger: TriggerRecord, project: string, agentId: AgentId): boolean => trigger.target.kind === "agent" && trigger.target.agentId === agentId && trigger.project === project;
 
 const targetKeyOf = (target: TriggerTarget): string => (target.kind === "chain" ? `chain/${target.chainId}` : `agent/${target.agentId}`);
 
@@ -290,6 +301,8 @@ async function activityOf(deps: Deps, caller: AgentCaller, target: TriggerTarget
 async function putTrigger(deps: Deps, caller: AgentCaller, target: TriggerTarget, rawId: string, body: unknown): Promise<StatusReply> {
   const triggerId = TriggerIdSchema.safeParse(rawId);
   if (!triggerId.success) throw notFound();
+  // The ids of the project's built-in switch are the switch's: a trigger put under one would be taken for a built-in's and moved or turned off by it.
+  if (isBuiltinTriggerId(triggerId.data)) throw agentXError("CONFIG_INVALID", "that trigger ID is kept for the project's built-in trigger switch; use another");
   const input = parseBody(PutBodySchema, body);
   const store = storeOf(deps);
   // The built-ins have one route, the project's switch (G26): a trigger on one made here would start a built-in the project never turned on.
@@ -375,7 +388,8 @@ async function builtinRows(deps: Deps, caller: AgentCaller, project: string): Pr
     if (suggestions.length === 0) continue;
     const runsVersion = await deps.store.pinnedBuiltinVersion(caller.orgId, agentId);
     for (const [index, spec] of suggestions.entries()) {
-      const trigger = await store.get(caller.orgId, builtinTriggerIdFor(caller.orgId, project, agentId, index));
+      const found = await store.get(caller.orgId, builtinTriggerIdFor(caller.orgId, project, agentId, index));
+      const trigger = found !== undefined && isRowOf(found, project, agentId) ? found : undefined;
       rows.push({
         agentId, index, spec: trigger?.spec ?? spec, enabled: trigger?.enabled === true, ...(trigger === undefined ? {} : { triggerId: trigger.triggerId }),
         needsHook: spec.kind === "event" && spec.source !== "github", runsVersion,
@@ -413,6 +427,7 @@ async function putBuiltin(deps: Deps, caller: AgentCaller, project: string, rawA
   if (!agentId.success || suggestion === undefined) throw agentXError("NOT_FOUND", "no built-in trigger has that name");
   const triggerId = builtinTriggerIdFor(caller.orgId, project, agentId.data, index);
   const existing = await store.get(caller.orgId, triggerId);
+  if (existing !== undefined && !isRowOf(existing, project, agentId.data)) throw agentXError("CONFIG_INVALID", "that trigger ID is taken by another trigger, so this built-in's trigger can't be set here");
   const spec = specFromSuggestion(suggestion, input);
   // Nothing is on and nothing was asked to be: there is nothing to store, and asking again is no different.
   if (existing === undefined && !input.enabled) return new StatusReply(200, { trigger: null });
