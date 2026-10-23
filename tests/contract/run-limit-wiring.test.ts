@@ -7,6 +7,8 @@ import { decideSpendRequest, escalateOwnerRequests, getSpendRequest } from "../.
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
+import { agentXError, orgMemberKey, orgRemovedKey } from "@agentx/contracts";
+import { createSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { AgentRunStateSchema } from "../../packages/contracts/src/agent-run.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { ADA, BEN, DEB, PREPARED, TRIAGE, setup, type World } from "../support/spend-world.js";
@@ -24,7 +26,7 @@ function seedHistory(w: World): void {
 }
 
 /** Maya's Quick workflow task, planned and approved by Maya (a member): blocked on its $20 run limit. */
-async function blockedPlan() {
+async function blockedPlan(before?: (w: World, taskId: string) => Promise<void>) {
   const w = await setup();
   seedHistory(w);
   const started = await w.api(MAYA, "POST", "/v1/dev/tasks", { project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
@@ -35,6 +37,7 @@ async function blockedPlan() {
   await w.finish(workspaceId, String(w.operations(workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
   await w.artifact(workspaceId, planningOperation(), "plan.md", planAnswer(planDocument()));
   await w.finish(workspaceId, planningOperation(), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+  if (before !== undefined) await before(w, taskId);
   const workflow = w.meta(taskId).workflow as unknown as { revision: number; artifacts: Array<{ sha256: string }> };
   const approved = await w.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
     requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256,
@@ -198,5 +201,112 @@ describe("the org's only owner or admin, who started a run and is not its payer 
     expect(request.approverIds).toEqual([DEB.developerId]);
     await expect(w.decide(ADA, request.spendRequestId)).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect((await w.decide(DEB, request.spendRequestId)).spendRequest).toMatchObject({ status: "APPROVED" });
+  });
+});
+
+// The merge review's fixes (I-1, M-1, M-2, M-4, M-5).
+describe("an approved run limit's start, kept until it is made or can never be", () => {
+  /** Deps whose resume fails the way `systemTaskAccess` does when the task-people proof could not be read. */
+  const unverified = (w: World) => {
+    const deps = w.deps();
+    return { ...deps, spendRequests: { ...deps.spendRequests!, resumeTask: async () => { throw agentXError("TASK_ACCESS_DENIED", "task access could not be verified"); } } };
+  };
+  const heldItems = (w: World) => w.db.find((item) => item.entityType === "SPEND_HELD_START");
+  /** A blocked plan whose approval committed but whose start failed: the held item is left. */
+  async function approvedButNotStarted() {
+    const planned = await blockedPlan();
+    const id = planned.requestsOfTask()[0]!.spendRequestId;
+    await decideSpendRequest(unverified(planned.w), planned.w.caller(BEN), id, { requestId: randomUUID(), decision: "APPROVE" });
+    expect(heldItems(planned.w)).toHaveLength(1);
+    expect(planned.implementations()).toEqual([]);
+    return planned;
+  }
+
+  it("I-1: a task-access proof that could not be read keeps the item, and coding starts on a later pass", async () => {
+    const { w, taskId, implementations } = await approvedButNotStarted();
+    expect(await escalateOwnerRequests(unverified(w), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+    expect(heldItems(w)).toHaveLength(1);
+    expect(implementations()).toEqual([]);
+    expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 1 });
+    expect(implementations()).toHaveLength(1);
+    expect(w.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+    expect(heldItems(w)).toEqual([]);
+  });
+
+  it("I-1: a creator who was really removed drops the item, and nothing starts", async () => {
+    const { w, implementations } = await approvedButNotStarted();
+    expect(w.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toBeDefined();
+    w.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+    w.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: MAYA.developerId, removedAt: new Date().toISOString() });
+    expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+    expect(heldItems(w)).toEqual([]);
+    expect(implementations()).toEqual([]);
+  });
+
+  it("M-4: a closed task drops the item and nothing starts", async () => {
+    const { w, taskId, implementations } = await approvedButNotStarted();
+    await w.set(taskId, "SET closedAt = :at", { ":at": new Date().toISOString() });
+    expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+    expect(heldItems(w)).toEqual([]);
+    expect(implementations()).toEqual([]);
+  });
+
+  it("M-4 and M-5: a task whose workspace is closed (cancelled) answers STALE: the item is dropped, nothing starts, and no start is counted", async () => {
+    const { w, workspaceId, implementations } = await approvedButNotStarted();
+    w.db.set({ ...w.db.get(`WORKSPACE#${workspaceId}`, "META")!, status: "CLOSED", closedAt: new Date().toISOString() });
+    expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+    expect(heldItems(w)).toEqual([]);
+    expect(implementations()).toEqual([]);
+  });
+
+  it("M-5: a plan that is no longer blocked on its run limit is not counted as a start", async () => {
+    const { w, taskId, implementations } = await approvedButNotStarted();
+    const meta = w.meta(taskId);
+    const { blockReason: _blockReason, ...rest } = meta.workflow as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the block is what goes away
+    w.db.set({ ...meta, workflow: { ...rest, state: "RUNNING" } });
+    expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+    expect(heldItems(w)).toEqual([]);
+    expect(implementations()).toEqual([]);
+  });
+
+  it("M-4: the approval and the settlement run racing start coding once", async () => {
+    const { w, taskId, implementations, requestsOfTask } = await blockedPlan();
+    const real = w.deps();
+    const racing = { ...real, spendRequests: { ...real.spendRequests!, resumeTask: async (input: Parameters<NonNullable<typeof real.spendRequests>["resumeTask"]>[0]) => {
+      // The approval's own start has not run yet; the settlement run finds the held item first.
+      expect(await escalateOwnerRequests(w.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 1 });
+      return real.spendRequests!.resumeTask(input);
+    } } };
+    await decideSpendRequest(racing, w.caller(BEN), requestsOfTask()[0]!.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" });
+    expect(implementations()).toHaveLength(1);
+    expect(w.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+    expect(heldItems(w)).toEqual([]);
+  });
+
+  it("M-1: an open run_limit request that resumes nothing is not the plan's request: the plan gets its own, and approving it starts coding", async () => {
+    const { w, taskId, implementations, requestsOfTask } = await blockedPlan(async (world, id) => {
+      await createSpendRequest(world.deps(), {
+        orgId: TEST_ORG, kind: "run_limit", scope: { kind: "task", taskId: id }, taskId: id, amountUsd: 5, newLimitUsd: 12, reason: "More for this run.",
+        requestedBy: { kind: "system" }, resume: "continue",
+      });
+    });
+    const open = requestsOfTask();
+    expect(open.map((record) => record.resume).sort()).toEqual(["continue", "implement"]);
+    const plans = open.find((record) => record.resume === "implement")!;
+    expect(plans).toMatchObject({ status: "PENDING", newLimitUsd: 20 });
+    expect((await w.decide(BEN, plans.spendRequestId)).spendRequest).toMatchObject({ status: "APPROVED" });
+    expect(implementations()).toHaveLength(1);
+    expect(w.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+  });
+
+  it("M-2: approving a plan's request after the plan moved on does not rewrite the run's limit or window", async () => {
+    const { w, taskId, implementations, requestsOfTask } = await blockedPlan();
+    const meta = w.meta(taskId);
+    const { blockReason: _blockReason, ...rest } = meta.workflow as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the block is what goes away
+    w.db.set({ ...meta, workflow: { ...rest, state: "RUNNING" }, budgetUsd: 7, budgetBaselineUsd: 3 });
+    expect((await w.decide(BEN, requestsOfTask()[0]!.spendRequestId)).spendRequest).toMatchObject({ status: "APPROVED" });
+    expect(w.meta(taskId)).toMatchObject({ budgetUsd: 7, budgetBaselineUsd: 3, workflow: { state: "RUNNING" } });
+    expect(implementations()).toEqual([]);
+    expect(heldItems(w)).toEqual([]);
   });
 });
