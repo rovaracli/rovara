@@ -103,7 +103,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - run: npm run build:web
       - run: npm run infra:synth
+      - name: Web builds are reproducible
+        run: |
+          cp -R packages/web/dist "$RUNNER_TEMP/web-first"
+          npm run build:web
+          diff -r "$RUNNER_TEMP/web-first" packages/web/dist
       - name: Release builds are reproducible
         run: |
           npm run release:build -- --version 0.0.0-ci --out "$RUNNER_TEMP/release-a"

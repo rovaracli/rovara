@@ -319,6 +319,11 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "ANY /v1/app/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /review/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /s/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      "ANY /v1/web/{proxy+}": { ThrottlingBurstLimit: 400, ThrottlingRateLimit: 200 },
+      "GET /app": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
+      "GET /app/": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
+      "GET /app/{proxy+}": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
+      "GET /s/{sessionId}": { ThrottlingBurstLimit: 200, ThrottlingRateLimit: 100 },
       // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post.
       "GET /v1/github/install/callback": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "POST /v1/github/install/confirm": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
@@ -331,6 +336,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(dependsOn).toContain(routeId("ANY /v1/app/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /s/{proxy+}"));
+    for (const key of ["ANY /v1/web/{proxy+}", "GET /app", "GET /app/", "GET /app/{proxy+}", "GET /s/{sessionId}"]) expect(dependsOn).toContain(routeId(key));
     expect(dependsOn).toContain(routeId("GET /v1/github/install/callback"));
     expect(dependsOn).toContain(routeId("POST /v1/github/install/confirm"));
     // The app route is served by the broker, which verifies the developer token itself: no API Gateway authorizer.

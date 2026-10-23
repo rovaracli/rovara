@@ -25,5 +25,8 @@
     {
       "path": "../ui"
     }
+  ],
+  "exclude": [
+    "src/server/**"
   ]
 }

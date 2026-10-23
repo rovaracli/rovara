@@ -45,6 +45,10 @@ export default tseslint.config(
     },
   },
   {
+    files: ["packages/web/src/server/**/*.ts"],
+    languageOptions: { parserOptions: { projectService: false, project: "./packages/web/tsconfig.server.json" } },
+  },
+  {
     files: ["packages/web/vite.config.ts"],
     languageOptions: { parserOptions: { projectService: false, project: "./packages/web/tsconfig.tools.json" } },
   },
