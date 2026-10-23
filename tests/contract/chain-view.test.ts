@@ -920,17 +920,36 @@ describe("no confirm link reaches a session viewer", () => {
     expect(JSON.stringify(viaSession)).not.toContain("/approve/");
   });
 
-  it("leaves a gate's confirm link out of the run view read as the session actor, and keeps it on the run's own route", async () => {
+  it("gives a gate's confirm link only to a reader who may decide that gate, never to the session actor", async () => {
     const v = world();
-    const { run, approvalId } = await reachReview(v);
+    const { chain, run, approvalId } = await v.w.runAtGate(PRIYA);
+    await setChainShares({ ...v.deps, store: v.w.chains }, { orgId: ORG_A, chainId: chain.chainId, shares: [CARL, MAX].map((developerId) => ({ principal: { kind: "member" as const, developerId }, level: "view" as const })), by: PRIYA });
+    const link = `https://cell.example.com/v1/app/approve/${approvalId}`;
+    const gateFor = async (who: string) => (await chainRunView(v.deps, callerOf(who), run.runId)).sections.find((section) => section.kind === "gate")!.gate!;
+    expect((await gateFor(PRIYA)).confirmUrl).toBe(link);
+    expect((await gateFor(MAX)).confirmUrl).toBe(link);
+    const outsider = await gateFor(CARL);
+    expect(outsider).toMatchObject({ status: "PENDING", prompt: "Should Rovara Code fix this?" });
+    expect(outsider).not.toHaveProperty("confirmUrl");
+    expect(JSON.stringify(await call(v, CARL, `/v1/app/chain-runs/${run.runId}`))).not.toContain("/approve/");
     const asSession = await chainSessionReads(v.deps, ORG_A).runView({ kind: "session", developerId: PRIYA }, run.runId);
-    const gate = ChainRunViewSchema.parse(asSession).sections[1]!.gate;
-    expect(gate).toMatchObject({ status: "APPROVED", prompt: "Should Rovara Code fix this?" });
-    expect(gate).not.toHaveProperty("confirmUrl");
+    expect(ChainRunViewSchema.parse(asSession).sections.find((section) => section.kind === "gate")!.gate).not.toHaveProperty("confirmUrl");
     expect(JSON.stringify(asSession)).not.toContain("/approve/");
-    const viaActorFunction = await chainRunView(v.deps, callerOf(PRIYA), run.runId, { actor: { kind: "session", developerId: PRIYA } });
-    expect(viaActorFunction.sections[1]!.gate).not.toHaveProperty("confirmUrl");
-    const own = await chainRunView(v.deps, callerOf(PRIYA), run.runId);
-    expect(own.sections[1]!.gate?.confirmUrl).toBe(`https://cell.example.com/v1/app/approve/${approvalId}`);
+    const viaActorFunction = await chainRunView(v.deps, callerOf(MAX), run.runId, { actor: { kind: "session", developerId: MAX } });
+    expect(viaActorFunction.sections.find((section) => section.kind === "gate")!.gate).not.toHaveProperty("confirmUrl");
+  });
+
+  it("neutralises an event start's title and link like any other vendor text", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const run = await eventRun(v, chain.chainId, CARL);
+    const meta = v.w.db.get(chainRunKey(ORG_A, run.runId, "META"))!;
+    const at = (url: string) => v.w.db.set({ ...meta, startedBy: { ...(meta["startedBy"] as object), title: "Refund\u202e errors\u0007\n  now", url } });
+    at("https://sentry.example.com/issues/1");
+    expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).toMatchObject({ title: "Refund errors now", url: "https://sentry.example.com/issues/1" });
+    for (const bad of ["https://sentry.example.com/issues/1?x=\u0007y", "not a link", `https://sentry.example.com/${"a".repeat(2100)}`]) {
+      at(bad);
+      expect((await chainRunView(v.deps, callerOf(CARL), run.runId)).startedBy).not.toHaveProperty("url");
+    }
   });
 });
