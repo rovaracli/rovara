@@ -2161,8 +2161,8 @@ describe("POST /v1/app/chains/{id}/runs", () => {
 function plantUnderBadId(w: ChainWorld, runId: string, badId: string) {
   const meta = w.db.get(chainRunKey(ORG_A, runId, "META"))!;
   const attempt = w.db.get(chainRunKey(ORG_A, runId, stepSk(1)))!;
-  w.db.set({ ...meta, ...chainRunKey(ORG_A, badId as never, "META"), runId: badId });
-  w.db.set({ ...attempt, ...chainRunKey(ORG_A, badId as never, stepSk(1)), runId: badId });
+  w.db.set({ ...meta, ...chainRunKey(ORG_A, badId, "META"), runId: badId });
+  w.db.set({ ...attempt, ...chainRunKey(ORG_A, badId, stepSk(1)), runId: badId });
 }
 
 describe("reads and ids the runner depends on", () => {
@@ -2210,7 +2210,7 @@ describe("reads and ids the runner depends on", () => {
         return real.send(new QueryCommand({ ...command.input, Limit: 1 } as never));
       },
     };
-    const w2 = { ...w, deps: { ...w.deps, documentClient: paged } } as ChainWorld;
+    const w2 = { ...w, deps: { ...w.deps, documentClient: paged } };
     const run = await startAs(w2, PRIYA, chain.chainId);
     await endTask(w2, "task-1", { finalReport: "one" });
     await endTask(w2, "task-2", { finalReport: "two" });
