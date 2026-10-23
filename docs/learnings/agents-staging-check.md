@@ -91,3 +91,4 @@ it continues from the stack that failed.
 | API answers | PASS | /v1/app/me and /v1/dev/whoami return 401 without a token. |
 | Task key 401/403 (R48) | NOT TESTED | Needs a signed-in task. |
 | GitHub webhook delivery | OPEN | Doctor says the latest delivery got 403. It may predate this deploy; check the App's Advanced page or redeliver. |
+- Follow-up upgrade without `--no-reserved-concurrency` (Lambda limit 1000): COMPLETE. Doctor 0 failed, 31 passed. Reserved concurrency restored: AuditExport 5, AuditAnchor 1. All six stacks complete.
