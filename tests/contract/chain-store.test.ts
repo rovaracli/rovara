@@ -1011,6 +1011,23 @@ describe("merged with Plan 3: one owner total with a version, an effective cap a
     expect(await ownerEffectiveTotal({ ...(deps as object), chains: undefined } as never, { orgId: ORG_A, owner: ALICE, month: "2026-10" })).toMatchObject({ totalUsd: 5, counterUsd: 8 });
   });
 
+  it("says \"agent and chain budgets\" when a chain's write can't settle the owner's total, and \"agent budgets\" for an agent's", async () => {
+    const ctx = setup();
+    // OLD_ALICE was merged into ALICE: a record naming the duplicate has the survivor's total rebuilt first.
+    const resolveOwner = async (_orgId: OrgId, id: string) => (id === OLD_ALICE ? ALICE : id);
+    const agents = new AgentStore({ documentClient: ctx.client, tableName: "T", now: () => ctx.clock.now, resolveOwner });
+    const chains = new ChainStore({ documentClient: ctx.client, tableName: "T", now: () => ctx.clock.now, agents });
+    const chain = await chains.create({ orgId: ORG_A, name: "Old", owner: { kind: "member", developerId: OLD_ALICE }, definition: TWO_STEPS, createdBy: ALICE });
+    const agent = await agents.create({ orgId: ORG_A, name: "Old agent", owner: { kind: "member", developerId: OLD_ALICE }, overlay: SCRATCH, createdBy: ALICE });
+    const jam = () => ctx.db.injectFault({ command: "UpdateCommand", match: (input) => JSON.stringify(input).includes("#built"), error: { name: "ConditionalCheckFailedException" }, times: 5 });
+    jam();
+    expect(await code(chains.setBudget(ORG_A, chain.chainId, 5, ALICE))).toEqual({
+      code: "CHAIN_REVISION_CONFLICT", message: "Someone else changed this person's agent and chain budgets just now. Reload and make your change again.",
+    });
+    jam();
+    expect(await code(agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: 5 }, ALICE))).toMatchObject({ code: "AGENT_REVISION_CONFLICT", message: "Someone else changed this person's agent budgets just now. Reload and make your change again." });
+  });
+
   it("lists the active chains that count for an owner", async () => {
     const ctx = setup();
     const mine = await ctx.create("Mine");

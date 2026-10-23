@@ -213,6 +213,15 @@ describe("chainRunPayer", () => {
     expect(chainRunPayer({ ...input, origin: "linear", projectPays: true })).toEqual({ kind: "project", project: "web" });
   });
 
+  it("a Linear-started run follows the payer table: a person who assigned it pays, a bot's assignment is paid by whoever approved it, else the project", async () => {
+    const { chainRunPayer } = await budget();
+    const input = { project: "web", projectPays: false, chainId: CHAIN as never, origin: "linear" as const };
+    expect(chainRunPayer({ ...input, assignedBy: { developerId: MAYA.developerId, bot: false } })).toEqual({ kind: "member", developerId: MAYA.developerId });
+    expect(chainRunPayer({ ...input, assignedBy: { bot: true }, approvedBy: { developerId: KIT } })).toEqual({ kind: "member", developerId: KIT });
+    expect(chainRunPayer({ ...input, assignedBy: { bot: true } })).toEqual({ kind: "project", project: "web" });
+    expect(chainRunPayer({ ...input, projectPays: true, assignedBy: { developerId: MAYA.developerId, bot: false } })).toEqual({ kind: "project", project: "web" });
+  });
+
   it("refuses a person's run that names nobody who started it", async () => {
     const { chainRunPayer } = await budget();
     expect(() => chainRunPayer({ project: "web", projectPays: false, chainId: CHAIN, origin: "app" })).toThrow(/needs the person who started it/);
@@ -338,9 +347,10 @@ async function chainTask(t: World, chainId: string, run = RUN) {
   await t.set(task.taskId, "SET payer = :payer, #chain = :chain, origin = :origin", { ":payer": { kind: "chain", chainId }, ":chain": { chainRunId: run, stepId: "look" }, ":origin": "chain" }, { "#chain": "chain" });
   return task;
 }
-const runLimitRequest = (taskId: string, amountUsd: number, newLimitUsd: number): SpendRequestRecord => ({
+/** A run-limit request for a task, for the run's starter (Carl by default, who owns nothing here). */
+const runLimitRequest = (taskId: string, amountUsd: number, newLimitUsd: number, starter: { developerId: string } = CARL): SpendRequestRecord => ({
   orgId: TEST_ORG, spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", kind: "run_limit", scope: { kind: "task", taskId }, taskId, amountUsd, newLimitUsd, reason: "x",
-  requestedBy: { kind: "system" }, requestedFor: { developerId: MAYA.developerId }, approverRole: "org_admin", approverIds: [], status: "PENDING", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1e9).toISOString(),
+  requestedBy: { kind: "system" }, requestedFor: { developerId: starter.developerId }, approverRole: "org_admin", approverIds: [], status: "PENDING", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1e9).toISOString(),
 });
 
 describe("who approves a chain's run limit", () => {
@@ -397,6 +407,62 @@ describe("who approves a chain's run limit", () => {
     const task = await t.runOf(agentId);
     const deps = { ...t.deps(), chainRunBudgets: reader("chn_cccccccccccccccccccc", 1) };
     expect((await spendApprovers(deps, runLimitRequest(task.taskId, 4, 40))).role).toBe("project_maintainer");
+  });
+});
+
+describe("a run-level raise is the chain owner's, whatever the payer and the amount", () => {
+  /** Ben owns the chain; Maya starts the step, and pays for it herself or the project does. Carl is who the request is for unless a test says so. */
+  async function steps(t: World, payer: "member" | "project") {
+    const chainId = await chainOf(t, BEN);
+    const task = await chainTask(t, chainId);
+    await t.set(task.taskId, "SET payer = :payer", { ":payer": payer === "member" ? { kind: "member", developerId: MAYA.developerId } : { kind: "project", project: "payments" } });
+    return { chainId, task };
+  }
+
+  it.each(["member", "project"] as const)("a %s-paid step's raise past what the run had left goes to the chain's owner at 8 and 40 dollars, and above the admin threshold to the admins", async (payer) => {
+    const t = await setupWorld();
+    const { chainId, task } = await steps(t, payer);
+    const deps = { ...t.deps(), chainRunBudgets: reader(chainId, 3) };
+    expect(await spendApprovers(deps, runLimitRequest(task.taskId, 5, 8))).toMatchObject({ role: "chain_owner", ids: [BEN.developerId] });
+    expect(await spendApprovers(deps, runLimitRequest(task.taskId, 5, 40))).toMatchObject({ role: "chain_owner", ids: [BEN.developerId] });
+    expect((await spendApprovers(deps, runLimitRequest(task.taskId, 5, 400))).role).toBe("org_admin");
+  });
+
+  it.each(["member", "project"] as const)("a %s-paid step's run-level raise without the run's seam, or with one that can't answer, goes to the admins (fail closed)", async (payer) => {
+    const t = await setupWorld();
+    const { task } = await steps(t, payer);
+    for (const seam of [undefined, { stepLimits: async () => undefined }, { stepLimits: async (): Promise<undefined> => { throw new Error("down"); } }]) {
+      const deps = { ...t.deps(), ...(seam === undefined ? {} : { chainRunBudgets: seam }) };
+      expect((await spendApprovers(deps, runLimitRequest(task.taskId, 5, 8))).role).toBe("org_admin");
+    }
+  });
+
+  it("a raise within what the run had left is Plan 3's: the payer's, whoever owns the chain", async () => {
+    const t = await setupWorld();
+    const { chainId, task } = await steps(t, "member");
+    expect(await spendApprovers({ ...t.deps(), chainRunBudgets: reader(chainId, 100) }, runLimitRequest(task.taskId, 5, 8))).toMatchObject({ role: "payer", ids: [MAYA.developerId] });
+  });
+
+  it("a payer who starts the step and owns the chain can't approve a raise past their own run's limit, and can approve one within it", async () => {
+    const t = await setupWorld();
+    const chainId = await chainOf(t, MAYA);
+    const task = await chainTask(t, chainId);
+    await t.set(task.taskId, "SET payer = :payer", { ":payer": { kind: "member", developerId: MAYA.developerId } });
+    const asked = (remaining: number) => spendApprovers({ ...t.deps(), chainRunBudgets: reader(chainId, remaining) }, runLimitRequest(task.taskId, 5, 8, MAYA));
+    expect((await asked(3)).role).toBe("org_admin");
+    expect(await asked(100)).toMatchObject({ role: "payer", ids: [MAYA.developerId] });
+  });
+
+  it("a starter does not decide their own run's raise on a chain-paid run, even as the chain's owner (Plan 3's rule: only the sole owner or admin does)", async () => {
+    const t = await setupWorld();
+    const chainId = await chainOf(t, MAYA);
+    const task = await chainTask(t, chainId);
+    const deps = { ...t.deps(), chainRunBudgets: reader(chainId, 1000) };
+    const approvers = await spendApprovers(deps, runLimitRequest(task.taskId, 4, 8, MAYA));
+    expect(approvers.role).toBe("org_admin");
+    expect(approvers.ids).not.toContain(MAYA.developerId);
+    // The same raise asked for someone else is the owner's.
+    expect(await spendApprovers(deps, runLimitRequest(task.taskId, 4, 8, CARL))).toMatchObject({ role: "chain_owner", ids: [MAYA.developerId] });
   });
 });
 
