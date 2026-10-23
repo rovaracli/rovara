@@ -1,6 +1,8 @@
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
+import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "./task-web.js";
+import { withDecideIsolation } from "../developer/confirm-page.js";
 import { authenticateWebRequest, webRouteAllowed } from "./web-auth.js";
 import { appCsrfTokenFor } from "../developer/app-csrf.js";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
@@ -2238,11 +2240,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         "AgentX developer workflows run in the project's Slack channel; this endpoint serves administration only",
       );
     } catch (error) {
+      // Confirmation and task pages remain isolated even when their adapter throws before rendering.
+      const errorPath = request.path.split("?", 1)[0]!;
+      const isolate = isDecidePagePath(errorPath) || TASK_PAGE.test(errorPath) || TASK_PEOPLE_CONFIRMATION.test(errorPath);
       if (error instanceof AgentXError) {
         // A decision that needs a person present says where to go (`confirmUrl` for a token, `signInUrl` for a browser): R66.
-        return json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        const response = json({ error: { code: error.code, message: stripCode(error.message, error.code), ...(error instanceof DecideReauthRequired ? error.details : {}) } }, request.requestId, error.statusCode);
+        return isolate ? withDecideIsolation(response) : response;
       }
-      return unexpectedErrorAnswer(error, request.requestId);
+      const response = unexpectedErrorAnswer(error, request.requestId);
+      return isolate ? withDecideIsolation(response) : response;
     }
   };
 }

@@ -18,7 +18,13 @@ export const CONFIRM_PAGE_HEADERS: Record<string, string> = {
   "referrer-policy": "same-origin",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
+  "cross-origin-opener-policy": "same-origin",
 };
+
+/** Keep every decide response in a browsing-context group isolated from the app's opener. */
+export function withDecideIsolation<T extends { headers: Record<string, string> }>(response: T): T {
+  return { ...response, headers: { ...response.headers, "cross-origin-opener-policy": "same-origin" } };
+}
 
 const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? c);

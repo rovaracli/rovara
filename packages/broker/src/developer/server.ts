@@ -1,3 +1,4 @@
+import { withDecideIsolation } from "./confirm-page.js";
 import { SessionIdSchema } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // packages/broker/src/developer/server.ts
@@ -503,7 +504,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
           return await decideFlow.callback(decide, query.get("code"), headers);
         } catch (error) {
           deps.log({ event: "signin.decide_error", error: errorName(error) });
-          return page(500, "Confirmation failed", ["Something went wrong on the Rovara server. Open the approval again from Rovara."]);
+          return withDecideIsolation(page(500, "Confirmation failed", ["Something went wrong on the Rovara server. Open the approval again from Rovara."]));
         }
       }
     }
@@ -1057,13 +1058,15 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const request = adaptHttpApiEvent(event);
     const url = new URL(request.path, "https://agentx.invalid");
     try {
-      return await route(request.method, url.pathname, url, request.body, request.headers);
+      const response = await route(request.method, url.pathname, url, request.body, request.headers);
+      return url.pathname.startsWith("/v1/auth/decide/") ? withDecideIsolation(response) : response;
     } catch (error) {
       // Only the error's name: a KMS or AWS message can carry a key ARN or other detail.
       deps.log({ event: "signin.error", path: url.pathname, error: errorName(error) });
-      return isPage(url.pathname)
+      const response = isPage(url.pathname)
         ? page(500, "Sign-in failed", ["Something went wrong on the AgentX server. Run agentx login again."])
         : oauthError(500, "server_error", "sign-in failed on the server; try again");
+      return url.pathname.startsWith("/v1/auth/decide/") ? withDecideIsolation(response) : response;
     }
   };
 }

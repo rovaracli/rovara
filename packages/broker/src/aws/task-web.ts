@@ -462,6 +462,7 @@ function confirmationPage(taskId: string, csrf: string, capabilities: { peopleRe
 function htmlResponse(statusCode: number, body: string, nonce: string): WebResponse {
   const response = safeResponse(statusCode, body, nonce);
   response.headers["content-security-policy"] = policy(nonce);
+  response.headers["cross-origin-opener-policy"] = "same-origin";
   return response;
 }
 
@@ -527,7 +528,7 @@ export function createTaskWeb(deps: TaskWebDependencies): (request: AdaptedHttpR
     if (caller === undefined) {
       const redirect = safeResponse(302, "");
       const returnTo = confirmation === null ? `/review/${taskId}/task${signInQuery(url)}` : url.pathname;
-      return { ...redirect, headers: { ...redirect.headers, "content-security-policy": policy(""), location: signInLocation(returnTo) } };
+      return { ...redirect, headers: { ...redirect.headers, "content-security-policy": policy(""), "cross-origin-opener-policy": "same-origin", location: signInLocation(returnTo) } };
     }
     try {
       if (confirmation !== null) {

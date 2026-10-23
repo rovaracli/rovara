@@ -255,6 +255,18 @@ export interface DecideRequestContext {
   authenticateBearer?: (authorization: string) => Promise<{ developerId: string; orgId: OrgId }>;
 }
 export interface DecideRequest { method: string; path: string; headers: Record<string, string | undefined>; body?: string }
+export const DECIDE_NAVIGATION_MESSAGE = "Open this approval from its link.";
+/** Fetch metadata is browser-controlled; no-metadata clients retain the existing presence rules. */
+export function requireDecideNavigation(request: DecideRequest): void {
+  if (!Object.entries(request.headers).some(([key, value]) => key.toLowerCase().startsWith("sec-fetch-") && value !== undefined)) return;
+  // RULING Q10: both JSON decision handlers use this shared guard before any ticket is minted.
+  if (request.path.endsWith("/decide")) {
+    if (["cors", "same-origin", "no-cors"].includes(request.headers["sec-fetch-mode"] ?? "")) throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
+    return;
+  }
+  if (request.headers["sec-fetch-dest"] !== "document" || request.headers["sec-fetch-mode"] !== "navigate"
+    || (request.method === "POST" && request.headers["sec-fetch-user"] !== "?1")) throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
+}
 export interface DecideAuthority {
   orgId: OrgId; developerId: string; approvalId: string;
   /**
@@ -364,6 +376,7 @@ export async function mintConfirmUrl(context: Pick<DecideRequestContext, "store"
  * - A state-changing request also needs the cell's own Origin and the session's CSRF field, and claims the session: it can decide once.
  */
 export async function requireDecideSession(context: DecideRequestContext, request: DecideRequest): Promise<DecideAuthority> {
+  requireDecideNavigation(request);
   const approvalId = approvalIdOfRequest(request.path);
   if (approvalId === undefined) throw agentXError("NOT_FOUND", "route not found");
   const authorization = request.headers.authorization;

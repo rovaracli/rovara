@@ -11,6 +11,7 @@
 //                                                        (isFreshInteractiveSignIn), resolves to the ticket's member, and writes the session.
 //
 // GitHub is never offered for a decision and never counts as fresh. Nothing here logs or stores a ticket, state, verifier or cookie value.
+import { withDecideIsolation } from "./confirm-page.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { normalizeEmail, type DeveloperSignInMethod } from "@agentx/contracts";
@@ -95,7 +96,11 @@ function hashMatches(value: string, hash: string): boolean {
   return given.length === stored.length && timingSafeEqual(given, stored);
 }
 
-export function createDecideSignIn(ctx: DecideSignInContext) {
+export function createDecideSignIn(context: DecideSignInContext) {
+  const ctx: DecideSignInContext = { ...context,
+    page: (...args) => withDecideIsolation(context.page(...args)),
+    redirect: (...args) => withDecideIsolation(context.redirect(...args)),
+  };
   const { deps } = ctx;
   const attribute = (attributes: Array<{ Name?: string; Value?: string }> | undefined, name: string) => attributes?.find((entry) => entry.Name === name)?.Value;
 

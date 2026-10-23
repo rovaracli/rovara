@@ -26,7 +26,7 @@ async function setup() {
 describe("a person's own approval navigation", () => {
  it("refuses every fetch and embedded document before exposing arguments or CSRF", async () => {
   const s = await setup();
-  for (const headers of [{ "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "same-origin", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "no-cors", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" }, { "sec-fetch-site": "same-origin" }]) {
+  for (const headers of [{ "sec-fetch-mode": "cors", "sec-fetch-dest": "document" }, { "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "same-origin", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "no-cors", "sec-fetch-dest": "empty" }, { "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" }, { "sec-fetch-site": "same-origin" }]) {
    const response = await s.page("GET", headers);
    expect(response.statusCode).toBe(403);expect(response.body).toContain("Open this approval from its link.");expect(response.body).not.toContain("secretArgumentFixture");expect(response.body).not.toContain('name="csrf"');expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
   }
@@ -69,8 +69,7 @@ describe("a person's own approval navigation", () => {
   expect(response.statusCode).toBe(404);expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
  });
  it("isolates decide sign-in error and chooser pages", async () => {
-  const h = identityHarness({ slackUsers: [], cloud: {}, decide: {} });
-  for (const path of ["/v1/auth/decide/start?ticket=invalid", "/v1/auth/decide/identify?return=invalid", `/v1/auth/decide/identify?return=${encodeURIComponent('/v1/app/approve/' + APR)}`]) {
+  for (const h of [identityHarness({ slackUsers: [], cloud: {}, decide: {} }), identityHarness({ slackUsers: [], cloud: {} })]) for (const path of ["/v1/auth/decide/start?ticket=invalid", "/v1/auth/decide/identify?return=invalid", `/v1/auth/decide/identify?return=${encodeURIComponent('/v1/app/approve/' + APR)}`]) {
    const response = await h.http(httpEvent("GET", path));expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
   }
  });
