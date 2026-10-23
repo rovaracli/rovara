@@ -497,7 +497,7 @@ describe("changing a comment", () => {
     expect(await code(deleteSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev: 1 }))).toBeUndefined();
   });
 
-  it("will not change a message to the agent once it was delivered, but may while it is queued", async () => {
+  it("will not change a message to the agent, queued or delivered", async () => {
     const f = world();
     const seed = (id: string, state: "queued" | "delivered") => {
       f.w.db.set({
@@ -512,9 +512,10 @@ describe("changing a comment", () => {
     expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued000000000", { rev: 1, text: "Use v3" }))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
     f.w.seedShare(ORG_A, f.sid, { kind: "member", developerId: ARJUN }, "use");
     expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steernotsent00000000", { rev: 1, text: "Use v3" }))).toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered000000", { rev: 1, text: "Use v3" }))).toEqual({ code: "CONFIG_INVALID", message: "The agent already has this message, so it can't be changed." });
+    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered000000", { rev: 1, text: "Use v3" }))).toEqual({ code: "CONFIG_INVALID", message: "The agent has this message, so it can't be changed." });
     expect(await code(deleteSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered000000", { rev: 1 }))).toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued000000000", { rev: 1, text: "Use v3" }))).toBeUndefined();
+    // A queued message is the agent's already (its text is held beside the task), so it can't be rewritten either (Task 11a).
+    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued000000000", { rev: 1, text: "Use v3" }))).toEqual({ code: "CONFIG_INVALID", message: "The agent has this message, so it can't be changed." });
   });
 });
 
