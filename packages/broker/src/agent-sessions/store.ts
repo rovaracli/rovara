@@ -1,6 +1,6 @@
 // The agent session store (Plan 5 Task 2): reads a session, finds the one a task belongs to, and writes events. Every key is built from
 // the org the caller checked; a session or task of another org reads as absent.
-import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentSessionRecordSchema,
   INDEX_EXPIRY_ATTRIBUTE,
@@ -97,16 +97,14 @@ export class AgentSessionStore {
     return sessionEventItem(this.table, session, event);
   }
 
-  /** Writes one event on its own. An event that is already there is "exists", not an error. */
+  /** Writes one event on its own, as one conditional put. An event that is already there is "exists", not an error. */
   async appendEvent(orgId: OrgId, sessionId: SessionId, event: SessionEvent): Promise<"appended" | "exists"> {
+    const { Put: put } = this.sessionEventItem({ orgId, sessionId }, event);
     try {
-      await this.table.documentClient.send(new TransactWriteCommand({ TransactItems: [this.sessionEventItem({ orgId, sessionId }, event)] }));
+      await this.table.documentClient.send(new PutCommand(put!));
       return "appended";
     } catch (error) {
-      if (errorName(error) === "TransactionCanceledException" || errorName(error) === "ConditionalCheckFailedException") {
-        const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
-        if (reasons === undefined || reasons.every((reason) => reason?.Code === "ConditionalCheckFailed")) return "exists";
-      }
+      if (errorName(error) === "ConditionalCheckFailedException") return "exists";
       throw error;
     }
   }

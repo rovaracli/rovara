@@ -10,6 +10,7 @@ import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { SESSION_COOKIE, escapeHtml, parseCookie, safeResponse, signInLocation, type WebResponse } from "../aws/web-session.js";
 import { randomBytes } from "node:crypto";
+import { readSessionEvents } from "./events.js";
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadDependencies } from "./read.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
 
@@ -21,7 +22,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task)?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events))?)?$/;
 const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
 
 /** The paths this module owns under `/v1/app/`. */
@@ -81,12 +82,12 @@ function queryOf(url: URL): SessionListQuery {
 
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
- * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task`. Any other path or method is `NOT_FOUND`.
+ * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`. Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();
-  const [, rawId, shares, rawKey, rawSeq] = matched;
+  const [, rawId, shares, rawKey, rawSeq, events] = matched;
   const read: SessionReadDependencies = deps.deciding !== undefined || deps.approvals === undefined ? deps : { ...deps, deciding: decidingOf(deps.approvals) };
   const method = request.method;
   if (rawId === undefined) {
@@ -97,6 +98,10 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   // An id that can't be a session is no session: the same answer as one that isn't there.
   if (!id.success) throw agentXError("NOT_FOUND", "session not found");
   const sessionId: SessionId = id.data;
+  if (events !== undefined) {
+    if (method !== "GET") throw notFound();
+    return readSessionEvents(read, caller, sessionId, { after: url.searchParams.get("after") ?? undefined });
+  }
   if (shares === undefined && rawSeq === undefined) {
     if (method !== "GET") throw notFound();
     return { session: await sessionView(read, caller, sessionId) };

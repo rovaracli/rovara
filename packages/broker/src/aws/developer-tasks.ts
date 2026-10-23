@@ -239,6 +239,7 @@ import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { bindingItems } from "../agent-sessions/bindings.js";
+import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
 import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
@@ -5216,7 +5217,10 @@ function truncateText(text: string, max: number): string {
 export async function recordWorkflowThreadNote(
   deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "now">,
   input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string;
-    peopleAccess?: { peopleRevision?: number; isOwner: boolean } },
+    peopleAccess?: { peopleRevision?: number; isOwner: boolean };
+    /** The person who wrote it, for the session's timeline (Plan 5 Task 6); without it the line says "Someone". */
+    actor?: { developerId: string; name: string };
+  },
 ): Promise<{ outcome: "captured" | "duplicate" | "refused" }> {
   const thread = SlackThreadSchema.parse(input.thread);
   const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
@@ -5230,12 +5234,19 @@ export async function recordWorkflowThreadNote(
   const messageTs = SlackMessageTimestampSchema.parse(input.messageTs);
   const workflowRevision = task.workflow.revision;
   let receivedAt = iso(deps);
+  // The task's session, if it has one that is really its own: the reply is told there as a `steer` event, the last item of the same transaction. Nothing
+  // about the event can fail the note: no session, an unreadable one or an event that can't be built just leaves it out.
+  const sessionRef = await sessionRefOfTask({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task);
+  let withEvent = sessionRef !== undefined;
   for (let attempt = 1; ; attempt += 1) {
     const note: WorkflowThreadNote = WorkflowThreadNoteSchema.parse({
       schemaVersion: 1, taskId: task.taskId, slackUserId, isOwner: input.peopleAccess?.isOwner ?? task.slackUserId === input.userId,
       teamId: thread.teamId, channelId: thread.channelId, threadTs: thread.threadTs, messageTs,
       eventId: input.eventId, text, truncated: text.length < trimmed.length, receivedAt, workflowRevision,
     });
+    const event = withEvent && sessionRef !== undefined
+      ? slackReplyEventItem({ tableName: deps.tableName }, sessionRef, { slackEventId: input.eventId, receivedAt: note.receivedAt, text: trimmed, actor: input.actor })
+      : undefined;
     const items: TransactItems = [
       // Position 0: the note itself; position 1: the task's count. The cancellation reasons are read by position.
       putNew(deps.tableName, { ...threadNoteKey(task.taskId, note.messageTs), entityType: "WORKFLOW_THREAD_NOTE", ...note }),
@@ -5249,6 +5260,8 @@ export async function recordWorkflowThreadNote(
         ExpressionAttributeValues: { ":one": 1, ":max": WORKFLOW_THREAD_NOTES_MAX, ":receivedAt": note.receivedAt },
       } },
       ...(input.peopleAccess === undefined ? [] : [taskAccessFence(deps.tableName, task.taskId, input.peopleAccess.peopleRevision)]),
+      // The last position, always: a cancellation there alone means the event is already recorded (Plan 5 Task 6).
+      ...(event === undefined ? [] : [event]),
     ];
     let failure: unknown;
     try {
@@ -5256,6 +5269,11 @@ export async function recordWorkflowThreadNote(
       return { outcome: "captured" };
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "TransactionCanceledException") throw error;
+      // Only the event was refused: it is there already. Save the note without it.
+      if (event !== undefined && onlyTheEventCancelled(error, items.length - 1)) {
+        withEvent = false;
+        continue;
+      }
       const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
       const code = (index: number) => Array.isArray(reasons) ? (reasons[index] as { Code?: unknown } | undefined)?.Code : undefined;
       // The same Slack message was saved already (its mention and message copies, or a retry).

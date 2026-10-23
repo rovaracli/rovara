@@ -1,6 +1,7 @@
 // Plan 5 Task 6: the session event log. An event is one conditional put at EVENT#<at>#<eventId> with a deterministic id and no counter, so a retry is the
 // same item and two writers never conflict. A transaction that holds an event puts it last: a cancellation at that position alone means "already recorded".
 // The log is read oldest first, re-reading five seconds before the cursor so an event written late is still seen. It adds no way for a run or a note to fail.
+import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
@@ -13,10 +14,13 @@ import {
   sessionEventSk,
   type SessionEvent,
 } from "../../packages/contracts/src/index.js";
+import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { appendSessionEvent, readSessionEvents } from "../../packages/broker/src/agent-sessions/events.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { ARJUN, BO, CELL, MIA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
@@ -32,12 +36,12 @@ function eventsWorld() {
   const event = (kind: string, occurrence: string, when: string, extra: Partial<SessionEvent> = {}): SessionEvent => ({
     eventId: sessionEventId(kind, occurrence), at: when, type: "status", text: `${kind} ${occurrence}`, ...extra,
   });
-  const rows = (id = sessionId) => w.db.find((item) => item.pk === agentSessionKey(ORG_A, id as never, "META").pk && String(item.sk).startsWith("EVENT#"));
+  const rows = (id = sessionId) => w.db.find((item) => item.pk === agentSessionKey(ORG_A, id, "META").pk && String(item.sk).startsWith("EVENT#"));
   const read = (who: string, after?: string, orgId = ORG_A, id = sessionId) => readSessionEvents(deps, w.caller(who, orgId), id, after === undefined ? {} : { after });
   return { w, deps, sessionId, taskId, event, rows, read };
 }
 type EventsWorld = ReturnType<typeof eventsWorld>;
-const put = async (e: EventsWorld, ...events: SessionEvent[]) => { for (const event of events) await appendSessionEvent(e.deps, ORG_A, e.sessionId as never, event); };
+const put = async (e: EventsWorld, ...events: SessionEvent[]) => { for (const event of events) await appendSessionEvent(e.deps, ORG_A, e.sessionId, event); };
 /** What a client does: reads page after page from the cursor it was given, de-duplicating by event id, until a page brings nothing new. */
 async function drain(e: EventsWorld, who = PRIYA): Promise<{ events: SessionEvent[]; pages: number }> {
   const seen = new Map<string, SessionEvent>();
@@ -93,8 +97,8 @@ describe("appending an event", () => {
 
   it("writes nothing for an event that doesn't fit the schema", async () => {
     const e = eventsWorld();
-    await expect(appendSessionEvent(e.deps, ORG_A, e.sessionId as never, { ...e.event("status", "x", AT), eventId: "not-an-id" } as never)).rejects.toThrow();
-    await expect(appendSessionEvent(e.deps, ORG_A, e.sessionId as never, { ...e.event("status", "x", AT), at: "yesterday" } as never)).rejects.toThrow();
+    await expect(appendSessionEvent(e.deps, ORG_A, e.sessionId as never, { ...e.event("status", "x", AT), eventId: "not-an-id" })).rejects.toThrow();
+    await expect(appendSessionEvent(e.deps, ORG_A, e.sessionId as never, { ...e.event("status", "x", AT), at: "yesterday" })).rejects.toThrow();
     expect(e.rows()).toHaveLength(0);
   });
 });
@@ -162,7 +166,7 @@ describe("reading events", () => {
     const e = eventsWorld();
     const other = e.w.seedSession({ owner: ARJUN });
     await put(e, e.event("status", "mine", AT));
-    await appendSessionEvent(e.deps, ORG_A, other.sessionId as never, e.event("status", "theirs", AT));
+    await appendSessionEvent(e.deps, ORG_A, other.sessionId, e.event("status", "theirs", AT));
     expect((await e.read(PRIYA)).events.map((event) => event.text)).toEqual(["status mine"]);
   });
 
@@ -186,7 +190,7 @@ describe("reading events", () => {
     expect(await code(readSessionEvents(e.deps, e.w.caller(PRIYA), "ses_99999999999999999999", {}))).toMatchObject({ code: "NOT_FOUND" });
     // Another org's events under the same session id are never read: the keys come from the caller's org.
     const mine = e.w.seedSession({ orgId: ORG_B, owner: BO });
-    await appendSessionEvent(e.deps, ORG_B, mine.sessionId as never, e.event("status", "b-only", AT));
+    await appendSessionEvent(e.deps, ORG_B, mine.sessionId, e.event("status", "b-only", AT));
     expect(await code(e.read(PRIYA, undefined, ORG_A, mine.sessionId))).toMatchObject({ code: "NOT_FOUND" });
   });
 
@@ -195,7 +199,7 @@ describe("reading events", () => {
     await put(e, e.event("status", "a", AT), e.event("status", "b", at(20_000)), e.event("status", "c", at(22_000)));
     const route = (method: string, path: string) => routeAgentSessionRequest(
       { ...e.deps, origin: CELL, taskView: async () => { throw new Error("not used"); } },
-      e.w.caller(PRIYA), { method, path: path.split("?")[0]!, headers: {}, requestId: "r" } as never, new URL(path, CELL),
+      e.w.caller(PRIYA), { method, path: path.split("?")[0]!, headers: {}, requestId: "r" }, new URL(path, CELL),
     ) as Promise<{ events: SessionEvent[]; next?: string }>;
     const first = await route("GET", `/v1/app/sessions/${e.sessionId}/events`);
     expect(SessionEventPageReaderSchema.safeParse(first).success).toBe(true);
@@ -218,13 +222,13 @@ function noteWorld(options: { sessionId?: "none" | "unreadable" | "other-task" }
   const { w, taskId, sessionId } = e;
   const { sessionId: _own, ...task } = w.db.get(taskKey(taskId))!; // eslint-disable-line @typescript-eslint/no-unused-vars -- put back below unless the test wants none
   w.db.set({ ...task, workflow: { revision: 1 }, share: { ...THREAD }, slackUserId: "U0PRIYA", ...(options.sessionId === "none" ? {} : { sessionId }) });
-  if (options.sessionId === "unreadable") w.db.set({ ...w.db.get(agentSessionKey(ORG_A, sessionId as never, "META"))!, surprise: true });
-  if (options.sessionId === "other-task") w.db.set({ ...w.db.get(agentSessionKey(ORG_A, sessionId as never, "META"))!, subject: { kind: "task", taskId: "00000000-0000-4000-8000-000000000000" } });
+  if (options.sessionId === "unreadable") w.db.set({ ...w.db.get(agentSessionKey(ORG_A, sessionId, "META"))!, surprise: true });
+  if (options.sessionId === "other-task") w.db.set({ ...w.db.get(agentSessionKey(ORG_A, sessionId, "META"))!, subject: { kind: "task", taskId: "00000000-0000-4000-8000-000000000000" } });
   const clock = { now: Date.parse(AT) };
   const transacts: Array<Array<Record<string, unknown>>> = [];
   const deps = {
     documentClient: w.db, tableName: "state", now: () => clock.now,
-    actions: { transact: async (items: Array<Record<string, unknown>>) => { transacts.push(items); await w.db.send(new TransactWriteCommand({ TransactItems: items as never })); } },
+    actions: { transact: async (items: Array<Record<string, unknown>>) => { transacts.push(items); await w.db.send(new TransactWriteCommand({ TransactItems: items })); } },
   } as never;
   const note = (extra: { messageTs?: string; eventId?: string; text?: string; actor?: { developerId: string; name: string } | null; peopleAccess?: { peopleRevision?: number; isOwner: boolean } } = {}) =>
     recordWorkflowThreadNote(deps, {
@@ -351,5 +355,27 @@ describe("a Slack thread reply on a task's session", () => {
       expect(await n.note({ actor: null })).toEqual({ outcome: "captured" });
       expect(n.rows()[0]).toMatchObject({ text: "Someone in Slack: Please keep the diff small." });
     });
+  });
+});
+
+describe("through the real broker", () => {
+  it("tells a Slack thread reply on a started task in that task's session, once, with the person's name", async () => {
+    const harness = await createDeveloperTaskBroker();
+    const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000021" };
+    const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+    // The harness has no agents set up, so the task has no session yet: it gets one as a read would give it.
+    const ownerId = String(harness.db.get(`DEVTASK#${taskId}`, "META")!.developerId);
+    const stored = { ...harness.db.get(`DEVTASK#${taskId}`, "META")!, agent: { agentId: "rovara-code", name: "Rovara Code", version: 3 }, origin: "slack", startedBy: { developerId: MAYA.developerId } };
+    harness.db.set(stored);
+    harness.db.set({ pk: `DEVELOPER#${ownerId}`, sk: "META", developerId: ownerId, provider: "slack", displayName: "Maya Chen", slackUserId: MAYA.slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    const sessionId = String(await ensureTaskSession({ documentClient: harness.db, tableName: "state", now: Date.now }, stored as never, { ownerName: "Maya Chen", title: "Add a greeting" }));
+    expect(sessionId).toMatch(/^ses_/);
+    const send = async (eventId: string) => JSON.parse((await harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId, thread, userId: MAYA.slackUserId, messageTs: "1695500002.000007", eventId, text: "Keep the old flag." })).body) as { outcome: string };
+    expect(await send("EvA")).toEqual({ outcome: "captured" });
+    expect(await send("EvB")).toEqual({ outcome: "duplicate" });
+    const events = harness.db.find((item) => String(item.sk).startsWith("EVENT#") && String(item.pk).endsWith(sessionId) && item.type === "steer");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ eventId: sessionEventId("steer", "EvA"), source: "slack", text: "Maya Chen in Slack: Keep the old flag.", actor: { kind: "member", name: "Maya Chen" } });
   });
 });

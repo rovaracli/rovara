@@ -7484,6 +7484,34 @@ export function isSlackThreadNoteEvent(event: unknown): event is SlackThreadNote
 }
 
 /**
+ * Who wrote a reply in a task's thread, for the session's timeline (Plan 5 Task 6). The id is the task's owner's when the Slack user is the owner, else the
+ * Slack caller's. The name is their developer record's display name, else the name the task's Task People list holds for their Slack id, else (the owner)
+ * the name the task keeps, else what the Slack caller is called. Never throws: the name is for the timeline only.
+ */
+async function slackReplyAuthor(
+  dependencies: AwsBrokerDependencies,
+  task: { taskId: string; developerId: string; developerName: string; slackUserId?: string | undefined },
+  slackUserId: string,
+  caller: DeveloperCaller,
+): Promise<{ developerId: string; name: string }> {
+  const owner = task.slackUserId === slackUserId;
+  const developerId = owner ? task.developerId : caller.developerId;
+  const known = (value: unknown): value is string => typeof value === "string" && value !== "";
+  try {
+    const record = await getItem<{ displayName?: unknown }>(dependencies, { pk: `DEVELOPER#${developerId}`, sk: "META" });
+    if (known(record?.displayName)) return { developerId, name: record.displayName };
+    const people = await getItem<{ people?: unknown }>(dependencies, { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" });
+    const listed = Array.isArray(people?.people)
+      ? (people.people as Array<{ slackUserId?: unknown; name?: unknown }>).find((person) => person?.slackUserId === slackUserId)
+      : undefined;
+    if (known(listed?.name)) return { developerId, name: listed.name };
+  } catch {
+    // The name is for the timeline only: what the task or the caller is called will do.
+  }
+  return { developerId, name: owner && known(task.developerName) ? task.developerName : caller.name };
+}
+
+/**
  * Gap 2: a reply anyone posted in a Slack-started task's own thread, saved as input for the task's next step.
  * Every expected answer (saved, already saved, or not saved because the thread or task no longer takes notes)
  * is a 200 with its outcome, so Slack is never asked to retry it.
@@ -7498,13 +7526,15 @@ async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks:
   const shared = await getItem<{ taskId?: string; workflowThread?: unknown; closedAt?: string }>(dependencies, sharedTaskKey(thread.data));
   if (shared === undefined || shared.taskId !== taskId || shared.workflowThread !== true || shared.closedAt !== undefined) return { outcome: "refused" };
   let access: TaskAccess;
-  try { ({ access } = await slackTaskAccess(dependencies, tasks, taskId, userId.data, "comment", true)); }
+  let actor: DeveloperCaller;
+  try { ({ access, caller: actor } = await slackTaskAccess(dependencies, tasks, taskId, userId.data, "comment", true)); }
   catch { return { outcome: "refused" }; }
   if (access.task.share?.teamId !== thread.data.teamId || access.task.share.channelId !== thread.data.channelId
     || access.task.share.threadTs !== thread.data.threadTs) return { outcome: "refused" };
   const result = await recordWorkflowThreadNote({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, now: Date.now },
     { taskId, thread: thread.data, userId: userId.data, messageTs: messageTs.data, eventId: event.eventId, text: event.text,
-      peopleAccess: { ...(access.peopleRevision === undefined ? {} : { peopleRevision: access.peopleRevision }), isOwner: access.role === "owner" } });
+      peopleAccess: { ...(access.peopleRevision === undefined ? {} : { peopleRevision: access.peopleRevision }), isOwner: access.role === "owner" },
+      actor: await slackReplyAuthor(dependencies, access.task, userId.data, actor) });
   // The PR feedback review page keeps showing the owner's own replies, as before (best effort).
   if (result.outcome === "captured") {
     const task = access.task;
