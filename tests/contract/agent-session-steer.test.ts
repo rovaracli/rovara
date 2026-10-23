@@ -128,6 +128,8 @@ describe("a message to the agent on a Rovara Code workflow task", () => {
     expect(only.some((entry) => entry.Put !== undefined && String(((entry.Put as { Item: Item }).Item).sk) === `NOTE#${message.messageId}`)).toBe(true);
     expect(only.some((entry) => JSON.stringify(entry).includes("threadNoteCount"))).toBe(true);
     expect(f.queued()).toBe(1);
+    // The count expires with the session's other items (a year on), so retention never leaves it behind.
+    expect(f.w.db.get(sessionQueuedSteersKey(ORG_A, f.sid))).toMatchObject({ orgId: ORG_A, sessionId: f.sid, indexExpiresAt: Math.floor(T0 / 1000) + 365 * 86_400 });
     expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "steer"))).toMatchObject({ count: 1 });
     expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, "session", "steer_all"))).toMatchObject({ count: 1 });
   });
@@ -706,6 +708,25 @@ describe("telling the session that a step took a message", () => {
     expect(f.queued()).toBe(0);
   });
 
+  it("leaves a message whose answer conflicts with another writer for the next look, and throws any other failure", async () => {
+    const f = steerWorld({ ended: true });
+    const at = new Date(T0).toISOString();
+    for (let n = 0; n < 2; n += 1) {
+      const messageId = `msg_${String(n).padStart(20, "0")}`;
+      f.w.db.set({ ...agentSessionKey(ORG_A, f.sid, `MESSAGE#${messageId}`), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: f.sid, messageId, kind: "steer", source: "app", author: { developerId: ARJUN, name: "Arjun" }, text: "x", createdAt: at, rev: 1, delivery: { state: "queued", at } });
+    }
+    f.w.db.set({ ...sessionQueuedSteersKey(ORG_A, f.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: f.sid, count: 2 });
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] }, times: 1 });
+    expect(await closeQueuedSteers(f.deps, f.session())).toBe(1);
+    expect(f.queued()).toBe(1);
+    expect(await closeQueuedSteers(f.deps, f.session())).toBe(1);
+    expect(f.queued()).toBe(0);
+    f.w.db.set({ ...f.w.db.get(agentSessionKey(ORG_A, f.sid, "MESSAGE#msg_00000000000000000000"))!, delivery: { state: "queued", at } });
+    f.w.db.set({ ...sessionQueuedSteersKey(ORG_A, f.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: f.sid, count: 1 });
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" }, times: 1 });
+    await expect(closeQueuedSteers(f.deps, f.session())).rejects.toMatchObject({ name: "InternalServerError" });
+  });
+
   it("closes at most 100 queued messages of an ended session at a time, and the rest on the next look", async () => {
     const f = steerWorld({ ended: true });
     const at = new Date(T0).toISOString();
@@ -1143,6 +1164,12 @@ describe("the notes, at the edges", () => {
     f.w.db.set({ ...f.task(), threadNotesFedThrough: new Date(T0 + 60_000).toISOString() });
     const late = await recordSessionNote(deps(f), input(f, { messageId: "msg_00000000000000000002" }));
     expect(late).toEqual({ outcome: "captured", receivedAt: new Date(T0 + 60_001).toISOString() });
+  });
+
+  it("refuses a message for a task that is not there, as closed", async () => {
+    const f = steerWorld();
+    f.w.db.delete(taskKey(f.made.taskId));
+    expect(await recordSessionNote(deps(f), input(f))).toEqual({ outcome: "refused", reason: "closed" });
   });
 
   it("answers `duplicate`, with the stored time, when the same message is saved by someone else at the same moment", async () => {
