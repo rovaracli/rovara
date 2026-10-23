@@ -3,6 +3,7 @@
 // binding hand-offs are tested here too: a budget pause is a pause (never a failure, never a second task, nothing released), each end is handled once whatever
 // replays, and report text is neutralised before anyone is shown it.
 import { randomUUID } from "node:crypto";
+import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { hasTaskEndHandlers, registerTaskEndHandler, registerTaskPauseHandler, onTaskEnded, onTaskPaused, type TaskEndHost } from "../../packages/broker/src/agents/task-end.js";
 import { setChainShares } from "../../packages/broker/src/chains/access.js";
@@ -2041,6 +2042,9 @@ describe("POST /v1/app/chains/{id}/runs without the runner", () => {
     delete bare["chainRuns"];
     const request = { method: "POST", body: JSON.stringify({ requestId: randomUUID(), project: "web" }), headers: {} };
     await expect(routeChainRequest(bare as never, callerOf(PRIYA), request as never, new URL(`https://x.example/v1/app/chains/${chain.chainId}/runs`))).rejects.toMatchObject({ code: "NOT_FOUND" });
+    // Not set up is the answer before the body is looked at.
+    const empty = { method: "POST", body: JSON.stringify({}), headers: {} };
+    await expect(routeChainRequest(bare as never, callerOf(PRIYA), empty as never, new URL(`https://x.example/v1/app/chains/${chain.chainId}/runs`))).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
 
@@ -2114,6 +2118,16 @@ describe("POST /v1/app/chains/{id}/runs", () => {
     expect(world.starts).toEqual([]);
   });
 
+  it("counts the input in characters, so 7,000 four-byte characters are within the 8,000 and 8,001 are not", async () => {
+    const { h, world, publishStarter } = await routeSetup(false);
+    const chain = await publishStarter();
+    const accepted = await post(h, CAROLINE, chain.chainId, { requestId: randomUUID(), project: "web", input: "\u{1F600}".repeat(7000) });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(202);
+    const refused = await post(h, CAROLINE, chain.chainId, { requestId: randomUUID(), project: "web", input: "\u{1F600}".repeat(8001) });
+    expect(refused.status).toBe(400);
+    expect(world.starts).toHaveLength(1);
+  });
+
   it("answers 404 to a person who can't see the chain, has no role on the project or is in another org, and 403 to a project viewer who can use it", async () => {
     const { h, world, routeDeps, publishStarter } = await routeSetup(false);
     const chain = await publishStarter();
@@ -2138,5 +2152,235 @@ describe("POST /v1/app/chains/{id}/runs", () => {
     expect(await onTaskEnded({ documentClient: h.db, tableName: "state", now: Date.now }, task, "succeeded", { finalReport: "Done" }, { record: true })).toBe("called");
     expect(h.db.get(chainRunKey(TEST_ORG, runId as never, "META"))).toMatchObject({ status: "succeeded" });
     expect(world.starts).toHaveLength(1);
+  });
+});
+
+// ---- what mutation testing found unpinned (the second pass)
+
+/** A copy of a run's META and first attempt under an id that is not a run's, as a stray record would be. */
+function plantUnderBadId(w: ChainWorld, runId: string, badId: string) {
+  const meta = w.db.get(chainRunKey(ORG_A, runId, "META"))!;
+  const attempt = w.db.get(chainRunKey(ORG_A, runId, stepSk(1)))!;
+  w.db.set({ ...meta, ...chainRunKey(ORG_A, badId as never, "META"), runId: badId });
+  w.db.set({ ...attempt, ...chainRunKey(ORG_A, badId as never, stepSk(1)), runId: badId });
+}
+
+describe("reads and ids the runner depends on", () => {
+  it("refuses to append an event to a run whose stored org is not the one it was asked under", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    const { appendRunEvent } = await runEvents();
+    w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, orgId: ORG_B });
+    const before = snapshot(w);
+    await expect(appendRunEvent(w.deps, ORG_A, run.runId, { type: "paused", text: "x" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(snapshot(w)).toBe(before);
+  });
+
+  it("never reads a record under an id that is not a run's, for an end, a pause or the spend seam", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    plantUnderBadId(w, run.runId, "not-a-run");
+    const { onStepTaskEnded, onStepTaskPaused, chainRunSpendReader } = await runner();
+    const stray = { chain: { chainRunId: "not-a-run", stepId: "look" } };
+    const before = snapshot(w);
+    await onStepTaskEnded(w.deps, { ...w.endEvent("task-1", { finalReport: "done" }), ...stray });
+    await onStepTaskPaused(w.deps, { ...w.pauseEvent("task-1"), ...stray });
+    expect(snapshot(w)).toBe(before);
+    expect(await chainRunSpendReader(w.deps).stepLimits(ORG_A, { chainRunId: "not-a-run", stepId: "look" })).toBeUndefined();
+  });
+
+  it("derives a person's run id from their org, themselves and the request id, the same one in every release", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    const run = await startAs(w, PRIYA, chain.chainId, { requestId: "00000000-0000-4000-8000-000000000001" });
+    expect(run.runId).toBe("crn_ppjz3vw4br7em7in1xyn");
+  });
+
+  it("reads every attempt of a run however the table pages them, and reads them consistently", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(THREE_STEPS_ALL);
+    const real = w.deps.documentClient;
+    const queries: Array<Record<string, unknown>> = [];
+    const paged = {
+      send: (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        if (command.constructor.name !== "QueryCommand") return real.send(command);
+        queries.push(command.input);
+        return real.send(new QueryCommand({ ...command.input, Limit: 1 } as never));
+      },
+    };
+    const w2 = { ...w, deps: { ...w.deps, documentClient: paged } } as ChainWorld;
+    const run = await startAs(w2, PRIYA, chain.chainId);
+    await endTask(w2, "task-1", { finalReport: "one" });
+    await endTask(w2, "task-2", { finalReport: "two" });
+    expect(w.starts).toHaveLength(3);
+    expect(w.attempts(run.runId).map((attempt) => attempt.status)).toEqual(["succeeded", "succeeded", "running"]);
+    const context = JSON.stringify(w.starts[2]!.input.context);
+    expect(context).toContain("one");
+    expect(context).toContain("two");
+    const stepReads = queries.filter((query) => (query["ExpressionAttributeValues"] as { ":prefix"?: string })[":prefix"] === "STEP#");
+    expect(stepReads.length).toBeGreaterThan(0);
+    expect(stepReads.every((query) => query["ConsistentRead"] === true)).toBe(true);
+  });
+});
+
+describe("a failure that is not a lost race is not taken for one", () => {
+  it("throws a failed write of a step's start even when the run has moved since, rather than re-reading", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    w.beforeTransaction('"step_started"', () => { w.touchRun(run.runId); throw new Error("db down"); });
+    await expect(endTask(w, "task-1", { finalReport: "one" })).rejects.toThrow("db down");
+    expect(w.starts).toHaveLength(1);
+  });
+
+  it("answers a failed start of a run as the failure it is, even if the chain was archived meanwhile", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    w.beforeTransaction('"started"', () => {
+      w.db.set({ ...w.db.get(chainKey(ORG_A, chain.chainId, "META"))!, status: "archived" });
+      throw new Error("db down");
+    });
+    await expect(startAs(w, PRIYA, chain.chainId)).rejects.toThrow("db down");
+  });
+
+  it("lets a refusal that will not pass on its own out of the first step's start, and a transient one not", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    w.beforeTransaction('"step_started"', () => { throw agentXError("CONFIG_INVALID", "the design is not valid"); });
+    expect(await fail(startAs(w, PRIYA, chain.chainId))).toMatchObject({ code: "CONFIG_INVALID" });
+    const requestId = randomUUID();
+    w.beforeTransaction('"step_started"', () => { throw new Error("db down"); });
+    const run = await startAs(w, PRIYA, chain.chainId, { requestId });
+    expect(run).toMatchObject({ status: "running", currentSeq: 0 });
+  });
+});
+
+describe("a request that comes again", () => {
+  /** A run that exists with no step at all: the process died right after the start's transaction. */
+  async function startedWithoutStep(w: ChainWorld, chainId: string, requestId: string) {
+    w.beforeTransaction("STEP#0001", () => { throw new Error("the process died"); });
+    await fail(startAs(w, PRIYA, chainId, { requestId }));
+  }
+
+  it("answers the stored run when finishing its first step fails for a reason that may pass", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    const requestId = randomUUID();
+    await startedWithoutStep(w, chain.chainId, requestId);
+    w.hooks.refuse.push(new Error("socket hang up"));
+    const again = await startAs(w, PRIYA, chain.chainId, { requestId });
+    expect(again.currentSeq).toBe(1);
+    expect(w.attempts(again.runId)).toMatchObject([{ status: "starting" }]);
+  });
+
+  it("does not move on a run that is going, however its steps stand, when the same request comes again", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const requestId = randomUUID();
+    const first = await startAs(w, PRIYA, chain.chainId, { requestId });
+    // The first step ended and nothing has moved the run on yet.
+    w.db.set({ ...w.db.get(chainRunKey(ORG_A, first.runId, stepSk(1)))!, status: "succeeded", result: { report: "one" } });
+    const again = await startAs(w, PRIYA, chain.chainId, { requestId });
+    expect(again.currentSeq).toBe(1);
+    expect(w.attempts(first.runId)).toHaveLength(1);
+    expect(w.starts).toHaveLength(1);
+  });
+});
+
+describe("what a step is handed is only what earlier steps reported", () => {
+  it("leaves out the result of a step that did not succeed, and of an attempt that is not an agent's", async () => {
+    for (const planted of [{ status: "failed" }, { kind: "gate", status: "succeeded" }]) {
+      const w = setupWorld();
+      const chain = await w.publish(THREE_STEPS_ALL);
+      const run = await startAs(w, PRIYA, chain.chainId);
+      await endTask(w, "task-1", { finalReport: "one" });
+      w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, stepSk(1)))!, ...planted, result: { report: "poison" } });
+      await endTask(w, "task-2", { finalReport: "two" });
+      const context = JSON.stringify(w.starts[2]!.input.context);
+      expect(context, JSON.stringify(planted)).toContain("two");
+      expect(context, JSON.stringify(planted)).not.toContain("poison");
+    }
+  });
+});
+
+describe("an edge to a step the design does not have", () => {
+  it("fails the run at the step it left, rather than breaking", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    const stored = w.db.find((item) => item.pk === chainKey(ORG_A, chain.chainId, "META").pk && String(item.sk).startsWith("VERSION#"))[0]!;
+    const definition = structuredClone(stored["definition"]) as { steps: Array<{ id: string; next: { to?: string } }> };
+    definition.steps.find((step) => step.id === "look")!.next.to = "ghost";
+    w.db.set({ ...stored, definition });
+    await endTask(w, "task-1", { finalReport: "one" });
+    expect(w.run(run.runId)).toMatchObject({ status: "failed", failure: { seq: 1, reason: "design_invalid", message: 'This chain has no step "ghost".' } });
+    expect(w.starts).toHaveLength(1);
+  });
+});
+
+describe("a run keeps the state a person can rely on when the next write fails", () => {
+  it("leaves a run that was paused running when its step ends and the next step's write then fails", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    const { onStepTaskPaused } = await runner();
+    await onStepTaskPaused(w.deps, w.pauseEvent("task-1"));
+    w.beforeTransaction('"step_started"', () => { throw new Error("db down"); });
+    await expect(endTask(w, "task-1", { finalReport: "one" })).rejects.toThrow("db down");
+    expect(w.run(run.runId)!.status).toBe("running");
+    expect(w.attempts(run.runId)[0]!.status).toBe("succeeded");
+  });
+
+  it("leaves a run running with its gate passed when the next step's write fails, and does not move it again for the same decision", async () => {
+    const w = setupWorld();
+    const { run } = await atGate(w);
+    const { recordGateDecision } = await runner();
+    w.beforeTransaction('"step_started"', () => { throw new Error("db down"); });
+    await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved")).rejects.toThrow("db down");
+    expect(w.run(run.runId)!.status).toBe("running");
+    expect(w.attempts(run.runId)[1]).toMatchObject({ status: "succeeded", decision: "approved" });
+    const before = snapshot(w);
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined");
+    expect(snapshot(w)).toBe(before);
+    expect(w.starts).toHaveLength(1);
+  });
+
+  it("goes on with the run when another telling of an end got its write in first and stopped there", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(TWO_STEPS);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    w.beforeTransaction('"step_ended"', () => {
+      w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, stepSk(1)))!, status: "succeeded", result: { report: "one" } });
+      w.touchRun(run.runId);
+    });
+    await endTask(w, "task-1", { finalReport: "one" });
+    expect(w.starts).toHaveLength(2);
+    expect(w.attempts(run.runId)).toHaveLength(2);
+  });
+
+  it("leaves a step that was started while its run was cancelled cancelled, even when the cancel lands as the start is recorded", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    w.beforeTransaction("task-1", () => {
+      const runId = (w.db.find((item) => item.entityType === "CHAIN_RUN")[0] as { runId: string }).runId;
+      w.db.set({ ...w.db.get(chainRunKey(ORG_A, runId, stepSk(1)))!, status: "cancelled" });
+      w.db.set({ ...w.db.get(chainRunKey(ORG_A, runId, "META"))!, status: "cancelled" });
+    });
+    const run = await startAs(w, PRIYA, chain.chainId);
+    expect(w.attempts(run.runId)[0]).toMatchObject({ status: "cancelled" });
+    expect(w.attempts(run.runId)[0]).not.toHaveProperty("taskId");
+  });
+
+  it("does not pause a run that has ended, even when its attempt still looks as if it ran", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(ONE_STEP);
+    const run = await startAs(w, PRIYA, chain.chainId);
+    w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, status: "cancelled" });
+    const { onStepTaskPaused } = await runner();
+    const before = snapshot(w);
+    await onStepTaskPaused(w.deps, w.pauseEvent("task-1"));
+    expect(snapshot(w)).toBe(before);
   });
 });
