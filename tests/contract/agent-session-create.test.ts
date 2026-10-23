@@ -441,6 +441,17 @@ describe("names a start never refuses", () => {
     }
   });
 
+  it("says someone started a run for the owner when the starter's name can't be read, and names the starter when it can", () => {
+    const build = (extra: Record<string, unknown>) => createTaskSessionItems(table, {
+      orgId: TEST_ORG, sessionId: "ses_0123456789abcdefghij", taskId: "5c2f4f0e-2d7e-4a53-9a3c-2f1d0f6f6b11", project: "payments",
+      agent: { agentId: "rovara-code", name: "Rovara Code", version: 3 }, title: "Bump", owner: { developerId: MAYA.developerId, name: "Maya Chen" },
+      startedBy: { kind: "member", developerId: KIT.developerId }, origin: "app", payer: { kind: "member", developerId: KIT.developerId }, now: "2026-10-22T09:30:00.000Z", ...extra,
+    }).map((item) => (item.Put as { Item: Item }).Item).find((item) => String(item.sk).startsWith("EVENT#"))!;
+    expect(build({})).toMatchObject({ text: "Someone started Rovara Code for Maya Chen: Bump", actor: { kind: "system" } });
+    expect(build({ startedByName: "Kit\u202E Alvarez" })).toMatchObject({ text: "Kit Alvarez started Rovara Code for Maya Chen: Bump", actor: { kind: "member", developerId: KIT.developerId, name: "Kit Alvarez" } });
+    expect(build({ startedByName: "\u202E" })).toMatchObject({ text: "Someone started Rovara Code for Maya Chen: Bump", actor: { kind: "system" } });
+  });
+
   it("keeps a ZWJ emoji in an agent's name", () => {
     const agent = "Helper \u{1F9D1}\u200D\u{1F527}";
     const made = make("Maya Chen", agent);
