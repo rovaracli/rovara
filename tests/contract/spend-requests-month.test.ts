@@ -16,6 +16,7 @@ import {
   type BudgetScope, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { agentXError } from "@agentx/contracts";
 import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
@@ -685,8 +686,45 @@ describe("fix round 2 (the Task 32/33 re-check)", () => {
     expect(swept).toMatchObject({ heldStarts: 0, complete: true });
     expect(resumeItems(t)).toEqual([]);
     expect(capture.recordedBy("spend_request.resume_dropped")).toEqual([
-      expect.objectContaining({ actor: expect.objectContaining({ kind: "system" }), target: { kind: "task", id: task.taskId }, facts: { kind: "month", cause: "member_left" } }),
+      expect.objectContaining({ actor: expect.objectContaining({ kind: "system" }) as unknown, target: { kind: "task", id: task.taskId }, facts: { kind: "month", cause: "member_left" } }),
     ]);
+  });
+
+  /** Deps whose resume is refused as `systemTaskAccess` and the owner lookup refuse when the proof or the sign-in could not be read: a code that does not say the creator left. */
+  const refusing = (t: World, code: "TASK_ACCESS_DENIED" | "FORBIDDEN") => {
+    const deps = t.deps();
+    return { ...deps, spendRequests: { ...deps.spendRequests!, resumeTask: async () => { throw agentXError(code, "task access could not be verified"); } } };
+  };
+
+  for (const code of ["TASK_ACCESS_DENIED", "FORBIDDEN"] as const) {
+    it(`a month resume refused with ${code} while its creator is still a member is kept, and goes on at a later sweep`, async () => {
+      const t = await setup();
+      const CARL_SCOPE: BudgetScope = { kind: "member", developerId: CARL.developerId };
+      const task = await t.plainTask(CARL);
+      await t.pauseAndEnd(task, CARL_SCOPE);
+      await approveWithFailingResumes(t, CARL_SCOPE);
+      expect(resumeItems(t).map((item) => item.taskId)).toEqual([task.taskId]);
+      const capture = capturingAuditDeps({ db: t.db });
+      expect(await escalateOwnerRequests({ ...refusing(t, code), audit: capture.audit }, { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+      expect(resumeItems(t).map((item) => item.taskId)).toEqual([task.taskId]);
+      expect(capture.recordedBy("spend_request.resume_dropped")).toEqual([]);
+      expect(await escalateOwnerRequests(t.deps(), { budgetMs: 5_000 })).toMatchObject({ heldStarts: 1 });
+      expect(resumeItems(t)).toEqual([]);
+    });
+  }
+
+  it("a month resume refused with TASK_ACCESS_DENIED for a creator who was really removed is dropped and audited", async () => {
+    const t = await setup();
+    const CARL_SCOPE: BudgetScope = { kind: "member", developerId: CARL.developerId };
+    const task = await t.plainTask(CARL);
+    await t.pauseAndEnd(task, CARL_SCOPE);
+    await approveWithFailingResumes(t, CARL_SCOPE);
+    await t.db.send(new DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, CARL.developerId) }));
+    t.db.set({ ...orgRemovedKey(TEST_ORG, CARL.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-21T00:00:00.000Z" });
+    const capture = capturingAuditDeps({ db: t.db });
+    expect(await escalateOwnerRequests({ ...refusing(t, "TASK_ACCESS_DENIED"), audit: capture.audit }, { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+    expect(resumeItems(t)).toEqual([]);
+    expect(capture.recordedBy("spend_request.resume_dropped")).toHaveLength(1);
   });
 
   it("Minor 1: the retries have their own small budget, so a slow list of them can't starve expiry", async () => {
