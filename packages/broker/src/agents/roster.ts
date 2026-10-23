@@ -20,8 +20,9 @@ import {
   type OrgId,
   type ProjectRole,
   type ResolvedRecipe,
+  projectArchivedMessage,
 } from "@agentx/contracts";
-import { projectArchivedMessage, readProjectMeta, requireNewWorkAllowed } from "../developer/project-roles.js";
+import { readProjectMeta, requireNewWorkAllowed } from "../developer/project-roles.js";
 import { agentAccess, listVisibleAgents, requireAgentAccess, type AgentCaller } from "./access.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { resolveRecipe, versionSafety } from "./changes.js";

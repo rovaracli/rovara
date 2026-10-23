@@ -373,7 +373,7 @@ describe("a project that cannot be changed from the app", () => {
     s.h.db.set({ ...projectMetaKey(TEST_ORG, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "x" });
     const put = await s.put(MIA, "linear", linear(id));
     expect(put.status).toBe(409);
-    expect(put.body.error).toMatchObject({ code: "PROJECT_ARCHIVED", message: "`web` is archived; restore it before changing its settings." });
+    expect(put.body.error).toMatchObject({ code: "PROJECT_ARCHIVED", message: "Project `web` is archived. Ask a project maintainer to restore it." });
     expect((await s.del(MIA, "linear")).body.error).toMatchObject({ code: "PROJECT_ARCHIVED" });
     // Reading is allowed: the connectors are as they were when it was archived.
     expect((await s.list(MIA)).status).toBe(200);

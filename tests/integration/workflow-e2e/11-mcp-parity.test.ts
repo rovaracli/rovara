@@ -149,6 +149,7 @@ function actualInviteComposition(e2e: WorkflowE2E, directory: ReturnType<typeof 
         && (!condition.developerTasksPresent || isDeepStrictEqual(definition?.developerTasks, condition.developerTasks));
     }
     if (condition.kind === "developer-grant") return row.projectName === condition.projectName && row.role === "developer";
+    if (condition.kind === "org-role") return row.developerId === condition.developerId && (row.role === "owner" || row.role === "admin");
     return row.teamId === condition.teamId && row.channelId === condition.channelId
       && row.projectName === condition.projectName && row.updatedAt === condition.updatedAt;
   };

@@ -150,6 +150,7 @@ import {
   WorkspaceClosePreflightResultSchema,
   WorkspaceInstanceSchema,
   agentXError,
+  projectNameTakenMessage,
   parseSlackThreadSubject,
   slackThreadSubject,
   slackThreadUrl,
@@ -292,6 +293,8 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPullRequestOpened } from "../audit/events.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation, slackThreadKey } from "./failed-preparation.js";
+import { closeSetupCheck } from "./setup-check-close.js";
+import { requireSameRequest } from "../org/request-records.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
 import { assertNoUntrustedRoutingFields, authorizeWorkspace } from "../authorization.js";
 import type { AgentTokenOptions, GitHubAppCredentialProvider, GitHubTokenScope } from "../github-app.js";
@@ -2651,7 +2654,7 @@ export async function registerProjectFor(
   const orgId = actor.orgId;
   const { definition, runtimeBinding, wantsPreflight, setupApproval } = parseRegistrationInput(value);
   if (options.requireNewName === true && await getItem(dependencies, orgProjectCatalogKey(orgId, definition.name)) !== undefined) {
-    throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+    throw agentXError("PROJECT_NAME_TAKEN", projectNameTakenMessage(definition.name));
   }
   let setupRuntimeAdmission: ReturnType<typeof admitProjectSetupRuntime>;
   let setupExecutionCreated = false;
@@ -2841,7 +2844,7 @@ export async function registerProjectFor(
         // the grant (if any), META, the catalog update (if any), then the setup rows.
         const metaIndex = membership === undefined ? 1 : 2;
         if (failed(0) || failed(metaIndex) || (updateCatalog && failed(metaIndex + 1))) {
-          throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+          throw agentXError("PROJECT_NAME_TAKEN", projectNameTakenMessage(definition.name));
         }
         // A transaction that only met another in flight says nothing about the name: the caller tries again.
         if (reasons?.some((reason) => reason?.Code === "TransactionConflict")) {
@@ -2853,7 +2856,7 @@ export async function registerProjectFor(
       // catalog before returning duplicate success; otherwise retry only a catalog/history advance.
       const winner = await getItem<RegisteredProjectRecord>(dependencies, key);
       if (winner !== undefined && options.requireNewName === true) {
-        throw agentXError("PROJECT_NAME_TAKEN", `a project named ${definition.name} already exists in this organization; choose another name`);
+        throw agentXError("PROJECT_NAME_TAKEN", projectNameTakenMessage(definition.name));
       }
       if (winner !== undefined) {
         if (!sameJsonContent(winner.definition, definition) || !sameJsonContent(winner.runtimeBinding, runtimeBinding)
@@ -2926,11 +2929,13 @@ async function replayedProjectCreation(
   orgId: OrgId,
   requestKey: { pk: string; sk: string },
   bodyHash: string,
+  actorId: string,
   nowMs: number,
 ): Promise<CloudProjectCreated | undefined> {
-  const recorded = await getItem<{ bodyHash?: unknown; projectName?: unknown; expiresAt?: unknown }>(dependencies, requestKey);
+  const recorded = await getItem<{ bodyHash?: unknown; projectName?: unknown; expiresAt?: unknown; by?: unknown }>(dependencies, requestKey);
   if (recorded === undefined || typeof recorded.expiresAt !== "number" || recorded.expiresAt < Math.floor(nowMs / 1000) || typeof recorded.projectName !== "string") return undefined;
-  if (recorded.bodyHash !== bodyHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this requestId was already used to create a different project");
+  // The one request-id pattern (final review M2): the record is the caller's, and says the same body. Another person of the org can neither replay it nor learn the project.
+  requireSameRequest(recorded, { by: actorId, bodyHash }, "this requestId was already used to create a different project");
   const made = await getItem<RegisteredProjectRecord>(dependencies, projectRevisionKey(orgId, recorded.projectName, 1));
   return made === undefined ? undefined : cloudProjectAnswer({ project: withoutKeys(made), duplicate: true });
 }
@@ -2949,7 +2954,7 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
   const requestKey = projectCreateRequestKey(orgId, input.requestId);
   const bodyHash = projectCreateBodyHash(input);
   const nowMs = Date.now();
-  const replayed = () => replayedProjectCreation(dependencies, orgId, requestKey, bodyHash, nowMs);
+  const replayed = () => replayedProjectCreation(dependencies, orgId, requestKey, bodyHash, caller.developerId, nowMs);
   const earlier = await replayed();
   if (earlier !== undefined) return earlier;
   const defaults = dependencies.cloudProjects;
@@ -2980,7 +2985,7 @@ async function createCloudProject(dependencies: AwsBrokerDependencies, caller: D
         extraItems: [{ Put: {
           TableName: dependencies.tableName,
           // `indexExpiresAt` is the State table's TTL attribute: the record goes when its day is over.
-          Item: { ...requestKey, entityType: "PROJECT_CREATE_REQUEST", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },
+          Item: { ...requestKey, entityType: "PROJECT_CREATE_REQUEST", by: caller.developerId, bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },
           ConditionExpression: "attribute_not_exists(pk) OR expiresAt < :now",
           ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000) },
         } }],
@@ -12747,6 +12752,21 @@ async function cancelledE2EWorkflowItems(
   return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, undefined, undefined, undefined, undefined, target);
 }
 
+/**
+ * Final review I3, follow-up N5: closes a project setup check's workspace and gives its slot back once its prepare has reported. A workspace that
+ * is not a check's is left alone, and a check already closed changes nothing, so a repeat of the result may call it again. A close that cannot
+ * land only logs: the next check or the sweep finishes it, and the result is never failed for it.
+ */
+async function closeCheckAfterPrepare(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<void> {
+  try {
+    await closeSetupCheck(dependencies.documentClient, dependencies.tableName, workspaceId, {
+      now: new Date(), stalled: false, deleteCompute: (target) => deleteWorkspaceCompute(dependencies, target as WorkspaceInstance),
+    });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "developer.setup_check_close_failed", workspaceId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
 async function recordTerminalResult(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
@@ -12773,6 +12793,8 @@ async function recordTerminalResult(
     }
     // A repeat of a task's result tries its keys again, in case the first end could not block them.
     await blockEndedOperationKeys(dependencies, operation);
+    // Follow-up N5: the same for a project setup check, whose first close may not have landed (the compute was busy).
+    if (operation.kind === "prepare") await closeCheckAfterPrepare(dependencies, operation.workspaceId);
     return operation;
   }
   const workspace = await requireWorkspace(dependencies, operation.workspaceId);
@@ -12985,6 +13007,9 @@ async function recordTerminalResult(
   }
   // #213: a prepare that did not succeed leaves the workspace PREPARATION_FAILED, which stops
   // counting toward the workspace limits now; the release logs, and never fails the callback.
+  // Final review I3: a project setup check has nothing more to do on its machine once its prepare reports, success or not: its workspace is
+  // closed and its limit slot given back now. A close that cannot land here is the next check's, or the sweep's. Never fails the callback.
+  if (operation.kind === "prepare") await closeCheckAfterPrepare(dependencies, workspace.id);
   if (operation.kind === "prepare" && recordedStatus !== "SUCCEEDED") {
     await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, workspace.id);
     // #225: a developer task's failed setup is an event of its own, so the task shows when it failed.

@@ -20,12 +20,14 @@ import {
   TaskChannelPeopleResponseSchema,
   TaskPeopleDisplayReadResponseSchema,
   agentXError,
+  LAST_OWNER_MESSAGE,
   MEMBER_GRANT_SK_PREFIX,
   PROJECT_REVISION_SK_PREFIX,
   SLACK_BINDING_SK_PREFIX,
   developerTaskPolicy,
   formatCommandLine,
   memberGrantsPk,
+  orgMemberKey,
   orgProjectCatalogPk,
   projectAllows,
   workspaceProjectIndexValue,
@@ -45,7 +47,6 @@ import {
   type ProjectMemberRemoveResponse,
   type ProjectMembersResponse,
   type ProjectRole,
-  type ProjectSetupStatus,
   type ChannelByNameRequest,
   type ChannelByNameResponse,
   type ChannelInfoRequest,
@@ -68,9 +69,11 @@ import {
   UnlinkableSignInMethodSchema,
   type LinkedIdentity,
   type OrgId,
+  type WorkspaceInstance,
   type OrgRole,
   OrgIdSchema,
   OrgRoleSchema,
+  ProjectSetupCheckBodySchema,
   PutProjectMemberBodySchema,
   RemoveProjectMemberBodySchema,
   type SlackAuthCheckRequest,
@@ -106,7 +109,12 @@ import { checkTaskPersonIdentity, registerTaskChannelPeople, resolveTaskPickerPe
 import { taskPeopleDisplayAdmission, type TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { DeveloperSignInStore, META, endedByAdmin, endedByUnlink, methodSince, startedBeforeMethodOn, type DeveloperMarks, type DeveloperRecord, type SessionRecord } from "../developer/store.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
-import type { DeveloperTaskRecord } from "../developer/task-records.js";
+import { developerTaskIdentity, type DeveloperTaskRecord, type WorkspaceCharge } from "../developer/task-records.js";
+import { developerCharge, limitReached, readWorkspaceLimits, type WorkspaceLimits } from "../developer/limits.js";
+import { STUCK_SETUP_MS } from "./stuck-setup.js";
+import { closeSetupCheck } from "./setup-check-close.js";
+import { admitMachineTime, admitTrial } from "../org/trial.js";
+import { commitSetupCheck, setupCheckLimitMessage, setupCheckReplay, setupStateOf, type SetupCheckDependencies } from "../org/project-setup-check.js";
 import type { DeveloperTaskActions } from "./developer-task-actions.js";
 import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
@@ -834,19 +842,6 @@ function repositoryFullName(repository: { name: string; url: string }): string {
   return repository.name;
 }
 
-/** The setup status, derived on every read from the project's META and the check's workspace (Plan 2, Task 22 writes `setupCheck`). */
-async function setupStateOf(deps: DeveloperRouteDependencies, meta: ProjectMetaItem | undefined, latestRevision: number): Promise<AppProjectSummary["setup"]> {
-  const check = meta?.setupCheck;
-  if (check === undefined) return { status: "unchecked" };
-  const checked = { checkedRevision: check.revision, checkedAt: check.startedAt };
-  if (check.revision < latestRevision) return { status: "outdated", ...checked };
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `WORKSPACE#${check.workspaceId}`, sk: "META" }, ConsistentRead: true })) as { Item?: { status?: string } };
-  const workspace = response.Item?.status;
-  if (workspace === undefined) return { status: "unchecked" };
-  const status: ProjectSetupStatus = workspace === "PREPARING" ? "checking" : workspace === "PREPARATION_FAILED" ? "failed" : "ready";
-  return { status, ...checked };
-}
-
 async function appProjectSummary(
   deps: DeveloperRouteDependencies,
   name: string,
@@ -862,7 +857,7 @@ async function appProjectSummary(
     latestRevision: definition.revision,
     repositories: definition.repositories.map((repository) => ({ fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
     myRole: role,
-    setup: await setupStateOf(deps, meta, definition.revision),
+    setup: await setupStateOf(setupCheckDepsOf(deps), meta, definition),
   };
 }
 
@@ -986,6 +981,94 @@ async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: De
     }
   }
   return { project: await getAppProject(deps, caller, name), warnings };
+}
+
+/** What the setup status and the setup check read and write: the table and the clock. */
+function setupCheckDepsOf(deps: DeveloperRouteDependencies): SetupCheckDependencies {
+  return { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
+}
+
+/**
+ * What a setup check must pass: the admissions of a task start except the model budget (no model runs). The org's GitHub connection must still
+ * reach every repository, a cloud org's trial must be unlocked and its month of machine time not used up, and the person must be under the
+ * workspace limits; the check then takes a slot (`commitSetupCheck`). Everything is read before anything is written, so a refused check leaves
+ * nothing behind.
+ */
+async function admitSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, definition: Parameters<NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]>>[1], limitDefaults: { member: number; organization: number }): Promise<{ charge: WorkspaceCharge; limits: WorkspaceLimits }> {
+  if (deps.requireRepositoriesConnected !== undefined) await deps.requireRepositoriesConnected(caller.orgId, definition);
+  if (deps.cloud === true) {
+    const trial = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
+    await admitTrial(trial, caller.orgId);
+    await admitMachineTime(trial, caller.orgId);
+  }
+  const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, caller.orgId, limitDefaults);
+  const charge = developerCharge({ orgId: caller.orgId, teamId: deps.developer.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId });
+  const full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
+  if (full !== undefined) throw agentXError("WORKSPACE_LIMIT", setupCheckLimitMessage(full, limits));
+  return { charge, limits };
+}
+
+/**
+ * The workspace a new check replaces is closed (its machine and volume deleted, its slot given back) before the new one is admitted, so the new
+ * check does not count the old. Best effort: a close that cannot land now is left to the sweep, which closes any check older than 50 minutes.
+ */
+async function closeSupersededCheck(deps: DeveloperRouteDependencies, tasks: NonNullable<DeveloperRouteDependencies["tasks"]>, previous: { workspaceId: string; startedAt: string } | undefined): Promise<void> {
+  if (previous === undefined) return;
+  const started = Date.parse(previous.startedAt);
+  try {
+    await closeSetupCheck(deps.documentClient, deps.tableName, previous.workspaceId, {
+      now: new Date(deps.now()), stalled: Number.isFinite(started) && deps.now() - started > STUCK_SETUP_MS, deleteCompute: (workspace) => tasks.deleteCompute(workspace as WorkspaceInstance),
+    });
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.setup_check_supersede_close_failed", workspaceId: previous.workspaceId, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
+const SETUP_CHECK_ATTEMPTS = 3;
+const SETUP_CHECK_BUSY = "a setup check is already running for this project";
+
+/**
+ * `POST /v1/app/projects/{name}/setup-check` (Plan 2, Task 22): a maintainer of the project (an org owner or admin, or the project's own
+ * maintainer; `setup_check` is theirs alone, so a viewer and a contributor are 403) has the project's setup and test commands run on a fresh
+ * workspace of theirs at the latest revision. No access, no project and another org's project are the same 404. The role is read live.
+ * A repeated request id answers the stored outcome (200, and starts nothing, even if the project has since been archived or locked); a new one
+ * is 202. Refused: an archived project (PROJECT_ARCHIVED), a check already running (409 WORKSPACE_BUSY), a locked trial (TRIAL_LOCKED), used-up
+ * machine time (MACHINE_TIME_EXCEEDED), a full workspace limit (WORKSPACE_LIMIT) and an unreachable repository.
+ * The workspace, META's `setupCheck` and the request record are one transaction; a cancelled one is read again and judged afresh.
+ */
+async function startProjectSetupCheck(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<StatusReply> {
+  const { name, role } = await projectRoleForRoute(deps, caller, rawName);
+  if (!projectAllows(role, "setup_check")) throw agentXError("FORBIDDEN", "only a project maintainer can run a setup check");
+  const parsed = ProjectSetupCheckBodySchema.safeParse(body);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const tasks = deps.tasks;
+  if (tasks === undefined) throw agentXError("NOT_FOUND", "setup checks are not set up in this deployment");
+  const checks = setupCheckDepsOf(deps);
+  const { requestId } = parsed.data;
+  for (let attempt = 0; attempt < SETUP_CHECK_ATTEMPTS; attempt += 1) {
+    // The replay comes before every admission: an id that was used answers what it started, whatever has changed since.
+    if (await setupCheckReplay(checks, caller.orgId, name, requestId, caller.developerId) !== undefined) return new StatusReply(200, { project: await getAppProject(deps, caller, name) });
+    await requireNewWorkAllowed(deps, caller.orgId, name, role, "setup_check");
+    const project = await tasks.latestProject(caller.orgId, name);
+    if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+    const meta = await readProjectMeta(deps, caller.orgId, name);
+    if ((await setupStateOf(checks, meta, project.definition)).status === "checking") throw agentXError("WORKSPACE_BUSY", SETUP_CHECK_BUSY);
+    await closeSupersededCheck(deps, tasks, meta?.setupCheck);
+    const { charge, limits } = await admitSetupCheck(deps, caller, project.definition, tasks.limitDefaults);
+    // The workspace is the caller's own and fresh: an owner key of its own, derived from the caller (as a task's is), so the check never touches
+    // a task's workspace or the caller's default one, and re-checking at a newer revision is a new workspace.
+    const identity = developerTaskIdentity({ taskId: randomUUID(), developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client: "Rovara app" }, caller.orgId);
+    const preparation = await tasks.preparation(identity, project, requestId);
+    const committed = await commitSetupCheck(checks, {
+      orgId: caller.orgId, project: name, requestId, actorId: caller.developerId, revision: project.definition.revision,
+      workspaceId: preparation.workspace.id, createdAt: preparation.workspace.createdAt, preparation: preparation.items, charge, limits, seenWorkspaceId: meta?.setupCheck?.workspaceId,
+    });
+    if (committed) {
+      logDeveloperEvent({ event: "developer.project_setup_check_started", orgId: caller.orgId, project: name, workspaceId: preparation.workspace.id });
+      return new StatusReply(202, { project: await getAppProject(deps, caller, name) });
+    }
+  }
+  throw agentXError("WORKSPACE_BUSY", "AgentX could not start the setup check just now; try again with the same request id");
 }
 
 /**
@@ -1379,15 +1462,20 @@ export function developerTaskRouteDependencies(
       targetProjectAccess: async (subject, project, freshMemberOf) => {
         const revision = await latestDefinition(deps, caller.orgId, project);
         if (revision === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${project}\` doesn't exist in this AgentX`);
-        const [memberships, allBindings] = await Promise.all([
+        const [memberships, allBindings, subjectOrg] = await Promise.all([
           queryAll<{ projectName: string; role?: string }>(deps, memberGrantsPk(caller.orgId, subject.developerId), MEMBER_GRANT_SK_PREFIX),
           bindingsOf(deps, caller.orgId),
+          deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(caller.orgId, subject.developerId), ConsistentRead: true })) as Promise<{ Item?: { role?: string } }>,
         ]);
+        // An org owner or admin is a maintainer of every project in the org with no grant, as `checkProjectAccess` counts them (final review I1).
+        const orgMember = subjectOrg.Item === undefined ? undefined : { ...orgMemberKey(caller.orgId, subject.developerId), ...(subjectOrg.Item.role === undefined ? {} : { role: subjectOrg.Item.role }) };
         const result = evaluateProjectAuthority({
+          orgId: caller.orgId, developerId: subject.developerId,
           project,
           revision: { revision: revision.revision, definition: { developerTasks: revision.developerTasks } },
           memberships,
           bindings: allBindings,
+          ...(orgMember === undefined ? {} : { orgMember }),
           freshMemberOf,
           ...(subject.slackUserId === undefined ? {} : { slackUserId: subject.slackUserId }),
         });
@@ -1563,6 +1651,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
+  const projectSetupCheckRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-check$/.exec(url.pathname);
+  if (request.method === "POST" && projectSetupCheckRoute !== null) return startProjectSetupCheck(deps, caller, projectSetupCheckRoute[1]!, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {
     if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
     return deps.githubConnect.start(caller);
@@ -1805,7 +1895,11 @@ async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller
   return { removed: { developerId, name }, message: STOPS_AFTER_STEP(name) };
 }
 
-const LeaveBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+/**
+ * The plan's route text is `body { requestId }`. Leave needs no request record: a repeat finds the person out of the org and is refused at
+ * sign-in, so an id could never be replayed. The id is accepted and ignored, so a client written to the plan works; other keys are refused.
+ */
+const LeaveBodySchema = z.object({ requestId: z.string().uuid().optional() }).strict();
 
 /**
  * `POST /v1/app/org/leave`. Members and admins leave. An owner leaves when another owner exists; an owner who is the only member
@@ -1820,7 +1914,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   const sole = caller.orgRole === "owner" && (await deps.orgs.listMembers(caller.orgId)).every((member) => member.developerId === caller.developerId);
   // Ruling (Task 4, Minor 6): closing is for cloud orgs. A private install's only org is never closed: a closed org would take every
   // later sign-in with no owner. Its sole owner promotes someone else first.
-  if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", "You are the only owner. Make someone else an owner first.");
+  if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", LAST_OWNER_MESSAGE);
   if (sole) {
     const connections = deps.orgConnections ?? deps.agents?.connections;
     const clearConnections = deps.closeOrgHooks?.clearConnections ?? (connections === undefined ? undefined : (orgId: OrgId) => clearOrgConnections({ store: connections }, orgId));

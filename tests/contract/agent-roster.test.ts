@@ -274,7 +274,7 @@ describe("resolveAgentForTask", () => {
 
   it("refuses new work in an archived project first, then a viewer, with Plan 2's messages", async () => {
     const { deps } = await setup();
-    expect(await refusal(resolveAgentForTask(deps, callerOf(CARL), { project: "old" }))).toEqual({ code: "PROJECT_ARCHIVED", message: "`old` is archived; ask a maintainer to restore it before starting new work." });
+    expect(await refusal(resolveAgentForTask(deps, callerOf(CARL), { project: "old" }))).toEqual({ code: "PROJECT_ARCHIVED", message: "Project `old` is archived. Ask a project maintainer to restore it." });
     // The archive refusal comes before the viewer's.
     expect((await refusal(resolveAgentForTask(deps, callerOf(VIV), { project: "old" })))?.code).toBe("PROJECT_ARCHIVED");
     expect(await refusal(resolveAgentForTask(deps, callerOf(VIV), { project: "web" }))).toEqual({
@@ -485,7 +485,7 @@ describe("resolveAgentForAutonomousRun", () => {
   it("refuses an archived project", async () => {
     const { deps } = await setup();
     expect(await refusal(resolveAgentForAutonomousRun(deps, { orgId: TEST_ORG, project: "old", agentId: "rovara-code" }))).toEqual({
-      code: "PROJECT_ARCHIVED", message: "`old` is archived; ask a maintainer to restore it before starting new work.",
+      code: "PROJECT_ARCHIVED", message: "Project `old` is archived. Ask a project maintainer to restore it.",
     });
   });
 

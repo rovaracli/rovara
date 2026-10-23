@@ -103,7 +103,7 @@ describe("agentx org", () => {
     }, { members: [MEMBERS[0]], confirm: async (question) => { questions.push(question); return true; } });
     expect(await h.run(["org", "leave"])).toBe(0);
     expect(questions).toEqual(["You are the only member of Acme, so leaving closes the organization and releases its GitHub connection. Leave and close Acme?"]);
-    expect(h.calls.find((call) => call.method === "POST")!.body).toEqual({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as string });
+    expect(h.calls.find((call) => call.method === "POST")!.body).toEqual({});
     expect(h.out.join("")).toBe("You left and the organization is closed.\n");
   });
 

@@ -13,6 +13,7 @@ import {
 import { tokenStoreKey } from "../../packages/cli/src/auth.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
+import { reconcileEgressWithRevisions } from "../../packages/broker/src/aws/egress-domains-sync.js";
 import {
   approvedUnion, clearOrgEgress, decideEgressDomain, listPendingEgress, putEgressDomains, setEgressOwnerActive, type EgressDomainsDependencies,
 } from "../../packages/broker/src/org/egress-domains.js";
@@ -183,21 +184,35 @@ describe("a settings save on Rovara Cloud", () => {
     expect((await h.staff("GET", "/v1/admin/egress/pending")).body).toMatchObject({ pending: [{ domain: "old.acme.dev" }] });
   });
 
-  it("takes the last domain out of the union even when the egress write failed on the save that removed it (Task 18 Minor 2)", async () => {
+  it("makes no revision when the egress write fails on the save that removes the last domain, and the retry then takes it out of the union (ruling C29)", async () => {
     const h = await install();
     await h.put(["a.acme.dev"]);
     await h.decide("approve", "a.acme.dev");
     expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
-    // The revision with no domains is stored, then the egress write fails.
+    // The egress write comes first now: when it fails, no revision with no domains is stored.
     h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
     const failed = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
     expect(failed.status).toBe(503);
+    expect(h.db.get(projectRevisionKey(TEST_ORG, "web", 3))).toBeUndefined();
     expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
-    // The next save, whatever it changes, reconciles the item with the project, which now has no domains.
-    const saved = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 3, description: "words" });
-    expect(saved.status).toBe(200);
+    const retried = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
+    expect(retried.status).toBe(200);
     expect(h.item()!.domains).toEqual([]);
     expect(await approvedUnion(h.deps)).toEqual([]);
+  });
+
+  it("repairs, on the schedule, the item of a save whose revision then failed to land (final review I2)", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    await h.decide("approve", "a.acme.dev");
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"entityType":"PROJECT"') && !JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    const failed = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    // The item lost the domain but the project (revision 2) still lists it.
+    expect(h.item()!.domains).toEqual([]);
+    const later = { ...h.deps, now: () => new Date(Date.now() + 600_000) };
+    expect(await reconcileEgressWithRevisions(later)).toEqual({ repaired: 1 });
+    expect(h.item()!.domains.map((entry) => entry.domain)).toEqual(["a.acme.dev"]);
   });
 
   it("does not put an archived project's first domains in the union (Task 18 Minor 7)", async () => {
@@ -327,6 +342,91 @@ describe("the admin routes", () => {
     }
     expect((await h.decide("reject", "c.acme.dev", { reason: "x".repeat(200) })).status).toBe(200);
     expect((await h.decide("approve", "c.acme.dev", { extra: 1 })).status).toBe(400);
+  });
+});
+
+describe("a staff decision's request id (final review M2)", () => {
+  const decisionRecords = (h: Awaited<ReturnType<typeof install>>) => h.db.find((item) => item.pk === "EGRESS_DECISION_REQUEST");
+
+  it("stores the request in the same transaction as the decision, bound to the operator and with an expiry", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    const sent: Array<Array<Record<string, unknown>>> = [];
+    const send = h.db.send.bind(h.db);
+    h.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<Record<string, unknown>> } }) => {
+      if (command.constructor.name === "TransactWriteCommand") sent.push(command.input?.TransactItems ?? []);
+      return send(command as never);
+    });
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
+    const decided = sent.filter((items) => JSON.stringify(items).includes("EGRESS_DECISION_REQUEST"));
+    expect(decided).toHaveLength(1);
+    expect(decided[0]!.length).toBeLessThanOrEqual(100);
+    expect(JSON.stringify(decided[0])).toContain("\"action\":\"approved\"");
+    expect(decisionRecords(h)).toHaveLength(1);
+    expect(decisionRecords(h)[0]).toMatchObject({ sk: id, by: STAFF.subject });
+    expect(decisionRecords(h)[0]!.indexExpiresAt as number).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it("leaves no record when the decision fails, and the same id then decides", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DECISION_REQUEST"), error: { name: "InternalServerError" } });
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBeGreaterThanOrEqual(500);
+    expect(decisionRecords(h)).toEqual([]);
+    expect(h.item()!.domains[0]).toMatchObject({ status: "pending" });
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
+  });
+
+  it("answers a repeat of the same id with the same outcome and writes nothing, even after the domain was removed and asked for again", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    const first = await h.decide("approve", "a.acme.dev", { requestId: id });
+    expect(first.status).toBe(200);
+    await h.put(["b.acme.dev"]);
+    await h.put(["a.acme.dev", "b.acme.dev"]);
+    expect(h.item()!.domains.find((entry) => entry.domain === "a.acme.dev")).toMatchObject({ status: "pending" });
+    const auditsBefore = h.audits().length;
+    const syncs = h.sync.mock.calls.length;
+    const again = await h.decide("approve", "a.acme.dev", { requestId: id });
+    expect(again).toMatchObject({ status: 200, body: { orgId: TEST_ORG, domain: "a.acme.dev", status: "approved" } });
+    expect(h.item()!.domains.find((entry) => entry.domain === "a.acme.dev")).toMatchObject({ status: "pending" });
+    expect(h.audits()).toHaveLength(auditsBefore);
+    expect(h.sync.mock.calls).toHaveLength(syncs);
+  });
+
+  it("refuses the same id for another decision, another domain, or another operator with IDEMPOTENCY_CONFLICT, and decides nothing", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev", "b.acme.dev"]);
+    const id = randomUUID();
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
+    const other = [
+      await h.decide("reject", "a.acme.dev", { requestId: id, reason: "no" }),
+      await h.decide("approve", "b.acme.dev", { requestId: id }),
+      await call(h.handler, { method: "POST", path: "/v1/admin/egress/approve", user: { subject: "staff-2", admin: true }, body: { requestId: id, orgId: TEST_ORG, owner: WEB, domain: "a.acme.dev" } }),
+    ];
+    for (const answer of other) expect(answer).toMatchObject({ status: 409, body: { error: { code: "IDEMPOTENCY_CONFLICT" } } });
+    expect(h.item()!.domains.find((entry) => entry.domain === "b.acme.dev")).toMatchObject({ status: "pending" });
+  });
+
+  it("takes an expired record the State table has not yet deleted as no record", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    h.db.set({ pk: "EGRESS_DECISION_REQUEST", sk: id, entityType: "EGRESS_DECISION_REQUEST", by: "staff-2", bodyHash: "x", indexExpiresAt: Math.floor(Date.now() / 1000) - 10 });
+    expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
+    expect(decisionRecords(h)[0]).toMatchObject({ by: STAFF.subject });
+  });
+
+  it("answers two identical requests sent together as one decision and one replay", async () => {
+    const h = await install();
+    await h.put(["a.acme.dev"]);
+    const id = randomUUID();
+    const answers = await Promise.all([h.decide("approve", "a.acme.dev", { requestId: id }), h.decide("approve", "a.acme.dev", { requestId: id })]);
+    expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
+    expect(h.audits().filter((audit) => audit.action === "approved")).toHaveLength(1);
   });
 });
 
@@ -467,7 +567,7 @@ describe("egress items", () => {
     expect((db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains).toMatchObject([{ domain: "a.acme.dev", status: "approved" }, { domain: "b.acme.dev", status: "pending" }]);
   });
 
-  it("refuse a save that loses the race twice with IDEMPOTENCY_CONFLICT and change nothing", async () => {
+  it("refuse a save that loses the race twice with CHANGE_STALE and change nothing", async () => {
     const { db, deps, audits } = plain({ cloud: true });
     await putEgressDomains(deps, TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
     const auditsBefore = audits().length;
@@ -482,7 +582,7 @@ describe("egress items", () => {
       return answer;
     } };
     await expect(putEgressDomains({ ...deps, documentClient: racing }, TEST_ORG, WEB, ["a.acme.dev", "b.acme.dev"], { developerId: "dev-1" }))
-      .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: expect.stringContaining("the allowed domains changed while saving; reload and try again") as string });
+      .rejects.toMatchObject({ code: "CHANGE_STALE", message: expect.stringContaining("the allowed domains changed while saving; reload and try again") as string });
     expect(reads).toBe(2);
     expect((db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains.map((entry) => entry.domain)).toEqual(["a.acme.dev"]);
     expect(audits()).toHaveLength(auditsBefore);
@@ -565,7 +665,7 @@ describe("closing an org", () => {
     seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
     await h.put(["a.acme.dev"]);
     await putEgressDomains(h.deps, OTHER_ORG, WEB, ["c.beta.dev"], { developerId: "dev-2" });
-    const left = await h.dev(OMAR, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    const left = await h.dev(OMAR, "POST", "/v1/app/org/leave", {});
     expect(left.status, JSON.stringify(left.body)).toBe(200);
     expect(h.item()).toBeUndefined();
     expect(h.item(OTHER_ORG)).toBeDefined();

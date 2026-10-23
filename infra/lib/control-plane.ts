@@ -859,18 +859,21 @@ export class ControlPlaneStack extends Stack {
       },
     });
     // Plan 2, Task 14 Step 6: one reminder to a requester whose GitHub admin has not approved after 2 days. Deleting this schedule (and the
-    // handler's branch) removes the feature and nothing else; the 7 day expiry stays either way. Hourly is the finest it needs.
-    new scheduler.CfnSchedule(this, "GithubInstallRequestReminderSchedule", {
-      flexibleTimeWindow: { mode: "OFF" },
-      scheduleExpression: "rate(1 hour)",
-      state: "ENABLED",
-      target: {
-        arn: broker.functionArn,
-        roleArn: githubRecoveryRole.roleArn,
-        input: JSON.stringify({ kind: "github-install-request-reminders" }),
-        retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
-      },
-    });
+    // handler's branch) removes the feature and nothing else; the 7 day expiry stays either way. Hourly is the finest it needs. Rovara Cloud only
+    // (follow-up): the broker's handler does nothing off the cloud, so no other install, the legacy deployment included, gets the schedule.
+    if (props?.cloud === true && naming.env !== undefined) {
+      new scheduler.CfnSchedule(this, "GithubInstallRequestReminderSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(1 hour)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ kind: "github-install-request-reminders" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
+    }
     // Plan 2, Task 19: the firewall list follows the approved egress domains. A change syncs at once; this run is the retry for one that could not,
     // and the one-off backfill of requests for domains stored before approvals existed. It does nothing while the sync marker is clean.
     if (projectAllowListArn !== undefined) {
@@ -1307,13 +1310,15 @@ export class ControlPlaneStack extends Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }).addAlarmAction(notifyOperator);
     // Plan 2, Task 14: a failed owners' notice after an approved GitHub request binds (the item stays for the hourly sweep, which retries it).
-    // The broker logs it as a JSON line; this filter turns it into a metric an alarm can watch.
-    broker.logGroup.addMetricFilter("GithubInstallRequestNoticeFailedMetric", {
-      filterPattern: logs.FilterPattern.stringValue("$.event", "=", "github.install_request_notice_failed"),
-      metricNamespace: naming.metricsNamespace,
-      metricName: "GithubInstallRequestNoticeFailed",
-      metricValue: "1",
-    });
+    // The broker logs it as a JSON line; this filter turns it into a metric an alarm can watch. Rovara Cloud only, like the sweep that logs it.
+    if (props?.cloud === true && naming.env !== undefined) {
+      broker.logGroup.addMetricFilter("GithubInstallRequestNoticeFailedMetric", {
+        filterPattern: logs.FilterPattern.stringValue("$.event", "=", "github.install_request_notice_failed"),
+        metricNamespace: naming.metricsNamespace,
+        metricName: "GithubInstallRequestNoticeFailed",
+        metricValue: "1",
+      });
+    }
 
     new CfnOutput(this, "ApiEndpoint", { value: api.attrApiEndpoint });
     new CfnOutput(this, "StateTableName", { value: state.tableName });

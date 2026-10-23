@@ -4,7 +4,7 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetCommand, QueryCommand, DynamoDBDocumentClient, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
-import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, projectMemberKey, projectPk, projectRevisionKey, projectSetupApprovalKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
+import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, orgMemberKey, projectMemberKey, projectPk, projectRevisionKey, projectSetupApprovalKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { requiredEnvironment, type DurableOutboxRecord, type Ec2OutboxRecord } from "./lambda.js";
 import type { Ec2Delivery } from "./ec2-delivery.js";
@@ -395,6 +395,18 @@ function taskPersonRuntimePorts(input: {
         });
         admission.assertOpen();
         return result;
+      },
+      async orgMember(orgId, developerId, admission, abortSignal) {
+        // The person's org member row: an owner or admin is a maintainer of every project in the org with no grant (final review I1).
+        const response = await taskAuthorityDocumentClient.send(new GetCommand({
+          TableName: input.stateTableName,
+          Key: orgMemberKey(orgId, developerId),
+          ConsistentRead: true,
+          ...projection(["pk", "sk", "role"]),
+        }), { abortSignal });
+        admission.assertOpen();
+        const item = (response as { Item?: { pk?: string; sk?: string; role?: string } }).Item;
+        return { ...(item === undefined ? {} : { item }), complete: true };
       },
       async bindings(orgId, teamId, admission, abortSignal) {
         const result = await queryPages<SlackChannelBinding & { pk: string; sk: string }>({

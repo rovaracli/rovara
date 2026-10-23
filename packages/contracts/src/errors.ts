@@ -65,6 +65,15 @@ export const AgentXErrorCodeSchema = z.enum([
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
 
+/** What LAST_OWNER (409) says: the organization's last owner may not step down, leave or be removed. */
+export const LAST_OWNER_MESSAGE = "An organization needs at least one owner. Make someone else an owner first.";
+
+/** What PROJECT_NAME_TAKEN (409) says. The name is shown between backticks; the caller has checked it is a project name. */
+export const projectNameTakenMessage = (name: string): string => `Your organization already has a project named \`${name}\` (it may be archived). Choose another name.`;
+
+/** What PROJECT_ARCHIVED (409) says, whichever new work or change it refuses. */
+export const projectArchivedMessage = (name: string): string => `Project \`${name}\` is archived. Ask a project maintainer to restore it.`;
+
 /** What INVITE_WRONG_EMAIL (409) says: an email-targeted invite was presented by a sign-in whose verified email is another address. */
 export const INVITE_WRONG_EMAIL_MESSAGE = "This invite is for a different email address. Sign in with the address it was sent to, or ask for an invite to yours.";
 

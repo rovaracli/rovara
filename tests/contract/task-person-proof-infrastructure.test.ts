@@ -240,24 +240,27 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 3 final fix wave (review C1): a named environment's broker is given its generated names in one variable (AGENTX_NAMES), not whole, and derives
     // what its environment name decides, so Lambda's 4 KB limit on its variables holds; the named and foreign digests moved with it (the broker's
     // variables only, and the connector secrets role's one Deny); the legacy digests did not move, which is the check that its broker is untouched.
+    // Merge of Plan 2's final fix wave into Plan 3: the install-request reminder schedule and metric filter are now created on cloud installs only, so the
+    // legacy template lost them again and its digests are back to their values before Plan 2 (the legacy-templates snapshot lost the same 45 lines); the
+    // named and foreign digests were regenerated for the merged template (Plan 2's cloud-only schedule and the reconciler's StartExecution grant on top of Plan 3).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "6ccc8a731d954e52efaf094a2d784d44fed2cd7b46eaecbeec055d5cb3baa365",
-        withoutRoute: "a56736c62060069412f9a6d5be1d7b0308f85574490af83968004a098db6f1b7",
+        withRoute: "5a7f2b46d47f611a891d891caade9351d951be319814443ae04438820f0fd302",
+        withoutRoute: "f9a972122862824042839ac5de07d9192403756545d54c4b942501bdf1dc1343",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "e102914180bdd02fe6cbbfeb5aa848752d40596d65c20fe3f0a6baa5b5581575",
-        withoutRoute: "e0727aef648dfc10f5d086842b44b0486067baed09160ebcb2179d34742d8409",
+        withRoute: "751450a602ed4c34458750fe66caca0cc725b4217c329a7f4a0242b089622480",
+        withoutRoute: "418b13dbd4c067eb03570b7e902e2bd4e681deb5bd5bb9206fbeba0be9654398",
       },
       {
         label: "legacy",
         template: legacy,
-        withRoute: "c8cb994acace74871d428c118ced239332c2c06f6f53e88ee4394adcbd34a994",
-        withoutRoute: "5a11a45cb6ccb2325312658e0bfba2f4ba6f36280d0848a36cbd6db37244427f",
+        withRoute: "b279f85a0f09a9fd78a25b85706b79bf1394184fd09597efa8cd466f93adb826",
+        withoutRoute: "dcd26742aba45c87a5f82cd0a6039801147e4e6cd02ee337cf28e7f01987a32b",
       },
     ] as const;
     for (const { label, template, withRoute, withoutRoute } of digestCases) {

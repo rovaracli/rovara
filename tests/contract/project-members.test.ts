@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  ProjectMemberChangeResponseSchema, ProjectMembersResponseSchema, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey,
+  ProjectMemberChangeResponseSchema, ProjectMembersResponseSchema, orgMemberKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey,
   type OrgId, type OrgRole, type ProjectRole,
 } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
@@ -404,6 +404,26 @@ describe("the target of a role change", () => {
     expect(grantOf(h.db, { developerId: unknown })).toBeUndefined();
   });
 
+  it("is still a member of the org when the grant commits (final review M7): a removal racing the write leaves no orphaned grant", async () => {
+    const h = await team();
+    // Neo is removed from the org after the route read him and before its transaction commits.
+    h.db.injectFault({
+      command: "TransactWriteCommand",
+      match: (input) => {
+        if (!JSON.stringify(input).includes(NEO.developerId)) return false;
+        h.db.delete(orgMemberKey(TEST_ORG, NEO.developerId));
+        return false;
+      },
+      error: { name: "InternalServerError" },
+    });
+    const refused = await put(h, PRIYA, NEO, "viewer");
+    expect(refused.status).toBe(404);
+    expect(refused.body.error).toMatchObject({ code: "NOT_FOUND", message: NOT_IN_ORG });
+    expect(grantOf(h.db, NEO)).toBeUndefined();
+    // Nor does the request id stay behind: asked again once he is back, it is a fresh request.
+    expect(h.db.find((item) => typeof item.sk === "string" && item.sk.startsWith("MEMBER_REQUEST#") && (item as { target?: string }).target === NEO.developerId)).toEqual([]);
+  });
+
   it("a member of another org is not in this org: 404, and no grant appears in either org", async () => {
     const h = await createDeveloperTaskBroker({ orgResolver: async ({ developerId }) => (developerId === ZED.developerId ? OTHER_ORG : TEST_ORG) });
     await admit(h, PRIYA);
@@ -594,7 +614,8 @@ describe("request ids (a replay answers the stored outcome)", () => {
     expect((await remove(h, PRIYA, NEO)).status).toBe(200);
     // A removal of someone with no grant still records its request.
     expect((await remove(h, PRIYA, NEO)).status).toBe(200);
-    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 2 }, { name: "TransactWriteCommand", items: 2 }, { name: "TransactWriteCommand", items: 1 }]);
+    // The grant, the check that the person is still in the org (M7) and the request; then the removal and its request; then the request alone.
+    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 3 }, { name: "TransactWriteCommand", items: 2 }, { name: "TransactWriteCommand", items: 1 }]);
     const stored = h.db.get({ pk: `ORG#${TEST_ORG}#PROJECT#payments`, sk: `MEMBER_REQUEST#${requestId}` });
     expect(stored).toMatchObject({ entityType: "PROJECT_MEMBER_REQUEST", action: "put", by: PRIYA.developerId, response: { developerId: NEO.developerId, role: "viewer" } });
     expect(stored!.indexExpiresAt).toBeGreaterThan(Date.now() / 1000 + 80_000);

@@ -138,6 +138,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/org/github-connection.ts", "packages/broker/src/org/github-install-requests.ts",
       // Plan 2, Task 21: a project's member-change request records (replay keys) expire on it after a day.
       "packages/broker/src/org/project-members.ts",
+      // Plan 2, Task 22: a project's setup-check request records (replay keys) expire on it after a day.
+      "packages/broker/src/org/project-setup-check.ts",
+      // Final review M2: the one request-id pattern's record (archive and restore, staff egress decisions) expires on it after a day.
+      "packages/broker/src/org/request-records.ts",
       // The agent request items (Plan 3, Task 7): one per marked write, kept 7 days so a retry is answered, then deleted by the TTL.
       // table-writes.ts writes them for the agent store and the skill store; store.ts reads them back.
       "packages/broker/src/agents/store.ts", "packages/broker/src/agents/table-writes.ts",
@@ -166,7 +170,7 @@ describe("the health route's grants (A13)", () => {
     expect(brokerUses).toEqual([
       "        slackUserId: user.data, channelId: thread.data.channelId, threadTs: thread.data.threadTs, message, at, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at) },",
       // Plan 2, Task 16: a project creation request's record, which expires with its day (it holds the same instant as its expiresAt).
-      "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
+      "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", by: caller.developerId, bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
       "      [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(operation.createdAt),",
     ]);
     // Task 19: a refused Slack press's private note, delivered within the hour and then dead weight.

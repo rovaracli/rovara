@@ -2,7 +2,7 @@
 // maintainer of every project in their org, with no grant. An archived project, or a role that may not start tasks, refuses only the
 // places that start new work (a task start, Slack-started work, the setup check): work that exists keeps going.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { ProjectRoleSchema, agentXError, projectAllows, projectMetaKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { ProjectRoleSchema, agentXError, projectAllows, projectArchivedMessage, projectMetaKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 
 /**
@@ -78,8 +78,7 @@ export async function readProjectMeta(deps: ProjectMetaReader, orgId: OrgId, pro
 
 /** What a viewer is told when they try to start a task. */
 export const viewerCannotStartTasksMessage = (project: string) => `You can view \`${project}\` but not start tasks in it. Ask a maintainer to make you a contributor.`;
-export const projectArchivedMessage = (project: string) => `\`${project}\` is archived; ask a maintainer to restore it before starting new work.`;
-export const projectArchivedSettingsMessage = (project: string) => `\`${project}\` is archived; restore it before changing its settings.`;
+// The plan's one PROJECT_ARCHIVED text (`projectArchivedMessage`, in the contracts) serves new work and a settings change alike.
 
 /**
  * Called only where new work starts. An archived project refuses every kind (PROJECT_ARCHIVED); a task start also needs the role to

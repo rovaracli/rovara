@@ -19,8 +19,8 @@ type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 
 const OTHER_ORG: OrgId = "org_bbbbbbbbbbbbbbbbbbbb";
 const PAYMENTS: EgressOwner = { kind: "project", project: "payments" };
-const ARCHIVED_MESSAGE = "`payments` is archived; ask a maintainer to restore it before starting new work.";
-const SETTINGS_ARCHIVED_MESSAGE = "`payments` is archived; restore it before changing its settings.";
+const ARCHIVED_MESSAGE = "Project `payments` is archived. Ask a project maintainer to restore it.";
+const SETTINGS_ARCHIVED_MESSAGE = ARCHIVED_MESSAGE;
 const BINDING = {
   deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0",
   subnets: [{ availabilityZone: "us-west-2a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB: 20, volumeType: "gp3",
@@ -306,7 +306,7 @@ describe("the project's approved domains", () => {
   it("finishes a half-done archive when it is repeated: META is archived but the egress flip failed once", async () => {
     const h = await cloudInstall();
     await h.approve(["artifacts.acme.dev"]);
-    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
     const failed = await archiveRoute(h, OMAR);
     expect(failed.status).toBeGreaterThanOrEqual(500);
     // The archive stands (new work is refused) while the domains are still served...
@@ -322,7 +322,7 @@ describe("the project's approved domains", () => {
     const h = await cloudInstall();
     await h.approve(["artifacts.acme.dev"]);
     await archiveRoute(h, OMAR);
-    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
     const failed = await restoreRoute(h, OMAR);
     expect(failed.status).toBeGreaterThanOrEqual(500);
     expect(metaOf(h)).toMatchObject({ status: "active" });
@@ -552,7 +552,7 @@ describe("closing an org archives its projects (POST /v1/app/org/leave by the on
     // Closing makes no per-project flip or sync: the items are deleted by clearOrgEgress, whose one sync follows. At each sync, alpha's item is already gone.
     const seen: Array<boolean> = [];
     sync.mockImplementation(async () => { seen.push(h.db.get(egressDomainsKey(orgA, { kind: "project", project: "alpha" })) !== undefined); return { ok: true, domains: 0 }; });
-    const left = await h.dev(zed, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    const left = await h.dev(zed, "POST", "/v1/app/org/leave", {});
     expect(seen).toEqual([false]);
     expect(left.status, JSON.stringify(left.body)).toBe(200);
     expect(left.body).toMatchObject({ orgClosed: true });
@@ -560,5 +560,92 @@ describe("closing an org archives its projects (POST /v1/app/org/leave by the on
     expect(metaOf(h, "beta", orgA)).toMatchObject({ status: "archived", archivedBy: "earlier" });
     expect(metaOf(h)).toMatchObject({ status: "active" });
     expect(await approvedUnion(egress)).toEqual(["p.acme.dev"]);
+  });
+});
+
+// Final review M2: the one request-id pattern. The record is written in the same transaction as the change, with an expiry; a replay by the same
+// person answers the stored outcome and writes nothing; another person's use of the id, or the other action's, is IDEMPOTENCY_CONFLICT.
+describe("the archive and restore request id (final review M2)", () => {
+  const requestsOf = (h: Harness) => h.db.find((item) => item.pk === projectMetaKey(TEST_ORG, "payments").pk && typeof item.sk === "string" && item.sk.startsWith("ARCHIVE_REQUEST#"));
+
+  it("stores the request in the same transaction as the META change, bound to the caller and with an expiry", async () => {
+    const h = await createDeveloperTaskBroker();
+    setRole(h.db, OMAR, "owner");
+    const sent: Array<Array<Record<string, unknown>>> = [];
+    const send = h.db.send.bind(h.db);
+    h.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<Record<string, unknown>> } }) => {
+      if (command.constructor.name === "TransactWriteCommand") sent.push(command.input?.TransactItems ?? []);
+      return send(command as never);
+    });
+    const id = randomUUID();
+    expect((await archiveRoute(h, OMAR, "payments", { requestId: id })).status).toBe(200);
+    const withMeta = sent.filter((items) => JSON.stringify(items).includes("ARCHIVE_REQUEST#") && JSON.stringify(items).includes("archived"));
+    expect(withMeta).toHaveLength(1);
+    expect(withMeta[0]!.length).toBeLessThanOrEqual(100);
+    expect(requestsOf(h)).toHaveLength(1);
+    expect(requestsOf(h)[0]).toMatchObject({ sk: `ARCHIVE_REQUEST#${id}`, action: "archive", by: OMAR.developerId });
+    expect(requestsOf(h)[0]!.indexExpiresAt as number).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it("leaves neither the change nor the record when the transaction fails, and the same id then works", async () => {
+    const h = await createDeveloperTaskBroker();
+    setRole(h.db, OMAR, "owner");
+    const id = randomUUID();
+    h.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    expect((await archiveRoute(h, OMAR, "payments", { requestId: id })).status).toBeGreaterThanOrEqual(500);
+    expect(metaOf(h)).toMatchObject({ status: "active" });
+    expect(requestsOf(h)).toEqual([]);
+    expect((await archiveRoute(h, OMAR, "payments", { requestId: id })).status).toBe(200);
+    expect(metaOf(h)).toMatchObject({ status: "archived" });
+  });
+
+  it("records a request that changes nothing (the project is already archived) and replays it", async () => {
+    const h = await createDeveloperTaskBroker();
+    setRole(h.db, OMAR, "owner");
+    await archiveRoute(h, OMAR);
+    const id = randomUUID();
+    expect((await archiveRoute(h, OMAR, "payments", { requestId: id })).status).toBe(200);
+    expect(requestsOf(h).map((item) => item.sk)).toContain(`ARCHIVE_REQUEST#${id}`);
+    await restoreRoute(h, OMAR);
+    const late = await archiveRoute(h, OMAR, "payments", { requestId: id });
+    expect(late.status).toBe(200);
+    expect(metaOf(h)).toMatchObject({ status: "active" });
+  });
+
+  it("refuses another person's use of a request id with IDEMPOTENCY_CONFLICT, and applies nothing", async () => {
+    const h = await createDeveloperTaskBroker();
+    setRole(h.db, OMAR, "owner");
+    setRole(h.db, MAYA, "admin");
+    const id = randomUUID();
+    await archiveRoute(h, OMAR, "payments", { requestId: id });
+    await restoreRoute(h, OMAR);
+    const stolen = await archiveRoute(h, MAYA, "payments", { requestId: id });
+    expect(stolen.status).toBe(409);
+    expect(stolen.body.error).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(metaOf(h)).toMatchObject({ status: "active" });
+  });
+
+  it("treats an expired record the State table has not yet deleted as absent, and replaces it in the same transaction", async () => {
+    const h = await createDeveloperTaskBroker();
+    setRole(h.db, OMAR, "owner");
+    const id = randomUUID();
+    h.db.set({ pk: projectMetaKey(TEST_ORG, "payments").pk, sk: `ARCHIVE_REQUEST#${id}`, entityType: "PROJECT_ARCHIVE_REQUEST", action: "restore", by: MAYA.developerId, indexExpiresAt: Math.floor(Date.now() / 1000) - 10 });
+    expect((await archiveRoute(h, OMAR, "payments", { requestId: id })).status).toBe(200);
+    expect(metaOf(h)).toMatchObject({ status: "archived" });
+    expect(requestsOf(h)[0]).toMatchObject({ action: "archive", by: OMAR.developerId });
+  });
+
+  it("answers a replay of a call whose firewall step failed without writing, and the schedule's reconcile finishes the flip", async () => {
+    const h = await cloudInstall();
+    await h.approve(["artifacts.acme.dev"]);
+    const id = randomUUID();
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    expect((await archiveRoute(h, OMAR, "payments", { requestId: id })).status).toBeGreaterThanOrEqual(500);
+    const again = await archiveRoute(h, OMAR, "payments", { requestId: id });
+    expect(again.status).toBe(200);
+    expect(await approvedUnion(h.egress)).toEqual(["artifacts.acme.dev"]);
+    const { reconcileProjectEgress } = await import("../../packages/broker/src/org/project-archive.js");
+    await reconcileProjectEgress({ documentClient: h.db, tableName: "state", egress: h.egress });
+    expect(await approvedUnion(h.egress)).toEqual([]);
   });
 });

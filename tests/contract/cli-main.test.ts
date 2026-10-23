@@ -32,7 +32,7 @@ describe("AgentX executable command surface", () => {
     expect(subcommands(program, "audit")).toEqual(["log", "export", "verify", "open"]);
     expect(subcommands(admin, "audit")).toEqual(["log", "export"]);
     expect(subcommands(program, "mcp")).toEqual(["install"]);
-    expect(subcommands(program, "project")).toEqual(["add", "create", "show", "archive", "restore", "members", "add-member", "remove-member", "settings", "agents", "connectors", "ai"]);
+    expect(subcommands(program, "project")).toEqual(["add", "create", "show", "archive", "restore", "check", "members", "add-member", "remove-member", "settings", "agents", "connectors", "ai"]);
     expect(subcommands(program, "channel")).toEqual(["add"]);
     expect(subcommands(program, "connector")).toEqual(["add"]);
     expect(subcommands(program, "alerts")).toEqual(["test"]);

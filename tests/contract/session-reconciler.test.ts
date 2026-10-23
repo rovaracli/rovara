@@ -275,6 +275,21 @@ describe("reconciler: stuck setups (spec 025 FR-055)", () => {
     expect(JSON.stringify(logs)).not.toContain("PLANTED-SWEEP-MESSAGE");
   });
 
+  it("counts the setup checks the sweep could not close, for the StuckSetupChecks alarm (follow-up N4)", async () => {
+    const { reconcile, emit } = setup({ sweepStuckSetups: async () => ({ failed: [], keptChecks: 3 }) });
+    await reconcile();
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ ReconcilerStuckSetupChecksKept: 3 }));
+  });
+
+  it("emits no kept checks when the sweep reports none or none is wired", async () => {
+    const { reconcile, emit } = setup({ sweepStuckSetups: async () => ({ failed: [] }) });
+    await reconcile();
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ ReconcilerStuckSetupChecksKept: 0 }));
+    const unwired = setup();
+    await unwired.reconcile();
+    expect(unwired.emit).toHaveBeenCalledWith(expect.objectContaining({ ReconcilerStuckSetupChecksKept: 0 }));
+  });
+
   it("reports no stuck setups and no sweep errors when no sweep is wired", async () => {
     const { reconcile, emit } = setup();
     expect((await reconcile()).stuckSetups).toEqual([]);

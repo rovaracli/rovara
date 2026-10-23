@@ -214,6 +214,7 @@ import type { DeveloperTaskActions, TransactItems } from "./developer-task-actio
 import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { setupWatchKey } from "./stuck-setup.js";
+import { appendOperationEvent } from "./operation-events.js";
 import { operationKey } from "./cancellation.js";
 import { resumeTaskDispatch } from "./task-dispatch-access.js";
 import { feedbackReviewNoticeId } from "../developer/notifications.js";
@@ -1323,7 +1324,11 @@ export async function taskView(
   const pausedView = await pauseViewOf(deps, task, operations);
   const runLimit = await runLimitViewOf(deps, task);
   // #225: a task whose setup failed shows its prepare's events (the failure the broker recorded).
-  const eventsOf = derived.current ?? derived.failedPrepare;
+  // Plan 2, Task 22: a task still starting (nothing but its prepare so far) shows its prepare's events, which is where a resumed task's note lands.
+  const startingPrepare = derived.status === "STARTING" && derived.current === undefined
+    ? operations.filter((operation) => operation.kind === "prepare").sort((left, right) => left.createdAt.localeCompare(right.createdAt)).at(-1)
+    : undefined;
+  const eventsOf = derived.current ?? derived.failedPrepare ?? startingPrepare;
   const operationEvents = eventsOf === undefined || options.events === 0
     ? []
     : recentTaskEvents(await deps.actions.eventsNewestFirst(eventsOf.id, 200), options.events);
@@ -2065,6 +2070,27 @@ function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: Develo
   } }];
 }
 
+/** What a `continue` that only resumed a parked task tells the person: the parked operation runs as it was queued, so the new instructions were not used. */
+export const RESUMED_WITH_ORIGINAL_INSTRUCTIONS = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
+
+/**
+ * A parked plain task is redriven exactly as it was queued (its invocation is not rewritten), so a `continue` that resumed it carries its new
+ * instructions nowhere. Say so as an event on the resumed operation, once per request: the task view already shows events to every client. The task
+ * has resumed whether or not this lands, so a failure here is logged (its name only) and never fails the continue.
+ */
+async function noteResumedWithOriginal(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, requestId: string): Promise<void> {
+  try {
+    const workspace = await deps.actions.workspace(task.workspaceId);
+    if (workspace.activeOperationId === null) return;
+    await appendOperationEvent(deps.documentClient as never, deps.tableName, {
+      workspaceId: task.workspaceId, operationId: workspace.activeOperationId, fence: workspace.fence, onceKey: `resumed-original-${requestId}`,
+      event: { type: "progress", timestamp: iso(deps), payload: { message: RESUMED_WITH_ORIGINAL_INSTRUCTIONS } },
+    });
+  } catch (error) {
+    log(deps, { event: "developer.resume_note_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
 async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "work");
@@ -2079,7 +2105,10 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     task, peopleRevision: access.peopleRevision ?? 0, actorId: access.actorId, requestId: request.requestId, payloadHash: hashJson(request),
     reauthorize: async () => { await authorizeTaskAction(deps, caller, taskId, "work"); },
   });
-  if (resumed) return { task: await taskView(deps, task, { events: 0, details: false }) };
+  if (resumed) {
+    await noteResumedWithOriginal(deps, task, request.requestId);
+    return { task: await taskView(deps, task, { events: DEVELOPER_EVENTS_DEFAULT, details: false }) };
+  }
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
   // Ruling R38: a Continue starts a new window of the task's own cap, at what its keys have spent so far. A proxy that cannot

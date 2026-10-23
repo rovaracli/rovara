@@ -28,6 +28,7 @@ import {
   type ProjectDefinition,
   type RegistrationPreflight,
   type StoredProjectDefinition,
+  projectArchivedMessage,
 } from "@agentx/contracts";
 import { orgRoleOf, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import {
@@ -48,7 +49,7 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { projectArchivedSettingsMessage, readProjectMeta } from "../developer/project-roles.js";
+import { readProjectMeta } from "../developer/project-roles.js";
 import { SETTINGS_STALE_MESSAGE, latestRevision, type LatestRevision } from "../org/project-settings.js";
 import type { OrgConnectionStore } from "./store.js";
 
@@ -304,7 +305,7 @@ async function requireMayChange(deps: Deps, caller: AgentCaller, project: string
 
 /** The project's newest revision, read consistently, and the person's `expectedRevision` held against it. An archived project's settings are as they were when it was archived. */
 async function loadCurrent(deps: Deps, orgId: OrgId, project: string, expectedRevision: number | undefined): Promise<LatestRevision> {
-  if ((await readProjectMeta(deps, orgId, project))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedSettingsMessage(project));
+  if ((await readProjectMeta(deps, orgId, project))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(project));
   const latest = await latestRevision(deps, orgId, project);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   if (expectedRevision !== undefined && latest.definition.revision !== expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
