@@ -10,6 +10,7 @@ import { AGENT_NAME_MAX, AgentIdSchema, AutonomySchema, SkillIdSchema } from "./
 import { canonicalJson } from "./canonical-json.js";
 import { ConnectorNameSchema } from "./connectors.js";
 import { ModelSelectionSchema } from "./models.js";
+import { EventTriggerSpecSchema, ScheduleTriggerSpecSchema } from "./trigger-specs.js";
 import type { WorkflowProgram } from "./task-workflow.js";
 
 export const INSTRUCTIONS_MAX_BYTES = 8192;
@@ -140,9 +141,12 @@ const AlwaysAskSchema = z.array(ToolPatternSchema).max(MAX_ALWAYS_ASK_RULES);
 export const ApprovalRulesSchema = z.object({ alwaysAsk: AlwaysAskSchema }).strict();
 export type ApprovalRules = z.infer<typeof ApprovalRulesSchema>;
 
-/** The ways a run can start that agents allow at launch. Plan 4 adds `event` and `schedule` here and to the schema below. */
-export const TRIGGER_KINDS_AT_LAUNCH = ["person"] as const;
-export const TriggerSpecSchema = z.discriminatedUnion("kind", [z.object({ kind: z.literal("person") }).strict()]);
+/**
+ * The ways a run can start. In a custom agent's recipe they say how the agent may be started (G10); on a trigger record (triggers.ts) an `event` or `schedule` spec is the
+ * live one. A built-in recipe lists `person` alone: its suggested triggers are Plan 4 data (builtin-triggers.ts), never recipe content.
+ */
+export const TRIGGER_KINDS_AT_LAUNCH = ["person", "event", "schedule"] as const;
+export const TriggerSpecSchema = z.discriminatedUnion("kind", [z.object({ kind: z.literal("person") }).strict(), EventTriggerSpecSchema, ScheduleTriggerSpecSchema]);
 export type TriggerSpec = z.infer<typeof TriggerSpecSchema>;
 
 export const SkillRefSchema = z.object({ skillId: SkillIdSchema, digest: Sha256HexSchema.optional() }).strict();
@@ -397,8 +401,6 @@ export function recipeProblems(recipe: ResolvedRecipe): RecipeProblem[] {
     }
   });
 
-  const launchKinds: readonly string[] = TRIGGER_KINDS_AT_LAUNCH;
-  if (recipe.triggers.some((trigger) => !launchKinds.includes(trigger.kind))) add("triggers", "event and schedule triggers aren't available yet");
   return problems;
 }
 

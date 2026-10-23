@@ -4,6 +4,8 @@
 import { canonicalInstant, indexDay } from "./admin.js";
 import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
 import type { ChainId, ChainRunId } from "./chains.js";
+import type { EventSource } from "./trigger-specs.js";
+import type { TriggerTarget } from "./triggers.js";
 import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
@@ -526,4 +528,46 @@ export function chainRunsByProjectPk(orgId: OrgId, project: string): string {
  */
 export function openChainRunKey(dueAt: string, orgId: OrgId, runId: ChainRunId): OrgKey {
   return { pk: "OPEN_CHAIN_RUNS", sk: `${canonicalInstant(dueAt)}#${orgId}#${runId}` };
+}
+
+// ---- triggers (Plan 4 Task 18)
+
+/** The name a trigger's target goes by in keys: `CHAIN#<id>` or `AGENT#<id>`. */
+export function triggerTargetKey(target: TriggerTarget): string {
+  return target.kind === "chain" ? `CHAIN#${target.chainId}` : `AGENT#${target.agentId}`;
+}
+
+/** A trigger's record. */
+export function triggerKey(orgId: OrgId, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER#${triggerId}`), sk: "META" };
+}
+
+/** The index item that lists a target's triggers (`targetKey` is `triggerTargetKey(target)`), and its counter at `COUNT`. */
+export function targetTriggersKey(orgId: OrgId, targetKey: string, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TARGET_TRIGGERS#${targetKey}`), sk: triggerId };
+}
+
+/** The counter of a target's triggers, beside the index items: a transaction that adds a trigger is held to `MAX_TRIGGERS_PER_TARGET` by it. */
+export function targetTriggerCountKey(orgId: OrgId, targetKey: string): OrgKey {
+  return { pk: orgScoped(orgId, `TARGET_TRIGGERS#${targetKey}`), sk: "COUNT" };
+}
+
+/** The index item that lists the triggers a member created, so a removed or merged member's can be found. */
+export function triggersByCreatorKey(orgId: OrgId, developerId: string, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGERS_BY_CREATOR#${developerId}`), sk: triggerId };
+}
+
+/** The index item dispatch reads: the triggers of the receiving hook only (`hookId` is `"github"` for GitHub's, which have none). */
+export function triggerMatchKey(orgId: OrgId, source: EventSource, project: string, hookId: string, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGERS#${source}#${project}#${hookId}`), sk: triggerId };
+}
+
+/** One thing a trigger did or was told, newest last; it expires with `TRIGGER_ACTIVITY_TTL_DAYS`. */
+export function triggerActivityKey(orgId: OrgId, triggerId: string, at: string, eventKey: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER_ACTIVITY#${triggerId}`), sk: `${canonicalInstant(at)}#${eventKey}` };
+}
+
+/** A notice stored for a member to be shown (Plan 7) and posted (Plan 9), as Plan 3 stores budget alerts. */
+export function triggerNoticeKey(orgId: OrgId, developerId: string, at: string, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER_NOTICES#${developerId}`), sk: `${canonicalInstant(at)}#${triggerId}` };
 }
