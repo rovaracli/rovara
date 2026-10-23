@@ -38,10 +38,10 @@ async function brokerWorld(options: { dispatch?: boolean } = { dispatch: true })
   const store = new HookStore({ documentClient: h.db, tableName: "state", now: Date.now });
   await store.create({ orgId: TEST_ORG, hookId: HOOK_1, source: "linear", project: "web", tenant: LINEAR_TENANT, auth: "hmac", hasSecret: true, status: "active", createdBy: "d".repeat(64), createdAt: new Date().toISOString() });
   secrets.values.set(`${TEST_ORG}|${HOOK_1}`, JSON.stringify({ current: SECRET_1 }));
-  const post = (raw: Buffer, over: { base64?: boolean; headers?: Record<string, string>; method?: string; hookId?: string; source?: string; signed?: boolean; ip?: string } = {}) => {
+  const post = (raw: Buffer, over: { base64?: boolean; headers?: Record<string, string>; method?: string; hookId?: string; source?: string; signed?: boolean; ip?: string; routeKey?: string } = {}) => {
     const signature = createHmac("sha256", SECRET_1).update(raw).digest("hex");
     return h.handler({
-      version: "2.0", routeKey: "POST /v1/hooks/{source}/{hookId}", rawPath: `/v1/hooks/${over.source ?? "linear"}/${over.hookId ?? HOOK_1}`, rawQueryString: "",
+      version: "2.0", routeKey: over.routeKey ?? "POST /v1/hooks/{source}/{hookId}", rawPath: `/v1/hooks/${over.source ?? "linear"}/${over.hookId ?? HOOK_1}`, rawQueryString: "",
       headers: { "content-type": "application/json", ...(over.signed === false ? {} : { [SIGNATURE_HEADER.toUpperCase()]: signature }), ...over.headers },
       body: over.base64 === false ? raw.toString("utf8") : raw.toString("base64"), isBase64Encoded: over.base64 !== false,
       requestContext: { requestId: randomUUID(), http: { method: over.method ?? "POST", sourceIp: over.ip ?? "203.0.113.9" } },
@@ -89,6 +89,17 @@ describe("a delivery through the broker", () => {
     expect([wrongSource.statusCode, wrongSource.body]).toEqual([403, FORBIDDEN]);
     expect((await w.post(eventBody("e1"), { method: "GET" })).statusCode).toBe(404);
     expect((await w.post(eventBody("e1"), { method: "PUT" })).statusCode).toBe(404);
+  });
+
+  it("takes a delivery only on the hook route's own key: the same path on another route is not a hook delivery and starts nothing", async () => {
+    const w = await brokerWorld();
+    for (const routeKey of ["ANY /{proxy+}", "ANY /v1/app/{proxy+}", "POST /v1/github/webhooks", "$default"]) {
+      const reply = await w.post(eventBody("e1"), { routeKey });
+      expect(reply.statusCode, routeKey).not.toBe(202);
+      expect(reply.statusCode, routeKey).not.toBe(200);
+    }
+    expect(w.dispatched).toEqual([]);
+    expect((await w.post(eventBody("e1"))).statusCode).toBe(202);
   });
 
   it("answers 413 for a body over a megabyte without reading anything", async () => {
