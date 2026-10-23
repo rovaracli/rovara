@@ -23,7 +23,7 @@ import {
   type OrgId,
   type SessionOwner,
 } from "@agentx/contracts";
-import { errorName, failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
+import { errorName, failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { AgentSessionStore } from "./store.js";
@@ -41,6 +41,25 @@ const DAY_SECONDS = 86_400;
 const PRESENCE_SCAN_MAX = 500;
 const PRESENCE_PAGE = 100;
 const TOO_MANY_FOLLOWERS = "This session has the most followers it can have.";
+/** How many times a follow or unfollow is tried when another transaction holds the session's items (every follow and unfollow writes the session's META). */
+const CONFLICT_ATTEMPTS = 4;
+const BUSY = "This session is busy right now. Try again in a moment.";
+
+/**
+ * Sends one transaction, trying again (at most `CONFLICT_ATTEMPTS` in all) while it only lost to another transaction on the same items. Anything else, a lost condition included,
+ * is thrown for the caller to read. A conflict that outlasts the attempts is a retryable `RUNTIME_UNAVAILABLE`, never a raw failure.
+ */
+async function sendTransaction(deps: Pick<SessionAccessDependencies, "documentClient">, items: TransactItem[]): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      return;
+    } catch (error) {
+      if (!isTransactionConflict(error)) throw error;
+      if (attempt >= CONFLICT_ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
+    }
+  }
+}
 
 const getItem = async (deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
@@ -81,7 +100,7 @@ export async function followSession(deps: SessionFollowerDependencies, caller: S
     },
   ];
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    await sendTransaction(deps, items);
   } catch (error) {
     const failed = failedIndexes(error);
     if (failed === undefined) throw error;
@@ -115,21 +134,23 @@ export async function removeFollower(deps: Pick<SessionAccessDependencies, "docu
   const key = followerKey(session, developerId);
   if (await getItem(deps, key) === undefined) return false;
   try {
-    await deps.documentClient.send(new TransactWriteCommand({
-      TransactItems: [
-        { Delete: { TableName: deps.tableName, Key: key, ConditionExpression: "attribute_exists(pk)" } },
-        {
-          Update: {
-            TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"), UpdateExpression: "ADD #followers :minusOne",
-            ConditionExpression: "#followers > :zero", ExpressionAttributeNames: { "#followers": "followerCount" },
-            ExpressionAttributeValues: { ":minusOne": -1, ":zero": 0 },
-          },
+    await sendTransaction(deps, [
+      { Delete: { TableName: deps.tableName, Key: key, ConditionExpression: "attribute_exists(pk)" } },
+      {
+        Update: {
+          TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"), UpdateExpression: "ADD #followers :minusOne",
+          ConditionExpression: "#followers > :zero", ExpressionAttributeNames: { "#followers": "followerCount" },
+          ExpressionAttributeValues: { ":minusOne": -1, ":zero": 0 },
         },
-      ],
-    }));
+      },
+    ]);
     return true;
   } catch (error) {
-    if (failedIndexes(error) === undefined) throw error;
+    const failed = failedIndexes(error);
+    if (failed === undefined) throw error;
+    // The follow itself is gone (another request removed it): nothing is left to remove. Only a refused count with the follow still there is a drifted count.
+    if (failed.has(0)) return false;
+    if (!failed.has(1)) throw error;
   }
   try {
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key, ConditionExpression: "attribute_exists(pk)" }));

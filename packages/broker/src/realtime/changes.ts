@@ -74,7 +74,7 @@ const refuseCursor = () => agentXError("CONFIG_INVALID", "since: is not a cursor
  * An item's `at` is the summary's `computedAt`, taken before the follower checks and the write, and two writers (the broker and the outbox publisher) write items, so an item can be
  * committed after a newer one was read. `next` is therefore held back: never newer than `CHANGES_SETTLE_MS` before now (and never behind the cursor given, nor past the page's last
  * item), so an item written late is still found by the next read. The cost is repeats: a notice inside the window comes again, with the same `sk`, and the client drops repeats by `sk`.
- * A full page is the exception: its cursor is its last item, or a feed with a burst of `CHANGES_PAGE_MAX` notices in the window could never move on.
+ * A full page is held back too, except that when the window's edge is no newer than the cursor given its cursor is its last item, or a burst of `CHANGES_PAGE_MAX` notices inside the window could never move on (it costs one repeated page).
  */
 export async function readChanges(deps: ChangesDependencies, caller: { orgId: OrgId; developerId: string }, since: string | undefined): Promise<ChangesFeedPage> {
   const now = deps.now();
@@ -97,7 +97,11 @@ export async function readChanges(deps: ChangesDependencies, caller: { orgId: Or
     const entry = entryOf(item, at, sk);
     if (entry !== undefined) notices.push(entry);
   }
-  if ((page.Items?.length ?? 0) >= CHANGES_PAGE_MAX && last !== undefined) return { notices, next: last };
+  if ((page.Items?.length ?? 0) >= CHANGES_PAGE_MAX && last !== undefined) {
+    // A full page is held back like any other, so a late item older than its last is still found; but when the edge is no newer than the cursor given, holding back would hand out the
+    // same page again, and the page's own last item is the cursor.
+    return { notices, next: since !== undefined && settled <= since ? last : last < settled ? last : settled };
+  }
   // Nothing came after the cursor: the cursor stands (a feed with no cursor starts at the window's edge). Otherwise the page's last item, held back to the window's edge.
   const held = last === undefined ? since ?? settled : last > settled ? settled : last;
   return { notices, next: since !== undefined && since > held ? since : held };

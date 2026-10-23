@@ -280,6 +280,15 @@ describe("following, when another transaction holds the same items (TransactionC
     expect(f.itemOf(ARJUN)).toBeDefined();
   });
 
+  it("passes on a cancellation that is neither a lost condition nor a conflict (a throttled transaction), and deletes nothing on the side", async () => {
+    const f = world();
+    await f.follow(ARJUN);
+    f.w.db.injectFault(conflict(["ThrottlingError", "None"]));
+    await expect(removeFollower(f.deps, f.session, ARJUN)).rejects.toMatchObject({ name: "TransactionCanceledException" });
+    expect(f.w.db.commandNames()).not.toContain("DeleteCommand");
+    expect(f.itemOf(ARJUN)).toBeDefined();
+  });
+
   it("retries a follow that hit a conflict, and writes one item and one count", async () => {
     const f = world();
     f.w.db.injectFault(conflict(["None", "TransactionConflict"]));
