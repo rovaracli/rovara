@@ -46,6 +46,8 @@ describe("the store", () => {
     expect((await v.triggers.listForMatch(ORG_A, "github", "web", undefined)).map((trigger) => trigger.triggerId)).toEqual([github.triggerId]);
     const matchItem = () => v.db.find((item) => item["entityType"] === "TRIGGER_MATCH" && item["triggerId"] === github.triggerId)[0];
     expect(matchItem()?.["enabled"]).toBe(true);
+    const created = await v.seed({ target, enabled: false });
+    expect(v.db.find((item) => item["entityType"] === "TRIGGER_MATCH" && item["triggerId"] === created.triggerId)[0]?.["enabled"]).toBe(false);
     await v.triggers.update({ trigger: github, patch: { enabled: false } });
     expect(matchItem()?.["enabled"]).toBe(false);
     const hooked = await v.seed({ target, spec: parse(SENTRY), hookId: HOOK_A });
@@ -117,7 +119,7 @@ describe("what a trigger needs", () => {
     v.hookReader.add({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", hookId: HOOK_A, project: "web", source: "sentry", disabled: false });
     const crossed = { ...v.routeDeps, hooks: { get: async () => ({ orgId: "org_bbbbbbbbbbbbbbbbbbbb" as never, hookId: HOOK_A, project: "web", source: "sentry", disabled: false }) } };
     expect((await triggerProblems(crossed, trigger))[0]).toMatchObject({ path: "hookId", code: "NOT_FOUND" });
-    const none = { ...v.routeDeps, hooks: undefined };
+    const { hooks: _hooks, ...none } = v.routeDeps; // eslint-disable-line @typescript-eslint/no-unused-vars -- the world with no hook reader
     expect((await triggerProblems(none, trigger))[0]).toMatchObject({ path: "hookId", code: "RUNTIME_UNAVAILABLE" });
   });
 });
@@ -184,6 +186,8 @@ describe("who may set, move, delete and confirm a trigger", () => {
     expect((await v.decideAs(DANA, id)).statusCode).toBe(200);
     expect((await stored(v, ID("a"))).enabled).toBe(true);
     const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, ISSUE], { budgetUsd: 20 });
+    // Max may view the agent, and is a maintainer of web, but does not manage it.
+    await v.agentCall(DANA, "PUT", `/v1/app/agents/${agent.agentId}/shares`, { shares: [{ principal: { kind: "member", developerId: MAX }, level: "view" }] });
     const agentAsked = await v.agentCall(DANA, "PUT", `/v1/app/agents/${agent.agentId}/triggers/${ID("b")}`, { project: "web", spec: ISSUE });
     expect((await v.decideAs(MAX, approvalOf(agentAsked.body["confirmUrl"]))).statusCode).toBe(403);
     expect((await stored(v, ID("b"))).enabled).toBe(false);
@@ -293,7 +297,7 @@ describe("a change of kind, source or creator, and what a removal and a delete l
     const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, createdBy: DANA, spec: parse(SCHEDULE), scheduleStatus: "ok" });
     await v.triggers.recordActivity(ORG_A, trigger.triggerId, { eventKey: "k", outcome: "failed", reason: "bad\u001b[31m thing‮" });
     const shown = (await v.chainCall(PRIYA, "GET", `/v1/app/chains/${chain.chainId}/triggers/${trigger.triggerId}/activity`)).body["activity"] as Array<{ reason: string }>;
-    expect(shown[0]!.reason).not.toMatch(/[\u001b‮]/u);
+    expect(shown[0]!.reason.includes(String.fromCharCode(27)) || shown[0]!.reason.includes(String.fromCharCode(0x202e))).toBe(false);
     expect((await v.chainCall(DANA, "DELETE", `/v1/app/chains/${chain.chainId}/triggers/${trigger.triggerId}`, {})).status).toBe(200);
     expect(v.scheduler.calls).toEqual([{ call: "remove", triggerId: trigger.triggerId }]);
   });
