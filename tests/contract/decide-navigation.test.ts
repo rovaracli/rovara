@@ -5,7 +5,9 @@ import { DECIDE_COOKIE, DecideStore, csrfTokenFor, requireDecideNavigation, requ
 import type { DecideKind } from "../../packages/broker/src/developer/decide-kinds.js";
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import { confirmPage, decidedPage, forbiddenPage, notFoundPage, reauthPage, refusedPage, resultPage } from "../../packages/broker/src/developer/confirm-page.js";
+import type { HttpResult } from "../../packages/broker/src/developer/server.js";
 import { createTaskWeb } from "../../packages/broker/src/aws/task-web.js";
+import { createAdminBroker } from "../support/admin-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { httpEvent, identityHarness } from "../support/developer-fakes.js";
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId, WHO = "a".repeat(64), APR = "apr_aaaaaaaaaaaaaaaaaaaa";
@@ -60,6 +62,11 @@ describe("a person's own approval navigation", () => {
   const pages = [confirmPage({ title: "Fixture", facts: [] }, { approvalId: APR, csrf: "fixture" }), decidedPage("Already done"), forbiddenPage("No access"), notFoundPage(), reauthPage("/v1/auth/decide/start"), refusedPage(403, "Refused", "Open again"), resultPage("Approved", "Done")];
   for (const page of pages) expect(page.headers["cross-origin-opener-policy"]).toBe("same-origin");
   const s = await setup();await s.store.deleteSession(COOKIE);expect((await s.page("GET", navigation)).headers["cross-origin-opener-policy"]).toBe("same-origin");
+ });
+ it("isolates the broker error response when approvals are not configured", async () => {
+  const h = await createAdminBroker();const event = httpEvent("GET", "/v1/app/approve/" + APR);
+  const response = await h.handler({ ...event, routeKey: "ANY /v1/app/{proxy+}" }) as HttpResult;
+  expect(response.statusCode).toBe(404);expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
  });
  it("isolates decide sign-in error and chooser pages", async () => {
   const h = identityHarness({ slackUsers: [], cloud: {}, decide: {} });
