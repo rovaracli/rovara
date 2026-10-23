@@ -10,9 +10,9 @@ import { ORG_A, ORG_B } from "../support/chain-run-world.js";
 const TASK = "task-1";
 const APPROVAL = `apr_${"a".repeat(20)}`;
 
-function setup(extra: { keys?: string[]; agent?: boolean; open?: boolean } = {}) {
+function setup(extra: { keys?: string[]; agent?: boolean; open?: boolean; workflow?: boolean } = {}) {
   const db = new FakeDynamoDb();
-  db.set({ ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: ORG_A, modelKeyIds: extra.keys ?? ["k1", "k2"], ...(extra.agent === false ? {} : { agent: { agentId: "root-cause-analyst", name: "Root-cause analyst", version: 1, builtin: true } }) });
+  db.set({ ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: ORG_A, modelKeyIds: extra.keys ?? ["k1", "k2"], ...(extra.agent === false ? {} : { agent: { agentId: "root-cause-analyst", name: "Root-cause analyst", version: 1, builtin: true } }), ...(extra.workflow === true ? { workflow: { stage: "BUILD" } } : {}) });
   db.set({
     ...taskAgentRunKey(TASK), entityType: "AGENT_RUN", orgId: ORG_A, revision: 1, state: "WAITING_FOR_APPROVAL", cursor: 0, input: { text: "why" },
     steps: [{ id: "investigate", status: "waiting", operationIds: [], approvalIds: [APPROVAL] }], reports: [],
@@ -29,7 +29,7 @@ function setup(extra: { keys?: string[]; agent?: boolean; open?: boolean } = {})
 describe("the chain view's task ports", () => {
   it("adds up the task's keys and counts the approvals its run waits on", async () => {
     const t = setup();
-    const ports = chainViewPortsFor({ approvals: t.approvals, keySpend: async (keys) => { t.asked.push([...keys]); return 1.234; }, confirmOrigin: "https://cell.example.com", taskView: async () => { throw new Error("not used"); } });
+    const ports = chainViewPortsFor({ approvals: t.approvals, keySpend: async (keys) => { t.asked.push([...keys]); return 1.234; }, taskView: async () => { throw new Error("not used"); } });
     expect(await ports.taskFacts(ORG_A, TASK)).toEqual({ spentUsd: 1.234, pendingApprovals: 1 });
     expect(t.asked).toEqual([["k1", "k2"]]);
   });
@@ -39,6 +39,13 @@ describe("the chain view's task ports", () => {
     expect(await closed.taskFacts(ORG_A, TASK)).toEqual({ spentUsd: 0, pendingApprovals: 0 });
     const coding = chainViewPortsFor({ approvals: setup({ agent: false }).approvals, taskView: async () => { throw new Error("not used"); } });
     expect(await coding.taskFacts(ORG_A, TASK)).toEqual({ spentUsd: 0, pendingApprovals: 0 });
+  });
+
+  it("counts no agent-step approvals for a task that runs a workflow, and rounds the cost to the cent-fraction the ledger keeps", async () => {
+    const workflow = chainViewPortsFor({ approvals: setup({ workflow: true }).approvals, taskView: async () => { throw new Error("not used"); } });
+    expect((await workflow.taskFacts(ORG_A, TASK))?.pendingApprovals).toBe(0);
+    const sum = chainViewPortsFor({ approvals: setup().approvals, keySpend: async () => 0.1 + 0.2, taskView: async () => { throw new Error("not used"); } });
+    expect((await sum.taskFacts(ORG_A, TASK))?.spentUsd).toBe(0.3);
   });
 
   it("asks the proxy nothing for a task with no keys, and reads a cost of nothing without a proxy", async () => {

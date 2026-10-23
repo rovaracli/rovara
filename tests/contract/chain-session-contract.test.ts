@@ -2,6 +2,9 @@
 // needs Plans 4 and 5 and a new CHAIN_SESSION_CONTRACT_VERSION; adding an optional field, an event type or a status stays in version 1.
 import { describe, expect, it } from "vitest";
 import {
+  CHAIN_RUN_EVENTS_PAGE_MAX,
+  CHAIN_RUN_EVENT_TEXT_MAX,
+  CHAIN_RUN_LIST_PAGE_MAX,
   CHAIN_SESSION_CONTRACT_VERSION,
   ChainRunEventPageReaderSchema,
   ChainRunEventPageSchema,
@@ -106,6 +109,14 @@ describe("what clients read: a newer server's view", () => {
 
   it("reads a known value as itself and keeps a section of a known kind whole", () => {
     expect(ChainRunSectionReaderSchema.parse(section({ status: "waiting", kind: "gate" }))).toMatchObject({ status: "waiting", kind: "gate" });
+  });
+
+  it("pins the page sizes", () => {
+    expect([CHAIN_RUN_EVENTS_PAGE_MAX, CHAIN_RUN_LIST_PAGE_MAX, CHAIN_RUN_EVENT_TEXT_MAX]).toEqual([200, 50, 500]);
+  });
+
+  it("does not read a start of a kind it knows, with a field missing, as unknown", () => {
+    expect(ChainRunViewReaderSchema.safeParse(view({ startedBy: { kind: "member", developerId: HEX } })).success).toBe(false);
   });
 
   it("reads a start of a kind it does not know as unknown, with its other fields", () => {

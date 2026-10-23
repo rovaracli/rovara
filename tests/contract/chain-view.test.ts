@@ -15,8 +15,10 @@ import {
   ChainRunEventPageSchema, ChainRunListSchema, ChainRunViewReaderSchema, ChainRunViewSchema, ChainStepTaskViewSchema,
 } from "../../packages/contracts/src/chain-session.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { approvalKey, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "../support/chain-gate-world.js";
 
 afterEach(() => disposeGateWorlds());
@@ -75,10 +77,10 @@ const share = async (v: ViewWorld, chainId: string, developerId: string, level: 
   setChainShares({ ...v.deps, store: v.w.chains }, { orgId: ORG_A, chainId, shares: [{ principal: { kind: "member", developerId }, level }], by: PRIYA });
 
 /** The example, run to its review step: started by `startedBy`, `fix` chosen, the gate approved by Max, the fix done; the review (seq 4) runs. */
-async function reachReview(v: ViewWorld, startedBy: string = PRIYA) {
+async function reachReview(v: ViewWorld, startedBy: string = PRIYA, fixEnd: Record<string, unknown> = {}) {
   const { chain, run, approvalId } = await v.w.runAtGate(startedBy);
   await v.w.decideAs(MAX, approvalId);
-  await end(v.w, "task-2");
+  await end(v.w, "task-2", fixEnd);
   return { chain, run, approvalId };
 }
 const eventRun = async (v: ViewWorld, chainId: string, owner: string = PRIYA) => startChainRun(v.deps, { system: "event", owner: { developerId: owner } }, {
@@ -110,6 +112,9 @@ describe("the view of a run", () => {
     expect(shown.sections[0]).toMatchObject({ detail: { kind: "task", taskId: "task-1", rovaraCode: false }, report: "the report", branchTaken: { id: "fix", description: "The cause is in our code and a code change fixes it", fellBack: false } });
     expect(shown.sections[1]).not.toHaveProperty("detail");
     expect(shown.sections[0]).not.toHaveProperty("gate");
+    expect(shown.sections[0]!.endedAt).toEqual(expect.any(String));
+    expect(shown.sections[3]).not.toHaveProperty("endedAt");
+    expect(shown.sections[3]).not.toHaveProperty("report");
   });
 
   it("parses with the reader schema too, and a gate that is still waiting is PENDING with no decision", async () => {
@@ -255,6 +260,8 @@ describe("the event log", () => {
     expect(seqs).toEqual(seqs.map((_, index) => index + 1));
     expect(seqs.length).toBeGreaterThanOrEqual(8);
     expect(page.events[0]).toMatchObject({ type: "started" });
+    expect(page.events[1]).toMatchObject({ type: "step_started", stepSeq: 1 });
+    expect(page.events[0]).not.toHaveProperty("stepSeq");
     expect(page).not.toHaveProperty("next");
     expect(v.w.run(run.runId)!.eventSeq).toBe(seqs.length);
     expect((await chainRunEvents(v.deps, callerOf(PRIYA), run.runId, seqs.length)).events).toEqual([]);
@@ -288,7 +295,8 @@ describe("the event log", () => {
     const v = world();
     const chain = await v.w.publish(twoSteps());
     const run = await v.w.start(chain.chainId);
-    for (const bad of [-1, 1.5, Number.NaN, 10_000_000]) expect(await refused(chainRunEvents(v.deps, callerOf(PRIYA), run.runId, bad))).toBe("CONFIG_INVALID");
+    for (const bad of [-1, 1.5, Number.NaN, 1_000_000, 10_000_000]) expect(await refused(chainRunEvents(v.deps, callerOf(PRIYA), run.runId, bad))).toBe("CONFIG_INVALID");
+    expect((await chainRunEvents(v.deps, callerOf(PRIYA), run.runId, 999_999)).events).toEqual([]);
   });
 });
 
@@ -390,7 +398,7 @@ describe("the routes", () => {
   it("defaults `after` to 0 and refuses a malformed one, a path that is not a run and a method that is not GET", async () => {
     const v = world();
     const { run } = await reachReview(v);
-    expect((await call(v, PRIYA, `/v1/app/chain-runs/${run.runId}/events`) as { events: unknown[] }).events.length).toBeGreaterThan(0);
+    expect((await call(v, PRIYA, `/v1/app/chain-runs/${run.runId}/events`) as { events: Array<{ seq: number }> }).events[0]!.seq).toBe(1);
     for (const bad of ["after=abc", "after=-1", "after=1.5", "after=1&after=2", "after=99999999"]) {
       expect(await refused(call(v, PRIYA, `/v1/app/chain-runs/${run.runId}/events?${bad}`))).toBe("CONFIG_INVALID");
     }
@@ -617,3 +625,267 @@ describe("the seams Plan 5's sessions read a chain through", () => {
     expect(await refused(chainSessionReads(v.deps, ORG_B).runView(actor, run.runId))).toBe("NOT_FOUND");
   });
 });
+
+// ---- what the first mutation pass found unpinned
+
+const seedEvents = (v: ViewWorld, runId: string, total: number) => {
+  for (let seq = v.w.events(runId).length + 1; seq <= total; seq += 1) v.w.db.set({ ...chainRunKey(ORG_A, runId, runEventSk(seq)), entityType: "CHAIN_RUN_EVENT", orgId: ORG_A, runId, seq, at: "2026-10-22T09:00:00.000Z", type: "step_started", text: `event ${String(seq)}` });
+};
+const gone = (v: ViewWorld, chainId: string) => v.w.db.delete(chainKey(ORG_A, chainId, "META"));
+
+describe("who reads, when the chain can't say", () => {
+  it("keeps the starter reading after the run's owner changed, and an owner or admin reading when the chain is gone", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const run = await v.w.start(chain.chainId, PRIYA);
+    v.w.db.set({ ...v.w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, owner: { developerId: CARL } });
+    gone(v, chain.chainId);
+    expect(await refused(chainRunView(v.deps, callerOf(PRIYA), run.runId))).toBeUndefined();
+    expect(await refused(chainRunView(v.deps, callerOf(CARL), run.runId))).toBeUndefined();
+    expect(await refused(chainRunView(v.deps, callerOf(DANA), run.runId))).toBeUndefined();
+    expect(await refused(chainRunView(v.deps, { ...callerOf(ARJUN), orgRole: "owner" }, run.runId))).toBeUndefined();
+    expect(await refused(chainRunView(v.deps, callerOf(MAX), run.runId))).toBe("NOT_FOUND");
+  });
+
+  it("names a project-owned chain's owner by its project", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps(), { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, by: MAX });
+    const run = await v.w.start(chain.chainId, PRIYA);
+    expect((await chainRunView(v.deps, callerOf(PRIYA), run.runId)).chainOwner).toEqual({ kind: "project", id: "web", name: "web" });
+  });
+
+  it("takes the person from the actor and not from the caller, and treats a developer who is not in the org as nobody", async () => {
+    const v = world();
+    const { run } = await reachReview(v);
+    expect(await refused(chainStepTask(v.deps, callerOf(PRIYA), run.runId, 3, { actor: { kind: "session", developerId: VIV } }))).toBe("NOT_FOUND");
+    expect(await refused(chainStepTask(v.deps, callerOf(VIV), run.runId, 3, { actor: { kind: "session", developerId: PRIYA } }))).toBeUndefined();
+    expect(await refused(chainRunView(v.deps, callerOf(PRIYA), run.runId, { actor: { kind: "session", developerId: NOBODY } }))).toBe("NOT_FOUND");
+    expect(await refused(chainRunEvents(v.deps, callerOf(PRIYA), run.runId, 0, { actor: { kind: "session", developerId: NOBODY } }))).toBe("NOT_FOUND");
+  });
+});
+
+describe("a section, when what it rests on is missing or odd", () => {
+  it("shows the gate from the attempt when its approval record is gone, and leaves the gate out when the attempt has no approval", async () => {
+    const v = world();
+    const waiting = await v.w.runAtGate(PRIYA);
+    v.w.db.delete(approvalKey(ORG_A, waiting.approvalId));
+    expect((await chainRunView(v.deps, callerOf(PRIYA), waiting.run.runId)).sections[1]!.gate).toMatchObject({ status: "PENDING", prompt: "Should Rovara Code fix this?" });
+    const approved = await v.w.runAtGate(PRIYA);
+    await v.w.decideAs(MAX, approved.approvalId);
+    v.w.db.delete(approvalKey(ORG_A, approved.approvalId));
+    const shown = (await chainRunView(v.deps, callerOf(PRIYA), approved.run.runId)).sections[1]!.gate;
+    expect(shown).toMatchObject({ status: "APPROVED" });
+    expect(shown).not.toHaveProperty("decidedBy");
+    const declined = await v.w.runAtGate(PRIYA);
+    await v.w.decideAs(MAX, declined.approvalId, "decline");
+    v.w.db.delete(approvalKey(ORG_A, declined.approvalId));
+    expect((await chainRunView(v.deps, callerOf(PRIYA), declined.run.runId)).sections[1]!.gate).toMatchObject({ status: "DECLINED" });
+    const stopped = await v.w.runAtGate(PRIYA);
+    const { cancelChainRun } = await import("../../packages/broker/src/chains/lifecycle.js");
+    await cancelChainRun(v.deps, callerOf(PRIYA), stopped.run.runId, { requestId: randomUUID() });
+    v.w.db.delete(approvalKey(ORG_A, stopped.approvalId));
+    expect((await chainRunView(v.deps, callerOf(PRIYA), stopped.run.runId)).sections[1]!.gate).toMatchObject({ status: "EXPIRED" });
+    const bare = await v.w.runAtGate(PRIYA);
+    const attempt = v.w.db.get(chainRunKey(ORG_A, bare.run.runId, stepSk(2)))!;
+    const { approvalId: _dropped, ...without } = attempt;
+    void _dropped;
+    v.w.db.delete(chainRunKey(ORG_A, bare.run.runId, stepSk(2)));
+    v.w.db.set(without);
+    expect((await chainRunView(v.deps, callerOf(PRIYA), bare.run.runId)).sections[1]).not.toHaveProperty("gate");
+  });
+
+  it("does not fail the view when the approval can't be read, and shows no decider without a decision time", async () => {
+    const v = world();
+    const { run, approvalId } = await v.w.runAtGate(PRIYA);
+    v.w.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("APPROVAL#"), error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
+    expect((await chainRunView(v.deps, callerOf(PRIYA), run.runId)).sections[1]!.gate).toMatchObject({ status: "PENDING" });
+    await v.w.decideAs(MAX, approvalId);
+    const { decidedAt: _removed, ...record } = v.w.db.get(approvalKey(ORG_A, approvalId))!;
+    void _removed;
+    v.w.db.delete(approvalKey(ORG_A, approvalId));
+    v.w.db.set(record);
+    const gate = (await chainRunView(v.deps, callerOf(PRIYA), run.runId)).sections[1]!.gate;
+    expect(gate).toMatchObject({ status: "APPROVED" });
+    expect(gate).not.toHaveProperty("decidedBy");
+    expect(gate).not.toHaveProperty("decidedAt");
+  });
+
+  it("shows the branch taken, from the step's own choices, and says when it was the default", async () => {
+    const v = world();
+    const chain = await v.w.publish(INVESTIGATE_THEN_FIX);
+    const run = await v.w.start(chain.chainId);
+    await end(v.w, "task-1");
+    expect((await chainRunView(v.deps, callerOf(PRIYA), run.runId)).sections[0]!.branchTaken).toEqual({ id: "no_fix", description: "Not a code problem, or not enough evidence", fellBack: true });
+    const chosen = await v.w.start(chain.chainId);
+    await end(v.w, "task-2", { branch: "no_fix" });
+    expect((await chainRunView(v.deps, callerOf(PRIYA), chosen.runId)).sections[0]!.branchTaken).toMatchObject({ id: "no_fix", fellBack: false });
+  });
+
+  it("shows a step's links, and none when it left none", async () => {
+    const v = world();
+    const { run } = await reachReview(v, PRIYA, { pullRequests: [{ repository: "web", number: 12, url: "https://github.com/acme/web/pull/12" }] });
+    const shown = await chainRunView(v.deps, callerOf(PRIYA), run.runId);
+    expect(shown.sections[2]!.links).toEqual([{ label: "Pull request web#12", url: "https://github.com/acme/web/pull/12" }]);
+    expect(shown.sections[0]).not.toHaveProperty("links");
+    const none = await reachReview(v, PRIYA, { outcome: "failed" });
+    expect((await chainRunView(v.deps, callerOf(PRIYA), none.run.runId)).sections[2]).not.toHaveProperty("links");
+  });
+});
+
+describe("the edges of the event log and the step task read", () => {
+  it("ends a page of exactly 200 without `next`, and a page of 201 with it", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const run = await v.w.start(chain.chainId);
+    seedEvents(v, run.runId, 200);
+    const exact = await chainRunEvents(v.deps, callerOf(PRIYA), run.runId, 0);
+    expect(exact.events).toHaveLength(200);
+    expect(exact).not.toHaveProperty("next");
+    seedEvents(v, run.runId, 201);
+    expect((await chainRunEvents(v.deps, callerOf(PRIYA), run.runId, 0)).next).toBe(200);
+  });
+
+  it("answers 404 for a seq that is not a step number at all, before it reads anything", async () => {
+    const v = world();
+    const { run } = await reachReview(v);
+    for (const bad of [1.5, -1, 0, 10_000, Number.NaN]) expect(await refused(chainStepTask(v.deps, callerOf(PRIYA), run.runId, bad)), String(bad)).toBe("NOT_FOUND");
+    expect(await refused(chainStepTask(v.deps, callerOf(PRIYA), run.runId, 9999))).toBe("NOT_FOUND");
+  });
+
+  it("answers 404 for a gate's seq and for an attempt that has no task, though the caller reads both", async () => {
+    const v = world();
+    const { run } = await v.w.runAtGate(PRIYA);
+    expect(await refused(chainStepTask(v.deps, callerOf(PRIYA), run.runId, 2))).toBe("NOT_FOUND");
+    const gateAttempt = v.w.db.get(chainRunKey(ORG_A, run.runId, stepSk(2)))!;
+    v.w.db.set({ ...gateAttempt, taskId: "task-1" });
+    expect(await refused(chainStepTask(v.deps, callerOf(PRIYA), run.runId, 2))).toBe("NOT_FOUND");
+  });
+});
+
+describe("the list's edges", () => {
+  /** Index rows of `count` clones of the run, oldest first from `from`; each is a run of the chain unless `missing` (then no run is behind it). */
+  const seedRuns = (v: ViewWorld, chainId: string, original: string, count: number, options: { from?: number; missing?: boolean } = {}) => {
+    const meta = v.w.db.get(chainRunKey(ORG_A, original, "META"))!;
+    const made: string[] = [];
+    for (let index = options.from ?? 1; index < (options.from ?? 1) + count; index += 1) {
+      const runId = `crn_${String(index).padStart(20, "0")}`;
+      const createdAt = new Date(Date.parse("2026-10-22T08:00:00.000Z") + index * 1000).toISOString();
+      if (options.missing !== true) v.w.db.set({ ...meta, ...chainRunKey(ORG_A, runId, "META"), runId, createdAt });
+      v.w.db.set({ ...chainRunsByChainKey(ORG_A, chainId, createdAt, runId), entityType: "CHAIN_RUN_INDEX", orgId: ORG_A, runId, chainId, project: "web", createdAt });
+      made.push(runId);
+    }
+    return made;
+  };
+  const ids = (list: { runs: Array<{ sessionId: string }> }) => list.runs.map((entry) => entry.sessionId);
+
+  it("ends a list of exactly 50 without a cursor", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const run = await v.w.start(chain.chainId);
+    seedRuns(v, chain.chainId, run.runId, 49);
+    const list = await listChainRuns(v.deps, callerOf(PRIYA), { chain: chain.chainId });
+    expect(list.runs).toHaveLength(50);
+    expect(list).not.toHaveProperty("next");
+  });
+
+  it("gives a cursor when the 50th run is the last of a page of index rows and more rows follow", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const run = await v.w.start(chain.chainId);
+    // Newest first: 50 rows with no run behind them, then the original run, then its 54 clones. 105 rows in all: a page of 100 ends with the 50th run.
+    const visible = seedRuns(v, chain.chainId, run.runId, 54, { from: 1 });
+    seedRuns(v, chain.chainId, run.runId, 50, { from: 100_000, missing: true });
+    const first = await listChainRuns(v.deps, callerOf(PRIYA), { chain: chain.chainId });
+    expect(first.runs).toHaveLength(50);
+    expect(first.next).toEqual(expect.any(String));
+    const second = await listChainRuns(v.deps, callerOf(PRIYA), { chain: chain.chainId, cursor: first.next! });
+    expect(new Set([...ids(first), ...ids(second)]).size).toBe(55);
+    expect([...ids(first), ...ids(second)].sort()).toEqual([run.runId, ...visible].sort());
+    expect(second).not.toHaveProperty("next");
+  });
+
+  it("stops looking after 200 index rows and gives a cursor to go on from, even when it found nothing yet", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const run = await v.w.start(chain.chainId);
+    seedRuns(v, chain.chainId, run.runId, 230, { from: 100_000, missing: true });
+    const first = await listChainRuns(v.deps, callerOf(PRIYA), { chain: chain.chainId });
+    expect(first.runs).toEqual([]);
+    expect(first.next).toEqual(expect.any(String));
+    const second = await listChainRuns(v.deps, callerOf(PRIYA), { chain: chain.chainId, cursor: first.next! });
+    expect(ids(second)).toEqual([run.runId]);
+    expect(second).not.toHaveProperty("next");
+  });
+
+  it("refuses a cursor that is too long, has other characters, is not JSON, or does not hold a sort key of this index", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    await v.w.start(chain.chainId);
+    const encode = (value: string) => Buffer.from(value, "utf8").toString("base64url");
+    const good = `2026-10-22T08:00:00.000Z#crn_${"0".repeat(20)}`;
+    expect(await refused(listChainRuns(v.deps, callerOf(PRIYA), { chain: chain.chainId, cursor: encode(JSON.stringify({ sk: good })) }))).toBeUndefined();
+    const long = encode(JSON.stringify({ sk: good, pad: "x".repeat(400) }));
+    for (const bad of [long, "a b", "a+b/c=", encode("not json"), encode(JSON.stringify({ sk: "x" })), encode(JSON.stringify({ sk: 1 })), encode(JSON.stringify({}))]) {
+      expect(await refused(listChainRuns(v.deps, callerOf(PRIYA), { chain: chain.chainId, cursor: bad })), bad.slice(0, 20)).toBe("CONFIG_INVALID");
+    }
+  });
+
+  it("leaves out an index row that points at a run of another chain or another project", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const other = await v.w.publish(twoSteps());
+    const run = await v.w.start(chain.chainId);
+    const stranger = await v.w.start(other.chainId);
+    const at = "2026-10-22T07:00:00.000Z";
+    v.w.db.set({ ...chainRunsByChainKey(ORG_A, chain.chainId, at, stranger.runId), entityType: "CHAIN_RUN_INDEX", orgId: ORG_A, runId: stranger.runId, chainId: chain.chainId, project: "web", createdAt: at });
+    expect(ids(await listChainRuns(v.deps, callerOf(PRIYA), { chain: chain.chainId }))).toEqual([run.runId]);
+    const apiRun = `crn_${"p".repeat(20)}`;
+    v.w.db.set({ ...v.w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, ...chainRunKey(ORG_A, apiRun, "META"), runId: apiRun, project: "api" });
+    v.w.db.set({ ...chainRunsByProjectKey(ORG_A, "web", at, apiRun), entityType: "CHAIN_RUN_INDEX", orgId: ORG_A, runId: apiRun, chainId: chain.chainId, project: "web", createdAt: at });
+    expect(ids(await listChainRuns(v.deps, callerOf(DANA), { project: "web" })).sort()).toEqual([run.runId, stranger.runId].sort());
+  });
+});
+
+describe("the seams, edge by edge", () => {
+  it("lists who a gate waits for by name, once each, whatever the rules", async () => {
+    const v = world();
+    const definition: ChainDefinitionInput = {
+      start: "look", limits: { maxRunUsd: 30 },
+      steps: [
+        agentStep("look", "Look into it", "root-cause-analyst", { kind: "go", to: "ask" }),
+        { kind: "gate", id: "ask", name: "Ask", prompt: "Go on?", approvers: [{ kind: "starter" }, { kind: "members", developerIds: [MAX, CARL, PRIYA] }, { kind: "chain_owner" }], onApprove: { to: "$end" }, onReject: { to: "$end" } },
+      ],
+    };
+    const chain = await v.w.publish(definition);
+    const run = await v.w.start(chain.chainId, PRIYA);
+    await end(v.w, "task-1");
+    const facts = await chainSessionSource(v.deps).read(ORG_A, run.runId);
+    expect(facts).toMatchObject({ status: "gate", needsPeople: ["Priya", "Max", "Carl", `${chain.name}'s owner`] });
+  });
+
+  it("names the project's maintainers for a gate of an event-started run, which has no starter to name", async () => {
+    const v = world();
+    const definition: ChainDefinitionInput = {
+      start: "look", limits: { maxRunUsd: 30 },
+      steps: [
+        agentStep("look", "Look into it", "root-cause-analyst", { kind: "go", to: "ask" }),
+        { kind: "gate", id: "ask", name: "Ask", prompt: "Go on?", approvers: [{ kind: "project_maintainers" }], onApprove: { to: "$end" }, onReject: { to: "$end" } },
+      ],
+    };
+    const chain = await v.w.publish(definition);
+    const run = await eventRun(v, chain.chainId, CARL);
+    await end(v.w, "task-1");
+    expect((await chainSessionSource(v.deps).read(ORG_A, run.runId))?.needsPeople).toEqual(["a maintainer of web"]);
+  });
+
+  it("refuses a read to a developer who is no longer in the org, though they started the run", async () => {
+    const v = world();
+    const chain = await v.w.publish(twoSteps());
+    const run = await v.w.start(chain.chainId, PRIYA);
+    const session = { subject: { kind: "chain" as const, chainRunId: run.runId } };
+    expect(await chainReadAccessFor(v.deps)({ orgId: ORG_A, developerId: PRIYA }, session)).toBe(true);
+    v.w.db.delete(orgMemberKey(ORG_A, PRIYA));
+    expect(await chainReadAccessFor(v.deps)({ orgId: ORG_A, developerId: PRIYA }, session)).toBe(false);
+  });
+});
+

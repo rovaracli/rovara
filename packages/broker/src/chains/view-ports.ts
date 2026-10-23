@@ -14,8 +14,6 @@ export interface ChainViewPortInput {
   keySpend?: ((keyIds: readonly string[]) => Promise<number>) | undefined;
   /** Plan 3's task view (`taskView`), bound to the request's task dependencies. It does no owner check: callers load the task first. */
   taskView(task: DeveloperTaskRecord): Promise<DeveloperTaskView>;
-  /** Where approvals are decided, so an open approval's link is the confirmation page. */
-  confirmOrigin?: string | undefined;
 }
 
 export function chainViewPortsFor(input: ChainViewPortInput): ChainViewPorts {
@@ -27,7 +25,7 @@ export function chainViewPortsFor(input: ChainViewPortInput): ChainViewPorts {
       const task = stored as unknown as DeveloperTaskRecord;
       const keys = task.modelKeyIds ?? [];
       const spentUsd = input.keySpend === undefined || keys.length === 0 ? 0 : cleanUsd(await input.keySpend(keys));
-      const run = task.agent !== undefined && task.workflow === undefined ? await agentRunView(input.approvals, task, input.confirmOrigin) : undefined;
+      const run = task.agent !== undefined && task.workflow === undefined ? await agentRunView(input.approvals, task) : undefined;
       return { spentUsd, pendingApprovals: run?.pendingApprovals.length ?? 0 };
     },
   };

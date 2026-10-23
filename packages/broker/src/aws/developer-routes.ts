@@ -1568,7 +1568,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     const admission = deps.modelAccess === undefined ? undefined : { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: deps.now, cloud: deps.cloud === true };
     const agentDeps = deps.agents;
     const chainView = agentDeps.chainView ?? chainViewPortsFor({
-      approvals: agentDeps, keySpend: deps.modelAccess === undefined ? undefined : (keyIds) => deps.modelAccess!.keySpend(keyIds), confirmOrigin: agentDeps.confirmOrigin,
+      approvals: agentDeps, keySpend: deps.modelAccess === undefined ? undefined : (keyIds) => deps.modelAccess!.keySpend(keyIds),
       taskView: (task) => taskView(developerTaskRouteDependencies(deps, caller), task, { events: 20, details: true, actor: "viewer" }),
     });
     return routeChainRequest({ ...agentDeps, chains: deps.agents.chains, chainView, ...(starter === undefined ? {} : { chainRuns: chainRunPortsFor(starter, admission) }) }, caller, request, url);
