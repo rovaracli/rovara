@@ -5,13 +5,13 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, approvalKey, defaultSpendPolicy, openApprovalKey, openSpendRequestDueKey, builtinSettingsKey, agentRunsKey, ledgerKey, orgProjectCatalogKey, projectAgentKey, projectMemberKey, projectMetaKey, projectRevisionKey, sourceAlias, spendCounterKey,
+  DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentRunsKey, approvalKey, builtinSettingsKey, defaultSpendPolicy, ledgerKey, openApprovalKey, openSpendRequestDueKey,
+  orgProjectCatalogKey, projectAgentKey, projectMemberKey, projectMetaKey, projectRevisionKey, sourceAlias, spendCounterKey,
   type OrgId,
 } from "@agentx/contracts";
 import { decideSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
-import { createStepApproval, createWriteApprovalRecord, decideApproval, getAnyApproval, runApprovalSweep, type ApprovalDependencies, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
+import { approvalTaskEventKey, createStepApproval, createWriteApprovalRecord, decideApproval, getAnyApproval, runApprovalSweep, type ApprovalDependencies, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { decideWriteApproval } from "../../packages/broker/src/agents/write-gate.js";
-import { approvalTaskEventKey } from "../../packages/broker/src/agents/approvals.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { agentUsageCounter } from "../../packages/broker/src/spend/payer.js";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
@@ -980,7 +980,7 @@ describe("the settlement run keeps an item to its own org", () => {
     // A request's and an approval's due items that name org B and an id of A's.
     const past = new Date(Date.now() - 86_400_000).toISOString();
     w.db.set({ ...openSpendRequestDueKey(past, ORG_B, w.ids.runLimit), entityType: "SPEND_REQUEST_DUE", orgId: ORG_B, spendRequestId: w.ids.runLimit, dueAt: past });
-    w.db.set({ ...openApprovalKey(past, ORG_B, w.ids.P as never), entityType: "OPEN_APPROVAL", orgId: ORG_B, approvalId: w.ids.P });
+    w.db.set({ ...openApprovalKey(past, ORG_B, w.ids.P), entityType: "OPEN_APPROVAL", orgId: ORG_B, approvalId: w.ids.P });
     const requestsBefore = JSON.stringify(w.requests(), stable);
     const approvalsBefore = JSON.stringify([w.ids.P, w.ids.Q, w.ids.changeId].map((id) => w.db.get(approvalKey(TEST_ORG, id as never))), stable);
     const aBeforeTask = taskState(w, aTask);
