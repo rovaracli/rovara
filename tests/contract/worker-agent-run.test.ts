@@ -338,6 +338,24 @@ describe("the connector bridge", () => {
   });
 });
 
+describe("minor 3: the connector bridge's request id is tied to the operation", () => {
+  const ids = async (context: { workspaceId: string; conversationId: string; operationId?: string }, callId = "call_1") => {
+    const seen: string[] = [];
+    const [tool] = createConnectorBridgeTools([catalog("linear", "get_issue")], async (input) => { seen.push(input.requestId); return { status: "SUCCEEDED" }; }, context);
+    await tool!.execute(callId, { id: "1" }, undefined, undefined, {} as never);
+    return seen[0]!;
+  };
+  const context = { workspaceId: "11111111-1111-4111-8111-111111111111", conversationId: "22222222-2222-4222-8222-222222222222" };
+
+  it("a later step's call with the same call id of an earlier step is a different request, and a redelivered operation keeps its id", async () => {
+    const first = await ids({ ...context, operationId: "33333333-3333-4333-8333-333333333333" });
+    const later = await ids({ ...context, operationId: "44444444-4444-4444-8444-444444444444" });
+    expect(later).not.toBe(first);
+    expect(await ids({ ...context, operationId: "33333333-3333-4333-8333-333333333333" })).toBe(first);
+    expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/u);
+  });
+});
+
 describe("the tools of a step", () => {
   const BANNED = ["bash", "edit", "write"];
   const calls = [catalog("linear", "get_issue")];

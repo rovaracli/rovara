@@ -196,7 +196,8 @@ async function forWorker(
   const carriesAgentStep = agentStep !== undefined;
   const carriesModelRoute = invocation.kind === "task" && invocation.payload.modelRoute !== undefined;
   // A preparation that checks a pull request's head out is the agent-step engine's: only a worker that runs agent steps does it.
-  const carriesCheckout = invocation.kind === "prepare" && invocation.payload.checkout !== undefined;
+  // Its read-only form (clone and checkout, nothing of the repository run) is the same: a worker that does not know the field would run the setup.
+  const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesCheckout) return invocation;
   let features: readonly string[] = [];

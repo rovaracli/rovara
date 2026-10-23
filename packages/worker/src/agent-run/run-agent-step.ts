@@ -137,7 +137,7 @@ export async function runAgentStep(input: RunAgentStepInput): Promise<AgentStepR
     const catalogs = await (input.catalogs ?? agentToolCatalogsSource(broker))();
     if (cancelled()) throw new WorkerOperationCancelledError(input.operationId);
     const call = input.call ?? brokerToolCall(broker);
-    const tools: ToolDefinition[] = createConnectorBridgeTools(catalogs, call, { workspaceId: input.workspaceId, conversationId: input.conversationId });
+    const tools: ToolDefinition[] = createConnectorBridgeTools(catalogs, call, { workspaceId: input.workspaceId, conversationId: input.conversationId, operationId: input.operationId });
     const branch = payload.resultContract === undefined ? undefined : chooseBranchTool(payload.resultContract);
     if (branch !== undefined) tools.push(branch.tool);
 

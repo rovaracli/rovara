@@ -139,7 +139,7 @@ export interface DeveloperTaskRecord {
    * mid-run (`mintOperationKey`) has no `firstDispatch`, and keeps the first pause it was given. Task 32's approval of the raise clears this field
    * (and, for `firstDispatch`, takes the slot and writes the outbox and the watch).
    */
-  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string; checkout?: RunCheckout[] } };
+  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string; checkout?: RunCheckout[]; readOnly?: true } };
   /**
    * Plan 3, M-6: the plain task's operation whose budget stop the pause handlers were told about (`noteTaskPaused`). A plain task that stops on a budget is paused,
    * not ended, so its end handlers are not told; this marks the stop as told (a replay or the recovery sweep tells nobody again) and says the task's end is still

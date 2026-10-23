@@ -161,6 +161,7 @@ import {
   ROVARA_CODE_AGENT_ID,
   RUN_LIMIT_ASK_COOLDOWN_MS,
   RUN_LIMIT_BLOCK_PREFIX,
+  isRunLimitBlockReason,
   heldPlanStartKey,
   planRunLimitSubject,
   runLimitAskedKey,
@@ -319,6 +320,12 @@ export interface DeveloperTaskRouteDependencies {
    * with its audit flushed once that committed. Absent where agents are not set up.
    */
   withdrawSpendRequests?(task: DeveloperTaskRecord): Promise<{ items: TransactItems; flush(): Promise<void> }>;
+  /**
+   * Final fix wave (owner decision 2 = A): whether `caller` may go on with a task paused on a run limit, planning limit or max per run by a Continue, a workflow
+   * retry or a send-back, which would start a new window and skip that approval. Allowed only to a person who may decide the request themselves. Absent where
+   * agents are not set up.
+   */
+  pausedTaskGate?(caller: { orgId: OrgId; developerId: string }, task: DeveloperTaskRecord): Promise<{ allowed: true } | { allowed: false; who: string }>;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -1688,7 +1695,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
-  const preparation = await deps.actions.preparation(identity, project, request.requestId, prepared === undefined || prepared.checkout.length === 0 ? undefined : { checkout: prepared.checkout });
+  const preparation = await deps.actions.preparation(identity, project, request.requestId, prepared?.runner !== "agent_steps" ? undefined : { ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }), readOnly: true });
   const workspaceId = preparation.workspace.id;
   const conversationId = randomUUID();
   const revision = project.definition.revision;
@@ -1715,7 +1722,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
       // The pull requests the held preparation checks out are kept with the pause: its dispatch is built again when the run limit is raised (Task 32).
-      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }) } } } : {}),
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }), ...(prepared.runner === "agent_steps" ? { readOnly: true as const } : {}) } } } : {}),
     }),
   };
   const index: DeveloperTaskIndexRecord = {
@@ -2011,6 +2018,19 @@ async function capWindowBaseline(deps: DeveloperTaskRouteDependencies, task: Dev
 const staleBudgetPause = (task: DeveloperTaskRecord): boolean => task.budgetPause !== undefined && task.budgetPause.firstDispatch === undefined;
 
 /**
+ * Owner decision 2 = A: a person's Continue, retry or send-back never skips an approval unless they may decide it themselves. Refused, naming who is asked, before
+ * anything is read for or written to the task. A system resume (`spendResume`, a spend approval going on) is the approval itself.
+ */
+async function requireMayGoOn(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<void> {
+  if (deps.spendResume !== undefined || deps.pausedTaskGate === undefined || !staleBudgetPause(task)) return;
+  const gate = await deps.pausedTaskGate({ orgId: deps.orgId, developerId: caller.developerId }, task);
+  if (!gate.allowed) throw agentXError("WORKSPACE_BUSY", `This run is waiting for ${gate.who} to approve more. Continuing can't skip that approval.`);
+}
+
+/** An agent-step run takes no free-form turn: the engine owns its steps, and a coding session in its workspace would break the run's no-shell guarantee. */
+const AGENT_RUN_TURN_REFUSAL = "An agent run takes no follow-up. Start a new run instead.";
+
+/**
  * The clause and values that record the window in the same update that moves the task, since one transaction cannot touch a record twice. The clause comes
  * last in its update: with `task`, it also removes a stale mid-run pause (Task 32).
  */
@@ -2038,6 +2058,8 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
   await creatorGuard(deps, task);
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
+  if (task.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) throw agentXError("WORKSPACE_BUSY", AGENT_RUN_TURN_REFUSAL);
+  await requireMayGoOn(deps, caller, task);
   // A plain task whose dispatch was parked (its creator was a project viewer) comes back by continuing it now that they may work again.
   const resumed = await resumeTaskDispatch(deps, {
     task, peopleRevision: access.peopleRevision ?? 0, actorId: access.actorId, requestId: request.requestId, payloadHash: hashJson(request),
@@ -2097,7 +2119,7 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
   if (held === undefined) return;
   const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
   if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${task.project}\` revision ${task.startingRevision} is no longer registered`);
-  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, held.checkout === undefined ? {} : { checkout: held.checkout });
+  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, { ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true } : {}) });
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
   const items: TransactItems = [
@@ -2661,7 +2683,7 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
       asked = await ask({
         kind: "run_limit", resume: "implement", orgId: deps.orgId, taskId: task.taskId, requestId, newLimitUsd: decision.runLimitUsd,
         amountUsd: Math.max(0, cleanUsd(decision.runLimitUsd - (task.budgetUsd ?? 0))), approverRole: decision.approverRole, requestedBy: { kind: "member", developerId: caller.developerId },
-        reason: `Approving this plan sets a run limit of $${String(decision.runLimitUsd)}, which needs ${decision.needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.`,
+        reason: `Approving this plan sets a run limit of $${String(decision.runLimitUsd)}, which needs ${decision.needs === "maintainer" ? "a project maintainer's" : decision.needs === "agent_owner" ? "the agent owner's" : "an admin's"} approval.`,
       }) !== undefined;
     } catch (error) {
       if (error instanceof AgentXError) throw error;
@@ -2670,7 +2692,8 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
     }
   }
   // "I've asked for it" only when a request exists.
-  return { accepted: false, message: runLimitBlockText(decision.runLimitUsd, decision.needs, asked) };
+  // Option E: when the project or an agent's owner pays, the wait is said as such, and the words are the same whether or not the seam made a request.
+  return { accepted: false, message: decision.message.startsWith(RUN_LIMIT_BLOCK_PREFIX) ? runLimitBlockText(decision.runLimitUsd, decision.needs as "maintainer" | "admin", asked) : decision.message };
 }
 
 /** The claim IDs this task's earlier structured documents dropped (they may not come back), in order; a document that cannot be read is skipped. */
@@ -2820,6 +2843,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     const selected = workflowSelectedChecks({ ...policy, selectedOptionalIds, selectedProposedIds });
     if (selected.length === 0) throw agentXError("CONFIG_INVALID", "keep at least one check before retrying verification, or close the task");
     await actionableWorkspace(deps, task);
+    await requireMayGoOn(deps, caller, task);
     const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
     const receivedAt = iso(deps);
     const { blockReason: _previousBlockReason, ...unblocked } = workflow;
@@ -2934,6 +2958,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   if (request.expectedRevision !== undefined && request.expectedRevision !== task.workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
@@ -3144,7 +3169,8 @@ async function queueWorkflowCoding(
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const { workflow } = task;
-  // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew.
+  // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew, unless that skips an approval they may not decide.
+  await requireMayGoOn(deps, caller, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
   try {
@@ -3196,7 +3222,7 @@ const RUN_LIMIT_NOT_APPROVED_REFUSAL = "Coding starts once the run limit is appr
 
 /** A plan blocked on its run limit (Task 34) is unblocked by the run-limit approval only (`resumeAfterRunLimitApproval`), never by a retry or a send-back. */
 const blockedOnRunLimit = (workflow: WorkflowSnapshot): boolean =>
-  workflow.stage === "IMPLEMENT" && workflow.state === "BLOCKED" && workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+  workflow.stage === "IMPLEMENT" && workflow.state === "BLOCKED" && isRunLimitBlockReason(workflow.blockReason);
 
 /**
  * Plan 3, Task 34: the run limit of a plan blocked on it was approved (Task 32's `resume: "implement"`). Sets `budgetUsd` to the approved limit and the window
@@ -3256,6 +3282,7 @@ async function retryWorkflowImplementation(
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
   const plan = await approvedCodingPlan(deps, workflow);
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
@@ -3290,6 +3317,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   }
   if (request.expectedRevision === undefined) throw agentXError("CONFIG_INVALID", "refresh the task and include its current revision before sending it back to coding");
   if (request.expectedRevision !== workflow.revision) throw agentXError("IDEMPOTENCY_CONFLICT", "this send-back is out of date; refresh the task and try again");
+  await requireMayGoOn(deps, caller, task);
   if (!workflowSendBackOffered(workflow)) {
     throw agentXError("CONFIG_INVALID", "there is no current failed check or review finding to send back to coding");
   }
@@ -3822,7 +3850,7 @@ function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, 
         : { status: "Waiting for the owner's approval", nextStep: `The task owner approves or requests changes ${inSlack}.` };
     case "PLAN_REVIEW/BLOCKED": return { status: `Stopped before approval of the ${name}`, nextStep: `Close the task ${inSlack} and start again.` };
     case "IMPLEMENT/READY": case "IMPLEMENT/RUNNING": return { status: "Writing the code", nextStep: "The checks and reviews run when coding finishes." };
-    case "IMPLEMENT/BLOCKED": if (workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true) {
+    case "IMPLEMENT/BLOCKED": if (isRunLimitBlockReason(workflow.blockReason)) {
       return { status: "Waiting for the run limit to be approved", nextStep: owner ? `Coding starts once a project maintainer or an admin approves it, or close the task ${inSlack}.` : "Coding starts once a project maintainer or an admin approves the run limit." };
     }
       return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing

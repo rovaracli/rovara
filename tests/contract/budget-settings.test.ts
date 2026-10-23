@@ -515,6 +515,56 @@ describe("a project's AI settings", () => {
     expect((await call(MAX, "GET", "/v1/app/projects/web/ai")).body).toMatchObject({ settings: { monthlyBudgetUsd: 200, projectPays: true }, revision: 1 });
   });
 
+  describe("what a member may accept as a run limit when the project pays (owner decision 3, option E)", () => {
+    it("defaults to $10, and a maintainer, an org admin or an owner may change it, anyone else may not", async () => {
+      const { call } = await routeSetup();
+      expect((await call(VIV, "GET", "/v1/app/projects/web/ai")).body).toMatchObject({ settings: { projectPays: false }, effective: { memberAcceptRunLimitUpToUsd: 10 } });
+      const byMaintainer = await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 25 });
+      expect(byMaintainer.status, JSON.stringify(byMaintainer.body)).toBe(200);
+      expect(byMaintainer.body).toMatchObject({ settings: { memberAcceptRunLimitUpToUsd: 25 }, effective: { memberAcceptRunLimitUpToUsd: 25 }, revision: 1 });
+      expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 40 })).status).toBe(200);
+      for (const who of [CARL, VIV]) {
+        const refused = await call(who, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 5 });
+        expect(refused.status, who.name).toBe(403);
+        expect(errorOf(refused).code).toBe("FORBIDDEN");
+      }
+      expect(errorOf(await call(EVE, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 5 })).code).toBe("PROJECT_NOT_FOUND");
+      expect((await call(VIV, "GET", "/v1/app/projects/web/ai")).body).toMatchObject({ settings: { memberAcceptRunLimitUpToUsd: 40 } });
+    });
+
+    it("lets a maintainer change this setting and nothing else", async () => {
+      const { call } = await routeSetup();
+      const mixed = await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 25, projectPays: true });
+      expect(mixed.status, JSON.stringify(mixed.body)).toBe(403);
+      expect((await call(MAX, "PUT", "/v1/app/projects/web/ai", { monthlyBudgetUsd: 5 })).status).toBe(403);
+      expect((await call(VIV, "GET", "/v1/app/projects/web/ai")).body).toMatchObject({ revision: 0 });
+    });
+
+    it("holds it from 0 to 1000 in a strict schema, and null puts the default back", async () => {
+      const { call } = await routeSetup();
+      expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 0 })).status).toBe(200);
+      expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 1000 })).status).toBe(200);
+      for (const bad of [-1, 1000.01, "10"]) {
+        const refused = await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: bad });
+        expect(refused.status, String(bad)).toBe(400);
+      }
+      expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpTo: 5 })).status).toBe(400);
+      const cleared = await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: null });
+      expect(cleared.body).toMatchObject({ effective: { memberAcceptRunLimitUpToUsd: 10 } });
+      expect((cleared.body.settings as Record<string, unknown>).memberAcceptRunLimitUpToUsd).toBeUndefined();
+    });
+
+    it("uses an R18 mark: a repeat of the request id answers the first, and another body with it is refused", async () => {
+      const { call } = await routeSetup();
+      const requestId = randomUUID();
+      const first = await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 25 }, requestId);
+      const again = await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 25 }, requestId);
+      expect(again.status).toBe(200);
+      expect(again.body).toMatchObject({ revision: first.body.revision });
+      expect((await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 30 }, requestId)).status).toBe(400);
+    });
+  });
+
   it("tells nobody about a project they have no role on, or one that is not there", async () => {
     const { call } = await routeSetup();
     expect(errorOf(await call(EVE, "GET", "/v1/app/projects/web/ai")).code).toBe("PROJECT_NOT_FOUND");

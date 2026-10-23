@@ -74,6 +74,11 @@ export interface AgentRunHost extends TaskEndHost {
   slackChannels?(orgId: OrgId, project: string): Promise<readonly string[]>;
   /** Asks the worker to stop an operation that is still running (never a finished one, which it leaves alone). A run that ends while its step runs calls it. */
   stopOperation?(task: DeveloperTaskRecord, operationId: string): Promise<void>;
+  /**
+   * Asks for the pause (and the spend request) a budget stop of `operationId` stands for, when the task has none yet: the broker works the scope out from the task's
+   * own spend and writes it (`requestForPausedTask`). Never throws for a stop that has nothing to ask for. Called by the sweep for a run that waits for its pause.
+   */
+  askForPause?(task: DeveloperTaskRecord, operationId: string): Promise<void>;
 }
 
 export type AgentRunEngineDependencies = ApprovalDependencies;
@@ -94,6 +99,10 @@ const OUTCOMES_HEADER = "Outcomes of the actions that needed approval:";
 const CANCELLED_REASON = "Cancelled.";
 const CLOSED_REASON = "The task was closed.";
 const FAILED_NO_REPORT = "The step ended without a report.";
+/** How long a run waits for the pause of a budget stop the broker had not written one for, and how often it looks meanwhile (final fix wave, runs I-1). */
+const PAUSE_WAIT_MS = 10 * MINUTE;
+const PAUSE_LOOK_MS = 2 * MINUTE;
+const NO_PAUSE_REASON = "The step ran out of budget, but no limit that could be raised was found, so the run stopped. Start the run again.";
 const GAVE_UP_REASON = "Rovara couldn't continue this run after an approval was decided, so it stopped. Start the run again.";
 
 export type AdvanceResult = "no_run" | "ended" | "paused" | "waiting" | "busy" | "dispatched" | "completed";
@@ -297,7 +306,6 @@ async function endRun(deps: AgentRunEngineDependencies, loaded: Loaded, end: { s
     dispatchRow(deps, task, run.revision + 1, 0),
   ];
   if (!await commitOrLost(deps, items)) return false;
-  await stopRunningSteps(deps, task, run);
   const ended: Loaded = { task: { ...task, agentRunEnd: { state: end.state, at } }, run: { ...next, revision: run.revision + 1 } };
   await finishEnd(deps, ended, end.outcome ?? END_OUTCOME[end.state]);
   return true;
@@ -305,20 +313,25 @@ async function endRun(deps: AgentRunEngineDependencies, loaded: Loaded, end: { s
 
 /**
  * A run that ends while a step is still running asks the worker to stop that step: its keys are blocked at the end, but a step left running would go on
- * working (and asking for approvals) for a run that is over. A step whose operation already ended is left alone (Task 22 review, I3).
+ * working (and asking for approvals) for a run that is over. A step whose operation already ended is left alone (Task 22 review, I3). It is asked from
+ * `finishEnd`, so a process that died between the end's commit and this call is made good by the sweep (final fix wave, runs minor 5): the end turned the
+ * running step `failed`, and stopping an operation is idempotent. False when the worker could not be asked, and the end is then not finished.
  */
-async function stopRunningSteps(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, run: AgentRunState): Promise<void> {
+async function stopRunningSteps(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, run: AgentRunState): Promise<boolean> {
   const host = (deps as { agentRuns?: AgentRunHost }).agentRuns;
-  if (host?.stopOperation === undefined) return;
+  if (host?.stopOperation === undefined || run.state === "COMPLETE") return true;
+  let stopped = true;
   for (const step of run.steps) {
-    const operationId = step.status === "running" ? step.operationIds.at(-1) : undefined;
+    const operationId = step.status === "running" || step.status === "failed" ? step.operationIds.at(-1) : undefined;
     if (operationId === undefined) continue;
     try {
       await host.stopOperation(task, operationId);
     } catch (error) {
+      stopped = false;
       log(deps, "agent_run.stop_failed", { taskId: task.taskId, error: errorNameOf(error) });
     }
   }
+  return stopped;
 }
 
 /**
@@ -328,6 +341,7 @@ async function stopRunningSteps(deps: AgentRunEngineDependencies, task: Develope
 async function finishEnd(deps: AgentRunEngineDependencies, loaded: Loaded, outcome?: TaskEndOutcome): Promise<void> {
   const { task, run } = loaded;
   const host = hostOf(deps);
+  const stopped = await stopRunningSteps(deps, task, run);
   for (const record of await taskApprovals(deps, task, run)) {
     if (record.status === "PENDING") await expireApprovalNow(deps, record);
   }
@@ -339,7 +353,12 @@ async function finishEnd(deps: AgentRunEngineDependencies, loaded: Loaded, outco
     return;
   }
   if (run.state === "COMPLETE") await reportToSlack(deps, loaded);
-  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentRunDispatchKey(task.taskId) }));
+  // A step the worker could not be asked to stop leaves the row, so the sweep asks again.
+  if (!stopped) {
+    await rearm(deps, task, run, PAUSE_LOOK_MS);
+    return;
+  }
+  await dropRow(deps, task.taskId, run.revision);
 }
 
 /** The final report of a run whose last agent step reports to Slack: handed to the notifier for the project's channel, or noted on the task when there is none. Once per run. */
@@ -435,6 +454,9 @@ function watchdogMs(step: ResolvedStep): number {
   return (minutes * MINUTE) + WATCHDOG_GRACE_MS;
 }
 
+/** How many times a step was handed the outcomes of its approved actions. A run from before the count has its operations less the first (a rerun after a budget pause was counted too, which only holds it back). */
+const continuationsOf = (state: AgentRunState["steps"][number]): number => state.continuations ?? Math.max(0, state.operationIds.length - 1);
+
 /** What a step is handed beyond its first inputs: the report it made before the outcomes were known, one line for each outcome, and which approvals those were. */
 interface Continuation { ownReport?: string; lines: string[]; told: string[] }
 
@@ -456,7 +478,7 @@ async function rerunOutcomes(deps: AgentRunEngineDependencies, loaded: Loaded, s
 /** Dispatches the step's operation (or a continuation of it): the operation, and with it the run's next state, its event and its watchdog, in one transaction. */
 async function dispatchStep(
   deps: AgentRunEngineDependencies, loaded: Loaded, recipe: ResolvedRecipe, step: Extract<ResolvedStep, { kind: "agent" }>,
-  options: { continuation?: Continuation } = {},
+  options: { continuation?: Continuation; counted?: boolean } = {},
 ): Promise<Moved> {
   const { task, run } = loaded;
   const gated = await gate(deps, loaded, recipe);
@@ -471,6 +493,7 @@ async function dispatchStep(
     ...withoutFields(run), state: "RUNNING",
     steps: withStep(run, step.id, {
       status: "running", operationIds: [...existing.operationIds, operationId], pendingBranch: undefined,
+      ...(options.counted === true ? { continuations: continuationsOf(existing) + 1 } : {}),
       ...(options.continuation === undefined ? {} : { told: [...new Set([...(existing.told ?? []), ...options.continuation.told])] }),
     }),
   };
@@ -538,6 +561,14 @@ export async function advanceAgentRun(deps: AgentRunEngineDependencies, taskId: 
     if (run.state === "WAITING_FOR_APPROVAL") return "waiting";
     if (run.state === "PAUSED_BUDGET") {
       if (task.budgetPause !== undefined) return "paused";
+      // A run goes on only after a real pause was told, or its stop was answered before it could be: never on a stop whose pause is not known yet.
+      const answered = run.pause?.operationId !== undefined && task.budgetStopOf === run.pause.operationId;
+      if (run.pause?.unconfirmed === true && !answered) return "paused";
+      if (run.pause !== undefined && run.pause.unconfirmed !== true && run.pause.notifiedAt === undefined && !answered) {
+        // The pause was lifted before the handlers heard it: they hear it now, and then the step runs again.
+        await notifyPause(deps, loaded);
+        continue;
+      }
       const resumed: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "RUNNING" };
       delete (resumed as { pause?: unknown }).pause;
       if (!await commitOrLost(deps, [putRun(deps, taskId, run, resumed), eventItem(deps, task, run.revision + 1, "The run's budget was raised, so it carries on."), dispatchRow(deps, task, run.revision + 1, 0)])) continue;
@@ -601,8 +632,9 @@ async function afterApprovals(deps: AgentRunEngineDependencies, loaded: Loaded, 
   const { run } = loaded;
   const state = run.steps.find((entry) => entry.id === step.id)!;
   const toTell = approvals.filter((record) => !(state.told ?? []).includes(record.approvalId));
-  if (toTell.length > 0 && state.operationIds.length < 1 + MAX_CONTINUATIONS && step.kind === "agent") {
+  if (toTell.length > 0 && continuationsOf(state) < MAX_CONTINUATIONS && step.kind === "agent") {
     return dispatchStep(deps, loaded, recipe, step, {
+      counted: true,
       continuation: { ...(run.reports.find((report) => report.stepId === step.id) === undefined ? {} : { ownReport: run.reports.find((report) => report.stepId === step.id)!.text }), lines: toTell.map(outcomeLine), told: toTell.map((record) => record.approvalId) },
     });
   }
@@ -695,26 +727,84 @@ export async function onAgentStepFinished(deps: AgentRunEngineDependencies, inpu
 
 // ---- a budget pause
 
-/** The step ran out of budget: the step is to run again, the run is PAUSED_BUDGET and the pause handlers hear it (not the end handlers). */
+/**
+ * The step ran out of budget: the step is to run again and the run waits for the limit to be raised. The task is read again here (the one in hand may be older than
+ * the stop's pause, or newer than its answer), and the answer decides:
+ *   - the task has a `budgetPause`: the run is PAUSED_BUDGET with that scope, and the pause handlers hear it (not the end handlers);
+ *   - it has none, and `budgetStopOf` names this operation: the stop was already answered (an approval cleared its pause before this result was driven), so the step
+ *     simply runs again and no pause is told;
+ *   - it has neither (the proxy's mid-step "budget exceeded": the broker had not written a pause): the run is PAUSED_BUDGET with an unconfirmed pause that nobody
+ *     is told, and its row is due again in two minutes. The sweep asks for the pause, then tells it or, after a bounded wait, ends the run FAILED.
+ */
 async function pauseRun(deps: AgentRunEngineDependencies, loaded: Loaded, stepId: string): Promise<boolean> {
-  const { task, run } = loaded;
-  const scope: PauseScope = task.budgetPause?.scope ?? { kind: "task", taskId: task.taskId };
-  const next: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "PAUSED_BUDGET", steps: withStep(run, stepId, { status: "pending" }), pause: { scope, at: iso(deps.now()) } };
-  if (!await commitOrLost(deps, [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, "The run is paused: its budget ran out."), dispatchRow(deps, task, run.revision + 1, 0)])) return false;
+  const { run } = loaded;
+  const task = await getItem<DeveloperTaskRecord>(deps, taskKey(loaded.task.taskId)) ?? loaded.task;
+  const stopped = run.steps.find((entry) => entry.id === stepId)?.operationIds.at(-1);
+  const at = iso(deps.now());
+  const pending = withStep(run, stepId, { status: "pending" });
+  if (task.budgetPause === undefined && stopped !== undefined && task.budgetStopOf === stopped) {
+    const resumed: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "RUNNING", steps: pending };
+    delete (resumed as { pause?: unknown }).pause;
+    return commitOrLost(deps, [putRun(deps, task.taskId, run, resumed), eventItem(deps, task, run.revision + 1, "The run's budget was raised, so it carries on."), dispatchRow(deps, task, run.revision + 1, 0)]);
+  }
+  const real = task.budgetPause?.scope;
+  const pause: NonNullable<AgentRunState["pause"]> = real === undefined
+    ? { scope: { kind: "task", taskId: task.taskId } satisfies PauseScope, at, ...(stopped === undefined ? {} : { operationId: stopped }), unconfirmed: true }
+    : { scope: real, at, ...(stopped === undefined ? {} : { operationId: stopped }) };
+  const next: Omit<AgentRunState, "revision"> = { ...withoutFields(run), state: "PAUSED_BUDGET", steps: pending, pause };
+  if (!await commitOrLost(deps, [
+    putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, "The run is paused: its budget ran out."),
+    dispatchRow(deps, task, run.revision + 1, real === undefined ? PAUSE_LOOK_MS : 0),
+  ])) return false;
   await notifyPause(deps, { task, run: { ...next, revision: run.revision + 1 } });
   return true;
 }
 
-/** Tells the pause handlers once; the row stays until they have been told. */
+/** Tells the pause handlers once; the row stays until they have been told. A pause that is not confirmed yet is told to nobody. */
 async function notifyPause(deps: AgentRunEngineDependencies, loaded: Loaded): Promise<void> {
   const { task, run } = loaded;
-  if (run.state !== "PAUSED_BUDGET" || run.pause === undefined) return;
+  if (run.state !== "PAUSED_BUDGET" || run.pause === undefined || run.pause.unconfirmed === true) return;
+  let seen = run.revision;
   if (run.pause.notifiedAt === undefined) {
     await onTaskPaused({ ...deps, agentRuns: hostOf(deps) }, task, run.pause.scope as PauseScope);
     const next: Omit<AgentRunState, "revision"> = { ...withoutFields(run), pause: { ...run.pause, notifiedAt: iso(deps.now()) } };
-    await commitOrLost(deps, [putRun(deps, task.taskId, run, next)]);
+    if (await commitOrLost(deps, [putRun(deps, task.taskId, run, next)])) seen = run.revision + 1;
   }
-  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentRunDispatchKey(task.taskId) }));
+  await dropRow(deps, task.taskId, seen);
+}
+
+/**
+ * A run whose pause is not confirmed (`pause.unconfirmed`): looks for the pause the stop stands for. Asks for it (the broker's own ask may have failed), and then:
+ *   - a pause exists: the run's pause becomes that scope and the handlers are told, once ("paused");
+ *   - there is none and the stop was answered (`budgetStopOf`): the step may run again, and nothing is told ("answered");
+ *   - neither within the bounded wait: the run ends FAILED with the budget words, as the plain-task path does ("ended");
+ *   - neither yet: it waits, its row due again soon ("waiting").
+ */
+async function confirmPause(deps: AgentRunEngineDependencies, loaded: Loaded): Promise<"paused" | "answered" | "ended" | "waiting"> {
+  const { run } = loaded;
+  const pause = run.pause;
+  if (pause === undefined || pause.unconfirmed !== true) return "paused";
+  const read = async () => await getItem<DeveloperTaskRecord>(deps, taskKey(loaded.task.taskId)) ?? loaded.task;
+  const answered = (task: DeveloperTaskRecord) => pause.operationId !== undefined && task.budgetStopOf === pause.operationId;
+  let task = await read();
+  if (task.budgetPause === undefined && !answered(task) && pause.operationId !== undefined) {
+    const host = hostOf(deps);
+    try {
+      await host.askForPause?.(task, pause.operationId);
+    } catch (error) {
+      log(deps, "agent_run.pause_not_asked", { taskId: task.taskId, error: errorNameOf(error) });
+    }
+    task = await read();
+  }
+  if (task.budgetPause !== undefined) {
+    const confirmed: Omit<AgentRunState, "revision"> = { ...withoutFields(run), pause: { scope: task.budgetPause.scope, at: pause.at, ...(pause.operationId === undefined ? {} : { operationId: pause.operationId }) } };
+    if (!await commitOrLost(deps, [putRun(deps, task.taskId, run, confirmed)])) return "waiting";
+    await notifyPause(deps, { task, run: { ...confirmed, revision: run.revision + 1 } });
+    return "paused";
+  }
+  if (answered(task)) return "answered";
+  if (deps.now() - Date.parse(pause.at) > PAUSE_WAIT_MS) return await endRun(deps, loaded, { state: "FAILED", reason: NO_PAUSE_REASON }) ? "ended" : "waiting";
+  return "waiting";
 }
 
 // ---- an approval was decided
@@ -840,10 +930,31 @@ export async function cancelAgentRun(deps: AgentRunEngineDependencies, taskId: s
 
 // ---- driven by the sweep or by a result
 
-/** Writes the run's dispatch row again, due `inMs` from now: the run is looked at then, not before. */
+/**
+ * Writes the run's dispatch row again, due `inMs` from now: the run is looked at then, not before. Conditional on the row being none, or one written no later than
+ * the state this pass read: a row a concurrent resume or result wrote (a fresh watchdog, or one due now) is never pushed out (final fix wave, runs minor 4).
+ */
 async function rearm(deps: AgentRunEngineDependencies, task: DeveloperTaskRecord, run: AgentRunState, inMs: number): Promise<void> {
   const item = agentRunDispatchItem(deps.tableName, { taskId: task.taskId, orgId: task.orgId as string, revision: run.revision, dueAt: iso(deps.now() + inMs), now: iso(deps.now()) });
-  await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: (item as { Put: { Item: Record<string, unknown> } }).Put.Item }));
+  try {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName, Item: (item as { Put: { Item: Record<string, unknown> } }).Put.Item,
+      ConditionExpression: "attribute_not_exists(pk) OR workflowRevision <= :revision", ExpressionAttributeValues: { ":revision": run.revision },
+    }));
+  } catch (error) {
+    if (errorNameOf(error) !== "ConditionalCheckFailedException") throw error;
+  }
+}
+
+/** Deletes the run's dispatch row only when it was written no later than the state this pass last saw: a newer row belongs to work this pass did not see. */
+async function dropRow(deps: AgentRunEngineDependencies, taskId: string, upToRevision: number): Promise<void> {
+  try {
+    await deps.documentClient.send(new DeleteCommand({
+      TableName: deps.tableName, Key: agentRunDispatchKey(taskId), ConditionExpression: "attribute_not_exists(pk) OR workflowRevision <= :revision", ExpressionAttributeValues: { ":revision": upToRevision },
+    }));
+  } catch (error) {
+    if (errorNameOf(error) !== "ConditionalCheckFailedException") throw error;
+  }
 }
 
 /** The prepare operation of the task's workspace, for a run whose preparation did not succeed. */
@@ -893,7 +1004,16 @@ export async function driveAgentRun(deps: AgentRunEngineDependencies, taskId: st
     return "DONE";
   }
   if (run.state === "PAUSED_BUDGET") {
-    if (task.budgetPause !== undefined) {
+    if (run.pause?.unconfirmed === true) {
+      const found = await confirmPause(deps, loaded);
+      if (found === "paused") return "DONE";
+      if (found === "ended") return "DONE";
+      if (found === "waiting") {
+        const waiting = await load(deps, taskId);
+        if (waiting !== undefined && !ENDED.has(waiting.run.state)) await rearm(deps, waiting.task, waiting.run, PAUSE_LOOK_MS);
+        return "WAIT";
+      }
+    } else if (task.budgetPause !== undefined) {
       await notifyPause(deps, loaded);
       return "DONE";
     }

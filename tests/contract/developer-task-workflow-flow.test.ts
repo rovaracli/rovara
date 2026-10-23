@@ -4494,8 +4494,8 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
       report("CRITIC", critic.length > 0 ? "FINDINGS" : "PASS", critic), report("SECURITY", securityStatus, security)] } };
   };
   /** A task whose code review (and maybe security review) blocked on findings. */
-  async function blockedOnFindings(critic: unknown[] = [PARSER], security: unknown[] = [TOKEN], securityStatus?: "PASS" | "FINDINGS" | "FAILED") {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+  async function blockedOnFindings(critic: unknown[] = [PARSER], security: unknown[] = [TOKEN], securityStatus?: "PASS" | "FINDINGS" | "FAILED", extra: Record<string, unknown> = {}) {
+    const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)), ...extra } });
     const setup = await workflowAtVerification(harness);
     await setup.finishImplementation();
     const review = operations(harness, setup.workspaceId).find((item) => item.workflowMode === "REVIEW")!;
@@ -4534,6 +4534,25 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
     expect((await t.harness.dev(MAYA, "POST", t.route, request)).status).toBe(200);
     expect(taskWorkflow(t.harness, t.taskId).revision).toBe(after.revision);
     expect(operations(t.harness, t.workspaceId).filter((item) => item.kind === "publish")).toHaveLength(1);
+  });
+
+  it("sending the findings to fix back to coding does not skip a pause the owner may not decide (final fix wave, the coding queue's own gate)", async () => {
+    const t = await blockedOnFindings([PARSER], [TOKEN], undefined, { agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true });
+    // The task's max per run stopped it; a max per run with no agent is the org admins' to decide, and Maya is a plain member.
+    const record = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>;
+    t.harness.db.set({ ...record, maxPerRunUsd: 4, budgetPause: { scope: { kind: "max_per_run", taskId: t.taskId }, at: new Date().toISOString() } });
+    const resolutions = [
+      { findingId: id("CRITIC", { text: PARSER.text, file: PARSER.file, line: PARSER.line }), action: "FIX" as const, note: "Keep the last line." },
+      { findingId: id("SECURITY", TOKEN), action: "ACCEPT" as const, note: "Test token only." },
+    ];
+    const pauseOf = () => (t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { budgetPause?: unknown }).budgetPause;
+    const before = { workflow: taskWorkflow(t.harness, t.taskId), ops: operations(t.harness, t.workspaceId).length, pause: pauseOf() };
+    const refused = await t.harness.dev(MAYA, "POST", t.route, t.body(resolutions));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body).toMatchObject({ error: { code: "WORKSPACE_BUSY", message: expect.stringContaining("waiting for") as unknown } });
+    expect(taskWorkflow(t.harness, t.taskId)).toEqual(before.workflow);
+    expect(operations(t.harness, t.workspaceId)).toHaveLength(before.ops);
+    expect(pauseOf()).toEqual(before.pause);
   });
 
   describe("from Slack (Task 6)", () => {
