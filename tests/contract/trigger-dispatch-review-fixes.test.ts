@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TriggerEvent } from "@agentx/contracts";
 import { addToRoster } from "../../packages/broker/src/agents/roster.js";
 import { dispatchTriggerEvent, type TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
-import { triggerProblems } from "../../packages/broker/src/triggers/requirements.js";
+import { ownerQualifies, triggerProblems } from "../../packages/broker/src/triggers/requirements.js";
 import { triggerKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
@@ -115,6 +115,29 @@ describe("I-1: the run owner", () => {
     v.db.set(without(record!, "accountable"));
     const trigger = await v.seed({ target: { kind: "agent", agentId: agent.agentId }, createdBy: DANA });
     expect((await triggerProblems(deps, trigger)).map((problem) => problem.path)).toEqual(["owner"]);
+  });
+});
+
+describe("I-1: what the run owner is held to, found by the mutation pass", () => {
+  it("reports a chain step agent the chain's member owner may no longer use, though the trigger's creator may", async () => {
+    const { v, deps } = setup();
+    const private_ = await v.customAgent("Max's own", MAX);
+    const chain = await v.publish({ start: "look", limits: { maxRunUsd: 5 }, steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: private_.agentId, version: "current" }, next: { kind: "end" } }] }, { owner: { kind: "member", developerId: MAX }, by: MAX, budgetUsd: 50 });
+    const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, createdBy: DANA });
+    expect(await triggerProblems(deps, trigger)).toEqual([]);
+    // The agent now belongs to Priya alone: Max, whom the chain runs as, can't use it; Dana, an admin, can.
+    for (const item of v.db.find((entry) => entry["agentId"] === private_.agentId && typeof entry["owner"] === "object")) v.db.set({ ...item, owner: { kind: "member", developerId: PRIYA } });
+    const problems = await triggerProblems(deps, trigger);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.message).toContain("its owner can no longer use it");
+  });
+
+  it("reads a merged developer as who they became when asking who could own a trigger", async () => {
+    const { v, deps } = setup();
+    merge(v, DUPLICATE, PRIYA);
+    const chain = await v.budgetedChain(ONE_STEP);
+    const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, createdBy: DANA });
+    expect(await ownerQualifies(deps, trigger, DUPLICATE)).toBe(true);
   });
 });
 
