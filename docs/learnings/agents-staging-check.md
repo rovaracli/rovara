@@ -60,3 +60,17 @@ it continues from the stack that failed.
 | API answers | PASS (old code) | /v1/app/me and /v1/dev/whoami return 401 without a token. |
 | Web health | NOT TESTED | There is no public health route. Admin health needs an admin sign-in (email; deferred). |
 | Steps 4-13 (live flows), Cognito amr gate | NOT TESTED | Blocked by the failed deploy. Vendor and test-email checks are deferred to the final round. |
+
+## Retry attempt, 2026-10-23: blocked before deploy (nothing changed)
+
+- The clone moved to 44f5ef73 (fast-forward) with local-only tag `v0.4.1`. `npm ci`, build and `tsc -b` are clean.
+- The images were reused, because 2a69897b..44f5ef73 changes only infra, contracts and tests.
+- A fresh template diff of all six stacks matches attempt 1, so there is still no stateful replace or delete:
+  - Access gains a CloudFormation service role Allow for 7 IAM read and delete actions on the path-less `role/agentx-staging-connector-secrets`, plus the boundary update.
+  - Foundation, identity, runtime and slack show no changes.
+  - The control plane has the same changes as attempt 1: the broker Lambda, its permission and invoke config, and the proxy task definition are replaced; the user pool is modified in place.
+- The `agentx upgrade` command was **denied by the Claude Code permission system** (the auto-mode classifier). An agent's message is not owner approval, so it was not worked around.
+- Stacks are as attempt 1 left them, with the control plane at UPDATE_ROLLBACK_COMPLETE.
+- To proceed, the owner runs the upgrade, or allows it to run, from the clone:
+  `staging-aws.sh node packages/cli/dist/bin.js --env staging upgrade --region us-west-2 --source <clone> --worker-image <repo>/worker@sha256:ad32b73d… --boot-stage2-sha256 1bfeb60e… --slack-image <repo>/slack@sha256:d1141cd4… --yes`
+- Every post-deploy check stays NOT TESTED until then.
