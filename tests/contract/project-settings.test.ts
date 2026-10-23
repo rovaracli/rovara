@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
-  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, orgGithubInstallationKey,
+  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey,
   orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, workerProjectDefinition, type GithubInstallationRecord, type OrgId, type OrgRole,
 } from "../../packages/contracts/src/index.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
@@ -657,5 +657,28 @@ describe("agentx project show and agentx project settings", () => {
     const h = await signedIn((request) => (request.method === "GET" ? Response.json(detail) : Response.json({ error: { code: "CONFIG_INVALID", message: FIELD_MESSAGE("allowedDomains.0") } }, { status: 400 })));
     expect(await h.run(["project", "settings", "web", "--allow-domain", "github.io"])).not.toBe(0);
     expect(h.err.join("")).toContain(FIELD_MESSAGE("allowedDomains.0"));
+  });
+});
+
+describe("GitHub's events find a project by repository (Plan 4 Task 21)", () => {
+  it("writes the index row of each pinned repository with the revision that adds it, and deletes it with the revision that removes it", async () => {
+    const h = await install();
+    seedInstallation(h.db, 55, "acme");
+    expect(h.db.find((item) => String(item.pk).startsWith("GITHUB_REPO#"))).toEqual([]);
+    expect((await h.put(OMAR, { addRepositories: ["acme/api"] })).status).toBe(200);
+    // api is pinned (installation 55, GitHub's id 2); web was registered without a pin, so GitHub's events have no way to find it.
+    expect(h.db.find((item) => String(item.pk).startsWith("GITHUB_REPO#")).map((item) => [item.pk, item.sk])).toEqual([[githubRepoProjectKey(2, TEST_ORG, "web").pk, `${TEST_ORG}#web`]]);
+    expect(h.db.get(githubRepoProjectKey(2, TEST_ORG, "web"))).toMatchObject({ orgId: TEST_ORG, project: "web", installationId: 55, githubRepositoryId: 2 });
+    expect((await h.put(OMAR, { removeRepositories: ["acme/api"], expectedRevision: 2 })).status).toBe(200);
+    expect(h.db.find((item) => String(item.pk).startsWith("GITHUB_REPO#"))).toEqual([]);
+  });
+
+  it("keeps the row of a repository the next revision still holds, and writes none for a repository without a pin", async () => {
+    const h = await install();
+    seedInstallation(h.db, 55, "acme");
+    expect((await h.put(OMAR, { addRepositories: ["acme/api"] })).status).toBe(200);
+    expect((await h.put(OMAR, { setupCommands: ["make"], expectedRevision: 2 })).status).toBe(200);
+    expect(h.db.get(githubRepoProjectKey(2, TEST_ORG, "web"))).toBeDefined();
+    expect(h.db.get(githubRepoProjectKey(1, TEST_ORG, "web"))).toBeUndefined();
   });
 });
