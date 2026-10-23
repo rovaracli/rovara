@@ -61,6 +61,19 @@ describe("I-1: the slot is read under the writer's key", () => {
   });
 });
 
+describe("I-1 (months): a pause raised late in a month is found in the month the request was made", () => {
+  it("a pause written last month whose request was made this month is found under this month's subject", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "FAILED", 0, "RUNTIME_UNAVAILABLE: budget");
+    const scope = { kind: "member", developerId: PRIYA };
+    p.patchTask(s.taskId, { budgetPause: { scope, at: "2026-09-30T23:00:00.000Z" } });
+    request(p, s.taskId, `MONTH#${iso(T0).slice(0, 7)}#${scopeKey(scope as never)}#system`, "month");
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ needsPeople: [ARJUN], pendingApprovals: 1 });
+  });
+});
+
 describe("I-2: only a stage that waits on a person is 'waiting'", () => {
   it.each([["VERIFY"], ["REVIEW"], ["PLAN"], ["IMPLEMENT"], ["PULL_REQUEST"]])("%s/WAITING is automatic work: running, with no 'Waiting for you' event", async (stage) => {
     const p = projectorWorld();
@@ -214,8 +227,11 @@ describe("I-4: an end found late is filed where the drain looks", () => {
     p.operation(s.workspaceId, "task", "SUCCEEDED");
     p.patchTask(s.taskId, { closedAt: "2026-10-21T08:30:00.000Z" });
     const keys = seedShare(p, s.sessionId);
+    // Refreshed yesterday (the work item is filed under yesterday), the saved day lost, drained today.
+    p.w.clock.now = Date.parse("2026-10-21T09:00:00.000Z");
     await p.refresh(s.sessionId);
     p.w.db.delete(ENDED_DRAIN_CURSOR_KEY);
+    p.w.clock.now = Date.parse("2026-10-22T09:00:00.000Z");
     await drainEndedSessions(p.deps, p.w.clock.now);
     expect(p.w.db.get(keys.share)?.indexExpiresAt).toBeDefined();
   });

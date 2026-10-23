@@ -8,6 +8,7 @@ import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
 import { registerTaskEndHandler, type TaskEndEvent, taskEndKey } from "../../packages/broker/src/agents/task-end.js";
+import { operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { releaseFinishedTaskQuietly } from "../../packages/broker/src/aws/developer-tasks.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
@@ -177,6 +178,22 @@ describe("a task whose creator was removed", () => {
     expect(heard).toHaveLength(1);
   });
 
+  it("the next refusal after a failed telling takes it up itself, before the sweep comes", async () => {
+    const t = await setup();
+    const { up, heard } = flakyHandler();
+    const taskId = await t.plainTask();
+    await removeCreator(t);
+    await expect(check(t, taskId)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(heard).toEqual([]);
+    up.now = true;
+    await expect(check(t, taskId)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(heard).toEqual([expect.objectContaining({ taskId, outcome: "creator_removed" })]);
+    // The row it left is still there for the sweep, which finds the end told and only clears the row.
+    await t.recover(taskId);
+    expect(heard).toHaveLength(1);
+    expect(t.rows(taskId)).toEqual([]);
+  });
+
   it("leaves no row when the end was told", async () => {
     const t = await setup();
     const heard: TaskEndEvent[] = [];
@@ -199,6 +216,48 @@ describe("a task whose creator was removed", () => {
     const { outcome: _outcome, outcomeReason: _reason, outcomeAt: _at, ...rest } = t.meta(taskId); // eslint-disable-line @typescript-eslint/no-unused-vars -- the outcome fields are dropped
     t.db.set(rest);
     up.now = true;
+    await t.recover(taskId);
+    expect(heard).toEqual([]);
+    expect(t.rows(taskId)).toEqual([]);
+  });
+});
+
+describe("a row is told only for the end its task is owed", () => {
+  const putRow = (t: Awaited<ReturnType<typeof setup>>, taskId: string, endOf: "closed" | "workflow" | "creator_removed") => {
+    const record = t.meta(taskId);
+    t.db.set((operationEndDispatchItem("state", { taskId, orgId: TEST_ORG, workspaceId: String(record.workspaceId), operationId: endOf, now: new Date().toISOString(), endOf }) as { Put: { Item: Item } }).Put.Item);
+  };
+
+  it("a `closed` row of a task that is not closed tells nothing and goes", async () => {
+    const t = await setup();
+    const heard: TaskEndEvent[] = [];
+    unregister.push(registerTaskEndHandler(async (_deps, event) => { heard.push(event); }));
+    const taskId = await t.plainTask();
+    putRow(t, taskId, "closed");
+    await t.recover(taskId);
+    expect(heard).toEqual([]);
+    expect(t.rows(taskId)).toEqual([]);
+  });
+
+  it("a `workflow` row of an agent-step run's task tells nothing (its engine tells that end) and goes", async () => {
+    const t = await setup();
+    const heard: TaskEndEvent[] = [];
+    unregister.push(registerTaskEndHandler(async (_deps, event) => { heard.push(event); }));
+    const taskId = await t.plainTask();
+    t.finishWorkflow(taskId, "MERGED");
+    t.db.set({ ...t.meta(taskId), agentRunEnd: { state: "COMPLETE", at: new Date().toISOString() } });
+    putRow(t, taskId, "workflow");
+    await t.recover(taskId);
+    expect(heard).toEqual([]);
+    expect(t.rows(taskId)).toEqual([]);
+  });
+
+  it("a `creator_removed` row of a task whose creator was not removed tells nothing and goes", async () => {
+    const t = await setup();
+    const heard: TaskEndEvent[] = [];
+    unregister.push(registerTaskEndHandler(async (_deps, event) => { heard.push(event); }));
+    const taskId = await t.plainTask();
+    putRow(t, taskId, "creator_removed");
     await t.recover(taskId);
     expect(heard).toEqual([]);
     expect(t.rows(taskId)).toEqual([]);

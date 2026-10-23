@@ -2,7 +2,7 @@
 // created session of an old, ended task), clears old presence, and the drain gives an ended session's items their retention expiry.
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   SESSION_RETENTION_DAYS,
   SESSION_SWEEP_BUDGET_MS,
@@ -263,6 +263,27 @@ describe("the broker's sweep event", () => {
     const failed = JSON.parse((await harness.handler({ source: "agentx.session-sweep" })).body) as { sweep: unknown; drain: unknown };
     expect(failed.sweep).toBe("failed");
     expect(failed.drain).toMatchObject({ pending: false });
+  });
+});
+
+describe("the sweep event's time", () => {
+  it("gives the drain only what is left of the event's 25 seconds after the sweep", async () => {
+    const harness = await createDeveloperTaskBroker();
+    const today = new Date().toISOString().slice(0, 10);
+    harness.db.set({ ...openAgentSessionKey(ORG_A, "ses_00000000000000000001"), entityType: "OPEN_AGENT_SESSION", orgId: ORG_A, sessionId: "ses_00000000000000000001" });
+    harness.db.set({ ...endedSessionWorkKey(today, ORG_A, "ses_00000000000000000002"), entityType: "ENDED_AGENT_SESSION", orgId: ORG_A, sessionId: "ses_00000000000000000002" });
+    const real = Date.now.bind(Date);
+    let offset = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => real() + offset);
+    // The sweep saves its cursor when it is done: that is when 26 seconds have gone by.
+    const stop = harness.db.onWrite((change) => { if (change.after?.pk === SESSION_SWEEP_CURSOR_KEY.pk) offset = 26_000; });
+    try {
+      const result = JSON.parse((await harness.handler({ source: "agentx.session-sweep" })).body) as { drain: { drained: number; pending: boolean } };
+      expect(result.drain).toEqual({ drained: 0, pending: true });
+    } finally {
+      stop();
+      clock.mockRestore();
+    }
   });
 });
 
