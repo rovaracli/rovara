@@ -196,6 +196,15 @@ describe("nativeConnection with a credential per call (Plan 4 Task 17)", () => {
     expect(textOf(crashed)).toBe("shows_token failed");
   });
 
+  it("scrubs the call's own credential from a refusal's words, and from a vendor failure's", async () => {
+    const quotes: NativeTool<Scope> = { name: "quotes", description: "Quotes", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async (_args, ctx) => { throw new NativeToolRefusal(`GitHub said ${ctx.credential.token}`, "vendor_error"); } };
+    const refused = await build(async () => ({ token: CALL_TOKEN }), [quotes]).call("quotes", SCOPE_ARGS).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ToolRefusal);
+    expect(refused).toMatchObject({ message: "GitHub said [REDACTED]", reason: "vendor_error" });
+    const unreachable: NativeTool<Scope> = { name: "unreachable", description: "Fails", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async (_args, ctx) => { throw new VendorFetchError(`failed with ${ctx.credential.token}`); } };
+    expect(await build(async () => ({ token: CALL_TOKEN }), [unreachable]).call("unreachable", SCOPE_ARGS).catch((error: unknown) => error)).toMatchObject({ message: "failed with [REDACTED]" });
+  });
+
   it("keeps the connection's own credential when there is no credentialFor", async () => {
     expect(textOf(await connection(["leaking"]).call("leaking", SCOPE_ARGS))).toBe("the vendor echoed [REDACTED] back");
   });
@@ -262,7 +271,7 @@ describe("vendorFetch", () => {
     await expect(vendorFetch({ url: URL_OK, allowedHosts: HOSTS, fetch: fakeFetch(redirect).fn })).rejects.toThrow("the vendor answered with a redirect, which is refused");
     // A redirect with no Location is captured as that: the caller decides what it means.
     const bare = await vendorFetch({ url: URL_OK, allowedHosts: HOSTS, captureRedirect: true, fetch: fakeFetch(() => new Response(null, { status: 302 })).fn });
-    expect(bare).toEqual({ status: 302 });
+    expect(bare).toStrictEqual({ status: 302 });
     // A 200 is unchanged by the option.
     expect((await vendorFetch({ url: URL_OK, allowedHosts: HOSTS, captureRedirect: true, fetch: fakeFetch(() => new Response("{}", { status: 200 })).fn })).status).toBe(200);
   });

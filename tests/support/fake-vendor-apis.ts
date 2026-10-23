@@ -372,6 +372,11 @@ export interface FakeGitHubActionsOptions {
   ownerCase?: string;
   /** The Actions and deployments endpoints answer 200 with text that is not JSON. */
   plainText?: boolean;
+  /** `GET /actions/runs/{id}` answers with another run than the one asked for. */
+  wrongItem?: boolean;
+  /** How many jobs a run has (default 2), and how many steps its first job has (default 2). */
+  jobCount?: number;
+  stepCount?: number;
 }
 
 export interface RecordedGitHubRequest { method: string; url: string; authorization: string | undefined; body: unknown }
@@ -409,7 +414,12 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
   const deployment = (id: number, repository: string, environment: string) => ({
     id, sha: "b".repeat(40), ref: "main", task: "deploy", environment, created_at: "2026-10-22T10:00:00Z", updated_at: "2026-10-22T10:01:00Z", creator: { login: "dana" }, repository_url: api(repository),
   });
-  const deployments = [deployment(5001, "demo", "production"), deployment(5002, "demo", "staging"), deployment(6001, "other", "production")];
+  const deployments = [
+    deployment(5001, "demo", "production"), deployment(5002, "demo", "staging"), deployment(6001, "other", "production"),
+    // Each wrong in one way only: right path on another host, and an address that is a list holding the right one.
+    { ...deployment(6002, "demo", "production"), repository_url: "https://evil.example/repos/example/demo" },
+    { ...deployment(6003, "demo", "production"), repository_url: [api("demo")] },
+  ];
   const status = (id: number, repository: string, deploymentId: number, state: string) => ({
     id, state, description: `deployment ${state}`, environment: "production", target_url: "https://shop.example/", log_url: "", created_at: "2026-10-22T10:02:00Z",
     deployment_url: `${api(repository)}/deployments/${String(deploymentId)}`, repository_url: api(repository),
@@ -460,15 +470,22 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
     }
     const oneRun = /^actions\/runs\/(\d+)$/.exec(rest);
     if (oneRun !== null) {
-      const found = runs.find((entry) => entry.id === Number(oneRun[1]) && (options.leak === true || entry.repository.full_name === `example/${name}`));
+      const found = options.wrongItem === true ? runs[2] : runs.find((entry) => entry.id === Number(oneRun[1]) && (options.leak === true || entry.repository.full_name === `example/${name}`));
       return found === undefined ? json({ message: "Not Found" }, 404) : json(found);
     }
     const jobs = /^actions\/runs\/(\d+)\/jobs$/.exec(rest);
     if (jobs !== null) {
       const id = Number(jobs[1]);
       if (!runs.some((entry) => entry.id === id && entry.repository.full_name === `example/${name}`)) return json({ message: "Not Found" }, 404);
-      const list = [job(7001, id, name), job(7002, id, name, { name: "lint", conclusion: "success", steps: [] }),
-        ...(options.leak === true ? [job(7999, 9101, "other", { name: "other-repo-job" }), job(7998, id + 1, name, { name: "another-run-job" })] : [])];
+      const steps = Array.from({ length: options.stepCount ?? 2 }, (_unused, index) => ({ name: index === 1 ? "npm test" : `step ${String(index + 1)}`, status: "completed", conclusion: index === 1 ? "failure" : "success", number: index + 1 }));
+      const list = [job(7001, id, name, { steps }), job(7002, id, name, { name: "lint", conclusion: "success", steps: [] }),
+        ...Array.from({ length: Math.max(0, (options.jobCount ?? 2) - 2) }, (_unused, index) => job(7100 + index, id, name, { name: `extra-${String(index)}`, steps: [] })),
+        ...(options.leak === true ? [
+          job(7999, 9101, "other", { name: "other-repo-job" }), job(7998, id + 1, name, { name: "another-run-job" }),
+          // Each wrong in one way only: the run's id is another run's but the address is this one's; the id is this run's but the address is another repository's.
+          job(7997, id + 2, name, { name: "wrong-run-id-job", run_url: `${api(name)}/actions/runs/${String(id)}` }),
+          job(7996, id, "other", { name: "wrong-run-url-job" }),
+        ] : [])];
       return json({ total_count: list.length, jobs: list });
     }
     const log = /^actions\/jobs\/(\d+)\/logs$/.exec(rest);
@@ -480,7 +497,7 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
     }
     if (rest === "deployments") {
       const environment = url.searchParams.get("environment");
-      const found = deployments.filter((entry) => (options.leak === true || entry.repository_url === api(name)) && (options.ignoreFilters === true || environment === null || entry.environment === environment));
+      const found = deployments.filter((entry) => (options.leak === true ? entry.id >= 5001 : entry.repository_url === api(name)) && (options.ignoreFilters === true || environment === null || entry.environment === environment));
       return json(found.slice(0, limit));
     }
     const statuses = /^deployments\/(\d+)\/statuses$/.exec(rest);
@@ -488,7 +505,12 @@ export function fakeGitHubActions(options: FakeGitHubActionsOptions = {}): { han
       const id = Number(statuses[1]);
       if (!deployments.some((entry) => entry.id === id && entry.repository_url === api(name))) return json({ message: "Not Found" }, 404);
       return json([status(1, name, id, "success"), status(2, name, id, "in_progress"),
-        ...(options.leak === true ? [status(3, "other", 6001, "failure")] : [])]);
+        ...(options.leak === true ? [
+          status(3, "other", 6001, "failure"),
+          // Each wrong in one way only: this repository's address with another deployment's; another repository's address with this deployment's.
+          { ...status(4, name, 5002, "queued") },
+          { ...status(5, name, id, "error"), repository_url: api("other") },
+        ] : [])]);
     }
     return json({ message: "Not Found" }, 404);
   };

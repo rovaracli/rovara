@@ -389,6 +389,11 @@ describe("get_workflow_execution and list_execution_jobs", () => {
     expect(other.text).not.toContain("Other repository");
   });
 
+  it("refuses a run GitHub answers with when it is not the one asked for", async () => {
+    const w = await world({ fake: { wrongItem: true } });
+    expect(await run(w, "get_workflow_execution", { workflowRunId: 9001 })).toMatchObject({ status: "FAILED", reason: "policy_denied", text: "that workflow run is not in demo" });
+  });
+
   it("answers an unknown run in fixed words", async () => {
     const w = await world();
     expect(await run(w, "get_workflow_execution", { workflowRunId: 4 })).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "GitHub has no such workflow run in demo" });
@@ -404,9 +409,23 @@ describe("get_workflow_execution and list_execution_jobs", () => {
     expect(result.text).toContain("lint");
     expect(result.text).not.toContain("other-repo-job");
     expect(result.text).not.toContain("another-run-job");
+    expect(result.text).not.toContain("wrong-run-id-job");
+    expect(result.text).not.toContain("wrong-run-url-job");
     const url = new URL(apiCalls(w)[0]!.url);
     expect(url.pathname).toBe("/repos/example/demo/actions/runs/9001/jobs");
     expect(url.searchParams.get("filter")).toBe("latest");
+  });
+});
+
+describe("how much of a run's jobs is shown", () => {
+  it("shows at most thirty jobs, and twenty-five steps of each", async () => {
+    const w = await world({ fake: { jobCount: 40, stepCount: 40 } });
+    const text = (await run(w, "list_execution_jobs", { workflowRunId: 9001 })).text;
+    expect(text).toContain("30 jobs of workflow run 9001");
+    expect(text.split("\n").filter((line) => /^\d{4} \[/u.test(line))).toHaveLength(30);
+    expect(text.split("\n").filter((line) => /^ {2}\d+\. /u.test(line))).toHaveLength(25);
+    expect(text).toContain("25. step 25");
+    expect(text).not.toContain("26. step 26");
   });
 });
 
@@ -491,7 +510,7 @@ describe("get_job_log", () => {
     for (const ok of [`https://${FAKE_GITHUB_STORAGE_HOST}/a`, "https://pipelinesghubeus6.actions.githubusercontent.com/a?sig=1", "https://productionresultssa7.blob.core.windows.net/actions-results/x?sig=2", "https://A.B.actions.githubusercontent.com/a"]) {
       expect(isLogStorageUrl(new URL(ok)), ok).toBe(true);
     }
-    for (const bad of ["https://example.com/a", "https://githubusercontent.com/a", "https://actions.githubusercontent.com/a", "https://-.actions.githubusercontent.com/a", "http://x.blob.core.windows.net/a", "https://x.blob.core.windows.net:444/a", "https://u@x.blob.core.windows.net/a", "https://:p@x.blob.core.windows.net/a", "https://xblob.core.windows.net/a", "https://x.actions.githubusercontent.com.attacker.io/a"]) {
+    for (const bad of ["https://example.com/a", "https://githubusercontent.com/a", "https://actions.githubusercontent.com/a", "https://-.actions.githubusercontent.com/a", "http://x.blob.core.windows.net/a", "https://x.blob.core.windows.net:444/a", "https://u@x.blob.core.windows.net/a", "https://:p@x.blob.core.windows.net/a", "https://xblob.core.windows.net/a", "https://x.actions.githubusercontent.com.attacker.io/a", "https://a-.b.actions.githubusercontent.com/a", "https://-a.b.actions.githubusercontent.com/a", "https://under_score.actions.githubusercontent.com/a", "https://a.-b.blob.core.windows.net/a"]) {
       expect(isLogStorageUrl(new URL(bad)), bad).toBe(false);
     }
   });
@@ -676,7 +695,7 @@ describe("deployments", () => {
     expect(all.text).toContain("5001");
     expect(all.text).toContain("production");
     expect(all.text).toContain("staging");
-    expect(all.text).not.toContain("6001");
+    for (const other of ["6001", "6002", "6003"]) expect(all.text).not.toContain(other);
     const url = new URL(apiCalls(w)[0]!.url);
     expect(url.pathname).toBe("/repos/example/demo/deployments");
     expect(url.searchParams.get("per_page")).toBe("10");
@@ -710,7 +729,7 @@ describe("deployments", () => {
     expect(result.status).toBe("SUCCEEDED");
     expect(result.text).toContain("success");
     expect(result.text).toContain("in_progress");
-    expect(result.text).not.toContain("failure");
+    for (const other of ["failure", "queued", "error"]) expect(result.text, other).not.toContain(other);
     expect(new URL(apiCalls(w)[0]!.url).pathname).toBe("/repos/example/demo/deployments/5001/statuses");
     // A deployment of another repository is not found in this one.
     expect(await run(w, "list_deployment_statuses", { deploymentId: 6001 })).toMatchObject({ status: "FAILED", reason: "vendor_error", text: "GitHub has no such deployment in demo" });
@@ -740,6 +759,13 @@ describe("what GitHub spells and sends", () => {
     }
   });
 
+  it("reads a lone carriage return (a progress line rewritten in place) as a line end", async () => {
+    const w = await world({ fake: { logText: `${Array.from({ length: 60 }, (_unused, index) => `step ${String(index + 1)}`).join("\r")}\r` } });
+    const result = await run(w, "get_job_log", { jobId: 7001, tailLines: 50 });
+    expect(result.text.split("\n").filter((line) => line.startsWith("step "))).toHaveLength(50);
+    expect(result.text).toContain("(10 earlier lines are not shown)");
+  });
+
   it("reads a log with Windows line ends as lines, and keeps no carriage return", async () => {
     const w = await world({ fake: { logText: `${Array.from({ length: 80 }, (_unused, index) => `row ${String(index + 1)}`).join("\r\n")}\r\n` } });
     const result = await run(w, "get_job_log", { jobId: 7001, tailLines: 50 });
@@ -758,6 +784,7 @@ describe("what GitHub says", () => {
       [404, "GitHub has no such workflow run in demo"],
       [429, "GitHub is limiting requests; try again later"],
       [500, "GitHub answered HTTP 500"],
+      [202, "GitHub answered HTTP 202"],
     ] as const) {
       const w = await world({ fake: { status } });
       const result = await run(w, "get_workflow_execution", { workflowRunId: 9001 });
