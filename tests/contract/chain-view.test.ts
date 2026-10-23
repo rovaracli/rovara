@@ -897,3 +897,38 @@ describe("the seams, edge by edge", () => {
   });
 });
 
+
+// ---- Task 18 step 0: a session viewer never gets a confirm link
+
+describe("no confirm link reaches a session viewer", () => {
+  const LINK = `https://cell.example.com/v1/app/approve/apr_${"a".repeat(20)}`;
+
+  it("drops the confirmUrl of a step task's open approvals at the source, for the route, the function and Plan 5's read alike", async () => {
+    const v = world();
+    v.ports.taskExtra = { confirmUrl: LINK };
+    const { chain, run } = await reachReview(v);
+    await share(v, chain.chainId, CARL, "view");
+    const direct = await chainStepTask(v.deps, callerOf(CARL), run.runId, 3);
+    expect(direct.task.run?.pendingApprovals).toEqual([{ approvalId: `apr_${"a".repeat(20)}`, kind: "write", text: "Push the branch?" }]);
+    const viaRoute = await call(v, PRIYA, `/v1/app/chain-runs/${run.runId}/sections/3/task`);
+    expect(JSON.stringify(viaRoute)).not.toContain("confirmUrl");
+    expect(JSON.stringify(viaRoute)).not.toContain("/approve/");
+    const viaSession = await chainSessionReads(v.deps, ORG_A).stepTask({ kind: "session", developerId: CARL }, run.runId, 3);
+    expect(JSON.stringify(viaSession)).not.toContain("confirmUrl");
+    expect(JSON.stringify(viaSession)).not.toContain("/approve/");
+  });
+
+  it("leaves a gate's confirm link out of the run view read as the session actor, and keeps it on the run's own route", async () => {
+    const v = world();
+    const { run, approvalId } = await reachReview(v);
+    const asSession = await chainSessionReads(v.deps, ORG_A).runView({ kind: "session", developerId: PRIYA }, run.runId);
+    const gate = ChainRunViewSchema.parse(asSession).sections[1]!.gate;
+    expect(gate).toMatchObject({ status: "APPROVED", prompt: "Should Rovara Code fix this?" });
+    expect(gate).not.toHaveProperty("confirmUrl");
+    expect(JSON.stringify(asSession)).not.toContain("/approve/");
+    const viaActorFunction = await chainRunView(v.deps, callerOf(PRIYA), run.runId, { actor: { kind: "session", developerId: PRIYA } });
+    expect(viaActorFunction.sections[1]!.gate).not.toHaveProperty("confirmUrl");
+    const own = await chainRunView(v.deps, callerOf(PRIYA), run.runId);
+    expect(own.sections[1]!.gate?.confirmUrl).toBe(`https://cell.example.com/v1/app/approve/${approvalId}`);
+  });
+});
