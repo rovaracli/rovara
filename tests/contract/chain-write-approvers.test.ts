@@ -455,7 +455,10 @@ describe("the rule reads what is stored and fails closed", () => {
     const { record } = await w.autonomousWrite();
     const { writerEligible } = await writers();
     expect(await writerEligible({ ...w.deps, triggers: undefined } as never, record, callerOf(PRIYA))).toBe(false);
+    // The broker was built without a trigger store: that is said, with the approval and the run, so it is not mistaken for a creator who left.
+    expect(w.logs.filter((line) => line.event === "chain_writer.triggers_missing")).toEqual([{ event: "chain_writer.triggers_missing", fields: { orgId: ORG_A, approvalId: record.approvalId, runId: expect.any(String) as string } }]);
     expect(await writerEligible({ ...w.deps, triggers: undefined } as never, record, callerOf(MAX))).toBe(true);
+    expect(w.logs.filter((line) => line.event === "chain_writer.triggers_missing")).toHaveLength(1);
   });
 
   it("takes the trigger's creator only for a run an event or a schedule started: a person's run has no trigger, whoever the store would name", async () => {
