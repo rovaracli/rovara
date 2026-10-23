@@ -1058,24 +1058,29 @@ describe("egress_domain.decided", () => {
     })]);
   });
 
-  it("two domains decided with one request id are two events", async () => {
+  // Plan 2's fix wave (ea3fc3e2) applies the one request-id pattern to staff egress decisions: a request id names one
+  // decision, so reusing it for another domain or owner is IDEMPOTENCY_CONFLICT and records nothing more.
+  it("two domains decided with their own request ids are two events; reusing one id for another domain is refused", async () => {
     const capture = capturingAuditDeps();
     const w = await egressWorld(capture);
-    const requestId = randomUUID();
     for (const domain of ["a.acme.dev", "b.acme.dev"]) {
-      await decideEgressDomain(w.deps, { orgId: TEST_ORG, owner: WEB, domain, decision: "approved", operatorId: "staff-subject", requestId, auditActor: { kind: "operator", id: operator } });
+      await decideEgressDomain(w.deps, { orgId: TEST_ORG, owner: WEB, domain, decision: "approved", operatorId: "staff-subject", requestId: randomUUID(), auditActor: { kind: "operator", id: operator } });
     }
     expect(new Set(capture.recordedBy("egress_domain.decided").map((event) => event.eventId)).size).toBe(2);
+    await putEgressDomains(w.deps, TEST_ORG, WEB, ["a.acme.dev", "b.acme.dev", "c.acme.dev", "d.acme.dev"], { developerId: "dev-maya" });
+    const reused = randomUUID();
+    await decideEgressDomain(w.deps, { orgId: TEST_ORG, owner: WEB, domain: "c.acme.dev", decision: "approved", operatorId: "staff-subject", requestId: reused, auditActor: { kind: "operator", id: operator } });
+    await expect(decideEgressDomain(w.deps, { orgId: TEST_ORG, owner: WEB, domain: "d.acme.dev", decision: "approved", operatorId: "staff-subject", requestId: reused, auditActor: { kind: "operator", id: operator } })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(capture.recordedBy("egress_domain.decided")).toHaveLength(3);
   });
 
-  it("one request id and domain on another owner is another decision", async () => {
+  it("the same domain on another owner, with its own request id, is another decision", async () => {
     const capture = capturingAuditDeps();
     const w = await egressWorld(capture);
     const docs: EgressOwner = { kind: "project", project: "docs" };
     await putEgressDomains(w.deps, TEST_ORG, docs, ["a.acme.dev"], { developerId: "dev-maya" });
-    const requestId = randomUUID();
     for (const owner of [WEB, docs]) {
-      await decideEgressDomain(w.deps, { orgId: TEST_ORG, owner, domain: "a.acme.dev", decision: "approved", operatorId: "staff-subject", requestId, auditActor: { kind: "operator", id: operator } });
+      await decideEgressDomain(w.deps, { orgId: TEST_ORG, owner, domain: "a.acme.dev", decision: "approved", operatorId: "staff-subject", requestId: randomUUID(), auditActor: { kind: "operator", id: operator } });
     }
     expect(capture.recordedBy("egress_domain.decided").map((event) => event.details)).toEqual([[{ subject: "org", fields: { project: "web" } }], [{ subject: "org", fields: { project: "docs" } }]]);
   });
