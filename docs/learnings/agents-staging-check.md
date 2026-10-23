@@ -23,9 +23,15 @@ failed and rolled back to UPDATE_ROLLBACK_COMPLETE, so slack was not attempted.
 **Cause (code bug):** `ConnectorSecretsRole` (`infra/lib/control-plane.ts`, `new iam.CfnRole`) has a fixed `roleName` and no
 `path`, so it is created at `/`. The CloudFormation service role `agentx-staging-cloudformation` may manage only
 `role/agentx/staging/*` (statement `IamRoles`). CREATE failed with AccessDenied on `iam:GetRole`, and the rollback
-DELETE failed on `iam:DeleteRolePolicy`. The role does not exist (checked). Fix: set `path: environmentRolePath(env)`
-(the broker already builds the ARN with that path, per the comment at line 251). Also add a contract test that every
-named role in the cloud templates sits under the environment path. The access-stack and template tests did not catch this.
+DELETE failed on `iam:DeleteRolePolicy`. The role does not exist (checked).
+
+**Correction (2026-10-23, role-path fix):** the first reading above (no `path`) was wrong. The synthesized template already had
+`Path: /agentx/staging/` (the `EnvironmentRolePath` aspect worked; `cdk.out/AgentXControlPlane.template.json` in the clone shows it). The
+error names the path-less ARN `role/agentx-staging-connector-secrets` because CloudFormation looks a fixed-name role up by name before
+creating it, and IAM authorizes a lookup of a role that does not exist yet against `role/<name>`, which `role/agentx/staging/*` does not
+cover. Fix: the service role and the default boundary also allow the read and delete actions (no create) on that exact path-less ARN,
+for each fixed-name role (`fixedNameEnvironmentRoleNames`). The access stack must be deployed first, to carry the new statement;
+`tests/contract/role-paths.test.ts` guards it.
 
 **Orphans left by the rollback:** three retained, empty audit DynamoDB tables with random names, so a retry does not
 collide. Delete them at teardown or once the fix lands. Not deleted here.

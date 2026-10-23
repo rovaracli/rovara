@@ -298,6 +298,37 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 },
                 {
                   "Action": [
+                    "iam:GetRole",
+                    "iam:GetRolePolicy",
+                    "iam:ListRolePolicies",
+                    "iam:ListAttachedRolePolicies",
+                    "iam:DeleteRolePolicy",
+                    "iam:DetachRolePolicy",
+                    "iam:DeleteRole",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-connector-secrets",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "IamFixedNameRolesNotYetCreated",
+                },
+                {
+                  "Action": [
                     "iam:CreateInstanceProfile",
                     "iam:DeleteInstanceProfile",
                     "iam:GetInstanceProfile",
@@ -724,6 +755,37 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 ],
               },
               "Sid": "IamRoles",
+            },
+            {
+              "Action": [
+                "iam:GetRole",
+                "iam:GetRolePolicy",
+                "iam:ListRolePolicies",
+                "iam:ListAttachedRolePolicies",
+                "iam:DeleteRolePolicy",
+                "iam:DetachRolePolicy",
+                "iam:DeleteRole",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-connector-secrets",
+                    ],
+                  ],
+                },
+              ],
+              "Sid": "IamFixedNameRolesNotYetCreated",
             },
             {
               "Action": [

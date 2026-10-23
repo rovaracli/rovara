@@ -195,6 +195,52 @@ export function connectorSecretsRoleName(env: string): string {
   return `agentx-${env}-connector-secrets`;
 }
 
+/**
+ * The one environment where the control plane builds the Task Person proof role (infra/lib/task-person-proof.ts), by a fixed name.
+ * Named here so the deploy role can name the role too.
+ */
+export const TASK_PERSON_PROOF_ENV = "agentxlivetest123";
+
+/** The Task Person proof role's fixed name (see TASK_PERSON_PROOF_ENV). */
+export function taskPersonProofRoleName(env: string): string {
+  return `${env}-task-person-proof`;
+}
+
+/**
+ * Every role the environment's stacks create under a fixed RoleName (the access stack's two roles are not among them: they are
+ * created at the root by the operator). Each one needs the path-less grant of fixedNameRoleLookupStatement, so keep this list
+ * complete: tests/contract/role-paths.test.ts compares it with the synthesized templates.
+ */
+export function fixedNameEnvironmentRoleNames(env: string): string[] {
+  return [connectorSecretsRoleName(env), ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : [])];
+}
+
+/**
+ * Reads and deletes that IAM authorizes against a role's path-less ARN while the role does not exist: CloudFormation looks a
+ * fixed-name role up by name before creating it (iam:GetRole), and cleans it up by name when a create rolls back, and IAM,
+ * which cannot know the path of a missing role, checks role/<name>, not role/agentx/<env>/<name>. No create or change action
+ * is here, so a role at the root path can never be made; the real role is created under the environment path, where the
+ * ordinary IamRoles statement applies.
+ */
+const FIXED_NAME_ROLE_LOOKUP_ACTIONS = [
+  "iam:GetRole",
+  "iam:GetRolePolicy",
+  "iam:ListRolePolicies",
+  "iam:ListAttachedRolePolicies",
+  "iam:DeleteRolePolicy",
+  "iam:DetachRolePolicy",
+  "iam:DeleteRole",
+];
+
+function fixedNameRoleLookupStatement(scope: Pick<PolicyScope, "env" | "partition" | "account">): PolicyStatementJson {
+  return {
+    Sid: "IamFixedNameRolesNotYetCreated",
+    Effect: "Allow",
+    Action: [...FIXED_NAME_ROLE_LOOKUP_ACTIONS],
+    Resource: fixedNameEnvironmentRoleNames(scope.env).map((name) => `arn:${scope.partition}:iam::${scope.account}:role/${name}`),
+  };
+}
+
 /** The name of the default permission boundary the access stack creates when the company gives none. */
 export function defaultBoundaryName(env: string): string {
   return `agentx-${env}-boundary`;
@@ -236,6 +282,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     // support rule resources remain unavailable with this resource constraint.
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: roles },
+    fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
     { Sid: "IamManagedPolicies", Effect: "Allow", Action: [...MANAGED_POLICY_ACTIONS], Resource: agentxManagedPolicies(scope) },
     {
@@ -306,6 +353,8 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     // not scoped further, since scoped ARNs in the identity policy already limit it to two quotas.
     { Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" },
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: roles },
+    // The service role carries this boundary, so the path-less lookups it is granted (see fixedNameRoleLookupStatement) are named here too.
+    fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
     // The service role creates the broker's named managed policies (ruling M2); the boundary is a ceiling, so it names the same actions on the same ARNs.
     { Sid: "IamManagedPolicies", Effect: "Allow", Action: [...MANAGED_POLICY_ACTIONS], Resource: agentxManagedPolicies(scope) },

@@ -231,7 +231,10 @@ export class ControlPlaneStack extends Stack {
     // The broker role may assume it and holds no Secrets Manager permission on those paths. Named environments only.
     if (naming.env !== undefined) {
       const connectorSecretsRole = new iam.CfnRole(this, "ConnectorSecretsRole", {
-        // Fixed, so the default permissions boundary can name it as the one role the broker's bounded role may assume.
+        // Fixed, so the default permissions boundary can name it as the one role the broker's bounded role may assume. It is created
+        // under the environment path (the EnvironmentRolePath aspect sets it). The access stack's deploy role and boundary also name its
+        // path-less ARN, for lookups and cleanup only: CloudFormation's lookup of a fixed-name role that does not exist yet is
+        // authorized against that ARN (see fixedNameRoleLookupStatement).
         roleName: connectorSecretsRoleName(naming.env),
         description: "AgentX org connector and hook secrets: assumed by the broker with a rovara:org session tag, reaches only that org's secrets",
         assumeRolePolicyDocument: connectorSecretsTrustPolicy(broker.role!.roleArn),

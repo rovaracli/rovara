@@ -11,7 +11,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { defaultBoundaryStatements, serviceRoleStatements, type PolicyScope, type PolicyStatementJson } from "../../infra/lib/access-policies.js";
+import { defaultBoundaryStatements, fixedNameEnvironmentRoleNames, serviceRoleStatements, type PolicyScope, type PolicyStatementJson } from "../../infra/lib/access-policies.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -64,14 +64,17 @@ const roleResources = (resources: Record<string, Resource>) => Object.entries(re
 const glob = (pattern: string, text: string) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`).test(text);
 const asList = <T>(value: T | T[] | undefined): T[] => (value === undefined ? [] : Array.isArray(value) ? value : [value]);
 
-/** Whether the statements allow the action on the resource: some Allow matches and no Deny whose resource matches does. Conditions are ignored (a Deny with one counts as applying). */
+/**
+ * Whether the statements allow the action on the resource: some Allow matches and no unconditional Deny does. A Deny with a Condition
+ * is skipped: the only ones are the boundary requirements, which a role created with the environment's boundary satisfies.
+ */
 function allowed(statements: PolicyStatementJson[], action: string, resource: string): boolean {
   const matches = (statement: PolicyStatementJson) =>
     statement.Action.some((pattern) => glob(pattern.toLowerCase(), action.toLowerCase()))
     && (statement.NotResource !== undefined
       ? !asList(statement.NotResource).some((pattern) => glob(pattern, resource))
       : asList(statement.Resource).some((pattern) => glob(pattern, resource)));
-  return statements.some((s) => s.Effect === "Allow" && matches(s)) && !statements.some((s) => s.Effect === "Deny" && matches(s));
+  return statements.some((s) => s.Effect === "Allow" && matches(s)) && !statements.some((s) => s.Effect === "Deny" && s.Condition === undefined && matches(s));
 }
 
 beforeAll(() => {
@@ -112,6 +115,7 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     expect(fixedNameRoles().map((role) => role.name).sort()).toEqual(
       [`agentx-${env}-connector-secrets`, ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : [])].sort(),
     );
+    expect(fixedNameEnvironmentRoleNames(env).sort()).toEqual(fixedNameRoles().map((role) => role.name).sort());
   });
 
   it("are named in every ARN that points at a fixed-name role with that role's path and name", () => {
