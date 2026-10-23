@@ -213,10 +213,10 @@ export async function readStepAttempts(deps: Table, orgId: OrgId, runId: ChainRu
 
 const transact = (deps: Table, items: TransactItem[]) => deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
 
-/** An update of one item's fields, conditional on a clause built with the same aliases. Fields that are undefined are left out. */
+/** An update of one item's fields, conditional on a clause built with the same aliases. */
 function update(deps: Table, key: { pk: string; sk: string }, fields: Record<string, unknown>, when: (aliases: Aliases) => string): TransactItem {
   const aliases = new Aliases();
-  const sets = Object.entries(fields).filter(([, value]) => value !== undefined).map(([name, value]) => `${aliases.name(name)} = ${aliases.value(value)}`);
+  const sets = Object.entries(fields).map(([name, value]) => `${aliases.name(name)} = ${aliases.value(value)}`);
   const condition = when(aliases);
   return { Update: { TableName: deps.tableName, Key: key, UpdateExpression: `SET ${sets.join(", ")}`, ConditionExpression: condition, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values } };
 }
@@ -712,8 +712,8 @@ async function resultOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRec
     return { status: "succeeded", result };
   }
   const task = await getItem(deps, { pk: `DEVTASK#${event.taskId}`, sk: "META" });
-  const said = (isAgentRun ? agentRun["endReason"] : undefined) ?? task?.["outcomeReason"];
-  const reason = neutralText(redactSecrets(typeof said === "string" && said !== "" ? said : "it did not finish"), REASON_MAX);
+  const said = [isAgentRun ? agentRun["endReason"] : undefined, task?.["outcomeReason"]].find((candidate): candidate is string => typeof candidate === "string" && candidate !== "");
+  const reason = neutralText(redactSecrets(said ?? "it did not finish"), REASON_MAX);
   if (event.outcome === "failed") return { status: "failed", failure: { reason: "step_failed", message: reason } };
   return { status: "cancelled", failure: { reason: event.outcome === "cancelled" ? "step_cancelled" : event.outcome, message: reason } };
 }

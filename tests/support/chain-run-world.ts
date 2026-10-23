@@ -15,7 +15,7 @@ import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.
 import type { AdmissionDependencies } from "../../packages/broker/src/org/budget.js";
 import type { AgentOwner } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
-import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import { ChainDefinitionSchema, type ChainDefinitionInput, type ChainRunId } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
 import { chainRunKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -87,6 +87,8 @@ export function setupWorld(options: WorldOptions = {}) {
     refuse: [] as Error[],
     /** The next call starts the task, then throws this before returning: the process died after the task existed. */
     crashAfterStart: [] as Error[],
+    /** Called when a task has been started, before the call returns. */
+    onStarted: undefined as ((task: FakeTask) => void) | undefined,
   };
   const startAgentRun = async (request: AgentRunRequest): Promise<AgentRunResult> => {
     starts.push(structuredClone(request));
@@ -104,6 +106,7 @@ export function setupWorld(options: WorldOptions = {}) {
     db.set({ ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: request.orgId, developerId: request.owner.developerId, project: request.project, ...(request.chain === undefined ? {} : { chain: request.chain }) });
     // An agent-step run keeps its state beside the task (a coding task has none).
     if (request.agent.agentId !== "rovara-code") db.set({ ...taskAgentRunKey(taskId), entityType: "AGENT_RUN", orgId: request.orgId, revision: 1, state: "RUNNING", cursor: 0, input: request.input, steps: [], reports: [] });
+    hooks.onStarted?.(task);
     const crash = hooks.crashAfterStart.shift();
     if (crash !== undefined) throw crash;
     return result;
@@ -116,8 +119,24 @@ export function setupWorld(options: WorldOptions = {}) {
   if (access !== undefined) access.setOrgSpent(ORG_A, 0);
   const admission: AdmissionDependencies | undefined = access === undefined ? undefined : { documentClient: db, tableName: "T", access, now: () => clock.now, cloud: false };
 
+  // The runner's own client: it can be made to let something happen just before a transaction it is about to send (a write that lands between its reads and its write).
+  const rules: Array<{ when: (command: { constructor: { name: string }; input: Record<string, unknown> }) => boolean; then: () => void | Promise<void>; times: number }> = [];
+  const client = {
+    send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const rule = rules.find((candidate) => candidate.times > 0 && candidate.when(command));
+      if (rule !== undefined) {
+        rule.times -= 1;
+        await rule.then();
+      }
+      return db.send(command);
+    },
+  };
+  /** Runs `then` just before the next `times` transactions whose text holds `touches`. */
+  const beforeTransaction = (touches: string, then: () => void | Promise<void>, times = 1) => {
+    rules.push({ when: (command) => command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes(touches), then, times });
+  };
   const deps: ChainRunnerDependencies = {
-    store: agents, chains, projectMembers, signInStore, documentClient: db, tableName: "T", now: () => clock.now, confirmOrigin: "https://cell.example.com",
+    store: agents, chains, projectMembers, signInStore, documentClient: client, tableName: "T", now: () => clock.now, confirmOrigin: "https://cell.example.com",
     chainRuns: { startAgentRun, callerFor, ...(admission === undefined ? {} : { admission }) },
   };
   const agentDeps: AgentAccessDeps = { store: agents, projectMembers, documentClient: db, tableName: "T", signInStore };
@@ -152,6 +171,20 @@ export function setupWorld(options: WorldOptions = {}) {
     db.find((item) => item.pk === chainRunKey(orgId, runId, "META").pk && String(item.sk).startsWith(prefix)).sort((a, b) => String(a.sk).localeCompare(String(b.sk)));
   const attempts = (runId: string, orgId: OrgId = ORG_A) => items(runId, "STEP#", orgId) as unknown as StepAttemptRecord[];
   const events = (runId: string, orgId: OrgId = ORG_A) => items(runId, "EVENT#", orgId) as unknown as RunEventRow[];
+  /** Moves the run's version on, as any other change to it would. */
+  const touchRun = (runId: string) => {
+    const meta = db.get(chainRunKey(ORG_A, runId, "META"))!;
+    db.set({ ...meta, version: (meta["version"] as number) + 1 });
+  };
+  /** Publishes `definition` as the chain's next version. */
+  const publishAgain = async (chainId: string, definition: ChainDefinitionInput, by = PRIYA) => {
+    const draft = (await chains.getDraft(ORG_A, chainId))!;
+    await chains.saveDraft({ orgId: ORG_A, chainId, definition, expectedRevision: draft.revision, by });
+    const chain = (await chains.get(ORG_A, chainId))!;
+    const checked = await validateChainForPublish(agentDeps, callerOf(by), ORG_A, ChainDefinitionSchema.parse(definition));
+    if (checked.problems.length > 0) throw new Error(`the test's chain has problems: ${JSON.stringify(checked.problems)}`);
+    await chains.publish({ orgId: ORG_A, chainId, expectedDraftRevision: chain.draftRevision, pinned: checked.pinned, digest: chainDigest(checked.pinned), guardrailsRevision: checked.guardrailsRevision, by });
+  };
   const chainOf = async (chainId: string) => (await chains.get(ORG_A, chainId))!;
   const openItems = () => db.find((item) => item.pk === "OPEN_CHAIN_RUNS");
 
@@ -173,7 +206,7 @@ export function setupWorld(options: WorldOptions = {}) {
   };
   const refusal = (code: Parameters<typeof agentXError>[0], message: string): AgentXError => agentXError(code, message);
 
-  return { db, clock, agents, chains, projectMembers, deps, agentDeps, access, starts, tasks, hooks, startAgentRun, publish, customAgent, run, attempts, events, chainOf, openItems, endEvent, pauseEvent, taskOf, refusal };
+  return { db, clock, beforeTransaction, touchRun, publishAgain, agents, chains, projectMembers, deps, agentDeps, access, starts, tasks, hooks, startAgentRun, publish, customAgent, run, attempts, events, chainOf, openItems, endEvent, pauseEvent, taskOf, refusal };
 }
 
 export type ChainWorld = ReturnType<typeof setupWorld>;
