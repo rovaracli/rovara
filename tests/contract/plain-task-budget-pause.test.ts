@@ -233,3 +233,145 @@ describe("M-6: a pause is told at most once, and until it is told", () => {
     expect(ended).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// The M-6 review (I-1, m-1, m-2, m-3)
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+const dueNow = (t: World, taskId: string) => {
+  const row = rowsOf(t, taskId)[0]!;
+  t.db.set({ ...row, nextAttemptAt: "2026-01-01T00:00:00.000Z", dispatchDueSk: `2026-01-01T00:00:00.000Z#${String(row.sk)}` });
+};
+const failingOnce = <T>(register: (handler: (deps: unknown, event: T) => Promise<void>) => () => void) => {
+  const events: T[] = [];
+  let failures = 1;
+  unregister.push(register(async (_deps, event) => {
+    if (failures > 0) { failures -= 1; throw new Error("down"); }
+    events.push(event);
+  }));
+  return events;
+};
+/** The task's next model key is refused for a used-up run limit: the mint writes the pause (and the operation it stopped), as the worker's key request does. */
+async function refusedKey(t: World, task: { taskId: string; operationId: string }) {
+  await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+  const headers = { "x-agentx-callback-capability": (t.outboxOf(task.operationId)!.invocation as { callbackCapability: string }).callbackCapability };
+  expect((await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers })).status).toBe(200);
+  t.access.setKeySpent(t.access.mintedKeys()[0]!, 14);
+  expect((await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers })).status).toBe(402);
+}
+
+describe("M-6 review I-1: a stop that was a pause stays a pause once the pause is removed", () => {
+  it("the pause handler throws, the approval removes the pause before the resume runs, the sweep tells nothing, and the end told later is `succeeded`, once", async () => {
+    const t = await setup();
+    const ended = endHandler();
+    const paused = failingOnce<TaskPauseEvent>(registerTaskPauseHandler);
+    const task = await t.plainTask();
+    await refusedKey(t, task);
+    await t.pauseAndEnd(task, "none");
+    expect(paused).toEqual([]);
+    expect(rowsOf(t, task.taskId)[0]).toMatchObject({ kind: "operation_end" });
+    // The approval's transaction removed the pause; its resume has not run (it failed, and is logged).
+    await t.set(task.taskId, "REMOVE budgetPause");
+    dueNow(t, task.taskId);
+    await recover(t);
+    expect(ended).toEqual([]);
+    expect(endRecords(t, task.taskId)).toEqual([]);
+    expect(rowsOf(t, task.taskId)).toEqual([]);
+    // The owner's Continue goes on and the task finishes: the first end it has is told, once.
+    const continued = await t.api(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/continue`, { instructions: "Go on" });
+    expect(continued.status, JSON.stringify(continued.body)).toBe(200);
+    const next = t.taskOps(task.workspaceId).at(-1)!;
+    await t.finish(task.workspaceId, next.id, "SUCCEEDED");
+    await t.finish(task.workspaceId, next.id, "SUCCEEDED");
+    await recover(t);
+    expect(ended).toEqual([expect.objectContaining({ taskId: task.taskId, outcome: "succeeded" })]);
+  });
+
+  it("a refusal records the operation it stopped, and a raise that removed the pause before the result came leaves the stop a pause, not a failure", async () => {
+    const t = await setup();
+    const ended = endHandler();
+    const paused = pauseHandler();
+    const task = await t.plainTask();
+    await refusedKey(t, task);
+    expect(t.meta(task.taskId)).toMatchObject({ budgetPause: { scope: { kind: "task" } }, budgetStopOf: task.operationId });
+    // A month raise removed the pause while the stopped operation was still winding down.
+    await t.set(task.taskId, "REMOVE budgetPause");
+    await t.finish(task.workspaceId, task.operationId, "FAILED", { error: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+    expect(ended).toEqual([]);
+    expect(paused).toEqual([]);
+    expect(endRecords(t, task.taskId)).toEqual([]);
+  });
+});
+
+describe("M-6 review m-1: a stale stop is not told as a later operation's pause", () => {
+  it("op1's pause tell failed and left a row; the task resumed and op2 stopped and was told; the sweep for op1 tells nothing more", async () => {
+    const t = await setup();
+    const ended = endHandler();
+    const paused = failingOnce<TaskPauseEvent>(registerTaskPauseHandler);
+    const task = await stopped(t);
+    expect(paused).toEqual([]);
+    await t.decide(DEB, monthRequests(t)[0]!.spendRequestId, "APPROVE", { amountUsd: 10 });
+    const second = await t.pauseAndEnd(task, MEMBER);
+    expect(second).not.toBe(task.stoppedOperationId);
+    expect(paused).toEqual([expect.objectContaining({ taskId: task.taskId })]);
+    expect(t.meta(task.taskId).budgetPauseToldFor).toBe(second);
+    dueNow(t, task.taskId);
+    await recover(t);
+    expect(paused).toHaveLength(1);
+    expect(t.meta(task.taskId).budgetPauseToldFor).toBe(second);
+    expect(ended).toEqual([]);
+  });
+});
+
+describe("M-6 review m-2: a `closed` end that could not be told is left to the recovery sweep", () => {
+  it("a handler that throws once leaves a row; the sweep tells `closed`, then once", async () => {
+    const t = await setup();
+    const ended = failingOnce<TaskEndEvent>(registerTaskEndHandler);
+    pauseHandler();
+    const task = await stopped(t);
+    const closing = await t.api(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/close`, {});
+    expect(closing.status, JSON.stringify(closing.body)).toBe(200);
+    const closeOperation = t.operations(task.workspaceId).find((operation) => operation.kind === "close")!;
+    await t.finish(task.workspaceId, closeOperation.id, "SUCCEEDED", { result: { safeToClose: true, repositories: [] } });
+    expect(t.meta(task.taskId)).toHaveProperty("closedAt");
+    expect(ended).toEqual([]);
+    expect(rowsOf(t, task.taskId)[0]).toMatchObject({ kind: "operation_end", endOf: "closed" });
+    dueNow(t, task.taskId);
+    await recover(t);
+    expect(ended).toEqual([expect.objectContaining({ taskId: task.taskId, outcome: "closed" })]);
+    expect(rowsOf(t, task.taskId)).toEqual([]);
+    await recover(t);
+    expect(ended).toHaveLength(1);
+  });
+});
+
+describe("M-6 review m-3: a pause that could not be worked out is not told as a failure", () => {
+  it("the ask fails on a transient error: nothing is told and a row is left; once it can run, the pause is told, not an end", async () => {
+    const t = await setup();
+    const ended = endHandler();
+    const paused = pauseHandler();
+    const task = await t.plainTask();
+    await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+    const headers = { "x-agentx-callback-capability": (t.outboxOf(task.operationId)!.invocation as { callbackCapability: string }).callbackCapability };
+    expect((await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers })).status).toBe(200);
+    t.access.setKeySpent(t.access.mintedKeys()[0]!, 14);
+    // The write of the worked-out pause fails (a transient DynamoDB error).
+    const original = t.db.send.bind(t.db);
+    let down = true;
+    t.db.send = (async (command: { input?: { UpdateExpression?: string } }) => {
+      if (down && command.input?.UpdateExpression?.startsWith("SET #pause = :pause")) throw new Error("ProvisionedThroughputExceededException");
+      return original(command as never);
+    }) as typeof t.db.send;
+    await t.pauseAndEnd(task, "none");
+    expect(ended).toEqual([]);
+    expect(paused).toEqual([]);
+    expect(endRecords(t, task.taskId)).toEqual([]);
+    expect(rowsOf(t, task.taskId)[0]).toMatchObject({ kind: "operation_end" });
+    down = false;
+    dueNow(t, task.taskId);
+    await recover(t);
+    expect(paused).toEqual([expect.objectContaining({ taskId: task.taskId, scope: { kind: "task", taskId: task.taskId } })]);
+    expect(ended).toEqual([]);
+    expect(rowsOf(t, task.taskId)).toEqual([]);
+  });
+});
