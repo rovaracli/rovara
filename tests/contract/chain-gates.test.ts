@@ -781,16 +781,16 @@ describe("the words of a gate, more", () => {
 });
 
 describe("the words of a gate", () => {
-  it("name a person who has no sign-in record a teammate, and show a name safely", async () => {
+  it("show a person's name safely: no direction mark, no marker for one, and the rest as text", async () => {
     const w = setupGateWorld();
-    w.db.set({ pk: `DEVELOPER#${CARL}`, sk: "META", developerId: CARL, displayName: "Carl‮<b>Evil</b>", revoked: false });
-    const { run } = await w.runAtGate(PRIYA, gated([{ kind: "members", developerIds: [CARL, VIV] }]));
-    w.db.delete(`DEVELOPER#${VIV}`, "META");
-    const { approvalId } = { approvalId: waitingGate(w, run.runId).approvalId! };
+    w.db.set({ pk: `DEVELOPER#${CARL}`, sk: "META", developerId: CARL, displayName: "Carl\u202E<b>Evil</b>", revoked: false });
+    const chain = await w.publish(gated([{ kind: "members", developerIds: [CARL] }]));
+    const run = await w.start(chain.chainId);
+    await w.endLatest();
     const text = w.events(run.runId).find((event) => event.type === "gate_waiting")!.text;
-    expect(text).not.toContain("‮");
-    expect(text).toContain("Carl");
-    void approvalId;
+    expect(text).not.toContain("\u202E");
+    expect(text).not.toContain("U+202E");
+    expect(text).toContain("Waiting for Carl <b>Evil</b> to approve");
   });
 
   it("say `a teammate` for a listed person nobody can name", async () => {
