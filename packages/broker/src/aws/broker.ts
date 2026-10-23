@@ -383,6 +383,7 @@ import { followMerges, orgRoleOf, type ProjectMembers } from "../agents/access.j
 import { escalateOwnerRequests, requestForPausedTask, runLimitRequester, spendDecideKind, type SpendRequestHost } from "../spend/requests.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
+import { slackReplyAuthor } from "../agent-sessions/events.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
@@ -7481,34 +7482,6 @@ export function isSlackThreadNoteEvent(event: unknown): event is SlackThreadNote
     && value.eventId.length > 0 && value.eventId.length <= 128 && typeof value.messageTs === "string"
     && typeof value.text === "string" && value.text.trim().length > 0
     && typeof value.thread === "object" && value.thread !== null;
-}
-
-/**
- * Who wrote a reply in a task's thread, for the session's timeline (Plan 5 Task 6). The id is the task's owner's when the Slack user is the owner, else the
- * Slack caller's. The name is their developer record's display name, else the name the task's Task People list holds for their Slack id, else (the owner)
- * the name the task keeps, else what the Slack caller is called. Never throws: the name is for the timeline only.
- */
-async function slackReplyAuthor(
-  dependencies: AwsBrokerDependencies,
-  task: { taskId: string; developerId: string; developerName: string; slackUserId?: string | undefined },
-  slackUserId: string,
-  caller: DeveloperCaller,
-): Promise<{ developerId: string; name: string }> {
-  const owner = task.slackUserId === slackUserId;
-  const developerId = owner ? task.developerId : caller.developerId;
-  const known = (value: unknown): value is string => typeof value === "string" && value !== "";
-  try {
-    const record = await getItem<{ displayName?: unknown }>(dependencies, { pk: `DEVELOPER#${developerId}`, sk: "META" });
-    if (known(record?.displayName)) return { developerId, name: record.displayName };
-    const people = await getItem<{ people?: unknown }>(dependencies, { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" });
-    const listed = Array.isArray(people?.people)
-      ? (people.people as Array<{ slackUserId?: unknown; name?: unknown }>).find((person) => person?.slackUserId === slackUserId)
-      : undefined;
-    if (known(listed?.name)) return { developerId, name: listed.name };
-  } catch {
-    // The name is for the timeline only: what the task or the caller is called will do.
-  }
-  return { developerId, name: owner && known(task.developerName) ? task.developerName : caller.name };
 }
 
 /**

@@ -15,10 +15,11 @@ import {
   type SessionEvent,
 } from "../../packages/contracts/src/index.js";
 import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
-import { appendSessionEvent, readSessionEvents } from "../../packages/broker/src/agent-sessions/events.js";
+import { appendSessionEvent, readSessionEvents, slackReplyAuthor } from "../../packages/broker/src/agent-sessions/events.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { ARJUN, BO, CELL, MIA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
@@ -145,11 +146,11 @@ describe("reading events", () => {
 
   it("still reaches the end when more than a page of events share one instant", async () => {
     const e = eventsWorld();
-    const crowd = Array.from({ length: SESSION_EVENTS_PAGE_MAX + 60 }, (_, n) => e.event("status", `c${String(n)}`, AT));
+    const crowd = Array.from({ length: SESSION_EVENTS_PAGE_MAX * 2 }, (_, n) => e.event("status", `c${String(n)}`, AT));
     await put(e, ...crowd);
     const drained = await drain(e);
     expect(new Set(drained.events.map((event) => event.eventId))).toEqual(new Set(crowd.map((event) => event.eventId)));
-    expect(drained.pages).toBeLessThan(10);
+    expect(drained.pages).toBeLessThanOrEqual(5); // each page moves on by at least half a page, however many events share the instant
   });
 
   it("leaves out an event whose expiry has passed though the table hasn't deleted it, and still fills the page behind a run of them", async () => {
@@ -170,10 +171,20 @@ describe("reading events", () => {
     expect((await e.read(PRIYA)).events.map((event) => event.text)).toEqual(["status mine"]);
   });
 
+  it("leaves out an item under this session's key that names another org or session", async () => {
+    const e = eventsWorld();
+    await put(e, e.event("status", "mine", AT));
+    const stray = e.event("status", "stray", at(1000));
+    e.w.db.set({ ...agentSessionKey(ORG_A, e.sessionId, sessionEventSk(stray.at, stray.eventId)), entityType: "AGENT_SESSION_EVENT", orgId: ORG_B, sessionId: e.sessionId, ...stray });
+    const other = e.event("status", "other", at(2000));
+    e.w.db.set({ ...agentSessionKey(ORG_A, e.sessionId, sessionEventSk(other.at, other.eventId)), entityType: "AGENT_SESSION_EVENT", orgId: ORG_A, sessionId: "ses_99999999999999999999", ...other });
+    expect((await e.read(PRIYA)).events.map((event) => event.text)).toEqual(["status mine"]);
+  });
+
   it("refuses a cursor that is not one this log gave, without echoing it", async () => {
     const e = eventsWorld();
     await put(e, e.event("status", "a", AT));
-    for (const bad of ["", "nope", `${AT}`, `${AT}#evt_xyz`, `2026-13-40T99:99:99.000Z#${sessionEventId("a", "b")}`, `${AT}#${sessionEventId("a", "b").toUpperCase()}`, `x${AT}#${sessionEventId("a", "b")}`, "9".repeat(300)]) {
+    for (const bad of ["", "nope", `${AT}`, `${AT}#evt_xyz`, `2026-13-40T99:99:99.000Z#${sessionEventId("a", "b")}`, `${AT}#${sessionEventId("a", "b").toUpperCase()}`, `x${AT}#${sessionEventId("a", "b")}`, `2026-02-30T10:00:00.000Z#${sessionEventId("a", "b")}`, "9".repeat(300)]) {
       const refused = await code(e.read(PRIYA, bad));
       expect(refused, bad).toMatchObject({ code: "CONFIG_INVALID" });
       if (bad.length > 3) expect(refused?.message).not.toContain(bad.slice(0, 12));
@@ -359,23 +370,54 @@ describe("a Slack thread reply on a task's session", () => {
 });
 
 describe("through the real broker", () => {
-  it("tells a Slack thread reply on a started task in that task's session, once, with the person's name", async () => {
+  async function started(options: { developerRecord: boolean }) {
     const harness = await createDeveloperTaskBroker();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000021" };
-    const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
-    const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+    const first = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    const taskId = String((JSON.parse(first.body) as { taskId: string }).taskId);
     // The harness has no agents set up, so the task has no session yet: it gets one as a read would give it.
     const ownerId = String(harness.db.get(`DEVTASK#${taskId}`, "META")!.developerId);
     const stored = { ...harness.db.get(`DEVTASK#${taskId}`, "META")!, agent: { agentId: "rovara-code", name: "Rovara Code", version: 3 }, origin: "slack", startedBy: { developerId: MAYA.developerId } };
     harness.db.set(stored);
-    harness.db.set({ pk: `DEVELOPER#${ownerId}`, sk: "META", developerId: ownerId, provider: "slack", displayName: "Maya Chen", slackUserId: MAYA.slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    if (options.developerRecord) harness.db.set({ pk: `DEVELOPER#${ownerId}`, sk: "META", developerId: ownerId, provider: "slack", displayName: "Maya Chen", slackUserId: MAYA.slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
     const sessionId = String(await ensureTaskSession({ documentClient: harness.db, tableName: "state", now: Date.now }, stored as never, { ownerName: "Maya Chen", title: "Add a greeting" }));
     expect(sessionId).toMatch(/^ses_/);
-    const send = async (eventId: string) => JSON.parse((await harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId, thread, userId: MAYA.slackUserId, messageTs: "1695500002.000007", eventId, text: "Keep the old flag." })).body) as { outcome: string };
-    expect(await send("EvA")).toEqual({ outcome: "captured" });
-    expect(await send("EvB")).toEqual({ outcome: "duplicate" });
-    const events = harness.db.find((item) => String(item.sk).startsWith("EVENT#") && String(item.pk).endsWith(sessionId) && item.type === "steer");
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ eventId: sessionEventId("steer", "EvA"), source: "slack", text: "Maya Chen in Slack: Keep the old flag.", actor: { kind: "member", name: "Maya Chen" } });
+    const send = async (userId: string, messageTs: string, eventId: string, text: string) =>
+      JSON.parse((await harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId, thread, userId, messageTs, eventId, text })).body) as { outcome: string };
+    const steers = () => harness.db.find((item) => String(item.sk).startsWith("EVENT#") && String(item.pk).endsWith(sessionId) && item.type === "steer");
+    return { harness, taskId, sessionId, send, steers, ownerId };
+  }
+
+  it("tells a Slack thread reply on a started task in that task's session, once, with the person's name", async () => {
+    const t = await started({ developerRecord: true });
+    expect(await t.send(MAYA.slackUserId!, "1695500002.000007", "EvA", "Keep the old flag.")).toEqual({ outcome: "captured" });
+    expect(await t.send(MAYA.slackUserId!, "1695500002.000007", "EvB", "Keep the old flag.")).toEqual({ outcome: "duplicate" });
+    expect(t.steers()).toHaveLength(1);
+    expect(t.steers()[0]).toMatchObject({ eventId: sessionEventId("steer", "EvA"), source: "slack", text: "Maya Chen in Slack: Keep the old flag.", actor: { kind: "member", developerId: t.ownerId, name: "Maya Chen" } });
+  });
+
+  it("names the owner by what the task keeps when no developer record says more, and a teammate by what the caller is called", async () => {
+    const t = await started({ developerRecord: false });
+    expect(await t.send(MAYA.slackUserId!, "1695500002.000007", "EvA", "From the owner.")).toEqual({ outcome: "captured" });
+    expect(await t.send("U0TEAMMATE1", "1695500003.000001", "EvC", "From a teammate.")).toEqual({ outcome: "captured" });
+    expect(t.steers().map((row) => row.text).sort()).toEqual(["Slack user U0MAYA001 in Slack: From the owner.", "Slack user U0TEAMMATE1 in Slack: From a teammate."]);
+  });
+
+  it("names a teammate by the name the task's Task People list holds for their Slack id, and never throws", async () => {
+    const t = await started({ developerRecord: false });
+    const teammate = developerIdForSlackUser("U0TEAMMATE1");
+    const task = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as never as { taskId: string; developerId: string; developerName: string; slackUserId?: string };
+    const caller = { developerId: teammate, name: "Slack user U0TEAMMATE1" } as never;
+    const deps = { documentClient: t.harness.db, tableName: "state" } as never;
+    expect(await slackReplyAuthor(deps, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Slack user U0TEAMMATE1" });
+    t.harness.db.set({
+      pk: `DEVTASK#${t.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false,
+      people: [{ developerId: teammate, slackUserId: "U0TEAMMATE1", name: "Tess Teammate", role: "commenter" }],
+    });
+    expect(await slackReplyAuthor(deps, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Tess Teammate" });
+    // A table that is down leaves the caller's own name.
+    const down = { documentClient: { send: async () => { throw new Error("down"); } }, tableName: "state" } as never;
+    expect(await slackReplyAuthor(down, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Slack user U0TEAMMATE1" });
   });
 });
+

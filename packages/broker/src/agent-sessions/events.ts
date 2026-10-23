@@ -4,7 +4,7 @@
 // Cancellation-position contract, for a caller that puts an event in its own transaction: the event is always the LAST item, and a cancellation at that
 // position alone (`onlyTheEventCancelled`) means "already recorded": the caller treats it as success and retries the rest without it. An event is never a
 // reason for the caller's own work to fail: build it with the helpers here, which answer undefined rather than throw.
-import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SESSION_EVENTS_PAGE_MAX,
   SessionEventSchema,
@@ -73,6 +73,34 @@ export function slackReplyEventItem(
     }
   }
   return undefined;
+}
+
+/**
+ * Who wrote a reply in a task's thread, for the session's timeline. The id is the task's owner's when the Slack user is the owner, else the Slack caller's.
+ * The name is their developer record's display name, else the name the task's Task People list holds for their Slack id, else (the owner) the name the task
+ * keeps, else what the Slack caller is called. Never throws: the name is for the timeline only.
+ */
+export async function slackReplyAuthor(
+  table: Pick<TableInput, "documentClient" | "tableName">,
+  task: { taskId: string; developerId: string; developerName: string; slackUserId?: string | undefined },
+  slackUserId: string,
+  caller: { developerId: string; name: string },
+): Promise<{ developerId: string; name: string }> {
+  const owner = task.slackUserId === slackUserId;
+  const developerId = owner ? task.developerId : caller.developerId;
+  const known = (value: unknown): value is string => typeof value === "string" && value !== "";
+  const read = async (key: { pk: string; sk: string }) =>
+    ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
+  try {
+    const record = await read({ pk: `DEVELOPER#${developerId}`, sk: "META" });
+    if (known(record?.["displayName"])) return { developerId, name: record["displayName"] };
+    const people = (await read({ pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" }))?.["people"];
+    const listed = Array.isArray(people) ? (people as Array<{ slackUserId?: unknown; name?: unknown } | null>).find((person) => person?.slackUserId === slackUserId) : undefined;
+    if (known(listed?.name)) return { developerId, name: listed.name };
+  } catch {
+    // The name is for the timeline only: what the task or the caller is called will do.
+  }
+  return { developerId, name: owner && known(task.developerName) ? task.developerName : caller.name };
 }
 
 // ---- reading
@@ -154,7 +182,7 @@ export async function readSessionEvents(deps: SessionEventsDependencies, caller:
       scanned += 1;
       if (typeof item["sk"] === "string") lastSk = item["sk"];
       const event = eventOf(item, orgId, session.sessionId, nowSeconds);
-      if (event === undefined || events.has(event.eventId)) continue;
+      if (event === undefined) continue;
       events.set(event.eventId, event);
       kept += 1;
     }
