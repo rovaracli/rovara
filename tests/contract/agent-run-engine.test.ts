@@ -199,22 +199,22 @@ describe("prepareSlackReport", () => {
   });
 
   it("turns a labelled link to another site into plain text `label (host)`", () => {
-    expect(prepareSlackReport("see <https://evil.example/x|the fix>", options())).toEqual({ kind: "text", text: "see the fix (evil.example)" });
+    expect(prepareSlackReport("see <https://evil.example/x|the fix>", options())).toEqual({ kind: "text", text: "see the fix (evil[.]example)" });
   });
 
   it("turns an unlabelled link and a bare URL into plain text with the host", () => {
     const result = prepareSlackReport("a <https://evil.example/a> and https://other.example/b?c=1 here", options());
     expect(result.kind).toBe("text");
     expect(result.text).not.toMatch(/https?:\/\//);
-    expect(result.text).toContain("(evil.example)");
-    expect(result.text).toContain("(other.example)");
+    expect(result.text).toContain("(evil[.]example)");
+    expect(result.text).toContain("(other[.]example)");
   });
 
   it("keeps the task link and a link whose host is one of the org's report link domains (or a subdomain of one)", () => {
     const own = `see <${TASK_LINK}|the task> and <https://docs.acme.example/runbook|the runbook> and <https://www.acme.example/x|more>`;
     const result = prepareSlackReport(own, options({ reportLinkDomains: ["acme.example", "docs.acme.example"] }));
     expect(result).toEqual({ kind: "text", text: own });
-    expect(prepareSlackReport("see <https://notacme.example/x|a>", options({ reportLinkDomains: ["acme.example"] }))).toEqual({ kind: "text", text: "see a (notacme.example)" });
+    expect(prepareSlackReport("see <https://notacme.example/x|a>", options({ reportLinkDomains: ["acme.example"] }))).toEqual({ kind: "text", text: "see a (notacme[.]example)" });
   });
 
   it.each([
@@ -964,7 +964,7 @@ describe("the final report in Slack", () => {
     expect(post).toHaveBeenCalledTimes(1);
     const posted = (post.mock.calls[0] as unknown as [{ channel: string; text: string }])[0];
     expect(posted.channel).toBe(SLACK_CHANNEL);
-    expect(posted.text).toBe("The retry was removed. see the fix (evil.example)");
+    expect(posted.text).toBe("The retry was removed. see the fix (evil[.]example)");
   });
 
   it("posts only the link to the task when the report holds a command", async () => {
@@ -1504,13 +1504,13 @@ describe("prepareSlackReport: what only the full normalisation and the exact for
   it("does not leave a link inside a link's label", () => {
     const result = prepareSlackReport("see <https://evil.example/x|https://good.example/y>", options);
     expect(result.text).not.toContain("https://");
-    expect(result.text).toContain("(evil.example)");
+    expect(result.text).toContain("(evil[.]example)");
   });
   it("takes a plain @here out with the space after it", () => {
     expect(prepareSlackReport("Ping @here now", options)).toEqual({ kind: "text", text: "Ping now" });
   });
   it("is the org's domain list that decides, not a look-alike ending", () => {
-    expect(prepareSlackReport("<https://evilacme.example/x|a>", { ...options, reportLinkDomains: ["acme.example"] })).toEqual({ kind: "text", text: "a (evilacme.example)" });
+    expect(prepareSlackReport("<https://evilacme.example/x|a>", { ...options, reportLinkDomains: ["acme.example"] })).toEqual({ kind: "text", text: "a (evilacme[.]example)" });
   });
 });
 
