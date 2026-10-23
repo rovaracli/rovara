@@ -40,7 +40,7 @@ describe("the cell app shell and its immutable files", () => {
  });
  it("leaves CloudFront files to the distribution", async () => { expect((await app()(event("/app/assets/main-fixture.js"))).statusCode).toBe(404); });
  it("serves cell-hosted Brotli, gzip and plain bytes with immutable cache and Vary", async () => {
-  for (const [accept, encoding] of [["br, gzip", "br"], ["gzip", "gzip"], ["", undefined], ["br;q=0, gzip", "gzip"], ["gzip;q=0", undefined]] as const) {
+  for (const [accept, encoding] of [["br, gzip", "br"], ["gzip", "gzip"], ["", undefined], ["br;q=0, gzip", "gzip"], ["br;q=0, gzip;q=1, *;q=1", "gzip"], ["gzip;q=0", undefined]] as const) {
    const response = await app("")(event("/app/assets/main-fixture.js", "GET", { "accept-encoding": accept }));
    expect(response.statusCode).toBe(200);expect(response.isBase64Encoded).toBe(true);expect(response.headers["content-encoding"]).toBe(encoding);expect(response.headers.vary).toBe("accept-encoding");expect(response.headers["cache-control"]).toBe("public, max-age=31536000, immutable");expect(response.headers["content-type"]).toBe("text/javascript; charset=utf-8");
    const bytes = Buffer.from(response.body, "base64");expect((encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString()).toBe(script);

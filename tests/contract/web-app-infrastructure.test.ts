@@ -34,7 +34,7 @@ describe("named web hosting and isolated throttle budgets", () => {
  });
  it("keeps old hashed assets and waits for their upload before changing the web function", () => {
   const [deploymentId, deployment] = ofType(hosted, "Custom::CDKBucketDeployment").find(([, resource]) => JSON.stringify(resource.Properties.DestinationBucketName).includes(webBucket()[0]))!;
-  expect(deployment.Properties.Prune).toBe(false);expect(deployment.Properties.DestinationBucketKeyPrefix).toBe("app/assets/");expect(deployment.Properties.CacheControl).toEqual(["public", "max-age=31536000", "immutable"]);
+  expect(deployment.Properties.Prune).toBe(false);expect(deployment.Properties.DestinationBucketKeyPrefix).toBe("app/assets/");expect(record(deployment.Properties.SystemMetadata)["cache-control"]).toBe("public, max-age=31536000, immutable");
   expect([webFunction(hosted)[1].DependsOn].flat()).toContain(deploymentId);
  });
  it("lets only the BucketDeployment handler role write the web bucket", () => {
