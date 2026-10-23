@@ -16,6 +16,7 @@ import {
   type TriggerTarget,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAgentAccess, type AgentCaller } from "../agents/access.js";
+import { shownText } from "../agents/approvals.js";
 import { resolveRecipe } from "../agents/changes.js";
 import { resolveAgentForAutonomousRun, type RosterDependencies } from "../agents/roster.js";
 import type { AgentRecord } from "../agents/store.js";
@@ -82,7 +83,9 @@ const reasonOf = (error: AgentXError): string => (error.message.startsWith(`${er
 /** What the chain's current version needs of the world for an autonomous start: its run limit, budget and gates, and each step's agent still usable on the project by the owner. */
 async function chainProblems(deps: Deps, trigger: TriggerRecord, owner: AgentCaller | undefined): Promise<TriggerProblem[]> {
   const { orgId } = trigger;
-  if (trigger.target.kind !== "chain" || deps.chains === undefined) return [];
+  if (trigger.target.kind !== "chain") return [];
+  // Without the chain store nothing can be said of the chain, and nothing that cannot be checked is let through.
+  if (deps.chains === undefined) return [{ path: "target", code: "RUNTIME_UNAVAILABLE", message: "chains are not set up in this deployment" }];
   const chain = await deps.chains.get(orgId, trigger.target.chainId);
   if (chain === undefined) return [{ path: "target", code: "NOT_FOUND", message: "no chain has that ID" }];
   if (chain.status !== "active") return [{ path: "target", code: "CHAIN_UNAVAILABLE", message: `${chain.name} is archived, so it can't start new runs.` }];
@@ -188,6 +191,20 @@ async function eventProblems(deps: Deps, trigger: TriggerRecord): Promise<Trigge
   return problems;
 }
 
+/** The name of the custom agent a trigger starts when `owner` may not use it (a built-in is everyone's, and an agent that is gone is the agent checks' to report); else undefined. */
+async function lostAgentAccess(deps: Deps, owner: AgentCaller, trigger: TriggerRecord): Promise<string | undefined> {
+  if (trigger.target.kind !== "agent" || isBuiltinAgentId(trigger.target.agentId)) return undefined;
+  const record = await deps.store.get(trigger.orgId, trigger.target.agentId);
+  if (record === undefined) return undefined;
+  try {
+    await requireAgentAccess(deps, owner, record.agentId, "use");
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof AgentXError)) throw error;
+    return shownText(record.name, 80);
+  }
+}
+
 /**
  * Everything a trigger needs and does not have, the first problem first: the target (it exists, is active, has a current version), what the target needs (a chain: a run
  * limit, a monthly budget, no gate only the starter can decide, every step agent usable on the project; an agent: that it allows this way, a budget, a run that resolves), the
@@ -203,6 +220,9 @@ export async function triggerProblems(deps: Deps, trigger: TriggerRecord): Promi
   if (owner === undefined) {
     problems.push({ path: "createdBy", message: "its owner is no longer a member of your company, so nobody can run it" });
   } else {
+    // A custom agent's runs are the owner's: an owner who lost access to the agent can't keep running it (a chain's agent steps are checked with the chain).
+    const lost = await lostAgentAccess(deps, owner, trigger);
+    if (lost !== undefined) problems.push({ path: "createdBy", message: `its owner can no longer use ${lost}, so nobody can run it` });
     const role = await deps.projectMembers.roleOf(orgId, trigger.project, { developerId: owner.developerId, orgRole: owner.orgRole });
     if (role === undefined || !projectAllows(role, "start_tasks")) problems.push({ path: "createdBy", message: `its owner can no longer start tasks on ${trigger.project}, so nobody can run it` });
   }
@@ -218,7 +238,8 @@ export async function ownerQualifies(deps: Deps, trigger: TriggerRecord, develop
   if (owner === undefined) return false;
   const role = await deps.projectMembers.roleOf(trigger.orgId, trigger.project, { developerId: owner.developerId, orgRole: owner.orgRole });
   if (role === undefined || !projectAllows(role, "start_tasks")) return false;
-  if (trigger.target.kind !== "chain" || deps.chains === undefined) return true;
+  if (trigger.target.kind === "agent") return await lostAgentAccess(deps, owner, trigger) === undefined;
+  if (deps.chains === undefined) return false;
   const chain = await deps.chains.get(trigger.orgId, trigger.target.chainId);
   const version = chain?.currentVersion === undefined ? undefined : await deps.chains?.getVersion(trigger.orgId, chain.chainId, chain.currentVersion);
   for (const step of version?.definition.steps ?? []) {
