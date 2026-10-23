@@ -888,6 +888,47 @@ describe("a $0-base agent's top-ups count toward the owner's cap (Plan 4 review 
     expect((await effective(t, BEN)).totalUsd).toBe(80);
   });
 
+  it("the owner_cap request for a $0-base move names the figures but no new monthly limit", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN); await t.budgeted(35, BEN);
+    const moving = await t.budgeted(0);
+    await t.decide(MAYA, (await agentRequest(t, moving, 30)).spendRequestId);
+    expect((await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen)).status).toBe(202);
+    const [asked] = t.requests().filter((record) => record.kind === "owner_cap");
+    expect(asked).toMatchObject({ amountUsd: 10 });
+    expect(asked!.newLimitUsd).toBeUndefined();
+  });
+
+  it("a $0-base move that fits is held to the version it was read at: a top-up approved on the new owner's agent meanwhile makes it ask an admin", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN);
+    const benSecond = await t.budgeted(30, BEN);
+    const moving = await t.budgeted(0);
+    await t.decide(MAYA, (await agentRequest(t, moving, 20)).spendRequestId);
+    const topUpForBen = await agentRequest(t, benSecond, 6);
+    expect(topUpForBen.approverRole).toBe("agent_owner");
+    // $75 + $20 = $95 fits. Just before the move's transaction, Ben approves a $6 top-up ($81 + $20 = $101 does not).
+    const real = t.db.send.bind(t.db);
+    let raced = false;
+    t.db.send = (async (command: { constructor: { name: string }; input: unknown }) => {
+      if (!raced && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes(moving) && JSON.stringify(command.input).includes("\"owner\"")) {
+        raced = true;
+        await t.decide(BEN, topUpForBen.spendRequestId);
+      }
+      return real(command as never);
+    }) as typeof t.db.send;
+    try {
+      const moved = await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen);
+      expect(raced).toBe(true);
+      expect(moved.status, JSON.stringify(moved.body)).toBe(202);
+      expect(moved.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    } finally {
+      t.db.send = real as typeof t.db.send;
+    }
+    expect(t.agentItem(moving)!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+    expect((await effective(t, BEN)).totalUsd).toBe(81);
+  });
+
   it("a $0-base move that fits the new owner's cap applies, counts there, and moves both owners' versions", async () => {
     const t = await setup();
     await t.budgeted(45, BEN); await t.budgeted(35, BEN);
