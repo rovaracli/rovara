@@ -77,6 +77,8 @@ export function auditWriteExecuted(input: AuditBuilderBase & { approvalId: strin
 
 interface SpendRequestFacts { spendRequestId: string; kind: string; scopeKind: string; amountCents: number; newLimitCents?: number; decision?: string }
 const spendFacts = (input: SpendRequestFacts): Record<string, Fact> => ({ kind: input.kind, scopeKind: input.scopeKind, amountCents: input.amountCents, newLimitCents: input.newLimitCents, decision: input.decision });
+/** What a decision applied, as against what was asked: the amount approved, the limit it set and, for a month top-up, the month. All absent for a denial. */
+interface SpendRequestApplied { approvedAmountCents?: number; appliedLimitCents?: number; topUpMonth?: string }
 
 /** `occurrence`: the spend request id. */
 export function auditSpendRequestCreated(input: AuditBuilderBase & SpendRequestFacts): AuditEventInput {
@@ -84,8 +86,9 @@ export function auditSpendRequestCreated(input: AuditBuilderBase & SpendRequestF
 }
 
 /** `occurrence`: the spend request id. Also part of the id: the decision. */
-export function auditSpendRequestDecided(input: AuditBuilderBase & SpendRequestFacts & { decision: string }): AuditEventInput {
-  return build("spend_request.decided", input, { kind: "spend_request", id: input.spendRequestId }, spendFacts(input), [input.decision]);
+export function auditSpendRequestDecided(input: AuditBuilderBase & SpendRequestFacts & SpendRequestApplied & { decision: string }): AuditEventInput {
+  return build("spend_request.decided", input, { kind: "spend_request", id: input.spendRequestId },
+    { ...spendFacts(input), approvedAmountCents: input.approvedAmountCents, appliedLimitCents: input.appliedLimitCents, topUpMonth: input.topUpMonth }, [input.decision]);
 }
 
 /** `occurrence`: the spend request id. */

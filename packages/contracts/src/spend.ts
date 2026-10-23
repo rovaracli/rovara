@@ -290,12 +290,14 @@ export interface SpendRequestRecord {
   change?: OwnerCapChange;
   /** The agent an `owner_cap` request is about. */
   agentId?: AgentId;
+  /** For `owner_cap`: the person whose total the change was summed against (the figures in `reason`). It applies only while the change still counts for them. */
+  forOwner?: string;
   createdAt: string;
   expiresAt: string;
   /** When the settlement run next looks at it (`openSpendRequestDueKey`): an unanswered owner's escalation, else its expiry. */
   dueAt?: string;
-  /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, or the person its change names left. */
-  endedBecause?: "continued" | "task_closed" | "target_left";
+  /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, the person its change names left, or the agent came to count for another owner than the one the change was summed for. */
+  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved";
 }
 
 /** What a paused run asks for by default: half its limit again, rounded up to whole dollars, and never less than $5. */

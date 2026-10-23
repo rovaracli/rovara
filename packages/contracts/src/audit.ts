@@ -180,6 +180,11 @@ export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
 export type AuditTargetKind = z.infer<typeof AuditTargetKindSchema>;
 
 const SPEND_REQUEST_FACTS = ["kind", "scopeKind", "amountCents", "newLimitCents", "decision"] as const;
+/**
+ * A decision also records what was applied, which an approver may set apart from what was asked (`amountUsd` on the decide body): the amount approved in
+ * cents, the limit that amount sets (for a month top-up, the scope's limit with it) and, for a month's request, the month that was topped up (`YYYY-MM`).
+ */
+const SPEND_REQUEST_DECIDED_FACTS = [...SPEND_REQUEST_FACTS, "approvedAmountCents", "appliedLimitCents", "topUpMonth"] as const;
 
 /**
  * The facts each action may carry. Every value is a fixed-vocabulary word, a count, a sequence number, an amount
@@ -193,7 +198,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "approval.rerouted": ["kind", "mode"],
   "write.executed": ["connectorType", "tool", "status", "argumentsHash"],
   "spend_request.created": SPEND_REQUEST_FACTS,
-  "spend_request.decided": SPEND_REQUEST_FACTS,
+  "spend_request.decided": SPEND_REQUEST_DECIDED_FACTS,
   "spend_request.expired": SPEND_REQUEST_FACTS,
   "spend_request.escalated": SPEND_REQUEST_FACTS,
   "spend_request.rerouted": ["kind", "mode"],

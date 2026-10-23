@@ -16,7 +16,7 @@ import {
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import { roleOnProject } from "../agents/roster.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { budgetOwnerOf, ownerVersionItem } from "./owner-total.js";
+import { budgetOwnerOf, ownerVersionItem, withBudgetFields } from "./owner-total.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import { askedRunLimit, type RequestRunLimit, type RunLimitRequest } from "./estimate.js";
 import { checkTime, registerMemberMover, registerOwnerCapConfirmation, type LifecycleDeps } from "../agents/lifecycle.js";
@@ -82,6 +82,7 @@ const ENDED_WORDS: Record<NonNullable<SpendRequestRecord["endedBecause"]>, strin
   continued: "The task went on without this, so nobody can decide it now.",
   task_closed: "This task was closed, so nobody can decide this now.",
   target_left: "The person this change names is no longer a member of your organization, so it can't apply now.",
+  owner_moved: "This agent's budget now counts for someone else than the person this change was checked for, so it can't apply. Nothing was changed; ask again.",
 };
 const closed = (record: Pick<SpendRequestRecord, "status" | "endedBecause">) =>
   agentXError("APPROVAL_CLOSED", record.status !== "EXPIRED" ? "This request was already decided." : record.endedBecause === undefined ? "This request expired, so nobody can decide it now." : ENDED_WORDS[record.endedBecause]);
@@ -433,6 +434,8 @@ export interface CreateSpendRequestInput {
   taskId?: string;
   agentId?: string;
   newOwner?: { developerId: string };
+  /** An `owner_cap` request: the person whose total it was summed against (`SpendRequestRecord.forOwner`). */
+  forOwner?: string;
   amountUsd: number;
   newLimitUsd?: number;
   /** What the person deciding is told; a function when the words name who was asked (known once the approvers are read). */
@@ -488,7 +491,7 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
       orgId: input.orgId, spendRequestId: newPrefixedId("spr"), kind: input.kind,
       ...(input.scope === undefined ? {} : { scope: input.scope }), ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
-      ...(input.newOwner === undefined ? {} : { newOwner: input.newOwner }),
+      ...(input.newOwner === undefined ? {} : { newOwner: input.newOwner }), ...(input.forOwner === undefined ? {} : { forOwner: input.forOwner }),
       amountUsd: cleanUsd(input.amountUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: cleanUsd(input.newLimitUsd) }),
       reason: "", requestedBy: input.requestedBy, ...(input.requestedFor === undefined ? {} : { requestedFor: input.requestedFor }),
       approverRole: "org_admin", approverIds: [], status: "PENDING",
@@ -875,7 +878,7 @@ export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
   const reason = ownerCapSentence(await nameOf(deps, input.owner), input.wouldBeUsd, input.capUsd);
   const made = await createSpendRequest(deps, {
     orgId: input.orgId, kind: "owner_cap", scope: { kind: "agent", agentId: input.agentId }, agentId: input.agentId,
-    ...(input.newOwner === undefined ? {} : { newOwner: { developerId: input.newOwner } }),
+    ...(input.newOwner === undefined ? {} : { newOwner: { developerId: input.newOwner } }), forOwner: input.owner,
     amountUsd: cleanUsd(input.wouldBeUsd - input.capUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: input.newLimitUsd }),
     reason, requestedBy: { kind: "member", developerId: input.requestedBy }, change: input.change,
     ...(input.request === undefined ? {} : { request: input.request }),
@@ -1086,6 +1089,24 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
   return { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
 }
 
+/**
+ * Whom `change` would count the agent's budget for if it applied now, read as their survivor (M-3). A request was summed against one person (`forOwner`);
+ * once the agent counts for someone else, approving it would raise that person's total with no cap, so it ends instead (`owner_moved`) and nothing applies.
+ */
+async function requireSameOwner(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined): Promise<void> {
+  if (record.forOwner === undefined || change === undefined || change.op === "confirm_move") return;
+  const agent = await deps.store.get(record.orgId, record.agentId as never);
+  const after = agent === undefined ? undefined
+    : change.op === "set_accountable" ? withBudgetFields(agent, { accountable: change.accountable })
+      : change.op === "set_owner" ? withBudgetFields(agent, { owner: change.owner, ...(change.accountable === undefined ? {} : { accountable: change.accountable }) })
+        : agent;
+  const raw = after === undefined ? undefined : budgetOwnerOf(after);
+  const now = raw === undefined ? undefined : await resolveSurvivor(deps, record.orgId, raw);
+  if (now === await resolveSurvivor(deps, record.orgId, record.forOwner)) return;
+  await expireOne(deps, record, "owner_moved");
+  throw closed({ status: "EXPIRED", endedBecause: "owner_moved" });
+}
+
 /** Applies an approved `owner_cap` request's change (`recheckedChange`) through the store, with the request's own end in the same transaction. */
 async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined, by: string, items: TransactItem[]): Promise<void> {
   const agentId = record.agentId as never;
@@ -1139,6 +1160,8 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   const events = await audited(deps, () => [auditSpendRequestDecided({
     orgId: record.orgId, actor: auditActorOf(decidedBy), occurredAt: decidedAt, occurrence: record.spendRequestId, ...facts(record),
     decision: status, proof: decisionProofOf(caller),
+    // What was applied, which an approver may have set apart from what was asked (I-2); an owner_cap request applies its stored change and has no amount.
+    ...(approvedUsd === undefined ? {} : { approvedAmountCents: centsOf(approvedUsd), appliedLimitCents: centsOf(newLimitFor(record, approvedUsd)), ...(record.kind === "month" ? { topUpMonth: monthOfRequest(record) } : {}) }),
   })]);
   const ending = [
     ...endItems(deps, record, { status, decidedBy, decidedAt, ...(approvedUsd === undefined ? {} : { approvedAmountUsd: approvedUsd }), ...(caller.decideProof === undefined ? {} : { decisionProof: caller.decideProof }) }),
@@ -1159,9 +1182,10 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     await expireOne(deps, record, "task_closed");
     throw closed({ status: "EXPIRED", endedBecause: "task_closed" });
   };
-  if (record.kind === "month") return decideMonth(deps, record, may.approvers, { status, approvedUsd, answer, events, ending, refused });
+  if (record.kind === "month") return decideMonth(deps, record, may.approvers, { status, approvedUsd, answer, events, ending, mark, refused });
   if (record.kind === "owner_cap" && status === "APPROVED") {
     const change = await recheckedChange(deps, caller, record);
+    await requireSameOwner(deps, record, change);
     try {
       await applyOwnerCap(deps, record, change, decidedBy, ending);
     } catch (error) {
@@ -1261,7 +1285,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
  * whose new limit the guardrail would clamp is refused: it could not take effect (I-4). Then every task the budget stopped goes on.
  */
 async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestRecord, approvers: SpendApprovers, decision: {
-  status: "APPROVED" | "DENIED"; approvedUsd: number | undefined; answer: { spendRequest: Record<string, unknown> }; events: AuditEventInput[]; ending: TransactItem[]; refused: (error: unknown) => Promise<never>;
+  status: "APPROVED" | "DENIED"; approvedUsd: number | undefined; answer: { spendRequest: Record<string, unknown> }; events: AuditEventInput[]; ending: TransactItem[]; mark: RequestMark; refused: (error: unknown) => Promise<never>;
 }): Promise<{ spendRequest: Record<string, unknown>; rerouted?: boolean }> {
   const scope = record.scope;
   if (!isBudgetScope(scope)) throw notFound();
@@ -1324,7 +1348,7 @@ async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestR
   } catch (error) {
     const failed = failedIndexes(error);
     if (failed !== undefined && held.some((index) => failed.has(index)) && !failed.has(0)) {
-      return { spendRequest: spendRequestView(deps, await reroute(deps, record)), rerouted: true };
+      return (await reroute(deps, record, decision.mark)).answer;
     }
     if (failed !== undefined && raced.some((index) => failed.has(index)) && !failed.has(0)) {
       throw agentXError("AGENT_REVISION_CONFLICT", "This agent's budget changed while you decided. Open the request again: it is checked on the budget as it is now.");
@@ -1348,8 +1372,11 @@ async function agentBudgetOwner(deps: SpendRequestDependencies, orgId: OrgId, ag
  * The owner's total moved while the request was being approved (R4-6): the approvers are read again, once, and the request is routed to them (to the admins
  * when the total with the top-up is now over the cap), conditional on it still being PENDING, audited as the system's `spend_request.rerouted`. Nothing applies.
  */
-async function reroute(deps: SpendRequestDependencies, record: SpendRequestRecord): Promise<SpendRequestRecord> {
+async function reroute(deps: SpendRequestDependencies, record: SpendRequestRecord, mark: RequestMark): Promise<{ record: SpendRequestRecord; answer: { spendRequest: Record<string, unknown>; rerouted: true } }> {
   const approvers = await spendApprovers(deps, record);
+  const rerouted = { ...record, approverRole: approvers.role, approverIds: approvers.ids };
+  // The decision's R18 mark carries the answer the rerouted decision gave (M-2), so a repeat of it answers that and is not decided again on the new route.
+  const answer = { spendRequest: spendRequestView(deps, rerouted), rerouted: true as const };
   const at = iso(deps.now());
   const events = await audited(deps, () => [auditSpendRequestRerouted({
     orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: auditOccurrence(record.spendRequestId, `recount-${at}`), spendRequestId: record.spendRequestId,
@@ -1366,9 +1393,13 @@ async function reroute(deps: SpendRequestDependencies, record: SpendRequestRecor
     },
     { Put: { TableName: deps.tableName, Item: { ...openSpendRequestsKey(record.orgId, record.createdAt, record.spendRequestId), entityType: "SPEND_REQUEST_OPEN", orgId: record.orgId, spendRequestId: record.spendRequestId, approverIds: approvers.ids } } },
     ...events.flatMap((event) => auditPending(deps, event)),
-  ] }));
+    requestMarkItem(deps, mark, answer),
+  ] })).catch((error: unknown) => {
+    if (failedIndexes(error)?.has(3 + events.length) === true) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID is already being used for another change.");
+    throw error;
+  });
   await flushAuditEvents(deps, events);
-  return { ...record, approverRole: approvers.role, approverIds: approvers.ids };
+  return { record: rerouted, answer };
 }
 
 // ---- the settlement run: escalation and expiry (PF13), held starts (fix round 1, M-1)
@@ -1673,6 +1704,8 @@ async function moveOne(deps: LifecycleDeps, record: SpendRequestRecord, from: st
   const newOwner = record.newOwner?.developerId === from ? { developerId: to } : record.newOwner;
   // A merge: the person the change names is the survivor now (a removal ends such a request instead, `moveRequests`).
   const change = mode === "merged" ? movedChange(record.change, from, to) : undefined;
+  // The person an `owner_cap` request was summed against is the survivor too (M-3); on a removal it stays, and an approval then finds the agent counted for someone else.
+  const forOwner = mode === "merged" && record.forOwner === from ? to : undefined;
   const at = iso(deps.now());
   const events = await tryAuditEvents(deps, () => [auditSpendRequestRerouted({
     orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: auditOccurrence(record.spendRequestId, String(revision + 1)), spendRequestId: record.spendRequestId, kind: record.kind, mode, from, to,
@@ -1681,12 +1714,12 @@ async function moveOne(deps: LifecycleDeps, record: SpendRequestRecord, from: st
     {
       Update: {
         TableName: deps.tableName, Key: spendRequestKey(record.orgId, record.spendRequestId),
-        UpdateExpression: `SET approverIds = :ids, requestedBy = :by, movedBy = :system, movedAt = :at, moveRevision = :next${newOwner === undefined ? "" : ", newOwner = :owner"}${change === undefined ? "" : ", #change = :change"}`,
+        UpdateExpression: `SET approverIds = :ids, requestedBy = :by, movedBy = :system, movedAt = :at, moveRevision = :next${newOwner === undefined ? "" : ", newOwner = :owner"}${change === undefined ? "" : ", #change = :change"}${forOwner === undefined ? "" : ", forOwner = :forOwner"}`,
         ConditionExpression: revision === 0 ? "#status = :pending AND attribute_not_exists(moveRevision)" : "#status = :pending AND moveRevision = :seen",
         ExpressionAttributeNames: { "#status": "status", ...(change === undefined ? {} : { "#change": "change" }) },
         ExpressionAttributeValues: {
           ":ids": ids, ":by": requestedBy, ":system": "system", ":at": at, ":next": revision + 1, ":pending": "PENDING",
-          ...(newOwner === undefined ? {} : { ":owner": newOwner }), ...(change === undefined ? {} : { ":change": change }), ...(revision === 0 ? {} : { ":seen": revision }),
+          ...(newOwner === undefined ? {} : { ":owner": newOwner }), ...(change === undefined ? {} : { ":change": change }), ...(forOwner === undefined ? {} : { ":forOwner": forOwner }), ...(revision === 0 ? {} : { ":seen": revision }),
         },
       },
     },
@@ -1714,7 +1747,7 @@ async function moveRequests(deps: LifecycleDeps, orgId: OrgId, from: string, to:
       await expireOne(deps, record, "target_left");
       continue;
     }
-    const names = named || record.approverIds.includes(from) || (record.requestedBy.kind === "member" && record.requestedBy.developerId === from) || record.newOwner?.developerId === from;
+    const names = named || record.approverIds.includes(from) || (record.requestedBy.kind === "member" && record.requestedBy.developerId === from) || record.newOwner?.developerId === from || (mode === "merged" && record.forOwner === from);
     if (!names && !(Array.isArray(ids) && ids.includes(from))) continue;
     for (let tried = 0; ; tried += 1) {
       try {
@@ -1862,7 +1895,9 @@ async function askForMonth(deps: SpendRequestDependencies, caller: AgentCaller, 
   const earlier = await readRequest(deps, caller.orgId, caller.developerId, body.requestId);
   if (earlier !== undefined) {
     if (earlier.fingerprint !== mark.fingerprint) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
-    return new StatusReply(201, earlier.result as object);
+    // An ask that found a request open answered 200 (M-1): its repeat does too, without the note that says so.
+    const { answeredOpen, ...answer } = earlier.result as { answeredOpen?: boolean } & Record<string, unknown>;
+    return new StatusReply(answeredOpen === true ? 200 : 201, answeredOpen === true ? answer : earlier.result as object);
   }
   const month = iso(deps.now()).slice(0, 7);
   const limit = (await effectiveLimits(deps, { orgId: caller.orgId, month, scopes: [scope] })).get(scopeKey(scope));
@@ -1878,7 +1913,13 @@ async function askForMonth(deps: SpendRequestDependencies, caller: AgentCaller, 
   });
   if (made.created) return new StatusReply(201, { spendRequest: spendRequestView(deps, made.record, caller) });
   const differs = made.record.amountUsd !== cleanUsd(body.amountUsd) || made.record.reason !== cleanReason(body.reason);
-  return new StatusReply(200, { spendRequest: spendRequestView(deps, made.record, caller), ...(differs ? { differs: true } : {}) });
+  const answer = { spendRequest: spendRequestView(deps, made.record, caller), ...(differs ? { differs: true } : {}) };
+  // The ask that found a request open wrote no mark with it (M-1): the answer is remembered here, so a repeat after the request is decided answers the same and
+  // does not make a new one. A mark that is already there (the same id sent twice at once) is that ask's own.
+  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [requestMarkItem(deps, mark, { ...answer, answeredOpen: true })] })).catch((error: unknown) => {
+    if (failedIndexes(error)?.has(0) !== true) throw error;
+  });
+  return new StatusReply(200, answer);
 }
 
 // ---- the routes
