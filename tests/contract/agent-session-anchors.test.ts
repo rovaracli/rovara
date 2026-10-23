@@ -20,6 +20,7 @@ import { editSessionMessage, deleteSessionMessage, listSessionMessages, sendSess
 import { anchorTargetsOf } from "../../packages/broker/src/agent-sessions/anchors.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { sessionView } from "../../packages/broker/src/agent-sessions/read.js";
+import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, MIA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
@@ -483,5 +484,97 @@ describe("the routes", () => {
     expect(await code(call(PRIYA, "GET", "?anchor=nope"))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(call(PRIYA, "POST", "", { requestId: randomUUID(), kind: "comment", text: "x", anchor: PLAN, other: 1 }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(call(PRIYA, "POST", "", { requestId: randomUUID(), kind: "comment", text: "x", anchor: { ...PLAN, excerpt: "x".repeat(201) } }))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
+
+// ---- the edges: what each guard is for (found by mutation)
+
+describe("the edges of pinned comments", () => {
+  it("ends a paragraph at a blank line however it is spelled (spaces, tabs, CRLF), and counts a part once however often the view lists it", () => {
+    const blocks = (planContent: string) => anchorTargetsOf({ workflow: { planContent, artifacts: [{ type: "plan", version: 1 }] } }).map((a) => a.targetId);
+    expect(blocks("A.\n  \nB.")).toEqual(["p1", "p2"]);
+    expect(blocks("A.\r\n\r\nB.\n\t\nC.")).toEqual(["p1", "p2", "p3"]);
+    expect(blocks("A.\nstill A.\nB.")).toEqual(["p1"]);
+    const twice = anchorTargetsOf({ run: { steps: [{ id: "build", status: "running" }, { id: "build", status: "done" }] }, changedFiles: [{ repository: "web", path: "a.ts", added: 1, removed: 0 }, { repository: "web", path: "a.ts", added: 2, removed: 0 }] });
+    expect(twice).toEqual([{ target: "step", targetId: "build", revision: "running" }, { target: "change_file", targetId: "web:a.ts", revision: "+1-0" }]);
+    // A step that holds nothing a revision can be made of is left out.
+    expect(anchorTargetsOf({ run: { steps: [{ id: "build", status: "" }, { id: "test", status: "queued" }] } })).toEqual([{ target: "step", targetId: "test", revision: "queued" }]);
+  });
+
+  it("says nothing of a view that isn't wired, and refuses a task of another org without reading its view", async () => {
+    const unwired = world({ noView: true });
+    await unwired.send(PRIYA, "x");
+    expect(await code(unwired.send(PRIYA, "x", { anchor: PLAN }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(unwired.logs).toEqual([]);
+    const foreign = world();
+    foreign.w.db.set({ ...foreign.w.db.get(taskKey(foreign.made.taskId))!, orgId: ORG_B });
+    expect(await code(foreign.send(PRIYA, "x", { anchor: PLAN }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(foreign.state.calls).toHaveLength(0);
+    // A task that is gone is the same.
+    const gone = world();
+    gone.w.db.delete(taskKey(gone.made.taskId));
+    expect(await code(gone.send(PRIYA, "x", { anchor: PLAN }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("tells a part by its kind as well as its id: a step called p2 is not the second paragraph", async () => {
+    const t = world();
+    t.state.view = { ...baseView(), run: { steps: [{ id: "p2", name: "P", status: "running" }] } };
+    const onStep = await t.send(PRIYA, "on the step", { anchor: { target: "step", targetId: "p2", revision: "running" } });
+    t.w.clock.now += 1000;
+    const onPlan = await t.send(PRIYA, "on the paragraph", { anchor: PLAN });
+    expect([onStep.anchorState, onPlan.anchorState]).toEqual(["current", "current"]);
+    t.w.clock.now += 1000;
+    // The step goes away; the paragraph stays: each is read as itself.
+    t.state.view = { ...baseView(), run: undefined };
+    expect((await t.list(PRIYA)).messages.map((m) => m.anchorState)).toEqual(["gone", "current"]);
+    // And each list holds its own comments only.
+    expect((await t.list(PRIYA, { anchor: "step:p2" })).messages.map((m) => m.text)).toEqual(["on the step"]);
+    expect((await t.list(PRIYA, { anchor: "plan_block:p2" })).messages.map((m) => m.text)).toEqual(["on the paragraph"]);
+  });
+
+  it("leaves the task page's comments out of the list of one part", async () => {
+    const t = world();
+    await t.send(PRIYA, "pinned", { anchor: PLAN });
+    t.w.db.set({
+      pk: `DEVTASK#${t.made.taskId}`, sk: "COMMENT#11111111-1111-4111-8111-111111111111", entityType: "TASK_COMMENT", schemaVersion: 1, taskId: t.made.taskId, commentId: "11111111-1111-4111-8111-111111111111",
+      document: "plan", version: 1, target: { kind: "claim", id: "2.1" }, author: { kind: "person", developerId: ARJUN, name: "Arjun", owner: false }, text: "from the page", createdAt: new Date(T0 + 500).toISOString(), rev: 1,
+    });
+    expect((await t.list(PRIYA)).messages.map((m) => m.text)).toEqual(["pinned", "from the page"]);
+    expect((await t.list(PRIYA, { anchor: "plan_block:p2" })).messages.map((m) => m.text)).toEqual(["pinned"]);
+  });
+
+  it("flattens the excerpt to one line, takes out format characters, cuts it at exactly 200 characters after redaction, and leaves it out when nothing is left", async () => {
+    const t = world();
+    const quoted = async (excerpt: string) => (await t.send(PRIYA, "x", { anchor: { ...PLAN, excerpt } })).anchor;
+    expect((await quoted("a\n\n   b\tc \r\n d"))?.excerpt).toBe("a b c d");
+    expect((await quoted("a\u200db\u00adc\ufeff"))?.excerpt).toBe("abc");
+    expect((await quoted("\u200d\u200d  "))).toEqual(PLAN);
+    expect((await quoted("  padded  "))?.excerpt).toBe("padded");
+    expect([...(await quoted("x".repeat(200)))!.excerpt!]).toHaveLength(200);
+    // 33 secrets of a few characters each grow past 200 when redacted: the cut comes after, at exactly 200.
+    const grown = (await quoted(Array.from({ length: 33 }, () => "pwd=x").join("\n")))!.excerpt!;
+    expect(grown).toContain("[REDACTED]");
+    expect([...grown]).toHaveLength(200);
+  });
+
+  it("treats a request with another thread as another request, and answers a replayed pinned comment with its state", async () => {
+    const t = world();
+    const root = await t.send(PRIYA, "first", { anchor: PLAN });
+    const other = await t.send(PRIYA, "other", { anchor: STEP });
+    const requestId = randomUUID();
+    const reply = await t.send(ARJUN, "reply", { requestId, threadId: root.messageId });
+    expect(await code(t.send(ARJUN, "reply", { requestId, threadId: other.messageId }))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(await t.send(ARJUN, "reply", { requestId, threadId: root.messageId })).toEqual(reply);
+    expect(reply.anchorState).toBe("current");
+    const again = await t.send(PRIYA, "pinned", { requestId: "11111111-2222-4333-8444-555555555555", anchor: { ...PLAN, excerpt: "quoted" } });
+    expect(await t.send(PRIYA, "pinned", { requestId: "11111111-2222-4333-8444-555555555555", anchor: { ...PLAN, excerpt: "quoted" } })).toEqual(again);
+    t.state.view = { ...baseView(), workflow: { ...baseView().workflow, artifacts: [{ id: "p", type: "plan", version: 9 }] } };
+    expect((await t.send(PRIYA, "pinned", { requestId: "11111111-2222-4333-8444-555555555555", anchor: { ...PLAN, excerpt: "quoted" } })).anchorState).toBe("outdated");
+  });
+
+  it("refuses an anchor query that only looks like one, naming nothing", async () => {
+    const t = world();
+    for (const anchor of ["plan_blockx", "step", "stepx", "change_filex", "plan_blocks"]) expect(await code(t.list(PRIYA, { anchor })), anchor).toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await t.list(PRIYA, { anchor: "plan_block:p1:p2" })).messages).toEqual([]);
   });
 });
