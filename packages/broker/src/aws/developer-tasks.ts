@@ -194,6 +194,7 @@ import {
   TASK_OWNER_LABEL,
   startIdempotencyKey,
   taskIndexKey,
+  taskActionRequestKey,
   taskAgentRunKey,
   taskKey,
   taskOwnerKey,
@@ -5606,7 +5607,7 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
   const turns = turnTable(deps);
   const receivedAt = iso(deps);
   // Ruling F14: the same key the task's other actions use, so one requestId names one action.
-  const idempotencyKey = { pk: `IDEMPOTENCY#${task.ownerKey}#${task.workspaceId}`, sk: `REQUEST#${request.requestId}` };
+  const idempotencyKey = taskActionRequestKey(task, request.requestId);
   const repeated = async (): Promise<boolean> => {
     const previous = await get<{ payloadHash: string }>(deps, idempotencyKey);
     if (previous === undefined) return false;

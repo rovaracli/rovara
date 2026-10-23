@@ -277,6 +277,9 @@ export function githubWorkflowPullRequestKey(repositoryFullName: string, number:
 }
 export const startIdempotencyKey = (developerId: string, requestId: string) => ({ pk: `IDEMPOTENCY#${developerId}#DEVTASK`, sk: `REQUEST#${requestId}` });
 
+/** The idempotency item of one request of a task's action (a cancel, a continue): the same key every action of the task uses, so one request id names one action. */
+export const taskActionRequestKey = (task: { ownerKey: string; workspaceId: string }, requestId: string) => ({ pk: `IDEMPOTENCY#${task.ownerKey}#${task.workspaceId}`, sk: `REQUEST#${requestId}` });
+
 export const taskOwnerSubject = (developerId: string, taskId: string): string => `${developerId}/${taskId}`;
 
 /** FR-017: the same function as ownerKeyForSubject, so every workspace handler accepts it. */

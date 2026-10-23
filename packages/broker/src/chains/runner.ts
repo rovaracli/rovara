@@ -22,10 +22,10 @@ import { requireAgentAccess, type AgentCaller } from "../agents/access.js";
 import type { AgentRunRequest, AgentRunResult, AgentRunStarter } from "../agents/runs.js";
 import { resolveAgentForAutonomousRun, resolveAgentForTask, roleOnProject, type RosterDependencies } from "../agents/roster.js";
 import { startAgentRun } from "../agents/runs.js";
-import type { TaskEndEvent, TaskPauseEvent, TaskResumeEvent } from "../agents/task-end.js";
+import { isDeclinedEndReason, type TaskEndEvent, type TaskPauseEvent, type TaskResumeEvent } from "../agents/task-end.js";
 import { Aliases, NOT_EXISTS, failedIndexes, strip, type TransactItem } from "../agents/table-writes.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
-import { taskAgentRunKey } from "../developer/task-records.js";
+import { taskActionRequestKey, taskAgentRunKey } from "../developer/task-records.js";
 import type { AdmissionDependencies } from "../org/budget.js";
 import { readProjectAiWithRevision } from "../spend/settings.js";
 import type { ChainRunSpendReader } from "../spend/chain-run-spend.js";
@@ -34,7 +34,7 @@ import { admitChainRun, chainRunLimitUsd, chainRunPayer, runRaiseMessage, settle
 import { requireChainAccess, type ChainAccessDeps } from "./access.js";
 import { buildHandoff, HandoffTriggerSchema, redactSecrets, type EarlierReport, type HandoffTrigger } from "./handoff.js";
 import { onChainGateDecided, openGateApproval } from "./gates.js";
-import { cancelAbandonedTask, closeAbandonedGate } from "./lifecycle.js";
+import { cancelAbandonedTask, cancelRequestId, closeAbandonedGate } from "./lifecycle.js";
 import { neutralText, runEventItems, type RunEventInput } from "./run-events.js";
 import type { ChainRouteDependencies } from "./routes.js";
 import type { ChainRecord } from "./store.js";
@@ -116,6 +116,8 @@ export interface StepAttemptRecord {
   timedOutAt?: string;
   /** The limit the attempt had when it was flagged, in minutes. */
   timeoutMinutes?: number;
+  /** Set when the run's own ending (a cancel, a run timeout) ended this attempt with its task still to end: the task's spend is not yet in the run's `spentUsd`. The task's end adds it, once. */
+  spendPending?: boolean;
   /** When the sweep last saw the attempt paused or waiting on approvals: the time it has run is counted from here when this is later than `startedAt`. */
   timeoutBase?: string;
 }
@@ -881,6 +883,40 @@ async function resultOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRec
 }
 
 /**
+ * Whether a cancelled task of a flagged attempt was stopped by the cancel the sweep asked for (and Plan 3 took) rather than by a person: a cancel of the task by a person, or
+ * a declined write approval, is the person's word and ends the run `cancelled`; only the sweep's own cancel is a timeout. The sweep's cancel is found by its request id
+ * (`cancelRequestId`), which Plan 3 keeps beside the task's other requests when it takes the cancel. A person's cancel that lands after the sweep's was taken can't be told apart
+ * (the task was being stopped for its time anyway), and counts as the timeout.
+ */
+async function endedByOwnTimeoutCancel(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, event: TaskEndEvent, said: string): Promise<boolean> {
+  if (isDeclinedEndReason(said)) return false;
+  const task = await getItem(deps, { pk: `DEVTASK#${event.taskId}`, sk: "META" });
+  if (task === undefined || task["orgId"] !== run.orgId || typeof task["ownerKey"] !== "string" || typeof task["workspaceId"] !== "string") return false;
+  return await getItem(deps, taskActionRequestKey({ ownerKey: task["ownerKey"], workspaceId: task["workspaceId"] }, cancelRequestId(run.runId, attempt.seq))) !== undefined;
+}
+
+/**
+ * The end of the task of an attempt that the run's own ending (a cancel, a run timeout) ended first: its spend is added to the run's `spentUsd`, once (the attempt's
+ * `spendPending` goes with it, in the same transaction). Anything else about the run and the attempt stays as the ending left it.
+ */
+async function settleStoppedSpend(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, event: TaskEndEvent): Promise<void> {
+  let current: { run: ChainRunRecord; attempt: StepAttemptRecord } | undefined = { run, attempt };
+  for (let round = 0; round < 3 && current !== undefined && current.attempt.spendPending === true; round += 1) {
+    const settled = settleStepSpend(current.run, { remainingAtStartUsd: current.attempt.remainingAtStartUsd ?? stepRunLimitUsd(current.run) }, event);
+    try {
+      await transact(deps, [
+        update(deps, attemptKey(current.run, current.attempt.seq), { spendPending: false }, (aliases) => `${aliases.name("spendPending")} = ${aliases.value(true)}`),
+        ...moveRun(deps, current.run, { spentUsd: settled.run.spentUsd }, []),
+      ]);
+      return;
+    } catch (error) {
+      if (failedIndexes(error) === undefined) throw error;
+      current = await findStepAttempt(deps, event);
+    }
+  }
+}
+
+/**
  * A step's task has ended (registered with `registerTaskEndHandler`). The attempt takes the task's end and the run settles the step's spend, with the step's
  * event, in one transaction; then the run moves on. Idempotent: an attempt that already ended is not ended again, but the run is moved on, so an end whose first
  * handling stopped half way is finished by the next telling. An event with no chain, for another run or org, or for a run that has ended, does nothing.
@@ -889,15 +925,19 @@ export async function onStepTaskEnded(deps: Deps, event: TaskEndEvent): Promise<
   const found = await findStepAttempt(deps, event);
   if (found === undefined) return;
   const { run, attempt } = found;
-  if (isTerminalStatus(run.status)) return;
+  if (isTerminalStatus(run.status)) {
+    await settleStoppedSpend(deps, run, attempt, event);
+    return;
+  }
   if (!isLive(attempt)) {
     await advanceChainRun(deps, run.orgId, run.runId);
     return;
   }
   const outcome = await resultOf(deps, run, attempt, event);
   const settled = settleStepSpend(run, { remainingAtStartUsd: attempt.remainingAtStartUsd ?? stepRunLimitUsd(run) }, event);
-  // A task that ended in the cancel the sweep asked for (its attempt ran past its time) timed out; one that finished anyway, or failed on its own, is what it did.
-  const timedOut = attempt.timedOutAt !== undefined && outcome.status === "cancelled";
+  // A task that ended in the cancel the sweep asked for (its attempt ran past its time) timed out; one that finished anyway, or failed on its own, is what it did, and a
+  // person's cancel or decline that ended it is theirs: it is never retried.
+  const timedOut = attempt.timedOutAt !== undefined && outcome.status === "cancelled" && await endedByOwnTimeoutCancel(deps, run, attempt, event, outcome.failure.message);
   const minutes = attempt.timeoutMinutes ?? STEP_DEFAULT_TIMEOUT_MINUTES;
   const fields = outcome.status === "succeeded" ? { status: "succeeded", result: outcome.result }
     : timedOut ? { status: "timed_out", failure: { reason: "step_timeout", message: `it ran longer than ${String(minutes)} minutes` } }

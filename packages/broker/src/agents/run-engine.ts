@@ -31,7 +31,7 @@ import { readGuardrails } from "./guardrails.js";
 import { readTaskRecipe } from "./runs.js";
 import { prepareSlackReport } from "./slack-report.js";
 import { WRITE_APPROVER_RULE, writeApproversFor } from "./write-gate.js";
-import { END_LEASE_MS, onTaskEnded, onTaskPaused, type TaskEndHost, type TaskEndOutcome } from "./task-end.js";
+import { END_LEASE_MS, approvalEndReason, onTaskEnded, onTaskPaused, type TaskEndHost, type TaskEndOutcome } from "./task-end.js";
 
 export type { TaskEndEvent, TaskEndHandler, TaskEndOutcome, TaskPauseEvent, TaskPauseHandler } from "./task-end.js";
 export { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, registerTaskEndHandler, registerTaskPauseHandler, registerTaskResumeHandler } from "./task-end.js";
@@ -884,7 +884,7 @@ export async function onWriteDecided(deps: AgentRunEngineDependencies, record: A
       return;
     }
     if (record.status === "DECLINED" || record.status === "EXPIRED") {
-      if (await endRun(deps, loaded, { state: "CANCELLED", reason: `${step.name} ${record.status === "DECLINED" ? "declined" : "expired"}: ${record.prompt}` })) return;
+      if (await endRun(deps, loaded, { state: "CANCELLED", reason: approvalEndReason(step.name, record.status, record.prompt) })) return;
       continue;
     }
     return;

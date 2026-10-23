@@ -850,8 +850,10 @@ describe("cancelling a run", () => {
     const requestId = randomUUID();
     await cancelAs(w, PRIYA, run.runId, requestId);
     const events = w.events(run.runId).length;
-    const version = w.run(run.runId)!.version;
     await endTask(w, "task-1", { outcome: "cancelled" });
+    // The task's own end adds its spend to the run once, and nothing else moves.
+    expect(w.run(run.runId)).toMatchObject({ spentUsd: 0.5 });
+    const version = w.run(run.runId)!.version;
     w.clock.now += 6 * MIN;
     await sweep(w);
     await sweep(w);
@@ -1024,7 +1026,9 @@ describe("cancelling a run", () => {
     const run = await w.start(chain.chainId, PRIYA);
     expect(w.run(run.runId)).toMatchObject({ status: "cancelled" });
     expect(w.attempts(run.runId)[0]).toMatchObject({ status: "cancelled" });
-    expect(w.cancels.map((cancel) => cancel.taskId)).toEqual(["task-1"]);
+    // Asked by the cancel (which finds the task through Plan 3's request item) and again when the start is recorded: one cancel request id, so Plan 3 answers the repeat as the first.
+    expect([...new Set(w.cancels.map((cancel) => cancel.taskId))]).toEqual(["task-1"]);
+    expect(new Set(w.cancels.map((cancel) => cancel.requestId)).size).toBe(1);
     expect(await openRunsOf(w, chain.chainId)).toBe(0);
   });
 
@@ -1345,7 +1349,9 @@ describe("a task started for a run that was stopped meanwhile", () => {
     const { cancelRequestId } = await lifecycle();
     const { run } = await stopDuringStart(w, async () => { w.clock.now += 169 * HOUR; await sweep(w); });
     expect(w.run(run.runId)).toMatchObject({ status: "timed_out" });
-    expect(w.cancels).toEqual([expect.objectContaining({ taskId: "task-1", requestId: cancelRequestId(run.runId, 1) })]);
+    // Asked once by the sweep's ending and once when the start is recorded: one request id, which Plan 3 answers as the same cancel.
+    expect(w.cancels.length).toBeGreaterThanOrEqual(1);
+    for (const cancel of w.cancels) expect(cancel).toMatchObject({ taskId: "task-1", requestId: cancelRequestId(run.runId, 1) });
   });
 
   it("is left to answer for itself when it can't be asked: the start still finishes", async () => {
@@ -1769,12 +1775,12 @@ describe("closing a gate's approval writes its audit item in the close's own tra
     const { closeStepApproval } = await lifecycle();
     const sent: string[][] = [];
     const send = w.db.send.bind(w.db);
-    w.db.send = (async (command: { constructor: { name: string }; input: { TransactItems?: Array<Record<string, { Item?: { pk?: string }; Key?: { pk?: string } }>> } }) => {
+    w.db.send = async (command: { constructor: { name: string }; input: { TransactItems?: Array<Record<string, { Item?: { pk?: string }; Key?: { pk?: string } }>> } }) => {
       if (command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("closedReason")) {
         sent.push((command.input.TransactItems ?? []).map((item) => String((item["Put"]?.Item ?? item["Update"]?.Key ?? item["Delete"]?.Key)?.pk)));
       }
-      return send(command as never);
-    }) as typeof w.db.send;
+      return send(command);
+    };
     await closeStepApproval(w.deps, ORG_A, run.runId, approvalId, "The run was cancelled.");
     expect(sent).toHaveLength(1);
     expect(sent[0]!.some((pk) => pk.startsWith("AUDIT_PENDING#"))).toBe(true);

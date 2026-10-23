@@ -23,6 +23,7 @@ import { getAnyApproval, approverDrops, commitOrLost, dueItems, type ApprovalDep
 import { onChainGateDecided } from "./gates.js";
 import { resolveMember, sameMember } from "../agents/lifecycle.js";
 import { markRequest } from "../agents/routes.js";
+import { readRunRequest } from "../agents/runs.js";
 import { Aliases, failedIndexes, requestMarkItem, type TransactItem } from "../agents/table-writes.js";
 import { readTaskEndEvent } from "../agents/task-end.js";
 import { auditApprovalExpired } from "../audit/events.js";
@@ -137,6 +138,23 @@ export async function closeAbandonedGate(deps: Deps, run: Pick<ChainRunRecord, "
 const meantToStop = (run: ChainRunRecord): boolean => run.status === "cancelled" || run.failure?.reason === "run_timeout";
 
 /**
+ * The attempt as it is, with its task named. An attempt whose start died after Plan 3 committed it (the task and its request item exist) but before `startAgentRun` returned has
+ * no task id, so nothing would stop its task: the task is found through Plan 3's request item for the attempt's start (`stepRequestId`), and named on the attempt (best effort, so the
+ * task's end finds it). An attempt whose start never committed has no request item and nothing to stop.
+ */
+async function withTaskOfStart(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord): Promise<StepAttemptRecord> {
+  if (attempt.kind !== "agent" || attempt.taskId !== undefined) return attempt;
+  const started = await readRunRequest(deps, run.orgId, stepRequestId(run.runId, attempt.seq));
+  if (started === undefined) return attempt;
+  try {
+    await transact(deps, [update(deps, attemptKey(run, attempt.seq), { taskId: started.taskId }, (aliases) => `attribute_not_exists(${aliases.name("taskId")})`)]);
+  } catch (error) {
+    if (failedIndexes(error) === undefined) throw error;
+  }
+  return { ...attempt, taskId: started.taskId };
+}
+
+/**
  * What an ending leaves to do when the run has ended with its open item still there: the task is asked to stop (a cancel or a run timeout), a gate's approval is closed, and
  * then the item and the chain's place are given back in one transaction that holds only while the item is there, so two finishers give one place back. Does nothing when
  * the item is gone (the ending is finished). `staleItem` is a sort key of `OPEN_CHAIN_RUNS` the sweep found that is not the run's own, which goes too.
@@ -149,7 +167,7 @@ async function finishEnding(deps: Deps, run: ChainRunRecord, staleItem?: string)
   }
   const latest = run.currentSeq === 0 ? undefined : await readStepAttempt(deps, run.orgId, run.runId, run.currentSeq);
   if (latest !== undefined) {
-    if (meantToStop(run)) await cancelStepTask(deps, run, latest);
+    if (meantToStop(run)) await cancelStepTask(deps, run, await withTaskOfStart(deps, run, latest));
     if (latest.kind === "gate" && latest.approvalId !== undefined) await closeStepApproval(deps, run.orgId, run.runId, latest.approvalId, run.status === "cancelled" ? "The run was cancelled." : "The run ended.");
   }
   const aliases = new Aliases();
@@ -202,7 +220,10 @@ async function endAndFinish(
       ...moveRun(deps, run, { status: end.status, endedAt: at, dueAt: at, ...(end.failure === undefined ? {} : { failure: end.failure }), ...end.fields }, [{ type: "ended", text: end.text }]),
     ];
     if (latest !== undefined && !isTerminalStatus(latest.status)) {
-      items.push(moveAttempt(deps, run, latest.seq, { status: end.status, endedAt: at, ...(end.attemptFailure === undefined ? {} : { failure: end.attemptFailure }) }, ["starting", "running", "paused", "waiting"]));
+      // An agent attempt's task still has to end, and its spend is the run's: the task's end adds it (`settleStoppedSpend`).
+      items.push(moveAttempt(deps, run, latest.seq, {
+        status: end.status, endedAt: at, ...(end.attemptFailure === undefined ? {} : { failure: end.attemptFailure }), ...(latest.kind === "agent" ? { spendPending: true } : {}),
+      }, ["starting", "running", "paused", "waiting"]));
     }
     if (at !== run.dueAt) {
       items.push({ Delete: { TableName: deps.tableName, Key: openChainRunKey(run.dueAt, run.orgId, run.runId) } });
@@ -354,7 +375,15 @@ const stepMinutes = (definition: PinnedChainDefinition, stepId: string): number 
 /** When an attempt's clock started: its start, or later when the sweep saw it paused or waiting since. */
 const clockStart = (attempt: StepAttemptRecord): number => Math.max(Date.parse(attempt.startedAt), attempt.timeoutBase === undefined ? 0 : Date.parse(attempt.timeoutBase));
 
-async function lookAt(deps: Deps, run: ChainRunRecord, now: number): Promise<void> {
+async function lookAt(deps: Deps, first: ChainRunRecord, now: number): Promise<void> {
+  let run = first;
+  // 0. A gate that was decided while the run did not hear is applied before anything else, so a decision that is made wins over the run's time (the run, as it is then, is looked at).
+  const waiting = run.currentSeq === 0 ? undefined : await readStepAttempt(deps, run.orgId, run.runId, run.currentSeq);
+  if (waiting?.kind === "gate" && await recoverGate(deps, run, waiting)) {
+    const moved = await readChainRun(deps, run.orgId, run.runId);
+    if (moved === undefined || isTerminalStatus(moved.status)) return;
+    run = moved;
+  }
   const definition = await designOf(deps, run);
   // 1. The run's own time.
   if (now - Date.parse(run.createdAt) >= maxRunMs(definition)) {
@@ -372,24 +401,22 @@ async function lookAt(deps: Deps, run: ChainRunRecord, now: number): Promise<voi
     await advanceChainRun(deps, run.orgId, run.runId);
     return;
   }
-  if (latest.kind === "gate") {
-    await recoverGate(deps, run, latest);
-    return;
-  }
+  if (latest.kind === "gate") return;
   await watchStep(deps, run, latest, definition, now);
 }
 
 /**
  * A gate that waits: if its approval was decided or expired while the run did not hear (the decision is written, then the handler is told), the handler is told now. A record still PENDING
- * is left alone, even past its time: Plan 3's expiry owns that, so this can never end a run for a gate that has a decision.
+ * is left alone, even past its time: Plan 3's expiry owns that, so this can never end a run for a gate that has a decision. True when a decision was told to the handler.
  */
-async function recoverGate(deps: Deps, run: ChainRunRecord, gate: StepAttemptRecord): Promise<void> {
-  if (gate.status !== "waiting" || gate.approvalId === undefined) return;
+async function recoverGate(deps: Deps, run: ChainRunRecord, gate: StepAttemptRecord): Promise<boolean> {
+  if (gate.status !== "waiting" || gate.approvalId === undefined) return false;
   const id = ApprovalIdSchema.safeParse(gate.approvalId);
-  if (!id.success) return;
+  if (!id.success) return false;
   const record = await getAnyApproval(deps, run.orgId, id.data);
-  if (record === undefined || record.status === "PENDING") return;
+  if (record === undefined || record.status === "PENDING") return false;
   await onChainGateDecided(deps, record);
+  return true;
 }
 
 /** The task of a running or paused step: its end, if it ended without being told, else its time. */

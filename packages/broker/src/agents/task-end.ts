@@ -31,6 +31,15 @@ export interface TaskEndEvent {
   spentUsd: number;
 }
 
+/**
+ * What a step approval's decision ends an agent-step run with, as the run records it: `<step> declined: <prompt>` or `<step> expired: <prompt>`. A run ended this way is
+ * ended by a person's (or the clock's) answer to the approval, never by a cancel of the task, which `isDeclinedEndReason` lets a listener tell.
+ */
+export const approvalEndReason = (stepName: string, status: "DECLINED" | "EXPIRED", prompt: string): string => `${stepName} ${status === "DECLINED" ? "declined" : "expired"}: ${prompt}`;
+
+/** Whether an end reason is a person's decline of a write approval (`approvalEndReason`). */
+export const isDeclinedEndReason = (reason: string): boolean => / declined: /u.test(reason);
+
 /** What a pause handler is told: the limit that was reached and, once Task 32 has asked for the raise, its request. */
 export interface TaskPauseEvent { orgId: OrgId; taskId: string; chain?: { chainRunId: string; stepId: string }; scope: PauseScope; spendRequestId?: string }
 
