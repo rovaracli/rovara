@@ -3434,7 +3434,7 @@ function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: Develope
       const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(input.taskId));
       if (task === undefined || task.orgId !== input.orgId) return;
       const { deps, caller } = await asOwner(input.orgId, task.developerId);
-      await resumeTaskAfterSpendApproval(deps, caller, input);
+      return resumeTaskAfterSpendApproval(deps, caller, input);
     },
     continueAsTask: async (caller, taskId, body) => {
       const { deps, caller: owner } = await asOwner(caller.orgId, caller.developerId, caller.orgRole);

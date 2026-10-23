@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
   AgentIdSchema, AgentXError, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, orgMemberKey, orgRemovedKey, RUN_LIMIT_BLOCK_PREFIX,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
@@ -36,7 +36,7 @@ import { cleanUsd, readTopUp } from "./top-ups.js";
 /** What the broker does for a request once it is approved: the parts that live with the developer tasks. */
 export interface SpendRequestHost {
   /** Goes on with a task whose limit was raised (`resumeTaskAfterSpendApproval` in developer-tasks.ts). Never asked for a task in another org. */
-  resumeTask(input: { orgId: OrgId; taskId: string; spendRequestId: string; resetRunWindow: boolean; firstDispatch: boolean; resume?: "implement"; runLimitUsd?: number }): Promise<void>;
+  resumeTask(input: { orgId: OrgId; taskId: string; spendRequestId: string; resetRunWindow: boolean; firstDispatch: boolean; resume?: "implement"; runLimitUsd?: number }): Promise<void | "STALE">;
   /** A test run that reached its cap goes on as a normal task of its owner (`POST /v1/app/tasks/{id}/continue-as-task`). */
   continueAsTask?(caller: AgentCaller, taskId: string, body: unknown): Promise<unknown>;
   /** What a task's model keys have spent so far, in dollars (the proxy's figure); how a pause that was never written is worked out from the end. */
@@ -554,6 +554,8 @@ export function runLimitRequester(deps: SpendRequestDependencies): RequestRunLim
     const { record } = await createSpendRequest(deps, {
       orgId: request.orgId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, amountUsd: request.amountUsd, newLimitUsd: request.newLimitUsd,
       reason: request.reason, requestedBy: request.requestedBy, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId }, resume: "implement",
+      // Its own slot: an open `run_limit` request that resumes nothing (the follow-up after a max-per-run raise) must not answer for the plan, since approving it would not start coding.
+      subject: `TASK#${task.taskId}#IMPLEMENT`,
     });
     return { spendRequestId: record.spendRequestId };
   };
@@ -918,7 +920,19 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
   };
   let resetRunWindow = false;
   let raisedPastRunLimit: number | undefined;
-  if (record.kind === "run_limit" || record.kind === "planning") {
+  // A plan's run limit request (`resume: "implement"`) applies only while the plan is still blocked on that limit, and only to the workflow as it was read:
+  // once the plan moved on (another decision accepted a limit, coding runs), approving it rewrites nothing.
+  const forPlan = record.kind === "run_limit" && record.resume === "implement";
+  const planBlocked = task.workflow !== undefined && task.workflow.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED" && task.workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+  if (forPlan && planBlocked) {
+    names["#workflow"] = "workflow";
+    names["#wrevision"] = "revision";
+    values[":wrevision"] = task.workflow!.revision;
+    conditions.push("#workflow.#wrevision = :wrevision");
+  }
+  if (forPlan && !planBlocked) {
+    // Nothing to raise: the request ends approved and the task is left as it is.
+  } else if (record.kind === "run_limit" || record.kind === "planning") {
     same("budgetUsd", task.budgetUsd);
     names["#budgetUsd"] = "budgetUsd";
     values[":limit"] = newLimitFor(record, approvedUsd);
@@ -950,7 +964,7 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
       ExpressionAttributeNames: names, ExpressionAttributeValues: values,
     },
   };
-  return { items: [update], resume: forThis || record.resume === "implement", resetRunWindow, firstDispatch, ...(raisedPastRunLimit === undefined ? {} : { raisedPastRunLimit }) };
+  return { items: [update], resume: forThis || (forPlan && planBlocked) || (!forPlan && record.resume === "implement"), resetRunWindow, firstDispatch, ...(raisedPastRunLimit === undefined ? {} : { raisedPastRunLimit }) };
 }
 
 /** The run limit request that follows a max-per-run raise past the run limit: who it goes to, worked out before the approval writes its event. */
@@ -1298,6 +1312,12 @@ async function clearHeldStart(deps: SpendRequestDependencies, key: { pk: string;
 const MEMBER_LEFT_CODES = new Set(["TASK_ACCESS_DENIED", "FORBIDDEN"]);
 const memberLeft = (error: unknown): boolean => MEMBER_LEFT_CODES.has(String((error as { code?: unknown } | undefined)?.code));
 
+/** Whether a task's creator is really gone from its org: no member record, and the removal's tombstone is there (the check R60's `requireCreatorStillMember` makes). */
+async function creatorGone(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName">, orgId: OrgId, task: DeveloperTaskRecord): Promise<boolean> {
+  if (await getItem(deps, orgMemberKey(orgId, task.developerId)) !== undefined) return false;
+  return await getItem(deps, orgRemovedKey(orgId, task.developerId)) !== undefined;
+}
+
 /** Drops a month resume that can never go on (fix round 2, minor 1), audited as the system's `spend_request.resume_dropped` in the same transaction. */
 async function dropMonthResume(deps: SpendRequestDependencies, key: { pk: string; sk: string }, orgId: OrgId, taskId: string, spendRequestId: string): Promise<void> {
   const events = await audited(deps, () => [auditSpendRequestResumeDropped({
@@ -1360,11 +1380,13 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
           continue;
         }
         try {
-          await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: true, firstDispatch: false, resume: "implement", runLimitUsd });
-          if (await clearHeldStart(deps, key, orgId, taskId, true)) dispatched += 1;
+          const outcome = await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: true, firstDispatch: false, resume: "implement", runLimitUsd });
+          // A plan that was no longer blocked on its limit (STALE) clears the item, and was not started now.
+          if (await clearHeldStart(deps, key, orgId, taskId, true) && outcome !== "STALE") dispatched += 1;
         } catch (error) {
-          // The task's creator was removed (R60) or its owner can't act now: nothing later can start it.
-          if (memberLeft(error)) await clearHeldStart(deps, key, orgId, taskId, true).catch(() => false);
+          // Dropped only when the creator is really gone (R60): any other refusal, including a task-access proof that could not be read (a transport failure,
+          // a brief loss of channel access), keeps the item, which tries again until the request's time runs out. The plan has no other way to start.
+          if (memberLeft(error) && await creatorGone(deps, orgId, task)) await clearHeldStart(deps, key, orgId, taskId, true).catch(() => false);
           logLine(deps, "spend_request.run_limit_start_failed", { spendRequestId, taskId, error: errorName(error) });
         }
         continue;
