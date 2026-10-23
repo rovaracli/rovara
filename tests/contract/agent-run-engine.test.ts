@@ -2684,6 +2684,8 @@ describe("final fix wave, runs I-1: a budget stop the broker has not turned into
     expect(t.runItem(run.taskId)).toMatchObject({ state: "RUNNING", steps: [{ id: "investigate", status: "running" }, { id: "report", status: "pending" }] });
     expect(t.runItem(run.taskId)!.pause).toBeUndefined();
     expect(eventsOf(t, run.taskId).filter((text) => text.includes("budget was raised"))).toHaveLength(1);
+    // It was never a pause: the run was not shown as paused at all.
+    expect(eventsOf(t, run.taskId).filter((text) => text.includes("The run is paused"))).toEqual([]);
   });
 
   describe("no pause could be worked out (the ledger says spend is just under the stop)", () => {
@@ -2735,6 +2737,20 @@ describe("final fix wave, runs I-1: a budget stop the broker has not turned into
       await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "REMOVE budgetPause" }));
       await advanceAgentRun(t.routeDeps(), run.taskId);
       expect(t.stepOps(run.workspaceId)).toHaveLength(2);
+    });
+
+    it("asks for the pause again when it looks (the broker's own ask may have failed), and tells what that wrote", async () => {
+      const { t, run, paused, first } = await running({ spent: 0.5 });
+      await stop(t, run, first.id);
+      const scope = { kind: "task", taskId: run.taskId };
+      const deps = t.routeDeps();
+      const askForPause = vi.fn(async (_task: unknown, operationId: string) => {
+        await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "SET budgetPause = :pause, budgetStopOf = :operation", ExpressionAttributeValues: { ":pause": { scope, at: new Date().toISOString() }, ":operation": operationId } }));
+      });
+      await driveAgentRun({ ...deps, agentRuns: { ...deps.agentRuns!, askForPause } } as ApprovalDependencies, run.taskId);
+      expect(askForPause).toHaveBeenCalledExactlyOnceWith(expect.anything(), first.id);
+      expect(paused).toEqual([{ orgId: TEST_ORG, taskId: run.taskId, scope }]);
+      expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET", pause: { scope, notifiedAt: expect.any(String) as string } });
     });
 
     it("resumes silently when the stop was answered meanwhile (its pause was approved away and `budgetStopOf` names the operation)", async () => {
