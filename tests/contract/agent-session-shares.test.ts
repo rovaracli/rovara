@@ -193,6 +193,21 @@ describe("what a share refuses", () => {
     expect(w.db.transactions()).toEqual([]);
   });
 
+  it("holds the share to the revision it read: a session that changed in between is the conflict, and nothing is written", async () => {
+    const w = world();
+    const { sessionId } = w.seedSession();
+    // Just before the transaction is sent, someone else changes the session (as a take-over or another share would).
+    let moved = false;
+    const original = w.db.send;
+    w.db.send = async (command) => {
+      if (!moved && command.constructor.name === "TransactWriteCommand") { moved = true; w.db.set({ ...w.meta(sessionId), revision: 9 }); }
+      return original(command);
+    };
+    expect(await code(w.share(PRIYA, sessionId, { principal: { kind: "member", developerId: ZED }, level: "view" }))).toMatchObject({ code: "SESSION_REVISION_CONFLICT" });
+    expect(w.shareItem(sessionId, `MEMBER#${ZED}`)).toBeUndefined();
+    expect(w.events(sessionId)).toEqual([]);
+  });
+
   it("answers a lost race on the session's revision with the conflict text, and writes nothing", async () => {
     const w = world();
     const { sessionId } = w.seedSession();
@@ -320,7 +335,9 @@ describe("a share with the whole company", () => {
     const { sessionId } = w.seedSession();
     const approvalId = new URL(NeedsConfirmationSchema.parse((await ask(w, sessionId)).body).confirmUrl).pathname.split("/").pop()!;
     // An org admin, who is not the asker, can't decide it.
-    expect(await w.kind.inspect({ orgId: ORG_A, developerId: OLA, approvalId })).toMatchObject({ status: "forbidden" });
+    expect(await w.kind.inspect({ orgId: ORG_A, developerId: OLA, approvalId })).toEqual({ status: "forbidden", who: "the person who asked, while they can still share the session" });
+    // Nor can another person who holds edit on the session.
+    expect(await w.kind.inspect({ orgId: ORG_A, developerId: MAX, approvalId })).toMatchObject({ status: "forbidden" });
     expect(await w.kind.inspect({ orgId: ORG_A, developerId: PRIYA, approvalId })).toMatchObject({ status: "open" });
     // A take-over moved the session to Arjun, and Priya kept no edit: she may not confirm now.
     w.db.set({ ...w.meta(sessionId), owner: { developerId: ARJUN, name: "Arjun" } });
@@ -353,6 +370,26 @@ describe("a share with the whole company", () => {
     await handler(w.deps, record);
     expect(w.meta(sessionId).revision).toBe(revision);
     expect(w.events(sessionId)).toHaveLength(events);
+  });
+
+  it("is refused by the handler for a person who may no longer share the session", async () => {
+    const w = world();
+    const { sessionId } = w.seedSession();
+    const approvalId = new URL(NeedsConfirmationSchema.parse((await ask(w, sessionId)).body).confirmUrl).pathname.split("/").pop()!;
+    const record = { ...(await getAnyApproval(w.deps, ORG_A, approvalId))!, decidedBy: ARJUN };
+    await expect(getApprovalSubjectHandler("session_share_org")!(w.deps, record)).rejects.toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(w.shareItem(sessionId, "ORG")).toBeUndefined();
+  });
+
+  it("says done at once, with no new approval, when the company already has the session at that level", async () => {
+    const w = world();
+    const { sessionId } = w.seedSession();
+    w.seedShare(ORG_A, sessionId, { kind: "org" }, "view");
+    const reply = await ask(w, sessionId);
+    expect(reply).toMatchObject({ status: 200, body: { share: { principal: { kind: "org" }, level: "view" } } });
+    expect(w.db.find((item) => item.entityType === "APPROVAL")).toEqual([]);
+    // Another level is a new question.
+    expect((await ask(w, sessionId, "use")).status).toBe(202);
   });
 
   it("is refused by the handler when sessions aren't wired, rather than applied by someone else", async () => {

@@ -214,9 +214,19 @@ describe("Task People on a task session", () => {
 
   it("gives a commenter use and a viewer view, to people who are on no project", async () => {
     const w = sessionWorld();
-    const { sessionId } = w.seedSession({ people: [{ developerId: ZED, role: "commenter" }, { developerId: OLA, role: "viewer" }] });
-    expect(await levelOf(w, ZED, sessionId)).toMatchObject({ level: "use", projectRole: undefined });
-    expect(await levelOf(w, OLA, sessionId)).toMatchObject({ level: "view" });
+    const commenter = w.seedSession({ people: [{ developerId: ZED, role: "commenter" }] });
+    expect(await levelOf(w, ZED, commenter.sessionId)).toMatchObject({ level: "use", projectRole: undefined });
+    const viewer = w.seedSession({ people: [{ developerId: ZED, role: "viewer" }] });
+    expect(await levelOf(w, ZED, viewer.sessionId)).toMatchObject({ level: "view", projectRole: undefined });
+    const none = w.seedSession({ people: [{ developerId: ARJUN, role: "viewer" }] });
+    expect(await code(resolveSessionAccess(depsOf(w), w.caller(ZED), none.sessionId))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("follows the task's current owner after a take-over: they own it, and the first owner is one more project member", async () => {
+    const w = sessionWorld();
+    const { sessionId } = w.seedSession({ currentOwner: ARJUN });
+    expect(await levelOf(w, ARJUN, sessionId)).toMatchObject({ level: "edit", owner: true });
+    expect(await levelOf(w, PRIYA, sessionId)).toMatchObject({ level: "view", owner: false });
   });
 
   it("gives the Task People owner edit only while no one has taken the task over", async () => {

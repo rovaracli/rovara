@@ -163,7 +163,7 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
   let level: "none" | SessionLevel = owner ? "edit" : "none";
   if (session.kind === "task" && session.project !== undefined) {
     if (grantRole === "maintainer") level = best(level, "edit");
-    else if (projectRole !== undefined || orgAdmin) level = best(level, "view");
+    else if (projectRole !== undefined) level = best(level, "view");
   } else if (session.kind === "chain") {
     if (deps.chainReadAccess !== undefined && await deps.chainReadAccess({ orgId, developerId: caller.developerId }, session)) level = best(level, "view");
     if (grantRole === "maintainer") level = best(level, "edit");
