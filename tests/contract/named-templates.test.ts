@@ -1,4 +1,5 @@
 import { Stack } from "aws-cdk-lib";
+import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { normalizedTemplate } from "../support/template-snapshot.js";
@@ -234,4 +235,31 @@ describe("named environment templates", () => {
       expect(stack.stackName === "agentx-staging-control-plane" ? withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template)))))) : template).toMatchSnapshot();
     }, 120_000);
   }
+});
+
+// Plan 4 Task 9: the chain sweep. Every 5 minutes the broker looks at the chain runs that are due (timeouts, lost callbacks, a decision not yet applied). Like the spend
+// settlement it is for named environments only, and it runs through the same role as the other recovery schedules, so it needs no new grant.
+describe("the chain sweep schedule", () => {
+  type Schedule = { Type: string; Properties: { ScheduleExpression: string; State: string; FlexibleTimeWindow: unknown; Target: { Arn: unknown; RoleArn: unknown; Input: string; RetryPolicy: unknown } } };
+  const schedules = (context: Record<string, unknown>): Array<[string, Schedule]> => {
+    const stack = buildAgentXApp(context).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+    return Object.entries(Template.fromStack(stack!).toJSON().Resources as Record<string, Schedule>).filter(([, resource]) => resource.Type === "AWS::Scheduler::Schedule");
+  };
+
+  it("runs every 5 minutes in a named environment, through the recovery schedules' role, with the event the broker answers", () => {
+    const found = schedules({ agentxEnv: "staging" });
+    const sweep = found.filter(([id]) => id.startsWith("ChainSweepSchedule"));
+    expect(sweep).toHaveLength(1);
+    const [, schedule] = sweep[0]!;
+    expect(schedule.Properties).toMatchObject({ ScheduleExpression: "rate(5 minutes)", State: "ENABLED", FlexibleTimeWindow: { Mode: "OFF" } });
+    expect(JSON.parse(schedule.Properties.Target.Input)).toStrictEqual({ source: "agentx.chain-sweep" });
+    expect(schedule.Properties.Target.RetryPolicy).toStrictEqual({ MaximumRetryAttempts: 2, MaximumEventAgeInSeconds: 300 });
+    const recovery = found.find(([id]) => id.startsWith("WorkflowMergeRecoverySchedule"))![1];
+    expect(schedule.Properties.Target.Arn).toStrictEqual(recovery.Properties.Target.Arn);
+    expect(schedule.Properties.Target.RoleArn).toStrictEqual(recovery.Properties.Target.RoleArn);
+  });
+
+  it("is not in the legacy template", () => {
+    expect(schedules({}).map(([id]) => id).filter((id) => id.startsWith("ChainSweep"))).toStrictEqual([]);
+  });
 });

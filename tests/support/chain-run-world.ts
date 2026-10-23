@@ -89,6 +89,15 @@ export function setupWorld(options: WorldOptions = {}) {
     crashAfterStart: [] as Error[],
     /** Called when a task has been started, before the call returns. */
     onStarted: undefined as ((task: FakeTask) => void) | undefined,
+    /** The next cancel requests throw this instead of being recorded (a worker that could not be asked, or a transient outage). */
+    cancelFails: [] as Error[],
+  };
+  /** Every request to cancel a step's task (Plan 3's cancel, as the task's owner), in order. A repeat of a request id is recorded again: Plan 3 answers it as the first. */
+  const cancels: Array<{ orgId: OrgId; taskId: string; owner: { developerId: string }; requestId: string }> = [];
+  const cancelTask = async (request: { orgId: OrgId; taskId: string; owner: { developerId: string }; requestId: string }): Promise<void> => {
+    const failure = hooks.cancelFails.shift();
+    if (failure !== undefined) throw failure;
+    cancels.push(structuredClone(request));
   };
   const startAgentRun = async (request: AgentRunRequest): Promise<AgentRunResult> => {
     starts.push(structuredClone(request));
@@ -137,7 +146,7 @@ export function setupWorld(options: WorldOptions = {}) {
   };
   const deps: ChainRunnerDependencies = {
     store: agents, chains, projectMembers, signInStore, documentClient: client, tableName: "T", now: () => clock.now, confirmOrigin: "https://cell.example.com",
-    chainRuns: { startAgentRun, callerFor, ...(admission === undefined ? {} : { admission }) },
+    chainRuns: { startAgentRun, callerFor, cancelTask, ...(admission === undefined ? {} : { admission }) },
   };
   const agentDeps: AgentAccessDeps = { store: agents, projectMembers, documentClient: db, tableName: "T", signInStore };
 
@@ -206,7 +215,7 @@ export function setupWorld(options: WorldOptions = {}) {
   };
   const refusal = (code: Parameters<typeof agentXError>[0], message: string): AgentXError => agentXError(code, message);
 
-  return { db, clock, beforeTransaction, touchRun, publishAgain, agents, chains, projectMembers, deps, agentDeps, access, starts, tasks, hooks, startAgentRun, publish, customAgent, run, attempts, events, chainOf, openItems, endEvent, pauseEvent, taskOf, refusal };
+  return { db, clock, beforeTransaction, touchRun, publishAgain, agents, chains, projectMembers, deps, agentDeps, access, starts, tasks, hooks, cancels, startAgentRun, publish, customAgent, run, attempts, events, chainOf, openItems, endEvent, pauseEvent, taskOf, refusal };
 }
 
 export type ChainWorld = ReturnType<typeof setupWorld>;
