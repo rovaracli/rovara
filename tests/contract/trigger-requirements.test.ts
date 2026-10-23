@@ -293,7 +293,7 @@ describe("a change that waits for a person turns triggers off when it is confirm
 
   it("does it for a rollback that turns on a schedule and drops the event kind", async () => {
     const v = setupTriggerWorld();
-    const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, SCHEDULE as never], { budgetUsd: 20 });
+    const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, SCHEDULE], { budgetUsd: 20 });
     const base = `/v1/app/agents/${agent.agentId}`;
     // The second version is published straight to the store: a version that turns on a new way to start the agent would wait for a person itself.
     const draft = await draftOf(v, base);
