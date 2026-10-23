@@ -40,6 +40,7 @@ import {
   type AppProjectSummary,
   type AppProjectsResponse,
   type ProjectMember,
+  StartDeveloperTaskRequestSchema,
   type ProjectMemberChangeResponse,
   type ProjectMemberRemoveResponse,
   type ProjectMembersResponse,
@@ -117,6 +118,7 @@ import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
+import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
 import { requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
@@ -1316,6 +1318,25 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
   };
 }
 
+/**
+ * The start of an agent at a published version through `POST /v1/dev/tasks` (the CLI's and the AI tools' start): the same gate as the app route's. Only a plain
+ * start is gated (no sharing or workflow options, which a run started after approval would not carry); any other start of a less safe older version is refused
+ * by the start itself. Undefined when the start goes on as it is.
+ */
+async function gateDeveloperStart(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest): Promise<StatusReply | undefined> {
+  if (deps.agents === undefined) return undefined;
+  let value: unknown;
+  try { value = request.body === undefined || request.body === "" ? undefined : JSON.parse(request.body) as unknown; } catch { return undefined; }
+  const parsed = StartDeveloperTaskRequestSchema.safeParse(value);
+  if (!parsed.success || parsed.data.agent === undefined || typeof parsed.data.agent.version !== "number") return undefined;
+  const start = parsed.data;
+  if (start.shareToChannel !== undefined || start.shareMode !== undefined || start.channel !== undefined || start.workflow !== undefined || start.workflowPath !== undefined) return undefined;
+  const waiting = await gateRunVersion(deps.agents, caller, {
+    requestId: start.requestId, project: start.project, agent: { agentId: start.agent!.agentId, version: start.agent!.version! }, input: start.input ?? { text: start.instructions }, origin: "cli",
+  });
+  return waiting === undefined ? undefined : new StatusReply(202, { status: NEEDS_OWNER_APPROVAL, confirmUrl: waiting.confirmUrl, changes: waiting.changes });
+}
+
 /** The app route that starts a run (`POST /v1/app/agents/{id}/runs`): the person's own request, from their own session, through the run start. */
 async function startAppRun(
   deps: DeveloperRouteDependencies,
@@ -1579,6 +1600,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "PUT" && url.pathname === "/v1/dev/org/budget") return putOrganizationBudget(deps, caller, jsonBody(request));
   if (url.pathname === "/v1/dev/tasks" || url.pathname.startsWith("/v1/dev/tasks/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
+    // An AI tool's start of an older version of an agent that is less safe than the current one waits for the agent's owner (owner decision 2026-10-22), as the app route's does.
+    const waitingForOwner = request.method === "POST" && url.pathname === "/v1/dev/tasks" ? await gateDeveloperStart(deps, caller, request) : undefined;
+    if (waitingForOwner !== undefined) return waitingForOwner;
     return routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url);
   }
   if (url.pathname === CHATGPT_CONNECTION_PATH || url.pathname === `${CHATGPT_CONNECTION_PATH}/finish`) {

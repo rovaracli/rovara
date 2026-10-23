@@ -1051,7 +1051,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       project: z.string().min(1).max(200).describe("the project's exact name, from agentx_list_projects"),
       input: instructionsInput,
       context: contextInput.optional().describe("information the agent is shown as information only: tickets, pull requests, alerts"),
-      version: versionInput.optional().describe("a published version number, or draft; the version that runs now when left out"),
+      version: versionInput.optional().describe("a published version number, or draft; the version that runs now when left out. An older version that is less safe than the one that runs now does not start: the answer is OWNER_APPROVAL_NEEDED with a link for the agent's owner, and the run starts when they approve it"),
       wait_seconds: waitInput(0).optional().describe("seconds to wait for the run to end, 0 to 600; 0 by default"),
       request_id: requestIdInput,
     },

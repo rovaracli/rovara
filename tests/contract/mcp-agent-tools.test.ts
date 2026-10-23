@@ -95,6 +95,24 @@ describe("agentx_list_agents and agentx_run_agent", () => {
   });
 });
 
+describe("agentx_run_agent when the version asked for waits for the agent's owner (owner decision 2026-10-22)", () => {
+  const WAITING = { status: "NEEDS_OWNER_APPROVAL", confirmUrl: CONFIRM, changes: ["Runs version 1 of Triage on payments, which is less safe than the version that runs now (version 3)"] };
+
+  it("is an error that says nothing started and gives the link for the owner, and no task", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json(WAITING, { status: 202 }));
+    const client = httpControlPlaneClient({ session: async () => ({ baseUrl: CELL, accessToken: "t", signInCommand: "x" }), fetch: fetchImplementation, sleep: async () => undefined });
+    const refused = await client.runAgent(AGT, { requestId: "33333333-3333-4333-8333-333333333333", project: "payments", version: 1, input: { text: "go" } }).then(() => undefined, (error: { code?: string; message: string; nextStep?: string }) => error);
+    expect(refused).toMatchObject({ code: "OWNER_APPROVAL_NEEDED" });
+    expect(refused!.message).toContain(CONFIRM);
+    expect(refused!.message).toContain("Nothing started");
+    expect(refused!.nextStep).toMatch(/owner/);
+    const mcp = await connect({ runAgent: client.runAgent });
+    const result = await mcp.callTool({ name: "agentx_run_agent", arguments: { agent_id: AGT, project: "payments", input: "go", version: 1 } });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(text(result)).toContain(CONFIRM);
+  });
+});
+
 describe("agentx_list_approvals", () => {
   it("returns each pending approval with its summary, full arguments and the bare confirmation link, and mints no ticket (review M2)", async () => {
     const args = { title: "Flaky retry test", labels: ["bug"] };

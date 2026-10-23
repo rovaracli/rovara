@@ -55,7 +55,8 @@ import {
 import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
-import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, type ChangeResult } from "./changes.js";
+import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, versionSafety, type ChangeResult } from "./changes.js";
+import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
@@ -109,6 +110,9 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
 async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<StatusReply> {
   if (deps.startRun === undefined) throw agentXError("NOT_FOUND", "starting runs is not set up in this deployment");
   const input = parseBody(RunBodySchema, body);
+  // A version that is not the current one and is less safe than it waits for the agent's owner (owner decision 2026-10-22): nothing starts until they OK it.
+  const waitingForOwner = await gateRunVersion(deps, caller, { requestId: input.requestId, project: input.project, agent: { agentId, ...(input.version === undefined ? {} : { version: input.version }) }, input: input.input, origin: "app" });
+  if (waitingForOwner !== undefined) return new StatusReply(202, { status: NEEDS_OWNER_APPROVAL, confirmUrl: waitingForOwner.confirmUrl, changes: waitingForOwner.changes });
   const started = await deps.startRun(caller, {
     requestId: input.requestId, project: input.project, input: input.input,
     agent: { agentId, ...(input.version === undefined ? {} : { version: input.version }) },
@@ -328,19 +332,37 @@ async function getAgent(deps: AgentRouteDependencies, caller: AgentCaller, agent
   };
 }
 
+/** What a version list says of one version against the one that runs now (owner decision 2026-10-22): `current`, `same_or_safer` (a run may use it as it is) or `less_safe` (a run of it needs the owner's OK; `lessSafe` says why). */
+async function safetyMarks(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId, agent: AgentRecord | undefined, versions: readonly number[]): Promise<Map<number, Shown>> {
+  const marks = new Map<number, Shown>();
+  for (const version of versions) {
+    try {
+      const { safety } = await versionSafety(deps, orgId, agentId, version, agent);
+      marks.set(version, safety.kind === "less_safe" ? { safety: "less_safe", needsOwnerOk: true, lessSafe: safety.changes } : { safety: safety.kind, needsOwnerOk: false });
+    } catch (error) {
+      // A version that can't be resolved now (the agent it builds on was archived): it can't run either, and the list still shows it.
+      if (!(error instanceof AgentXError)) throw error;
+      marks.set(version, { safety: "unknown", needsOwnerOk: false, problem: error.message.replace(`${error.code}: `, "") });
+    }
+  }
+  return marks;
+}
+
 async function listVersions(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<{ versions: Shown[] }> {
   const { agent } = await requireReadableAgent(deps, caller, agentId, "view");
   if (!("owner" in agent)) {
     const pinned = (await deps.store.getBuiltinSettings(caller.orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId);
     const releases = BUILTIN_AGENTS[agentId as keyof typeof BUILTIN_AGENTS].versions;
-    return { versions: releases.map((release) => ({ version: release.version, digest: release.digest, releasedIn: release.releasedIn, notes: release.notes, current: release.version === pinned })) };
+    const marks = await safetyMarks(deps, caller.orgId, agentId, undefined, releases.map((release) => release.version));
+    return { versions: releases.map((release) => ({ version: release.version, digest: release.digest, releasedIn: release.releasedIn, notes: release.notes, current: release.version === pinned, ...marks.get(release.version) })) };
   }
   const versions = await deps.store.listVersions(caller.orgId, agentId);
+  const marks = await safetyMarks(deps, caller.orgId, agentId, agent, versions.map((version) => version.version));
   return {
     versions: versions.map((version) => ({
       version: version.version, name: version.name, description: version.description, digest: version.digest,
       publishedBy: version.publishedBy, publishedAt: version.publishedAt, ...(version.note === undefined ? {} : { note: version.note }),
-      ...(version.extends === undefined ? {} : { extends: version.extends }), current: version.version === agent.currentVersion,
+      ...(version.extends === undefined ? {} : { extends: version.extends }), current: version.version === agent.currentVersion, ...marks.get(version.version),
     })),
   };
 }
@@ -953,5 +975,6 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
 }
 
 registerAgentApprovals();
+registerRunVersionApproval();
 registerProjectConnectorApprovals();
 registerCommentTriggerApprovals();

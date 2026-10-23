@@ -120,6 +120,9 @@ const ApprovalSummarySchema = z.object({
 }).passthrough();
 export type ApprovalSummary = z.infer<typeof ApprovalSummarySchema>;
 
+/** The answer to a run whose version waits for the agent's owner (`202 NEEDS_OWNER_APPROVAL`): where the owner confirms it. */
+const OwnerApprovalWaitSchema = z.object({ status: z.literal("NEEDS_OWNER_APPROVAL"), confirmUrl: z.string(), changes: z.array(z.string()) });
+
 /** Spec 025 A1: adminApiVersion is absent from a control plane from before 25d. */
 /** Spec 025 E16 (C22): confirm is absent from a control plane from before 25e. */
 const ConfigurationSchema = z.object({ env: z.string(), apiVersion: z.string(), adminApiVersion: z.string().optional(), confirm: AgentXConfigurationConfirmSchema.optional() });
@@ -308,7 +311,14 @@ export function httpControlPlaneClient(options: {
     takeTaskOwnership: async (taskId, request) => (await call(TaskPeopleChangeResponseSchema, "POST", path(taskId, "/people/take-ownership"), request)).change,
     auditStatus: () => call(AuditStatusSchema, "GET", "/v1/dev/org/audit/status"),
     listAgents: async (query) => (await call(z.object({ agents: z.array(AgentSummarySchema) }), "GET", `/v1/app/agents${query.project === undefined ? "" : `?project=${encodeURIComponent(query.project)}`}`)).agents,
-    runAgent: async (agentId, request) => task(await call(DeveloperTaskResponseSchema, "POST", `/v1/app/agents/${encodeURIComponent(agentId)}/runs`, request, true, { busyStep: START_BUSY_STEP })),
+    runAgent: async (agentId, request) => {
+      const answer = await call(z.union([DeveloperTaskResponseSchema, OwnerApprovalWaitSchema]), "POST", `/v1/app/agents/${encodeURIComponent(agentId)}/runs`, request, true, { busyStep: START_BUSY_STEP });
+      if ("status" in answer) {
+        // Owner decision 2026-10-22: a version less safe than the one that runs now waits for the agent's owner; this is not a started run.
+        throw new ToolError("OWNER_APPROVAL_NEEDED", `That version of the agent is less safe than the one that runs now, so the agent's owner has to OK this run first. Nothing started. Give this link to the owner, who approves it signed in: ${plainText(answer.confirmUrl, "")}${answer.changes.length === 0 ? "" : ` (${answer.changes.map((change) => plainText(change, "")).join("; ")})`}`);
+      }
+      return task(answer);
+    },
     listApprovals: async () => (await call(z.object({ approvals: z.array(ApprovalSummarySchema) }), "GET", "/v1/app/approvals?status=PENDING")).approvals,
     getApproval: async (approvalId) => (await call(z.object({ approval: ApprovalSummarySchema }), "GET", `/v1/app/approvals/${encodeURIComponent(approvalId)}`)).approval,
     // A POST without a body: repeatable() keeps it to one try, so a ticket is minted at most once per call.

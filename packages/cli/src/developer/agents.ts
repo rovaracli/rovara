@@ -181,10 +181,16 @@ export async function agentsPublish(deps: DeveloperSessionDeps, env: string | un
   return result(answer, answer.body, waitingText(answer.body) ?? `Published ${clean(agentId)} as version ${str(version.version)}; new runs use it.\n`);
 }
 
+/** What a version list says of a version against the one that runs now (owner decision 2026-10-22): a run of a less safe one needs the agent's owner's OK. */
+function safetyMark(version: Body): string {
+  if (version.safety === "less_safe") return "  less safe than the current version, needs the owner's OK";
+  return version.safety === "same_or_safer" ? "  same or safer" : "";
+}
+
 export async function agentsVersions(deps: DeveloperSessionDeps, env: string | undefined, agentId: string): Promise<AppResult> {
   const answer = await appRequest(deps, env, `/v1/app/agents/${seg(agentId)}/versions`);
   const versions = list(answer.body.versions);
-  const lines = versions.map((version) => `  v${str(version.version)}${version.current === true ? " (runs now)" : ""}  ${str(version.publishedAt ?? version.releasedIn)}${version.note === undefined && version.notes === undefined ? "" : `  ${str(version.note ?? version.notes)}`}`);
+  const lines = versions.map((version) => `  v${str(version.version)}${version.current === true ? " (runs now)" : ""}  ${str(version.publishedAt ?? version.releasedIn)}${safetyMark(version)}${version.note === undefined && version.notes === undefined ? "" : `  ${str(version.note ?? version.notes)}`}`);
   return result(answer, { versions }, `${[`Versions of ${clean(agentId)}:`, ...lines].join("\n")}\n`);
 }
 
@@ -249,6 +255,10 @@ export async function agentsRun(
   const answer = await appRequest(deps, env, `/v1/app/agents/${seg(agentId)}/runs`, {
     method: "POST", body: { requestId: randomUUID(), project: input.project, ...(version === undefined ? {} : { version }), input: { text: input.input } },
   });
+  if (answer.body.status === "NEEDS_OWNER_APPROVAL" && typeof answer.body.confirmUrl === "string") {
+    const changes = Array.isArray(answer.body.changes) ? (answer.body.changes as unknown[]).map((change) => `  - ${item(change)}`) : [];
+    return result(answer, answer.body, [`This run of ${clean(agentId)}${version === undefined ? "" : ` version ${version}`} waits for the agent's owner to OK it. Nothing started yet; it starts once they approve it. Open: ${clean(answer.body.confirmUrl)}`, ...changes, ""].join("\n"));
+  }
   const task = (answer.body.task ?? {}) as Body;
   return result(answer, answer.body, `Started ${clean(agentId)}${version === "draft" ? " (its draft, as a test run)" : version === undefined ? "" : ` version ${version}`} on ${clean(input.project)}: task ${str(task.taskId)} is ${str(task.status)}.\n`);
 }

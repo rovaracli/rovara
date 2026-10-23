@@ -108,7 +108,7 @@ export async function orgAdminApprovers(deps: ApprovalDependencies, orgId: OrgId
   return { kind: "rule", rule: "org_admin", candidates: await orgAdmins(deps, orgId) };
 }
 
-async function waitForPerson(
+export async function waitForPerson(
   deps: ApprovalDependencies, caller: AgentCaller, requestId: string, subject: AgentChangeSubject, changes: string[], approvers: ApproverSpec,
 ): Promise<ChangeResult<never>> {
   const record = await createPendingChange(deps, { orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject, changes, approvers });
@@ -118,8 +118,38 @@ async function waitForPerson(
 }
 
 /** A change that needs a person can't be confirmed on an archived agent, so it is not asked for. */
-function requireActiveForConfirmation(agent: AgentRecord): void {
+export function requireActiveForConfirmation(agent: AgentRecord): void {
   if (agent.status === "archived") throw agentXError("AGENT_UNAVAILABLE", `${agent.name} is archived, so a change that needs confirmation can't be made. Unarchive it first, then ask again.`);
+}
+
+// ---- running an older version (owner decision 2026-10-22, option D)
+
+/**
+ * How a version compares with the one that runs now: the same, no looser (`same_or_safer`, by the comparison a publish makes), or looser (`less_safe`, with
+ * what it loosens, in words). A run may use any version that is not looser than the current one without asking anyone; a looser one needs the agent's owner.
+ */
+export type VersionSafety = { kind: "current" } | { kind: "same_or_safer" } | { kind: "less_safe"; changes: string[] };
+
+/**
+ * `version` of an agent against what runs now: the published version of a custom agent (`agent`), or the org's pin of a built-in (`agent` absent). A version
+ * that can't be compared (the version that runs now can't be resolved) reads as less safe: nothing is waved through that was not looked at.
+ */
+export async function versionSafety(
+  deps: ApprovalDependencies, orgId: OrgId, agentId: AgentId, version: number, agent: AgentRecord | undefined,
+): Promise<{ current: number | undefined; safety: VersionSafety }> {
+  const builtin = agent === undefined;
+  // Read only: a version list must not make the org's settings for a built-in (the start does, `ensureBuiltinSettings`, before it asks).
+  const current = builtin ? (await deps.store.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId) : agent.currentVersion;
+  if (current === undefined || version === current) return { current, safety: { kind: "current" } };
+  const target = builtin ? deps.store.builtinRecipe(agentId, version) : await resolveRecipe(deps, orgId, agentId, version);
+  let now: ResolvedRecipe;
+  try {
+    now = builtin ? deps.store.builtinRecipe(agentId, current) : await resolveRecipe(deps, orgId, agentId, current);
+  } catch {
+    return { current, safety: { kind: "less_safe", changes: [`Version ${String(current)}, which runs now, can't be read to compare with it`] } };
+  }
+  const changes = lessSafeChanges(now, target);
+  return { current, safety: changes.length === 0 ? { kind: "same_or_safer" } : { kind: "less_safe", changes } };
 }
 
 // ---- publish, rollback, adopt, share

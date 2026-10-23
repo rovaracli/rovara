@@ -52,6 +52,7 @@ const TITLES: Record<string, string> = {
   guardrails: "Relax the company's agent guardrails",
   connector_widen: "Let a project's connector make changes",
   opt_out: "Let agents comment in a repository whose workflows act on comments",
+  agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
 };
 
 const fact = (label: string, value: string) => ({ label, value });
@@ -82,6 +83,12 @@ async function agentChangeFacts(deps: ApprovalDependencies, orgId: OrgId, subjec
     outOfDate = await deps.store.pinnedBuiltinVersion(orgId, agentId).then((pinned) => pinned !== subject.expectedPinnedVersion, () => false);
   } else if (subject.kind === "agent_share") {
     outOfDate = live !== undefined && (live.sharesRevision ?? 0) !== subject.expectedSharesRevision;
+  } else if (subject.kind === "agent_run_version") {
+    facts.push(
+      fact("Version", `Run version ${String(subject.version)} (digest ${prefix(subject.digest)}) instead of version ${String(subject.expectedCurrentVersion)}, which ${builtin ? "your company uses" : "runs now"}`),
+      fact("Project", subject.project), fact("Asked to do", shownText(subject.input.text, 400)),
+    );
+    outOfDate = builtin ? await deps.store.pinnedBuiltinVersion(orgId, agentId).then((pinned) => pinned !== subject.expectedCurrentVersion, () => false) : live !== undefined && live.currentVersion !== subject.expectedCurrentVersion;
   }
   if (outOfDate) facts.push(fact("Out of date", "The agent has changed since this was asked, so approving it will be refused. Ask again."));
   return facts;
