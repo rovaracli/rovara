@@ -111,7 +111,7 @@ describe("what a session shows while its work goes on", () => {
     p.patchTask(s.taskId, { budgetPause: { scope: { kind: "task" }, at: iso(T0) }, budgetUsd: 5, maxPerRunUsd: 3 });
     const requestId = "spr_0123456789abcdefghij";
     p.w.db.set({ ...spendRequestKey(ORG_A, requestId), entityType: "SPEND_REQUEST", orgId: ORG_A, spendRequestId: requestId, kind: "run_limit", taskId: s.taskId, status: "PENDING", approverIds: [ARJUN], amountUsd: 5, reason: "x", requestedBy: { kind: "system" }, approverRole: "payer", createdAt: iso(T0), expiresAt: iso(T0 + DAY_MS) });
-    p.w.db.set({ ...spendRequestSlotKey(ORG_A, s.taskId, "run_limit"), entityType: "SPEND_REQUEST_SLOT", orgId: ORG_A, spendRequestId: requestId, createdAt: iso(T0) });
+    p.w.db.set({ ...spendRequestSlotKey(ORG_A, `TASK#${s.taskId}`, "run_limit"), entityType: "SPEND_REQUEST_SLOT", orgId: ORG_A, spendRequestId: requestId, createdAt: iso(T0) });
     p.spent(s.taskId, 2.5);
     await p.refresh(s.sessionId);
     const session = p.sessionOf(s.sessionId);
