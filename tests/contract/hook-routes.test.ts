@@ -305,3 +305,29 @@ describe("closing an org", () => {
     expect(await hw.store.record(ORG_B, theirs.hookId)).toMatchObject({ status: "active" });
   });
 });
+
+
+describe("a hook belongs to its project", () => {
+  it("lists only the project's hooks, and finds a hook of another project neither to rotate nor to delete", async () => {
+    const { v, hw } = world();
+    v.projectMembers.addProject(ORG_A, "api");
+    const mine = hookOf(await v.agentCall(DANA, "POST", BASE, { source: "linear", tenant: LINEAR_TENANT, secret: SECRET_1 }));
+    const other = await hw.hook({ hookId: `hk_${"o".repeat(26)}`, project: "api" });
+    const listed = (await v.agentCall(DANA, "GET", BASE)).body["hooks"] as Array<{ hookId: string }>;
+    expect(listed.map((hook) => hook.hookId)).toEqual([mine.hookId]);
+    expect((await v.agentCall(DANA, "GET", "/v1/app/projects/api/event-hooks")).body["hooks"] as unknown[]).toHaveLength(1);
+    expect((await v.agentCall(DANA, "DELETE", `${BASE}/${other.hookId}`, {})).status).toBe(404);
+    expect((await v.agentCall(DANA, "POST", `${BASE}/${other.hookId}/rotate`, { secret: SECRET_2 })).status).toBe(404);
+    expect(await hw.store.record(ORG_A, other.hookId)).toMatchObject({ status: "active" });
+  });
+
+  it("deletes a hook only after turning it off, and a rotation records only for a hook that is on", async () => {
+    const { v, hw } = world();
+    const hook = hookOf(await v.agentCall(DANA, "POST", BASE, { source: "datadog", tenant: DATADOG }));
+    await hw.store.disable(ORG_A, hook.hookId);
+    await hw.store.noteRotation(ORG_A, hook.hookId, rid(), "2026-10-22T09:00:00.000Z");
+    expect((await hw.store.record(ORG_A, hook.hookId))!.rotationRequestId).toBeUndefined();
+    await hw.store.touch(ORG_A, hook.hookId, "2026-10-22T09:00:00.000Z");
+    expect((await hw.store.record(ORG_A, hook.hookId))!.lastDeliveryAt).toBeUndefined();
+  });
+});

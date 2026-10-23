@@ -46,7 +46,8 @@ describe("a forged request writes nothing and is refused with one answer", () =>
     const answers = [
       await w.receive(w.delivery({ source: "linear", hookId: `hk_${"4".repeat(26)}` }, body)),
       await w.receive(w.delivery(off, body)),
-      await w.receive(w.delivery({ source: "linear", hookId: sentry.hookId }, body)),
+      // Signed with the sentry hook's own secret and naming its own tenant: only the path's source gives it away.
+      await w.receive(w.delivery({ source: "linear", hookId: sentry.hookId }, { ...body, tenant: sentry.tenant })),
       await w.receive(w.delivery({ source: "linear", hookId: "not-a-hook" }, body)),
       await w.receive(w.delivery({ source: "github", hookId: hook.hookId }, body)),
       await w.receive(w.delivery({ source: "pagerduty", hookId: hook.hookId }, body)),
@@ -155,10 +156,16 @@ describe("forged traffic is bounded and never uses a real delivery's allowance",
     expect(counter.count("a", 59_000)).toBe(2);
     expect(counter.count("a", 61_000)).toBe(1);
     expect(counter.count("a", 91_000)).toBe(0);
-    counter.hit("b", 0); counter.hit("c", 0); counter.hit("d", 0);
-    // The oldest key went to make room.
-    expect(counter.count("a", 0) + counter.count("b", 0)).toBe(1);
-    expect(counter.count("d", 0)).toBe(1);
+  });
+
+  it("forgets a hit when its second leaves the window exactly a minute later, and holds at most its number of keys, the oldest going first", () => {
+    const counter = new WindowCounter(3);
+    counter.hit("a", 0);
+    expect(counter.count("a", 59_999)).toBe(1);
+    expect(counter.count("a", 60_000)).toBe(0);
+    counter.hit("a", 0); counter.hit("b", 0); counter.hit("c", 0);
+    counter.hit("d", 0);
+    expect([counter.count("a", 0), counter.count("b", 0), counter.count("c", 0), counter.count("d", 0)]).toEqual([0, 1, 1, 1]);
   });
 
   it("answers 413 for a body over the limit before any read or count", async () => {
@@ -409,5 +416,120 @@ describe("what is kept and what is logged", () => {
     for (const forbidden of [marker, secretLooking, SECRET_1, SECRET_2]) expect(everything, forbidden).not.toContain(forbidden);
     // The refusals did log, so the absence above means something.
     expect(w.logs.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+
+describe("what the endpoint reads and counts before it knows who is asking", () => {
+  it("reads nothing for a source or a hook id that is not well formed, and one lookup for an id nobody made", async () => {
+    const { w, hook } = await linear();
+    for (const target of [{ source: "linear", hookId: "not-a-hook" }, { source: "github", hookId: hook.hookId }, { source: "nope", hookId: hook.hookId }]) {
+      const mark = w.db.commandNames().length;
+      expect((await w.receive(w.delivery(target, bodyOf(w, "e1")))).status).toBe(403);
+      expect(w.commandsSince(mark), JSON.stringify(target)).toEqual([]);
+    }
+    const mark = w.db.commandNames().length;
+    await w.receive(w.delivery({ source: "linear", hookId: `hk_${"4".repeat(26)}` }, bodyOf(w, "e1")));
+    expect(w.commandsSince(mark)).toEqual(["GetCommand"]);
+    // A lookup that names no organization is no lookup.
+    w.db.set({ pk: `HOOK#${HOOK_OTHER_ORG}`, sk: "ORG", orgId: "bogus" });
+    const again = w.db.commandNames().length;
+    expect((await w.receive(w.delivery({ source: "linear", hookId: HOOK_OTHER_ORG }, bodyOf(w, "e1")))).status).toBe(403);
+    expect(w.commandsSince(again)).toEqual(["GetCommand"]);
+  });
+
+  it("refuses a hook that is not on, whatever its other state: unsubscribed and pending confirmation too", async () => {
+    const w = setupHookWorld();
+    for (const [index, status] of (["unsubscribed", "pending_confirmation", "disabled"] as const).entries()) {
+      const hook = await w.hook({ hookId: `hk_${String(index + 3).repeat(26)}`, status });
+      expect((await w.receive(w.delivery(hook, bodyOf(w, "e1")))).status, status).toBe(403);
+    }
+  });
+
+  it("counts requests with no source address together, and addresses cut at 64 characters as one", async () => {
+    const { w, hook } = await linear();
+    const nobody = { source: "linear", hookId: `hk_${"7".repeat(26)}` };
+    for (let index = 0; index < HOOK_PRE_VERIFY_PER_IP_PER_MINUTE; index += 1) await w.receive({ ...w.delivery(nobody, bodyOf(w, "x")), sourceIp: undefined });
+    expect((await w.receive({ ...w.delivery(hook, bodyOf(w, "e1")), sourceIp: undefined })).status).toBe(429);
+    const long = "a".repeat(64);
+    for (let index = 0; index < HOOK_PRE_VERIFY_PER_IP_PER_MINUTE; index += 1) await w.receive(w.delivery(nobody, bodyOf(w, "x"), { ip: `${long}${String(index % 10)}` }));
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "e2"), { ip: `${long}z` }))).status).toBe(429);
+  });
+});
+
+describe("what the secret cache and the checks may not do", () => {
+  it("reads the secret again after five minutes, so a secret that was replaced is the only one believed", async () => {
+    const { w, hook } = await linear();
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "a")))).status).toBe(202);
+    w.secrets.values.set(`${ORG_A}|${hook.hookId}`, JSON.stringify({ current: SECRET_2 }));
+    w.clock.now += 6 * 60_000;
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "b"), { secret: SECRET_1 }))).status).toBe(403);
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "c"), { secret: SECRET_2 }))).status).toBe(202);
+  });
+
+  it("forgets a secret that is gone: a signature of the old secret is not believed from a copy kept while the gate is tripped", async () => {
+    const { w, hook } = await linear();
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "a")))).status).toBe(202);
+    w.secrets.values.delete(`${ORG_A}|${hook.hookId}`);
+    w.clock.now += 6 * 60_000;
+    for (let index = 0; index < HOOK_FAILED_VERIFY_PER_MINUTE; index += 1) await w.receive(w.delivery(hook, bodyOf(w, `f${String(index)}`), { secret: SECRET_2 }));
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "late")))).status).toBe(403);
+  });
+
+  it("counts a failed read of the secret toward the gate, which then stops the reads", async () => {
+    const { w, hook } = await linear();
+    w.secrets.failReads = new Error("secrets are down");
+    for (let index = 0; index < HOOK_FAILED_VERIFY_PER_MINUTE; index += 1) expect((await w.receive(w.delivery(hook, bodyOf(w, `f${String(index)}`)))).status).toBe(503);
+    expect(w.secrets.reads).toBe(HOOK_FAILED_VERIFY_PER_MINUTE);
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "next")))).status).toBe(403);
+    expect(w.secrets.reads).toBe(HOOK_FAILED_VERIFY_PER_MINUTE);
+  });
+
+  it("checks a delivery again after it re-reads the secret, and refuses a forged one that the re-read does not change", async () => {
+    const { w, hook } = await linear();
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "a")))).status).toBe(202);
+    w.clock.now += 31 * SECOND;
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "forged"), { secret: SECRET_2 }))).status).toBe(403);
+    expect(w.secrets.reads).toBe(2);
+    expect(w.dispatched).toHaveLength(1);
+  });
+
+  it("treats a provider that throws as a refusal, and tries both secrets every time", async () => {
+    const w = setupHookWorld();
+    const hook = await w.hook({ secretJson: JSON.stringify({ current: SECRET_2, previous: SECRET_1, previousValidUntil: iso(T0 + 24 * HOUR) }) });
+    const provider = w.providers.linear!;
+    let calls = 0;
+    w.providers.linear = { ...provider, verify: (...args) => { calls += 1; return provider.verify(...args); } };
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "a"), { secret: SECRET_2 }))).status).toBe(202);
+    expect(calls).toBe(2);
+    w.providers.linear = { ...provider, verify: () => { throw new Error("broken"); } };
+    expect(await w.receive(w.delivery(hook, bodyOf(w, "b"), { secret: SECRET_2 }))).toEqual({ status: 403, body: FORBIDDEN });
+  });
+
+  it("refuses a validly signed body whose bytes are not UTF-8 even where the JSON would otherwise read", async () => {
+    const { w, hook } = await linear();
+    const raw = Buffer.concat([Buffer.from(`{"id":"e1","tenant":${JSON.stringify(LINEAR_TENANT)},"occurredAt":"${iso(w.clock.now)}","note":"`), Buffer.from([0xff]), Buffer.from('"}')]);
+    expect(await w.receive(w.delivery(hook, "", { raw }))).toEqual({ status: 403, body: FORBIDDEN });
+  });
+
+  it("answers 503, not a refusal or a count, when the table fails for a verified delivery, and keeps the minute's count and the de-duplication item exact", async () => {
+    const { w, hook } = await linear();
+    w.db.injectFault({ command: "UpdateCommand", error: { name: "InternalServerError" } });
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "a")))).status).toBe(503);
+    w.db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" } });
+    expect((await w.receive(w.delivery(hook, bodyOf(w, "b")))).status).toBe(503);
+    expect(w.dispatched).toEqual([]);
+    const reply = await w.receive(w.delivery(hook, bodyOf(w, "c")));
+    expect(reply.status).toBe(202);
+    const rate = w.db.get(hookRateKey(ORG_A, hook.hookId, iso(w.clock.now).slice(0, 16)))!;
+    expect(rate["indexExpiresAt"]).toBe(Math.floor(w.clock.now / 1000) + 600);
+  });
+
+  it("writes its de-duplication items under the org the hook belongs to", async () => {
+    const { w, hook } = await linear();
+    await w.receive(w.delivery(hook, bodyOf(w, "e1")));
+    const items = w.db.find((item) => String(item["pk"]).includes("HOOK_EVENT#"));
+    expect(items.map((item) => item["pk"])).toEqual([hookEventKey(ORG_A, hook.hookId, "test:e1").pk]);
+    expect(items[0]!["orgId"]).toBe(ORG_A);
   });
 });

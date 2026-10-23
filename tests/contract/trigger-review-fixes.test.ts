@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
 import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { builtinTriggerIdFor } from "../../packages/broker/src/triggers/routes.js";
+import { closeTriggerEnableApproval } from "../../packages/broker/src/triggers/lifecycle.js";
 import { ownerQualifies, triggerProblems } from "../../packages/broker/src/triggers/requirements.js";
-import { CARL, DANA, MAX, ORG_A, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
+import { CARL, DANA, MAX, ORG_A, PRIYA, disposeGateWorlds, rid, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 
 afterEach(disposeGateWorlds);
 
@@ -55,6 +56,18 @@ describe("I-2: a built-in's trigger id is the built-in's", () => {
     expect(rows.find((row) => row["agentId"] === "code-reviewer" && row["index"] === 0)).not.toHaveProperty("triggerId");
     expect(JSON.stringify(rows)).not.toContain(foreign.triggerId);
     expect(JSON.stringify(rows)).not.toContain(otherProject.triggerId);
+  });
+});
+
+describe("I-2: a record of another project under the id is not this project's row", () => {
+  it("is refused by the switch and hidden from its row", async () => {
+    const v = setupTriggerWorld();
+    await v.builtinBudget("code-reviewer");
+    const id = builtinTriggerIdFor(ORG_A, "web", "code-reviewer", 0);
+    await v.triggers.create({ record: { orgId: ORG_A, triggerId: id, target: { kind: "agent", agentId: "code-reviewer" }, project: "api", spec: TriggerSpecSchema.parse(PR_OPENED) as never, enabled: true, maxRunsPerHour: 30, createdBy: DANA } });
+    expect((await v.agentCall(MAX, "PUT", "/v1/app/projects/web/builtin-triggers/code-reviewer/0", { enabled: false })).status).toBe(400);
+    const rows = (await v.agentCall(MAX, "GET", "/v1/app/projects/web/builtin-triggers")).body["triggers"] as Array<Record<string, unknown>>;
+    expect(rows.find((row) => row["agentId"] === "code-reviewer")).toMatchObject({ enabled: false });
   });
 });
 
@@ -112,6 +125,31 @@ describe("I-3 and M-3: a request to turn a trigger on dies with the state it was
     expect((await stored(v, ID("a"))).enabled).toBe(false);
   });
 
+  it("clears the pending request from the trigger when it is confirmed, and answers a repeat of a closed request as closed", async () => {
+    const { v, path } = await projectChain();
+    const requestId = rid();
+    const asked = await v.chainCall(DANA, "PUT", path, { requestId, project: "web", spec: PR_OPENED });
+    expect((await stored(v, ID("a"))).pendingApprovalId).toBe(approvalOf(asked));
+    await v.chainCall(DANA, "PUT", path, { project: "web", spec: PR_OPENED, enabled: false });
+    expect((await stored(v, ID("a"))).pendingApprovalId).toBeUndefined();
+    expect(await v.chainCall(DANA, "PUT", path, { requestId, project: "web", spec: PR_OPENED })).toMatchObject({ status: 409, body: { code: "APPROVAL_CLOSED" } });
+    const again = await v.chainCall(DANA, "PUT", path, { project: "web", spec: PR_OPENED, enabled: true });
+    expect(await confirmed(v, DANA, approvalOf(again))).toBe("went through");
+    expect(await stored(v, ID("a"))).toMatchObject({ enabled: true });
+    expect((await stored(v, ID("a"))).pendingApprovalId).toBeUndefined();
+  });
+
+  it("closes only a pending request that is this trigger's own", async () => {
+    const { v, path } = await projectChain();
+    const asked = await v.chainCall(DANA, "PUT", path, { project: "web", spec: PR_OPENED });
+    const deps = v.routeDeps;
+    expect(await closeTriggerEnableApproval(deps, ORG_A, ID("b"), approvalOf(asked), "x")).toBe(false);
+    expect(await closeTriggerEnableApproval(deps, ORG_A, ID("a"), "not-an-approval", "x")).toBe(false);
+    expect((await v.approval(approvalOf(asked))).status).toBe("PENDING");
+    expect(await closeTriggerEnableApproval(deps, ORG_A, ID("a"), approvalOf(asked), "x")).toBe(true);
+    expect(await closeTriggerEnableApproval(deps, ORG_A, ID("a"), approvalOf(asked), "x")).toBe(false);
+  });
+
   it("still finishes a confirmation that was applied and told again", async () => {
     const { v, path } = await projectChain();
     const asked = await v.chainCall(DANA, "PUT", path, { project: "web", spec: PR_OPENED });
@@ -134,6 +172,15 @@ describe("M-1: the owner of a custom agent's trigger must still be able to use t
     expect((await v.agentCall(DANA, "PUT", `/v1/app/agents/${agent.agentId}/shares`, { shares: [{ principal: { kind: "member", developerId: CARL }, level: "use" }] })).status).toBe(200);
     expect(await triggerProblems(v.routeDeps, trigger)).toEqual([]);
     expect(await ownerQualifies(v.routeDeps, trigger, CARL)).toBe(true);
+  });
+
+  it("wants `use`, not `view`", async () => {
+    const v = setupTriggerWorld();
+    const agent = await v.triggerAgent("Triage bot", [{ kind: "person" }, ISSUE], { budgetUsd: 20, owner: DANA });
+    const trigger = await v.seed({ target: { kind: "agent", agentId: agent.agentId }, createdBy: CARL, spec: TriggerSpecSchema.parse(ISSUE) as never });
+    await v.agentCall(DANA, "PUT", `/v1/app/agents/${agent.agentId}/shares`, { shares: [{ principal: { kind: "member", developerId: CARL }, level: "view" }] });
+    expect((await triggerProblems(v.routeDeps, trigger)).map((problem) => problem.path)).toContain("createdBy");
+    expect(await ownerQualifies(v.routeDeps, trigger, CARL)).toBe(false);
   });
 
   it("asks nothing of a built-in, which everyone may use", async () => {
