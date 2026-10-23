@@ -14,13 +14,16 @@ import {
   WorkflowThreadNoteSchema,
   agentSessionKey,
   sessionEventId,
+  endedSessionWorkKey,
+  sessionQueuedSteersKey,
   sessionRateKey,
   type AgentSessionRecord,
 } from "../../packages/contracts/src/index.js";
 import { sendSessionMessage, editSessionMessage, deleteSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
-import { deliverSteer, settleSteerDeliveries, settleSteerDeliveriesFor } from "../../packages/broker/src/agent-sessions/steer.js";
+import { closeQueuedSteers, settleSteerDeliveries, settleSteerDeliveriesFor } from "../../packages/broker/src/agent-sessions/steer.js";
 import { projectSessions } from "../../packages/broker/src/agent-sessions/projector.js";
 import { marshall } from "@aws-sdk/util-dynamodb";
+import { drainEndedSessions } from "../../packages/broker/src/agent-sessions/sweep.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { classifyWrite, type ClassifyWriteInput } from "../../packages/broker/src/agents/write-class.js";
 import { readWorkflowThreadNotes, recordSessionNote, recordWorkflowThreadNote, threadNotesPromptSection } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -82,7 +85,9 @@ function steerWorld(options: { realtime?: boolean; workflow?: boolean; kind?: "t
   const messageItems = () => w.db.find((item) => item.pk === metaKey.pk && /^MESSAGE#msg_/.test(String(item.sk)));
   const events = () => w.db.find((item) => item.pk === metaKey.pk && String(item.sk).startsWith("EVENT#")).sort((a, b) => String(a.sk).localeCompare(String(b.sk)));
   const everything = () => JSON.stringify(w.db.find(() => true));
-  return { w, deps, logs, published, made, sid, metaKey, session, send, task, notes, messageItems, events, everything };
+  /** How many messages to the agent the session counts as still queued. */
+  const queued = () => Number((w.db.get(sessionQueuedSteersKey(ORG_A, sid)) as { count?: number } | undefined)?.count ?? 0);
+  return { w, deps, logs, published, made, sid, metaKey, session, send, task, notes, messageItems, events, everything, queued };
 }
 
 describe("a message to the agent on a Rovara Code workflow task", () => {
@@ -111,15 +116,18 @@ describe("a message to the agent on a Rovara Code workflow task", () => {
     expect(f.events().filter((item) => item.type === "steer_delivered" || item.type === "steer_not_delivered")).toHaveLength(0);
   });
 
-  it("commits the message, its request item, rates, count and event in one transaction, the event last, then the note in its own", async () => {
+  it("commits the message, its note, the task's count, the queued count, its request item, rates, count and event in ONE transaction, the event last", async () => {
     const f = steerWorld();
-    await f.send(ARJUN, "use the v2 endpoint");
+    const message = await f.send(ARJUN, "use the v2 endpoint");
     const transactions = f.w.db.transactions();
-    expect(transactions).toHaveLength(2);
-    const [first, second] = transactions as [Array<Record<string, unknown>>, Array<Record<string, unknown>>];
-    expect(String(((first.at(-1)!.Put as { Item: Item }).Item).sk)).toMatch(/^EVENT#/);
-    expect(first.some((entry) => entry.Put !== undefined && String(((entry.Put as { Item: Item }).Item).sk).startsWith("MESSAGE#msg_"))).toBe(true);
-    expect(JSON.stringify(second)).toContain("NOTE#msg_");
+    expect(transactions).toHaveLength(1);
+    const [only] = transactions as [Array<Record<string, unknown>>];
+    expect(only).toHaveLength(10);
+    expect(String(((only.at(-1)!.Put as { Item: Item }).Item).sk)).toMatch(/^EVENT#/);
+    expect(only.some((entry) => entry.Put !== undefined && String(((entry.Put as { Item: Item }).Item).sk) === `MESSAGE#${message.messageId}`)).toBe(true);
+    expect(only.some((entry) => entry.Put !== undefined && String(((entry.Put as { Item: Item }).Item).sk) === `NOTE#${message.messageId}`)).toBe(true);
+    expect(only.some((entry) => JSON.stringify(entry).includes("threadNoteCount"))).toBe(true);
+    expect(f.queued()).toBe(1);
     expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "steer"))).toMatchObject({ count: 1 });
     expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, "session", "steer_all"))).toMatchObject({ count: 1 });
   });
@@ -139,23 +147,25 @@ describe("a message to the agent on a Rovara Code workflow task", () => {
     expect(await code(sendSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, { requestId, kind: "comment", text: "use the v2 endpoint" }))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   });
 
-  it("finishes the delivery of a message whose note was lost to a crash when the same request is sent again, once", async () => {
+  it("saves nothing when its transaction does not commit, so no message is ever left without its note; the same request then saves everything once", async () => {
     const f = steerWorld();
     const requestId = randomUUID();
-    // The message commits; the note's transaction then fails (the process died, or the table was busy).
-    f.w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("WORKFLOW_THREAD_NOTE"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "None" }, { Code: "TransactionConflict" }] }, times: 3 });
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] }, times: 4 });
     expect(await code(f.send(ARJUN, "use the v2 endpoint", { requestId }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-    expect(f.messageItems()).toHaveLength(1);
-    expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "queued" } });
-    expect(f.notes()).toHaveLength(0);
+    for (const nothing of [f.messageItems(), f.notes(), f.events()]) expect(nothing).toHaveLength(0);
+    expect(f.task()).not.toHaveProperty("threadNoteCount");
+    expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "steer"))).toBeUndefined();
+    expect(f.queued()).toBe(0);
     const again = await f.send(ARJUN, "use the v2 endpoint", { requestId });
-    expect(again.messageId).toBe(f.messageItems()[0]!.messageId);
+    expect(again).toMatchObject({ delivery: { state: "queued" } });
+    expect(f.messageItems()).toHaveLength(1);
     expect(f.notes()).toHaveLength(1);
     expect(f.task()).toMatchObject({ threadNoteCount: 1 });
+    expect(f.queued()).toBe(1);
     // And a third time changes nothing.
     await f.send(ARJUN, "use the v2 endpoint", { requestId });
     expect(f.notes()).toHaveLength(1);
-    expect(f.task()).toMatchObject({ threadNoteCount: 1 });
+    expect(f.queued()).toBe(1);
     expect(f.events().filter((item) => item.type === "steer")).toHaveLength(1);
   });
 
@@ -182,13 +192,11 @@ describe("a message to the agent on a Rovara Code workflow task", () => {
     expect(JSON.stringify(f.logs)).not.toContain(TOKEN);
   });
 
-  it("writes no log line holding the message when the write fails, and never fails the message over its event", async () => {
+  it("saves nothing and logs nothing of the message when the write fails for any other reason", async () => {
     const f = steerWorld();
-    f.w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("NOTE#msg_"), error: { name: "InternalServerError", message: "use the v2 endpoint failed" }, times: 10 });
-    const refused = await code(f.send(ARJUN, "use the v2 endpoint"));
-    expect(refused).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "Your message was saved but is not with the agent yet. Send it again to finish." });
-    // The failure was logged (so the check below means something), with the ids and the error's name, and none of the message or the error's words.
-    expect(f.logs).toContainEqual({ event: "agent_session.steer_delivery_failed", orgId: ORG_A, sessionId: f.sid, messageId: String(f.messageItems()[0]!.messageId), error: "InternalServerError" });
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError", message: "use the v2 endpoint failed" }, times: 10 });
+    expect(await code(f.send(ARJUN, "use the v2 endpoint"))).toMatchObject({ code: undefined });
+    for (const nothing of [f.messageItems(), f.notes(), f.events()]) expect(nothing).toHaveLength(0);
     expect(JSON.stringify(f.logs)).not.toContain("v2 endpoint");
   });
 
@@ -441,16 +449,66 @@ describe("a task that cannot take a message", () => {
     expect(reply).toEqual({ outcome: "refused" });
   });
 
-  it("marks a message not delivered when the task closed between the check and the note", async () => {
+  it("refuses with SESSION_ENDED, writing nothing, when the task closed between the check and the write", async () => {
     const f = steerWorld();
     let done = false;
-    const racing = { send: async (command: { constructor: { name: string }; input?: { TransactItems?: unknown[] } }) => {
-      if (!done && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("NOTE#msg_")) { done = true; f.w.db.set({ ...f.task(), closedAt: "2026-10-22T09:00:01.000Z" }); }
+    const racing = { send: async (command: { constructor: { name: string } }) => {
+      if (!done && command.constructor.name === "TransactWriteCommand") { done = true; f.w.db.set({ ...f.task(), closedAt: "2026-10-22T09:00:01.000Z" }); }
       return f.w.db.send(command as never);
     } };
-    const message = await sendSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "steer", text: "just in time" });
-    expect(message.delivery).toMatchObject({ state: "not_delivered", reason: "the task has ended" });
+    expect(await code(sendSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "steer", text: "just in time" }))).toEqual({ code: "SESSION_ENDED", message: ENDED_TEXT });
+    for (const nothing of [f.messageItems(), f.notes()]) expect(nothing).toHaveLength(0);
+    expect(f.queued()).toBe(0);
+  });
+
+  it("refuses with SESSION_ENDED, writing nothing, when the session ended after it was read: a message is never queued into an ended session", async () => {
+    const f = steerWorld();
+    let done = false;
+    const racing = { send: async (command: { constructor: { name: string } }) => {
+      if (!done && command.constructor.name === "TransactWriteCommand") { done = true; f.w.db.set({ ...f.w.db.get(f.metaKey)!, endedAt: "2026-10-22T09:00:01.000Z" }); }
+      return f.w.db.send(command as never);
+    } };
+    expect(await code(sendSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "steer", text: "just in time" }))).toEqual({ code: "SESSION_ENDED", message: ENDED_TEXT });
+    for (const nothing of [f.messageItems(), f.notes(), f.events()]) expect(nothing).toHaveLength(0);
+    expect(f.queued()).toBe(0);
+    // A session that is gone is not an ended one.
+    const gone = steerWorld();
+    let removed = false;
+    const vanishing = { send: async (command: { constructor: { name: string } }) => {
+      if (!removed && command.constructor.name === "TransactWriteCommand") { removed = true; gone.w.db.delete(gone.metaKey); }
+      return gone.w.db.send(command as never);
+    } };
+    expect(await code(sendSessionMessage({ ...gone.deps, documentClient: vanishing }, gone.w.caller(ARJUN), gone.sid, { requestId: randomUUID(), kind: "steer", text: "hello" }))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("falls back to a message that is not delivered, in the same single transaction, when the task fills up between the check and the write", async () => {
+    const f = steerWorld({ agentName: "Rovara Code" });
+    let done = false;
+    const racing = { send: async (command: { constructor: { name: string } }) => {
+      if (!done && command.constructor.name === "TransactWriteCommand") { done = true; f.w.db.set({ ...f.task(), threadNoteCount: WORKFLOW_THREAD_NOTES_MAX }); }
+      return f.w.db.send(command as never);
+    } };
+    const message = await sendSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "steer", text: "no place left" });
+    expect(message.delivery).toMatchObject({ state: "not_delivered", reason: CAP_REASON });
+    expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "not_delivered", reason: CAP_REASON } });
     expect(f.notes()).toHaveLength(0);
+    expect(f.queued()).toBe(0);
+    expect(f.events().map((item) => item.type)).toEqual(["steer", "steer_not_delivered"]);
+    expect(f.w.db.get(sessionRateKey(ORG_A, f.sid, ARJUN, "steer"))).toMatchObject({ count: 1 });
+  });
+
+  it("stamps the note after the mark of a step that took notes meanwhile, so the next step reads it", async () => {
+    const f = steerWorld();
+    const mark = new Date(T0 + 60_000).toISOString();
+    let done = false;
+    const racing = { send: async (command: { constructor: { name: string } }) => {
+      if (!done && command.constructor.name === "TransactWriteCommand") { done = true; f.w.db.set({ ...f.task(), threadNotesFedThrough: mark }); }
+      return f.w.db.send(command as never);
+    } };
+    const message = await sendSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "steer", text: "after the mark" });
+    expect(message.delivery).toMatchObject({ state: "queued" });
+    expect((f.notes()[0] as { receivedAt: string }).receivedAt > mark).toBe(true);
+    expect(f.notes()).toHaveLength(1);
   });
 });
 
@@ -465,8 +523,10 @@ describe("a message to a chain", () => {
     const { f, calls } = chain({ kind: "gate" });
     const message = await f.send(MAX, "hold on");
     expect(message.delivery).toMatchObject({ state: "not_delivered", reason: GATE_REASON });
-    // Asked before the message is written and again to deliver it, each time for this chain run of this org.
-    expect(calls).toEqual([{ orgId: ORG_A, chainRunId: f.sid }, { orgId: ORG_A, chainRunId: f.sid }]);
+    // Asked once, before the message is written (it is written with its answer, in one transaction), for this chain run of this org.
+    expect(calls).toEqual([{ orgId: ORG_A, chainRunId: f.sid }]);
+    expect(f.w.db.transactions()).toHaveLength(1);
+    expect(f.queued()).toBe(0);
     expect(f.events().find((item) => item.type === "steer_not_delivered")).toMatchObject({ text: `The agent can't take messages right now: ${GATE_REASON}.` });
   });
 
@@ -602,28 +662,83 @@ describe("telling the session that a step took a message", () => {
     expect(f.events().filter((item) => item.type === "steer_delivered")).toHaveLength(1);
   });
 
-  it("leaves a message whose note is saved as it is when the session ends, and marks one with no note not delivered", async () => {
-    const f = steerWorld();
-    const message = await f.send(ARJUN, "use the v2 endpoint");
+  it("marks a queued message not delivered when the session ends before any step read its note, but not one a step took", async () => {
+    const f = steerWorld({ agentName: "Rovara Code" });
+    const taken = await f.send(ARJUN, "taken");
+    f.w.clock.now += 10_000;
+    const left = await f.send(PRIYA, "left behind");
+    const takenNote = f.w.db.get({ pk: `DEVTASK#${f.made.taskId}`, sk: `NOTE#${taken.messageId}` }) as { receivedAt: string };
+    f.w.db.set({ ...f.task(), threadNotesFedThrough: takenNote.receivedAt });
     f.w.db.set({ ...f.w.db.get(f.metaKey)!, endedAt: "2026-10-22T09:30:00.000Z" });
-    expect((await deliverSteer(f.deps, f.session(), message, { isOwner: false })).delivery).toMatchObject({ state: "queued" });
-    // A queued message with no note (its first try died before the note) is told it was not delivered when the session has ended.
-    f.w.db.delete({ pk: `DEVTASK#${f.made.taskId}`, sk: `NOTE#${message.messageId}` });
-    const answered = await deliverSteer(f.deps, f.session(), message, { isOwner: false });
-    expect(answered.delivery).toMatchObject({ state: "not_delivered", reason: "the session has ended" });
-    expect(f.events().find((item) => item.type === "steer_not_delivered")).toMatchObject({ text: "The agent can't take messages right now: the session has ended." });
+    f.w.clock.now += 5_000;
+    // Not an ended session: nothing is closed.
+    expect(await closeQueuedSteers(f.deps, { ...f.session(), endedAt: undefined } as never)).toBe(0);
+    await settleSteerDeliveries(f.deps, f.session());
+    expect(await closeQueuedSteers(f.deps, f.session())).toBe(1);
+    const state = (id: string) => (f.w.db.get(agentSessionKey(ORG_A, f.sid, `MESSAGE#${id}`)) as { delivery: Record<string, unknown> }).delivery;
+    expect(state(taken.messageId)).toMatchObject({ state: "delivered" });
+    expect(state(left.messageId)).toEqual({ state: "not_delivered", at: new Date(f.w.clock.now).toISOString(), reason: "the session has ended" });
+    expect(f.events().find((item) => item.type === "steer_not_delivered")).toMatchObject({ eventId: sessionEventId("steer_not_delivered", left.messageId), text: "Rovara Code can't take messages right now: the session has ended.", messageId: left.messageId });
+    expect(f.queued()).toBe(0);
+    // Again: nothing to do, nothing written.
+    const before = f.w.db.commandNames().length;
+    expect(await closeQueuedSteers(f.deps, f.session())).toBe(0);
+    expect(f.w.db.commandNames().slice(before).filter((name) => ["TransactWriteCommand", "UpdateCommand", "PutCommand"].includes(name))).toEqual([]);
   });
 
-  it("answers nothing twice: a message already answered is left as it is, and a lost race for the answer returns what is stored", async () => {
-    const f = steerWorld({ workflow: false });
-    const first = await f.send(ARJUN, "hello");
-    expect(first.delivery).toMatchObject({ state: "not_delivered" });
-    // Delivering it again, from the queued copy a slow caller still holds, writes nothing new.
-    const stale = { ...first, delivery: { state: "queued" as const, at: first.createdAt } };
-    const before = f.events().length;
-    expect(await deliverSteer(f.deps, f.session(), stale, { isOwner: false })).toMatchObject({ delivery: { state: "not_delivered", reason: PLAIN_REASON } });
-    expect(f.events()).toHaveLength(before);
-    expect(await deliverSteer(f.deps, f.session(), first, { isOwner: false })).toEqual(first);
+  it("closes queued messages of an ended session only when the session counts some, and never touches comments, answered messages or another session's", async () => {
+    const f = steerWorld({ ended: true });
+    const queries = () => f.w.db.commandNames().filter((name) => name === "QueryCommand").length;
+    const before = queries();
+    expect(await closeQueuedSteers(f.deps, f.session())).toBe(0);
+    expect(queries()).toBe(before);
+    const at = new Date(T0).toISOString();
+    const put = (messageId: string, fields: Item) => f.w.db.set({ ...agentSessionKey(ORG_A, f.sid, `MESSAGE#${messageId}`), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: f.sid, messageId, source: "app", author: { developerId: ARJUN, name: "Arjun" }, text: "x", createdAt: at, rev: 1, ...fields });
+    put("msg_00000000000000000001", { kind: "comment" });
+    put("msg_00000000000000000002", { kind: "steer", delivery: { state: "delivered", at } });
+    put("msg_00000000000000000003", { kind: "steer", delivery: { state: "not_delivered", at, reason: "x" } });
+    put("msg_00000000000000000004", { kind: "steer", delivery: { state: "queued", at } });
+    f.w.db.set({ ...sessionQueuedSteersKey(ORG_A, f.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: f.sid, count: 1 });
+    expect(await closeQueuedSteers(f.deps, f.session())).toBe(1);
+    expect(f.messageItems().map((item) => [item.messageId, (item.delivery as { state: string } | undefined)?.state])).toEqual([
+      ["msg_00000000000000000001", undefined], ["msg_00000000000000000002", "delivered"], ["msg_00000000000000000003", "not_delivered"], ["msg_00000000000000000004", "not_delivered"],
+    ]);
+    expect(f.queued()).toBe(0);
+  });
+
+  it("closes at most 100 queued messages of an ended session at a time, and the rest on the next look", async () => {
+    const f = steerWorld({ ended: true });
+    const at = new Date(T0).toISOString();
+    for (let n = 0; n < 130; n += 1) {
+      const messageId = `msg_${String(n).padStart(20, "0")}`;
+      f.w.db.set({ ...agentSessionKey(ORG_A, f.sid, `MESSAGE#${messageId}`), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: f.sid, messageId, kind: "steer", source: "app", author: { developerId: ARJUN, name: "Arjun" }, text: "x", createdAt: at, rev: 1, delivery: { state: "queued", at } });
+    }
+    f.w.db.set({ ...sessionQueuedSteersKey(ORG_A, f.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: f.sid, count: 130 });
+    expect(await closeQueuedSteers(f.deps, f.session())).toBe(100);
+    expect(f.queued()).toBe(30);
+    expect(await closeQueuedSteers(f.deps, f.session())).toBe(30);
+    expect(f.queued()).toBe(0);
+  });
+
+  it("closes them when the task's end is told to the session, and again from the retention drain if that was missed", async () => {
+    const f = steerWorld({ agentName: "Rovara Code" });
+    const message = await f.send(ARJUN, "use the v2 endpoint");
+    // The task ends: its session is refreshed (the end handler, the stream and the sweep all do this), and the message is told it was not delivered.
+    f.w.db.set({ ...f.task(), closedAt: "2026-10-22T09:30:00.000Z" });
+    f.w.clock.now += 60_000;
+    await refreshSessionSummary({ documentClient: f.w.db, tableName: "state", now: () => f.w.clock.now, log: (entry) => f.logs.push(entry) }, ORG_A, f.sid);
+    expect(f.session().endedAt).toBeDefined();
+    expect(f.messageItems()[0]).toMatchObject({ messageId: message.messageId, delivery: { state: "not_delivered", reason: "the session has ended" } });
+    expect(f.queued()).toBe(0);
+    // The drain is the backstop: a session whose end refresh could not close its messages has them closed when its retention is drained.
+    const g = steerWorld({ ended: true });
+    const at = new Date(T0).toISOString();
+    g.w.db.set({ ...agentSessionKey(ORG_A, g.sid, "MESSAGE#msg_00000000000000000001"), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: g.sid, messageId: "msg_00000000000000000001", kind: "steer", source: "app", author: { developerId: ARJUN, name: "Arjun" }, text: "x", createdAt: at, rev: 1, delivery: { state: "queued", at } });
+    g.w.db.set({ ...sessionQueuedSteersKey(ORG_A, g.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: g.sid, count: 1 });
+    g.w.db.set({ ...endedSessionWorkKey("2026-10-22", ORG_A, g.sid), entityType: "ENDED_AGENT_SESSION", orgId: ORG_A, sessionId: g.sid });
+    await drainEndedSessions({ documentClient: g.w.db, tableName: "state", now: () => Date.parse("2026-10-23T09:00:00.000Z"), log: () => undefined }, Date.parse("2026-10-23T09:00:00.000Z"));
+    expect(g.messageItems()[0]).toMatchObject({ delivery: { state: "not_delivered", reason: "the session has ended" } });
+    expect(g.queued()).toBe(0);
   });
 
   it("ignores a note of another session or another org's task, and a task that is not the session's", async () => {
@@ -786,92 +901,74 @@ describe("the edges of a message's route", () => {
     expect(f.events().filter((item) => item.type === "steer").map((item) => item.source).sort()).toEqual(["app", "linear"]);
   });
 
-  it("tells the open pages again when a message could not be given to the agent, and only then", async () => {
+  it("tells the open pages once for a message, whether it was queued or could not be given to the agent (one commit, one notice)", async () => {
     const queued = steerWorld({ realtime: true });
     await queued.send(ARJUN, "use v2");
     expect(queued.published).toHaveLength(1);
     const refused = steerWorld({ realtime: true, workflow: false });
     await refused.send(ARJUN, "use v2");
-    expect(refused.published).toHaveLength(2);
-    expect(new Set(refused.published.map((entry) => entry.channel)).size).toBe(1);
+    expect(refused.published).toHaveLength(1);
   });
 
-  it("keeps a message queued, with the words of the refusal, when the task became an agent run before it was delivered", async () => {
-    const f = steerWorld();
-    const requestId = randomUUID();
-    f.w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("NOTE#msg_"), error: { name: "InternalServerError" }, times: 1 });
-    await code(f.send(ARJUN, "use v2", { requestId }));
-    f.w.db.set({ ...f.task(), workflow: undefined, agent: { agentId: "ticket-triage", name: "Ticket triage", version: 1 } });
-    expect(await code(f.send(ARJUN, "use v2", { requestId }))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "Messages to this kind of session aren't available yet." });
-    expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "queued" } });
-    expect(f.notes()).toHaveLength(0);
-  });
-
-  it("does nothing for a message that is not queued, or is a comment", async () => {
-    const f = steerWorld({ workflow: false });
-    const first = await f.send(ARJUN, "hello");
-    const comment = await sendSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, { requestId: randomUUID(), kind: "comment", text: "hi" });
-    const before = f.w.db.commandNames().length;
-    const transactions = f.w.db.transactions().length;
-    expect(await deliverSteer(f.deps, f.session(), first, { isOwner: false })).toEqual(first);
-    expect(await deliverSteer(f.deps, f.session(), comment, { isOwner: false })).toEqual(comment);
-    const queuedLooking = { ...comment, kind: "steer" as const };
-    expect(await deliverSteer(f.deps, f.session(), queuedLooking, { isOwner: false })).toEqual(queuedLooking);
-    expect(f.w.db.commandNames().slice(before)).toEqual([]);
-    expect(f.w.db.transactions()).toHaveLength(transactions);
-  });
-
-  it("finishes the answer when only its event was recorded already, for both answers", async () => {
-    for (const plain of [true, false]) {
-      const f = steerWorld({ workflow: plain ? false : undefined as never });
-      if (plain) {
-        const requestId = randomUUID();
-        // The event of the answer is there already (a crash after it was written alone).
-        const first = await f.send(ARJUN, "hello", { requestId });
-        f.w.db.set({ ...f.w.db.get(agentSessionKey(ORG_A, f.sid, `MESSAGE#${first.messageId}`))!, delivery: { state: "queued", at: first.createdAt } });
-        expect(await f.send(ARJUN, "hello", { requestId })).toMatchObject({ delivery: { state: "not_delivered" } });
-        expect(f.events().filter((item) => item.type === "steer_not_delivered")).toHaveLength(1);
-      } else {
-        const { message, note } = await (async () => { const m = await f.send(ARJUN, "hello"); return { message: m, note: f.w.db.get({ pk: `DEVTASK#${f.made.taskId}`, sk: `NOTE#${m.messageId}` }) as { receivedAt: string } }; })();
-        f.w.db.set({ ...f.task(), threadNotesFedThrough: note.receivedAt });
-        await settleSteerDeliveries(f.deps, f.session());
-        f.w.db.set({ ...f.w.db.get(agentSessionKey(ORG_A, f.sid, `MESSAGE#${message.messageId}`))!, delivery: { state: "queued", at: message.createdAt } });
-        const { settledAt: _settled, ...unsettled } = f.w.db.get({ pk: `DEVTASK#${f.made.taskId}`, sk: `NOTE#${message.messageId}` })!;
-        void _settled;
-        f.w.db.set(unsettled);
-        expect(await settleSteerDeliveries(f.deps, f.session())).toBe(1);
-        expect(f.events().filter((item) => item.type === "steer_delivered")).toHaveLength(1);
-      }
+  it("writes the message without an event that is recorded already, never failing the message over an event: one, the other or both", async () => {
+    // A task that cannot take it: the message, then the "sent" event, then the "not delivered" event are the last three of eight items.
+    for (const [failedEvents, events] of [[[6], ["steer_not_delivered"]], [[7], ["steer"]], [[6, 7], []]] as Array<[number[], string[]]>) {
+      const f = steerWorld({ workflow: false });
+      f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: Array.from({ length: 8 }, (_, index) => ({ Code: failedEvents.includes(index) ? "ConditionalCheckFailed" : "None" })) }, times: 1 });
+      const message = await f.send(ARJUN, "hello");
+      expect(message.delivery).toMatchObject({ state: "not_delivered", reason: PLAIN_REASON });
+      expect(f.messageItems()).toHaveLength(1);
+      expect(f.events().map((item) => item.type)).toEqual(events);
     }
+    // A queued message: its one event.
+    const g = steerWorld();
+    g.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: Array.from({ length: 10 }, (_, index) => ({ Code: index === 9 ? "ConditionalCheckFailed" : "None" })) }, times: 1 });
+    expect((await g.send(ARJUN, "hello")).delivery).toMatchObject({ state: "queued" });
+    expect(g.notes()).toHaveLength(1);
+    expect(g.events()).toHaveLength(0);
+    expect(g.queued()).toBe(1);
   });
 
-  it("does not hide a conflict with another writer behind an answer: the caller is told to try again", async () => {
+  it("settles a note and answers its message once more when only the answer's event was recorded already", async () => {
+    const f = steerWorld();
+    const { message, note } = await (async () => { const m = await f.send(ARJUN, "hello"); return { message: m, note: f.w.db.get({ pk: `DEVTASK#${f.made.taskId}`, sk: `NOTE#${m.messageId}` }) as { receivedAt: string } }; })();
+    f.w.db.set({ ...f.task(), threadNotesFedThrough: note.receivedAt });
+    await settleSteerDeliveries(f.deps, f.session());
+    f.w.db.set({ ...f.w.db.get(agentSessionKey(ORG_A, f.sid, `MESSAGE#${message.messageId}`))!, delivery: { state: "queued", at: message.createdAt } });
+    f.w.db.set({ ...sessionQueuedSteersKey(ORG_A, f.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: f.sid, count: 1 });
+    const { settledAt: _settled, ...unsettled } = f.w.db.get({ pk: `DEVTASK#${f.made.taskId}`, sk: `NOTE#${message.messageId}` })!;
+    void _settled;
+    f.w.db.set(unsettled);
+    expect(await settleSteerDeliveries(f.deps, f.session())).toBe(1);
+    expect(f.events().filter((item) => item.type === "steer_delivered")).toHaveLength(1);
+    expect(f.queued()).toBe(0);
+  });
+
+  it("tries again when another writer holds one of its items, and saves the message once", async () => {
     const f = steerWorld({ workflow: false });
-    const requestId = randomUUID();
-    f.w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("steer_not_delivered") || JSON.stringify(input).includes("not_delivered"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }, { Code: "None" }] }, times: 1 });
-    expect(await code(f.send(ARJUN, "hello", { requestId }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-    expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "queued" } });
-    expect(await f.send(ARJUN, "hello", { requestId })).toMatchObject({ delivery: { state: "not_delivered" } });
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }, { Code: "None" }] }, times: 2 });
+    expect(await f.send(ARJUN, "hello")).toMatchObject({ delivery: { state: "not_delivered" } });
+    expect(f.messageItems()).toHaveLength(1);
+    expect(f.events().map((item) => item.type)).toEqual(["steer", "steer_not_delivered"]);
   });
 
-  it("finishes the delivery of a request whose first try committed while this one was being written", async () => {
+  it("answers with the stored message when the first try of this very request committed while this one was being written", async () => {
     const f = steerWorld();
     const requestId = randomUUID();
     let raced = false;
     const racing = { send: async (command: { constructor: { name: string } }) => {
       if (!raced && command.constructor.name === "TransactWriteCommand") {
         raced = true;
-        // The first try of this very request commits its message but not its note.
-        f.w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("NOTE#msg_"), error: { name: "InternalServerError" }, times: 1 });
-        await code(sendSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, { requestId, kind: "steer", text: "use v2" }));
+        await sendSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, { requestId, kind: "steer", text: "use v2" });
       }
       return f.w.db.send(command as never);
     } };
-    // This request's own transaction (written before the first try's) is cancelled at its request item: the stored message is the answer, and it is delivered now.
+    // This request's own transaction (written before the first try's) is cancelled at its request item: the stored message is the answer.
     const answer = await sendSessionMessage({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.sid, { requestId, kind: "steer", text: "use v2" });
     expect(answer.messageId).toBe(f.messageItems()[0]!.messageId);
     expect(f.messageItems()).toHaveLength(1);
     expect(f.notes()).toHaveLength(1);
+    expect(f.queued()).toBe(1);
   });
 });
 
@@ -907,6 +1004,7 @@ describe("telling the session, at the edges", () => {
       f.w.db.set({ pk: `DEVTASK#${f.made.taskId}`, sk: `NOTE#${messageId}`, entityType: "WORKFLOW_THREAD_NOTE", schemaVersion: 1, source: "app", taskId: f.made.taskId, developerId: ARJUN, name: "Arjun", isOwner: false, sessionId: over.sessionId ?? f.sid, messageId, text: "x", truncated: false, receivedAt: at, workflowRevision: 3 });
     }
     f.w.db.set({ ...f.task(), threadNoteCount: count, threadNotesFedThrough: at });
+    f.w.db.set({ ...sessionQueuedSteersKey(ORG_A, f.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: f.sid, count });
   };
 
   it("settles at most 50 messages at a time, and the rest on the next look", async () => {
@@ -915,6 +1013,22 @@ describe("telling the session, at the edges", () => {
     expect(await settleSteerDeliveries(f.deps, f.session())).toBe(50);
     expect(await settleSteerDeliveries(f.deps, f.session())).toBe(10);
     expect(await settleSteerDeliveries(f.deps, f.session())).toBe(0);
+  });
+
+  it("looks at no notes when the session counts no queued messages to the agent, even though its task holds notes, on a settle and on a refresh", async () => {
+    const f = steerWorld();
+    seedQueued(f, 3);
+    f.w.db.delete(sessionQueuedSteersKey(ORG_A, f.sid));
+    const noteReads: unknown[] = [];
+    const spy = { send: async (command: { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, unknown> } }) => { if (command.constructor.name === "QueryCommand" && command.input.ExpressionAttributeValues?.[":note"] !== undefined) noteReads.push(command.input); return f.w.db.send(command as never); } };
+    expect(await settleSteerDeliveries({ ...f.deps, documentClient: spy }, f.session())).toBe(0);
+    await refreshSessionSummary({ documentClient: spy, tableName: "state", now: () => f.w.clock.now }, ORG_A, f.sid);
+    expect(noteReads).toHaveLength(0);
+    expect(f.messageItems().every((item) => (item.delivery as { state: string }).state === "queued")).toBe(true);
+    // The same session with the count: the notes are looked at and settled.
+    f.w.db.set({ ...sessionQueuedSteersKey(ORG_A, f.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: f.sid, count: 3 });
+    expect(await settleSteerDeliveries(f.deps, f.session())).toBe(3);
+    expect(f.queued()).toBe(0);
   });
 
   it("looks at nothing when the task holds no notes, and at no note of another session", async () => {
@@ -936,6 +1050,7 @@ describe("telling the session, at the edges", () => {
     const queued = (f: ReturnType<typeof steerWorld>, taskId: string, messageId: string) => {
       f.w.db.set({ ...agentSessionKey(ORG_A, f.sid, `MESSAGE#${messageId}`), entityType: "AGENT_SESSION_MESSAGE", orgId: ORG_A, sessionId: f.sid, messageId, kind: "steer", source: "app", author: { developerId: MAX, name: "Max" }, text: "x", createdAt: at, rev: 1, delivery: { state: "queued", at } });
       f.w.db.set({ pk: `DEVTASK#${taskId}`, sk: `NOTE#${messageId}`, entityType: "WORKFLOW_THREAD_NOTE", schemaVersion: 1, source: "app", taskId, developerId: MAX, name: "Max", isOwner: false, sessionId: f.sid, messageId, text: "x", truncated: false, receivedAt: at, workflowRevision: 3 });
+      f.w.db.set({ ...sessionQueuedSteersKey(ORG_A, f.sid), entityType: "AGENT_SESSION_QUEUED_STEERS", orgId: ORG_A, sessionId: f.sid, count: 1 });
     };
     // A task session is given another task's id: that task holds a note of this session, and is still not this session's.
     const f = steerWorld();

@@ -51,6 +51,7 @@ import {
   memberDevicesKey,
   mySessionsKey,
   openAgentSessionKey,
+  sessionQueuedSteersKey,
   orgSettingsKey,
   projectMonthStatsKey,
   projectSessionsKey,
@@ -632,6 +633,10 @@ describe("session keys", () => {
     expect(endedSessionWorkKey("2026-10-22", ORG_B, SESSION).sk.startsWith(`${ORG_B}#`)).toBe(true);
     expect(() => endedSessionWorkKey("22 Oct", ORG_A, SESSION)).toThrow();
     expect(SESSION_SWEEP_CURSOR_KEY.pk).toBe("SESSION_SWEEP_CURSOR");
+    // A session's count of messages to the agent that are still queued sits in its own partition, among the messages (so retention reaches it), and never reads as a message.
+    expect(sessionQueuedSteersKey(ORG_A, SESSION)).toEqual({ pk: agentSessionKey(ORG_A, SESSION, "META").pk, sk: "MESSAGE#QUEUED" });
+    expect(sessionQueuedSteersKey(ORG_A, SESSION).sk.startsWith("MESSAGE#msg_")).toBe(false);
+    expect(sessionQueuedSteersKey(ORG_B, SESSION).pk).not.toBe(sessionQueuedSteersKey(ORG_A, SESSION).pk);
     expect(JSON.stringify(SESSION_SWEEP_CURSOR_KEY)).not.toContain("org_");
   });
 
