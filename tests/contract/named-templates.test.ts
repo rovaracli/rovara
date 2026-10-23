@@ -9,7 +9,7 @@ import { withoutAuditLedger } from "../support/audit-ledger-template.js";
 
 skipLambdaBundling();
 
-type Resource = { Type: string; Properties: Record<string, unknown> };
+type Resource = { Type: string; Properties: Record<string, unknown>; DependsOn?: string | string[] };
 type Statement = { Sid?: string };
 
 /**
@@ -61,6 +61,14 @@ function withoutEventHookRoute(template: unknown): unknown {
     Type: "AWS::ApiGatewayV2::Route",
     Properties: { ApiId: github.Properties["ApiId"], AuthorizationType: "NONE", RouteKey: "POST /v1/hooks/{source}/{hookId}", Target: github.Properties["Target"] },
   });
+  // Its own throttle bucket and the stage's wait for the route: exactly these, taken out too.
+  const [, stage] = Object.entries(resources).find(([, resource]) => resource.Type === "AWS::ApiGatewayV2::Stage")!;
+  const settings = stage.Properties["RouteSettings"] as Record<string, unknown>;
+  expect(settings["POST /v1/hooks/{source}/{hookId}"]).toStrictEqual({ ThrottlingBurstLimit: 100, ThrottlingRateLimit: 50 });
+  delete settings["POST /v1/hooks/{source}/{hookId}"];
+  const depends = [stage.DependsOn].flat() as string[];
+  expect(depends).toContain(routes[0]!);
+  stage.DependsOn = depends.filter((id) => id !== routes[0]!);
   delete resources[routes[0]!];
   return template;
 }

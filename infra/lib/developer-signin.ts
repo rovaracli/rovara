@@ -58,6 +58,8 @@ export interface DeveloperSignInProps {
   stage: apigwv2.CfnStage;
   /** Further public routes of the same API the stage throttles like the /v1/auth, /v1/dev and /v1/app ones (the GitHub install routes). */
   throttledRoutes?: apigwv2.CfnRoute[];
+  /** Plan 4 Task 19: the public event-hook route. It gets a bucket of its own, larger than the sign-in routes' (route settings are per route key, so it does not share `/v1/app`'s). */
+  hookRoute?: apigwv2.CfnRoute;
   /** The TurnRecords table (control-plane.ts), so the broker may write AI-tool audit records.
    * The concrete Table (as with slackSecret above): dynamodb.ITable's tableStreamArn is an
    * optional string, but Table's getter returns string | undefined, which this repo's
@@ -331,6 +333,7 @@ export class DeveloperSignIn extends Construct {
     props.stage.routeSettings = {
       [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle,
       ...Object.fromEntries(throttledRoutes.map((route) => [route.routeKey, throttle])),
+      ...(props.hookRoute === undefined ? {} : { [props.hookRoute.routeKey]: { ThrottlingBurstLimit: 100, ThrottlingRateLimit: 50 } }),
     };
     // Route settings must name routes that already exist.
     props.stage.addDependency(authRoute);
@@ -338,6 +341,7 @@ export class DeveloperSignIn extends Construct {
     props.stage.addDependency(appRoute);
     props.stage.addDependency(feedbackReviewRoute);
     for (const route of throttledRoutes) props.stage.addDependency(route);
+    if (props.hookRoute !== undefined) props.stage.addDependency(props.hookRoute);
 
     const broker = props.broker;
     // The sign-in issuer is the API's address plus /v1/auth: the broker is given the API's id (in its names) and builds the URL.

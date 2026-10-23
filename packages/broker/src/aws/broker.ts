@@ -1834,7 +1834,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Plan 3, Task 21a-presence: the confirmation page. A browser's decide cookie, CSRF field and Origin authorize it, never a bearer token.
       if (isDecidePagePath(url.pathname)) return await routeDecidePage(decideRequestContext(dependencies, agents), request, url);
       // Plan 4 Task 19: the endpoint vendors post events to. No token: every delivery proves itself over its own bytes (see triggers/ingress.ts).
-      const hookPath = HOOK_DELIVERY_PATH.exec(url.pathname);
+      const hookPath = event.routeKey === HOOK_ROUTE_KEY ? HOOK_DELIVERY_PATH.exec(url.pathname) : null;
       if (hookPath !== null) {
         if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
         const eventHooks = dependencies.agents?.eventHooks;
@@ -14155,6 +14155,8 @@ function parseStoredEvent(item: Record<string, unknown>): {
 
 /** `/v1/hooks/{source}/{hookId}` (Plan 4 Task 19). */
 const HOOK_DELIVERY_PATH = /^\/v1\/hooks\/([^/]+)\/([^/]+)$/;
+/** The one route key a delivery arrives on (infra/lib/control-plane.ts `EventHookRoute`): the same path under any other route is not a hook delivery. */
+const HOOK_ROUTE_KEY = "POST /v1/hooks/{source}/{hookId}";
 const hookMemories = new WeakMap<object, HookIngressMemory>();
 
 /** What this broker's event hooks remember between requests: one table per broker, shared by the routes that rotate a secret and the endpoint that reads it. */

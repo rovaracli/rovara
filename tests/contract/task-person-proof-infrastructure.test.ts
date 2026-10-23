@@ -247,18 +247,20 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 4 Task 19: a named environment's API gains the public event-hook route (`POST /v1/hooks/{source}/{hookId}`, no authorizer, the broker verifies every delivery), so the
     // named and foreign digests moved with it. They had also drifted from the earlier Plan 4 tasks' broker and role changes (the merge of plan 3, BROKER_ROLE_ARN in AGENTX_NAMES, the
     // fixed role names), which no task had re-pinned: all four are taken from the synthesized templates now. The legacy digests did not move: its template has no such route.
+    // Task 19 review fix: the route also has its own stage throttle (`RouteSettings`, 100 burst and 50 a second) and the stage waits for it, so the named and foreign digests were taken again from
+    // the synthesized templates; the legacy digests are unchanged.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "a3794a38c3c272a631ad60c15e4578d2b3b6a699d37d7a7dd9c1c547f90433a2",
-        withoutRoute: "4bbbba1144fb2b6334b87153542dd6867292ee5d384af936e84dceb1750712b2",
+        withRoute: "bc2bad2150af2bb9d6f01a3fa0d1b95ecff9d5a202cb4e9106094dce3bcfaf42",
+        withoutRoute: "5251d2e260b8a81c7d40674cdf7726fbf991cf7d88b4370c58ce2628b047ab63",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "dfc3053735be62de053ae38bc537b14624a13c92838e4e1680267c65eb2827a8",
-        withoutRoute: "5419e73967cf382b179634736e1c4c6fa77265fad312cafed5f42ddd10eeda21",
+        withRoute: "949430b6af43ef9ee376fa68a2ad6959efe9575bb5cc8a6e71d1df3a380016d7",
+        withoutRoute: "6cb72fdb4fbd0cbaf59e1bc1e679ba48788e8dd4305fd8cfc05b326044536474",
       },
       {
         label: "legacy",

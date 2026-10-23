@@ -317,6 +317,7 @@ async function rotateHook(deps: Deps, caller: AgentCaller, project: string, rawI
   }
   const next: HookSecret = { current: secret, ...(earlier === undefined ? {} : { previous: earlier.current, previousValidUntil: new Date(deps.now() + HOOK_ROTATION_OVERLAP_HOURS * HOUR).toISOString() }) };
   await hooks.secrets.put(caller.orgId, record.hookId, JSON.stringify(next));
+  // This container believes the new secret at once; the others within a minute (the ingress cache's lifetime). Deleting the hook is the instant revoke: its record is read on every delivery.
   hooks.secretRotated?.(record.hookId);
   await hooks.store.noteRotation(caller.orgId, record.hookId, input.requestId, new Date(deps.now()).toISOString());
   const rotated = await hooks.store.record(caller.orgId, record.hookId) ?? record;

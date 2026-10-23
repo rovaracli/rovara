@@ -318,6 +318,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post.
       "GET /v1/github/install/callback": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "POST /v1/github/install/confirm": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      // Plan 4 Task 19: the public event-hook route has a bucket of its own.
+      "POST /v1/hooks/{source}/{hookId}": { ThrottlingBurstLimit: 100, ThrottlingRateLimit: 50 },
     });
     // A stage's route settings name routes that must already exist.
     const routeId = (key: string) => ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === key)![0];
@@ -328,6 +330,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
     expect(dependsOn).toContain(routeId("GET /v1/github/install/callback"));
     expect(dependsOn).toContain(routeId("POST /v1/github/install/confirm"));
+    expect(dependsOn).toContain(routeId("POST /v1/hooks/{source}/{hookId}"));
     // The app route is served by the broker, which verifies the developer token itself: no API Gateway authorizer.
     const appRoute = ofType(named, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === "ANY /v1/app/{proxy+}")![1];
     expect(appRoute.Properties.AuthorizationType).toBe("NONE");

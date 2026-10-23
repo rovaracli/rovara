@@ -73,7 +73,7 @@ describe("a crash between recording an event and starting its work does not lose
     const w = setupHookWorld();
     const hook = await w.hook();
     let seen: unknown;
-    const original = w.deps.dispatch;
+    const original = w.deps.dispatch.bind(w.deps);
     w.deps.dispatch = async (orgId, event) => { seen = itemOf(w, hook.hookId, event.eventKey)?.["status"]; return original(orgId, event); };
     expect((await w.receive(w.delivery(hook, bodyOf(w, "e1")))).status).toBe(202);
     expect(seen).toBe("pending");

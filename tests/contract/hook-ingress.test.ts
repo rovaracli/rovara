@@ -394,7 +394,8 @@ describe("what is kept and what is logged", () => {
     const mark = w.db.commandNames().length;
     await w.receive(w.delivery(hook, bodyOf(w, "e2")));
     expect((await w.store.record(ORG_A, hook.hookId))!.lastDeliveryAt).toBe(first);
-    expect(w.writesSince(mark).filter((name) => name === "UpdateCommand")).toHaveLength(1);
+    // The delivery's own rate count and the mark that its event was started; the hook is not touched again.
+    expect(w.writesSince(mark).filter((name) => name === "UpdateCommand")).toHaveLength(2);
   });
 
   it("puts no secret, no body and no header value in any log line or answer, for every kind of refusal", async () => {
