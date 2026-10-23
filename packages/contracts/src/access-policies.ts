@@ -1,6 +1,7 @@
 // The two access-stack policy documents as pure functions: no CDK imports, so they can be unit
 // tested with plain strings and printed as JSON (the access stack passes CDK tokens instead).
 import { STACK_PARTS, environmentStackName } from "./environments.js";
+import { REALTIME_NAMESPACE } from "./realtime.js";
 
 export interface PolicyScope {
   env: string;
@@ -104,6 +105,28 @@ const sesChecks = (scope: Pick<PolicyScope, "partition" | "region" | "account">)
   { Sid: "SesIdentityCheck", Effect: "Allow", Action: ["ses:GetEmailIdentity"], Resource: `arn:${scope.partition}:ses:${scope.region}:${scope.account}:identity/*` },
   { Sid: "SesAccountCheck", Effect: "Allow", Action: ["ses:GetAccount"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": scope.region } } },
 ];
+
+/**
+ * AppSync Events (Plan 5 Task 8): what CloudFormation's AWS::AppSync::Api (an Events API) and AWS::AppSync::ChannelNamespace handlers call to create, read, update, delete
+ * and tag them, and no other AppSync action (no GraphQL, no publishing). Allowed by name, on this account's and region's APIs and their namespaces, in the service role and
+ * (as a ceiling) in the boundary; the service role's `lambda:*` already covers the `lambda:AddPermission` and `lambda:RemovePermission` the authorizer's invoke permission needs.
+ */
+export const APPSYNC_EVENTS_ACTIONS: readonly string[] = [
+  "appsync:CreateApi",
+  "appsync:GetApi",
+  "appsync:UpdateApi",
+  "appsync:DeleteApi",
+  "appsync:CreateChannelNamespace",
+  "appsync:GetChannelNamespace",
+  "appsync:UpdateChannelNamespace",
+  "appsync:DeleteChannelNamespace",
+  "appsync:TagResource",
+  "appsync:UntagResource",
+  "appsync:ListTagsForResource",
+];
+const appsyncEvents = (scope: Pick<PolicyScope, "partition" | "region" | "account">): PolicyStatementJson => ({
+  Sid: "AppSyncEvents", Effect: "Allow", Action: [...APPSYNC_EVENTS_ACTIONS], Resource: `arn:${scope.partition}:appsync:${scope.region}:${scope.account}:apis/*`,
+});
 
 /** Role management the service role needs on this environment's roles. */
 const ROLE_ACTIONS = [
@@ -281,6 +304,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     // Keep the resource exact to this environment's rule. EventBridge actions that do not
     // support rule resources remain unavailable with this resource constraint.
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
+    appsyncEvents(scope),
     { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: roles },
     fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
@@ -333,6 +357,9 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
   return [
     { Sid: "Services", Effect: "Allow", Action: BOUNDARY_SERVICES.map((s) => `${s}:*`), Resource: "*" },
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
+    appsyncEvents(scope),
+    // The broker and the outbox publisher publish change notices to the realtime events API's one namespace (Plan 5 Task 8): the boundary allows that action on that namespace only.
+    { Sid: "AppSyncEventsPublish", Effect: "Allow", Action: ["appsync:EventPublish"], Resource: `arn:${scope.partition}:appsync:${scope.region}:${scope.account}:apis/*/channelNamespace/${REALTIME_NAMESPACE}` },
     // The operator's identity check.
     { Sid: "CallerIdentity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" },
     // The sign-in function's notice of a newly linked sign-in method (Plan 2, Task 8) sends from a verified SES identity: ses:SendEmail

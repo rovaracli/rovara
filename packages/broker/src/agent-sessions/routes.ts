@@ -13,21 +13,27 @@ import { randomBytes } from "node:crypto";
 import { readSessionEvents } from "./events.js";
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadDependencies } from "./read.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
+import { readChanges } from "../realtime/changes.js";
+import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/token.js";
 
 /** What the session routes need: the read dependencies, and (for a company-wide share and the decisions a caller may make) Plan 3's approvals core. */
 export interface SessionRouteDependencies extends SessionReadDependencies {
   approvals?: ApprovalDependencies & Partial<AgentRouteDependencies>;
+  /** What the realtime token route needs (Task 8). Without it the route answers `RUNTIME_UNAVAILABLE`. */
+  realtime?: RealtimeTokenDependencies;
 }
 
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
 const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events))?)?$/;
+const CHANGES_PATH = "/v1/app/changes";
+const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
 const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
 
-/** The paths this module owns under `/v1/app/`. */
+/** The paths this module owns under `/v1/app/`: the sessions, the changes feed and the realtime token (Task 8). */
 export function isAgentSessionRoute(pathname: string): boolean {
-  return /^\/v1\/app\/sessions(\/|$)/.test(pathname);
+  return /^\/v1\/app\/sessions(\/|$)/.test(pathname) || pathname === CHANGES_PATH || pathname === REALTIME_TOKEN_PATH;
 }
 
 /** `/s/<anything>`: a session's link, served to a browser. */
@@ -82,9 +88,19 @@ function queryOf(url: URL): SessionListQuery {
 
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
- * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`. Any other path or method is `NOT_FOUND`.
+ * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `GET /v1/app/changes?since=` (the caller's own change notices) and
+ * `POST /v1/app/realtime/token`. Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  if (url.pathname === CHANGES_PATH) {
+    if (request.method !== "GET") throw notFound();
+    return readChanges(deps, caller, url.searchParams.get("since") ?? undefined);
+  }
+  if (url.pathname === REALTIME_TOKEN_PATH) {
+    if (request.method !== "POST") throw notFound();
+    if (deps.realtime === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Live updates aren't available right now.");
+    return realtimeTokenFor(deps.realtime, caller);
+  }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();
   const [, rawId, shares, rawKey, rawSeq, events] = matched;

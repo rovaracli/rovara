@@ -26,6 +26,8 @@ export type BrokerNameKind =
   | "cognitoIssuer"
   /** An HTTP API's id; the variable gets the control plane's sign-in issuer (`https://<id>.execute-api.<region>.amazonaws.com/v1/auth`). */
   | "apiIssuer"
+  /** An AppSync Events API's id; the variable gets its HTTP endpoint (`https://<id>.appsync-api.<region>.amazonaws.com/event`). */
+  | "eventApiEndpoint"
   /** A dead-letter queue's name, which the health route lists under `label`; the variable gets the JSON of every such queue, `{ label: URL }`. */
   | "deadLetterQueue";
 
@@ -60,6 +62,7 @@ export const BROKER_NAMES = {
   deleterStateMachine: { code: "dl", variable: "DELETER_ARN", kind: "stateMachineArn" },
   cloudUserPool: { code: "ci", variable: "DEVELOPER_CLOUD_ISSUER", kind: "cognitoIssuer" },
   signInApi: { code: "ti", variable: "DEVELOPER_TOKEN_ISSUER", kind: "apiIssuer" },
+  realtimeApi: { code: "rt", variable: "REALTIME_HTTP_ENDPOINT", kind: "eventApiEndpoint" },
   dispatchDeadLetters: { code: "dq", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "dispatch" },
   slackRequestDeadLetters: { code: "sr", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "slack-requests" },
   developerNoticeDeadLetters: { code: "dn", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "developer-notices" },

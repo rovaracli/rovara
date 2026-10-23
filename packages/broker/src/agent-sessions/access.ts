@@ -138,21 +138,30 @@ export async function readSessionShares(deps: Pick<SessionAccessDependencies, "d
 // ---- Task People, read without Slack
 
 const PEOPLE_ROLES = new Set(["owner", "commenter", "viewer", "denied"]);
-type PeopleRole = "owner" | "commenter" | "viewer" | "denied";
+export type PeopleRole = "owner" | "commenter" | "viewer" | "denied";
 
-/** The caller's entry in the task's people list: undefined for none, "unreadable" for a list that doesn't parse (which counts as a denial). */
-async function peopleRoleOf(deps: SessionAccessDependencies, taskId: string, developerId: string): Promise<PeopleRole | "unreadable" | undefined> {
+/**
+ * The task's people list as roles by developer: `undefined` when the task has none, "unreadable" for a list that doesn't parse (which counts as a denial for
+ * everyone). A person listed twice keeps their last entry.
+ */
+export async function readTaskPeople(deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, taskId: string): Promise<Map<string, PeopleRole> | "unreadable" | undefined> {
   const item = await getItem(deps, { pk: `DEVTASK#${taskId}`, sk: "PEOPLE" });
   if (item === undefined) return undefined;
   const people = item["people"];
   if (item["schemaVersion"] !== 1 || !Array.isArray(people)) return "unreadable";
-  let found: PeopleRole | undefined;
+  const roles = new Map<string, PeopleRole>();
   for (const entry of people as unknown[]) {
     const person = entry as { developerId?: unknown; role?: unknown } | null;
     if (typeof person !== "object" || person === null || typeof person.developerId !== "string" || typeof person.role !== "string" || !PEOPLE_ROLES.has(person.role)) return "unreadable";
-    if (person.developerId === developerId) found = person.role as PeopleRole;
+    roles.set(person.developerId, person.role as PeopleRole);
   }
-  return found;
+  return roles;
+}
+
+/** The caller's entry in the task's people list: undefined for none, "unreadable" for a list that doesn't parse (which counts as a denial). */
+async function peopleRoleOf(deps: SessionAccessDependencies, taskId: string, developerId: string): Promise<PeopleRole | "unreadable" | undefined> {
+  const roles = await readTaskPeople(deps, taskId);
+  return roles === undefined || roles === "unreadable" ? roles : roles.get(developerId);
 }
 
 // ---- the effective owner

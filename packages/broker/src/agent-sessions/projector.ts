@@ -140,7 +140,7 @@ export async function projectSessions(records: readonly StreamRecord[], deps: Pr
       next += 1;
       const { orgId, sessionId } = batch[index]!;
       try {
-        const outcome = await refresh(deps, orgId, sessionId);
+        const outcome = await refresh({ ...deps, deadline: options.deadline }, orgId, sessionId);
         if (outcome === "updated") result.refreshed += 1;
         else result.unchanged += 1;
       } catch (error) {

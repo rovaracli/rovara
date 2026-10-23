@@ -393,6 +393,7 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { slackReplyAuthor } from "../agent-sessions/events.js";
 import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.js";
+import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
@@ -406,7 +407,7 @@ import type { DecideKinds } from "../developer/decide-kinds.js";
 import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../developer/decide-inspect.js";
 import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
 import { ADMISSION_REFUSALS, continueAsTask, resumeTaskAfterSpendApproval, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -1491,7 +1492,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   // Plan 5, Task 7b: a session follows its task's end and budget pause as Plan 3 tells them, instead of waiting for the stream or the sweep. Only where agents are set up
   // (sessions begin there); a broker without them registers nothing, so Plan 3's "nobody listens" behaviour is unchanged. Plan 4's chain and Task 18's device reads are given
   // here when those land (the sweep's event passes them the same way).
-  if (agents !== undefined) registerAgentSessionTaskHandlers();
+  if (agents !== undefined) {
+    registerAgentSessionTaskHandlers();
+    // Plan 5, Task 8: what a session's change turns into: each person's feed, and a notice on the events API where there is one. Plan 4's chain readers judge a chain session's followers.
+    installRealtimeSink({ realtime: realtimeConfigFromEnvironment(), chainReadAccess: agents.agentSessions?.chainReadAccess });
+  }
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
@@ -14180,6 +14185,9 @@ function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["in
     unlinkIdentity: unlinkIdentityThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     startIdentityLink: startIdentityLinkThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     channelByName: channelByNameThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
+    // Plan 5 Task 8: the realtime token is signed by DeveloperIdentity, which holds the key; the endpoint is where clients connect (set only where there is an events API).
+    realtimeToken: realtimeTokenThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
+    ...(process.env.REALTIME_HTTP_ENDPOINT ? { realtimeEndpoint: process.env.REALTIME_HTTP_ENDPOINT } : {}),
     // D17: kept for the Lambda's lifetime; an unknown kid refetches at most once a minute.
     verifyAccessToken: developerTokenVerifier({
       issuer,

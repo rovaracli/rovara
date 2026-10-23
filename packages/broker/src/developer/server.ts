@@ -16,6 +16,7 @@ import {
   ADMIN_API_VERSION,
   DEVELOPER_API_VERSION,
   EndDeveloperSessionsRequestSchema,
+  RealtimeTokenRequestSchema,
   UnlinkIdentityRequestSchema,
   StartIdentityLinkRequestSchema,
   type UnlinkIdentityRequest,
@@ -41,6 +42,8 @@ import {
   type DeveloperSignInMethod,
   type OrgId,
   type EndDeveloperSessionsRequest,
+  type RealtimeTokenAnswer,
+  type RealtimeTokenRequest,
   type EndDeveloperSessionsResponse,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
@@ -62,6 +65,7 @@ import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type
 import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { createDecideSignIn, type DecideSignInDependencies } from "./decide-signin.js";
 import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./tokens.js";
+import { issueRealtimeToken } from "../realtime/token.js";
 
 /** `since` (epoch seconds, FR-045): when the method was last turned on. A session started before it
  * was ended by the disable in between, so it never comes back when the method is on again. */
@@ -977,8 +981,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join") || pathname.startsWith("/v1/auth/decide/");
 
   return async (
-    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest,
-  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse> => {
+    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
+  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse | RealtimeTokenAnswer> => {
     if ("kind" in event) {
       if (event.kind === "end-developer-sessions") {
         const parsed = EndDeveloperSessionsRequestSchema.safeParse(event);
@@ -986,6 +990,17 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         const result = await store.endSessions(parsed.data.developerId, parsed.data.at);
         deps.log({ event: "signin.sessions_ended_by_admin", developerId: parsed.data.developerId, result });
         return result === "ended" ? { ok: true } : { ok: false, error: "not_found" };
+      }
+      if (event.kind === "realtime-token") {
+        // Plan 5 Task 8: the broker holds no signing right, so it asks here for the token of a person it has already signed in.
+        const parsed = RealtimeTokenRequestSchema.safeParse(event);
+        if (!parsed.success) return { ok: false, error: "invalid_request" };
+        try {
+          return { ok: true, ...await issueRealtimeToken(deps.signer, { orgId: parsed.data.orgId, developerId: parsed.data.developerId, projects: parsed.data.projects, now: deps.now() }) };
+        } catch (error) {
+          deps.log({ event: "signin.realtime_token_failed", error: error instanceof Error ? error.name : "unknown" });
+          return { ok: false, error: "unavailable" };
+        }
       }
       if (event.kind === "unlink-identity") return unlinkIdentity(event);
       if (event.kind === "start-identity-link") return startIdentityLink(event);

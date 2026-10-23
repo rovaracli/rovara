@@ -1,5 +1,5 @@
-// Where a summary change goes after it commits (Plan 5 Task 7a). Task 8 registers the sink that turns a change into realtime notices and feed entries; until
-// then it is a no-op. A sink's failure is logged and never thrown: a notice is never a reason for a refresh to fail.
+// Where a summary change goes after it commits (Plan 5 Task 7a). Task 8's sink (realtime/sink.ts) turns a change into realtime notices and feed entries; until one
+// is registered this is a no-op. A sink's failure is logged and never thrown: a notice is never a reason for a refresh to fail.
 import type { AgentSessionRecord, OrgId, SessionId, SessionSummary } from "@agentx/contracts";
 import type { TableInput } from "../agents/table-writes.js";
 
@@ -19,7 +19,10 @@ export interface SessionChange {
   at: string;
 }
 
-export type SessionNoticeSink = (deps: TableInput, change: SessionChange) => Promise<void>;
+/** What a sink gets with a change: the table, the log, and (from the projector) the time it has until. */
+export type NoticeSinkDependencies = TableInput & { log?: ((entry: Record<string, unknown>) => void) | undefined; deadline?: number | undefined };
+
+export type SessionNoticeSink = (deps: NoticeSinkDependencies, change: SessionChange) => Promise<void>;
 
 let registered: SessionNoticeSink | undefined;
 
@@ -29,7 +32,7 @@ export function registerSessionNoticeSink(sink: SessionNoticeSink | undefined): 
 }
 
 /** Hands a change to the sink, if any. Never throws. */
-export async function notifySessionChange(deps: TableInput & { log?: ((entry: Record<string, unknown>) => void) | undefined }, change: SessionChange): Promise<void> {
+export async function notifySessionChange(deps: NoticeSinkDependencies, change: SessionChange): Promise<void> {
   if (registered === undefined) return;
   try {
     await registered(deps, change);

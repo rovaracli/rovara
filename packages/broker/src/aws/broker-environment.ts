@@ -70,6 +70,11 @@ function build(spec: BrokerNameSpec, value: string, env: MutableEnvironment): st
     case "deadLetterQueue": return queueUrl(requiredScope(env, needed), value);
     // The pool's issuer, to the text the control plane has always passed: the stack's region, `.amazonaws.com` in every partition (cloud-identity.ts).
     case "cognitoIssuer": return `https://cognito-idp.${requiredScope(env, needed).region}.amazonaws.com/${value}`;
+    // The events API's HTTP endpoint (Plan 5 Task 8): `<id>.appsync-api.<region>.amazonaws.com/event`, as AppSync gives every Events API.
+    case "eventApiEndpoint": {
+      const scope = requiredScope(env, needed);
+      return `https://${value}.appsync-api.${scope.region}.amazonaws.com${scope.partition === "aws-cn" ? ".cn" : ""}/event`;
+    }
     case "apiIssuer": return `https://${value}.${apiHost(requiredScope(env, needed))}/v1/auth`;
     case "kmsKeyArn": {
       const scope = requiredScope(env, needed);

@@ -131,6 +131,8 @@ export interface SummaryDependencies extends TableInput {
   log?: Log | undefined;
   chains?: ChainSessionSource | undefined;
   local?: LocalSessionSource | undefined;
+  /** The time (epoch ms) the caller must be done by: the notice sink's checks stop there. Set by the projector. */
+  deadline?: number | undefined;
 }
 
 // ---- digest and small helpers
