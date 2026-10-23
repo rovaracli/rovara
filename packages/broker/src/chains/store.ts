@@ -477,6 +477,8 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
   /**
    * The active chains whose monthly budgets count in `owner`'s total, each with that budget (the chain side of the agent store's `ownerAgents`; the owner total's
    * contributors read it). A chain whose owner is a merged duplicate counts for its survivor.
+   * A chain whose base is $0 is listed too (review I-2, as agents): it adds nothing to the counter, but this month's top-ups on it are spendable, so the effective
+   * total adds them. One with no base at all, or an archived one, is not listed.
    */
   async ownerChains(orgId: OrgId, owner: string): Promise<Array<{ chainId: ChainId; monthlyBudgetUsd: number }>> {
     return this.countedChains(orgId, this.ownerBudgets.countsFor(orgId, owner));
