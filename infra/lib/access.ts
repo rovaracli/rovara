@@ -9,6 +9,11 @@ import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 
 export interface AccessStackProps extends StackProps {
   naming: AgentXNaming;
+  /**
+   * The id of Rovara's own AWS Organization, from the `agentxRovaraOrgId` context value, never from source. When set, the default boundary's AssumeOrgRoles
+   * statement also excludes every account of that organization; when not, it excludes this account only (the fallback).
+   */
+  rovaraOrganizationId?: string;
 }
 
 /**
@@ -20,7 +25,7 @@ export interface AccessStackProps extends StackProps {
 export class AccessStack extends Stack {
   constructor(scope: Construct, id: string, props: AccessStackProps) {
     super(scope, id, props);
-    const { naming } = props;
+    const { naming, rovaraOrganizationId } = props;
     const env = naming.env;
     if (env === undefined) throw new Error("the access stack exists only for named environments");
     const ecsFailureRuleArn = Fn.sub(`arn:${"${AWS::Partition}"}:events:${"${AWS::Region}"}:${"${AWS::AccountId}"}:rule/agentx-${env}-*-service-failures`);
@@ -41,7 +46,7 @@ export class AccessStack extends Stack {
           description: `Default permission boundary for every agentx-${env} role`,
           policyDocument: {
             Version: "2012-10-17",
-            Statement: defaultBoundaryStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName })
+            Statement: defaultBoundaryStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName, ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }) })
               .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement),
           },
         });

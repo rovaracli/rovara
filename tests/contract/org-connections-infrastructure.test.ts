@@ -181,7 +181,16 @@ describe("ConnectorSecretsRole (named environments)", () => {
       Action: ["sts:AssumeRole", "sts:TagSession"],
       Resource: "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets",
     });
-    expect(sts[1]!.Condition).toEqual({ StringNotEquals: { "aws:ResourceAccount": "111122223333" }, StringLike: { "sts:ExternalId": "rovara-org_*" } });
+    // Owner decision A narrows it to the broker, the model proxy task role and the model access probe (ArnLike on the principal): see access-policies.test.ts for the exact JSON.
+    expect(sts[1]!.Condition).toEqual({
+      ArnLike: { "aws:PrincipalArn": [
+        "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-broker-role",
+        "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-proxy-task",
+        "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-access-probe",
+      ] },
+      StringNotEquals: { "aws:ResourceAccount": "111122223333" },
+      StringLike: { "sts:ExternalId": "rovara-org_*" },
+    });
   });
 
   it("uses no em dash in a name or description", () => {
@@ -195,5 +204,77 @@ describe("ConnectorSecretsRole (named environments)", () => {
     expect(Object.keys(legacy).filter((id) => id.startsWith("ConnectorSecretsRole"))).toEqual([]);
     expect(JSON.stringify(legacy)).not.toContain("org-connectors");
     expect(JSON.stringify(legacy)).not.toContain("CONNECTOR_SECRETS_ROLE_ARN");
+  });
+});
+
+// Owner decision A: the permissions boundary's AssumeOrgRoles statement names the three roles that hold a cross-account grant, so each has a fixed name (CloudFormation's
+// generated names are truncated and carry a hash, which no ArnLike can name exactly), and each sits on the environment's role path the boundary names them under.
+describe("the three roles that may assume a customer's role (named environments)", () => {
+  const rolesByPrefix = (resources: Resources, prefix: string) => Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Role" && id.startsWith(prefix));
+  const boundaryPrincipals = [
+    "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-broker-role",
+    "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-proxy-task",
+    "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-access-probe",
+  ];
+  let resources: Resources;
+  beforeAll(() => {
+    resources = controlPlane({ agentxEnv: "staging", agentxCloud: true }).toJSON().Resources as Resources;
+  }, 240_000);
+
+  it("are named exactly as the boundary names them, on the environment's role path", () => {
+    const named = [["BrokerServiceRole", "agentx-staging-broker-role"], ["ModelProxyTaskRole", "agentx-staging-model-proxy-task"], ["ModelAccessFunctionServiceRole", "agentx-staging-model-access-probe"]] as const;
+    for (const [prefix, name] of named) {
+      const found = rolesByPrefix(resources, prefix);
+      expect(found.map(([id]) => id), prefix).toHaveLength(1);
+      expect(found[0]![1].Properties.RoleName, prefix).toBe(name);
+      expect(found[0]![1].Properties.Path, prefix).toBe("/agentx/staging/");
+      expect(boundaryPrincipals).toContain(`arn:aws:iam::111122223333:role${found[0]![1].Properties.Path as string}${name}`);
+    }
+  });
+
+  it("are the only roles in the control plane that hold an sts:AssumeRole grant into another account", () => {
+    const grants = Object.values(resources).flatMap((resource) => {
+      if (resource.Type !== "AWS::IAM::Policy" && resource.Type !== "AWS::IAM::ManagedPolicy") return [];
+      const statements = resource.Properties.PolicyDocument!.Statement.filter((statement) => [statement.Action].flat().includes("sts:AssumeRole") && statement.Condition?.StringNotEquals !== undefined);
+      return statements.length === 0 ? [] : (resource.Properties.Roles ?? []).map((entry) => entry.Ref ?? "?");
+    });
+    expect([...new Set(grants)].sort()).toEqual(
+      ["BrokerServiceRole", "ModelAccessFunctionServiceRole", "ModelProxyTaskRole"].map((prefix) => rolesByPrefix(resources, prefix)[0]![0]).sort(),
+    );
+  });
+
+  it("have no fixed name in the legacy deployment, which has no access stack and no boundary", () => {
+    const legacy = controlPlane({}).toJSON().Resources as Resources;
+    for (const prefix of ["BrokerServiceRole"]) for (const [, role] of rolesByPrefix(legacy, prefix)) expect(role.Properties.RoleName).toBeUndefined();
+  });
+});
+
+describe("the access stack's boundary takes Rovara's AWS Organization id from context, never from the source", () => {
+  const boundaryStatement = (context: Record<string, unknown>) => {
+    const app = buildAgentXApp({ agentxEnv: "staging", ...context });
+    const access = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXAccess")!;
+    const policy = Object.values(Template.fromStack(access).toJSON().Resources as Resources).find((resource) => resource.Type === "AWS::IAM::ManagedPolicy" && resource.Properties.ManagedPolicyName === "agentx-staging-boundary")!;
+    return policy.Properties.PolicyDocument!.Statement.find((statement) => statement.Sid === "AssumeOrgRoles")!;
+  };
+
+  it("with no organization id configured, keeps the account-only exclusion", () => {
+    expect(boundaryStatement({}).Condition!.StringNotEquals).toEqual({ "aws:ResourceAccount": { Ref: "AWS::AccountId" } });
+  });
+
+  it("with agentxRovaraOrgId, excludes the organization's accounts as well", () => {
+    expect(boundaryStatement({ agentxRovaraOrgId: "o-abc123def4" }).Condition!.StringNotEquals).toEqual({ "aws:ResourceAccount": { Ref: "AWS::AccountId" }, "aws:ResourceOrgID": "o-abc123def4" });
+  });
+
+  it("names the three roles by ARN built from the partition and account of the deploy", () => {
+    const principals = boundaryStatement({}).Condition!.ArnLike!["aws:PrincipalArn"] as unknown[];
+    expect(principals.map(flatten)).toEqual([
+      "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-broker-role",
+      "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-proxy-task",
+      "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-access-probe",
+    ]);
+  });
+
+  it("refuses a malformed organization id at synth", () => {
+    expect(() => boundaryStatement({ agentxRovaraOrgId: "not-an-org" })).toThrow(/organization id/i);
   });
 });

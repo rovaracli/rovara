@@ -37,7 +37,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { HEALTH_ALARM_SUFFIXES, brokerManagedPolicyPath, brokerManagedPolicyPrefix, connectorSecretsRoleName, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { TaskPersonProof } from "./task-person-proof.js";
@@ -224,6 +224,8 @@ export class ControlPlaneStack extends Stack {
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
     if (naming.env !== undefined) broker.addEnvironment("CONNECTOR_SECRET_PREFIX", naming.connectorSecretPrefix);
+    // A fixed name, so the default boundary's AssumeOrgRoles statement can name this role as one of the three that may be granted a cross-account assume.
+    if (naming.env !== undefined) (broker.role!.node.defaultChild as iam.CfnRole).roleName = brokerRoleName(naming.env);
     // Plan 3, ruling R62: an org's connection keys and event hook secrets (agentx/<env>/org-connectors/<org>/... and
     // agentx/<env>/org-hooks/<org>/...) are readable only through this role, in a session the broker tags with the org.
     // The broker role may assume it and holds no Secrets Manager permission on those paths. Named environments only.
@@ -1169,6 +1171,8 @@ export class ControlPlaneStack extends Stack {
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this
       // VPC-attached function, the only reader of the master key besides the proxy. The broker may invoke it, and nothing else.
       const modelAccessFunction = packagedFunction(this, "ModelAccessFunction", "packages/broker/src/model-proxy/handler.ts", {});
+      // A fixed name, like the broker's: the Bedrock source probe's role is one of the three the default boundary's AssumeOrgRoles statement names.
+      (modelAccessFunction.role!.node.defaultChild as iam.CfnRole).roleName = modelAccessProbeRoleName(naming.env);
       new ModelAccess(this, "ModelAccess", {
         naming,
         vpcId,

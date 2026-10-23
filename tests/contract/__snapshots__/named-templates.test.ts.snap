@@ -684,6 +684,58 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "sts:AssumeRole",
               ],
               "Condition": {
+                "ArnLike": {
+                  "aws:PrincipalArn": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx/staging/agentx-staging-broker-role",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx/staging/agentx-staging-model-proxy-task",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx/staging/agentx-staging-model-access-probe",
+                        ],
+                      ],
+                    },
+                  ],
+                },
                 "StringLike": {
                   "sts:ExternalId": "rovara-org_*",
                 },
@@ -2910,6 +2962,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
           ],
         },
+        "RoleName": "agentx-staging-broker-role",
         "Tags": [
           {
             "Key": "agentx:env",

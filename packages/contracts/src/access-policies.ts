@@ -11,6 +11,11 @@ export interface PolicyScope {
   pullThroughPrefix: string;
   cloudFormationRoleName: string;
   permissionsBoundaryArn?: string;
+  /**
+   * The id of Rovara's own AWS Organization (`o-` and 10 to 32 lowercase letters or digits), from configuration, never from source. When set, the default
+   * boundary's AssumeOrgRoles statement excludes every account of that organization, not only this one; when not, it excludes this account alone.
+   */
+  rovaraOrganizationId?: string;
 }
 
 export interface PolicyStatementJson {
@@ -195,6 +200,27 @@ export function connectorSecretsRoleName(env: string): string {
   return `agentx-${env}-connector-secrets`;
 }
 
+/**
+ * The three roles that hold an `sts:AssumeRole` grant into another AWS account's role, with fixed names so the default boundary's AssumeOrgRoles statement can name
+ * them exactly (CloudFormation's generated names are cut short and carry a hash, which no ArnLike can name). Longest, for a 20-character environment: 46 characters.
+ */
+export function brokerRoleName(env: string): string {
+  return `agentx-${env}-broker-role`;
+}
+
+/** The model proxy's ECS task role: its Bedrock sources assume a company's role (Plan 3). */
+export function modelProxyTaskRoleName(env: string): string {
+  return `agentx-${env}-model-proxy-task`;
+}
+
+/** The model access function's role, which runs the Bedrock source probe (Plan 3). */
+export function modelAccessProbeRoleName(env: string): string {
+  return `agentx-${env}-model-access-probe`;
+}
+
+/** An AWS Organizations id: `o-` and 10 to 32 lowercase letters or digits. */
+export const ORGANIZATION_ID_PATTERN = /^o-[a-z0-9]{10,32}$/;
+
 /** The name of the default permission boundary the access stack creates when the company gives none. */
 export function defaultBoundaryName(env: string): string {
   return `agentx-${env}-boundary`;
@@ -274,14 +300,23 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
   ];
 }
 
+/** The exact ARNs of the three roles the default boundary's AssumeOrgRoles statement raises the ceiling for. */
+function assumeOrgRolePrincipals(scope: Pick<PolicyScope, "env" | "partition" | "account">): string[] {
+  const prefix = `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(scope.env)}`;
+  return [brokerRoleName(scope.env), modelProxyTaskRoleName(scope.env), modelAccessProbeRoleName(scope.env)].map((name) => `${prefix}${name}`);
+}
+
 /**
  * The default permission boundary: the most any AgentX role (the service and operator roles
  * included) can ever do, whatever its own policy says. It allows the services AgentX uses, role
  * management only on this environment's roles, and nothing for users, groups or managed policies.
  * The Deny statements hold even if a later change widens an Allow.
  */
-export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "partition" | "region" | "account" | "cloudFormationRoleName">): PolicyStatementJson[] {
-  const { partition, account } = scope;
+export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "partition" | "region" | "account" | "cloudFormationRoleName" | "rovaraOrganizationId">): PolicyStatementJson[] {
+  const { partition, account, rovaraOrganizationId } = scope;
+  if (rovaraOrganizationId !== undefined && !ORGANIZATION_ID_PATTERN.test(rovaraOrganizationId)) {
+    throw new Error(`the Rovara organization id must be an AWS Organizations id (o- and 10 to 32 lowercase letters or digits), got ${JSON.stringify(rovaraOrganizationId)}`);
+  }
   const roles = environmentRoles(scope);
   return [
     { Sid: "Services", Effect: "Allow", Action: BOUNDARY_SERVICES.map((s) => `${s}:*`), Resource: "*" },
@@ -303,14 +338,21 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       Resource: `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${connectorSecretsRoleName(scope.env)}`,
     },
     // A bounded role may be granted `sts:AssumeRole` into a customer's role in ANOTHER account, with an external id that names a Rovara org (the broker's CloudWatch
-    // connector, Plan 4 Task 16, and the model proxy's Bedrock sources, Plan 3): a boundary only caps, so without this the grants could never take effect. The same two
-    // conditions as the grants: a role of this account is never allowed, so the ceiling does not reach the environment's own roles.
+    // connector, Plan 4 Task 16, and the model proxy's Bedrock sources, Plan 3): a boundary only caps, so without this the grants could never take effect.
+    // Owner decision A narrows it twice. The ceiling is raised for the three roles that hold such a grant and no other principal (ArnLike on aws:PrincipalArn), so a
+    // future broad sts:AssumeRole on some other role gains no cross-account reach. And the resource is never a role of this account, nor of any account of Rovara's own
+    // AWS Organization when its id is configured (aws:ResourceOrgID; a customer account outside any organization has no such key, and a negated condition passes when
+    // the key is missing). With no organization id configured, only this account is excluded: the fallback, as before. The external id condition is the grants' own.
     {
       Sid: "AssumeOrgRoles",
       Effect: "Allow",
       Action: ["sts:AssumeRole"],
       Resource: `arn:${partition}:iam::*:role/*`,
-      Condition: { StringNotEquals: { "aws:ResourceAccount": account }, StringLike: { "sts:ExternalId": "rovara-org_*" } },
+      Condition: {
+        ArnLike: { "aws:PrincipalArn": assumeOrgRolePrincipals(scope) },
+        StringNotEquals: { "aws:ResourceAccount": account, ...(rovaraOrganizationId === undefined ? {} : { "aws:ResourceOrgID": rovaraOrganizationId }) },
+        StringLike: { "sts:ExternalId": "rovara-org_*" },
+      },
     },
     // The operator's EC2 quota reads (prerequisites on a resume); named like CallerIdentity above,
     // not scoped further, since scoped ARNs in the identity policy already limit it to two quotas.
