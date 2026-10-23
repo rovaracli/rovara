@@ -245,18 +245,20 @@ describe("the named TEST proof-only installation gate", () => {
     // legacy template lost them again and its digests are back to their values before Plan 2 (the legacy-templates snapshot lost the same 45 lines); the
     // named and foreign digests were regenerated for the merged template (Plan 2's cloud-only schedule and the reconciler's StartExecution grant on top of Plan 3).
     // Merge of Plan 3 into Plan 5: the named and foreign digests were regenerated again for the merged template (Plan 5's `ANY /s/{proxy+}` route on top of the above).
+    // Plan 5, Task 8: the realtime events API (its API, namespace, authorizer, the authorizer's and publishers' grants, the token key's split deny and the broker's one more
+    // name) moved the named and foreign digests; the legacy template has no sign-in stack and none of it, and its digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "7519376b8a988d905fdbdc2b796d1348de0e27a529701f0e4a2eff2d58b57d37",
-        withoutRoute: "2877851db404003f1500d5a73cd7701e43180c738a70b2b9bbeb9a61d894dca4",
+        withRoute: "767b84fef3a9c824802a41dbc1e6d85e640e2a68d660b5227890b244763bc973",
+        withoutRoute: "05015394eb5dce9072fc7c0e2acb0f4ca2c5f9fbcf5dd811536e4ffc7fc328d9",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "83e85746fba9d0a6e533111547ab52145598de7d5066204ee3242d988daa0b41",
-        withoutRoute: "6acfe086ed8d1fc4647713c9ae66ce767ada8acbb1b15a2b541538b5301ac034",
+        withRoute: "d9447e56556c9770e7a44b11682652de92d35a5c9d1397174264d2f48208088f",
+        withoutRoute: "846a0aedefa4df6cff7fa14b71fde11eb0b2ed8bb06ac1659b7426a8ae7611be",
       },
       {
         label: "legacy",
