@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ProjectDefinition, WorkerInvocation } from "@agentx/contracts";
+import type { OrgId, ProjectDefinition, WorkerInvocation } from "@agentx/contracts";
 import {
   InMemoryRegistry,
   OperationStore,
@@ -15,6 +15,7 @@ import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { describe, expect, it } from "vitest";
+import { TEST_ORG } from "../support/orgs.js";
 
 const run = promisify(execFile);
 
@@ -37,6 +38,7 @@ describe("remote coding delegation", () => {
       deploymentMode: "ec2-ebs" as const,
       id: randomUUID(),
       ownerKey: owner.ownerKey,
+      orgId: TEST_ORG,
       projectName: project.name,
       projectRevision: project.revision,
       rootPath: "/mnt/workspace",
@@ -123,6 +125,10 @@ describe("remote coding delegation", () => {
     await expect(output.getArtifact(identity("b".repeat(64)), workspace.id, artifactIds[0]!)).rejects.toThrow(
       /not found/i,
     );
+    // The same owner key in another org is another caller: the workspace reads as not found.
+    await expect(
+      output.getArtifact({ ...owner, orgId: "org_zzzzzzzzzzzzzzzzzzzz" as OrgId }, workspace.id, artifactIds[0]!),
+    ).rejects.toThrow(/not found/i);
     const page = await output.pageEvents(owner, workspace.id, first.operation.id, { limit: 2 });
     expect(page.events.map(({ sequence }) => sequence)).toEqual([1, 2]);
     expect(page.cursor).toBeDefined();
@@ -209,6 +215,7 @@ function identity(ownerKey: string): AuthenticatedIdentity {
     issuer: "https://identity.example.test",
     subject: ownerKey,
     ownerKey,
+    orgId: TEST_ORG,
     isAdministrator: false,
     claims: {},
   };
