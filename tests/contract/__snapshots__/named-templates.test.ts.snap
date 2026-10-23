@@ -298,6 +298,37 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 },
                 {
                   "Action": [
+                    "iam:GetRole",
+                    "iam:GetRolePolicy",
+                    "iam:ListRolePolicies",
+                    "iam:ListAttachedRolePolicies",
+                    "iam:DeleteRolePolicy",
+                    "iam:DetachRolePolicy",
+                    "iam:DeleteRole",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-connector-secrets",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "IamFixedNameRolesNotYetCreated",
+                },
+                {
+                  "Action": [
                     "iam:CreateInstanceProfile",
                     "iam:DeleteInstanceProfile",
                     "iam:GetInstanceProfile",
@@ -724,6 +755,37 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 ],
               },
               "Sid": "IamRoles",
+            },
+            {
+              "Action": [
+                "iam:GetRole",
+                "iam:GetRolePolicy",
+                "iam:ListRolePolicies",
+                "iam:ListAttachedRolePolicies",
+                "iam:DeleteRolePolicy",
+                "iam:DetachRolePolicy",
+                "iam:DeleteRole",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-connector-secrets",
+                    ],
+                  ],
+                },
+              ],
+              "Sid": "IamFixedNameRolesNotYetCreated",
             },
             {
               "Action": [
@@ -2603,11 +2665,99 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "ADMIN_VALUES": {
               "Ref": "AdminValues",
             },
-            "AGENTX_ALARM_PREFIX": "agentx-staging-",
-            "AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID": "agentx-staging-e2e-mock-runtime-v1",
+            "AGENTX_ACCOUNT_ID": {
+              "Ref": "AWS::AccountId",
+            },
             "AGENTX_ENV": "staging",
-            "AGENTX_METRICS_NAMESPACE": "AgentX/staging",
-            "AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID": "agentx-staging-project-setup-runtime-v1",
+            "AGENTX_NAMES": {
+              "Fn::Join": [
+                "",
+                [
+                  "{"ck":"",
+                  {
+                    "Ref": "ChatGptConnectionKey03C49F9D",
+                  },
+                  "","dl":"",
+                  {
+                    "Fn::GetAtt": [
+                      "SessionsDeleterB48741EA",
+                      "Name",
+                    ],
+                  },
+                  "","dn":"",
+                  {
+                    "Fn::GetAtt": [
+                      "DeveloperTaskNotifierNoticeDeadLetterQueue3C87E1D7",
+                      "QueueName",
+                    ],
+                  },
+                  "","dq":"",
+                  {
+                    "Fn::GetAtt": [
+                      "DispatchDeadLetterQueue3E30F4B8",
+                      "QueueName",
+                    ],
+                  },
+                  "","ds":"",
+                  {
+                    "Fn::GetAtt": [
+                      "DeveloperTaskNotifierStreamFailureQueue58891933",
+                      "QueueName",
+                    ],
+                  },
+                  "","if":"",
+                  {
+                    "Ref": "DeveloperSignInFunction10B62B05",
+                  },
+                  "","pe":"",
+                  {
+                    "Ref": "PlanEvidence3615C4CB",
+                  },
+                  "","pv":"",
+                  {
+                    "Fn::GetAtt": [
+                      "SessionsProvisioner9C44055B",
+                      "Name",
+                    ],
+                  },
+                  "","sl":"",
+                  {
+                    "Ref": "SlackThreads36E14C1E",
+                  },
+                  "","so":"",
+                  {
+                    "Ref": "SlackOrchestratorTaskRole2372FE40",
+                  },
+                  "","sq":"",
+                  {
+                    "Fn::GetAtt": [
+                      "SlackRequestQueueCC82C864",
+                      "QueueName",
+                    ],
+                  },
+                  "","sr":"",
+                  {
+                    "Fn::GetAtt": [
+                      "SlackRequestDeadLetterQueueBBBDDF4E",
+                      "QueueName",
+                    ],
+                  },
+                  "","st":"",
+                  {
+                    "Ref": "DeveloperSignInTable26CE739E",
+                  },
+                  "","ti":"",
+                  {
+                    "Ref": "HttpApi",
+                  },
+                  "","tr":"",
+                  {
+                    "Ref": "TurnRecords69ECFCD9",
+                  },
+                  ""}",
+                ],
+              ],
+            },
             "AGENTX_WORKFLOW_DEPENDENCIES_ENABLED": {
               "Ref": "WorkflowDependenciesEnabled",
             },
@@ -2616,28 +2766,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
             "CALLBACK_SIGNING_KEY": {
               "Ref": "CallbackSigningKey",
-            },
-            "CHATGPT_CONNECTION_KEY_ARN": {
-              "Fn::GetAtt": [
-                "ChatGptConnectionKey03C49F9D",
-                "Arn",
-              ],
-            },
-            "CONNECTOR_SECRETS_ROLE_ARN": {
-              "Fn::GetAtt": [
-                "ConnectorSecretsRole",
-                "Arn",
-              ],
-            },
-            "CONNECTOR_SECRET_PREFIX": "agentx/staging/connectors/",
-            "DELETER_ARN": {
-              "Ref": "SessionsDeleterB48741EA",
-            },
-            "DEVELOPER_IDENTITY_FUNCTION_ARN": {
-              "Fn::GetAtt": [
-                "DeveloperSignInFunction10B62B05",
-                "Arn",
-              ],
             },
             "DEVELOPER_OIDC_ISSUER": {
               "Ref": "DeveloperOidcIssuer",
@@ -2650,23 +2778,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
             "DEVELOPER_SIGNIN_SLACK_SINCE": {
               "Ref": "DeveloperSignInSlackSince",
-            },
-            "DEVELOPER_SIGNIN_TABLE_NAME": {
-              "Ref": "DeveloperSignInTable26CE739E",
-            },
-            "DEVELOPER_TOKEN_ISSUER": {
-              "Fn::Join": [
-                "",
-                [
-                  {
-                    "Fn::GetAtt": [
-                      "HttpApi",
-                      "ApiEndpoint",
-                    ],
-                  },
-                  "/v1/auth",
-                ],
-              ],
             },
             "EC2_WORKER_LAUNCH_TEMPLATE_ID": {
               "Ref": "Ec2WorkerLaunchTemplateId",
@@ -2683,69 +2794,23 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "GITHUB_APP_PRIVATE_KEY_SECRET_ARN": {
               "Ref": "GitHubAppPrivateKeySecretArn",
             },
-            "HEALTH_DEAD_LETTER_QUEUES": {
-              "Fn::Join": [
-                "",
-                [
-                  "{"dispatch":"",
-                  {
-                    "Ref": "DispatchDeadLetterQueue3E30F4B8",
-                  },
-                  "","slack-requests":"",
-                  {
-                    "Ref": "SlackRequestDeadLetterQueueBBBDDF4E",
-                  },
-                  "","developer-notices":"",
-                  {
-                    "Ref": "DeveloperTaskNotifierNoticeDeadLetterQueue3C87E1D7",
-                  },
-                  "","developer-notice-stream":"",
-                  {
-                    "Ref": "DeveloperTaskNotifierStreamFailureQueue58891933",
-                  },
-                  ""}",
-                ],
-              ],
-            },
             "MCP_CONFIRM_ELICITATION": {
               "Ref": "McpConfirmElicitation",
             },
             "OIDC_ISSUER": {
               "Ref": "OidcIssuer",
             },
-            "PLAN_EVIDENCE_FUNCTION_NAME": {
-              "Ref": "PlanEvidence3615C4CB",
-            },
-            "PROVISIONER_ARN": {
-              "Ref": "SessionsProvisioner9C44055B",
-            },
             "SLACK_MEMBER_WORKSPACE_LIMIT": {
               "Ref": "SlackMemberWorkspaceLimit",
-            },
-            "SLACK_ORCHESTRATOR_ROLE_ARN": {
-              "Fn::GetAtt": [
-                "SlackOrchestratorTaskRole2372FE40",
-                "Arn",
-              ],
             },
             "SLACK_ORGANIZATION_WORKSPACE_LIMIT": {
               "Ref": "SlackOrganizationWorkspaceLimit",
             },
-            "SLACK_REQUEST_QUEUE_URL": {
-              "Ref": "SlackRequestQueueCC82C864",
-            },
             "SLACK_TEAM_ID": {
               "Ref": "SlackTeamId",
             },
-            "SLACK_THREADS_TABLE_NAME": {
-              "Ref": "SlackThreads36E14C1E",
-            },
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",
-            },
-            "SWEBENCH_SETTINGS_PREFIX": "/agentx/staging/",
-            "TURN_RECORDS_TABLE_NAME": {
-              "Ref": "TurnRecords69ECFCD9",
             },
           },
         },
@@ -2834,22 +2899,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "MetricTransformations": [
           {
             "MetricName": "EvalBatchWatcherFailed",
-            "MetricNamespace": "AgentX/staging",
-            "MetricValue": "1",
-          },
-        ],
-      },
-      "Type": "AWS::Logs::MetricFilter",
-    },
-    "BrokerLogsGithubInstallRequestNoticeFailedMetricC2F13A67": {
-      "Properties": {
-        "FilterPattern": "{ $.event = "github.install_request_notice_failed" }",
-        "LogGroupName": {
-          "Ref": "BrokerLogs003CD6FC",
-        },
-        "MetricTransformations": [
-          {
-            "MetricName": "GithubInstallRequestNoticeFailed",
             "MetricNamespace": "AgentX/staging",
             "MetricValue": "1",
           },
@@ -4023,6 +4072,17 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "Effect": "Deny",
                   "Resource": "*",
                   "Sid": "NeverUntag",
+                },
+                {
+                  "Action": "secretsmanager:DeleteSecret",
+                  "Condition": {
+                    "Bool": {
+                      "secretsmanager:ForceDeleteWithoutRecovery": "true",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": "*",
+                  "Sid": "NeverDeleteWithoutRecovery",
                 },
               ],
               "Version": "2012-10-17",
@@ -6624,35 +6684,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
       },
       "Type": "AWS::ApiGatewayV2::Route",
-    },
-    "GithubInstallRequestReminderSchedule": {
-      "Properties": {
-        "FlexibleTimeWindow": {
-          "Mode": "OFF",
-        },
-        "ScheduleExpression": "rate(1 hour)",
-        "State": "ENABLED",
-        "Target": {
-          "Arn": {
-            "Fn::GetAtt": [
-              "BrokerE1355FD6",
-              "Arn",
-            ],
-          },
-          "Input": "{"kind":"github-install-request-reminders"}",
-          "RetryPolicy": {
-            "MaximumEventAgeInSeconds": 300,
-            "MaximumRetryAttempts": 2,
-          },
-          "RoleArn": {
-            "Fn::GetAtt": [
-              "GithubWebhookRecoveryRoleD4894C8E",
-              "Arn",
-            ],
-          },
-        },
-      },
-      "Type": "AWS::Scheduler::Schedule",
     },
     "GithubWebhookRecoveryRoleD4894C8E": {
       "Properties": {
@@ -9996,6 +10027,13 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "states:StartExecution",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SessionsDeleterB48741EA",
+              },
+            },
+            {
               "Action": [
                 "ec2:DescribeInstances",
                 "ec2:DescribeVolumes",
@@ -10613,6 +10651,32 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "MetricName": "ReconcilerStuckProvisioning",
         "Namespace": "AgentX/staging",
         "Period": 900,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "notBreaching",
+      },
+      "Type": "AWS::CloudWatch::Alarm",
+    },
+    "SessionsStuckSetupChecksAlarm69266D82": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "OperatorAlertsA2431256",
+          },
+        ],
+        "AlarmDescription": "The reconciler could not close a project setup check that is over 50 minutes old, on two runs in a row; the check still holds a workspace slot. Check the reconciler's logs for stuck_setup_check.close_failed and stuck_setup_check.kept events.",
+        "AlarmName": "agentx-staging-StuckSetupChecks",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "EvaluationPeriods": 2,
+        "MetricName": "ReconcilerStuckSetupChecksKept",
+        "Namespace": "AgentX/staging",
+        "Period": 600,
         "Statistic": "Maximum",
         "Tags": [
           {

@@ -205,9 +205,9 @@ export interface OwnerCap {
   seen?: OwnerTotalSeen;
 }
 
-/** Why Rovara moved something of a member's to someone else: the person was removed from the org, or merged into another member. */
+/** Why Rovara moved something of a member's to someone else: the person was removed from the org, merged into another member, or stopped being a maintainer of the project (accountable only). */
 export interface MoveCause {
-  kind: "member_removed" | "member_merged";
+  kind: "member_removed" | "member_merged" | "project_role_changed";
   developerId: string;
 }
 
@@ -732,7 +732,8 @@ export class AgentStore {
 
   /**
    * Task 33: the active agents (and built-ins it is accountable for) whose monthly budgets count in `owner`'s total, each with that budget. An id that names a
-   * merged duplicate counts for its survivor.
+   * merged duplicate counts for its survivor. An agent whose base is $0 is listed too (Plan 4 review I-2): it adds nothing to the counter, but this month's
+   * top-ups on it are spendable, so the effective total adds them. One with no base at all, or an archived one, is not listed.
    */
   async ownerAgents(orgId: OrgId, owner: string): Promise<Array<{ agentId: AgentId; monthlyBudgetUsd: number }>> {
     const survivors = new Map<string, Promise<string>>();

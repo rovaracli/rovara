@@ -24,6 +24,7 @@ import {
   defaultModelSourceOrder,
   diffRecipes,
   isBuiltinAgentId,
+  memberAcceptRunLimitUsd,
   projectAllows,
   recipeRunner,
   type AgentAccessLevel,
@@ -55,7 +56,8 @@ import {
 import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
-import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, type ChangeResult } from "./changes.js";
+import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, versionSafety, type ChangeResult } from "./changes.js";
+import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
@@ -72,7 +74,7 @@ import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependen
 import { isProjectConnectorRoute, registerProjectConnectorApprovals, routeProjectConnectorRequest } from "../connections/project-connectors.js";
 import { routeModelSourceRequest, type ModelSourceRouteDependencies } from "../model-sources/routes.js";
 import {
-  applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicyWithRevision,
+  applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicy, readSpendPolicyWithRevision,
   writeProjectAi, writeSpendPolicy, type ProjectAiChange,
 } from "../spend/settings.js";
 import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type OwnerCap, type RequestMark } from "./store.js";
@@ -109,6 +111,9 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
 async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<StatusReply> {
   if (deps.startRun === undefined) throw agentXError("NOT_FOUND", "starting runs is not set up in this deployment");
   const input = parseBody(RunBodySchema, body);
+  // A version that is not the current one and is less safe than it waits for the agent's owner (owner decision 2026-10-22): nothing starts until they OK it.
+  const waitingForOwner = await gateRunVersion(deps, caller, { requestId: input.requestId, project: input.project, agent: { agentId, ...(input.version === undefined ? {} : { version: input.version }) }, input: input.input, origin: "app" });
+  if (waitingForOwner !== undefined) return new StatusReply(202, { status: NEEDS_OWNER_APPROVAL, confirmUrl: waitingForOwner.confirmUrl, changes: waitingForOwner.changes });
   const started = await deps.startRun(caller, {
     requestId: input.requestId, project: input.project, input: input.input,
     agent: { agentId, ...(input.version === undefined ? {} : { version: input.version }) },
@@ -129,7 +134,7 @@ const waiting = (result: Extract<ChangeResult<unknown>, { applied: false }>): St
 export function isAgentRoute(pathname: string): boolean {
   return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget)(\/|$)/.test(pathname)
     || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy)(\/|$)/.test(pathname)
-    || /^\/v1\/app\/tasks\/[^/]+\/continue-as-task$/.test(pathname)
+    || /^\/v1\/app\/tasks\/[^/]+\/(continue-as-task|run-limit-request)$/.test(pathname)
     || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors)(\/|$)/.test(pathname);
 }
 
@@ -173,6 +178,7 @@ const ProjectAiBodySchema = z.object({
   projectPays: z.boolean().optional(),
   sourceOrder: z.array(ModelSourceIdSchema).nullable().optional(),
   planningLimitUsd: z.object({ QUICK: Amount.nullable().optional(), FULL: Amount.nullable().optional() }).strict().optional(),
+  memberAcceptRunLimitUpToUsd: Amount.nullable().optional(),
 }).strict();
 const BudgetBodySchema = z.object({ requestId: RequestIdSchema, monthlyUsd: Amount.nullable().optional(), maxPerRunUsd: Amount.nullable().optional() }).strict();
 const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
@@ -328,19 +334,37 @@ async function getAgent(deps: AgentRouteDependencies, caller: AgentCaller, agent
   };
 }
 
+/** What a version list says of one version against the one that runs now (owner decision 2026-10-22): `current`, `same_or_safer` (a run may use it as it is) or `less_safe` (a run of it needs the owner's OK; `lessSafe` says why). */
+async function safetyMarks(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId, agent: AgentRecord | undefined, versions: readonly number[]): Promise<Map<number, Shown>> {
+  const marks = new Map<number, Shown>();
+  for (const version of versions) {
+    try {
+      const { safety } = await versionSafety(deps, orgId, agentId, version, agent);
+      marks.set(version, safety.kind === "less_safe" ? { safety: "less_safe", needsOwnerOk: true, lessSafe: safety.changes } : { safety: safety.kind, needsOwnerOk: false });
+    } catch (error) {
+      // A version that can't be resolved now (the agent it builds on was archived): it can't run either, and the list still shows it.
+      if (!(error instanceof AgentXError)) throw error;
+      marks.set(version, { safety: "unknown", needsOwnerOk: false, problem: error.message.replace(`${error.code}: `, "") });
+    }
+  }
+  return marks;
+}
+
 async function listVersions(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<{ versions: Shown[] }> {
   const { agent } = await requireReadableAgent(deps, caller, agentId, "view");
   if (!("owner" in agent)) {
     const pinned = (await deps.store.getBuiltinSettings(caller.orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId);
     const releases = BUILTIN_AGENTS[agentId as keyof typeof BUILTIN_AGENTS].versions;
-    return { versions: releases.map((release) => ({ version: release.version, digest: release.digest, releasedIn: release.releasedIn, notes: release.notes, current: release.version === pinned })) };
+    const marks = await safetyMarks(deps, caller.orgId, agentId, undefined, releases.map((release) => release.version));
+    return { versions: releases.map((release) => ({ version: release.version, digest: release.digest, releasedIn: release.releasedIn, notes: release.notes, current: release.version === pinned, ...marks.get(release.version) })) };
   }
   const versions = await deps.store.listVersions(caller.orgId, agentId);
+  const marks = await safetyMarks(deps, caller.orgId, agentId, agent, versions.map((version) => version.version));
   return {
     versions: versions.map((version) => ({
       version: version.version, name: version.name, description: version.description, digest: version.digest,
       publishedBy: version.publishedBy, publishedAt: version.publishedAt, ...(version.note === undefined ? {} : { note: version.note }),
-      ...(version.extends === undefined ? {} : { extends: version.extends }), current: version.version === agent.currentVersion,
+      ...(version.extends === undefined ? {} : { extends: version.extends }), current: version.version === agent.currentVersion, ...marks.get(version.version),
     })),
   };
 }
@@ -727,7 +751,7 @@ async function holdingCap<T>(
   };
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
-    const monthly = ownerShare(after)?.usd;
+    const monthly = ownerShare(after)?.usd || undefined; // a $0 base has no new limit to name
     const { record, message } = await requestOwnerCap(deps, {
       orgId: caller.orgId, agentId, requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
       ...(monthly === undefined ? {} : { newLimitUsd: monthly }), ...(newOwner === undefined ? {} : { newOwner }),
@@ -753,10 +777,15 @@ const waitingReplay = (result: unknown): StatusReply | undefined =>
 
 async function projectAiView(deps: AgentRouteDependencies, orgId: OrgId, stored: { settings: ProjectAiSettings; revision: number }): Promise<Shown> {
   const orgOrder = deps.orgSourceOrder === undefined ? defaultModelSourceOrder(false) : await deps.orgSourceOrder(orgId);
+  const policy = await readSpendPolicy(deps, orgId);
   return {
     settings: stored.settings,
     revision: stored.revision,
-    effective: { sourceOrder: projectSourceOrder(stored.settings, orgOrder), planningLimitUsd: { QUICK: planningLimit(stored.settings, "QUICK"), FULL: planningLimit(stored.settings, "FULL") } },
+    effective: {
+      sourceOrder: projectSourceOrder(stored.settings, orgOrder), planningLimitUsd: { QUICK: planningLimit(stored.settings, "QUICK"), FULL: planningLimit(stored.settings, "FULL") },
+      // What a member can accept now, as the acceptance applies it: the setting or the lead threshold, held to the admin threshold.
+      memberAcceptRunLimitUpToUsd: memberAcceptRunLimitUsd(stored.settings, policy),
+    },
   };
 }
 
@@ -766,15 +795,26 @@ async function getProjectAi(deps: AgentRouteDependencies, caller: AgentCaller, p
 }
 
 async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentCaller, project: string, body: unknown): Promise<Shown> {
-  if (!isOrgAdmin(caller)) throw agentXError("FORBIDDEN", "Only an org owner or admin can change a project's AI settings.");
+  const admin = isOrgAdmin(caller);
   const input = parseBody(ProjectAiBodySchema, body);
   const { requestId: _requestId, ...change } = input; // eslint-disable-line @typescript-eslint/no-unused-vars -- the id is the request's, not a setting
-  if (Object.keys(change).length === 0) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyBudgetUsd, projectPays, sourceOrder and planningLimitUsd");
-  await roleOnProject(deps, caller, project);
+  if (Object.keys(change).length === 0) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd and memberAcceptRunLimitUpToUsd");
+  // Owner decision 3: a project maintainer may change what a member can accept as a run limit, and nothing else of the project's AI settings.
+  const acceptOnly = Object.keys(change).every((field) => field === "memberAcceptRunLimitUpToUsd");
+  if (!admin && !acceptOnly) throw agentXError("FORBIDDEN", "Only an org owner or admin can change a project's AI settings.");
+  const role = await roleOnProject(deps, caller, project);
+  if (!admin && role !== "maintainer") throw agentXError("FORBIDDEN", "Only a project maintainer, or an org owner or admin, can change what a member may accept as a run limit.");
   const { mark, replay } = await markRequest(deps, caller, "project-ai", project, input);
   if (replay !== undefined) return projectAiView(deps, caller.orgId, replay.result as { settings: ProjectAiSettings; revision: number });
   const current = await readProjectAiWithRevision(deps, caller.orgId, project);
   const next = applyProjectAiChange(current.settings, change as ProjectAiChange);
+  // Fix wave re-check N-1 (owner ruling): a member's allowance is never more than what a project maintainer may accept, the admin threshold; above it an org admin accepts.
+  if (next.memberAcceptRunLimitUpToUsd !== undefined && next.memberAcceptRunLimitUpToUsd !== current.settings.memberAcceptRunLimitUpToUsd) {
+    const adminThresholdUsd = (await readSpendPolicy(deps, caller.orgId)).adminApprovalThresholdUsd;
+    if (next.memberAcceptRunLimitUpToUsd > adminThresholdUsd) {
+      throw agentXError("CONFIG_INVALID", `memberAcceptRunLimitUpToUsd: can't be more than $${String(adminThresholdUsd)}, the amount above which your company needs an org admin's approval for a run limit`);
+    }
+  }
   await requireWithinTrial(deps, caller.orgId, "monthlyBudgetUsd", next.monthlyBudgetUsd, TRIAL_LIMITS_R49.projectMonthlyUsd, "project budget");
   if (next.sourceOrder !== undefined) {
     const allowed = new Set(deps.orgSourceOrder === undefined ? defaultModelSourceOrder(false) : await deps.orgSourceOrder(caller.orgId));
@@ -953,5 +993,6 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
 }
 
 registerAgentApprovals();
+registerRunVersionApproval();
 registerProjectConnectorApprovals();
 registerCommentTriggerApprovals();

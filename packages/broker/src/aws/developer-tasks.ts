@@ -161,7 +161,12 @@ import {
   ROVARA_CODE_AGENT_ID,
   newPrefixedId,
   sessionLink,
+  RUN_LIMIT_ASK_COOLDOWN_MS,
   RUN_LIMIT_BLOCK_PREFIX,
+  isRunLimitBlockReason,
+  heldPlanStartKey,
+  planRunLimitSubject,
+  runLimitAskedKey,
   runLimitBlockText,
   type ProjectRole,
 } from "@agentx/contracts";
@@ -170,7 +175,7 @@ import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDec
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
 import { admitWork } from "../spend/admission.js";
-import { acceptRunLimit, estimateRun, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
+import { acceptRunLimit, estimateRun, planRunLimit, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
 import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import type { ModelAccess } from "../model-proxy/access.js";
@@ -204,13 +209,14 @@ import {
   type TurnParty,
   type WorkspaceCharge,
 } from "../developer/task-records.js";
-import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
+import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, operationEndDispatchItem, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../developer/plan-evidence-jobs.js";
 import { loadPlanEvidence, loadWorkflowDocument, shortenMarkdown, type LoadedDocument } from "../developer/plan-artifacts.js";
 import type { DeveloperTaskActions, TransactItems } from "./developer-task-actions.js";
 import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { setupWatchKey } from "./stuck-setup.js";
+import { appendOperationEvent } from "./operation-events.js";
 import { operationKey } from "./cancellation.js";
 import { resumeTaskDispatch } from "./task-dispatch-access.js";
 import { feedbackReviewNoticeId } from "../developer/notifications.js";
@@ -243,7 +249,7 @@ import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "..
 import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
-import { onTaskEnded, type TaskEndOutcome } from "../agents/task-end.js";
+import { END_LEASE_MS, hasTaskEndHandlers, onTaskEnded, onTaskPaused, type TaskEndOutcome } from "../agents/task-end.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -323,6 +329,12 @@ export interface DeveloperTaskRouteDependencies {
    * with its audit flushed once that committed. Absent where agents are not set up.
    */
   withdrawSpendRequests?(task: DeveloperTaskRecord): Promise<{ items: TransactItems; flush(): Promise<void> }>;
+  /**
+   * Final fix wave (owner decision 2 = A): whether `caller` may go on with a task paused on a run limit, planning limit or max per run by a Continue, a workflow
+   * retry or a send-back, which would start a new window and skip that approval. Allowed only to a person who may decide the request themselves. Absent where
+   * agents are not set up.
+   */
+  pausedTaskGate?(caller: { orgId: OrgId; developerId: string }, task: DeveloperTaskRecord): Promise<{ allowed: true } | { allowed: false; who: string }>;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -1332,8 +1344,13 @@ export async function taskView(
   const derived = run === undefined ? derivedWithE2E : statusOfRun(derivedWithE2E, run, task);
   // Plan 3, Task 32: a task waiting for money says so, with its request, what planning found and a test's offer.
   const pausedView = await pauseViewOf(deps, task, operations);
+  const runLimit = await runLimitViewOf(deps, task);
   // #225: a task whose setup failed shows its prepare's events (the failure the broker recorded).
-  const eventsOf = derived.current ?? derived.failedPrepare;
+  // Plan 2, Task 22: a task still starting (nothing but its prepare so far) shows its prepare's events, which is where a resumed task's note lands.
+  const startingPrepare = derived.status === "STARTING" && derived.current === undefined
+    ? operations.filter((operation) => operation.kind === "prepare").sort((left, right) => left.createdAt.localeCompare(right.createdAt)).at(-1)
+    : undefined;
+  const eventsOf = derived.current ?? derived.failedPrepare ?? startingPrepare;
   const operationEvents = eventsOf === undefined || options.events === 0
     ? []
     : recentTaskEvents(await deps.actions.eventsNewestFirst(eventsOf.id, 200), options.events);
@@ -1415,6 +1432,7 @@ export async function taskView(
     ...(task.agent === undefined ? {} : { agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version, builtin: task.agent.builtin } }),
     ...(run === undefined ? {} : { run }),
     ...pausedView,
+    ...(runLimit === undefined ? {} : { runLimit }),
     ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate }),
     ...(sessionId === undefined ? {} : { sessionId, ...(deps.issuer === undefined ? {} : { sessionUrl: sessionLink(new URL(deps.issuer).origin, sessionId) }) }),
     createdAt: task.createdAt,
@@ -1561,6 +1579,14 @@ async function confirmMayShareInto(deps: DeveloperTaskRouteDependencies, caller:
  * it names the origin, who started it and who pays, takes a run limit and a result contract, and makes the start write the run's request item; its
  * answer then carries the run's limits. The AI-tool route and the Slack start pass nothing.
  */
+/**
+ * Whether this person's start with this request ID was already made (R8): the first task is returned to a retry whatever changed since, so a gate that would
+ * refuse or hold a new start (an older version that waits for the agent's owner) must let the retry through to be answered with it.
+ */
+export async function startAlreadyMade(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">, caller: DeveloperCaller, requestId: string): Promise<boolean> {
+  return await get<{ taskId: string }>(deps, startIdempotencyKey(caller.developerId, requestId)) !== undefined;
+}
+
 export async function startTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, value: unknown, run?: RunStartOptions): Promise<{ task: DeveloperTaskView; run?: AgentRunResult }> {
   const request = parse(StartDeveloperTaskRequestSchema, value, deps, "start");
   const turns = turnTable(deps);
@@ -1574,10 +1600,16 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(request.input === undefined ? {} : { input: request.input }),
   });
   const idempotencyKey = startIdempotencyKey(caller.developerId, request.requestId);
+  // A start of a published older version that waited for the agent's owner was started, once approved, with `input` (the text again) and no title, so a client's
+  // retry of the first request, which names the instructions alone or adds a title, is the same start (fix wave re-check, minor 2).
+  const approvedFormHash = typeof request.agent?.version !== "number" ? undefined : hashJson({
+    project: request.project, instructions: request.instructions, title: null, shareToChannel: null, shareMode: null, channel: null,
+    agent: request.agent, input: request.input ?? { text: request.instructions },
+  });
   // loadOwnedTask is the ownership check before taskView's reads. Access is not checked again: a
   // retry returns the first task whatever changed since (R8), as every read of a task does (R11).
   const returning = async (previous: { taskId: string; payloadHash: string }) => {
-    if (previous.payloadHash !== payloadHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another task; use a new request_id");
+    if (previous.payloadHash !== payloadHash && previous.payloadHash !== approvedFormHash) throw agentXError("IDEMPOTENCY_CONFLICT", "this request_id was already used for another task; use a new request_id");
     const task = await loadOwnedTask(deps, caller, previous.taskId);
     return { task: await taskView(deps, task, { events: DEVELOPER_EVENTS_DEFAULT, details: false }), ...(run === undefined ? {} : { run: runResultOf(task) }) };
   };
@@ -1652,6 +1684,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         ...(run?.chain === undefined ? {} : { chain: run.chain }),
         ...(run?.runLimitUsd === undefined ? {} : { runLimitUsd: run.runLimitUsd }),
         ...(run?.resultContract === undefined ? {} : { resultContract: run.resultContract }),
+        ...(run?.versionApproved === true ? { versionApproved: true as const } : {}),
         repositories: project.definition.repositories.map((repository) => ({ name: repository.name, url: repository.url, ...(repository.installationId === undefined ? {} : { installationId: repository.installationId }) })),
         ...(project.definition.models === undefined ? {} : { projectApproved: project.definition.models.approved }),
       });
@@ -1715,7 +1748,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
-  const preparation = await deps.actions.preparation(identity, project, request.requestId, prepared === undefined || prepared.checkout.length === 0 ? undefined : { checkout: prepared.checkout });
+  const preparation = await deps.actions.preparation(identity, project, request.requestId, prepared?.runner !== "agent_steps" ? undefined : { ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }), readOnly: true });
   const workspaceId = preparation.workspace.id;
   const conversationId = randomUUID();
   const revision = project.definition.revision;
@@ -1743,7 +1776,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
       // The pull requests the held preparation checks out are kept with the pause: its dispatch is built again when the run limit is raised (Task 32).
-      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }) } } } : {}),
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }), ...(prepared.runner === "agent_steps" ? { readOnly: true as const } : {}) } } } : {}),
     }),
   };
   const index: DeveloperTaskIndexRecord = {
@@ -2056,6 +2089,19 @@ async function capWindowBaseline(deps: DeveloperTaskRouteDependencies, task: Dev
 const staleBudgetPause = (task: DeveloperTaskRecord): boolean => task.budgetPause !== undefined && task.budgetPause.firstDispatch === undefined;
 
 /**
+ * Owner decision 2 = A: a person's Continue, retry or send-back never skips an approval unless they may decide it themselves. Refused, naming who is asked, before
+ * anything is read for or written to the task. A system resume (`spendResume`, a spend approval going on) is the approval itself.
+ */
+async function requireMayGoOn(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<void> {
+  if (deps.spendResume !== undefined || deps.pausedTaskGate === undefined || !staleBudgetPause(task)) return;
+  const gate = await deps.pausedTaskGate({ orgId: deps.orgId, developerId: caller.developerId }, task);
+  if (!gate.allowed) throw agentXError("WORKSPACE_BUSY", `This run is waiting for ${gate.who} to approve more. Continuing can't skip that approval.`);
+}
+
+/** An agent-step run takes no free-form turn: the engine owns its steps, and a coding session in its workspace would break the run's no-shell guarantee. */
+const AGENT_RUN_TURN_REFUSAL = "An agent run takes no follow-up. Start a new run instead.";
+
+/**
  * The clause and values that record the window in the same update that moves the task, since one transaction cannot touch a record twice. The clause comes
  * last in its update: with `task`, it also removes a stale mid-run pause (Task 32).
  */
@@ -2076,6 +2122,27 @@ function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: Develo
   } }];
 }
 
+/** What a `continue` that only resumed a parked task tells the person: the parked operation runs as it was queued, so the new instructions were not used. */
+export const RESUMED_WITH_ORIGINAL_INSTRUCTIONS = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
+
+/**
+ * A parked plain task is redriven exactly as it was queued (its invocation is not rewritten), so a `continue` that resumed it carries its new
+ * instructions nowhere. Say so as an event on the resumed operation, once per request: the task view already shows events to every client. The task
+ * has resumed whether or not this lands, so a failure here is logged (its name only) and never fails the continue.
+ */
+async function noteResumedWithOriginal(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, requestId: string): Promise<void> {
+  try {
+    const workspace = await deps.actions.workspace(task.workspaceId);
+    if (workspace.activeOperationId === null) return;
+    await appendOperationEvent(deps.documentClient as never, deps.tableName, {
+      workspaceId: task.workspaceId, operationId: workspace.activeOperationId, fence: workspace.fence, onceKey: `resumed-original-${requestId}`,
+      event: { type: "progress", timestamp: iso(deps), payload: { message: RESUMED_WITH_ORIGINAL_INSTRUCTIONS } },
+    });
+  } catch (error) {
+    log(deps, { event: "developer.resume_note_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
 async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "continue");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "work");
@@ -2083,12 +2150,17 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
   await creatorGuard(deps, task);
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
+  if (task.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) throw agentXError("WORKSPACE_BUSY", AGENT_RUN_TURN_REFUSAL);
+  await requireMayGoOn(deps, caller, task);
   // A plain task whose dispatch was parked (its creator was a project viewer) comes back by continuing it now that they may work again.
   const resumed = await resumeTaskDispatch(deps, {
     task, peopleRevision: access.peopleRevision ?? 0, actorId: access.actorId, requestId: request.requestId, payloadHash: hashJson(request),
     reauthorize: async () => { await authorizeTaskAction(deps, caller, taskId, "work"); },
   });
-  if (resumed) return { task: await taskView(deps, task, { events: 0, details: false }) };
+  if (resumed) {
+    await noteResumedWithOriginal(deps, task, request.requestId);
+    return { task: await taskView(deps, task, { events: DEVELOPER_EVENTS_DEFAULT, details: false }) };
+  }
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
   // Ruling R38: a Continue starts a new window of the task's own cap, at what its keys have spent so far. A proxy that cannot
@@ -2142,7 +2214,7 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
   if (held === undefined) return;
   const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
   if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${task.project}\` revision ${task.startingRevision} is no longer registered`);
-  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, held.checkout === undefined ? {} : { checkout: held.checkout });
+  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, { ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true } : {}) });
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
   const items: TransactItems = [
@@ -2303,6 +2375,34 @@ async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: Developer
     if (said !== undefined) out.planningSoFar = Array.from(said).slice(0, 4096).join("");
   }
   return out;
+}
+
+/**
+ * Plan 3, Task 35b: what the view says of a plan blocked on its run limit (and of nothing else): the limit it waits for, the request that asks for it while one is
+ * open and still has time, and whether the owner may ask again (`POST /v1/app/tasks/{id}/run-limit-request`). A request whose time has run out reads as ended,
+ * as it does everywhere, so the owner is not told to wait for one nobody can decide.
+ */
+async function runLimitViewOf(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<DeveloperTaskView["runLimit"]> {
+  if (task.orgId === undefined || task.closedAt !== undefined || task.workflow === undefined || !blockedOnRunLimit(task.workflow)) return undefined;
+  let limitUsd: number;
+  try {
+    limitUsd = await planRunLimit(estimateDependencies(deps), task);
+  } catch (error) {
+    // The estimate's history could not be read: the rest of the view still stands.
+    log(deps, { event: "developer.run_limit_view_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+    return undefined;
+  }
+  const slot = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, planRunLimitSubject(task.taskId), "run_limit"));
+  const record = slot?.spendRequestId === undefined ? undefined : await get<{ orgId?: string; status?: string; expiresAt?: string }>(deps, spendRequestKey(task.orgId, slot.spendRequestId));
+  const open = record?.orgId === task.orgId && record.status === "PENDING" && Date.parse(record.expiresAt ?? "") > deps.now() ? slot?.spendRequestId : undefined;
+  if (open !== undefined) return { limitUsd, spendRequestId: open, canAskAgain: false };
+  // Approved, and the start after the approval is still to be made: nothing to ask for.
+  if (await get<Record<string, unknown>>(deps, heldPlanStartKey(task.orgId, task.taskId)) !== undefined) return { limitUsd, canAskAgain: false };
+  // Asked a few minutes ago: the next ask is allowed from then.
+  const last = await get<{ at?: string }>(deps, runLimitAskedKey(task.orgId, task.taskId));
+  const lastAt = typeof last?.at === "string" ? Date.parse(last.at) : Number.NaN;
+  if (Number.isFinite(lastAt) && lastAt + RUN_LIMIT_ASK_COOLDOWN_MS > deps.now()) return { limitUsd, canAskAgain: false, askAgainAfter: new Date(lastAt + RUN_LIMIT_ASK_COOLDOWN_MS).toISOString() };
+  return { limitUsd, canAskAgain: true };
 }
 
 /**
@@ -2678,7 +2778,7 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
       asked = await ask({
         kind: "run_limit", resume: "implement", orgId: deps.orgId, taskId: task.taskId, requestId, newLimitUsd: decision.runLimitUsd,
         amountUsd: Math.max(0, cleanUsd(decision.runLimitUsd - (task.budgetUsd ?? 0))), approverRole: decision.approverRole, requestedBy: { kind: "member", developerId: caller.developerId },
-        reason: `Approving this plan sets a run limit of $${String(decision.runLimitUsd)}, which needs ${decision.needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.`,
+        reason: `Approving this plan sets a run limit of $${String(decision.runLimitUsd)}, which needs ${decision.needs === "maintainer" ? "a project maintainer's" : decision.needs === "agent_owner" ? "the agent owner's" : "an admin's"} approval.`,
       }) !== undefined;
     } catch (error) {
       if (error instanceof AgentXError) throw error;
@@ -2687,7 +2787,8 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
     }
   }
   // "I've asked for it" only when a request exists.
-  return { accepted: false, message: runLimitBlockText(decision.runLimitUsd, decision.needs, asked) };
+  // Option E: when the project or an agent's owner pays, the wait is said as such, and the words are the same whether or not the seam made a request.
+  return { accepted: false, message: decision.message.startsWith(RUN_LIMIT_BLOCK_PREFIX) ? runLimitBlockText(decision.runLimitUsd, decision.needs as "maintainer" | "admin", asked) : decision.message };
 }
 
 /** The claim IDs this task's earlier structured documents dropped (they may not come back), in order; a document that cannot be read is skipped. */
@@ -2837,6 +2938,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     const selected = workflowSelectedChecks({ ...policy, selectedOptionalIds, selectedProposedIds });
     if (selected.length === 0) throw agentXError("CONFIG_INVALID", "keep at least one check before retrying verification, or close the task");
     await actionableWorkspace(deps, task);
+    await requireMayGoOn(deps, caller, task);
     const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
     const receivedAt = iso(deps);
     const { blockReason: _previousBlockReason, ...unblocked } = workflow;
@@ -2951,6 +3053,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   if (request.expectedRevision !== undefined && request.expectedRevision !== task.workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
@@ -3161,7 +3264,8 @@ async function queueWorkflowCoding(
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const { workflow } = task;
-  // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew.
+  // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew, unless that skips an approval they may not decide.
+  await requireMayGoOn(deps, caller, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
   try {
@@ -3213,7 +3317,7 @@ const RUN_LIMIT_NOT_APPROVED_REFUSAL = "Coding starts once the run limit is appr
 
 /** A plan blocked on its run limit (Task 34) is unblocked by the run-limit approval only (`resumeAfterRunLimitApproval`), never by a retry or a send-back. */
 const blockedOnRunLimit = (workflow: WorkflowSnapshot): boolean =>
-  workflow.stage === "IMPLEMENT" && workflow.state === "BLOCKED" && workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+  workflow.stage === "IMPLEMENT" && workflow.state === "BLOCKED" && isRunLimitBlockReason(workflow.blockReason);
 
 /**
  * Plan 3, Task 34: the run limit of a plan blocked on it was approved (Task 32's `resume: "implement"`). Sets `budgetUsd` to the approved limit and the window
@@ -3273,6 +3377,7 @@ async function retryWorkflowImplementation(
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
+  await requireMayGoOn(deps, caller, task);
   await actionableWorkspace(deps, task);
   const plan = await approvedCodingPlan(deps, workflow);
   const workflowDependencies = await approvedWorkflowDependencies(deps, task, access.peopleRevision);
@@ -3307,6 +3412,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   }
   if (request.expectedRevision === undefined) throw agentXError("CONFIG_INVALID", "refresh the task and include its current revision before sending it back to coding");
   if (request.expectedRevision !== workflow.revision) throw agentXError("IDEMPOTENCY_CONFLICT", "this send-back is out of date; refresh the task and try again");
+  await requireMayGoOn(deps, caller, task);
   if (!workflowSendBackOffered(workflow)) {
     throw agentXError("CONFIG_INVALID", "there is no current failed check or review finding to send back to coding");
   }
@@ -3839,7 +3945,7 @@ function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, 
         : { status: "Waiting for the owner's approval", nextStep: `The task owner approves or requests changes ${inSlack}.` };
     case "PLAN_REVIEW/BLOCKED": return { status: `Stopped before approval of the ${name}`, nextStep: `Close the task ${inSlack} and start again.` };
     case "IMPLEMENT/READY": case "IMPLEMENT/RUNNING": return { status: "Writing the code", nextStep: "The checks and reviews run when coding finishes." };
-    case "IMPLEMENT/BLOCKED": if (workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true) {
+    case "IMPLEMENT/BLOCKED": if (isRunLimitBlockReason(workflow.blockReason)) {
       return { status: "Waiting for the run limit to be approved", nextStep: owner ? `Coding starts once a project maintainer or an admin approves it, or close the task ${inSlack}.` : "Coding starts once a project maintainer or an admin approves the run limit." };
     }
       return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing
@@ -5847,6 +5953,7 @@ export async function finishTaskClose(
       // First, at positions 0 and 1: releaseConflict reads the cancellation reasons by position.
       await deps.actions.transact([...(release ? releaseItems(deps.tableName, task.charge, task.taskId) : []), ...closing(current)]);
       await endAgentRunOfClosedTask(deps, task);
+      await tellClosedTaskEnd(deps, task);
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
@@ -5855,6 +5962,7 @@ export async function finishTaskClose(
       // Another call finished the close first; its transaction released the counters once.
       if (fresh?.closedAt !== undefined) {
         await endAgentRunOfClosedTask(deps, task);
+        await tellClosedTaskEnd(deps, task);
         return;
       }
       // Ruling F4: the notifier changed the share (it recorded the thread) meanwhile: close that one.
@@ -5921,6 +6029,53 @@ export async function noteTaskEnded(deps: { tableName: string; documentClient: {
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "task_end.not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
     return "failed";
+  }
+}
+
+/**
+ * Plan 3, M-6: a plain task's operation stopped on a budget, and the task is paused (its `budgetPause`), not ended: Task 32 may resume it. Tells the pause
+ * handlers (`onTaskPaused`, as the agent-step engine does) and marks the stop as told on the task (`budgetPauseToldFor`), so a replay or the recovery sweep tells it
+ * once; the mark also says the task's end is still owed (`tellClosedTaskEnd`). Never throws: `failed` means a handler threw or the mark could not be written, and the caller
+ * keeps a recovery row to try again.
+ */
+export async function noteTaskPaused(deps: { tableName: string; documentClient: { send(command: unknown): Promise<unknown> } }, task: DeveloperTaskRecord, operationId: string): Promise<EndTold> {
+  try {
+    if (task.budgetPause === undefined) return "told";
+    await onTaskPaused({ documentClient: deps.documentClient, tableName: deps.tableName, now: Date.now }, task, task.budgetPause.scope);
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET budgetPauseToldFor = :operation", ConditionExpression: "attribute_exists(pk)",
+      ExpressionAttributeValues: { ":operation": operationId },
+    }));
+    return "told";
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "task_pause.not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    return "failed";
+  }
+}
+
+/**
+ * Plan 3, M-6: a plain task (no workflow, no agent-step run) that was closed while its end was still owed (it stopped on a budget, so its end was not told) has ended: tells `closed`. The first
+ * end a task has is the one told, so a task that already ended tells nobody again. Never throws; a close that could not tell is left for the recovery sweep (an `operation_end` row with `endOf: "closed"`).
+ */
+async function tellClosedTaskEnd(deps: { tableName: string; documentClient: { send(command: unknown): Promise<unknown> } }, task: DeveloperTaskRecord): Promise<void> {
+  if (!hasTaskEndHandlers() || task.workflow !== undefined) return;
+  try {
+    const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId)) ?? task;
+    if (fresh.budgetPause === undefined && fresh.budgetPauseToldFor === undefined) return;
+    // An agent-step run's end is its engine's (the close cancels the run above).
+    if (fresh.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) return;
+    const told = await noteTaskEnded(deps, fresh, "closed");
+    // An end that is not finished (a handler threw, or another call is telling it) is left to the recovery sweep, as a plain task's operation end is (Task 22, N1).
+    if (told !== "told" && fresh.orgId !== undefined) {
+      const now = Date.now();
+      const row = operationEndDispatchItem(deps.tableName, {
+        taskId: task.taskId, orgId: fresh.orgId, workspaceId: task.workspaceId, operationId: "close", now: new Date(now).toISOString(),
+        dueAt: new Date(now + (told === "in_progress" ? END_LEASE_MS + 5_000 : 60_000)).toISOString(), endOf: "closed",
+      }) as { Put: { Item: Record<string, unknown> } };
+      await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: row.Put.Item }));
+    }
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "task_end.close_not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
   }
 }
 

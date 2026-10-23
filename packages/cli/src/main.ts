@@ -44,6 +44,7 @@ import { disableEvalChannel, enableEvalChannel, parseMaxCostUsd, showEvalChannel
 import { exportTurns, parseSince } from "./admin/turns.js";
 import { loginWithPkce, openSystemBrowser, sanitizeServerText, tokenStoreKey } from "./auth.js";
 import { loadProjectConfig } from "./config.js";
+import { checkDeveloperProject, projectCheckText } from "./developer/project-check.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { resolveDeveloperEnvironment } from "./developer/config.js";
 import {
@@ -78,11 +79,11 @@ import { cleanConnectionSecret, connectionsAdd, connectionsAddText, connectionsC
 import { INIT_STEP_IDS, type InitStepId } from "./init/install-state.js";
 import {
   agentsAccountable, agentsAdopt, agentsArchive, agentsCreate, agentsDiff, agentsDraftGet, agentsDraftSet, agentsList, agentsPublish, agentsRollback, agentsRun,
-  agentsShare, agentsShow, agentsUpdateBase, agentsVersions, approvalsConfirmLink, approvalsList, approvalsShow, commentTriggersOptOut, commentTriggersShow,
+  agentsShare, agentsShow, agentsUpdateBase, agentsVersions, approvalsConfirmLink, approvalsList, approvalsShow, spendRequestConfirmLink, commentTriggersOptOut, commentTriggersShow,
   guardrailsSet, guardrailsShow, projectAgentsChange, projectConnectorsList, projectConnectorsRemove, projectConnectorsSet, skillsAdd, skillsList, sourcesAdd,
   sourcesCheck, sourcesList, sourcesOrder, sourcesRemove, type AppResult,
 } from "./developer/agents.js";
-import { agentsBudget, projectAiSet } from "./developer/spend.js";
+import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
 import { ssmParameterStore, type ParameterStore } from "./environments/parameter-store.js";
@@ -128,6 +129,8 @@ export interface CliDependencies {
    */
   cliInvocation?: CliInvocation;
   fetchImplementation?: typeof fetch;
+  /** Waits between polls (`agentx project check`), for tests. Defaults to a timer. */
+  sleep?: (ms: number) => Promise<void>;
   tokenStore?: TokenStore;
   stdout?: TextWriter;
   stderr?: TextWriter;
@@ -242,6 +245,7 @@ export const DEFAULT_CALLBACK_PORT = 8765;
 export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const services = {
     fetchImplementation: dependencies.fetchImplementation ?? fetch,
+    sleep: dependencies.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); })),
     tokenStore: dependencies.tokenStore ?? new SystemCredentialTokenStore(),
     stdout: dependencies.stdout ?? process.stdout,
     stderr: dependencies.stderr ?? process.stderr,
@@ -793,6 +797,12 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--max-per-run <usd|none>", "the most one run may spend")
     .action(async (agentId: string, options: { monthly?: string; maxPerRun?: string }, command: Command) => printResult(command, await agentsBudget(developerSession(), developerEnv(command), agentId, options)));
   agents
+    .command("spend")
+    .description("what an agent has spent this month, where its runs came from, and its latest runs")
+    .argument("<agent-id>", "the agent's ID")
+    .option("--month <YYYY-MM>", "a month other than this one")
+    .action(async (agentId: string, options: { month?: string }, command: Command) => printResult(command, await agentsSpend(developerSession(), developerEnv(command), agentId, options)));
+  agents
     .command("run")
     .description("start a run of an agent on a project; --version <n> runs a published version, --draft the draft as a test run")
     .argument("<agent-id>", "the agent's ID")
@@ -841,6 +851,43 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       if (options.browser && link.openUrl !== undefined) await (dependencies.login?.openBrowser ?? openSystemBrowser)(link.openUrl).catch(() => undefined);
     });
 
+  // R66: a spend request is read here and decided only by a person on its confirmation page; there is no approve, decline or deny command.
+  const spendRequests = program.command("spend-requests").description("requests for a higher limit; a person approves or declines each on its confirmation page");
+  spendRequests
+    .command("list")
+    .description("list the spend requests waiting for you, and your own")
+    .action(async (_options: unknown, command: Command) => printResult(command, await spendRequestsList(developerSession(), developerEnv(command))));
+  spendRequests
+    .command("open")
+    .description("open a spend request's confirmation page in your browser, where you approve or decline it")
+    .argument("<spend-request-id>", "the request's ID, from agentx spend-requests list")
+    .option("--no-browser", "print the link instead of opening a browser")
+    .action(async (spendRequestId: string, options: { browser: boolean }, command: Command) => {
+      const link = await spendRequestConfirmLink(developerSession(), developerEnv(command), spendRequestId);
+      printResult(command, link);
+      if (options.browser && link.openUrl !== undefined) await (dependencies.login?.openBrowser ?? openSystemBrowser)(link.openUrl).catch(() => undefined);
+    });
+
+  // A task that stopped at a limit: a test run goes on as a normal task, and a plan whose run limit was denied or ran out asks again. Neither decides anything.
+  const taskCommand = program.command("task").description("a task that stopped at a limit");
+  taskCommand
+    .command("continue-as-task")
+    .description("a test run that reached its cap goes on as a normal task of yours")
+    .argument("<task-id>", "the task's ID")
+    .action(async (taskId: string, _options: unknown, command: Command) => printResult(command, await taskContinueAsTask(developerSession(), developerEnv(command), taskId)));
+  taskCommand
+    .command("ask-run-limit")
+    .description("ask again for a plan's run limit after the last request was denied or ran out; a person approves it on its page")
+    .argument("<task-id>", "the task's ID")
+    .action(async (taskId: string, _options: unknown, command: Command) => printResult(command, await taskAskRunLimit(developerSession(), developerEnv(command), taskId)));
+
+  org
+    .command("spend")
+    .description("what your organization has spent this month by project, member, agent, source and model (an org owner or admin); --ledger lists the settled lines")
+    .option("--month <YYYY-MM>", "a month other than this one")
+    .option("--ledger", "list the month's settled lines, newest first", false)
+    .option("--cursor <cursor>", "with --ledger: the next page, from the cursor the last page printed")
+    .action(async (options: { month?: string; ledger: boolean; cursor?: string }, command: Command) => printResult(command, await orgSpend(developerSession(), developerEnv(command), options)));
   const guardrails = org.command("guardrails").description("your company's agent guardrails");
   guardrails
     .command("show")
@@ -1669,6 +1716,17 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const result = await changeDeveloperProjectArchive(developerSession(), developerEnv(command), name, "restore", randomUUID());
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project, warnings: result.warnings }, true) : restoreProjectText(result));
     });
+  // Plan 2, Task 22: a maintainer has the project's setup and test commands run on a fresh workspace, and waits for the answer.
+  projectCommand
+    .command("check")
+    .description("run a project's setup and test commands on a fresh workspace and wait for the result (a maintainer of the project); a failure exits non-zero and names the step")
+    .argument("<name>", "the project's name")
+    .action(async (name: string, _options: unknown, command: Command) => {
+      const globals = globalOptions(command);
+      const result = await checkDeveloperProject(developerSession(), developerEnv(command), name, { sleep: services.sleep });
+      const text = projectCheckText(result.project);
+      services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, project: result.project }, true) : text);
+    });
   // Plan 2, Task 21: the people in a project and their roles. Anyone who can see the project lists them; a maintainer changes them.
   projectCommand
     .command("members")
@@ -1793,13 +1851,14 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command("ai")
     .description("a project's AI settings")
     .command("set")
-    .description("set a project's AI budget, whether it pays for its runs, and its planning limits (an org owner or admin)")
+    .description("set a project's AI budget, whether it pays for its runs, and its planning limits (an org owner or admin; a project maintainer may set only --member-accept-run-limit)")
     .argument("<project>", "the project's name")
     .option("--budget <usd|none>", "the project's monthly AI budget")
     .option("--project-pays <on|off>", "whether runs on the project are charged to it")
     .option("--planning-quick <usd|none>", "the most a quick plan may spend; none for the default")
     .option("--planning-full <usd|none>", "the most a full plan may spend; none for the default")
-    .action(async (project: string, options: { budget?: string; projectPays?: string; planningQuick?: string; planningFull?: string }, command: Command) =>
+    .option("--member-accept-run-limit <usd|none>", "the most a member may accept as a run limit when the project pays (a project maintainer, an org owner or admin); none for the default $10")
+    .action(async (project: string, options: { budget?: string; projectPays?: string; planningQuick?: string; planningFull?: string; memberAcceptRunLimit?: string }, command: Command) =>
       printResult(command, await projectAiSet(developerSession(), developerEnv(command), project, options)));
 
   const envCommand = program.command("env").description("AgentX environments in this AWS account and region");

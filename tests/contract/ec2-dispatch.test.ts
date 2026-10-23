@@ -521,6 +521,18 @@ describe("ec2-ebs delivery", () => {
         expect(postedPayload(capable.post).agentStep).toEqual(agent);
       });
 
+      it("refuses a read-only preparation on a worker that lacks task.agentRun, since such a worker would run the repository's setup, and sends it unchanged to one that has it (runs I-2)", async () => {
+        const record = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", readOnly: true } } as unknown as WorkerInvocation };
+        for (const features of [[], ["task.agentStep", "model.route"]]) {
+          const older = delivery({ workerFeatures: async () => features });
+          await expect(older.deliver(record, record.invocation)).rejects.toMatchObject(refusal);
+          expect(older.post).not.toHaveBeenCalled();
+        }
+        const capable = delivery({ workerFeatures: async () => ["task.agentRun"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).readOnly).toBe(true);
+      });
+
       it("refuses a model route on a worker that lacks model.route and sends it unchanged to one that has it", async () => {
         const record = taskRecord({ modelRoute });
         const older = delivery({ workerFeatures: async () => ["task.agentStep", "task.agentRun"] });

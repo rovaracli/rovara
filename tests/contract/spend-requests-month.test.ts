@@ -334,6 +334,22 @@ describe("fix round 1 (the Task 33 review)", () => {
     expect(capture.flushed().filter((event) => event.action === "spend_request.rerouted").map((event) => JSON.stringify(event))).toEqual([expect.stringContaining("recounted")]);
   });
 
+  it("M-2: a month decision that is rerouted writes the decision's R18 mark, so a repeat of it answers the same and not FORBIDDEN", async () => {
+    const t = await setup();
+    const first = await t.budgeted(40);
+    await t.budgeted(40);
+    const request = await agentRequest(t, first, 10);
+    expect(request.approverRole).toBe("agent_owner");
+    const requestId = randomUUID();
+    const deps = afterFirstOwnerRead(t, () => t.budgeted(15));
+    const rerouted = await decideSpendRequest(deps, t.caller(MAYA, "member"), request.spendRequestId, { requestId, decision: "APPROVE" });
+    expect(rerouted).toMatchObject({ rerouted: true, spendRequest: { status: "PENDING", approverRole: "org_admin" } });
+    // The request is now the admins'; Maya's repeat of the same decision is not decided again against that route.
+    const repeat = await decideSpendRequest(t.deps(), t.caller(MAYA, "member"), request.spendRequestId, { requestId, decision: "APPROVE" });
+    expect(repeat).toEqual(rerouted);
+    expect(topUp(t, { kind: "agent", agentId: first })).toBe(0);
+  });
+
   it("M-9: an admin lowering the cap between the owner's read and the write re-routes the request", async () => {
     const t = await setup();
     const first = await t.budgeted(40);
@@ -600,6 +616,53 @@ describe("fix round 1 (the Task 33 review)", () => {
   });
 });
 
+// Final fix wave, money I-2, M-1, M-2.
+describe("final fix wave: the audit of a decision, and the R18 marks of a month's ask and a rerouted decision", () => {
+  const monthSetup = async () => {
+    const t = await setup();
+    const task = await t.plainTask();
+    await t.pauseAndEnd(task, MEMBER);
+    return { t, request: monthRequests(t)[0]! };
+  };
+
+  it("I-2: spend_request.decided records the amount approved and the limit applied, not the ones asked for, and the month topped up", async () => {
+    const { t, request } = await monthSetup();
+    const capture = capturingAuditDeps({ db: t.db });
+    // $10 was asked for; the admin approves $40.
+    await decideSpendRequest({ ...t.deps(), audit: capture.audit }, t.caller(DEB, "admin"), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE", amountUsd: 40 });
+    const [event] = capture.recordedBy("spend_request.decided");
+    expect(event?.facts).toMatchObject({
+      kind: "month", decision: "APPROVED", amountCents: 1000, newLimitCents: Math.round(request.newLimitUsd! * 100),
+      approvedAmountCents: 4000, appliedLimitCents: Math.round((request.newLimitUsd! - request.amountUsd + 40) * 100), topUpMonth: month(),
+    });
+  });
+
+  it("I-2: a denial records no approved amount and no applied limit", async () => {
+    const { t, request } = await monthSetup();
+    const capture = capturingAuditDeps({ db: t.db });
+    await decideSpendRequest({ ...t.deps(), audit: capture.audit }, t.caller(DEB, "admin"), request.spendRequestId, { requestId: randomUUID(), decision: "DENY" });
+    const [event] = capture.recordedBy("spend_request.decided");
+    expect(event?.facts).toMatchObject({ decision: "DENIED", amountCents: 1000 });
+    expect(event?.facts).not.toHaveProperty("approvedAmountCents");
+    expect(event?.facts).not.toHaveProperty("appliedLimitCents");
+  });
+
+  it("M-1: asking again while a request is open writes the repeat's R18 mark, so repeating it after the request is decided answers the same, not a new request", async () => {
+    const t = await setup();
+    const ask = { kind: "month", scope: MEMBER, amountUsd: 15, reason: "Mine." };
+    expect((await t.api(MAYA, "POST", "/v1/app/spend-requests", ask)).status).toBe(201);
+    const requestId = randomUUID();
+    const second = await t.api(MAYA, "POST", "/v1/app/spend-requests", { requestId, ...ask });
+    expect(second.status).toBe(200);
+    const [open] = monthRequests(t);
+    await t.decide(DEB, open!.spendRequestId, "DENY");
+    const repeat = await t.api(MAYA, "POST", "/v1/app/spend-requests", { requestId, ...ask });
+    expect(repeat.status).toBe(200);
+    expect(repeat.body).toEqual(second.body);
+    expect(monthRequests(t)).toHaveLength(1);
+  });
+});
+
 describe("fix round 2 (the Task 32/33 re-check)", () => {
   const effectiveOf = async (t: World, who: { developerId: string }) => (await ownerEffectiveTotal(t.deps(), { orgId: TEST_ORG, owner: who.developerId, month: month() })).totalUsd;
   const toBen = { owner: { kind: "member", developerId: BEN.developerId } };
@@ -799,5 +862,187 @@ describe("fix round 2 (the Task 32/33 re-check)", () => {
     expect(race.raced()).toBe(true);
     expect(lost).toMatchObject({ code: "AGENT_REVISION_CONFLICT" });
     expect(topUp(t, { kind: "agent", agentId: builtin })).toBe(15);
+  });
+});
+
+// Plan 4 Task 5 review, I-2: a scope whose base is $0 still has this month's top-ups, and the limit reader lets them be spent, so the owner's effective total
+// (and with it every cap check: month routing, owner approval, Task 28 raises, owner moves, unarchive) has to count them. The counter stays base-only.
+describe("a $0-base agent's top-ups count toward the owner's cap (Plan 4 review I-2)", () => {
+  const effective = (t: World, who: { developerId: string }) => ownerEffectiveTotal(t.deps(), { orgId: TEST_ORG, owner: who.developerId, month: month() });
+  const toBen = { owner: { kind: "member", developerId: BEN.developerId } };
+  /** Maya at $95 of the $100 cap (two agents) and one agent whose base is $0. */
+  const nearCap = async (t: World) => {
+    const filled = [await t.budgeted(50), await t.budgeted(45)];
+    const zero = await t.budgeted(0);
+    return { filled, zero };
+  };
+
+  it("the review's scenario: the first owner-approved $5 top-up on the $0-base agent is fine, the second goes to the admins", async () => {
+    const t = await setup();
+    const { zero } = await nearCap(t);
+    const first = await agentRequest(t, zero, 5);
+    expect(first).toMatchObject({ approverRole: "agent_owner", approverIds: [MAYA.developerId] });
+    await t.decide(MAYA, first.spendRequestId);
+    expect(topUp(t, { kind: "agent", agentId: zero })).toBe(5);
+    expect(await effective(t, MAYA)).toMatchObject({ totalUsd: 100, counterUsd: 95 });
+    const second = await agentRequest(t, zero, 5);
+    expect(second).toMatchObject({ approverRole: "org_admin" });
+    expect(await refusal(t.decide(MAYA, second.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
+    await t.decide(DEB, second.spendRequestId);
+    expect(topUp(t, { kind: "agent", agentId: zero })).toBe(10);
+  });
+
+  it("the counter stays base-only, so the extra is exactly the top-ups", async () => {
+    const t = await setup();
+    const { zero } = await nearCap(t);
+    await t.decide(MAYA, (await agentRequest(t, zero, 3)).spendRequestId);
+    expect(t.ownerTotal(MAYA)).toBe(95);
+    expect(await effective(t, MAYA)).toMatchObject({ totalUsd: 98, counterUsd: 95 });
+  });
+
+  it("a top-up on a $0-base agent also counts against a top-up on another agent of the same owner", async () => {
+    const t = await setup();
+    const { filled, zero } = await nearCap(t);
+    await t.decide(MAYA, (await agentRequest(t, zero, 5)).spendRequestId);
+    expect(await agentRequest(t, filled[1]!, 1)).toMatchObject({ approverRole: "org_admin" });
+  });
+
+  it("a Task 28 raise is held to the cap with the $0-base agent's top-up counted: $95 + $5 + $1 asks an admin", async () => {
+    const t = await setup();
+    const { filled, zero } = await nearCap(t);
+    await t.decide(MAYA, (await agentRequest(t, zero, 5)).spendRequestId);
+    const raised = await t.setBudget(MAYA, filled[1]!, { monthlyUsd: 46 });
+    expect(raised.status, JSON.stringify(raised.body)).toBe(202);
+    expect(raised.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    expect(t.agentItem(filled[1]!)!.monthlyBudgetUsd).toBe(45);
+    expect(t.ownerTotal(MAYA)).toBe(95);
+  });
+
+  it("two owner approvals that fit alone but not together, one on a $0-base agent: one applies, the other re-routes to the admins", async () => {
+    const t = await setup();
+    await t.budgeted(50);
+    await t.budgeted(48);
+    const zeroA = await t.budgeted(0);
+    const zeroB = await t.budgeted(0);
+    const a = await agentRequest(t, zeroA, 2);
+    const b = await agentRequest(t, zeroB, 2);
+    expect([a.approverRole, b.approverRole]).toEqual(["agent_owner", "agent_owner"]);
+    const versionBefore = version(t, MAYA.developerId);
+    await Promise.all([t.decide(MAYA, a.spendRequestId), t.decide(MAYA, b.spendRequestId)]);
+    const after = monthRequests(t);
+    expect(after.filter((record) => record.status === "APPROVED")).toHaveLength(1);
+    const rerouted = after.filter((record) => record.status === "PENDING");
+    expect(rerouted).toHaveLength(1);
+    expect(rerouted[0]).toMatchObject({ approverRole: "org_admin" });
+    expect(topUp(t, { kind: "agent", agentId: zeroA }) + topUp(t, { kind: "agent", agentId: zeroB })).toBe(2);
+    expect(version(t, MAYA.developerId)).toBe(versionBefore + 1);
+  });
+
+  it("moving a $0-base agent that carries a top-up to an owner near the cap asks an admin, and the top-up counts for the new owner", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN); await t.budgeted(35, BEN);
+    const moving = await t.budgeted(0);
+    await t.decide(MAYA, (await agentRequest(t, moving, 30)).spendRequestId);
+    expect(topUp(t, { kind: "agent", agentId: moving })).toBe(30);
+    const moved = await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen);
+    expect(moved.status, JSON.stringify(moved.body)).toBe(202);
+    expect(moved.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    expect(t.agentItem(moving)!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+    expect((await effective(t, BEN)).totalUsd).toBe(80);
+  });
+
+  it("the owner_cap request for a $0-base move names the figures but no new monthly limit", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN); await t.budgeted(35, BEN);
+    const moving = await t.budgeted(0);
+    await t.decide(MAYA, (await agentRequest(t, moving, 30)).spendRequestId);
+    expect((await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen)).status).toBe(202);
+    const [asked] = t.requests().filter((record) => record.kind === "owner_cap");
+    expect(asked).toMatchObject({ amountUsd: 10 });
+    expect(asked!.newLimitUsd).toBeUndefined();
+  });
+
+  it("a $0-base move that fits is held to the version it was read at: a top-up approved on the new owner's agent meanwhile makes it ask an admin", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN);
+    const benSecond = await t.budgeted(30, BEN);
+    const moving = await t.budgeted(0);
+    await t.decide(MAYA, (await agentRequest(t, moving, 20)).spendRequestId);
+    const topUpForBen = await agentRequest(t, benSecond, 6);
+    expect(topUpForBen.approverRole).toBe("agent_owner");
+    // $75 + $20 = $95 fits. Just before the move's transaction, Ben approves a $6 top-up ($81 + $20 = $101 does not).
+    const real = t.db.send.bind(t.db);
+    let raced = false;
+    t.db.send = (async (command: { constructor: { name: string }; input: unknown }) => {
+      if (!raced && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes(moving) && JSON.stringify(command.input).includes("\"owner\"")) {
+        raced = true;
+        await t.decide(BEN, topUpForBen.spendRequestId);
+      }
+      return real(command as never);
+    }) as typeof t.db.send;
+    try {
+      const moved = await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen);
+      expect(raced).toBe(true);
+      expect(moved.status, JSON.stringify(moved.body)).toBe(202);
+      expect(moved.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    } finally {
+      t.db.send = real as typeof t.db.send;
+    }
+    expect(t.agentItem(moving)!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+    expect((await effective(t, BEN)).totalUsd).toBe(81);
+  });
+
+  it("a $0-base move that fits the new owner's cap applies, counts there, and moves both owners' versions", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN); await t.budgeted(35, BEN);
+    const moving = await t.budgeted(0);
+    await t.decide(MAYA, (await agentRequest(t, moving, 20)).spendRequestId);
+    const [mayaBefore, benBefore] = [version(t, MAYA.developerId), version(t, BEN.developerId)];
+    const moved = await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen);
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    expect((await effective(t, BEN)).totalUsd).toBe(100);
+    expect((await effective(t, MAYA)).totalUsd).toBe(0);
+    expect(version(t, BEN.developerId)).toBeGreaterThan(benBefore);
+    expect(version(t, MAYA.developerId)).toBeGreaterThan(mayaBefore);
+    // The move used the cap: Ben's next $1 top-up on his own agents goes to the admins.
+    const [first] = (await t.store.list(TEST_ORG)).filter((agent) => agent.owner.kind === "member" && agent.owner.developerId === BEN.developerId && agent.monthlyBudgetUsd === 45);
+    expect(await agentRequest(t, first!.agentId, 1)).toMatchObject({ approverRole: "org_admin" });
+  });
+
+  it("a $0-base move with no top-up applies", async () => {
+    const t = await setup();
+    await t.budgeted(45, BEN); await t.budgeted(35, BEN);
+    const moving = await t.budgeted(0);
+    const moved = await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen);
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+  });
+
+  it("unarchiving a $0-base agent that carries a top-up brings it back into the owner's total, and over the cap asks an admin", async () => {
+    const t = await setup();
+    const zero = await t.budgeted(0);
+    await t.decide(MAYA, (await agentRequest(t, zero, 30)).spendRequestId);
+    expect((await t.api(MAYA, "POST", `/v1/app/agents/${zero}/archive`, {})).status).toBe(200);
+    await t.budgeted(45); await t.budgeted(35);
+    expect((await effective(t, MAYA)).totalUsd).toBe(80);
+    const back = await t.api(MAYA, "POST", `/v1/app/agents/${zero}/unarchive`, {});
+    expect(back.status, JSON.stringify(back.body)).toBe(202);
+    expect(back.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    expect(t.agentItem(zero)!.status).toBe("archived");
+  });
+
+  it("an archived $0-base agent's top-ups don't count", async () => {
+    const t = await setup();
+    const { filled, zero } = await nearCap(t);
+    await t.decide(MAYA, (await agentRequest(t, zero, 5)).spendRequestId);
+    expect((await effective(t, MAYA)).totalUsd).toBe(100);
+    expect((await t.api(MAYA, "POST", `/v1/app/agents/${zero}/archive`, {})).status).toBe(200);
+    expect(await effective(t, MAYA)).toMatchObject({ totalUsd: 95, counterUsd: 95 });
+    expect(await agentRequest(t, filled[1]!, 5)).toMatchObject({ approverRole: "agent_owner" });
+  });
+
+  it("a $0-base agent with no top-up adds nothing to the total", async () => {
+    const t = await setup();
+    await nearCap(t);
+    expect(await effective(t, MAYA)).toMatchObject({ totalUsd: 95, counterUsd: 95 });
   });
 });

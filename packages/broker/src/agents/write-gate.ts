@@ -240,6 +240,14 @@ function scopeDigestOf(definition: StoredProjectDefinition, connector: StoredCon
   return found === undefined ? undefined : createHash("sha256").update(canonicalJson(found), "utf8").digest("hex");
 }
 
+/** The repository a GitHub connector's scope names, as `owner/name` in the case the project stores it; undefined for any other connector or a scope that names none. */
+function scopeRepositoryName(definition: StoredProjectDefinition, connector: StoredConnector, alias: string): string | undefined {
+  if (connector.type !== "github") return undefined;
+  const url = definition.repositories.find((entry) => entry.name === alias)?.url;
+  const found = url === undefined ? undefined : /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(url);
+  return found === null || found === undefined ? undefined : `${found[1]!}/${found[2]!}`;
+}
+
 // ---- GitHub: the call's own repository
 
 const repositoryFullName = (url: string): string | undefined => /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(url)?.slice(1, 3).join("/").toLowerCase();
@@ -333,11 +341,12 @@ export async function decideWrite(deps: ApprovalDependencies, input: DecideWrite
   const now = deps.now();
   const createdAt = new Date(now).toISOString();
   const ownerName = shownText(run.owner.name, 80);
+  const repository = scopeRepositoryName(latest.definition, connector, call.scope);
   const summary = describeAction(tool.presentedName, call.arguments);
   const record: WriteApprovalRecord = {
     orgId: input.orgId, approvalId: approvalId, kind: "write",
     subject: { kind: "agent_run", taskId: input.taskId, stepId: input.stepId }, operationId: input.operationId,
-    connector: tool.connector, connectorType: tool.type, tool: tool.upstreamName, toolAccess: approved.access, scope: call.scope, schemaHash: call.schemaHash,
+    connector: tool.connector, connectorType: tool.type, tool: tool.upstreamName, toolAccess: approved.access, scope: call.scope, ...(repository === undefined ? {} : { repository }), schemaHash: call.schemaHash,
     projectRevision: latest.definition.revision, ...(connector.credentialRef === undefined ? {} : { credentialRef: connector.credentialRef }), scopeDigest,
     arguments: call.arguments, argumentsHash, summary, class: classification.class,
     approvers, status: "PENDING", project: run.project, owner: { developerId: run.owner.developerId, name: ownerName },

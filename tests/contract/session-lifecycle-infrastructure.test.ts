@@ -174,6 +174,13 @@ describe("EC2 session lifecycle infrastructure (issue #83)", () => {
     expect([...actions(statements)]).toEqual(expect.arrayContaining(["states:DescribeExecution", "states:StartExecution"]));
   });
 
+  it("does not let the legacy reconciler start the deleter: only a named environment sweeps setup checks (final review I3)", () => {
+    const [, reconciler] = ofType("AWS::Lambda::Function").find(([id]) => id.startsWith("SessionsReconciler"))!;
+    const roleId = (reconciler.Properties.Role as { "Fn::GetAtt": [string] })["Fn::GetAtt"][0];
+    const starts = roleStatements(roleId).filter((st) => [st.Action].flat().includes("states:StartExecution"));
+    expect(JSON.stringify(starts.map((st) => st.Resource))).not.toContain("SessionsDeleter");
+  });
+
   it("alarms on quarantined volumes, lost instances and stuck provisioning (#86)", () => {
     const names = ofType("AWS::CloudWatch::Alarm").map(([, a]) => a.Properties.AlarmName);
     expect(names).toEqual(expect.arrayContaining(["AgentXReconcilerQuarantinedVolumes", "AgentXReconcilerLostInstances", "AgentXReconcilerStuckProvisioning"]));

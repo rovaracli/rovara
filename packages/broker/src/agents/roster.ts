@@ -20,11 +20,12 @@ import {
   type OrgId,
   type ProjectRole,
   type ResolvedRecipe,
+  projectArchivedMessage,
 } from "@agentx/contracts";
-import { projectArchivedMessage, readProjectMeta, requireNewWorkAllowed } from "../developer/project-roles.js";
+import { readProjectMeta, requireNewWorkAllowed } from "../developer/project-roles.js";
 import { agentAccess, listVisibleAgents, requireAgentAccess, type AgentCaller } from "./access.js";
 import type { ApprovalDependencies } from "./approvals.js";
-import { resolveRecipe } from "./changes.js";
+import { resolveRecipe, versionSafety } from "./changes.js";
 import { requireAgentEnabled, validateRecipeForOrg } from "./guardrails.js";
 import { EXISTS, coded, commit, putNew, strip, type Item, type RequestMark, type TransactItem } from "./table-writes.js";
 import type { AgentDraft, AgentRecord } from "./store.js";
@@ -229,7 +230,7 @@ async function resolveChosen(
   deps: RosterDependencies,
   orgId: OrgId,
   project: string,
-  chosen: { agentId: AgentId; agent: AgentRecord | undefined; version: number | "draft" | undefined },
+  chosen: { agentId: AgentId; agent: AgentRecord | undefined; version: number | "draft" | undefined; versionApproved?: boolean; autonomous?: boolean },
 ): Promise<{ recipe: ResolvedRecipe; digest: string; ref: TaskAgentRef }> {
   const { agentId, agent } = chosen;
   let version: number | "draft";
@@ -254,6 +255,18 @@ async function resolveChosen(
     const current = chosen.version ?? agent.currentVersion;
     if (current === undefined) throw agentXError("AGENT_UNAVAILABLE", `${agent.name} has no published version yet, so it can't start new work.`);
     version = current;
+  }
+  // A run uses the version that runs now unless one is named. A named published version that is not the current one runs only when it is no looser than the current
+  // one (the comparison a publish makes), or an owner has OK'd this very run (`versionApproved`, set by the broker once the approval is decided). Owner decision 2026-10-22.
+  if (typeof chosen.version === "number" && version !== "draft" && chosen.versionApproved !== true) {
+    const { current, safety } = await versionSafety(deps, orgId, agentId, version, agent);
+    if (safety.kind === "less_safe") {
+      const name = agent === undefined ? deps.store.builtinName(agentId) : agent.name;
+      const unit = agent === undefined ? "the version your company uses" : "the version that runs now";
+      throw agentXError("FORBIDDEN", chosen.autonomous === true
+        ? `${name} version ${String(version)} is less safe than ${unit} (version ${String(current)}), so it can't be started without a person's OK. Ask the agent's owner to run it, or start the version that runs now.`
+        : `${name} version ${String(version)} is less safe than ${unit} (version ${String(current)}): it needs the agent's owner to OK it first.`);
+    }
   }
   // The draft read above is the one resolved, so the revision recorded is the revision of the recipe.
   const recipe = await resolveRecipe(deps, orgId, agentId, version, draft);
@@ -284,7 +297,7 @@ function requireNotArchived(agent: AgentRecord): void {
 export async function resolveAgentForTask(
   deps: RosterDependencies,
   caller: AgentCaller,
-  input: { project: string; agent?: { agentId: AgentId; version?: number | "draft" }; role?: ProjectRole },
+  input: { project: string; agent?: { agentId: AgentId; version?: number | "draft" }; role?: ProjectRole; versionApproved?: boolean },
 ): Promise<{ recipe: ResolvedRecipe; digest: string; ref: TaskAgentRef; testRun: boolean }> {
   if (input.role === undefined) {
     const { role } = deps.checkProjectAccess === undefined ? { role: await roleOnProject(deps, caller, input.project) } : await deps.checkProjectAccess(caller, input.project);
@@ -299,7 +312,7 @@ export async function resolveAgentForTask(
     if (!draft) await requireOnRoster(deps, caller.orgId, input.project, agent);
     requireNotArchived(agent);
   }
-  const resolved = await resolveChosen(deps, caller.orgId, input.project, { agentId, agent: "owner" in agent ? agent : undefined, version });
+  const resolved = await resolveChosen(deps, caller.orgId, input.project, { agentId, agent: "owner" in agent ? agent : undefined, version, ...(input.versionApproved === true ? { versionApproved: true } : {}) });
   return { ...resolved, testRun: draft };
 }
 
@@ -322,5 +335,5 @@ export async function resolveAgentForAutonomousRun(
     await requireOnRoster(deps, input.orgId, input.project, agent);
     requireNotArchived(agent);
   }
-  return resolveChosen(deps, input.orgId, input.project, { agentId: input.agentId, agent, version: input.version });
+  return resolveChosen(deps, input.orgId, input.project, { agentId: input.agentId, agent, version: input.version, autonomous: true });
 }

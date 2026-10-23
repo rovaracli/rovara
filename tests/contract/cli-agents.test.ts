@@ -56,6 +56,34 @@ describe("agentx agents list, show, versions and diff", () => {
   });
 });
 
+describe("agentx agents versions and run against the owner's OK for a looser older version (owner decision 2026-10-22)", () => {
+  it("marks each version as the one that runs now, the same or safer, or less safe and needing the owner's OK", async () => {
+    const h = await agentsCli({
+      [`GET /v1/app/agents/${AGT}/versions`]: Response.json({ versions: [
+        { version: 1, digest: "a".repeat(64), publishedBy: DEV, publishedAt: "2026-10-19T00:00:00.000Z", current: false, safety: "less_safe", needsOwnerOk: true, lessSafe: ["Lets the agent change things in every linear connector (read and write)"] },
+        { version: 2, digest: "b".repeat(64), publishedBy: DEV, publishedAt: "2026-10-20T00:00:00.000Z", current: false, safety: "same_or_safer", needsOwnerOk: false },
+        { version: 3, digest: "c".repeat(64), publishedBy: DEV, publishedAt: "2026-10-21T00:00:00.000Z", current: true, safety: "current", needsOwnerOk: false },
+      ] }),
+    });
+    expect(await h.run(["agents", "versions", AGT])).toBe(0);
+    const lines = h.stdout().split("\n");
+    expect(lines.find((line) => line.includes("v1"))).toContain("less safe than the current version, needs the owner's OK");
+    expect(lines.find((line) => line.includes("v2"))).toContain("same or safer");
+    expect(lines.find((line) => line.includes("v3"))).toContain("(runs now)");
+    expect(lines.find((line) => line.includes("v3"))).not.toContain("same or safer");
+  });
+
+  it("says a run of a looser older version waits for the owner, with the link, instead of reporting a task", async () => {
+    const h = await agentsCli({
+      [`POST /v1/app/agents/${AGT}/runs`]: new Response(JSON.stringify({ status: "NEEDS_OWNER_APPROVAL", confirmUrl: CONFIRM, changes: ["Runs version 1 of Triage helper on payments, which is less safe than the version that runs now (version 3)"] }), { status: 202, headers: { "content-type": "application/json" } }),
+    });
+    expect(await h.run(["agents", "run", AGT, "--project", "payments", "--input", "go", "--version", "1"])).toBe(0);
+    expect(h.stdout()).toContain("waits for the agent's owner to OK it");
+    expect(h.stdout()).toContain(CONFIRM);
+    expect(h.stdout()).not.toContain("Started");
+  });
+});
+
 describe("agentx agents create", () => {
   it("creates a member's agent that extends another", async () => {
     const h = await agentsCli({ "POST /v1/app/agents": Response.json({ agent: agent() }, { status: 201 }) });

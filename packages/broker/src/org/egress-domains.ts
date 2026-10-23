@@ -3,7 +3,7 @@
 // anywhere else the union is one org's list, so a domain is approved when it is saved. Every request, decision and removal is written as an
 // audit item in the same transaction as the change; those items never expire. Every write is conditional on the `updatedAt` it read, so a save
 // cannot overwrite a staff decision made meanwhile (and a decision cannot overwrite a save).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { auditEgressDecided, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -17,6 +17,7 @@ import {
   EGRESS_SYNC_PENDING_WARNING,
   ALLOWED_DOMAIN_MESSAGE,
   EgressDomainsItemSchema,
+  AgentXError,
   agentXError,
   egressDomainsKey,
   egressNotPendingMessage,
@@ -34,6 +35,7 @@ import {
   type OrgId,
   type OrgKey,
 } from "@agentx/contracts";
+import { readRequestRecord, requestRecordPut, requireSameRequest, type RequestTransactItem } from "./request-records.js";
 
 export interface EgressDomainsDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -61,6 +63,8 @@ interface AuditDraft { orgId: OrgId; owner: EgressOwner; domain: string; action:
 interface Plan<T> {
   /** The item to write, `"delete"` to remove it, or undefined when nothing is stored differently. */
   next?: EgressDomainsItem | "delete";
+  /** Items that commit with the change and fail it with them: a request record (final review M2). Counted against the transaction's 100 actions. */
+  extra?: RequestTransactItem[];
   audits: AuditDraft[];
   /** Whether the domains the firewall serves change. */
   dirty: boolean;
@@ -101,7 +105,7 @@ async function readItem(deps: Reader, key: OrgKey): Promise<EgressDomainsItem | 
 
 /**
  * Reads the item, plans the change, and writes it with its audit items in one transaction that holds only while the item is as it was read.
- * A refused condition (the item changed) reads again and plans again, once; a second refusal is IDEMPOTENCY_CONFLICT. A cancellation for any
+ * A refused condition (the item changed) reads again and plans again, once; a second refusal is CHANGE_STALE, as for the other concurrent edits (member roles, the org's members). A cancellation for any
  * other reason (a concurrent transaction on the shared sync marker, throttling) is retried quietly and, if it persists, is RUNTIME_UNAVAILABLE:
  * it says nothing about the allowed domains having changed. `updatedAt` always moves forward, so two writes in one millisecond are never taken for one.
  */
@@ -147,15 +151,16 @@ async function mutate<T>(
       },
     }] : [];
     const pending = (plan.events ?? []).flatMap((event) => auditPending(deps, event));
-    const room = TRANSACTION_ACTIONS - 1 - marker.length - ownerCheck.length - pending.length;
+    const extra = plan.extra ?? [];
+    const room = TRANSACTION_ACTIONS - 1 - marker.length - ownerCheck.length - extra.length - pending.length;
     try {
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write, ...marker, ...ownerCheck, ...pending, ...audits.slice(0, room)] }));
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [write, ...marker, ...ownerCheck, ...extra, ...pending, ...audits.slice(0, room)] }));
     } catch (error) {
       const reason = cancellation(error);
       if (reason === undefined) throw error;
       if (reason === "changed") {
         changedUnderUs += 1;
-        if (changedUnderUs >= 2) throw agentXError("IDEMPOTENCY_CONFLICT", EGRESS_CONFLICT_MESSAGE);
+        if (changedUnderUs >= 2) throw agentXError("CHANGE_STALE", EGRESS_CONFLICT_MESSAGE);
       }
       // Not about the item (a concurrent transaction on the shared sync marker, throttling): a short, jittered wait makes the retry likelier to hold.
       if (reason === "other" && attempt < MAX_ATTEMPTS - 1) await (deps.sleep ?? defaultSleep)(Math.round(50 * (attempt + 1) * (0.5 + Math.random())));
@@ -243,31 +248,58 @@ export async function setEgressOwnerActive(deps: EgressDomainsDependencies, orgI
   return dirty ? syncNow(deps) : {};
 }
 
+/** Where a staff decision's request id is remembered: its own partition, under a prefix no egress query reads. */
+export const EGRESS_DECISION_REQUEST_PK = "EGRESS_DECISION_REQUEST";
+const decisionRequestKey = (requestId: string): OrgKey => ({ pk: EGRESS_DECISION_REQUEST_PK, sk: requestId });
+
 /**
  * Staff decide one pending domain: `pending` becomes `approved` or `rejected`, audited with the operator's identity. With a ledger the decision
  * is also recorded in the audit chain, in the same transaction: `auditActor` names the staff member by their pseudonym (never the subject), and
- * `requestId` is the request's id, which with the domain and the owner makes the occurrence.
+ * `requestId` is the request's id, which with the domain and the owner makes the occurrence. By the one request-id
+ * pattern (`request-records`): the decision and the operator's request record are one transaction; a repeat of the id by the same operator for
+ * the same decision answers `replayed: true` and writes nothing (even when the domain has been changed since); another operator's use of the id,
+ * or the same id for another decision, is IDEMPOTENCY_CONFLICT.
  */
 export async function decideEgressDomain(
   deps: EgressDomainsDependencies,
-  input: { orgId: OrgId; owner: EgressOwner; domain: string; decision: "approved" | "rejected"; operatorId: string; reason?: string; requestId?: string; auditActor?: AuditActor },
-): Promise<{ warning?: string }> {
+  input: { requestId?: string; orgId: OrgId; owner: EgressOwner; domain: string; decision: "approved" | "rejected"; operatorId: string; reason?: string; auditActor?: AuditActor },
+): Promise<{ warning?: string; replayed?: boolean }> {
   const { orgId, owner, domain, decision, operatorId } = input;
-  const { dirty, events } = await mutate(deps, egressDomainsKey(orgId, owner), (current, at): Plan<undefined> => {
-    const entry = current?.domains.find((candidate) => candidate.domain === domain);
-    if (current === undefined || entry === undefined || entry.status !== "pending") throw agentXError("CONFIG_INVALID", egressNotPendingMessage(domain));
-    const decided: EgressDomainEntry = { ...entry, status: decision, decidedAt: at, decidedBy: operatorId, ...(decision === "rejected" && input.reason !== undefined ? { reason: input.reason } : {}) };
-    return {
-      next: { ...current, domains: current.domains.map((candidate) => (candidate === entry ? decided : candidate)), updatedAt: at },
-      audits: [{ orgId, owner, domain, action: decision, actor: { kind: "operator", id: operatorId }, ...(decided.reason === undefined ? {} : { reason: decided.reason }) }],
-      dirty: decision === "approved" && current.active,
-      events: decisionEvents(deps, input, entry.requestedAt, at, decided.reason),
-      result: undefined,
-    };
-  });
+  const key = decisionRequestKey(input.requestId ?? "");
+  const bodyHash = createHash("sha256").update(JSON.stringify([orgId, egressDomainsKey(orgId, owner).sk, domain, decision, input.reason ?? null]), "utf8").digest("hex");
+  // The staff route always has the client's id; a caller inside the broker with none records nothing.
+  const recorded = input.requestId !== undefined;
+  const replay = async (): Promise<boolean> => {
+    if (!recorded) return false;
+    const stored = await readRequestRecord(deps.documentClient, deps.tableName, key, deps.now().getTime());
+    if (stored === undefined) return false;
+    requireSameRequest(stored, { by: operatorId, bodyHash });
+    return true;
+  };
+  if (await replay()) return { replayed: true };
+  let outcome: { dirty: boolean; events: AuditEventInput[] };
+  try {
+    outcome = await mutate(deps, egressDomainsKey(orgId, owner), (current, at): Plan<undefined> => {
+      const entry = current?.domains.find((candidate) => candidate.domain === domain);
+      if (current === undefined || entry === undefined || entry.status !== "pending") throw agentXError("CONFIG_INVALID", egressNotPendingMessage(domain));
+      const decided: EgressDomainEntry = { ...entry, status: decision, decidedAt: at, decidedBy: operatorId, ...(decision === "rejected" && input.reason !== undefined ? { reason: input.reason } : {}) };
+      return {
+        next: { ...current, domains: current.domains.map((candidate) => (candidate === entry ? decided : candidate)), updatedAt: at },
+        ...(recorded ? { extra: [requestRecordPut(deps.tableName, key, "EGRESS_DECISION_REQUEST", { by: operatorId, bodyHash }, deps.now().getTime())] } : {}),
+        audits: [{ orgId, owner, domain, action: decision, actor: { kind: "operator", id: operatorId }, ...(decided.reason === undefined ? {} : { reason: decided.reason }) }],
+        dirty: decision === "approved" && current.active,
+        events: decisionEvents(deps, input, entry.requestedAt, at, decided.reason),
+        result: undefined,
+      };
+    });
+  } catch (error) {
+    // The same request, sent twice together, decided the domain first: it is then a replay.
+    if (error instanceof AgentXError && (error.code === "CONFIG_INVALID" || error.code === "CHANGE_STALE") && await replay()) return { replayed: true };
+    throw error;
+  }
   log(decision === "approved" ? "domain_approved" : "domain_rejected", { orgId, owner, operatorId });
-  await flushAuditEvents(deps, events);
-  return dirty ? syncNow(deps) : {};
+  await flushAuditEvents(deps, outcome.events);
+  return outcome.dirty ? syncNow(deps) : {};
 }
 
 /** The project or model source a domain belongs to, for the details of its decision (a name is personal data and stays out of the chain). */

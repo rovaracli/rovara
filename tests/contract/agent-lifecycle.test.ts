@@ -1,13 +1,14 @@
 // Plan 3 Task 11: what happens to agents when a member is merged into another, a member is removed, or a project is archived. The sign-in
 // function only leaves a marker in the `MEMBER_MERGE_QUEUE` partition; the broker's 5-minute sweep drains it and moves what the duplicate
 // owned. A removal moves what the person owned at once, and leaves the same kind of marker until it has.
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, agentKey, developerOrgKey, memberMergeQueueKey, memberRemovalQueueKey, orgMemberKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, skillKey, type AgentId, type OrgId, type OrgRole, type RecipeOverlay,
 } from "@agentx/contracts";
 import { agentAccess, followMerges, type AgentAccessDeps, type AgentCaller } from "../../packages/broker/src/agents/access.js";
 import {
-  drainMemberMerges, drainMemberRemovals, memberRemovalHook, onMemberRemoved, onMembersMerged, onProjectArchived, registerMemberMover, resolveMember, runMemberMergeDrain, sameMember, type LifecycleDeps, type MemberMover,
+  drainMemberMerges, drainMemberRemovals, memberRemovalHook, onMemberRemoved, onMembersMerged, onProjectArchived, onProjectMemberChanged, registerMemberMover, resolveMember, runMemberMergeDrain, sameMember, type LifecycleDeps, type MemberMover,
 } from "../../packages/broker/src/agents/lifecycle.js";
 import { checkRosterChange } from "../../packages/broker/src/agents/roster.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -1165,6 +1166,62 @@ describe("OrgStore.removeMember with the lifecycle hook", () => {
   });
 });
 
+// Final fix wave, access m-2: a maintainer who is demoted or removed from a project stops being accountable for that project's agents.
+describe("a project maintainer who loses the role", () => {
+  const accountableEvents = async (w: ReturnType<typeof agentWorld>, agentId: AgentId) => (await w.store.listEvents(ORG_A, agentId)).filter((event) => event.kind === "owner_changed");
+
+  it("re-routes accountable to another maintainer by grant when the person is demoted, and moves the budget in the owners' totals", async () => {
+    const w = agentWorld();
+    const web = await w.projectAgent("web", BOB, "Web helper", 30);
+    w.projectMembers.grant(ORG_A, "web", BOB, "contributor");
+
+    await onProjectMemberChanged(w.deps, { orgId: ORG_A, project: "web", developerId: BOB });
+
+    expect((await w.store.get(ORG_A, web.agentId))!.accountable).toEqual({ developerId: CARA });
+    expect(await readOwnerTotal(w.deps, ORG_A, CARA)).toBe(30);
+    expect(await readOwnerTotal(w.deps, ORG_A, BOB)).toBe(0);
+    expect((await accountableEvents(w, web.agentId))[0]).toMatchObject({ by: "system", accountable: { developerId: CARA }, cause: { kind: "project_role_changed", developerId: BOB } });
+    // The project still owns the agent.
+    expect((await w.store.get(ORG_A, web.agentId))!.owner).toEqual({ kind: "project", project: "web" });
+  });
+
+  it("re-routes to the first org owner when no other maintainer holds a grant, and when the grant is removed", async () => {
+    const w = agentWorld();
+    w.projectMembers.grant(ORG_A, "api", BOB, "maintainer");
+    const api = await w.projectAgent("api", BOB, "Api helper", 10);
+    w.projectMembers.revoke(ORG_A, "api", BOB);
+
+    await onProjectMemberChanged(w.deps, { orgId: ORG_A, project: "api", developerId: BOB });
+
+    expect((await w.store.get(ORG_A, api.agentId))!.accountable).toEqual({ developerId: OWEN });
+    expect(await readOwnerTotal(w.deps, ORG_A, OWEN)).toBe(10);
+  });
+
+  it("leaves an agent alone while the person still holds manage_agents on the project, another project's agent, and a second run", async () => {
+    const w = agentWorld();
+    const web = await w.projectAgent("web", BOB, "Web helper", 30);
+    w.projectMembers.grant(ORG_A, "api", BOB, "maintainer");
+    const api = await w.projectAgent("api", BOB, "Api helper", 10);
+    // Still a maintainer of web: nothing moves. Demoted on api only: web's agent stays with Bob.
+    await onProjectMemberChanged(w.deps, { orgId: ORG_A, project: "web", developerId: BOB });
+    expect((await w.store.get(ORG_A, web.agentId))!.accountable).toEqual({ developerId: BOB });
+    w.projectMembers.grant(ORG_A, "api", BOB, "viewer");
+    await onProjectMemberChanged(w.deps, { orgId: ORG_A, project: "api", developerId: BOB });
+    expect((await w.store.get(ORG_A, api.agentId))!.accountable).toEqual({ developerId: OWEN });
+    expect((await w.store.get(ORG_A, web.agentId))!.accountable).toEqual({ developerId: BOB });
+    const before = w.db.commandNames().length;
+    await onProjectMemberChanged(w.deps, { orgId: ORG_A, project: "api", developerId: BOB });
+    expect(w.writesSince(before)).toEqual([]);
+  });
+
+  it("keeps an org owner accountable: their org role still maintains every project", async () => {
+    const w = agentWorld();
+    const web = await w.projectAgent("web", OLIVE, "Web helper", 5);
+    await onProjectMemberChanged(w.deps, { orgId: ORG_A, project: "web", developerId: OLIVE });
+    expect((await w.store.get(ORG_A, web.agentId))!.accountable).toEqual({ developerId: OLIVE });
+  });
+});
+
 describe("a project archive", () => {
   it("refuses a change of its roster with PROJECT_ARCHIVED and keeps its agents visible", async () => {
     const w = agentWorld();
@@ -1251,6 +1308,25 @@ describe("the broker's wiring", () => {
     expect((await h.store.get(TEST_ORG, owned.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect(h.markers()).toEqual([]);
+  });
+
+  it("re-routes a project agent's accountable maintainer when the project's member routes demote or remove them", async () => {
+    const h = await installWithAgents();
+    const put = (role: string) => h.dev(OMAR, "PUT", `/v1/app/projects/payments/members/${MAYA.developerId}`, { requestId: randomUUID(), role });
+    expect((await put("maintainer")).status).toBe(200);
+    const agent = await h.store.create({ orgId: TEST_ORG, name: "Payments helper", owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId }, overlay: SCRATCH, createdBy: MAYA.developerId });
+    expect((await put("maintainer")).status).toBe(200);
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: MAYA.developerId });
+
+    expect((await put("contributor")).status).toBe(200);
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: OMAR.developerId });
+
+    // Removing the grant of a maintainer does the same.
+    await put("maintainer");
+    await h.store.setAccountable(TEST_ORG, agent.agentId, { developerId: MAYA.developerId }, OMAR.developerId);
+    const removed = await h.dev(OMAR, "DELETE", `/v1/app/projects/payments/members/${MAYA.developerId}`, { requestId: randomUUID() });
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: OMAR.developerId });
   });
 
   it("tells the agents platform when a project is archived, once, and archives it whatever that does", async () => {

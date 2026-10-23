@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { takeBrokerNames } from "./broker-names-template.js";
 
 type Statement = { Action: unknown; Resource: unknown };
 type Resource = {
@@ -56,8 +57,9 @@ function withoutModelAccess(synthesized: { Resources: Record<string, Resource> }
   const brokers = Object.entries(resources).filter(([id, resource]) => id.startsWith("Broker") && resource.Type === "AWS::Lambda::Function");
   expect(brokers).toHaveLength(1);
   const variables = brokers[0]![1].Properties.Environment!.Variables;
-  expect(variables.MODEL_ACCESS_FUNCTION_NAME).toStrictEqual({ Ref: functionId });
-  delete variables.MODEL_ACCESS_FUNCTION_NAME;
+  // The broker's one variable of names holds it (the broker's variables are held to Lambda's 4 KB).
+  expect(variables.MODEL_ACCESS_FUNCTION_NAME).toBeUndefined();
+  expect(takeBrokerNames(variables, ["modelAccessFunction"]).modelAccessFunction).toStrictEqual({ Ref: functionId });
   // Ruling R29: the proxy's address, which the broker hands a task's worker with its key.
   expect(JSON.stringify(variables.MODEL_PROXY_URL)).toContain("LoadBalancer");
   delete variables.MODEL_PROXY_URL;

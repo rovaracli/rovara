@@ -107,6 +107,11 @@ export interface AgentRunRequest {
   resultContract?: ResultContract;
   /** The owner's own authenticated caller when a route started the run; it must be the owner. Any other start acts as the owner. */
   caller?: DeveloperCaller;
+  /**
+   * The agent's owner approved running `agent.version`, an older version that is less safe than the one that runs now (owner decision 2026-10-22): the start
+   * skips that one check and no other. Only the broker's own approval handler sets it, never a request body.
+   */
+  versionApproved?: true;
 }
 
 export interface AgentRunResult { taskId: string; runLimitUsd: number; stopAtUsd: number; paused: boolean }
@@ -127,6 +132,8 @@ export interface RunStartOptions {
   trigger?: SessionTrigger;
   runLimitUsd?: number;
   resultContract?: ResultContract;
+  /** The owner OK'd an older, less safe version for this run (`AgentRunRequest.versionApproved`). */
+  versionApproved?: true;
   /** The fingerprint of the request; when present the start also writes the run's request item. */
   requestFingerprint?: string;
 }
@@ -243,6 +250,8 @@ export interface PrepareRunInput {
   chain?: { chainRunId: string; stepId: string };
   runLimitUsd?: number;
   resultContract?: ResultContract;
+  /** The owner OK'd the version named (`RunStartOptions.versionApproved`). */
+  versionApproved?: true;
   /** The project's repositories, from the revision the task starts on. */
   repositories: ReadonlyArray<{ name: string; url: string; installationId?: number | undefined }>;
   /** The models the project approves (`definition.models.approved`), from the same revision; absent when it lists none. */
@@ -265,6 +274,7 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
       project: input.project,
       ...(input.agent === undefined ? {} : { agent: input.agent }),
       ...(input.role === undefined ? {} : { role: input.role }),
+      ...(input.versionApproved === true ? { versionApproved: true } : {}),
     });
   } else {
     if (input.agent === undefined) throw agentXError("CONFIG_INVALID", "agent: an autonomous run names its agent");
@@ -523,6 +533,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(request.trigger === undefined ? {} : { trigger: request.trigger }),
     ...(request.runLimitUsd === undefined ? {} : { runLimitUsd: request.runLimitUsd }),
     ...(request.resultContract === undefined ? {} : { resultContract: request.resultContract }),
+    ...(request.versionApproved === true ? { versionApproved: true as const } : {}),
   });
   return started.run;
 }

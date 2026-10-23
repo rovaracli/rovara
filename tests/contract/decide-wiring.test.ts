@@ -54,6 +54,7 @@ const OPERATION = "22222222-2222-4222-8222-222222222222";
 const WORKSPACE = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "con_aaaaaaaaaaaaaaaaaaaa";
 const TEAM = "c408e946-78aa-4db8-923e-f78053dd954f";
+const TEAM_PAY = "d519f057-89bb-4ec9-a34f-089164ee065a";
 const SCHEMA = "a".repeat(64);
 const FORBIDDEN = "Only Alice or a project maintainer can decide this.";
 const STALE = "The draft changed after this was asked. Publish again.";
@@ -64,6 +65,10 @@ function grant(upstreamName: string): GrantedTool {
   return { connector: "linear", type: "linear", upstreamName, presentedName: `linear__${upstreamName}`, access: "write", facts };
 }
 const SAVE_ISSUE = grant("save_issue");
+const GITHUB_REVIEW: GrantedTool = {
+  connector: "github", type: "github", upstreamName: "create_pull_request_review", presentedName: "github__create_pull_request_review", access: "write",
+  facts: { connector: "github", upstreamName: "create_pull_request_review", access: "write", itemArguments: ["pull_number"] },
+};
 const CLASSIFY: ClassifyContext = { rules: { alwaysAsk: [] }, autonomy: "run", allowMentions: false };
 
 function world() {
@@ -114,9 +119,17 @@ function world() {
     ...projectRevisionKey(ORG_A, "web", 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", runtimeBinding: { deploymentMode: "ec2-ebs" },
     definition: {
       name: "web", revision: 1,
-      repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }],
+      repositories: [
+        { name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" },
+        { name: "payments-api", url: "https://github.com/acme/payments-api.git", path: "repo/payments-api", defaultBranch: "main", credentialRef: "github-app" },
+      ],
       setup: [command], readiness: [{ ...command, args: ["test"] }], orchestratorInstructions: "Delegate work.",
-      integrations: { connectors: [{ name: "linear", type: "linear", credentialRef: CONNECTION, scopes: [{ alias: "eng", teamId: TEAM }], tools: [{ name: "save_issue", access: "write" }] }] },
+      integrations: {
+        connectors: [
+          { name: "linear", type: "linear", credentialRef: CONNECTION, scopes: [{ alias: "eng", teamId: TEAM }, { alias: "pay", teamId: TEAM_PAY }], tools: [{ name: "save_issue", access: "write" }] },
+          { name: "github", type: "github", scopes: ["web", "payments-api"], tools: [{ name: "create_pull_request_review", access: "write" }] },
+        ],
+      },
     },
   });
   db.set({
@@ -159,12 +172,16 @@ function world() {
   const decide = (approvalId: string, cookie: string, decision: "approve" | "decline" = "approve", kinds?: DecideKinds) =>
     page(approvalId, { method: "POST", cookie, fields: { decision, csrf: csrfTokenFor(cookie) }, ...(kinds === undefined ? {} : { kinds }) });
 
-  const input = (args: Record<string, unknown> = { id: "ENG-12", stateId: "s1" }): DecideWriteInput => ({
+  const input = (args: Record<string, unknown> = { id: "ENG-12", stateId: "s1" }, scope = "eng"): DecideWriteInput => ({
     orgId: ORG_A, taskId: TASK, operationId: OPERATION, stepId: "work", agentId: "agt_00000000000000000007", agentName: "Triage bot", tool: SAVE_ISSUE,
-    call: { scope: "eng", schemaHash: SCHEMA, arguments: args }, classify: CLASSIFY, run: { project: "web", owner: { developerId: ALICE, name: "Alice" } },
+    call: { scope, schemaHash: SCHEMA, arguments: args }, classify: CLASSIFY, run: { project: "web", owner: { developerId: ALICE, name: "Alice" } },
   });
-  const waitingWrite = async (args?: Record<string, unknown>): Promise<string> => {
-    const decision = await decideWrite(deps, input(args));
+  /** A GitHub review call: the server binds the repository from the scope, so the arguments never name it. */
+  const githubInput = (scope: string): DecideWriteInput => ({
+    ...input({ pull_number: 12, event: "APPROVE" }, scope), tool: GITHUB_REVIEW, classification: { class: "consequential", reason: "a review", ignoredRules: [] },
+  });
+  const waitingWrite = async (args?: Record<string, unknown>, scope?: string): Promise<string> => {
+    const decision = await decideWrite(deps, input(args, scope));
     if (decision.outcome !== "wait") throw new Error(`expected wait, got ${JSON.stringify(decision)}`);
     return decision.approvalId;
   };
@@ -179,7 +196,12 @@ function world() {
   })).approvalId;
   const record = async (approvalId: string): Promise<AnyApprovalRecord> => (await getAnyApproval(deps, ORG_A, approvalId))!;
   const sessionOf = async (cookie: string) => decideStore.getSession(cookie);
-  return { db, clock, members, deps, vendor, handled, changes, kind, decideStore, context, session, page, decide, waitingWrite, waitingChange, waitingStep, record, sessionOf, member };
+  const waitingGithub = async (scope: string): Promise<string> => {
+    const decision = await decideWrite(deps, githubInput(scope));
+    if (decision.outcome !== "wait") throw new Error(`expected wait, got ${JSON.stringify(decision)}`);
+    return decision.approvalId;
+  };
+  return { db, clock, members, deps, vendor, handled, changes, kind, decideStore, context, session, page, decide, waitingWrite, waitingGithub, waitingChange, waitingStep, record, sessionOf, member };
 }
 type World = ReturnType<typeof world>;
 const caller = (developerId: string, orgRole: OrgRole = "member", orgId: OrgId = ORG_A): AgentCaller => ({ orgId, developerId, orgRole });
@@ -201,6 +223,38 @@ describe("the confirmation page for a write approval", () => {
     expect(shown.headers["content-security-policy"]).toContain("form-action 'self'");
     expect(shown.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     expect(shown.headers["x-frame-options"]).toBe("DENY");
+  });
+
+  // Final fix wave, access I-1: the scope is part of the call, so two approvals that differ only in it must read differently.
+  const plain = (body: string, ...ids: string[]) => ids.reduce((text, id) => text.split(id).join("<id>"), body).replace(/name="csrf" value="[^"]*"/u, "");
+  it("shows the connector's scope in the facts and the exact call, so two calls that differ only by scope read differently", async () => {
+    const w = world();
+    const eng = await w.waitingWrite(undefined, "eng");
+    const pay = await w.waitingWrite(undefined, "pay");
+    expect(eng).not.toBe(pay);
+    const engPage = await w.page(eng, { cookie: await w.session(BOB, eng) });
+    const payPage = await w.page(pay, { cookie: await w.session(BOB, pay) });
+    expect(engPage.statusCode).toBe(200);
+    expect(payPage.statusCode).toBe(200);
+    expect(engPage.body).toContain("<dt>Scope</dt><dd>eng</dd>");
+    expect(payPage.body).toContain("<dt>Scope</dt><dd>pay</dd>");
+    // The exact call block names the scope beside the connector and the tool.
+    expect(engPage.body).toMatch(/<h2>The exact call<\/h2><dl>.*<dt>Scope<\/dt><dd>eng<\/dd>.*<\/dl><pre>/u);
+    expect(payPage.body).toMatch(/<h2>The exact call<\/h2><dl>.*<dt>Scope<\/dt><dd>pay<\/dd>.*<\/dl><pre>/u);
+    expect(plain(engPage.body, eng)).not.toBe(plain(payPage.body, pay));
+  });
+
+  it("shows a GitHub call's repository as owner/name, which the stored arguments leave out", async () => {
+    const w = world();
+    const site = await w.waitingGithub("web");
+    const payments = await w.waitingGithub("payments-api");
+    const sitePage = await w.page(site, { cookie: await w.session(BOB, site) });
+    const paymentsPage = await w.page(payments, { cookie: await w.session(BOB, payments) });
+    expect(sitePage.body).toContain("<dt>Repository</dt><dd>acme/web</dd>");
+    expect(paymentsPage.body).toContain("<dt>Repository</dt><dd>acme/payments-api</dd>");
+    expect(sitePage.body).not.toContain("acme/payments-api");
+    expect(plain(sitePage.body, site)).not.toBe(plain(paymentsPage.body, payments));
+    expect(await w.record(payments)).toMatchObject({ scope: "payments-api", repository: "acme/payments-api" });
   });
 
   it("approving applies exactly the stored call once, with the session's proof, and ends the session", async () => {

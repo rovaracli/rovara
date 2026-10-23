@@ -75,6 +75,8 @@ const state = createWorkerServerState(
           }),
           // An agent-step run that looks at a pull request: its head is checked out after the clone (Plan 3, Task 22).
           ...(invocation.payload.checkout === undefined ? {} : { checkout: invocation.payload.checkout }),
+          // An agent-step run's preparation runs none of the repository's code (runs I-2).
+          ...(invocation.payload.readOnly === true ? { readOnly: true } : {}),
         });
         return {
           manifestPath: ".agentx/preparation-manifest.json",

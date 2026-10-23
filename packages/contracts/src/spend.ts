@@ -43,11 +43,37 @@ export type RunEstimate = z.infer<typeof RunEstimateSchema>;
 /** How the words a workflow blocks with begin when approving its plan needs a higher tier to accept the run limit (Task 34). */
 export const RUN_LIMIT_BLOCK_PREFIX = "This plan's run limit is $";
 /**
+ * Owner decision 3 (option E): when the project or an agent's owner pays, the plan waits for the person who may accept the run limit, in these words. The block
+ * is still a run-limit block (`isRunLimitBlockReason`), which only that person's approval of the request lifts.
+ */
+export const RUN_LIMIT_WAITING_PREFIXES = ["Waiting for a project maintainer to accept the $", "Waiting for the agent's owner to accept the $"] as const;
+export const runLimitWaitingText = (runLimitUsd: number, waitingFor: "project_maintainer" | "agent_owner"): string =>
+  `${RUN_LIMIT_WAITING_PREFIXES[waitingFor === "project_maintainer" ? 0 : 1]}${String(runLimitUsd)} run limit.`;
+/** Whether a workflow's block reason is the wait for a run limit's acceptance, in either set of words. */
+export const isRunLimitBlockReason = (reason: string | undefined): boolean =>
+  reason !== undefined && (reason.startsWith(RUN_LIMIT_BLOCK_PREFIX) || RUN_LIMIT_WAITING_PREFIXES.some((prefix) => reason.startsWith(prefix)));
+/**
  * The words the workflow blocks with when the approver may not accept the run limit: who has to approve and, only when a request was actually made, that it
  * has been asked for.
  */
 export const runLimitBlockText = (runLimitUsd: number, needs: "maintainer" | "admin", asked = true): string =>
   `${RUN_LIMIT_BLOCK_PREFIX}${String(runLimitUsd)}, which needs ${needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.${asked ? " I've asked for it." : ""}`;
+
+/**
+ * The subject a plan's `run_limit` request (the one that resumes coding) keeps its one-open-request slot under: apart from the task's other `run_limit`
+ * request, which resumes nothing. The broker makes it, and the task view looks for the open one by it.
+ */
+export const planRunLimitSubject = (taskId: string): string => `TASK#${taskId}#IMPLEMENT`;
+
+/**
+ * Kept while an approved plan's coding start has not been made (the approval committed; a start that failed is retried): "approved, starting" for the task.
+ * The ask-again route and the task view read it; it is removed when the start is made, given up or the task closes.
+ */
+export const heldPlanStartKey = (orgId: string, taskId: string): { pk: string; sk: string } => ({ pk: `HELD_SPEND_STARTS#PLAN#${orgId}`, sk: taskId });
+/** The owner's last new ask for a plan's run limit (`POST /v1/app/tasks/{id}/run-limit-request`), for the cooldown between asks. */
+export const runLimitAskedKey = (orgId: string, taskId: string): { pk: string; sk: string } => ({ pk: `RUN_LIMIT_ASKED#${orgId}`, sk: taskId });
+/** How long after one new ask the owner may make the next. */
+export const RUN_LIMIT_ASK_COOLDOWN_MS = 10 * 60_000;
 
 /** The limit on a workflow task's planning phase, before a plan is approved. */
 export const DEFAULT_PLANNING_LIMIT_USD = { QUICK: 2, FULL: 6 } as const;
@@ -171,7 +197,15 @@ export const ProjectAiSettingsSchema = z.object({
     if (new Set(order).size !== order.length) context.addIssue({ code: "custom", message: "must not repeat a source" });
   }).optional(),
   planningLimitUsd: z.object({ QUICK: PlanningLimit.optional(), FULL: PlanningLimit.optional() }).strict().optional(),
+  /**
+   * Owner decision 3 (option E): when the project pays, the most a run limit may be for the member who approves the plan to accept it themselves. Above it a
+   * `run_limit` request goes to the project's maintainers. Absent: the org's lead threshold. Never more than the org's admin threshold (saving more is refused, and an older
+   * setting is held to it when applied: `memberAcceptRunLimitUsd`). A project maintainer, an org owner or an admin sets it.
+   */
+  memberAcceptRunLimitUpToUsd: z.number().finite().min(0).max(1000).optional(),
 }).strict();
+/** The lead threshold's own default. A project that set nothing no longer uses this: it follows the org's lead threshold (`memberAcceptRunLimitUsd`). */
+export const DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD = 10;
 export type ProjectAiSettings = z.infer<typeof ProjectAiSettingsSchema>;
 
 /** A project that has never set any of its AI settings. */
@@ -193,6 +227,14 @@ export const SpendPolicySchema = SpendPolicyFieldsSchema.superRefine((policy, co
   }
 });
 export type SpendPolicy = z.infer<typeof SpendPolicySchema>;
+
+/**
+ * What a member may accept as a run limit when the project pays (owner decision 3, option E, with the fix wave re-check's N-1 ruling): the project's setting, or
+ * when it set none the org's lead threshold (so a project follows an org that changed it); and never more than the org's admin threshold, which is what a project
+ * maintainer may accept. Read where it is applied, so a threshold lowered after the setting was saved holds at once.
+ */
+export const memberAcceptRunLimitUsd = (settings: { memberAcceptRunLimitUpToUsd?: number | undefined }, policy: Pick<SpendPolicy, "leadApprovalThresholdUsd" | "adminApprovalThresholdUsd">): number =>
+  Math.min(settings.memberAcceptRunLimitUpToUsd ?? Math.min(policy.leadApprovalThresholdUsd, policy.adminApprovalThresholdUsd), policy.adminApprovalThresholdUsd);
 
 export const defaultSpendPolicy = (): SpendPolicy => ({
   leadApprovalThresholdUsd: LEAD_APPROVAL_THRESHOLD_USD,
@@ -231,14 +273,14 @@ export const SPEND_RESUME_INSTRUCTIONS = "Your AI budget was raised. Continue wh
 
 /**
  * The change an `owner_cap` request holds until an admin decides: nothing changes while it is PENDING, and approving applies exactly this, as an override of the
- * cap. `confirm_move` is Rovara's own move (a member merged or removed), which already applied: approving it only records that an admin saw it.
+ * cap. `confirm_move` is Rovara's own move (a member merged, removed or no longer a project maintainer), which already applied: approving it only records that an admin saw it.
  */
 export type OwnerCapChange =
   | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null } }
   | { op: "set_owner"; owner: { kind: "member"; developerId: string } | { kind: "project"; project: string }; accountable?: { developerId: string } }
   | { op: "set_accountable"; accountable: { developerId: string } }
   | { op: "unarchive" }
-  | { op: "confirm_move"; owner: string; cause: "member_merged" | "member_removed" };
+  | { op: "confirm_move"; owner: string; cause: "member_merged" | "member_removed" | "project_role_changed" };
 
 /** A request for more spend, at `spendRequestKey(orgId, spendRequestId)`; the open ones are listed at `openSpendRequestsKey`. */
 export interface SpendRequestRecord {
@@ -274,12 +316,14 @@ export interface SpendRequestRecord {
   change?: OwnerCapChange;
   /** The agent an `owner_cap` request is about. */
   agentId?: AgentId;
+  /** For `owner_cap`: the person whose total the change was summed against (the figures in `reason`). It applies only while the change still counts for them. */
+  forOwner?: string;
   createdAt: string;
   expiresAt: string;
   /** When the settlement run next looks at it (`openSpendRequestDueKey`): an unanswered owner's escalation, else its expiry. */
   dueAt?: string;
-  /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, or the person its change names left. */
-  endedBecause?: "continued" | "task_closed" | "target_left";
+  /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, the person its change names left, or the agent came to count for another owner than the one the change was summed for. */
+  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved";
 }
 
 /** What a paused run asks for by default: half its limit again, rounded up to whole dollars, and never less than $5. */

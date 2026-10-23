@@ -12,6 +12,7 @@ import type { ProjectAuthorityWitness } from "../../packages/broker/src/develope
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgMemberKey } from "../../packages/contracts/src/org.js";
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
@@ -164,6 +165,73 @@ describe("task dispatch access", () => {
     expect(changed).toBe(true);
     expect(h.checkTaskPerson).toHaveBeenCalledTimes(2);
     expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("WAITING_FOR_TASK_ACCESS");
+  });
+
+  describe("an org owner or admin with no grant (final review I1)", () => {
+    const seeded = () => {
+      const h = harness();
+      const revision = { ...projectRevisionKey(TEST_ORG, "payments", 7), definition: { revision: 7, developerTasks: { enabled: true, channelMembersMayUse: false } } };
+      const orgMember = { ...orgMemberKey(TEST_ORG, OWNER), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: OWNER, role: "owner", joinedAt: "2026-10-01T00:00:00.000Z" };
+      h.db.set(revision);
+      h.db.set(orgMember);
+      const witness: ProjectAuthorityWitness & { taskId: string; developerId: string; project: string } = {
+        taskId: TASK_ID, developerId: OWNER, project: "payments", access: "granted",
+        projectRevision: { pk: revision.pk, sk: revision.sk, revision: 7, developerTasksPresent: true, developerTasks: revision.definition.developerTasks },
+        orgMember: { pk: orgMember.pk, sk: orgMember.sk, role: "owner" },
+      };
+      return { h, orgMember, witness };
+    };
+
+    it("allows the dispatch while the org member row still holds the owner or admin role", async () => {
+      const { h, witness } = seeded();
+      await expect(guardTaskDispatch({
+        documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson,
+        stateAuthorityWitnessForOwnerActor: async (_task, actorId) => actorId === taskOwnerKey(OWNER, TASK_ID) ? witness : undefined,
+      }, h.outbox)).resolves.toBe("ALLOWED");
+    });
+
+    it.each(["demoted", "removed"] as const)("requalifies after the person is %s before the final State fence", async (change) => {
+      const { h, orgMember, witness } = seeded();
+      h.checkTaskPerson.mockImplementationOnce(async () => ({
+        subject: { developerId: OWNER, slackUserId: OWNER_SLACK },
+        identity: { developerId: OWNER, slackUserId: OWNER_SLACK, name: "Avery", method: "slack" as const, issuer: "https://slack.com", subject: OWNER_SLACK },
+        eligible: true, channelMember: true,
+      })).mockImplementation(async () => ({
+        subject: { developerId: OWNER, slackUserId: OWNER_SLACK },
+        identity: { developerId: OWNER, slackUserId: OWNER_SLACK, name: "Avery", method: "slack" as const, issuer: "https://slack.com", subject: OWNER_SLACK },
+        eligible: false, channelMember: true,
+      }));
+      let changed = false;
+      const documentClient = {
+        async send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown> {
+          void options;
+          if (!changed && command instanceof TransactWriteCommand) {
+            const input = command.input as { TransactItems?: Array<{ ConditionCheck?: { Key?: { pk?: string; sk?: string } } }> };
+            if (input.TransactItems?.some((item) => item.ConditionCheck?.Key?.pk === orgMember.pk && item.ConditionCheck.Key.sk === orgMember.sk)) {
+              changed = true;
+              if (change === "removed") h.db.delete(orgMember.pk, orgMember.sk);
+              else h.db.set({ ...orgMember, role: "member" });
+            }
+          }
+          return h.db.send(command as never);
+        },
+      };
+      await expect(guardTaskDispatch({
+        documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson,
+        stateAuthorityWitnessForOwnerActor: async (_task, actorId) => actorId === taskOwnerKey(OWNER, TASK_ID) ? witness : undefined,
+      }, h.outbox)).resolves.toBe("PARKED");
+      expect(changed).toBe(true);
+      expect(h.checkTaskPerson).toHaveBeenCalledTimes(2);
+    });
+
+    it("refuses an org member witness keyed to another developer or org", async () => {
+      const { h, witness } = seeded();
+      const stolen = { ...witness, orgMember: { ...orgMemberKey(TEST_ORG, "b".repeat(64)), role: "owner" as const } };
+      await expect(guardTaskDispatch({
+        documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson,
+        stateAuthorityWitnessForOwnerActor: async (_task, actorId) => actorId === taskOwnerKey(OWNER, TASK_ID) ? stolen : undefined,
+      }, h.outbox)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    });
   });
 
   it("parks without demoting the owner when the final authority query is unavailable", async () => {

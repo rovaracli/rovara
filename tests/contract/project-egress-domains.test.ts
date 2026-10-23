@@ -7,8 +7,9 @@ import {
   EGRESS_SYNC_KEY, egressDomainsKey, isAllowedDomain, projectMetaKey, projectRevisionKey, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import {
-  EGRESS_BACKFILL_KEY, EMPTY_UNION_SENTINEL, FIREWALL_DOMAINS_PER_CALL, backfillLegacyEgress, runEgressDomainsSync, syncCellAllowList,
+  EGRESS_BACKFILL_KEY, EGRESS_RECONCILE_CONCURRENCY, EMPTY_UNION_SENTINEL, FIREWALL_DOMAINS_PER_CALL, backfillLegacyEgress, reconcileEgressWithRevisions, runEgressDomainsSync, syncCellAllowList,
 } from "../../packages/broker/src/aws/egress-domains-sync.js";
+import { reconcileProjectEgress } from "../../packages/broker/src/org/project-archive.js";
 import { decideEgressDomain, putEgressDomains, setEgressOwnerActive, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -385,10 +386,251 @@ describe("the legacy backfill", () => {
     legacyProject(t.db, "api", ["x.beta.dev"]);
     t.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("PROJECT#api"), error: { name: "InternalServerError" } });
     await expect(backfillLegacyEgress(t.deps(true))).rejects.toThrow();
-    expect(t.db.get(EGRESS_BACKFILL_KEY)).toBeUndefined();
+    // Not done: the marker only keeps where it got to (the project that was written before the failure).
+    expect(t.db.get(EGRESS_BACKFILL_KEY)?.completedAt).toBeUndefined();
     expect(await backfillLegacyEgress(t.deps(true))).toEqual({ ran: true, projects: 1 });
     expect(t.db.get(egressDomainsKey(TEST_ORG, API))).toMatchObject({ domains: [{ domain: "x.beta.dev" }] });
     expect(t.db.get(EGRESS_BACKFILL_KEY)).toBeDefined();
+  });
+});
+
+describe("the reconcile of egress items with the current revision (final review I2)", () => {
+  const audits = (db: FakeDynamoDb) => db.find((candidate) => candidate.pk === "EGRESS_AUDIT") as unknown as EgressAuditItem[];
+  const items = (t: ReturnType<typeof setup>, owner: EgressOwner = WEB, orgId: OrgId = TEST_ORG) => (t.db.get(egressDomainsKey(orgId, owner)) as unknown as EgressDomainsItem);
+  /** A clock that has moved well past the item's last write, so an in-flight save is not mistaken for a stopped one. */
+  const later = (t: ReturnType<typeof setup>) => ({ ...t.deps(true), now: () => new Date("2026-10-21T10:30:00.000Z") });
+
+  it("asks for a domain the current revision lists and the item lacks, and drops one the item holds and the revision no longer lists", async () => {
+    const t = setup();
+    // The save wrote its revision, then died before the item: the revision lists new.acme.dev, the item still holds the removed one.
+    await putEgressDomains(t.quiet(false), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev", "registry.npmjs.org"]] });
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 1 });
+    expect(items(t).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+    expect(items(t).domains[0]).toMatchObject({ status: "pending", requestedBy: "system" });
+    expect(audits(t.db).map((audit) => `${audit.domain}:${audit.action}`).sort()).toEqual(["new.acme.dev:requested", "old.acme.dev:auto_approved", "old.acme.dev:removed"]);
+    // A second run finds nothing to do.
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 0 });
+  });
+
+  it("keeps the status of a domain both agree on, and takes a removed approved domain out of the served union", async () => {
+    const t = setup();
+    const cloud = t.deps(true);
+    await putEgressDomains(cloud, TEST_ORG, WEB, ["keep.acme.dev", "gone.acme.dev"], { developerId: "dev-1" });
+    await decideEgressDomain(cloud, { orgId: TEST_ORG, owner: WEB, domain: "keep.acme.dev", decision: "approved", operatorId: "staff-1" });
+    await decideEgressDomain(cloud, { orgId: TEST_ORG, owner: WEB, domain: "gone.acme.dev", decision: "approved", operatorId: "staff-1" });
+    legacyProject(t.db, "web", undefined, { revisions: [["keep.acme.dev", "gone.acme.dev"], ["keep.acme.dev"]] });
+    t.resolver.send.mockClear();
+    const outcome = await runEgressDomainsSync({ ...later(t), sync: () => syncCellAllowList({ documentClient: t.db, tableName: "state", resolver: t.resolver, listId: LIST_ID, now: () => new Date("2026-10-21T10:30:00.000Z"), sleep: t.sleep }) });
+    expect(outcome.ok).toBe(true);
+    expect(items(t).domains).toMatchObject([{ domain: "keep.acme.dev", status: "approved" }]);
+    expect(t.resolver.updates().at(-1)).toEqual({ FirewallDomainListId: LIST_ID, Operation: "REPLACE", Domains: ["keep.acme.dev"] });
+  });
+
+  it("leaves an item written a moment ago alone: a save may be between its two writes", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["new.acme.dev"], { developerId: "dev-1" });
+    legacyProject(t.db, "web", ["old.acme.dev"]);
+    expect(await reconcileEgressWithRevisions(t.deps(true))).toEqual({ repaired: 0 });
+    expect(items(t).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+  });
+
+  it("leaves a project with no revision, an owner that is not a project, and every other org's item alone", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["a.acme.dev"], { developerId: "dev-1" });
+    await putEgressDomains(t.quiet(true), TEST_ORG, SOURCE, ["b.acme.dev"], { developerId: "dev-1" });
+    await putEgressDomains(t.quiet(true), OTHER_ORG, API, ["c.beta.dev"], { developerId: "dev-2" });
+    // The other org's revision for the same name lists something else: it must not be read for TEST_ORG's item, nor the reverse.
+    legacyProject(t.db, "api", ["c.beta.dev"], { orgId: OTHER_ORG });
+    legacyProject(t.db, "web", ["a.acme.dev"], { orgId: OTHER_ORG });
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 0 });
+    expect(items(t).domains.map((entry) => entry.domain)).toEqual(["a.acme.dev"]);
+  });
+
+  it("repairs an archived project's item without waking it", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    await setEgressOwnerActive(t.quiet(true), TEST_ORG, WEB, false);
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev"]], status: "archived" });
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 1 });
+    expect(items(t)).toMatchObject({ active: false, domains: [{ domain: "new.acme.dev" }] });
+  });
+
+  it("skips a stored domain the firewall must never serve, and is part of the scheduled run", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev", "*"]] });
+    const outcome = await runEgressDomainsSync({ ...later(t), sync: async () => ({ ok: true, domains: 0 }) });
+    expect(outcome.ok).toBe(true);
+    expect(items(t).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+  });
+});
+
+describe("the reconciles are bounded and isolated (follow-up N3)", () => {
+  const items = (t: ReturnType<typeof setup>, project: string) => (t.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project })) as unknown as EgressDomainsItem);
+  const later = (t: ReturnType<typeof setup>, at = "2026-10-21T10:30:00.000Z") => ({ ...t.deps(true), now: () => new Date(at) });
+  /** `count` projects whose items still hold a domain their newest revision dropped. */
+  async function stale(t: ReturnType<typeof setup>, count: number): Promise<string[]> {
+    const names = Array.from({ length: count }, (_, index) => `p${String(index).padStart(2, "0")}`);
+    for (const name of names) {
+      await putEgressDomains(t.quiet(true), TEST_ORG, { kind: "project", project: name }, ["old.acme.dev"], { developerId: "dev-1" });
+      legacyProject(t.db, name, undefined, { revisions: [["old.acme.dev"], ["new.acme.dev"]] });
+    }
+    return names;
+  }
+  /** Wraps the fake so each command waits a tick and the most commands of a kind in flight at once are recorded. */
+  function watchConcurrency(t: ReturnType<typeof setup>) {
+    const inFlight = { query: 0, write: 0 };
+    const most = { query: 0, write: 0 };
+    const send = t.db.send.bind(t.db);
+    t.db.send = (async (command: { constructor: { name: string } }) => {
+      const kind = command.constructor.name === "QueryCommand" ? "query" : command.constructor.name === "TransactWriteCommand" ? "write" : undefined;
+      if (kind === undefined) return send(command as never);
+      inFlight[kind] += 1;
+      most[kind] = Math.max(most[kind], inFlight[kind]);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return await send(command as never);
+      } finally { inFlight[kind] -= 1; }
+    });
+    return most;
+  }
+
+  it("reads the revisions several at a time, within its bound, and writes one item at a time", async () => {
+    const t = setup();
+    const names = await stale(t, 30);
+    const most = watchConcurrency(t);
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 30 });
+    expect(most.query).toBeGreaterThan(1);
+    expect(most.query).toBeLessThanOrEqual(EGRESS_RECONCILE_CONCURRENCY);
+    expect(most.write).toBe(1);
+    for (const name of names) expect(items(t, name).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+  });
+
+  it("repairs the others when one project's revision cannot be read, and then reports the failure", async () => {
+    const t = setup();
+    const names = await stale(t, 6);
+    t.db.injectFault({ command: "QueryCommand", match: (input) => JSON.stringify(input).includes("PROJECT#p03"), error: { name: "ProvisionedThroughputExceededException" } });
+    await expect(reconcileEgressWithRevisions(later(t))).rejects.toThrow("1 egress item(s)");
+    for (const name of names.filter((candidate) => candidate !== "p03")) expect(items(t, name).domains.map((entry) => entry.domain), name).toEqual(["new.acme.dev"]);
+    expect(items(t, "p03").domains.map((entry) => entry.domain)).toEqual(["old.acme.dev"]);
+    // The next run finishes it.
+    expect(await reconcileEgressWithRevisions(later(t))).toEqual({ repaired: 1 });
+  });
+
+  it("looks at no more than its per-run limit, moving along so every item is reached within a few runs", async () => {
+    const t = setup();
+    const names = await stale(t, 5);
+    const slice = (index: number) => new Date(Date.parse("2026-10-21T10:30:00.000Z") + index * 300_000).toISOString();
+    const repaired: number[] = [];
+    for (let run = 0; run < 3; run += 1) repaired.push((await reconcileEgressWithRevisions(later(t, slice(run)), { limit: 2 })).repaired);
+    expect(repaired).toEqual([2, 2, 1]);
+    for (const name of names) expect(items(t, name).domains.map((entry) => entry.domain), name).toEqual(["new.acme.dev"]);
+  });
+
+  it("flips the others when one project's META cannot be read, and then reports the failure", async () => {
+    const t = setup();
+    for (const name of ["a", "b", "c"]) {
+      await putEgressDomains(t.quiet(true), TEST_ORG, { kind: "project", project: name }, ["x.acme.dev"], { developerId: "dev-1" });
+      legacyProject(t.db, name, ["x.acme.dev"], { status: "archived" });
+    }
+    t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("PROJECT#b"), error: { name: "ProvisionedThroughputExceededException" } });
+    await expect(reconcileProjectEgress({ documentClient: t.db, tableName: "state", egress: t.deps(true) })).rejects.toThrow("1 egress item(s)");
+    expect([items(t, "a").active, items(t, "b").active, items(t, "c").active]).toEqual([false, true, false]);
+  });
+
+  it("runs the revision reconcile although the META reconcile failed, and the META reconcile although the revision one failed, and still syncs", async () => {
+    const t = setup();
+    await putEgressDomains(t.quiet(true), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev"]] });
+    t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("PROJECT#web"), error: { name: "ProvisionedThroughputExceededException" } });
+    const sync = vi.fn(async () => ({ ok: true, domains: 0 }));
+    const metaFailed = await runEgressDomainsSync({ ...later(t), sync });
+    expect(metaFailed.ok).toBe(false);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(items(t, "web").domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+
+    const u = setup();
+    await putEgressDomains(u.quiet(true), TEST_ORG, API, ["a.acme.dev"], { developerId: "dev-1" });
+    legacyProject(u.db, "api", ["a.acme.dev"], { status: "archived" });
+    await putEgressDomains(u.quiet(true), TEST_ORG, WEB, ["old.acme.dev"], { developerId: "dev-1" });
+    legacyProject(u.db, "web", undefined, { revisions: [["old.acme.dev"], ["new.acme.dev"]] });
+    u.db.injectFault({ command: "QueryCommand", match: (input) => JSON.stringify(input).includes("PROJECT#web"), error: { name: "ProvisionedThroughputExceededException" } });
+    const revisionFailed = await runEgressDomainsSync({ ...later(u), sync });
+    expect(revisionFailed.ok).toBe(false);
+    expect(sync).toHaveBeenCalledTimes(2);
+    expect(items(u, "api").active).toBe(false);
+  });
+});
+
+const itemsOf = (t: { db: FakeDynamoDb }) => t.db.find((item) => item.pk === "EGRESS_DOMAINS" && String(item.sk).startsWith("ORG#")) as unknown as EgressDomainsItem[];
+
+describe("the legacy backfill is time-bounded and resumable (final review M6)", () => {
+  /** A clock that moves 100 ms each time it is read. */
+  const ticking = () => { let at = 0; return () => { at += 100; return at; }; };
+
+  it("stops when its time is up with a cursor on its marker, and the next run carries on, asking for every project once", async () => {
+    const t = setup();
+    for (const name of ["a1", "a2", "a3", "a4", "a5"]) legacyProject(t.db, name, [`${name}.acme.dev`]);
+    let total = 0;
+    let runs = 0;
+    for (; runs < 10; runs += 1) {
+      const outcome = await backfillLegacyEgress(t.deps(true), { deadline: 350, clock: ticking(), pageSize: 2 });
+      total += outcome.projects;
+      if (t.db.get(EGRESS_BACKFILL_KEY)?.completedAt !== undefined) break;
+      // Unfinished: the marker keeps where it got to, and the run made progress.
+      expect(t.db.get(EGRESS_BACKFILL_KEY)).toMatchObject({ cursor: { pk: expect.any(String) as string, sk: expect.any(String) as string } });
+      expect(outcome.projects).toBeGreaterThan(0);
+    }
+    expect(runs).toBeGreaterThan(0);
+    expect(total).toBe(5);
+    expect(itemsOf(t)).toHaveLength(5);
+    expect(t.db.get(EGRESS_BACKFILL_KEY)).toMatchObject({ projects: 5 });
+    expect(t.db.get(EGRESS_BACKFILL_KEY)).not.toHaveProperty("cursor");
+    expect(await backfillLegacyEgress(t.deps(true))).toEqual({ ran: false, projects: 0 });
+  });
+
+  it("stops in the middle of one page of projects when its time is up, and no project is lost or asked twice", async () => {
+    const t = setup();
+    for (const name of ["a1", "a2", "a3", "a4", "a5"]) legacyProject(t.db, name, [`${name}.acme.dev`]);
+    // One page holds all five; the clock runs out after the first whole project.
+    const first = await backfillLegacyEgress(t.deps(true), { deadline: 150, clock: ticking() });
+    expect(first.projects).toBeGreaterThan(0);
+    expect(first.projects).toBeLessThan(5);
+    expect(t.db.get(EGRESS_BACKFILL_KEY)?.completedAt).toBeUndefined();
+    let total = first.projects;
+    for (let runs = 0; runs < 10 && t.db.get(EGRESS_BACKFILL_KEY)?.completedAt === undefined; runs += 1) total += (await backfillLegacyEgress(t.deps(true), { deadline: 150, clock: ticking() })).projects;
+    expect(total).toBe(5);
+    expect(itemsOf(t)).toHaveLength(5);
+  });
+
+  it("moves on by a whole project even when it starts after its deadline", async () => {
+    const t = setup();
+    for (const name of ["a1", "a2", "a3"]) legacyProject(t.db, name, [`${name}.acme.dev`]);
+    const outcome = await backfillLegacyEgress(t.deps(true), { deadline: 0, clock: ticking() });
+    expect(outcome.projects).toBe(1);
+    expect(t.db.get(EGRESS_BACKFILL_KEY)?.completedAt).toBeUndefined();
+  });
+
+  it("asks only for a project's newest revision even when its revisions are read on different pages", async () => {
+    const t = setup();
+    legacyProject(t.db, "web", undefined, { revisions: [["old.acme.dev"], ["old.acme.dev", "mid.acme.dev"], ["new.acme.dev"]] });
+    legacyProject(t.db, "api", ["x.beta.dev"], { orgId: OTHER_ORG });
+    for (let runs = 0; runs < 10 && t.db.get(EGRESS_BACKFILL_KEY)?.completedAt === undefined; runs += 1) await backfillLegacyEgress(t.deps(true), { deadline: 150, clock: ticking(), pageSize: 1 });
+    expect((t.db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains.map((entry) => entry.domain)).toEqual(["new.acme.dev"]);
+    expect(t.db.get(egressDomainsKey(OTHER_ORG, API))).toMatchObject({ domains: [{ domain: "x.beta.dev" }] });
+  });
+
+  it("keeps its progress when a write fails partway, and the next run resumes after the last whole project", async () => {
+    const t = setup();
+    legacyProject(t.db, "a1", ["a1.acme.dev"]);
+    legacyProject(t.db, "a2", ["a2.acme.dev"]);
+    t.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("PROJECT#a2"), error: { name: "InternalServerError" } });
+    await expect(backfillLegacyEgress(t.deps(true))).rejects.toThrow();
+    expect(t.db.get(EGRESS_BACKFILL_KEY)?.completedAt).toBeUndefined();
+    expect((await backfillLegacyEgress(t.deps(true))).projects).toBeGreaterThanOrEqual(1);
+    expect(t.db.get(EGRESS_BACKFILL_KEY)?.completedAt).toBeDefined();
+    expect(itemsOf(t)).toHaveLength(2);
   });
 });
 
@@ -405,6 +647,29 @@ describe("the scheduled run", () => {
     t.resolver.send.mockClear();
     expect(await runEgressDomainsSync({ ...t.deps(true), sync: t.sync })).toEqual({ ok: true, domains: 0, backfilled: 0 });
     expect(t.resolver.send).not.toHaveBeenCalled();
+  });
+
+  it("syncs BEFORE it backfills, so a large backfill never starves the firewall (final review M6)", async () => {
+    const t = setup();
+    legacyProject(t.db, "web", ["old.acme.dev"]);
+    const order: string[] = [];
+    const sync = async () => { order.push(`sync with ${String(itemsOf(t).length)} items`); return t.sync(); };
+    await runEgressDomainsSync({ ...t.deps(true), sync });
+    order.push(`after: ${String(itemsOf(t).length)} items`);
+    expect(order).toEqual(["sync with 0 items", "after: 1 items"]);
+  });
+
+  it("hands the backfill what is left of its budget and carries on next run", async () => {
+    const t = setup();
+    for (const name of ["a1", "a2", "a3"]) legacyProject(t.db, name, [`${name}.acme.dev`]);
+    let at = 0;
+    const first = await runEgressDomainsSync(t.deps(true), { budgetMs: 150, clock: () => { at += 100; return at; } });
+    expect(first.backfilled).toBeGreaterThan(0);
+    expect(first.backfilled).toBeLessThan(3);
+    expect(t.db.get(EGRESS_BACKFILL_KEY)?.completedAt).toBeUndefined();
+    let guard = 0;
+    while (t.db.get(EGRESS_BACKFILL_KEY)?.completedAt === undefined && guard < 10) { guard += 1; at = 0; await runEgressDomainsSync(t.deps(true), { budgetMs: 150, clock: () => { at += 100; return at; } }); }
+    expect(itemsOf(t)).toHaveLength(3);
   });
 
   it("still syncs when the backfill fails, and reports it", async () => {

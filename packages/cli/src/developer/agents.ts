@@ -55,15 +55,15 @@ export async function appRequest(
   return { env: session.env, url: session.entry.url, status: response.status, body: value as Body };
 }
 
-const result = (answer: { env: string; url: string }, data: Body, text: string): AppResult => ({ env: answer.env, url: answer.url, data: jsonSafe(data) as Body, text });
+export const result = (answer: { env: string; url: string }, data: Body, text: string): AppResult => ({ env: answer.env, url: answer.url, data: jsonSafe(data) as Body, text });
 /** One path segment from an ID the person typed; `.` and `..` are refused, since a URL would read them as a step up the path (review M7). */
 export const seg = (id: string): string => {
   if (id === "." || id === "..") throw agentXError("CONFIG_INVALID", "an ID cannot be . or ..");
   return encodeURIComponent(id);
 };
-const str = (value: unknown, fallback = ""): string => (typeof value === "string" || typeof value === "number" ? clean(String(value)) : fallback);
+export const str = (value: unknown, fallback = ""): string => (typeof value === "string" || typeof value === "number" ? clean(String(value)) : fallback);
 const pretty = (value: unknown): string => JSON.stringify(jsonSafe(value), null, 2);
-const list = (value: unknown): Body[] => (Array.isArray(value) ? value.filter((entry): entry is Body => typeof entry === "object" && entry !== null) : []);
+export const list = (value: unknown): Body[] => (Array.isArray(value) ? value.filter((entry): entry is Body => typeof entry === "object" && entry !== null) : []);
 const item = (value: unknown): string => (typeof value === "string" ? clean(value) : clean(JSON.stringify(value)));
 
 /** A JSON file the person wrote: an object, or (for shares) an array. Read before anything is sent. */
@@ -181,10 +181,16 @@ export async function agentsPublish(deps: DeveloperSessionDeps, env: string | un
   return result(answer, answer.body, waitingText(answer.body) ?? `Published ${clean(agentId)} as version ${str(version.version)}; new runs use it.\n`);
 }
 
+/** What a version list says of a version against the one that runs now (owner decision 2026-10-22): a run of a less safe one needs the agent's owner's OK. */
+function safetyMark(version: Body): string {
+  if (version.safety === "less_safe") return "  less safe than the current version, needs the owner's OK";
+  return version.safety === "same_or_safer" ? "  same or safer" : "";
+}
+
 export async function agentsVersions(deps: DeveloperSessionDeps, env: string | undefined, agentId: string): Promise<AppResult> {
   const answer = await appRequest(deps, env, `/v1/app/agents/${seg(agentId)}/versions`);
   const versions = list(answer.body.versions);
-  const lines = versions.map((version) => `  v${str(version.version)}${version.current === true ? " (runs now)" : ""}  ${str(version.publishedAt ?? version.releasedIn)}${version.note === undefined && version.notes === undefined ? "" : `  ${str(version.note ?? version.notes)}`}`);
+  const lines = versions.map((version) => `  v${str(version.version)}${version.current === true ? " (runs now)" : ""}  ${str(version.publishedAt ?? version.releasedIn)}${safetyMark(version)}${version.note === undefined && version.notes === undefined ? "" : `  ${str(version.note ?? version.notes)}`}`);
   return result(answer, { versions }, `${[`Versions of ${clean(agentId)}:`, ...lines].join("\n")}\n`);
 }
 
@@ -249,6 +255,10 @@ export async function agentsRun(
   const answer = await appRequest(deps, env, `/v1/app/agents/${seg(agentId)}/runs`, {
     method: "POST", body: { requestId: randomUUID(), project: input.project, ...(version === undefined ? {} : { version }), input: { text: input.input } },
   });
+  if (answer.body.status === "NEEDS_OWNER_APPROVAL" && typeof answer.body.confirmUrl === "string") {
+    const changes = Array.isArray(answer.body.changes) ? (answer.body.changes as unknown[]).map((change) => `  - ${item(change)}`) : [];
+    return result(answer, answer.body, [`This run of ${clean(agentId)}${version === undefined ? "" : ` version ${version}`} waits for the agent's owner to OK it. Nothing started yet; it starts once they approve it. Open: ${clean(answer.body.confirmUrl)}`, ...changes, ""].join("\n"));
+  }
   const task = (answer.body.task ?? {}) as Body;
   return result(answer, answer.body, `Started ${clean(agentId)}${version === "draft" ? " (its draft, as a test run)" : version === undefined ? "" : ` version ${version}`} on ${clean(input.project)}: task ${str(task.taskId)} is ${str(task.status)}.\n`);
 }
@@ -392,8 +402,15 @@ function confirmationPage(raw: string, cellUrl: string): string | undefined {
  * The confirmation page's link for one approval (ticketed for a person who may decide it now). Nothing is decided here. `openUrl` is set only
  * when the link is this cell's own confirmation page; any other link is printed, never handed to a browser.
  */
-export async function approvalsConfirmLink(deps: DeveloperSessionDeps, env: string | undefined, approvalId: string): Promise<AppResult & { openUrl?: string }> {
-  const answer = await appRequest(deps, env, `/v1/app/approvals/${seg(approvalId)}/confirm-link`, { method: "POST" });
+export const approvalsConfirmLink = (deps: DeveloperSessionDeps, env: string | undefined, approvalId: string): Promise<AppResult & { openUrl?: string }> =>
+  confirmLink(deps, env, `/v1/app/approvals/${seg(approvalId)}/confirm-link`);
+
+/** The same for a spend request (`agentx spend-requests open`): its page is the one place it is decided. */
+export const spendRequestConfirmLink = (deps: DeveloperSessionDeps, env: string | undefined, spendRequestId: string): Promise<AppResult & { openUrl?: string }> =>
+  confirmLink(deps, env, `/v1/app/spend-requests/${seg(spendRequestId)}/confirm-link`);
+
+async function confirmLink(deps: DeveloperSessionDeps, env: string | undefined, path: string): Promise<AppResult & { openUrl?: string }> {
+  const answer = await appRequest(deps, env, path, { method: "POST" });
   if (typeof answer.body.confirmUrl !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "AgentX answered without the confirmation link; try again");
   const openUrl = confirmationPage(answer.body.confirmUrl, answer.url);
   const text = `Approve or decline it on its page: ${clean(answer.body.confirmUrl)}\n${openUrl === undefined ? "That is not this AgentX's confirmation page, so it was not opened.\n" : ""}`;

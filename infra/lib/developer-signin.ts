@@ -3,6 +3,7 @@
 import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
+import { BrokerNames } from "./broker-names.js";
 import { packagedFunction } from "./control-plane.js";
 import { CloudIdentity } from "./cloud-identity.js";
 
@@ -345,10 +346,13 @@ export class DeveloperSignIn extends Construct {
     for (const route of throttledRoutes) props.stage.addDependency(route);
 
     const broker = props.broker;
-    broker.addEnvironment("DEVELOPER_TOKEN_ISSUER", issuer);
+    // The sign-in issuer is the API's address plus /v1/auth: the broker is given the API's id (in its names) and builds the URL.
+    BrokerNames.of(broker).add("signInApi", props.api.ref);
     broker.addEnvironment("AGENTX_ENV", props.env);
-    broker.addEnvironment("DEVELOPER_SIGNIN_TABLE_NAME", table.tableName);
-    broker.addEnvironment("DEVELOPER_IDENTITY_FUNCTION_ARN", fn.functionArn);
+    // The table and the function by name, in the broker's names (BrokerNames; its variables are held to Lambda's 4 KB). Lambda's Invoke takes a name.
+    const brokerNames = BrokerNames.of(broker);
+    brokerNames.add("signInTable", table.tableName);
+    brokerNames.add("identityFunction", fn.functionName);
     broker.addEnvironment("SLACK_TEAM_ID", p.slackTeamId.valueAsString);
     broker.addEnvironment("DEVELOPER_SIGNIN_SLACK", p.slack.valueAsString);
     broker.addEnvironment("DEVELOPER_OIDC_ISSUER", p.oidcIssuer.valueAsString);
@@ -358,7 +362,8 @@ export class DeveloperSignIn extends Construct {
     // The broker reads only whether the cloud sign-in is configured (it then resolves orgs by membership, R6)
     // and where invite links point; the sign-in function holds the client settings and the secret.
     if (cloud !== undefined) {
-      broker.addEnvironment("DEVELOPER_CLOUD_ISSUER", cloud.issuer);
+      // The pool's id, in the broker's names: the broker builds the issuer URL from it (a URL of 70 to 100 bytes against the id's 20).
+      BrokerNames.of(broker).add("cloudUserPool", cloud.userPoolId);
       broker.addEnvironment("ROVARA_WEB_ORIGIN", cloud.webOrigin.valueAsString);
       // Whether GitHub tokens are accepted (developerClaims checks the method is on); the client id is not a secret, the secret stays with the sign-in function.
       broker.addEnvironment("DEVELOPER_GITHUB_CLIENT_ID", cloud.githubClientId.valueAsString);

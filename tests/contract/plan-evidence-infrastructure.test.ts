@@ -5,6 +5,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -86,7 +87,9 @@ describe("the PlanEvidence function's infrastructure", () => {
     const statements = statementsOf(named, broker);
     const invoke = statements.filter((statement) => actionsOf(statement).includes("lambda:InvokeFunction") && JSON.stringify(statement.Resource).includes(planEvidence[0]));
     expect(invoke).toHaveLength(1);
-    expect(broker[1].Properties.Environment?.Variables).toMatchObject({ PLAN_EVIDENCE_FUNCTION_NAME: { Ref: planEvidence[0] } });
+    // The name is in the broker's one variable of names (its variables are held to Lambda's 4 KB), and the broker puts it back as PLAN_EVIDENCE_FUNCTION_NAME.
+    expect(broker[1].Properties.Environment?.Variables).not.toHaveProperty("PLAN_EVIDENCE_FUNCTION_NAME");
+    expect(brokerNamesIn(broker[1].Properties.Environment?.Variables).planEvidenceFunction).toEqual({ Ref: planEvidence[0] });
     // Nothing else may start it: no other role in the stack names it in an invoke grant.
     const grants = ([...Object.values(named.findResources("AWS::IAM::Policy")), ...Object.values(named.findResources("AWS::IAM::ManagedPolicy"))] as Policy[])
       .filter((policy) => JSON.stringify(policy.Properties.PolicyDocument).includes(planEvidence[0]) && JSON.stringify(policy.Properties.PolicyDocument).includes("lambda:InvokeFunction"));

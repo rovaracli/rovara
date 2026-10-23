@@ -12,6 +12,7 @@ import {
   StoredProjectDefinitionSchema,
   TEST_TIMEOUT,
   agentXError,
+  projectArchivedMessage,
   canonicalJson,
   githubInstallationKey,
   githubNotConnectedMessage,
@@ -28,7 +29,7 @@ import {
   type ProjectSettingsBody,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
-import { projectArchivedSettingsMessage, readProjectMeta } from "../developer/project-roles.js";
+import { readProjectMeta } from "../developer/project-roles.js";
 import { cloudRepositoryEntry } from "./cloud-projects.js";
 import { egressStatusWarnings, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "./egress-domains.js";
 
@@ -227,7 +228,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change its settings");
   if (!deps.cloud) throw agentXError("FORBIDDEN", "ask an administrator to change this project with agentx admin project register");
   // An archived project's settings are as they were when it was archived; restoring it is how they change again (Task 20).
-  if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedSettingsMessage(name));
+  if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(name));
   const body = parseProjectSettingsBody(rawBody);
 
   const latest = await latestRevision(deps, caller.orgId, name);
@@ -294,6 +295,10 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   const previous = ProjectDefinitionSchema.safeParse(current);
   const withoutRevision = (definition: unknown) => canonicalJson({ ...(definition as Record<string, unknown>), revision: 0 });
   const changed = !previous.success || withoutRevision(previous.data) !== withoutRevision(parsed.data);
+  // Ruling C29: the egress item first. Its refusal (a concurrent edit) then leaves no revision, and a revision that fails to land leaves an item
+  // the scheduled reconcile compares with the project's current revision and repairs (`reconcileEgressWithRevisions`). The other order left a
+  // revision with no item, which nothing noticed: a domain the maintainer removed stayed in the cell-wide union.
+  const egressWarnings = await recordEgress(deps.egress, caller, name, parsed.data.network?.allowedDomains ?? []);
   if (changed) {
     try {
       await deps.registerRevision({ orgId: caller.orgId, ownerKey: caller.developerId }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding });
@@ -304,7 +309,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
     }
   }
   if (body.description !== undefined) await writeDescription(deps, caller.orgId, name, body.description);
-  warnings.push(...await recordEgress(deps.egress, caller, name, parsed.data.network?.allowedDomains ?? []));
+  warnings.push(...egressWarnings);
   console.log(JSON.stringify({
     component: "broker", event: "developer.project_settings_changed", orgId: caller.orgId, project: name, revision: changed ? parsed.data.revision : current.revision,
     changed: SETTING_FIELDS.filter((field) => body[field] !== undefined),
@@ -315,8 +320,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
 /**
  * Makes the project's egress item match the domains the project now has, and answers what the person is told: each domain still waiting for
  * Rovara, each one Rovara refused, and that the firewall will follow within 5 minutes when it could not be told at once. It runs on every
- * save, whatever the save changed: a project whose domains were stored before approvals existed asks for them on its next save, and a save
- * after one whose egress write failed (say, the one that removed the last domain) takes the old item's domains out of the union. With no item
+ * save, whatever the save changed, and BEFORE the revision is written (ruling C29): a project whose domains were stored before approvals existed asks
+ * for them on its next save, and the scheduled reconcile puts the item right after a save whose revision then failed to land. With no item
  * and no domains it reads once and writes nothing. Domains every project already has are not asked about.
  */
 async function recordEgress(egress: EgressDomainsDependencies, caller: ProjectSettingsCaller, project: string, domains: readonly string[]): Promise<string[]> {

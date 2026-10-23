@@ -139,7 +139,18 @@ export interface DeveloperTaskRecord {
    * mid-run (`mintOperationKey`) has no `firstDispatch`, and keeps the first pause it was given. Task 32's approval of the raise clears this field
    * (and, for `firstDispatch`, takes the slot and writes the outbox and the watch).
    */
-  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string; checkout?: RunCheckout[] } };
+  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string; checkout?: RunCheckout[]; readOnly?: true } };
+  /**
+   * Plan 3, M-6: the plain task's operation whose budget stop the pause handlers were told about (`noteTaskPaused`). A plain task that stops on a budget is paused,
+   * not ended, so its end handlers are not told; this marks the stop as told (a replay or the recovery sweep tells nobody again) and says the task's end is still
+   * owed: closing it tells `closed` once.
+   */
+  budgetPauseToldFor?: string;
+  /**
+   * Plan 3, M-6 (I-1): the operation that a budget refusal stopped, written with the pause (and by the ask that works out a pause that was never written) and kept when
+   * an approval removes the pause. It says that operation's end is a pause answered, not a failure, however early the approval came.
+   */
+  budgetStopOf?: string;
   /**
    * Plan 3, Task 22: set in the transaction that ends an agent-step run (COMPLETE, FAILED or CANCELLED), with when. An ended run is finished the way a
    * merged workflow task is: it gives back its workspace slot and its workspace (`workflowTaskFinished`, `releaseFinishedTask`).

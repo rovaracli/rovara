@@ -30,6 +30,7 @@ import {
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, canonicalJson } from "@agentx/contracts";
+import { BrokerNames } from "./broker-names.js";
 import type { AgentXNaming } from "./naming.js";
 import {
   auditLockSettings,
@@ -393,14 +394,13 @@ export class AuditLedger extends Construct {
       }),
     });
 
-    // The key policy lets nobody ScheduleKeyDeletion (and the alias cannot be deleted by anyone the policy allows), so a
-    // rolled-back first create could not delete either and would leave the stack in ROLLBACK_FAILED. Both keep plain
-    // Retain (the ActionLogsKey precedent in slack-orchestrator.ts).
+    // The key policy lets nobody ScheduleKeyDeletion, so a rolled-back first create could not delete the key and would leave
+    // the stack in ROLLBACK_FAILED. It keeps plain Retain (the ActionLogsKey precedent in slack-orchestrator.ts).
     (this.vaultKey.node.defaultChild as kms.CfnKey).addMetadata(KEEP_ON_ROLLBACK_METADATA, true);
-    // Later tasks MUST address the vault key by its ARN, never by this alias: kms:Update* and kms:CreateAlias in
-    // AdminWithoutUse let an IAM administrator repoint the alias at a key they control.
-    const vaultKeyAlias = new kms.Alias(this, "AuditVaultKeyAlias", { aliasName: `alias/agentx/${env}/audit-vault`, targetKey: this.vaultKey, removalPolicy: RemovalPolicy.RETAIN });
-    (vaultKeyAlias.node.defaultChild as kms.CfnAlias).addMetadata(KEEP_ON_ROLLBACK_METADATA, true);
+    // There is no alias, on purpose (final review I1). Nothing reads one: the key is addressed by its ARN, never by an alias
+    // (kms:Update* and kms:CreateAlias in AdminWithoutUse let an IAM administrator repoint an alias at a key they control).
+    // And a fixed alias name that a rolled-back first create keeps (nobody the key policy allows can DeleteAlias) makes every
+    // retry fail with AlreadyExistsException. The key's id and ARN are in the stack's resources.
 
     // The lock profile: one stack parameter chooses between the two sets of values. It sits at the stack's top level
     // so that its name is exactly AuditLockProfile, which the deploy CLI passes. Changing it only changes the default
@@ -578,7 +578,8 @@ export class AuditLedger extends Construct {
    */
   private addBrokerOutbox(props: AuditLedgerProps, brokerRole: iam.IRole): void {
     const { naming, broker } = props;
-    broker.addEnvironment("AUDIT_INTAKE_QUEUE_URL", this.intakeQueue.queueUrl);
+    // The queue's name goes in the broker's names (BrokerNames): the broker builds its URL from the region and the account.
+    BrokerNames.of(broker).add("auditIntakeQueue", this.intakeQueue.queueName);
     new iam.Policy(this, "AuditBrokerOutboxPolicy", {
       roles: [brokerRole],
       statements: [
@@ -669,13 +670,16 @@ export class AuditLedger extends Construct {
    */
   private addBrokerReader(props: AuditLedgerProps, brokerRole: iam.IRole): void {
     const { broker } = props;
-    broker.addEnvironment("AUDIT_LEDGER_TABLE_NAME", this.ledgerTable.tableName);
-    broker.addEnvironment("AUDIT_SEALS_TABLE_NAME", this.sealsTable.tableName);
-    broker.addEnvironment("AUDIT_KEYS_TABLE_NAME", this.keysTable.tableName);
-    broker.addEnvironment("AUDIT_EXPORTS_BUCKET_NAME", this.exportsBucket.bucketName);
-    broker.addEnvironment("AUDIT_EXPORT_FUNCTION_NAME", this.exportFunction.functionName);
-    // The key's ARN, never the alias: kms:Update* and kms:CreateAlias let an administrator repoint the alias.
-    broker.addEnvironment("AUDIT_VAULT_KEY_ARN", this.vaultKey.keyArn);
+    // The ledger's names go in the broker's names (BrokerNames), not in variables of their own: the broker's environment is held to Lambda's
+    // 4 KB, and seven variables of full names, a URL and an ARN came to 780 bytes of it. The key is named by its id (the broker builds its
+    // ARN), never by its alias: kms:Update* and kms:CreateAlias let an administrator repoint an alias.
+    const names = BrokerNames.of(broker);
+    names.add("auditLedgerTable", this.ledgerTable.tableName);
+    names.add("auditSealsTable", this.sealsTable.tableName);
+    names.add("auditKeysTable", this.keysTable.tableName);
+    names.add("auditExportsBucket", this.exportsBucket.bucketName);
+    names.add("auditExportFunction", this.exportFunction.functionName);
+    names.add("auditVaultKey", this.vaultKey.keyId);
     new iam.Policy(this, "AuditBrokerReadPolicy", {
       roles: [brokerRole],
       statements: [

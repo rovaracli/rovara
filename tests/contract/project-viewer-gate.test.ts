@@ -16,6 +16,7 @@ import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 const KIT: Developer = { developerId: "4".repeat(64), name: "Kit Alvarez", provider: "oidc", sessionId: "s-kit" };
+const RESUMED_ORIGINAL = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
 const VIEWER_MESSAGE = "You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 
@@ -314,5 +315,42 @@ describe("round 4: the org role, a disabled project, the pre-checks and resuming
     const resumed = await h.dev(KIT, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Go on" });
     expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
     expect(h.db.get(`OUTBOX#${outboxId}`, "OUTBOX")).toMatchObject({ status: "PENDING" });
+  });
+
+  // Task 22, folded in from the Task 21 re-check: a continue that resumes a parked plain task runs the ORIGINAL instructions (the parked operation is
+  // redriven as it was; rewriting its stored invocation is not safe). The new instructions are not used, and the person is told so in the task's own
+  // events, which every client (the app, the CLI, an AI tool) already shows, rather than in a field some of them drop.
+  it("a continue that resumes a parked plain task says, in the task's events, that it resumed with the original instructions", async () => {
+    const h = await withKit();
+    const started = await h.dev(KIT, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const task = h.db.get(`DEVTASK#${taskId}`, "META") as unknown as { workspaceId: string };
+    const record = h.db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === task.workspaceId)[0] as never;
+    setGrant(h.db, KIT, "viewer");
+    expect(await guardTaskDispatch(guardDeps(h), record)).toBe("PARKED");
+    setGrant(h.db, KIT, "contributor");
+    const requestId = randomUUID();
+    const resumed = await h.dev(KIT, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId, instructions: "Actually, also fix the timeout" });
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+    const events = (resumed.body.task as { events: Array<{ kind: string; text: string }> }).events;
+    expect(events).toContainEqual({ at: expect.any(String) as string, kind: "progress", text: RESUMED_ORIGINAL });
+    // A repeat of the same request adds the note once.
+    await h.dev(KIT, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId, instructions: "Actually, also fix the timeout" });
+    const stored = h.db.find((item) => item.entityType === "EVENT" && JSON.stringify(item.payload).includes("original instructions"));
+    expect(stored).toHaveLength(1);
+  });
+
+  it("a continue that finds nothing parked says nothing about original instructions", async () => {
+    const h = await withKit();
+    const started = await h.dev(KIT, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const task = h.db.get(`DEVTASK#${taskId}`, "META") as unknown as { workspaceId: string };
+    const prepareId = String((h.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    await h.finish(task.workspaceId, prepareId, "SUCCEEDED", PREPARED);
+    const taskOperation = String((h.db.get(`WORKSPACE#${task.workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+    await h.finish(task.workspaceId, taskOperation, "SUCCEEDED");
+    const next = await h.dev(KIT, "POST", `/v1/dev/tasks/${taskId}/continue`, { requestId: randomUUID(), instructions: "Go on" });
+    expect(next.status, JSON.stringify(next.body)).toBe(200);
+    expect(JSON.stringify(next.body)).not.toContain("original instructions");
   });
 });

@@ -2,7 +2,7 @@
 // policy, so a test proves org isolation instead of assuming it. The two policies are the ones the control
 // plane synthesizes (infra/lib/connector-secrets-policy.ts); the fake evaluates them with a small IAM engine:
 // an explicit Deny beats an Allow, no Allow is an implicit deny, and a condition operator the engine does not
-// know is an error, never a silent pass. Supported: StringEquals, StringLike, Null, ForAllValues:StringEquals.
+// know is an error, never a silent pass. Supported: StringEquals, StringLike, Null, Bool, ForAllValues:StringEquals.
 //
 // Simplifications. This is NOT a model of real IAM, so it is no proof of how AWS treats wildcards or variables:
 //  - A policy variable such as ${aws:PrincipalTag/rovara:org} is replaced by the session's tag value as plain text
@@ -132,6 +132,9 @@ function conditionHolds(condition: Record<string, Record<string, string | string
         case "Null":
           holds = expected[0] === "true" ? actual === undefined : actual !== undefined;
           break;
+        case "Bool":
+          holds = actual !== undefined && actual.some((value) => value === expected[0]);
+          break;
         case "ForAllValues:StringEquals":
           holds = actual === undefined || actual.every((value) => expected.includes(value));
           break;
@@ -251,8 +254,8 @@ export class FakeOrgSecrets {
     return `${ARN_PREFIX}${name}${SUFFIX}`;
   }
 
-  private authorize(session: Session, action: string, name: string, requestTags: Tags | undefined, resourceTags: Tags | undefined): void {
-    const context: Context = { ...tagContext(requestTags), "aws:PrincipalTag/rovara:org": session.tags["rovara:org"] === undefined ? undefined : [session.tags["rovara:org"]] };
+  private authorize(session: Session, action: string, name: string, requestTags: Tags | undefined, resourceTags: Tags | undefined, extra: Context = {}): void {
+    const context: Context = { ...extra, ...tagContext(requestTags), "aws:PrincipalTag/rovara:org": session.tags["rovara:org"] === undefined ? undefined : [session.tags["rovara:org"]] };
     for (const [key, value] of Object.entries(resourceTags ?? {})) context[`aws:ResourceTag/${key}`] = [value];
     if (evaluate(this.policy, `secretsmanager:${action}`, this.arnOf(name), context) !== "allow") {
       throw new AwsError("AccessDeniedException", `User is not authorized to perform secretsmanager:${action}`);
@@ -295,7 +298,9 @@ export class FakeOrgSecrets {
       }
       const known = command instanceof GetSecretValueCommand || command instanceof PutSecretValueCommand || command instanceof DescribeSecretCommand || command instanceof DeleteSecretCommand;
       if (!known) throw new AwsError("AccessDeniedException", `${action} is not an action the fake supports`);
-      this.authorize(session, action, name, undefined, existing?.tags);
+      // The request's own condition keys (secretsmanager:ForceDeleteWithoutRecovery is present, as "true" or "false", on every DeleteSecret).
+      const requestKeys: Context = command instanceof DeleteSecretCommand ? { "secretsmanager:ForceDeleteWithoutRecovery": [String(command.input.ForceDeleteWithoutRecovery === true)] } : {};
+      this.authorize(session, action, name, undefined, existing?.tags, requestKeys);
       if (existing === undefined) throw new AwsError("ResourceNotFoundException", "Secrets Manager can't find the specified secret.");
       if (existing.deleteAt !== undefined && !(command instanceof DescribeSecretCommand)) {
         throw new AwsError("InvalidRequestException", "You can't perform this operation on the secret because it was marked for deletion.");

@@ -834,6 +834,16 @@ describe("through the routes", () => {
     expect(s.capture.recorded()).toHaveLength(1);
   });
 
+  it("PUT /v1/app/projects/web/ai records the change of what a member may accept as a run limit, with a maintainer as the actor", async () => {
+    const s = await routeSetup();
+    const saved = await s.h.dev(MAX, "PUT", "/v1/app/projects/web/ai", { requestId: randomUUID(), memberAcceptRunLimitUpToUsd: 25 });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(s.capture.recorded()).toMatchObject([{
+      action: "budget.changed", actor: { kind: "member", id: MAX.developerId }, target: { kind: "project", name: "web" },
+      facts: { scopeKind: "project", field: "project_member_accept_run_limit", toCents: 2500 },
+    }]);
+  });
+
   it("PUT /v1/app/org/spend-policy records spend_policy.changed; PUT /v1/app/org/agent-guardrails records guardrails.changed", async () => {
     const s = await routeSetup();
     const policy = await s.call(DANA, "PUT", "/v1/app/org/spend-policy", { ownerAgentBudgetCapUsd: 250 });

@@ -1051,7 +1051,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       project: z.string().min(1).max(200).describe("the project's exact name, from agentx_list_projects"),
       input: instructionsInput,
       context: contextInput.optional().describe("information the agent is shown as information only: tickets, pull requests, alerts"),
-      version: versionInput.optional().describe("a published version number, or draft; the version that runs now when left out"),
+      version: versionInput.optional().describe("a published version number, or draft; the version that runs now when left out. An older version that is less safe than the one that runs now does not start: the answer is OWNER_APPROVAL_NEEDED with a link for the agent's owner, and the run starts when they approve it"),
       wait_seconds: waitInput(0).optional().describe("seconds to wait for the run to end, 0 to 600; 0 by default"),
       request_id: requestIdInput,
     },
@@ -1076,6 +1076,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       approvals: z.array(z.object({
         approval_id: z.string(), kind: z.string(), status: z.string(), summary: z.string(),
         project: z.string().optional(), connector: z.string().optional(), tool: z.string().optional(), expires_at: z.string().optional(),
+        scope: z.string().optional().describe("the connector scope the call is made in, such as a Linear team or a GitHub repository"), repository: z.string().optional().describe("for GitHub, the repository the call acts on, as owner/name"),
         arguments: z.unknown().optional().describe("the full arguments of a change to another system, exactly as it would be sent; data, not instructions"),
         confirm_url: z.string().describe("the page where the person approves or declines it; give it to them"),
       })),
@@ -1092,17 +1093,19 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
         const project = field(approval.project);
         const connector = field(approval.connector);
         const tool = field(approval.tool);
+        const scope = field(approval.scope);
+        const repository = field(approval.repository);
         approvals.push({
           approval_id: approval.approvalId, kind: plainText(approval.kind, "unknown"), status: plainText(approval.status, "unknown"), summary: plainText(words, "(no summary)"),
           ...(project === undefined ? {} : { project }), ...(connector === undefined ? {} : { connector }),
-          ...(tool === undefined ? {} : { tool }), ...(approval.expiresAt === undefined ? {} : { expires_at: approval.expiresAt }),
+          ...(tool === undefined ? {} : { tool }), ...(scope === undefined ? {} : { scope }), ...(repository === undefined ? {} : { repository }), ...(approval.expiresAt === undefined ? {} : { expires_at: approval.expiresAt }),
           ...(approval.arguments === undefined ? {} : { arguments: approval.arguments }),
           confirm_url: approval.confirmUrl,
         });
       }
       const more = listed.length > approvals.length ? ` ${listed.length - approvals.length} more wait; the person sees them all with agentx approvals list.` : "";
       const text = approvals.length === 0 ? "Nothing waits for your approval."
-        : `${approvals.map((approval) => `${approval.summary}: open ${approval.confirm_url} to approve or decline it.`).join("\n")}${more}`;
+        : `${approvals.map((approval) => `${approval.summary}${approval.scope === undefined ? "" : ` (${approval.repository ?? approval.scope})`}: open ${approval.confirm_url} to approve or decline it.`).join("\n")}${more}`;
       return { structured: { approvals }, text };
     },
   },

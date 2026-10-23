@@ -83,6 +83,9 @@ export function registerTaskPauseHandler(handler: TaskPauseHandler): () => void 
 /** Whether anything listens for a task's end. */
 export const hasTaskEndHandlers = (): boolean => endHandlers.length > 0;
 
+/** Whether anything listens for a task's pause. */
+export const hasTaskPauseHandlers = (): boolean => pauseHandlers.length > 0;
+
 /** DEVTASK#<task> / TASK_END: the task's end, recorded once. */
 export const taskEndKey = (taskId: string) => ({ pk: `DEVTASK#${taskId}`, sk: "TASK_END" as const });
 

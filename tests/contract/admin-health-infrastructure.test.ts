@@ -10,6 +10,8 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
+import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -37,7 +39,14 @@ describe("the health route's grants (A13)", () => {
     const describe = brokerStatements(named).filter((statement) => statement.Action === "cloudwatch:DescribeAlarms");
     expect(describe).toHaveLength(1);
     expect(JSON.stringify(describe[0]?.Resource)).toContain(":alarm:agentx-live25d-*");
-    expect(brokerEnvironment(named).AGENTX_ALARM_PREFIX).toBe("agentx-live25d-");
+    // The prefix is not a variable of the broker's (its variables are held to Lambda's 4 KB): the broker derives it from AGENTX_ENV, and
+    // what it derives is the prefix every alarm of the environment is named with.
+    expect(brokerEnvironment(named).AGENTX_ALARM_PREFIX).toBeUndefined();
+    expect(brokerEnvironment(named).AGENTX_ENV).toBe("live25d");
+    const derived: MutableEnvironment = { AGENTX_ENV: "live25d", AGENTX_NAMES: "{}", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
+    hydrateBrokerEnvironment(derived);
+    expect(derived.AGENTX_ALARM_PREFIX).toBe(environmentNaming("live25d").alarmName(""));
+    expect(derived.AGENTX_ALARM_PREFIX).toBe("agentx-live25d-");
   });
 
   // Issue 206: a DescribeAlarms call by name prefix is authorized against *, so the probe asks for
@@ -84,8 +93,19 @@ describe("the health route's grants (A13)", () => {
       expect(Object.keys(named.findResources("AWS::SQS::Queue"))).toContain(resource["Fn::GetAtt"]?.[0]);
     }
     for (const id of queueIds) expect(resources.filter((resource) => id.test(resource["Fn::GetAtt"]?.[0] ?? ""))).toHaveLength(1);
-    const listed = JSON.stringify(brokerEnvironment(named).HEALTH_DEAD_LETTER_QUEUES);
-    for (const queue of ["DispatchDeadLetterQueue", "SlackRequestDeadLetterQueue", "NoticeDeadLetterQueue", "StreamFailureQueue"]) expect(listed).toContain(queue);
+    // The broker is given the four queues' names (in its one variable of names), and lists them for the route under the labels it always has.
+    const names = brokerNamesIn(brokerEnvironment(named));
+    const queueNameOf = (key: keyof typeof names) => (names[key] as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"];
+    const labelled = [["dispatchDeadLetters", queueIds[0]!], ["slackRequestDeadLetters", queueIds[1]!], ["developerNoticeDeadLetters", queueIds[2]!], ["developerNoticeStreamFailures", queueIds[3]!]] as const;
+    for (const [key, id] of labelled) {
+      const [logicalId, attribute] = queueNameOf(key);
+      expect(attribute, key).toBe("QueueName");
+      expect(id.test(logicalId), `${key} is ${logicalId}`).toBe(true);
+    }
+    expect(brokerEnvironment(named).HEALTH_DEAD_LETTER_QUEUES).toBeUndefined();
+    const derived: MutableEnvironment = { AGENTX_ENV: "live25d", AGENTX_NAMES: JSON.stringify({ dq: "a", sr: "b", dn: "c", ds: "d" }), AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
+    hydrateBrokerEnvironment(derived);
+    expect(Object.keys(JSON.parse(derived.HEALTH_DEAD_LETTER_QUEUES!) as object)).toEqual(["dispatch", "slack-requests", "developer-notices", "developer-notice-stream"]);
   });
 
   it("expires index items by TTL on indexExpiresAt in a named environment, and tells the reconciler so (A6, Q5)", () => {
@@ -118,6 +138,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/org/github-connection.ts", "packages/broker/src/org/github-install-requests.ts",
       // Plan 2, Task 21: a project's member-change request records (replay keys) expire on it after a day.
       "packages/broker/src/org/project-members.ts",
+      // Plan 2, Task 22: a project's setup-check request records (replay keys) expire on it after a day.
+      "packages/broker/src/org/project-setup-check.ts",
+      // Final review M2: the one request-id pattern's record (archive and restore, staff egress decisions) expires on it after a day.
+      "packages/broker/src/org/request-records.ts",
       // The agent request items (Plan 3, Task 7): one per marked write, kept 7 days so a retry is answered, then deleted by the TTL.
       // table-writes.ts writes them for the agent store and the skill store; store.ts reads them back.
       "packages/broker/src/agents/store.ts", "packages/broker/src/agents/table-writes.ts",
@@ -138,6 +162,8 @@ describe("the health route's grants (A13)", () => {
       // Plan 5, Tasks 6 and 7a: the event log reads it back (and leaves it off an event it returns); a session's end sets it on the session and its live tile
       // (summary.ts); the drain sets it on an ended session's items and the sweep reads a presence item's (sweep.ts).
       "packages/broker/src/agent-sessions/events.ts", "packages/broker/src/agent-sessions/summary.ts", "packages/broker/src/agent-sessions/sweep.ts",
+      // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
+      "packages/broker/src/spend/requests.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
@@ -149,7 +175,7 @@ describe("the health route's grants (A13)", () => {
     expect(brokerUses).toEqual([
       "        slackUserId: user.data, channelId: thread.data.channelId, threadTs: thread.data.threadTs, message, at, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at) },",
       // Plan 2, Task 16: a project creation request's record, which expires with its day (it holds the same instant as its expiresAt).
-      "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
+      "          Item: { ...requestKey, entityType: \"PROJECT_CREATE_REQUEST\", by: caller.developerId, bodyHash, projectName: definition.name, createdAt, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: expiresAt },",
       "      [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(operation.createdAt),",
     ]);
     // Task 19: a refused Slack press's private note, delivered within the hour and then dead weight.

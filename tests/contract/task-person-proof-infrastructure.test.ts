@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
+import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { hasModelProxy, withoutModelProxy } from "../support/model-proxy-template.js";
 import { hasAuditLedger, withoutAuditLedger } from "../support/audit-ledger-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -46,8 +48,19 @@ function expectRuntimeCatalogEnvironment(template: TemplateJson, prefix: string)
   const { broker, dispatcher } = runtimeCatalogEnvironmentEntries(template);
   const setupId = `${prefix}-project-setup-runtime-v1`;
   const featureId = `${prefix}-e2e-mock-runtime-v1`;
-  expect(broker.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID).toBe(setupId);
-  expect(broker.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID).toBe(featureId);
+  if (prefix === "agentx-production") {
+    // The legacy install's broker is given both whole, as it always was.
+    expect(broker.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID).toBe(setupId);
+    expect(broker.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID).toBe(featureId);
+  } else {
+    // A named environment's broker derives both from its environment name (the broker's variables are held to Lambda's 4 KB), to the same ids.
+    expect(broker).not.toHaveProperty("AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID");
+    expect(broker).not.toHaveProperty("AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID");
+    const derived: MutableEnvironment = { AGENTX_ENV: prefix.replace(/^agentx-/, ""), AGENTX_NAMES: "{}", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
+    hydrateBrokerEnvironment(derived);
+    expect(derived.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID).toBe(setupId);
+    expect(derived.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID).toBe(featureId);
+  }
   expect(dispatcher.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID).toBe(setupId);
   expect(dispatcher).not.toHaveProperty("AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID");
 }
@@ -225,24 +238,31 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 3, Task 22: the notifier's stream filter also takes AGENT_REPORT_POST items (one more value in an existing filter), so the named and foreign
     // digests moved with it; the legacy template has no notifier and is unchanged.
     // Plan 5, Task 5: the sign-in stack's `ANY /s/{proxy+}` route (a session's link) moved the named and foreign digests; legacy has no sign-in stack.
+    // Plan 3 final fix wave (review C1): a named environment's broker is given its generated names in one variable (AGENTX_NAMES), not whole, and derives
+    // what its environment name decides, so Lambda's 4 KB limit on its variables holds; the named and foreign digests moved with it (the broker's
+    // variables only, and the connector secrets role's one Deny); the legacy digests did not move, which is the check that its broker is untouched.
+    // Merge of Plan 2's final fix wave into Plan 3: the install-request reminder schedule and metric filter are now created on cloud installs only, so the
+    // legacy template lost them again and its digests are back to their values before Plan 2 (the legacy-templates snapshot lost the same 45 lines); the
+    // named and foreign digests were regenerated for the merged template (Plan 2's cloud-only schedule and the reconciler's StartExecution grant on top of Plan 3).
+    // Merge of Plan 3 into Plan 5: the named and foreign digests were regenerated again for the merged template (Plan 5's `ANY /s/{proxy+}` route on top of the above).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "82a1d23319893234fa31c25a3a7997eafee04884478f705d48dee41e95e53a85",
-        withoutRoute: "4be7fe0be92d1babd842caea381381602d45e99b6ff51706f5beec2facbae366",
+        withRoute: "7519376b8a988d905fdbdc2b796d1348de0e27a529701f0e4a2eff2d58b57d37",
+        withoutRoute: "2877851db404003f1500d5a73cd7701e43180c738a70b2b9bbeb9a61d894dca4",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "d649d2b8e07b73ebcd006a4004339b677fdaad0cb0ca1ec2be95786131ec98e6",
-        withoutRoute: "d8fa48ebd3d11406debffb7d0a38861c1c03c3348d49af762b3d01ee4dd1ef0d",
+        withRoute: "83e85746fba9d0a6e533111547ab52145598de7d5066204ee3242d988daa0b41",
+        withoutRoute: "6acfe086ed8d1fc4647713c9ae66ce767ada8acbb1b15a2b541538b5301ac034",
       },
       {
         label: "legacy",
         template: legacy,
-        withRoute: "c8cb994acace74871d428c118ced239332c2c06f6f53e88ee4394adcbd34a994",
-        withoutRoute: "5a11a45cb6ccb2325312658e0bfba2f4ba6f36280d0848a36cbd6db37244427f",
+        withRoute: "b279f85a0f09a9fd78a25b85706b79bf1394184fd09597efa8cd466f93adb826",
+        withoutRoute: "dcd26742aba45c87a5f82cd0a6039801147e4e6cd02ee337cf28e7f01987a32b",
       },
     ] as const;
     for (const { label, template, withRoute, withoutRoute } of digestCases) {
@@ -403,7 +423,8 @@ describe("the named TEST proof-only installation gate", () => {
     }
     const brokerVars = (broker.Properties!.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(brokerVars.SLACK_TEAM_ID).toEqual({ Ref: "SlackTeamId" });
-    expect(brokerVars.DEVELOPER_SIGNIN_TABLE_NAME).toEqual({ Ref: tableId });
+    expect(brokerVars.DEVELOPER_SIGNIN_TABLE_NAME).toBeUndefined();
+    expect(brokerNamesIn(brokerVars).signInTable).toEqual({ Ref: tableId });
     const notifierVars = (notifier.Properties!.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(notifierVars.SLACK_TEAM_ID).toBeUndefined();
     expect(notifierVars.DEVELOPER_SIGNIN_TABLE_NAME).toBeUndefined();

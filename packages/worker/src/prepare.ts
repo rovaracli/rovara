@@ -132,6 +132,12 @@ export interface PrepareWorkspaceOptions {
    * never looks at the wrong commit). The run's steps only ever read.
    */
   checkout?: ReadonlyArray<{ repository: string; pullRequest: number; headSha: string }>;
+  /**
+   * An agent-step run's preparation (Plan 3 final fix wave, runs I-2): clone and checkout only. The repository's own code is not run: no devcontainer,
+   * no `project.setup` command and no readiness command, because the checkout may be a contributor's pull request head and the agent's steps only read.
+   * The manifest is complete after the checkout, so a head that breaks the project's build can still be reviewed.
+   */
+  readOnly?: boolean;
   /** Tests only: where a pull request head is fetched from (the repository's own URL by default; a fixture is not an HTTPS URL a project may name). */
   pullRequestRemote?: (repository: StoredProjectDefinition["repositories"][number]) => string;
 }
@@ -142,13 +148,14 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
   await mkdir(rootPath, { recursive: true });
   const canonicalRoot = await realpath(rootPath);
   const materializer = options.materializer ?? cloneRepository;
-  const target = devcontainerTarget(canonicalRoot, project);
+  const readOnly = options.readOnly === true;
+  const target = readOnly ? undefined : devcontainerTarget(canonicalRoot, project);
   const runtimeBackingPath = options.trustedRuntimeBackingOwner === undefined
     ? undefined
     : resolve(canonicalRoot, RUNTIME_BACKING_DIRECTORY);
   const devcontainerCli = target === undefined ? undefined : options.devcontainerCli ?? createDevcontainerCli();
   // With a devcontainer, setup and readiness run in it, like the agent's shell; without one, in the task sandbox (R56).
-  const sandbox = options.commandRunner !== undefined || (target !== undefined && devcontainerCli !== undefined)
+  const sandbox = readOnly || options.commandRunner !== undefined || (target !== undefined && devcontainerCli !== undefined)
     ? undefined
     : taskSandboxFor(options.taskShell ?? taskShellSelection(), { rootPath: canonicalRoot, taskId: options.creationIdentity ?? randomUUID() });
   const commandRunner = options.commandRunner
@@ -207,6 +214,12 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
         ...(checkedOut === undefined ? {} : { checkedOut }),
       });
       manifest = await writeManifest(canonicalRoot, withoutFailure(manifest));
+    }
+
+    if (readOnly) {
+      // Nothing of the repository runs: the checkout is all an agent step reads.
+      manifest = await writeManifest(canonicalRoot, withoutFailure({ ...manifest, readinessResults: [], complete: true }));
+      return manifest;
     }
 
     if (target !== undefined && devcontainerCli !== undefined && project.devcontainer !== undefined) {

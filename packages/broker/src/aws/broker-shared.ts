@@ -344,12 +344,16 @@ export function agentRunDispatchItem(tableName: string, input: { taskId: string;
 /** A task has one `operation_end` row at a time: the latest operation that ended where only a row could tell the broker (Task 22 review, I2). */
 export const operationEndDispatchKey = (taskId: string) => ({ pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#end` } as const);
 
-export function operationEndDispatchItem(tableName: string, input: { taskId: string; orgId: string; workspaceId: string; operationId: string; now: string; dueAt?: string }): TransactItems[number] {
+/**
+ * `endOf: "closed"` (Plan 3, M-6 m-2) is the row of a closed plain task whose `closed` end was not finished: the sweep tells that end, whatever operation `operationId`
+ * names (it is not looked up).
+ */
+export function operationEndDispatchItem(tableName: string, input: { taskId: string; orgId: string; workspaceId: string; operationId: string; now: string; dueAt?: string; endOf?: "closed" }): TransactItems[number] {
   const key = operationEndDispatchKey(input.taskId);
   const dueAt = input.dueAt ?? input.now;
   // The agent-step engine's row with its own key and kind (one builder keeps the due-time index keys and the expiry backstop the same for every row).
   const base = agentRunDispatchItem(tableName, { taskId: input.taskId, orgId: input.orgId, revision: 0, dueAt, now: input.now }) as { Put: { Item: Record<string, unknown> } };
-  return { Put: { TableName: tableName, Item: { ...base.Put.Item, ...key, kind: "operation_end", dispatchDueSk: `${dueAt}#${key.sk}`, workspaceId: input.workspaceId, operationId: input.operationId } } };
+  return { Put: { TableName: tableName, Item: { ...base.Put.Item, ...key, kind: "operation_end", dispatchDueSk: `${dueAt}#${key.sk}`, workspaceId: input.workspaceId, operationId: input.operationId, ...(input.endOf === undefined ? {} : { endOf: input.endOf }) } } };
 }
 /** The candidate digest of a dispatch row due before the task has a candidate. */
 export const WORKFLOW_NO_CANDIDATE_DIGEST = "0".repeat(64);

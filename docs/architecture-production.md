@@ -288,6 +288,18 @@ It also includes creating, reading, versioning and deleting the environment's ow
 `iam:ListEntitiesForPolicy` on `policy/agentx/<env>/agentx-<env>-broker-*`): the broker's grants live in
 `agentx-<env>-broker-state`, `-orchestration` and `-integrations` under the path `/agentx/<env>/`, because IAM caps a role's inline
 policies at 10,240 characters.
+It also includes `sts:AssumeRole` and `sts:TagSession` on the one role
+`arn:<partition>:iam::<account>:role/agentx/<env>/agentx-<env>-connector-secrets`: the broker assumes that role, tagged with an
+organization, to read and write that organization's connection and event hook secrets (it holds no Secrets Manager
+permission on those paths itself). The default boundary allows exactly these two actions on exactly that role. Without them in a
+company-supplied boundary, every organization connection save or read is refused as FORBIDDEN.
+A role with a fixed name also needs a second, narrower grant. CloudFormation looks a fixed-name role up by name before it
+creates it (`iam:GetRole`) and cleans it up by name if the create rolls back, and IAM authorizes a lookup of a role that does not
+exist yet against the path-less ARN `arn:<partition>:iam::<account>:role/<name>`, not the path ARN. The service role and the
+default boundary therefore also allow `iam:GetRole`, `iam:GetRolePolicy`, `iam:ListRolePolicies`, `iam:ListAttachedRolePolicies`,
+`iam:DeleteRolePolicy`, `iam:DetachRolePolicy` and `iam:DeleteRole` (no create or change action) on
+`role/agentx-<env>-connector-secrets`, and in the Task Person proof environment on `role/<env>-task-person-proof`. The roles
+themselves are still created under `/agentx/<env>/`. A company-supplied boundary needs the same statement.
 
 What this does and does not protect, plainly:
 
