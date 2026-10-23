@@ -141,6 +141,12 @@ export interface DeveloperTaskRecord {
    */
   budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string; checkout?: RunCheckout[] } };
   /**
+   * Plan 3, M-6: the plain task's operation whose budget stop the pause handlers were told about (`noteTaskPaused`). A plain task that stops on a budget is paused,
+   * not ended, so its end handlers are not told; this marks the stop as told (a replay or the recovery sweep tells nobody again) and says the task's end is still
+   * owed: closing it tells `closed` once.
+   */
+  budgetPauseToldFor?: string;
+  /**
    * Plan 3, Task 22: set in the transaction that ends an agent-step run (COMPLETE, FAILED or CANCELLED), with when. An ended run is finished the way a
    * merged workflow task is: it gives back its workspace slot and its workspace (`workflowTaskFinished`, `releaseFinishedTask`).
    */

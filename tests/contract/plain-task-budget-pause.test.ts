@@ -10,6 +10,7 @@ import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/d
 import type { BudgetScope, SpendRequestRecord } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { call } from "../support/slack-broker.js";
 import { DEB, setup, type World } from "../support/spend-world.js";
 
 const MEMBER: BudgetScope = { kind: "member", developerId: MAYA.developerId };
@@ -128,6 +129,22 @@ describe("M-6: a plain task stopped on a budget is paused, not ended", () => {
     expect(ended).toEqual([expect.objectContaining({ taskId: task.taskId, outcome: "failed" })]);
   });
 
+  it("a pause that was never written is worked out by the ask first, so the stop is told as a pause, with its request", async () => {
+    const t = await setup();
+    const ended = endHandler();
+    const paused = pauseHandler();
+    const task = await t.plainTask();
+    await t.set(task.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+    const asked = await call(t.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": (t.outboxOf(task.operationId)!.invocation as { callbackCapability: string }).callbackCapability } });
+    expect(asked.status).toBe(200);
+    t.access.setKeySpent(t.access.mintedKeys()[0]!, 14);
+    await t.pauseAndEnd(task, "none");
+    expect(t.requestOf(task.taskId)[0]).toMatchObject({ kind: "run_limit" });
+    expect(paused).toEqual([expect.objectContaining({ taskId: task.taskId, scope: { kind: "task", taskId: task.taskId } })]);
+    expect(ended).toEqual([]);
+    expect(endRecords(t, task.taskId)).toEqual([]);
+  });
+
   it("a task that fails for another reason is told as failed, as before", async () => {
     const t = await setup();
     const ended = endHandler();
@@ -180,12 +197,39 @@ describe("M-6: a pause is told at most once, and until it is told", () => {
 
   it("a stopped operation whose task was resumed before the sweep looked is told as nothing: not an end", async () => {
     const t = await setup();
-    const ended = endHandler();
+    // No handler listened at the stop, so nothing was told then: the row finds a task that went on since.
     const task = await stopped(t);
     await t.decide(DEB, monthRequests(t)[0]!.spendRequestId, "APPROVE", { amountUsd: 10 });
+    expect(t.taskOps(task.workspaceId)).toHaveLength(2);
+    const ended = endHandler();
     t.db.set((operationEndDispatchItem("state", { taskId: task.taskId, orgId: TEST_ORG, workspaceId: task.workspaceId, operationId: task.stoppedOperationId, now: new Date().toISOString() }) as { Put: { Item: Record<string, unknown> } }).Put.Item);
     await recover(t);
     expect(ended).toEqual([]);
     expect(rowsOf(t, task.taskId)).toEqual([]);
+  });
+
+  it("a budget stop that reaches a task already closed is told as its `closed` end, not as a pause", async () => {
+    const t = await setup();
+    const ended = endHandler();
+    const paused = pauseHandler();
+    const task = await t.plainTask();
+    await t.set(task.taskId, "SET closedAt = :now", { ":now": new Date().toISOString() });
+    await t.pauseAndEnd(task, MEMBER);
+    expect(paused).toEqual([]);
+    expect(ended).toEqual([expect.objectContaining({ taskId: task.taskId, outcome: "closed" })]);
+  });
+
+  it("closing a plain task that never stopped on a budget tells nothing, as before", async () => {
+    const t = await setup();
+    const task = await t.plainTask();
+    await t.finish(task.workspaceId, task.operationId, "SUCCEEDED");
+    // Nobody listened when its operation ended; a close tells nothing it was not owed (only a stop on a budget owes the end).
+    const ended = endHandler();
+    const closing = await t.api(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/close`, {});
+    expect(closing.status, JSON.stringify(closing.body)).toBe(200);
+    const closeOperation = t.operations(task.workspaceId).find((operation) => operation.kind === "close")!;
+    await t.finish(task.workspaceId, closeOperation.id, "SUCCEEDED", { result: { safeToClose: true, repositories: [] } });
+    expect(t.meta(task.taskId)).toHaveProperty("closedAt");
+    expect(ended).toEqual([]);
   });
 });
