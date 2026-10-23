@@ -818,6 +818,36 @@ describe("the link /s/<id>", () => {
     expect(real.body.replace(/nonce="[^"]+"/g, "")).toBe(fake.body.replace(/nonce="[^"]+"/g, ""));
   });
 
+  it("opens the task page and its poll to a session viewer outside the channel when the task has a People list, with no People data (review I-1)", async () => {
+    const t = await setup();
+    const { taskId, sessionId } = await t.start();
+    // The task was shared in Slack and its People panel was opened: a PEOPLE item exists, and Omar is neither in it nor in the channel.
+    t.db.set({
+      pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 3, orphaned: false,
+      people: [{ developerId: MAYA.developerId, slackUserId: "U0MAYA001", name: "Quentin Peoplesworth", role: "commenter" }],
+    });
+    await t.share(MAYA, sessionId, OMAR);
+    const link = await t.browser(`/s/${sessionId}`, OMAR);
+    expect(link.status, link.body).toBe(302);
+    expect(link.headers.location).toBe(`${ORIGIN}/review/${taskId}/task`);
+    const page = await t.browser(`/review/${taskId}/task`, OMAR);
+    expect(page.status, page.body.slice(0, 300)).toBe(200);
+    expect(page.body).not.toContain("Quentin Peoplesworth");
+    const state = await t.browser(`/review/${taskId}/task/api/state`, OMAR);
+    expect(state.status, state.body).toBe(200);
+    const polled = JSON.parse(state.body) as Record<string, unknown>;
+    expect(polled).toMatchObject({ canRead: true, canManagePeople: false, canTakeOwnership: false });
+    expect(polled.peopleRevision).toBeUndefined();
+    // The People list itself answers nothing to this reader (not a refusal, and not the list).
+    const people = await t.browser(`/review/${taskId}/task/api/people`, OMAR);
+    expect(people.status, people.body).toBe(404);
+    expect(people.body).not.toContain("Quentin Peoplesworth");
+    expect(people.body).not.toContain("denied");
+    // Someone the session was not shared with still gets nothing.
+    expect((await t.browser(`/review/${taskId}/task`, ZOE)).status).toBeGreaterThanOrEqual(400);
+    expect((await t.browser(`/review/${taskId}/task/api/state`, ZOE)).status).toBeGreaterThanOrEqual(400);
+  });
+
   it("sends a person who isn't signed in to sign in, and a malformed id nowhere", async () => {
     const t = await setup();
     const { sessionId } = await t.start();
