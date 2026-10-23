@@ -415,6 +415,9 @@ describe("through the real broker", () => {
       people: [{ developerId: teammate, slackUserId: "U0TEAMMATE1", name: "Tess Teammate", role: "commenter" }],
     });
     expect(await slackReplyAuthor(deps, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Tess Teammate" });
+    // The owner is the task's own developer, by the name the task keeps (the caller's is a placeholder).
+    expect(await slackReplyAuthor(deps, { ...task, developerId: "o".repeat(64), developerName: "Maya on the task", slackUserId: "U0OWNER001" }, "U0OWNER001", { developerId: "c".repeat(64), name: "Slack user U0OWNER001" }))
+      .toEqual({ developerId: "o".repeat(64), name: "Maya on the task" });
     // A table that is down leaves the caller's own name.
     const down = { documentClient: { send: async () => { throw new Error("down"); } }, tableName: "state" } as never;
     expect(await slackReplyAuthor(down, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Slack user U0TEAMMATE1" });
