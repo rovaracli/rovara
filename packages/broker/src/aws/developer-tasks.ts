@@ -159,6 +159,8 @@ import {
   workflowVerificationPosition,
   capText,
   ROVARA_CODE_AGENT_ID,
+  newPrefixedId,
+  sessionLink,
   RUN_LIMIT_BLOCK_PREFIX,
   runLimitBlockText,
   type ProjectRole,
@@ -236,6 +238,8 @@ import type { TaskPeopleDisplayAdmission } from "../developer/task-people-displa
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
+import { bindingItems } from "../agent-sessions/bindings.js";
+import { createTaskSessionItems } from "../agent-sessions/create.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { onTaskEnded, type TaskEndOutcome } from "../agents/task-end.js";
 
@@ -1390,6 +1394,7 @@ export async function taskView(
     ...(run === undefined ? {} : { run }),
     ...pausedView,
     ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate }),
+    ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId, ...(deps.issuer === undefined ? {} : { sessionUrl: sessionLink(new URL(deps.issuer).origin, task.sessionId) }) }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
     updatedAt: derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt,
@@ -1641,6 +1646,12 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const paused = prepared?.paused === true;
   // Who started the run, kept on the record: a person's start is the caller; a run no person started has none.
   const startedBy = run === undefined ? { developerId: caller.developerId } : run.startedBy;
+  // Plan 5, Task 2: every run is a session, created in this start transaction. A chain step's task is not (its chain run is the session), and a
+  // run no person started and no trigger names has no starter to record, so it has none either.
+  const sessionStartedBy = prepared === undefined || prepared.chain !== undefined ? undefined
+    : run?.trigger !== undefined ? { kind: run.trigger.kind, triggerId: run.trigger.triggerId }
+    : startedBy === undefined ? undefined : { kind: "member" as const, developerId: startedBy.developerId };
+  const sessionId = sessionStartedBy === undefined ? undefined : newPrefixedId("ses");
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
   const asWorkflow = request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding");
   const workflowPath = request.workflowPath ?? "QUICK";
@@ -1705,6 +1716,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(prepared === undefined ? {} : {
       agent: prepared.ref, origin: prepared.origin, payer: prepared.payer, place: prepared.place,
       ...(startedBy === undefined ? {} : { startedBy }),
+      ...(sessionId === undefined ? {} : { sessionId }),
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
       // The pull requests the held preparation checks out are kept with the pause: its dispatch is built again when the run limit is raised (Task 32).
@@ -1757,7 +1769,17 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(prepared === undefined ? [] : runStartItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {
       orgId: deps.orgId, taskId, createdAt: receivedAt, project: request.project, developerId: caller.developerId, prepared,
       ...(run?.requestFingerprint === undefined ? {} : { request: { requestId: request.requestId, fingerprint: run.requestFingerprint } }),
+      ...(sessionId === undefined ? {} : { sessionId }),
     })),
+    // Plan 5, Task 2: the session, last, so the positions the charge conflict reads stay where they were. A task shared to a Slack thread in this
+    // same transaction is bound to it here; a thread shared later is bound when the notifier records it (Task 20).
+    ...(prepared === undefined || sessionId === undefined || sessionStartedBy === undefined ? [] : [
+      ...createTaskSessionItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {
+        orgId: deps.orgId, sessionId, taskId, project: request.project, agent: { agentId: prepared.ref.agentId, name: prepared.ref.name, version: prepared.ref.version },
+        title: inertTaskTitle(title), owner: { developerId: caller.developerId, name: caller.name }, startedBy: sessionStartedBy, origin: prepared.origin, payer: prepared.payer, now: receivedAt,
+      }),
+      ...threadBinding(deps.tableName, deps.orgId, sessionId, share, receivedAt),
+    ]),
   ];
   try {
     await deps.actions.transact(items);
@@ -1785,6 +1807,13 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     task: await taskView(deps, task, { events: 0, details: false }),
     ...(run === undefined || prepared === undefined ? {} : { run: { taskId, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused } }),
   };
+}
+
+/** The Slack thread a task shared at its start follows, as the items that bind it to the session (none when it wasn't shared to a thread). */
+function threadBinding(tableName: string, orgId: OrgId, sessionId: string, share: TaskShare | undefined, at: string): TransactItems {
+  if (share?.threadTs === undefined) return [];
+  const thread = SlackThreadSchema.safeParse({ teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs });
+  return thread.success ? bindingItems({ tableName }, orgId, sessionId, { kind: "slack_thread", ...thread.data }, at) : [];
 }
 
 /** The limits of a run as its task record keeps them, for a repeat of the start that finds the task already made. */

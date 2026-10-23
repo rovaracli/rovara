@@ -152,6 +152,8 @@ export interface DeveloperTaskRecord {
   runEstimate?: RunEstimate;
   /** Plan 3, Task 34: the run limit a start asked for (`runLimitUsd` of `startAgentRun`); approving the plan accepts no more than it. */
   requestedRunLimitUsd?: number;
+  /** Plan 5, Task 2: the session this task is the subject of, created in the task's start transaction. A chain step's task has none (its chain run is the session). */
+  sessionId?: string;
   /** Plan 3, Task 34: when the run's cost was written for the estimates (`recordRunCost`), so a run is counted once. */
   runCostRecordedAt?: string;
 }

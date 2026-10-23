@@ -4,10 +4,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
-import { AgentSessionStore, sessionEventItem } from "../../packages/broker/src/agent-sessions/store.js";
+import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
 import { createTaskSessionItems } from "../../packages/broker/src/agent-sessions/create.js";
 import { readRunRequest, runRequestFingerprint, startAgentRun, type AgentRunRequest } from "../../packages/broker/src/agents/runs.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
+import { resolveAgent } from "../../packages/broker/src/agents/store.js";
 import {
   AgentSessionRecordSchema,
   SESSION_EVENT_TEXT_MAX,
@@ -21,6 +23,7 @@ import {
   liveSessionKey,
   mySessionsKey,
   openAgentSessionKey,
+  projectMemberKey,
   projectSessionsKey,
   runRequestKey,
   sessionEventSk,
@@ -28,7 +31,7 @@ import {
   sessionSurfaceKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
-import { DEV_ISSUER, MAYA, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
+import { DEV_ISSUER, MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";
 
@@ -78,7 +81,27 @@ async function setup(options: { brokerExtra?: Record<string, unknown> } = {}) {
     expect(found, "the task META is written by exactly one transaction").toHaveLength(1);
     return found[0]!.flatMap((entry) => ((entry.Put as { Item?: Item } | undefined)?.Item === undefined ? [] : [(entry.Put as { Item: Item }).Item]));
   };
-  return { ...h, store, start, starter, request, autonomous, meta, sessionPartitions, sessionRecords, indexItems, sessionOf, startTransaction };
+  /** A custom agent made by Maya, published and (unless told otherwise) not on the payments roster. */
+  const agentOf = async (): Promise<string> => {
+    const overlay = { instructions: "Summarise the open tickets.", sequence: [{ id: "work", name: "work", kind: "agent" as const, workspace: "none" as const }] };
+    const created = await h.dev(MAYA, "POST", "/v1/app/agents", { requestId: randomUUID(), name: `Agent ${randomUUID().slice(0, 8)}`, overlay });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const agentId = (created.body.agent as { agentId: string }).agentId as never;
+    const draft = (await store.getDraft(TEST_ORG, agentId))!;
+    await store.saveDraft({ orgId: TEST_ORG, agentId, overlay, expectedRevision: draft.revision, by: MAYA.developerId });
+    const agent = (await store.get(TEST_ORG, agentId))!;
+    await store.publish({ orgId: TEST_ORG, agentId, expectedDraftRevision: agent.draftRevision, digest: recipeDigest(await resolveAgent(store, TEST_ORG, agentId, "draft")), by: MAYA.developerId });
+    return agentId;
+  };
+  /** A member of the org with a contributor role on payments. */
+  const addMember = async (who: Developer) => {
+    await h.orgOf(who);
+    h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+    h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    seedMembership(h.db, who.developerId, { orgId: TEST_ORG, role: "member" });
+    h.db.set({ ...projectMemberKey(TEST_ORG, who.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: who.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor" });
+  };
+  return { ...h, store, agentOf, addMember, start, starter, request, autonomous, meta, sessionPartitions, sessionRecords, indexItems, sessionOf, startTransaction };
 }
 
 describe("a person's start creates its session in the start transaction", () => {
@@ -131,7 +154,7 @@ describe("a person's start creates its session in the start transaction", () => 
     const t = await setup();
     const { task } = await t.start(MAYA, { instructions: `Rotate ${GITHUB_TOKEN} for <@U0MAYA001> now` });
     const record = t.sessionOf(task.sessionId!)!;
-    expect(record.title).toContain("[redacted]");
+    expect(record.title).toContain("[REDACTED]");
     expect(String(record.title)).not.toContain(GITHUB_TOKEN);
     expect(String(record.title)).not.toContain("<@");
     const event = t.sessionPartitions().find((item) => (item.sk as string).startsWith("EVENT#"))!;
@@ -150,9 +173,11 @@ describe("a person's start creates its session in the start transaction", () => 
 
   it("starts an agent run for another owner with the starter's own entry too", async () => {
     const t = await setup();
+    await t.start(MAYA, {});
+    await t.addMember(KIT);
     const result = await startAgentRun(t.starter(), t.request({ owner: { developerId: MAYA.developerId }, startedBy: { developerId: KIT.developerId }, payer: { kind: "member", developerId: KIT.developerId } }));
     const sessionId = t.meta(result.taskId)!.sessionId!;
-    const mine = t.indexItems().filter((item) => String(item.pk).includes("MY_SESSIONS#"));
+    const mine = t.indexItems().filter((item) => String(item.pk).includes("MY_SESSIONS#") && item.sessionId === sessionId);
     expect(mine.map((item) => item.developerId).sort()).toEqual([KIT.developerId, MAYA.developerId].sort());
     expect(t.sessionOf(sessionId)).toMatchObject({ owner: { developerId: MAYA.developerId }, startedBy: { kind: "member", developerId: KIT.developerId } });
   });
@@ -208,11 +233,12 @@ describe("the runs that get no session", () => {
 
   it("leaves nothing behind when the start is refused", async () => {
     const t = await setup();
-    const refusal = await startAgentRun(t.starter(), t.autonomous({ agent: { agentId: "ticket-triage" } })).then(() => undefined, (error: { code?: string }) => error.code);
+    const agentId = await t.agentOf();
+    const refusal = await startAgentRun(t.starter(), t.autonomous({ agent: { agentId: agentId }, payer: { kind: "agent", agentId: agentId } })).then(() => undefined, (error: { code?: string }) => error.code);
     expect(refusal).toBe("AGENT_NOT_ON_PROJECT");
     expect(t.sessionPartitions()).toEqual([]);
     expect(t.indexItems()).toEqual([]);
-    const person = await t.start(MAYA, { agent: { agentId: "ticket-triage" }, input: { text: "Fix the retry bug" } });
+    const person = await t.start(MAYA, { agent: { agentId }, input: { text: "Fix the retry bug" } });
     expect(person.status).toBeGreaterThanOrEqual(400);
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
     expect(t.sessionPartitions()).toEqual([]);
@@ -276,8 +302,11 @@ describe("an autonomous run with a trigger", () => {
     const other = await startAgentRun(t.starter(), { ...request, trigger: { kind: "schedule", triggerId: "ctr_zzzzzzzzzzzzzzzzzzzz" } }).then(() => undefined, (error: { code?: string }) => error.code);
     expect(other).toBe("IDEMPOTENCY_CONFLICT");
     // A request with no trigger keeps the fingerprint it had before triggers existed, so a stored one still matches its repeat.
-    const { requestId: _requestId, ...person } = t.request({ requestId: "r", orgId: "org_aaaaaaaaaaaaaaaaaaaa" as OrgId }); // eslint-disable-line @typescript-eslint/no-unused-vars -- the id is not part of a fingerprint
-    expect(runRequestFingerprint({ ...person, owner: { developerId: "d".repeat(64) }, startedBy: { developerId: "d".repeat(64) }, payer: { kind: "member", developerId: "d".repeat(64) } })).toBe("6ceb7ad10209224fd400aedffbc5436b1cb60d8ef7d552ab527551ecbf87e36e");
+    const dev = "d".repeat(64);
+    expect(runRequestFingerprint({
+      requestId: "r", orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", agent: { agentId: "rovara-code" }, input: { text: "Fix the retry bug" }, origin: "app",
+      owner: { developerId: dev }, startedBy: { developerId: dev }, payer: { kind: "member", developerId: dev },
+    })).toBe("6ceb7ad10209224fd400aedffbc5436b1cb60d8ef7d552ab527551ecbf87e36e");
   });
 });
 
@@ -320,7 +349,7 @@ describe("createTaskSessionItems", () => {
   const fake = { send: async () => ({}) };
   const puts = (items: ReturnType<typeof createTaskSessionItems>) => items.map((item) => (item.Put as { Item: Item; ConditionExpression?: string }));
 
-  it("makes the META, the first leg, the event and the five index items, each one only if absent", () => {
+  it("makes the META, the first leg, the event and the four index entries, each one only if absent", () => {
     const items = puts(createTaskSessionItems(table(fake), input()));
     expect(items).toHaveLength(7);
     for (const put of items) expect(put.ConditionExpression).toBe("attribute_not_exists(pk)");
@@ -415,7 +444,8 @@ describe("AgentSessionStore", () => {
 
   it("makes an event item that is a conditional put of its own key, with the text cut and an expiry", () => {
     const at = "2026-10-22T10:00:00.000Z";
-    const item = sessionEventItem({ orgId: TEST_ORG, sessionId: "ses_0123456789abcdefghij" }, { eventId: sessionEventId("step", "a"), at, type: "step", text: "s".repeat(900) }, () => Date.parse(at));
+    const store = new AgentSessionStore({ documentClient: { send: async () => ({}) }, tableName: "state", now: () => Date.parse(at) });
+    const item = store.sessionEventItem({ orgId: TEST_ORG, sessionId: "ses_0123456789abcdefghij" }, { eventId: sessionEventId("step", "a"), at, type: "step", text: "s".repeat(900) });
     const put = item.Put as { Item: Item; ConditionExpression: string };
     expect(put.ConditionExpression).toBe("attribute_not_exists(pk)");
     expect(put.Item.sk).toBe(sessionEventSk(at, sessionEventId("step", "a")));
@@ -438,9 +468,4 @@ function chainRecord(chainRunId: string): Item {
     startedBy: { kind: "member", developerId: MAYA.developerId }, origin: "app", followerCount: 0, summaryRevision: 1, revision: 1, createdAt: "2026-10-22T09:30:00.000Z", updatedAt: "2026-10-22T09:30:00.000Z",
     summary: { status: "running", costUsd: 0, needsPeople: [], pendingApprovals: 0, digest: createHash("sha256").update("x").digest("hex"), computedAt: "2026-10-22T09:30:00.000Z" },
   };
-}
-
-/** Keeps the test's own call on the session partition count readable. */
-function h<T>(value: T): T {
-  return value;
 }
