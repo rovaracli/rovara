@@ -445,7 +445,7 @@ describe("changing a comment", () => {
     const f = world();
     const mine = await f.send(ARJUN, "Mine");
     const keys: string[] = [];
-    const spy = { send: async (command: { constructor: { name: string }; input: { Key?: { sk?: string } } }) => { if (command.constructor.name === "GetCommand") keys.push(String(command.input.Key?.sk)); return f.w.db.send(command as never); } };
+    const spy = { send: async (command: { constructor: { name: string }; input: { Key?: { sk?: string } } }) => { if (command.constructor.name === "GetCommand") keys.push(String(command.input.Key?.sk)); return f.w.db.send(command); } };
     for (const id of ["x".repeat(3000), "COUNT", "msg_short", mine.messageId.toUpperCase()]) {
       expect(await code(editSessionMessage({ ...f.deps, documentClient: spy }, f.w.caller(ARJUN), f.sid, id, { rev: 1, text: "Changed" })), id).toMatchObject({ code: "NOT_FOUND" });
     }
@@ -703,6 +703,17 @@ describe("the conversation", () => {
     expect(last.next).toBe(third.next);
     expect([...first.messages, ...second.messages, ...third.messages].some((message) => message.source === "page")).toBe(true);
     expect(last.messages.some((message) => message.source === "page")).toBe(false);
+  });
+
+  it("repeats only what is within the few seconds before the cursor, the page's comments included", async () => {
+    const f = world();
+    f.pageComment({ text: "Long ago", createdAt: new Date(T0 + 1_000).toISOString() });
+    f.pageComment({ text: "Just before", createdAt: new Date(T0 + 118_000).toISOString() });
+    f.w.clock.now = T0 + 120_000;
+    const sent = await f.send(ARJUN, "The latest");
+    const again = await f.list(ARJUN, `${sent.createdAt}#${sent.messageId}`);
+    expect(again.messages.map((message) => message.text)).toEqual(["Just before"]);
+    expect(again.next).toBe(`${sent.createdAt}#${sent.messageId}`);
   });
 
   it("refuses a cursor with a date that is not one", async () => {
