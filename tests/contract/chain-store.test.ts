@@ -1,6 +1,7 @@
 // Plan 4 Task 3: the chain store (records, drafts, immutable versions, names, events, owner totals), who can do what with a chain, and its shares.
 import { describe, expect, it } from "vitest";
 import { agentAccess, type AgentAccessDeps, type AgentCaller } from "../../packages/broker/src/agents/access.js";
+import { ownerEffectiveTotal } from "../../packages/broker/src/spend/requests.js";
 import { AgentStore, isOwnerCapRefusal, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
 import {
   chainAccess,
@@ -912,6 +913,118 @@ describe("one monthly total for agent and chain budgets", () => {
     expect(() => new AgentStore({ documentClient: other, tableName: "T", now: () => ctx.clock.now, ownerBudgets: ctx.agents.ownerBudgets })).toThrow(/another table/);
     // The same client on a differently named table is another table too.
     expect(() => new ChainStore({ documentClient: ctx.client, tableName: "U", now: () => ctx.clock.now, agents: ctx.agents })).toThrow(/another table/);
+  });
+});
+
+describe("merged with Plan 3: one owner total with a version, an effective cap and an approved override", () => {
+  const version = (ctx: ReturnType<typeof setup>, owner = ALICE) => ctx.db.get(ownerBudgetKey(ORG_A, owner))?.["version"];
+
+  it("builds a counter at version 0, bumps it on every chain budget change and shares the version with the agent store", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    await ctx.chains.setBudget(ORG_A, chain.chainId, 10, ALICE);
+    expect(version(ctx)).toBe(1);
+    await ctx.chains.setBudget(ORG_A, chain.chainId, 4, ALICE);
+    expect(version(ctx)).toBe(2);
+    await ctx.chains.archive(ORG_A, chain.chainId, ALICE);
+    expect(version(ctx)).toBe(3);
+    await ctx.chains.unarchive(ORG_A, chain.chainId, ALICE);
+    expect(version(ctx)).toBe(4);
+    await ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE);
+    expect(version(ctx, ALICE)).toBe(5);
+    expect(version(ctx, BOB)).toBe(1);
+    // An agent's budget change of the same owner moves the same counter.
+    const agent = await ctx.agents.create({ orgId: ORG_A, name: "Budgeted", owner: { kind: "member", developerId: BOB }, overlay: SCRATCH, createdBy: BOB });
+    await ctx.agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: 2 }, BOB);
+    expect(version(ctx, BOB)).toBe(2);
+    // A rebuild moves it too (it changes the figure an approval summed at).
+    ctx.db.set({ ...ctx.db.get(ownerBudgetKey(ORG_A, BOB))!, totalUsd: 99 });
+    expect(await ctx.agents.rebuildOwnerTotal(ORG_A, BOB)).toBe(6);
+    expect(version(ctx, BOB)).toBe(3);
+  });
+
+  it("a counter built fresh starts at version 0", async () => {
+    const ctx = setup();
+    await ctx.agents.ensureOwnerTotal(ORG_A, ALICE);
+    expect(version(ctx)).toBe(0);
+  });
+
+  it("holds a chain raise to the counter version it was read at: a budget change of the same owner since then refuses it", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    const agent = await ctx.agents.create({ orgId: ORG_A, name: "Budgeted", owner: ALICE_OWNS, overlay: SCRATCH, createdBy: ALICE });
+    await ctx.chains.setBudget(ORG_A, chain.chainId, 5, ALICE);
+    const seen = { owner: ALICE, version: version(ctx) as number, extraUsd: 0 };
+    ctx.hooks.push(async () => { await ctx.agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: 1 }, ALICE); });
+    // The version and the cap are conditions of the one counter item, so the refusal reads as the cap's: the route re-reads once and decides again (Plan 3 Task 28).
+    const error = await ctx.chains.setBudget(ORG_A, chain.chainId, 6, ALICE, undefined, { ownerCap: { usd: 100, policyRevision: 0, seen } }).catch((caught: unknown) => caught);
+    expect(isOwnerCapRefusal(error)).toBe(ALICE);
+    expect((await ctx.chains.get(ORG_A, chain.chainId))!.monthlyBudgetUsd).toBe(5);
+    expect(ctx.total(ALICE)).toBe(6);
+  });
+
+  it("holds a chain raise to the cap less what the effective total holds beyond the counter (this month's top-ups)", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    await ctx.chains.setBudget(ORG_A, chain.chainId, 10, ALICE);
+    const seen = { owner: ALICE, version: version(ctx) as number, extraUsd: 85 };
+    const error = await ctx.chains.setBudget(ORG_A, chain.chainId, 16, ALICE, undefined, { ownerCap: { usd: 100, policyRevision: 0, seen } }).catch((caught: unknown) => caught);
+    expect(isOwnerCapRefusal(error)).toBe(ALICE);
+    expect((await ctx.chains.get(ORG_A, chain.chainId))!.monthlyBudgetUsd).toBe(10);
+    // Landing exactly on the cap passes.
+    await ctx.chains.setBudget(ORG_A, chain.chainId, 15, ALICE, undefined, { ownerCap: { usd: 100, policyRevision: 0, seen } });
+    expect(ctx.total(ALICE)).toBe(15);
+  });
+
+  it("an approved owner_cap request applies the stored change with its own items in the same transaction, and names the request in the event", async () => {
+    const ctx = setup();
+    const chain = await ctx.create("Investigate");
+    const marker = { pk: "TEST#marker", sk: "1" };
+    const overrideCap = { spendRequestId: "spr_0123456789abcdefghij", items: [{ Put: { TableName: "T", Item: { ...marker, entityType: "MARKER" } } }], closed: () => new Error("the request was decided") };
+    await ctx.chains.setBudget(ORG_A, chain.chainId, 500, ALICE, undefined, { overrideCap });
+    expect(ctx.total(ALICE)).toBe(500);
+    expect(ctx.db.get(marker)).toBeDefined();
+    expect(ctx.events(ORG_A, chain.chainId).at(-1)).toMatchObject({ kind: "budget_changed", overrideCap: "spr_0123456789abcdefghij" });
+    // The request's own item refusing (decided meanwhile) names the request's refusal and changes nothing.
+    const gone = { ...overrideCap, items: [{ ConditionCheck: { TableName: "T", Key: { pk: "TEST#absent", sk: "1" }, ConditionExpression: "attribute_exists(pk)" } }] };
+    await expect(ctx.chains.setBudget(ORG_A, chain.chainId, 600, ALICE, undefined, { overrideCap: gone })).rejects.toThrow("the request was decided");
+    expect(ctx.total(ALICE)).toBe(500);
+    // The same for the owner moves and archive.
+    await expect(ctx.chains.archive(ORG_A, chain.chainId, ALICE, undefined, { overrideCap: gone })).rejects.toThrow("the request was decided");
+    await expect(ctx.chains.setOwner(ORG_A, chain.chainId, { kind: "member", developerId: BOB }, ALICE, undefined, undefined, { overrideCap: gone })).rejects.toThrow("the request was decided");
+    expect((await ctx.chains.get(ORG_A, chain.chainId))!).toMatchObject({ status: "active", owner: ALICE_OWNS });
+  });
+
+  it("the effective total sums agent and chain budgets, so it equals the counter when there are no top-ups and an archived chain is not in it", async () => {
+    const ctx = setup();
+    const agent = await ctx.agents.create({ orgId: ORG_A, name: "Budgeted", owner: ALICE_OWNS, overlay: SCRATCH, createdBy: ALICE });
+    await ctx.agents.setBudget(ORG_A, agent.agentId, { monthlyUsd: 5 }, ALICE);
+    const live = await ctx.create("Live");
+    await ctx.chains.setBudget(ORG_A, live.chainId, 3, ALICE);
+    const gone = await ctx.create("Gone");
+    await ctx.chains.setBudget(ORG_A, gone.chainId, 7, ALICE);
+    await ctx.chains.archive(ORG_A, gone.chainId, ALICE);
+    const deps = { store: ctx.agents, chains: ctx.chains, documentClient: ctx.client, tableName: "T", now: () => ctx.clock.now } as never;
+    const effective = await ownerEffectiveTotal(deps, { orgId: ORG_A, owner: ALICE, month: "2026-10" });
+    expect(effective).toEqual({ totalUsd: 8, counterUsd: 8, version: version(ctx) });
+    // No chain store: only the agents' side (a deployment without chains).
+    expect(await ownerEffectiveTotal({ ...(deps as object), chains: undefined } as never, { orgId: ORG_A, owner: ALICE, month: "2026-10" })).toMatchObject({ totalUsd: 5, counterUsd: 8 });
+  });
+
+  it("lists the active chains that count for an owner", async () => {
+    const ctx = setup();
+    const mine = await ctx.create("Mine");
+    await ctx.chains.setBudget(ORG_A, mine.chainId, 3, ALICE);
+    const archived = await ctx.create("Archived");
+    await ctx.chains.setBudget(ORG_A, archived.chainId, 9, ALICE);
+    await ctx.chains.archive(ORG_A, archived.chainId, ALICE);
+    await ctx.create("None");
+    const bobs = await ctx.create("Bobs", { owner: { kind: "member", developerId: BOB }, by: BOB });
+    await ctx.chains.setBudget(ORG_A, bobs.chainId, 4, BOB);
+    const project = await ctx.create("Project", { owner: WEB_OWNS, accountable: { developerId: ALICE }, by: DAN });
+    await ctx.chains.setBudget(ORG_A, project.chainId, 2, DAN);
+    expect(await ctx.chains.ownerChains(ORG_A, ALICE)).toEqual([{ chainId: mine.chainId, monthlyBudgetUsd: 3 }, { chainId: project.chainId, monthlyBudgetUsd: 2 }]);
+    expect(await ctx.chains.ownerChains(ORG_A, BOB)).toEqual([{ chainId: bobs.chainId, monthlyBudgetUsd: 4 }]);
   });
 });
 
