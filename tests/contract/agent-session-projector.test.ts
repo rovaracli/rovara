@@ -199,6 +199,31 @@ describe("when a session ends", () => {
     expect(p.w.db.get(openAgentSessionKey(ORG_A, s.sessionId))).toBeUndefined();
   });
 
+  it("reads a task of another org as no task: the summary stays as it was", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "RUNNING");
+    p.patchTask(s.taskId, { orgId: ORG_B, closedAt: "2026-10-22T08:30:00.000Z" });
+    expect(await p.refresh(s.sessionId)).toBe("unchanged");
+    expect(p.sessionOf(s.sessionId).summaryRevision).toBe(1);
+    expect(p.sessionOf(s.sessionId).endedAt).toBeUndefined();
+  });
+
+  it("an ended session keeps the status it ended with, whatever the source says later", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "SUCCEEDED");
+    p.patchTask(s.taskId, { closedAt: "2026-10-22T08:30:00.000Z" });
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary.status).toBe("succeeded");
+    // The creator is removed afterwards: the source now reads 'failed', the session stays 'succeeded' (and its cost still moves).
+    p.patchTask(s.taskId, { outcome: "creator_removed", outcomeAt: "2026-10-22T09:00:00.000Z" });
+    p.spent(s.taskId, 1);
+    expect(await p.refresh(s.sessionId)).toBe("updated");
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "succeeded", costUsd: 1 });
+    expect(p.events(s.sessionId)).toHaveLength(1);
+  });
+
   it("keeps its end and its words while its cost catches up from a key settled an hour late", async () => {
     const p = projectorWorld();
     const s = p.open();
@@ -281,6 +306,11 @@ describe("who is needed", () => {
     await p.refresh(s.sessionId);
     expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "needs_person", pendingApprovals: 1 });
     expect([...p.sessionOf(s.sessionId).summary.needsPeople].sort()).toEqual([ARJUN, PRIYA].sort());
+    // The run's own state says RUNNING (the step is still working) while an approval waits: the person is still needed.
+    p.w.db.set({ ...p.w.db.get({ pk: `DEVTASK#${s.taskId}`, sk: "AGENT_RUN" })!, state: "RUNNING" });
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "needs_person", pendingApprovals: 1 });
+    p.w.db.set({ ...p.w.db.get({ pk: `DEVTASK#${s.taskId}`, sk: "AGENT_RUN" })!, state: "WAITING_FOR_APPROVAL" });
     // Decided: the record is no longer PENDING and the run goes on.
     const record = p.w.db.get({ pk: `ORG#${ORG_A}#APPROVAL#${approvalId}`, sk: "META" })!;
     p.w.db.set({ ...record, status: "APPROVED_DONE" });
@@ -417,6 +447,15 @@ describe("what the projector reads", () => {
     expect(p.sessionOf(s.sessionId).summaryRevision).toBe(1);
   });
 
+  it("skips a counter whose key org is not the org of the task it names", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "RUNNING");
+    expect(await p.project([{ ...taskSpendKey(ORG_B, s.taskId), entityType: "TASK_SPENT", orgId: ORG_B, settledUsd: 9 }])).toMatchObject({ refreshed: 0, unchanged: 0 });
+    expect(p.logs.map((entry) => entry.event)).toContain("agent_session.projector_org_mismatch");
+    expect(p.sessionOf(s.sessionId).summaryRevision).toBe(1);
+  });
+
   it("does not refresh another org's session through a task that says it belongs elsewhere", async () => {
     const p = projectorWorld();
     const s = p.open();
@@ -433,6 +472,10 @@ describe("what the projector reads", () => {
     const task = taskOf(p, s.taskId);
     expect(await p.project([task, op, task, { ...taskSpendKey(ORG_A, s.taskId), entityType: "TASK_SPENT", orgId: ORG_A, settledUsd: 1 }])).toMatchObject({ refreshed: 1 });
     expect(p.sessionOf(s.sessionId).summaryRevision).toBe(2);
+    const calls: string[] = [];
+    const refresh = async (_deps: unknown, _org: unknown, id: string) => { calls.push(id); return "unchanged" as const; };
+    await p.project([task, op, task, { ...taskSpendKey(ORG_A, s.taskId), entityType: "TASK_SPENT", orgId: ORG_A, settledUsd: 1 }], Date.now() + 60_000, { refresh });
+    expect(calls).toEqual([s.sessionId]);
   });
 });
 

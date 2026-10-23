@@ -66,6 +66,16 @@ describe("the session sweep", () => {
     expect(w.db.get(SESSION_SWEEP_CURSOR_KEY)).toBeDefined();
   });
 
+  it("reads the list a page at a time", async () => {
+    const w = sessionWorld();
+    openList(w, 50);
+    const limits: unknown[] = [];
+    const base = w.db.send.bind(w.db);
+    const spy = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => { if (command.constructor.name === "QueryCommand") limits.push(command.input.Limit); return base(command as never); } };
+    await sweepAgentSessions({ documentClient: spy, tableName: "state", now: () => T0, log: () => undefined, refresh: async () => "unchanged" as const } as never, T0);
+    expect(limits[0]).toBe(SESSION_SWEEP_PAGE);
+  });
+
   it("stops at its budget and saves where it got to, and the next run starts after it", async () => {
     const w = sessionWorld();
     openList(w, 50);
@@ -183,7 +193,7 @@ describe("retention: drainEndedSessions", () => {
     const timed = { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "UpdateCommand") { updates += 1; if (updates === 100) p.w.clock.now += DRAIN_BUDGET_MS + 1; } return base(command as never); } };
     await drainEndedSessions({ ...p.deps, documentClient: timed }, p.w.clock.now);
     const partial = p.w.db.get(work)!;
-    expect(partial.cursor).toBeDefined();
+    expect(partial.cursor).toMatchObject({ prefix: 3, after: expect.stringMatching(/^MESSAGE#/) as string });
     const stamped = () => p.w.db.find((item) => String(item.sk).startsWith("MESSAGE#") && item.indexExpiresAt === expires).length;
     expect(stamped()).toBeGreaterThanOrEqual(100);
     expect(stamped()).toBeLessThan(250);
@@ -207,6 +217,17 @@ describe("retention: drainEndedSessions", () => {
     expect(p.w.db.get(keys.share)?.indexExpiresAt).toBe(Math.floor(Date.parse("2026-10-12T08:30:00.000Z") / 1000) + SESSION_RETENTION_DAYS * DAY);
     expect(p.w.db.get(endedSessionWorkKey("2026-10-12", ORG_A, old.sessionId))).toBeUndefined();
     expect(p.w.db.get(ENDED_DRAIN_CURSOR_KEY)?.day).toBe("2026-10-21");
+  });
+
+  it("never creates an item: one a session never had stays absent", async () => {
+    const { p, s } = ended();
+    await p.refresh(s.sessionId);
+    p.w.db.set({ ...agentSessionKey(ORG_A, s.sessionId, "SHARE#MEMBER#y"), orgId: ORG_A, sessionId: s.sessionId, principal: { kind: "member", developerId: "y".repeat(64) }, level: "view" });
+    const before = p.w.db.find(() => true).length;
+    p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
+    await drainEndedSessions(p.deps as never, p.w.clock.now);
+    // The work item is gone; nothing was made (no list entry for the owner, the project or the share, no surface key).
+    expect(p.w.db.find(() => true).length).toBe(before - 1);
   });
 
   it("does not touch another org's session through a work item that names the wrong org", async () => {
