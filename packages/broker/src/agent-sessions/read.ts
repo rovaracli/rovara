@@ -2,6 +2,7 @@
 // a session the caller can't view is `NOT_FOUND` and its existence never leaks; what the caller may not see inside it (a decision they can't make,
 // a step's task without a project role) is left out, never shown as an error.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import {
   AGENT_SESSION_CONTRACT_VERSION,
   AGENTX_NAME_PATTERN,
@@ -28,7 +29,7 @@ import {
   type SessionView,
 } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
+import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
 import type { SessionShareDependencies } from "./shares.js";
 
 /** Who reads: `DeveloperCaller` fits. */
@@ -207,7 +208,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     title: session.title,
     ...(session.project === undefined ? {} : { project: session.project }),
     ...(session.agent === undefined ? {} : { agent: session.agent }),
-    owner: session.owner,
+    owner: access.effectiveOwner,
     startedBy: session.startedBy,
     where: session.where.kind === "cloud" ? { kind: "cloud" } : { kind: "mac", label: session.where.label, offline: summary.offline === true },
     status,
@@ -278,7 +279,7 @@ const PROBE_AT = "2000-01-01T00:00:00.000Z";
 const INDEX_SK = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z#(?:ses|crn)_[0-9a-z]{20}$/;
 const SHARED_SK = /^(?:ses|crn)_[0-9a-z]{20}$/;
 
-function tileOf(session: AgentSessionRecord, level: SessionTile["level"]): SessionTile {
+function tileOf(session: AgentSessionRecord, level: SessionTile["level"], owner: SessionTile["owner"]): SessionTile {
   return {
     contractVersion: AGENT_SESSION_CONTRACT_VERSION,
     sessionId: session.sessionId,
@@ -286,7 +287,7 @@ function tileOf(session: AgentSessionRecord, level: SessionTile["level"]): Sessi
     title: session.title,
     ...(session.project === undefined ? {} : { project: session.project }),
     ...(session.agent === undefined ? {} : { agent: session.agent }),
-    owner: session.owner,
+    owner,
     where: session.where,
     level,
     revision: session.revision,
@@ -298,6 +299,46 @@ function tileOf(session: AgentSessionRecord, level: SessionTile["level"]): Sessi
 }
 
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
+
+// ---- the cursor
+// A cursor is the sort key of the last row a list scanned, which may be a session the caller can't see (when the scan cap stops the loop). So it is
+// sealed (AES-256-GCM under the server's cursor key) and bound to the org, the person and the list it was given for: nobody can read the key out of
+// it, change it, or carry it to another list or another person. Any failure is one message that echoes nothing (review m-1).
+
+const CURSOR_VERSION = "v1.";
+const cursorKeyOf = (deps: Pick<SessionReadDependencies, "cursorKey">): Buffer => {
+  if (deps.cursorKey === undefined || deps.cursorKey === "") throw agentXError("RUNTIME_UNAVAILABLE", "Sessions can't be listed right now.");
+  return createHash("sha256").update(deps.cursorKey, "utf8").digest();
+};
+const cursorContext = (orgId: string, developerId: string, pk: string) => Buffer.from(`${orgId}\n${developerId}\n${pk}`, "utf8");
+
+function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, sk: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", cursorKeyOf(deps), iv);
+  cipher.setAAD(cursorContext(caller.orgId, caller.developerId, pk));
+  const sealed = Buffer.concat([cipher.update(sk, "utf8"), cipher.final()]);
+  return `${CURSOR_VERSION}${Buffer.concat([iv, sealed, cipher.getAuthTag()]).toString("base64url")}`;
+}
+
+/** The sort key a cursor holds, or `CONFIG_INVALID` for anything this list, this person and this server key didn't give. */
+function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, pattern: RegExp, cursor: string): string {
+  const key = cursorKeyOf(deps);
+  const refuse = () => invalid("cursor: is not one this list gave");
+  if (!cursor.startsWith(CURSOR_VERSION)) throw refuse();
+  const body = cursor.slice(CURSOR_VERSION.length);
+  const bytes = Buffer.from(body, "base64url");
+  if (bytes.toString("base64url") !== body || bytes.length < 12 + 16 + 1) throw refuse(); // not the one spelling this list writes
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
+    decipher.setAAD(cursorContext(caller.orgId, caller.developerId, pk));
+    decipher.setAuthTag(bytes.subarray(bytes.length - 16));
+    const sk = Buffer.concat([decipher.update(bytes.subarray(12, bytes.length - 16)), decipher.final()]).toString("utf8");
+    if (!pattern.test(sk)) throw refuse();
+    return sk;
+  } catch {
+    throw refuse();
+  }
+}
 
 /**
  * `GET /v1/app/sessions?owner=me|project=<p>|shared=me&status=open|ended&cursor=`: one of the three indexes, newest first, each row read again with the
@@ -319,11 +360,11 @@ export async function listSessions(deps: SessionReadDependencies, caller: Sessio
     : query.shared !== undefined ? sharedSessionsKey(orgId, { kind: "member", developerId: caller.developerId }, PROBE_ID).pk
       : mySessionsKey(orgId, caller.developerId, PROBE_AT, PROBE_ID).pk;
   const pattern = query.shared === undefined ? INDEX_SK : SHARED_SK;
+  cursorKeyOf(deps); // a list that can't seal its cursor doesn't start
+  const memo = newSessionRoleMemo(); // the caller's role on each project, asked once for the whole request (review m-2)
   let start: Record<string, unknown> | undefined;
   if (query.cursor !== undefined) {
-    const sk = Buffer.from(query.cursor, "base64url").toString("utf8");
-    if (!pattern.test(sk)) throw invalid("cursor: is not one this list gave");
-    start = { pk, sk };
+    start = { pk, sk: openCursor(deps, caller, pk, pattern, query.cursor) };
   }
 
   const tiles: SessionTile[] = [];
@@ -337,7 +378,7 @@ export async function listSessions(deps: SessionReadDependencies, caller: Sessio
     const rows = page.Items ?? [];
     for (const row of rows) {
       if (tiles.length >= limit || scanned >= LIVE_INDEX_SCAN_MAX) {
-        return { sessions: tiles, ...(lastSk === undefined ? {} : { next: Buffer.from(lastSk, "utf8").toString("base64url") }) };
+        return { sessions: tiles, ...(lastSk === undefined ? {} : { next: sealCursor(deps, caller, pk, lastSk) }) };
       }
       scanned += 1;
       if (typeof row["sk"] === "string") lastSk = row["sk"];
@@ -345,14 +386,14 @@ export async function listSessions(deps: SessionReadDependencies, caller: Sessio
       if (!id.success || row["orgId"] !== orgId) continue;
       let access: SessionAccess;
       try {
-        access = await requireSessionLevel(deps, caller, id.data, "view", "view it");
+        access = await requireSessionLevel(deps, caller, id.data, "view", "view it", { memo });
       } catch (error) {
         if (isAgentXError(error)) continue;
         throw error;
       }
       const ended = access.session.endedAt !== undefined;
       if ((query.status === "open" && ended) || (query.status === "ended" && !ended)) continue;
-      tiles.push(tileOf(access.session, levelOf(access)));
+      tiles.push(tileOf(access.session, levelOf(access), access.effectiveOwner));
     }
     start = page.LastEvaluatedKey;
     if (start === undefined) return { sessions: tiles };

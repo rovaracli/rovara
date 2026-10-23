@@ -445,7 +445,7 @@ describe("listing sessions", () => {
         if (bad === cursor) continue;
         const refused = await code(listSessions(l.deps, l.w.caller(PRIYA), { owner: "me", limit: 2, cursor: bad }));
         expect(refused, bad).toMatchObject({ code: "CONFIG_INVALID" });
-        expect(refused?.message).not.toContain(bad.slice(0, 12));
+        if (bad !== "") expect(refused?.message).not.toContain(bad.slice(0, 12)); // an empty cursor has nothing to echo
       }
       // Another list, and another person's list, refuse it too.
       expect(await code(listSessions(l.deps, l.w.caller(PRIYA), { project: "web", limit: 2, cursor }))).toMatchObject({ code: "CONFIG_INVALID" });

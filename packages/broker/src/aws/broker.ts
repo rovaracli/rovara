@@ -680,7 +680,7 @@ const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 /** The hosted app's routes (Plan 2): authorizer-free like /v1/dev, the broker verifies the same developer token itself. */
 const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
-/** A session's link (Plan 5, Task 5), served to a browser like the review pages. The API route for it is added with the web app (Plan 7). */
+/** A session's link (Plan 5, Task 5), served to a browser like the review pages. Its API Gateway route (`ANY /s/{proxy+}`) is in the infrastructure; the web app (Plan 7) adds the page. */
 const SESSION_LINK_ROUTE_KEY = "ANY /s/{proxy+}";
 
 /** The install's environment name: what its single org (ruling R3) and the default org resolver derive from. */
@@ -1008,6 +1008,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   // `agents.sessions`; without them nobody reads a chain session through the project or the chain (only its owner, its shares and maintainers do): fail closed.
   routeDependencies.agentSessions = {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: () => Date.now(), projectMembers, signInStore,
+    // Seals the list cursor (review m-1): derived from the signing key under its own label, so no other use of the key can open or forge one.
+    cursorKey: createHmac("sha256", dependencies.callbackSigningKey).update("agentx:session-list-cursor:v1").digest("hex"),
     chainReadAccess: agents.sessions?.chainReadAccess ?? (async () => false),
     ...(agents.sessions?.chain === undefined ? {} : { chain: agents.sessions.chain }),
   };

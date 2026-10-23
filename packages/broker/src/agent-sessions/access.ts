@@ -18,6 +18,7 @@ import {
   agentSessionKey,
   agentXError,
   atLeast,
+  cleanSessionName,
   orgMemberKey,
   projectMemberKey,
   sessionLevelRequiredMessage,
@@ -59,6 +60,8 @@ export interface SessionAccessDependencies {
   chainReadAccess?: (caller: { orgId: OrgId; developerId: string }, session: AgentSessionRecord) => Promise<boolean>;
   /** Plan 4's chain reads (see `ChainSessionReads`). */
   chain?: ChainSessionReads;
+  /** The server secret that seals a session list's cursor (hex, derived by the broker from its signing key). Without it a list can't give a cursor, so it answers `RUNTIME_UNAVAILABLE`. */
+  cursorKey?: string;
 }
 
 /** Who is asking: `DeveloperCaller` fits. Their org role is read from the org's member record, never taken from here. */
@@ -67,8 +70,10 @@ export interface SessionCaller { orgId: OrgId; developerId: string }
 export interface SessionAccess {
   session: AgentSessionRecord;
   level: "none" | SessionLevel;
-  /** The effective owner. */
+  /** Whether the caller is the effective owner. */
   owner: boolean;
+  /** Who the effective owner is, named for a header or a "ask <name>" message: the taker once the task was taken over (their name as the task records it), else the session's own owner. */
+  effectiveOwner: { developerId: string; name: string };
   projectRole?: ProjectRole;
   /** An org owner or admin, on a task or chain session: they may stop it (`view` plus Stop). */
   orgAdmin: boolean;
@@ -78,9 +83,18 @@ export interface SessionAccess {
 
 export type { SessionAction };
 
+/** What one request already learned of the caller's roles, so a list of many sessions asks the project channel once per project, not once per row (review m-2). */
+export interface SessionRoleMemo {
+  roles: Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined }>>;
+  shareRoles: Map<string, Promise<ProjectRole | undefined>>;
+}
+export const newSessionRoleMemo = (): SessionRoleMemo => ({ roles: new Map(), shareRoles: new Map() });
+
 export interface SessionAccessOptions {
   /** The realtime authorizer's path: grant rows, shares and the Task People item are read directly, and no Slack call is made. */
   readOnlyPath?: true;
+  /** One caller's role lookups, shared by the reads of one request. Never share it between callers (it holds only their roles, keyed by project). */
+  memo?: SessionRoleMemo;
 }
 
 const NOT_FOUND = () => agentXError("NOT_FOUND", "session not found");
@@ -156,6 +170,18 @@ export function effectiveOwnerId(session: AgentSessionRecord, taskItem: Item | u
   return takenBy(taskItem) ?? session.owner.developerId;
 }
 
+/** What names someone whose name isn't recorded. */
+const UNNAMED_OWNER = "the owner";
+
+/** The effective owner with a name: the task's `currentOwner` name once taken over (cleaned, never the previous owner's), else the session's owner. */
+function effectiveOwnerNamed(session: AgentSessionRecord, taskItem: Item | undefined): { developerId: string; name: string } {
+  const developerId = effectiveOwnerId(session, taskItem);
+  if (developerId === session.owner.developerId) return { developerId, name: session.owner.name };
+  const recorded = (taskItem?.["currentOwner"] as { name?: unknown } | undefined)?.name;
+  const name = typeof recorded === "string" ? cleanSessionName(recorded) : undefined;
+  return { developerId, name: name ?? UNNAMED_OWNER };
+}
+
 /** `effectiveOwnerId`, reading the task of a task session (a task of another org is no task). */
 export async function effectiveOwnerOf(deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, session: AgentSessionRecord): Promise<string> {
   if (session.subject.kind !== "task") return session.owner.developerId;
@@ -165,13 +191,14 @@ export async function effectiveOwnerOf(deps: Pick<SessionAccessDependencies, "do
 
 // ---- the level
 
-interface Computed { level: "none" | SessionLevel; owner: boolean; projectRole: ProjectRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
+interface Computed { level: "none" | SessionLevel; owner: boolean; effectiveOwner: { developerId: string; name: string }; projectRole: ProjectRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
 
 async function compute(deps: SessionAccessDependencies, caller: SessionCaller, orgRole: OrgRole, session: AgentSessionRecord, options: SessionAccessOptions): Promise<Computed> {
   const { orgId } = caller;
   const readOnly = options.readOnlyPath === true;
   const isAdmin = isAdminRole(orgRole);
-  const roles = new Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined }>>();
+  const roles = options.memo?.roles ?? new Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined }>>();
+  const shareRoles = options.memo?.shareRoles ?? new Map<string, Promise<ProjectRole | undefined>>();
   /** The caller's role on a project: their own grant row, an org owner's or admin's maintainership, or (off the read-only path) the project's channel. */
   const roleOn = (project: string) => {
     const known = roles.get(project);
@@ -192,11 +219,17 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
    * The caller's role on a project for a share to it: their own grant row, or (off the read-only path) the project's Slack channel. An org owner's or
    * admin's maintainership does not count, so a project share never reaches an admin who isn't in the project (answer 2, I5, m7).
    */
-  const shareRoleOn = async (project: string): Promise<ProjectRole | undefined> => {
-    const { grant, effective } = await roleOn(project);
-    if (!isAdmin) return effective;
-    if (grant !== undefined || readOnly) return grant;
-    return deps.projectMembers.roleOf(orgId, project, { developerId: caller.developerId, orgRole: "member" });
+  const shareRoleOn = (project: string): Promise<ProjectRole | undefined> => {
+    const known = shareRoles.get(project);
+    if (known !== undefined) return known;
+    const read = (async () => {
+      const { grant, effective } = await roleOn(project);
+      if (!isAdmin) return effective;
+      if (grant !== undefined || readOnly) return grant;
+      return deps.projectMembers.roleOf(orgId, project, { developerId: caller.developerId, orgRole: "member" });
+    })();
+    shareRoles.set(project, read);
+    return read;
   };
 
   // The task, for a task session. A task of another org is not this session's task (m15), and counts as no task.
@@ -239,7 +272,7 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
 
   // A project viewer who isn't the owner only watches, whatever a share or a people entry says.
   if (!owner && projectRole === "viewer" && RANK[level] > RANK.view) level = "view";
-  return { level, owner, projectRole, orgAdmin, orgRole };
+  return { level, owner, effectiveOwner: effectiveOwnerNamed(session, taskItem), projectRole, orgAdmin, orgRole };
 }
 
 /**
@@ -267,7 +300,7 @@ export async function sessionLevelOf(deps: SessionAccessDependencies, caller: Se
 
 function finish(session: AgentSessionRecord, computed: Computed): SessionAccess {
   if (computed.level === "none") throw NOT_FOUND();
-  return { session, level: computed.level, owner: computed.owner, orgAdmin: computed.orgAdmin, orgRole: computed.orgRole, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }) };
+  return { session, level: computed.level, owner: computed.owner, effectiveOwner: computed.effectiveOwner, orgAdmin: computed.orgAdmin, orgRole: computed.orgRole, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }) };
 }
 
 export interface RequireOptions extends SessionAccessOptions {
@@ -288,7 +321,7 @@ export async function requireSessionLevel(deps: SessionAccessDependencies, calle
     throw agentXError("SESSION_LEVEL_REQUIRED", sessionViewerOnlyMessage(access.session.project ?? "this project"));
   }
   if (options.orgAdminMay === true && access.orgAdmin) return access;
-  if (!atLeast(access.level, needed)) throw agentXError("SESSION_LEVEL_REQUIRED", sessionLevelRequiredMessage(needed, action, access.session.owner.name));
+  if (!atLeast(access.level, needed)) throw agentXError("SESSION_LEVEL_REQUIRED", sessionLevelRequiredMessage(needed, action, access.effectiveOwner.name));
   return access;
 }
 
