@@ -90,7 +90,7 @@ async function world(options: { builtins?: Record<string, unknown> } = {}) {
     if (decision === undefined) return raw("GET", `/v1/app/approve/${approvalId}`, headers);
     return raw("POST", `/v1/app/approve/${approvalId}`, { ...headers, origin: CELL, "content-type": "application/x-www-form-urlencoded" }, new URLSearchParams({ decision, csrf: csrfTokenFor(cookie) }).toString());
   };
-  const record = async (approvalId: string) => (await getAnyApproval({ documentClient: h.db, tableName: "state" }, TEST_ORG, approvalId as never))!;
+  const record = async (approvalId: string) => (await getAnyApproval({ documentClient: h.db, tableName: "state" }, TEST_ORG, approvalId))!;
   const status = (approvalId: string) => (h.db.get(approvalKey(TEST_ORG, approvalId).pk, approvalKey(TEST_ORG, approvalId).sk) as { status: string }).status;
   return { ...h, store, call, publishNext, agentWith, run, tasks, approvals, page, record, status };
 }

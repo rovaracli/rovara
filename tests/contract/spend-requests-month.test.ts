@@ -979,14 +979,14 @@ describe("a $0-base agent's top-ups count toward the owner's cap (Plan 4 review 
         await t.decide(BEN, topUpForBen.spendRequestId);
       }
       return real(command as never);
-    }) as typeof t.db.send;
+    });
     try {
       const moved = await t.api(ADA, "PUT", `/v1/app/agents/${moving}/owner`, toBen);
       expect(raced).toBe(true);
       expect(moved.status, JSON.stringify(moved.body)).toBe(202);
       expect(moved.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
     } finally {
-      t.db.send = real as typeof t.db.send;
+      t.db.send = real;
     }
     expect(t.agentItem(moving)!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect((await effective(t, BEN)).totalUsd).toBe(81);
