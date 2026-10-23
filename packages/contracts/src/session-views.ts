@@ -14,6 +14,7 @@ import {
   HOME_CARD_BUTTONS_MAX,
   LIVE_PAGE_MAX,
   SESSION_EVENTS_PAGE_MAX,
+  SESSION_MESSAGES_PAGE_MAX,
   SESSION_KINDS,
   SESSION_LEVELS,
   SESSION_MODES,
@@ -21,6 +22,7 @@ import {
   SessionEventSchema,
   SessionIdSchema,
   SessionLegSchema,
+  SessionMessageSchema,
   SessionOwnerSchema,
   SessionStartedBySchema,
   SessionSummarySchema,
@@ -239,6 +241,17 @@ export const SessionEventPageSchema = z
   .strict();
 export type SessionEventPage = z.infer<typeof SessionEventPageSchema>;
 export const SessionEventPageReaderSchema = forwardReader(SessionEventPageSchema);
+
+/**
+ * A page of a session's conversation, oldest first: its own comments and, for a task session, the task page's (`source: "page"`). `next` is the cursor for the following read: the last
+ * new message's `<createdAt>#<messageId>`. A read with a cursor starts with the few seconds of messages before it (at most `SESSION_MESSAGES_PAGE_MAX`), so one committed late is still
+ * found: readers de-duplicate by `messageId`. An edit or a deletion shows on a read that reaches the message again (a reload); a cursor read gives it only while it is that recent.
+ */
+export const SessionMessagePageSchema = z
+  .object({ messages: z.array(SessionMessageSchema).max(2 * SESSION_MESSAGES_PAGE_MAX), next: z.string().min(1).optional() })
+  .strict();
+export type SessionMessagePage = z.infer<typeof SessionMessagePageSchema>;
+export const SessionMessagePageReaderSchema = forwardReader(SessionMessagePageSchema);
 
 // ---- Home and the project page (declared here; Tasks 15 and 16 fill them in)
 

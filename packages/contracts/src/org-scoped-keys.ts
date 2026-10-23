@@ -509,6 +509,11 @@ export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: 
   return { pk: orgScoped(orgId, `SESSION_REQUEST#${keyPart(developerId, "a developer id")}`), sk: keyPart(requestId, "a request id") };
 }
 
+/** The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window: `<kind>#<developerId>` in the session's rate partition. */
+export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change"): OrgKey {
+  return { pk: orgScoped(orgId, `SESSION_RATE#${keyPart(sessionId, "a session id")}`), sk: `${kind}#${keyPart(developerId, "a developer id")}` };
+}
+
 /** What one task has cost so far, added to when a model key settles, so a session shows cost without summing keys. */
 export function taskSpendKey(orgId: OrgId, taskId: string): OrgKey {
   return { pk: orgScoped(orgId, `TASK_SPENT#${keyPart(taskId, "a task id")}`), sk: "META" };

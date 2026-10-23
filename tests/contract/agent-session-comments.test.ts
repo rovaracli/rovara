@@ -18,7 +18,6 @@ import {
   sessionChannel,
   sessionRateKey,
   type AgentSessionRecord,
-  type SessionMessage,
 } from "../../packages/contracts/src/index.js";
 import { editSessionMessage, deleteSessionMessage, listSessionMessages, sendSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
@@ -383,14 +382,14 @@ describe("changing a comment", () => {
         author: { developerId: ARJUN, name: "Arjun" }, text: "Use v2", createdAt: "2026-10-22T09:00:00.000Z", rev: 1, delivery: { state, at: "2026-10-22T09:00:00.000Z" },
       });
     };
-    seed("msg_steerdelivered00000", "delivered");
-    seed("msg_steerqueued0000000", "queued");
+    seed("msg_steerdelivered000000", "delivered");
+    seed("msg_steerqueued000000000", "queued");
     // Changing a message the agent will read needs "can use" still (a share that was taken back doesn't let it be rewritten).
-    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued0000000", { rev: 1, text: "Use v3" }))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued000000000", { rev: 1, text: "Use v3" }))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
     f.w.seedShare(ORG_A, f.sid, { kind: "member", developerId: ARJUN }, "use");
-    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered00000", { rev: 1, text: "Use v3" }))).toEqual({ code: "CONFIG_INVALID", message: "The agent already has this message, so it can't be changed." });
-    expect(await code(deleteSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered00000", { rev: 1 }))).toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued0000000", { rev: 1, text: "Use v3" }))).toBeUndefined();
+    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered000000", { rev: 1, text: "Use v3" }))).toEqual({ code: "CONFIG_INVALID", message: "The agent already has this message, so it can't be changed." });
+    expect(await code(deleteSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerdelivered000000", { rev: 1 }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, "msg_steerqueued000000000", { rev: 1, text: "Use v3" }))).toBeUndefined();
   });
 });
 
@@ -511,7 +510,7 @@ describe("the routes", () => {
   const routed = (f: ReturnType<typeof world>) => {
     const deps = { ...f.deps, signInStore: f.w.signInStore, origin: "https://cell.example.com", taskView: async () => ({}) as never };
     return (who: string, method: string, path: string, body?: unknown, orgId = ORG_A) => routeAgentSessionRequest(
-      deps as never, f.w.caller(who, orgId), { method, path, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) } as never, new URL(`https://cell.example.com${path}`),
+      deps, f.w.caller(who, orgId), { method, path, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(`https://cell.example.com${path}`),
     );
   };
 

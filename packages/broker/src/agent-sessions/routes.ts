@@ -12,6 +12,7 @@ import { SESSION_COOKIE, escapeHtml, parseCookie, safeResponse, signInLocation, 
 import { randomBytes } from "node:crypto";
 import { readSessionEvents } from "./events.js";
 import { followSession, recordPresence, unfollowSession } from "./followers.js";
+import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage, editSessionMessage, listSessionMessages, parseMessageBody, sendSessionMessage } from "./messages.js";
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadDependencies } from "./read.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
 import { readChanges } from "../realtime/changes.js";
@@ -30,7 +31,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence))?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?)?)?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
 const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
@@ -92,7 +93,8 @@ function queryOf(url: URL): SessionListQuery {
 
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
- * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET /v1/app/changes?since=` (the caller's own change notices) and
+ * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET` and `POST …/messages` and `PATCH` and
+ * `DELETE …/messages/{messageId}` (Task 10); `GET /v1/app/changes?since=` (the caller's own change notices) and
  * `POST /v1/app/realtime/token`. Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
@@ -107,7 +109,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();
-  const [, rawId, shares, rawKey, rawSeq, events, person] = matched;
+  const [, rawId, shares, rawKey, rawSeq, events, person, messages, rawMessageId] = matched;
   const read: SessionReadDependencies = deps.deciding !== undefined || deps.approvals === undefined ? deps : { ...deps, deciding: decidingOf(deps.approvals) };
   const method = request.method;
   if (rawId === undefined) {
@@ -121,6 +123,24 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   if (events !== undefined) {
     if (method !== "GET") throw notFound();
     return readSessionEvents(read, caller, sessionId, { after: url.searchParams.get("after") ?? undefined });
+  }
+  if (messages !== undefined) {
+    // Comments (Task 10). A message to the agent is not a comment: it is refused here until Task 11a.
+    const messageDeps = { ...read, realtimePublish: deps.realtimePublish };
+    if (rawMessageId === undefined) {
+      if (method === "GET") return listSessionMessages(messageDeps, caller, sessionId, { after: url.searchParams.get("after") ?? undefined });
+      if (method === "POST") return sendSessionMessage(messageDeps, caller, sessionId, parseMessageBody(SendBodySchema, jsonBody(request)));
+      throw notFound();
+    }
+    if (method === "PATCH") {
+      const body = parseMessageBody(EditBodySchema, jsonBody(request));
+      return editSessionMessage(messageDeps, caller, sessionId, rawMessageId, body);
+    }
+    if (method === "DELETE") {
+      const body = parseMessageBody(DeleteBodySchema, jsonBody(request));
+      return deleteSessionMessage(messageDeps, caller, sessionId, rawMessageId, body);
+    }
+    throw notFound();
   }
   if (person !== undefined) {
     const peopleDeps = { ...read, realtimePublish: deps.realtimePublish };

@@ -25,6 +25,8 @@ export const SESSION_EVENTS_PAGE_MAX = 200;
 /** The same limit as a task page comment (`COMMENT_TEXT_MAX_CHARS`). */
 export const SESSION_MESSAGE_MAX_CHARS = 2000;
 export const SESSION_MESSAGES_MAX = 1000;
+/** New messages in one page of `GET …/messages`; a page with a cursor also repeats up to this many just before it (see `SessionMessagePageSchema`). */
+export const SESSION_MESSAGES_PAGE_MAX = 100;
 export const STEER_RATE = { perPersonPerHour: 20, perSessionPerHour: 60 } as const;
 export const SESSION_LEGS_MAX = 20;
 export const SESSION_NEEDS_PEOPLE_MAX = 50;
