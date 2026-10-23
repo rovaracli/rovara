@@ -253,8 +253,8 @@ export async function drainEndedSessions(deps: SummaryDependencies, now: number,
   let day = text(cursor?.["day"]) ?? new Date(now - 2 * 86_400_000).toISOString().slice(0, 10);
   let drained = 0;
   let failed = false;
-  // The earliest day with an item that failed and is not parked yet: the saved day stays there.
-  let retryDay: string | undefined;
+  // Whether an item that failed is not parked yet: while one is, the saved day stays at the earliest day with such an item.
+  let retrying = false;
   while (day <= today) {
     const pk = `ENDED_AGENT_SESSIONS#${day}`;
     let after: string | undefined;
@@ -276,14 +276,14 @@ export async function drainEndedSessions(deps: SummaryDependencies, now: number,
           drained += 1;
         } catch (error) {
           warn(deps, { event: "agent_session.drain_failed", error: error instanceof Error ? error.name : "unknown" });
-          if (!await recordDrainFailure(deps, work)) retryDay ??= day;
+          if (!await recordDrainFailure(deps, work)) retrying = true;
           failed = true;
         }
       }
     }
     // Today's day is read too (an end filed today is drained at once), but the saved day never passes yesterday: a late end is filed under the day of its refresh.
     day = dayAfter(day);
-    if (day <= settled && retryDay === undefined) await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...ENDED_DRAIN_CURSOR_KEY, entityType: "ENDED_DRAIN_CURSOR", day } }));
+    if (day <= settled && !retrying) await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...ENDED_DRAIN_CURSOR_KEY, entityType: "ENDED_DRAIN_CURSOR", day } }));
   }
   return { drained, pending: failed };
 }

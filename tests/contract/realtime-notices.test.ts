@@ -462,7 +462,7 @@ describe("what the sink does with its time and its readers", () => {
     expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${ZED}`))).toBeUndefined();
   });
 
-  it("reads at most the followers a session may have, and stops reading pages once it has them", async () => {
+  it.each([[50, 4], [120, 2]])("reads at most the followers a session may have (pages of %i), and stops reading pages once it has them", async (limit, expectedPages) => {
     const p = projectorWorld();
     const session = p.w.seedSession().record as unknown as AgentSessionRecord;
     p.w.seedShare(ORG_A, session.sessionId, { kind: "org" }, "view");
@@ -472,16 +472,25 @@ describe("what the sink does with its time and its readers", () => {
     const paged = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
       if (command.constructor.name === "QueryCommand" && (command.input.ExpressionAttributeValues as Record<string, unknown>)[":prefix"] === "FOLLOWER#") {
         pages += 1;
-        return p.w.db.send(new QueryCommand({ ...command.input, Limit: 50 } as never));
+        return p.w.db.send(new QueryCommand({ ...command.input, Limit: limit } as never));
       }
       return p.w.db.send(command);
     } };
     const rec = recorder();
     await createRealtimeSink({ realtime: rec.config() })({ documentClient: paged, tableName: "state", now: () => p.w.clock.now }, changeOf(session, needsPerson));
-    expect(pages).toBe(4);
+    expect(pages).toBe(expectedPages);
     const told = crowd.filter((who) => rec.calls.some((call) => call.channel === userChannel(ORG_A, who)));
     expect(told).toHaveLength(200);
     expect(told).toEqual(crowd.slice(0, 200));
+  });
+
+  it("reads no Task People list for a session that has no task", async () => {
+    const p = projectorWorld();
+    const session = p.w.seedSession({ kind: "chain" }).record as unknown as AgentSessionRecord;
+    const reads: string[] = [];
+    const watching = { send: async (command: { constructor: { name: string }; input: { Key?: { pk: string; sk: string } } }) => { if (command.constructor.name === "GetCommand") reads.push(command.input.Key!.sk); return p.w.db.send(command); } };
+    await createRealtimeSink({ realtime: undefined })({ documentClient: watching, tableName: "state", now: () => p.w.clock.now }, changeOf(session, needsPerson));
+    expect(reads).not.toContain("PEOPLE");
   });
 });
 
@@ -535,7 +544,7 @@ describe("publishing, in more detail", () => {
     const w = sessionWorld();
     const notice = { type: "home.changed" as const, revision: 1 };
     let n = 0;
-    const flaky = { send: async (command: unknown) => { n += 1; if (n === 2) throw new Error("full"); return w.db.send(command); } };
+    const flaky = { send: async (command: Parameters<typeof w.db.send>[0]) => { n += 1; if (n === 2) throw new Error("full"); return w.db.send(command); } };
     const entries = [PRIYA, ARJUN, MIA].map((developerId) => ({ developerId, notice, at: iso(T0) }));
     expect(await writeChanges({ documentClient: flaky, tableName: "state", now: () => T0, log: () => undefined }, ORG_A, entries)).toEqual({ written: 2, failed: 1 });
     expect(await writeChanges({ documentClient: w.db, tableName: "state", now: () => T0 }, ORG_A, [])).toEqual({ written: 0, failed: 0 });

@@ -321,3 +321,34 @@ describe("a creator_removed row of an agent-step run's task is the engine's to t
     expect(t.rows(taskId)).toEqual([]);
   });
 });
+
+describe("a creator_removed row is the engine's only for a task that has an agent and a run", () => {
+  const rowFor = async (t: Awaited<ReturnType<typeof setup>>, taskId: string, endOf: "creator_removed" | "closed", extra: Item, withRun: boolean) => {
+    t.db.set({ ...t.meta(taskId), ...extra });
+    if (withRun) t.db.set({ ...taskAgentRunKey(taskId), orgId: TEST_ORG, revision: 1 });
+    const record = t.meta(taskId);
+    t.db.set((operationEndDispatchItem("state", { taskId, orgId: TEST_ORG, workspaceId: String(record.workspaceId), operationId: endOf, now: new Date().toISOString(), endOf }) as { Put: { Item: Item } }).Put.Item);
+    await t.recover(taskId);
+  };
+  const removed = { outcome: "creator_removed", outcomeReason: "x", outcomeAt: new Date().toISOString() };
+  const heardBy = () => { const heard: TaskEndEvent[] = []; unregister.push(registerTaskEndHandler(async (_deps, event) => { heard.push(event); })); return heard; };
+
+  it("tells the end of a task that has a run record but no agent, and of one with an agent and no run record", async () => {
+    for (const [extra, withRun] of [[{}, true], [{ agent: { agentId: "agt_x" } }, false]] as const) {
+      const t = await setup();
+      const heard = heardBy();
+      const taskId = await t.plainTask();
+      await rowFor(t, taskId, "creator_removed", { ...removed, ...extra }, withRun);
+      expect(heard, JSON.stringify(extra)).toEqual([expect.objectContaining({ taskId, outcome: "creator_removed" })]);
+      expect(t.rows(taskId)).toEqual([]);
+    }
+  });
+
+  it("still tells a closed task's end, whatever agent run the task has", async () => {
+    const t = await setup();
+    const heard = heardBy();
+    const taskId = await t.plainTask();
+    await rowFor(t, taskId, "closed", { agent: { agentId: "agt_x" }, closedAt: new Date().toISOString() }, true);
+    expect(heard).toEqual([expect.objectContaining({ taskId, outcome: "closed" })]);
+  });
+});
