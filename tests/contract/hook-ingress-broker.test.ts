@@ -111,13 +111,13 @@ describe("a delivery through the broker", () => {
     expect(w.secrets.reads).toBe(0);
   });
 
-  it("answers 503 and takes nothing where nothing can start the work, so the vendor tries again", async () => {
+  it("starts the work with the broker's own dispatch when none is given: an event no trigger is for is accepted, starts nothing and is a duplicate the second time", async () => {
     const w = await brokerWorld({ dispatch: false });
-    const mark = w.h.db.commandNames().length;
     const reply = await w.post(eventBody("e1"));
-    expect(reply.statusCode).toBe(503);
-    expect(JSON.parse(reply.body)).toEqual({ error: { code: "RUNTIME_UNAVAILABLE", message: "try again" } });
-    expect(w.h.db.commandNames().length).toBe(mark);
+    expect(reply.statusCode).toBe(202);
+    expect(JSON.parse(reply.body)).toEqual({ delivery: "ACCEPTED", events: 1 });
+    expect(w.dispatched).toEqual([]);
+    expect((await w.post(eventBody("e1"))).statusCode).toBe(200);
   });
 });
 

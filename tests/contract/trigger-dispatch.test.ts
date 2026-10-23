@@ -4,19 +4,19 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spendCounterKey, triggerKey, type TriggerEvent } from "@agentx/contracts";
+import type * as RosterModule from "../../packages/broker/src/agents/roster.js";
 import { addToRoster, resolveAgentForAutonomousRun } from "../../packages/broker/src/agents/roster.js";
 import { monthOf } from "../../packages/broker/src/org/trial.js";
 import { dispatchTriggerEvent, rovaraActorIds, runOwnerFor, type TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
 import { orgAutonomousKey, triggerRateKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { DANA, HOOK_A, HOOK_A2, MAX, ORG_A, ORG_B, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 import type { WorldOptions } from "../support/chain-run-world.js";
 
 // A spy that still calls the real roster check, so the test can see what dispatch asked it.
 vi.mock("../../packages/broker/src/agents/roster.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../packages/broker/src/agents/roster.js")>();
+  const actual = await importOriginal<typeof RosterModule>();
   return { ...actual, resolveAgentForAutonomousRun: vi.fn(actual.resolveAgentForAutonomousRun) };
 });
 
@@ -26,6 +26,7 @@ afterEach(() => {
 });
 
 const ONE_STEP: ChainDefinitionInput = { start: "look", steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: "root-cause-analyst", version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 5 } };
+const BUILTIN = { kind: "agent" as const, agentId: "code-reviewer" };
 const PR = { kind: "event" as const, source: "github" as const, type: "pull_request.opened" };
 let counter = 0;
 
@@ -77,7 +78,8 @@ describe("matching an event to triggers", () => {
     const missingKey = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { ...PR, filter: { authorAssociation: ["OWNER"] } } });
     const wrongType = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { ...PR, type: "pull_request.ready_for_review" } });
     const outcomes = await dispatch(prEvent({ fields: { label: ["bug", "p1"], baseBranch: ["main"] } }));
-    expect(outcomes).toEqual([{ triggerId: bug.triggerId, outcome: "started", runId: expect.stringMatching(/^crn_[0-9a-z]{20}$/) }]);
+    expect(outcomes.map((entry) => [entry.triggerId, entry.outcome])).toEqual([[bug.triggerId, "started"]]);
+    expect(outcomes[0]!.runId).toMatch(/^crn_[0-9a-z]{20}$/);
     for (const other of [docs, missingKey, wrongType]) expect(await activity(v, other.triggerId)).toEqual([]);
     const run = v.run(outcomes[0]!.runId!)!;
     expect(run).toMatchObject({ origin: "event", project: "web", startedBy: { kind: "event", triggerId: bug.triggerId, source: "github", type: "pull_request.opened", title: "Fix the login redirect", url: "https://github.com/acme/web/pull/42" } });
@@ -117,7 +119,7 @@ describe("matching an event to triggers", () => {
     expect((await dispatch(prEvent({ hookId: HOOK_A }))).map((entry) => entry.triggerId)).toEqual([]);
     expect((await dispatch(prEvent())).map((entry) => entry.triggerId)).toEqual([github.triggerId]);
     // A hook event that carries no hook is refused, so it can't read the GitHub index under a source that has no hook-less triggers.
-    expect(await dispatch(linearEvent(HOOK_A, { hookId: undefined } as never))).toEqual([]);
+    expect(await dispatch(linearEvent(HOOK_A, { hookId: undefined }))).toEqual([]);
   });
 
   it("reads only the receiving org's keys: another org's trigger on a same-named project is never read or started", async () => {
@@ -129,8 +131,8 @@ describe("matching an event to triggers", () => {
     const send = v.db.send.bind(v.db);
     v.db.send = (async (command: { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
       if (command.constructor.name === "QueryCommand") queried.push(String(command.input.ExpressionAttributeValues?.[":pk"]));
-      return send(command as never);
-    }) as never;
+      return send(command);
+    });
     expect((await dispatch(prEvent())).map((entry) => entry.triggerId)).toEqual([mine.triggerId]);
     expect(queried.length).toBeGreaterThan(0);
     for (const pk of queried) expect(pk.startsWith(`ORG#${ORG_A}#`), pk).toBe(true);
@@ -141,7 +143,7 @@ describe("the agent target", () => {
   it("starts the built-in agent once as an event, paid by the agent, with the pull request as its context, at the version the roster check resolved", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer");
-    const trigger = await v.seed({ createdBy: DANA });
+    const trigger = await v.seed({ target: BUILTIN, createdBy: DANA });
     const [outcome] = await dispatch(prEvent());
     expect(outcome).toEqual({ triggerId: trigger.triggerId, outcome: "started", taskId: "task-1" });
     expect(v.starts).toHaveLength(1);
@@ -163,7 +165,7 @@ describe("the agent target", () => {
   it("owns the run of a built-in by the maintainer who turned the trigger on, of a project's agent by its accountable maintainer, and of a member's agent by the member", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer");
-    const builtin = await v.seed({ createdBy: MAX });
+    const builtin = await v.seed({ target: BUILTIN, createdBy: MAX });
     const project = await customAgent(v, [{ kind: "person" }, PR], { project: "web", accountable: MAX });
     const member = await customAgent(v, [{ kind: "person" }, PR], { member: PRIYA });
     await v.seed({ target: { kind: "agent", agentId: project.agentId }, createdBy: DANA });
@@ -204,7 +206,7 @@ describe("the agent target", () => {
   it("starts the same event once: a repeat of it is a duplicate and writes no second start or rate count", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer");
-    const trigger = await v.seed({ createdBy: DANA });
+    const trigger = await v.seed({ target: BUILTIN, createdBy: DANA });
     const event = prEvent();
     expect((await dispatch(event))[0]).toMatchObject({ outcome: "started" });
     const second = await dispatch(event);
@@ -273,7 +275,6 @@ describe("the requirements are read again at the event", () => {
     expect((await v.notices(DANA)).join("\n")).toContain("was turned off");
     expect(v.db.get(triggerRateKey(ORG_A, trigger.triggerId, hour(v)))).toBeUndefined();
     expect(v.db.get(orgAutonomousKey(ORG_A, day(v)))).toBeUndefined();
-    expect(v.run).toBeDefined();
     expect(v.starts).toEqual([]);
     // Off now: the next event does not even look at it.
     expect(await dispatch(prEvent())).toEqual([]);
@@ -299,7 +300,7 @@ describe("the requirements are read again at the event", () => {
   it("never starts a trigger whose owner left the org, and says why", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer");
-    const trigger = await v.seed({ createdBy: "9".repeat(64) });
+    const trigger = await v.seed({ target: BUILTIN, createdBy: "9".repeat(64) });
     expect(await dispatch(prEvent())).toEqual([{ triggerId: trigger.triggerId, outcome: "failed", reason: "trigger_invalid" }]);
     expect(v.starts).toEqual([]);
     expect(await v.triggers.get(ORG_A, trigger.triggerId)).toMatchObject({ enabled: false });
@@ -332,7 +333,7 @@ describe("the loop guard", () => {
   it("skips a GitHub event from the app's own bot when the app's slug is known", async () => {
     const { v, deps } = setup();
     await v.builtinBudget("code-reviewer");
-    await v.seed({ createdBy: DANA });
+    await v.seed({ target: BUILTIN, createdBy: DANA });
     const withSlug = { ...deps, githubAppSlug: async () => "rovara-app" } as TriggerDispatchDependencies;
     const outcomes = await dispatchTriggerEvent(withSlug, ORG_A, prEvent({ actor: { kind: "external", id: "rovara-app[bot]" } }));
     expect(outcomes[0]).toMatchObject({ outcome: "skipped", reason: "caused_by_rovara" });
@@ -355,7 +356,7 @@ describe("limits", () => {
   it("starts exactly 30 of 200 concurrent events against maxRunsPerHour 30 and records the rest as rate_limited", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer", 500);
-    const trigger = await v.seed({ createdBy: DANA, maxRunsPerHour: 30 });
+    const trigger = await v.seed({ target: BUILTIN, createdBy: DANA, maxRunsPerHour: 30 });
     const outcomes = (await Promise.all(Array.from({ length: 200 }, () => dispatch(prEvent())))).flat();
     expect(outcomes.filter((entry) => entry.outcome === "started")).toHaveLength(30);
     expect(outcomes.filter((entry) => entry.outcome === "skipped" && entry.reason === "rate_limited")).toHaveLength(170);
@@ -370,7 +371,7 @@ describe("limits", () => {
   it("holds a trigger whose stored allowance is not a positive number to nothing, and never above the platform's most", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer", 500);
-    const trigger = await v.seed({ createdBy: DANA });
+    const trigger = await v.seed({ target: BUILTIN, createdBy: DANA });
     v.db.set({ ...v.db.get(triggerKey(ORG_A, trigger.triggerId))!, maxRunsPerHour: 0 });
     expect((await dispatch(prEvent()))[0]).toMatchObject({ outcome: "skipped", reason: "rate_limited" });
     v.db.set({ ...v.db.get(triggerKey(ORG_A, trigger.triggerId))!, maxRunsPerHour: 1000 });
@@ -381,7 +382,7 @@ describe("limits", () => {
   it("stops every trigger of the org at the day's cap with org_daily_limit, and starts again the next day", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer", 500);
-    const trigger = await v.seed({ createdBy: DANA });
+    const trigger = await v.seed({ target: BUILTIN, createdBy: DANA });
     v.db.set({ ...orgAutonomousKey(ORG_A, day(v)), entityType: "ORG_AUTONOMOUS", count: 499 });
     expect((await dispatch(prEvent()))[0]).toMatchObject({ outcome: "started" });
     expect(await dispatch(prEvent())).toEqual([{ triggerId: trigger.triggerId, outcome: "skipped", reason: "org_daily_limit" }]);
@@ -393,7 +394,7 @@ describe("limits", () => {
   it("gives the counters a time to live, so they clean themselves up", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer");
-    const trigger = await v.seed({ createdBy: DANA });
+    const trigger = await v.seed({ target: BUILTIN, createdBy: DANA });
     await dispatch(prEvent());
     const seconds = Math.floor(v.clock.now / 1000);
     expect(v.db.get(triggerRateKey(ORG_A, trigger.triggerId, hour(v)))!["indexExpiresAt"]).toBe(seconds + 2 * 3600);
@@ -405,8 +406,8 @@ describe("failures and what is logged", () => {
   it("records a refusal by its code and not its words, leaves the others' starts alone, and lets a transient fault come back as an error so the vendor sends the event again", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer");
-    const first = await v.seed({ createdBy: DANA });
-    const second = await v.seed({ createdBy: DANA });
+    const first = await v.seed({ target: BUILTIN, createdBy: DANA });
+    const second = await v.seed({ target: BUILTIN, createdBy: DANA });
     v.hooks.refuse.push(Object.assign(new Error("model said: top secret"), { name: "Boom" }));
     await expect(dispatch(prEvent())).rejects.toThrow();
     // The first trigger's failure did not stop the second from starting.
@@ -418,7 +419,7 @@ describe("failures and what is logged", () => {
   it("puts no payload text in any log line: not the title, the link, the event key, the actor or the words of an error", async () => {
     const { v, dispatch, logs } = setup();
     await v.builtinBudget("code-reviewer");
-    await v.seed({ createdBy: DANA, maxRunsPerHour: 1 });
+    await v.seed({ target: BUILTIN, createdBy: DANA, maxRunsPerHour: 1 });
     const marker = "PAYLOAD-MARKER-27182";
     const loud = (over: Partial<TriggerEvent> = {}) => prEvent({
       eventKey: `gh:${marker}:${String(++counter)}`, subject: { kind: "pull_request", id: marker, title: `${marker} title`, url: `https://example.com/${marker}` }, actor: { kind: "external", id: `${marker}-actor` }, ...over,

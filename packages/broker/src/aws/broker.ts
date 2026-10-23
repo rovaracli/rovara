@@ -402,6 +402,7 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import { ChainStore } from "../chains/store.js";
 import { TriggerStore } from "../triggers/store.js";
 import type { TriggerHookReader, TriggerScheduler } from "../triggers/ports.js";
+import { dispatchTriggerEvent } from "../triggers/dispatch.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../triggers/lifecycle.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
@@ -1838,14 +1839,20 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (hookPath !== null) {
         if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
         const eventHooks = dependencies.agents?.eventHooks;
-        // Not set up, or nothing yet to start work with: nothing a vendor sent would be acted on, so it is told to try later.
-        if (eventHooks?.dispatch === undefined) return hookReply({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "try again" } } });
+        // What starts the work is Task 20's dispatch over the chain runner's dependencies, unless the broker was given another. Where there is none (agents, chains or sign-in are not
+        // set up) nothing a vendor sent would be acted on, so it is told to try later.
+        const chainDependencies = eventHooks === undefined || eventHooks.dispatch !== undefined ? undefined : chainRunnerDependenciesOf(dependencies, tasks, agents);
+        const githubApp = dependencies.githubPullRequests;
+        const dispatch: HookIngressDeps["dispatch"] | undefined = eventHooks?.dispatch ?? (chainDependencies === undefined ? undefined : (orgId, hookEvent) => dispatchTriggerEvent({
+          ...chainDependencies, ...(githubApp?.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
+        }, orgId, hookEvent));
+        if (eventHooks === undefined || dispatch === undefined) return hookReply({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "try again" } } });
         // The bytes as they arrived: a signature is over these, not over text decoded from them.
         const raw = event.body === undefined ? Buffer.alloc(0) : Buffer.from(event.body, event.isBase64Encoded === true ? "base64" : "utf8");
         const answer = await receiveHook({
           documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
           hooks: new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
-          secrets: eventHooks.secrets, providers: eventHooks.providers ?? hookProviders(), dispatch: eventHooks.dispatch, memory: hookMemoryOf(dependencies),
+          secrets: eventHooks.secrets, providers: eventHooks.providers ?? hookProviders(), dispatch, memory: hookMemoryOf(dependencies),
         }, { source: hookPath[1]!, hookId: hookPath[2]!, raw, headers: request.headers, sourceIp: event.requestContext?.http?.sourceIp });
         return hookReply(answer);
       }

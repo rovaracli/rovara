@@ -571,3 +571,15 @@ export function triggerActivityKey(orgId: OrgId, triggerId: string, at: string, 
 export function triggerNoticeKey(orgId: OrgId, developerId: string, at: string, triggerId: string): OrgKey {
   return { pk: orgScoped(orgId, `TRIGGER_NOTICES#${developerId}`), sk: `${canonicalInstant(at)}#${triggerId}` };
 }
+
+// ---- the limits dispatch counts against (Plan 4 Task 20)
+
+/** The count of runs one trigger started in one UTC hour (`hour` is `YYYY-MM-DDTHH`); it expires after two hours. */
+export function triggerRateKey(orgId: OrgId, triggerId: string, hour: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER_RATE#${triggerId}`), sk: hour };
+}
+
+/** The count of runs events and schedules started for the whole org in one UTC day (`day` is `YYYY-MM-DD`); it expires after two days. */
+export function orgAutonomousKey(orgId: OrgId, day: string): OrgKey {
+  return { pk: orgScoped(orgId, "ORG_AUTONOMOUS"), sk: day };
+}
