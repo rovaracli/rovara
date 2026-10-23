@@ -1,7 +1,7 @@
 // Plan 5 Task 11a: messages to the agent. A person with "can use" sends a message to a Rovara Code workflow task (or a chain's current step). It is saved as a session message
 // and as one of the task's notes (the same `NOTE#` items and the same 200-note cap as a Slack reply), and the task's next planning or coding step reads it as information only.
 // A message never decides an approval or a gate, never changes tools, permissions or budget, is redacted before it is stored, is delivered once (a repeated request is the same
-// message), and is answered with a clear code when the session has ended or is paused. Nothing the person wrote goes into a log.
+// message), and is answered with a clear code when the session has ended. Nothing the person wrote goes into a log.
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
@@ -43,7 +43,6 @@ const HOUR = 3_600_000;
 const LEVEL_TEXT = 'You need "can use" on this session to send messages to the agent. Ask Priya to share it with you.';
 const VIEWER_TEXT = "Viewers of web can only watch its sessions.";
 const ENDED_TEXT = "This session has ended.";
-const PAUSED_TEXT = "This session is paused for budget. Send your message again after it continues.";
 const PERSON_RATE_TEXT = "You've sent 20 messages to this agent in the last hour. Try again later.";
 const SESSION_RATE_TEXT = "This agent has had a lot of messages in the last hour. Try again later.";
 const PLAIN_REASON = "this task takes instructions only from its owner's next request";
@@ -257,7 +256,7 @@ describe("who may send a message to the agent", () => {
   });
 });
 
-describe("a session that has ended or is paused", () => {
+describe("a session that has ended", () => {
   const refused = (f: ReturnType<typeof steerWorld>) => {
     expect(f.messageItems()).toHaveLength(0);
     expect(f.notes()).toHaveLength(0);
@@ -286,14 +285,18 @@ describe("a session that has ended or is paused", () => {
     expect(await code(removed.send(ARJUN, "too late"))).toMatchObject({ code: "SESSION_ENDED" });
   });
 
-  it("answers a clear budget code for a paused task, by the task or by its session", async () => {
-    const byTask = steerWorld();
+  it("queues a message for a task paused for budget, by the task or by its session, like one for a stopped task (a budget stop is a pause, and resumes)", async () => {
+    const byTask = steerWorld({ agentName: "Rovara Code" });
     byTask.w.db.set({ ...byTask.task(), budgetPause: { scope: "task", at: "2026-10-22T08:45:00.000Z" } });
-    expect(await code(byTask.send(ARJUN, "carry on"))).toEqual({ code: "BUDGET_EXCEEDED", message: PAUSED_TEXT });
-    refused(byTask);
+    const first = await byTask.send(ARJUN, "carry on");
+    expect(first.delivery).toMatchObject({ state: "queued" });
+    expect(byTask.notes()).toHaveLength(1);
+    expect(byTask.task()).toMatchObject({ threadNoteCount: 1, budgetPause: { scope: "task" } });
+    expect(byTask.events().filter((item) => item.type === "steer_not_delivered")).toHaveLength(0);
     const bySession = steerWorld({ status: "paused" });
-    expect(await code(bySession.send(ARJUN, "carry on"))).toEqual({ code: "BUDGET_EXCEEDED", message: PAUSED_TEXT });
-    refused(bySession);
+    expect((await bySession.send(ARJUN, "carry on")).delivery).toMatchObject({ state: "queued" });
+    expect(bySession.notes()).toHaveLength(1);
+    expect(JSON.stringify(byTask.logs) + JSON.stringify(bySession.logs)).not.toContain("BUDGET");
   });
 
   it("still lets a repeated request answer after the session ended, without writing", async () => {
