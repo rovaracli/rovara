@@ -137,12 +137,12 @@ describe("resolveToolGrants", () => {
 
   it("a { name: \"slack\" } selector is a problem when the agent is published", async () => {
     expect(toolGrantProblems([grant({ name: "slack" }, "read_write"), grant({ name: "linear" }, "read"), grant({ type: "mcp" }, "read")])).toEqual([
-      { path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana or mcp" },
+      { path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana, mcp, sentry, datadog, cloudwatch, github-actions, grafana, vercel or pagerduty" },
     ]);
     const h = await createDeveloperTaskBroker();
     const recipe: ResolvedRecipe = { ...EMPTY_RECIPE, steps: [{ id: "triage", name: "Triage", kind: "agent", workspace: "none", settings: { instructions: [] } }], tools: [grant({ name: "slack" }, "read_write")] };
     const problems = await validateRecipeForOrg({ documentClient: h.db, tableName: "state" }, TEST_ORG, recipe);
-    expect(problems).toContainEqual({ path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana or mcp" });
+    expect(problems).toContainEqual({ path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana, mcp, sentry, datadog, cloudwatch, github-actions, grafana, vercel or pagerduty" });
   });
 
   it("grants only tools the project approved and the vendor still offers", () => {

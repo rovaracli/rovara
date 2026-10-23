@@ -105,10 +105,16 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   let accessStack: AccessStack | undefined;
   if (naming.env !== undefined) {
     const region = deploymentRegion ?? "us-east-1";
+    // Rovara's own AWS Organization id (-c agentxRovaraOrgId=o-...): the default boundary's AssumeOrgRoles statement excludes every account of it, not only this one.
+    // Unset or empty keeps the account-only exclusion. Checked when the statement is built.
+    const rovaraOrgContext = app.node.tryGetContext("agentxRovaraOrgId") as unknown;
+    if (rovaraOrgContext !== undefined && typeof rovaraOrgContext !== "string") throw new Error("agentxRovaraOrgId must be a string, an AWS Organizations id such as o-abc123def4");
+    const rovaraOrganizationId = rovaraOrgContext === undefined || rovaraOrgContext === "" ? undefined : rovaraOrgContext;
     accessStack = new AccessStack(app, "AgentXAccess", {
       description: "AgentX access for a named environment: artifact bucket, image cache rule, deploy and operator roles",
       stackName: naming.stackName("access"),
       naming,
+      ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }),
       terminationProtection: true,
       env: { region },
     });

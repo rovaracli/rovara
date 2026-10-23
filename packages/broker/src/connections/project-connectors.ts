@@ -20,6 +20,7 @@ import {
   ProjectDefinitionSchema,
   agentXError,
   canonicalJson,
+  connectionTakesSecret,
   projectAllows,
   type AuditProof,
   type ConnectorConfig,
@@ -50,6 +51,13 @@ import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { projectArchivedSettingsMessage, readProjectMeta } from "../developer/project-roles.js";
 import { SETTINGS_STALE_MESSAGE, latestRevision, type LatestRevision } from "../org/project-settings.js";
+import { DATADOG_TOOL_NAMES } from "../connectors/native/datadog.js";
+import { GRAFANA_TOOL_NAMES } from "../connectors/native/grafana.js";
+import { PAGERDUTY_TOOL_NAMES } from "../connectors/native/pagerduty.js";
+import { CLOUDWATCH_TOOL_NAMES } from "../connectors/native/cloudwatch.js";
+import { GITHUB_ACTIONS_TOOL_NAMES } from "../connectors/native/github-actions.js";
+import { SENTRY_TOOL_NAMES } from "../connectors/native/sentry.js";
+import { VERCEL_TOOL_NAMES } from "../connectors/native/vercel.js";
 import type { OrgConnectionStore } from "./store.js";
 
 /** What the project connector routes need beyond the approvals' dependencies; the broker builds it, and a deployment that is not Rovara Cloud sets `cloud: false`. */
@@ -79,8 +87,26 @@ type Deps = ApprovalDependencies & { projectConnectors: Connectors };
 
 export const isProjectConnectorRoute = (pathname: string): boolean => /^\/v1\/app\/projects\/[^/]+\/connectors(\/|$)/.test(pathname);
 
-/** The connector types a project can attach from the app: the ones that name an org connection, and GitHub through the org's GitHub App. */
+/** The connector types Plan 3 built: the ones that name an org connection, and GitHub through the org's GitHub App. */
 const APP_CONNECTOR_TYPES = ["github", "linear", "jira", "mcp"] as const;
+
+/** Plan 4 Task 12: the seven read-only connector types that watch a company's systems. */
+export const NATIVE_CONNECTOR_TYPES = ["sentry", "datadog", "cloudwatch", "github-actions", "grafana", "vercel", "pagerduty"] as const;
+export type NativeConnectorType = (typeof NATIVE_CONNECTOR_TYPES)[number];
+
+/** Every type `PUT` accepts. */
+const ACCEPTED_CONNECTOR_TYPES: readonly string[] = [...APP_CONNECTOR_TYPES, ...NATIVE_CONNECTOR_TYPES];
+
+const isNativeType = (type: string): type is NativeConnectorType => (NATIVE_CONNECTOR_TYPES as readonly string[]).includes(type);
+
+/**
+ * The tools a project may approve on each native type: the tools its connector offers, all of them reads. A type's list is empty until its task
+ * (13 to 17) lists the tools of its connector, and until then no tool of the type is accepted. A tool outside the list is refused when a connector is saved
+ * and again when a confirmed change is applied, so a tool a later release stops offering is not approved by an old request.
+ */
+export const PROJECT_CONNECTOR_TOOLS: Record<NativeConnectorType, readonly string[]> = {
+  sentry: SENTRY_TOOL_NAMES, datadog: DATADOG_TOOL_NAMES, cloudwatch: CLOUDWATCH_TOOL_NAMES, "github-actions": GITHUB_ACTIONS_TOOL_NAMES, grafana: GRAFANA_TOOL_NAMES, vercel: VERCEL_TOOL_NAMES, pagerduty: PAGERDUTY_TOOL_NAMES,
+};
 
 const PRIVATE_INSTALL_MESSAGE = "ask an administrator to change this project's connectors with agentx admin project register";
 const NOT_SET_UP_MESSAGE = "project connectors are not set up in this deployment";
@@ -114,8 +140,8 @@ function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
 function parseConnector(raw: unknown, name: string): ConnectorConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw invalid("connector: must be an object");
   const type = (raw as { type?: unknown }).type;
-  if (typeof type !== "string" || !(APP_CONNECTOR_TYPES as readonly string[]).includes(type)) {
-    throw invalid(`type: a project connector is one of ${APP_CONNECTOR_TYPES.join(", ")}`);
+  if (typeof type !== "string" || !ACCEPTED_CONNECTOR_TYPES.includes(type)) {
+    throw invalid(`type: a project connector is one of ${ACCEPTED_CONNECTOR_TYPES.join(", ")}`);
   }
   const parsed = ConnectorConfigSchema.safeParse(raw);
   if (!parsed.success) {
@@ -179,10 +205,43 @@ function targetMoved(previous: StoredEntry, next: ConnectorConfig): string | und
   return undefined;
 }
 
-/** The scopes of `next` that `previous` did not already cover, by what each names: a new alias, team, Jira site (or project), or repository. */
+/** A list of strings from stored data, which may be absent. */
+const stringsOf = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : []);
+const within = (inner: readonly string[], outer: readonly string[]): boolean => inner.every((value) => outer.includes(value));
+
+/**
+ * UNREACHABLE TODAY (review B-M1): `widenings()` returns nothing for a connector with no write tool, and every native schema refuses a write tool, so these
+ * rules run only when a test casts a write tool past the schema. They are kept, and tested that way, for a later plan that lets a native type write; until
+ * then a scope added to a native connector applies at once, as a scope added to any other read-only connector does.
+ *
+ * For each native type, whether a stored scope already reaches everything a new scope would, by what that type's scope names. A scope that asks for less
+ * than the stored one (more Datadog tags, fewer PagerDuty services, a longer name prefix) is covered; one that asks for more or for something else is not.
+ */
+const NATIVE_SCOPE_COVERS: Readonly<Record<string, (stored: Fields, scope: Fields) => boolean>> = {
+  sentry: (stored, scope) => stored["projectSlug"] === scope["projectSlug"],
+  vercel: (stored, scope) => stored["projectId"] === scope["projectId"],
+  pagerduty: (stored, scope) => within(stringsOf(scope["serviceIds"]), stringsOf(stored["serviceIds"])),
+  // Every tag narrows a query, so a scope holding all of the stored tags (and more) reaches no more than it did.
+  datadog: (stored, scope) => within(stringsOf(stored["tags"]), stringsOf(scope["tags"])),
+  grafana: (stored, scope) => {
+    // No folders means every folder; no data source means no metric query.
+    const folders = stored["folderUids"] === undefined || (scope["folderUids"] !== undefined && within(stringsOf(scope["folderUids"]), stringsOf(stored["folderUids"])));
+    return folders && (scope["datasourceUid"] === undefined || scope["datasourceUid"] === stored["datasourceUid"]);
+  },
+  cloudwatch: (stored, scope) => {
+    // No log group prefixes means no log search; no alarm prefix means every alarm of the region.
+    const newLogs = stringsOf(scope["logGroupPrefixes"]);
+    const logs = newLogs.length === 0 || newLogs.every((prefix) => stringsOf(stored["logGroupPrefixes"]).some((held) => prefix.startsWith(held)));
+    const held = stored["alarmNamePrefix"];
+    const alarms = held === undefined || (typeof held === "string" && typeof scope["alarmNamePrefix"] === "string" && scope["alarmNamePrefix"].startsWith(held));
+    return stored["region"] === scope["region"] && logs && alarms;
+  },
+};
+
+/** The scopes of `next` that `previous` did not already cover, by what each names: a new alias, team, Jira site (or project), repository, Sentry project, tag set and so on. */
 function addedScopes(previous: StoredEntry, next: ConnectorConfig): string[] {
   const before = (previous as Fields)["scopes"];
-  if (next.type === "github") {
+  if (next.type === "github" || next.type === "github-actions") {
     if (next.scopes === "all-repositories") return before === "all-repositories" ? [] : ["all repositories"];
     if (before === "all-repositories") return [];
     const known = new Set(Array.isArray(before) ? before as string[] : []);
@@ -194,6 +253,7 @@ function addedScopes(previous: StoredEntry, next: ConnectorConfig): string[] {
   const covered = (scope: Fields): boolean => stored.some((old) => {
     if (next.type === "linear") return String(old["teamId"]).toLowerCase() === String(scope["teamId"]).toLowerCase();
     if (next.type === "jira") return String(old["cloudId"]).toLowerCase() === String(scope["cloudId"]).toLowerCase() && (old["projectKey"] === undefined || old["projectKey"] === scope["projectKey"]);
+    if (isNativeType(next.type)) return Object.hasOwn(NATIVE_SCOPE_COVERS, next.type) && NATIVE_SCOPE_COVERS[next.type]!(old, scope);
     return canonicalJson(old["values"] ?? null) === canonicalJson(scope["values"] ?? null);
   });
   return (next.scopes as Fields[]).filter((scope) => !aliases.has(String(scope["alias"])) || !covered(scope)).map((scope) => `one more scope (${String(scope["alias"])})`);
@@ -322,7 +382,13 @@ async function loadCurrent(deps: Deps, orgId: OrgId, project: string, expectedRe
  * the same target, which is let through even when its connection is gone.
  */
 async function validateConnector(deps: Deps, orgId: OrgId, definition: StoredProjectDefinition, connector: ConnectorConfig, holdsApproval = false): Promise<void> {
-  if (connector.type === "github") {
+  // A native type offers its own tools and no others, held or not: a list is never carried over from an older revision.
+  if (isNativeType(connector.type)) {
+    const offered = PROJECT_CONNECTOR_TOOLS[connector.type];
+    const unlisted = connector.tools.findIndex((tool) => !offered.includes(tool.name));
+    if (unlisted >= 0) throw invalid(`tools.${String(unlisted)}: ${connector.tools[unlisted]!.name} is not a ${connector.type} tool`);
+  }
+  if (connector.type === "github" || connector.type === "github-actions") {
     if (connector.scopes !== "all-repositories") {
       for (const [index, scope] of connector.scopes.entries()) {
         if (!definition.repositories.some((repository) => repository.name === scope)) throw invalid(`scopes.${String(index)}: is not a repository of this project`);
@@ -330,7 +396,7 @@ async function validateConnector(deps: Deps, orgId: OrgId, definition: StoredPro
     }
     return;
   }
-  if (connector.type === "asana") throw invalid(`type: a project connector is one of ${APP_CONNECTOR_TYPES.join(", ")}`);
+  if (connector.type === "asana") throw invalid(`type: a project connector is one of ${ACCEPTED_CONNECTOR_TYPES.join(", ")}`);
   // A change that adds no reach to a connector as it was confirmed (a narrowing, or the same tools again) needs no connection: it can only hold or shrink what is there.
   if (holdsApproval) return;
   const connections = deps.projectConnectors.connections;
@@ -338,7 +404,8 @@ async function validateConnector(deps: Deps, orgId: OrgId, definition: StoredPro
   // Keyed by the caller's org: another org's connection id reads exactly as one nobody has.
   const connection = await connections.get(orgId, connector.credentialRef);
   if (connection === undefined || connection.type !== connector.type) throw invalid(`credentialRef: no ${connector.type} connection called ${connector.credentialRef} in your organization`);
-  if (!connection.hasSecret) throw invalid(`credentialRef: ${connection.label} has no key saved yet; add one to the connection first`);
+  // A CloudWatch connection has no key: Rovara assumes its role instead.
+  if (!connection.hasSecret && connectionTakesSecret(connection.type)) throw invalid(`credentialRef: ${connection.label} has no key saved yet; add one to the connection first`);
   const write = connector.tools.findIndex((tool) => tool.access === "write");
   if (write >= 0 && connection.access !== "read_write") throw invalid(`tools.${String(write)}: ${connection.label} is read-only`);
 }

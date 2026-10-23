@@ -1,10 +1,19 @@
-import { GitHubConnectorSchema, githubConnectorOf, type CredentialType, type ProjectDefinition, type RepositoryDefinition } from "@agentx/contracts";
+import { GitHubConnectorSchema, githubConnectorOf, type CredentialType, type OrgId, type ProjectDefinition, type RepositoryDefinition } from "@agentx/contracts";
 import { githubConnector, type ConnectorDefinition, type ConnectorPolicy, type PresentationApproval, type connectMcp } from "@agentx/gateway";
+import type { CloudWatchAws } from "../connectors/native/cloudwatch.js";
+import type { GitHubActionsTokens } from "../connectors/native/github-actions.js";
 import type { McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import type { GitHubMcpDependencies } from "../github-mcp.js";
 import { GITHUB_LEDGER } from "./connector-ledger.js";
 import { asanaConnectorType } from "./asana-connector-type.js";
 import { mcpConnectorType } from "./connector-presets.js";
+import { cloudwatchConnectorType } from "./cloudwatch-connector-type.js";
+import { datadogConnectorType } from "./datadog-connector-type.js";
+import { githubActionsConnectorType } from "./github-actions-connector-type.js";
+import { grafanaConnectorType } from "./grafana-connector-type.js";
+import { pagerdutyConnectorType } from "./pagerduty-connector-type.js";
+import { sentryConnectorType } from "./sentry-connector-type.js";
+import { vercelConnectorType } from "./vercel-connector-type.js";
 import type { ConnectorCredentials, HostPin } from "./credentials.js";
 import { jiraConnectorType } from "./jira-connector-type.js";
 import { linearConnectorType } from "./linear-connector-type.js";
@@ -43,9 +52,26 @@ export interface ConnectorTypeContext {
   connect?: typeof connectMcp;
   /**
    * Plan 3 Task 19: checks a company's MCP endpoint before every request and pins the connection to the addresses it checked (`mcpEndpointGuard`). Only
-   * the generic `mcp` type, whose endpoint a person typed, goes through it; a vendor's own endpoint (Linear, Jira, Asana, GitHub) does not.
+   * the types whose address a person typed (`HOST_TYPED_CONNECTOR_TYPES`: `mcp`, and Grafana's runtime connector) go through it; a vendor's own endpoint (Linear, Jira, Asana, GitHub) does not.
    */
   endpointGuard?: McpEndpointGuard;
+  /**
+   * Plan 4 Task 13: the fetch under every native connector's vendor requests, which hold it to the vendor's one host and refuse a redirect
+   * (`connectors/native/vendor-fetch.ts`). Absent, the connectors use the lookup-checked fetch that refuses a non-public address at connect time; a test passes a fake.
+   */
+  nativeFetch?: typeof fetch;
+  /**
+   * Plan 4 Task 16: the org the request is for (the caller's, or the workspace's, task's or run's own): the CloudWatch connector's external id is built from
+   * it and from nothing a record or a request holds. Absent, a CloudWatch connector is not connected.
+   */
+  orgId?: OrgId;
+  /** Plan 4 Task 16: the AWS access the CloudWatch connector assumes a customer's role through. Absent where the deployment has none. */
+  cloudwatchAws?: CloudWatchAws;
+  /**
+   * Plan 4 Task 17: Plan 3's guarded way to mint an agent's GitHub token (`createAgentInstallationToken`), which the GitHub Actions connector mints from for every
+   * call, with the permissions of the tool and for `orgId` above. Absent where the deployment has no GitHub App; the connector is then not connected.
+   */
+  githubAgentTokens?: GitHubActionsTokens;
 }
 
 /** A stored connectors entry. Only its name and type are known before its type validates the rest. */
@@ -103,6 +129,9 @@ export const githubConnectorType: ConnectorType = {
  */
 export const BUILT_IN_CONNECTOR_TYPES: Readonly<Record<string, ConnectorType>> = {
   github: githubConnectorType, linear: linearConnectorType, jira: jiraConnectorType, asana: asanaConnectorType, mcp: mcpConnectorType,
+  // Plan 4: the native read-only connectors, as their tasks land.
+  sentry: sentryConnectorType, datadog: datadogConnectorType, grafana: grafanaConnectorType,
+  pagerduty: pagerdutyConnectorType, vercel: vercelConnectorType, cloudwatch: cloudwatchConnectorType, "github-actions": githubActionsConnectorType,
 };
 
 /**

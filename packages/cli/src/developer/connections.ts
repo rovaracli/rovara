@@ -3,7 +3,7 @@
 // (hidden on a terminal), sent once in the request body and never printed, logged or kept; the control plane stores it where only the
 // organization's own role session can read it, and never returns it.
 import { randomUUID } from "node:crypto";
-import { ConnectionAccessSchema, ConnectionTypeSchema, agentXError, type ConnectionType } from "@agentx/contracts";
+import { ConnectionAccessSchema, agentXError } from "@agentx/contracts";
 import { z } from "zod";
 import { sanitizeServerText } from "../auth.js";
 import { developerRequest } from "./commands.js";
@@ -57,6 +57,10 @@ export interface ConnectionAddInput {
   authPrefix?: string | undefined;
 }
 
+/** The types this command adds. The Plan 4 types (Sentry, Datadog, CloudWatch, Grafana, Vercel, PagerDuty) are added from the app, not here. */
+const CliConnectionTypeSchema = z.enum(["linear", "jira", "mcp"]);
+type ConnectionType = z.infer<typeof CliConnectionTypeSchema>;
+
 const OPTIONS_OF = {
   linear: [],
   jira: ["siteUrl", "email"],
@@ -66,8 +70,8 @@ const FLAG = { siteUrl: "--site-url", email: "--email", endpoint: "--endpoint", 
 
 /** The connection a command line describes and what its secret is called, checked before anything is asked or sent. */
 export function parseConnectionAdd(input: ConnectionAddInput): { type: ConnectionType; connection: Record<string, unknown>; secretName: string; secretOf: (value: string) => Record<string, unknown> } {
-  const type = ConnectionTypeSchema.safeParse(input.type);
-  if (!type.success) throw agentXError("CONFIG_INVALID", `the type must be one of ${ConnectionTypeSchema.options.join(", ")}`);
+  const type = CliConnectionTypeSchema.safeParse(input.type);
+  if (!type.success) throw agentXError("CONFIG_INVALID", `the type must be one of ${CliConnectionTypeSchema.options.join(", ")}`);
   if (input.label === undefined || input.label.trim() === "") throw agentXError("CONFIG_INVALID", "give the connection a name with --label");
   const access = ConnectionAccessSchema.safeParse(input.access ?? "read");
   if (!access.success) throw agentXError("CONFIG_INVALID", "--access must be read or read_write");

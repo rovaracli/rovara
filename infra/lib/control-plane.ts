@@ -37,7 +37,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { HEALTH_ALARM_SUFFIXES, brokerManagedPolicyPath, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { TaskPersonProof } from "./task-person-proof.js";
@@ -226,6 +226,8 @@ export class ControlPlaneStack extends Stack {
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
     // A named environment's broker derives its connector secret prefix from AGENTX_ENV (broker-environment.ts), so it is not given it.
+    // A fixed name, so the default boundary's AssumeOrgRoles statement can name this role as one of the three that may be granted a cross-account assume.
+    if (naming.env !== undefined) (broker.role!.node.defaultChild as iam.CfnRole).roleName = brokerRoleName(naming.env);
     // Plan 3, ruling R62: an org's connection keys and event hook secrets (agentx/<env>/org-connectors/<org>/... and
     // agentx/<env>/org-hooks/<org>/...) are readable only through this role, in a session the broker tags with the org.
     // The broker role may assume it and holds no Secrets Manager permission on those paths. Named environments only.
@@ -267,6 +269,26 @@ export class ControlPlaneStack extends Stack {
         actions: ["route53resolver:UpdateFirewallDomains", "route53resolver:GetFirewallDomainList"],
         resources: [projectAllowListArn],
       }));
+    }
+    // Plan 4, Task 16 (cloud installs): the CloudWatch connector assumes a role a customer made in their own AWS account. The grant is one action on roles in
+    // OTHER accounts (never a role of this one, so the broker cannot reach its own or any other role here this way), and only with an external id that names a
+    // Rovara org; the connector sends the caller org's own, and the customer's trust policy requires it. AWS documents sts:ExternalId as a request-context key
+    // present whenever the caller supplies an external id (docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_iam-condition-keys.html); it does not say
+    // in so many words that an identity policy is checked against it, so the external id the connector sets itself stays the control and this condition is a second one.
+    // The statement falls in the broker's orchestration managed policy (an sts action), see brokerPolicyGroup. The role's own ARN is the principal the customer
+    // names in the trust policy, so the function gets it.
+    if (props?.cloud === true && naming.env !== undefined) {
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "AssumeCustomerCloudWatchRoles",
+        actions: ["sts:AssumeRole"],
+        resources: [`arn:${Aws.PARTITION}:iam::*:role/*`],
+        conditions: {
+          StringNotEquals: { "aws:ResourceAccount": Aws.ACCOUNT_ID },
+          StringLike: { "sts:ExternalId": "rovara-org_*" },
+        },
+      }));
+      // Passed in AGENTX_NAMES (the role's fixed name; the broker builds the ARN in the environment's role path) so the broker's environment stays under Lambda's 4 KB.
+      BrokerNames.of(broker).add("brokerRole", brokerRoleName(naming.env));
     }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
@@ -1167,6 +1189,8 @@ export class ControlPlaneStack extends Stack {
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this
       // VPC-attached function, the only reader of the master key besides the proxy. The broker may invoke it, and nothing else.
       const modelAccessFunction = packagedFunction(this, "ModelAccessFunction", "packages/broker/src/model-proxy/handler.ts", {});
+      // A fixed name, like the broker's: the Bedrock source probe's role is one of the three the default boundary's AssumeOrgRoles statement names.
+      (modelAccessFunction.role!.node.defaultChild as iam.CfnRole).roleName = modelAccessProbeRoleName(naming.env);
       new ModelAccess(this, "ModelAccess", {
         naming,
         vpcId,

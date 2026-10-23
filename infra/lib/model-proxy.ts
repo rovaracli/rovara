@@ -1,4 +1,4 @@
-import { INFERENCE_PATHS, MODEL_PROXY_URL_PARAMETER } from "@agentx/contracts";
+import { INFERENCE_PATHS, MODEL_PROXY_URL_PARAMETER, modelProxyTaskRoleName } from "@agentx/contracts";
 import { ROVARA_GUARD_PY, litellmConfig } from "@agentx/model-proxy";
 import {
   Duration,
@@ -233,6 +233,8 @@ export class ModelProxy extends Construct {
     // and read provider keys (the provider-key grants are attached to it by the control plane).
     const taskTrust = new iam.ServicePrincipal("ecs-tasks.amazonaws.com", { conditions: { StringEquals: { "aws:SourceAccount": stack.account } } });
     this.taskRole = new iam.Role(this, "TaskRole", {
+      // A fixed name in a named environment, so the default boundary's AssumeOrgRoles statement can name this role as one of the three that may be granted a cross-account assume.
+      ...(naming.env === undefined ? {} : { roleName: modelProxyTaskRoleName(naming.env) }),
       assumedBy: taskTrust,
       description: "AgentX model proxy: calls Amazon Bedrock and reads its own secrets",
     });

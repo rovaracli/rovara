@@ -570,7 +570,7 @@ describe("OrgConnectionStore", () => {
     expect(refuse).toHaveBeenCalledWith("https://mcp.acme.dev/mcp");
     expect(listTools).not.toHaveBeenCalled();
 
-    const allowed = storeOf(deps, { checkEndpoint: vi.fn(async () => undefined), listMcpTools: listTools as never });
+    const allowed = storeOf(deps, { checkEndpoint: vi.fn(async () => undefined), endpointGuard: async () => fetch, listMcpTools: listTools as never });
     expect(await allowed.check(ORG_A, CON_A)).toEqual({ ok: true, message: "2 tools" });
     expect(listTools).toHaveBeenCalledWith(expect.objectContaining({ endpoint: new URL("https://mcp.acme.dev/mcp"), token: "mcp-token" }));
     expect(await connectionActorIds(deps, ORG_A, "mcp")).toEqual(new Set());

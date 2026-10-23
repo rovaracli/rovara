@@ -266,6 +266,7 @@ import {
   PER_TASK_BUDGET_USD,
   ROVARA_CODE_AGENT_ID,
   ResolvedRecipeSchema,
+  cloudwatchRoleAccount,
   type AgentId,
   type Payer,
   type Place,
@@ -365,8 +366,15 @@ import { answerSlackChatGpt, isSlackChatGptCommandEvent, isSlackChatGptFinishEve
 import { chatGptConnections, kmsChatGptSealer, type ChatGptConnections } from "../chatgpt/connections.js";
 import { OrgSecrets, type SecretsClient } from "../connections/org-secrets.js";
 import { orgCredentialRegistry } from "../connections/registry.js";
+import { awsCloudWatchAccess, cloudwatchConnectionCheck } from "./cloudwatch-connector-type.js";
+import type { CloudWatchAws } from "../connectors/native/cloudwatch.js";
 import { dnsResolveHost, checkEndpointUrl } from "../connections/endpoint-check.js";
 import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
+import { datadogConnectionCheck } from "./datadog-connector-type.js";
+import { grafanaConnectionCheck } from "./grafana-connector-type.js";
+import { pagerdutyConnectionCheck } from "./pagerduty-connector-type.js";
+import { sentryConnectionCheck } from "./sentry-connector-type.js";
+import { vercelConnectionCheck } from "./vercel-connector-type.js";
 import { OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
@@ -635,7 +643,16 @@ interface AwsBrokerDependencies {
    * Plan 3 Task 12b: how the connection routes reach a vendor. By default a connection is checked with `fetch`, the MCP server's tools are
    * listed over the network, and an MCP endpoint is checked with `checkEndpointUrl` and the system resolver; a test replaces any of them.
    */
-  connectionChecks?: Pick<OrgConnectionStoreInput, "fetch" | "listMcpTools" | "checkEndpoint">;
+  connectionChecks?: Pick<OrgConnectionStoreInput, "fetch" | "listMcpTools" | "checkEndpoint" | "endpointGuard" | "checks">;
+  /** Plan 4 Task 13: a test replaces the fetch under every native connector's vendor requests; production uses the lookup-checked one. */
+  nativeFetch?: typeof fetch;
+  /**
+   * Plan 4 Task 16: the AWS access the CloudWatch connector and its connection check assume a customer's role through. Set only on the hosted cloud, where
+   * the control plane grants the broker the cross-account assume; without it a CloudWatch connection cannot be checked or read.
+   */
+  cloudwatchConnector?: CloudWatchAws;
+  /** Plan 4 Task 16: the broker function's own role ARN, named as the principal in the trust policy a CloudWatch connection shows the customer. */
+  brokerRoleArn?: string;
   /** The administrator turn record export; absent when the deployment has no TurnRecords table. */
   turnRecords?: TurnRecordExport;
   /** The TurnRecords table developer task audit records go to (spec 025); absent when there is none. */
@@ -920,6 +937,12 @@ function orgConnectionStoreOf(dependencies: AwsBrokerDependencies): OrgConnectio
     tableName: dependencies.tableName,
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
+    // The checks of an MCP endpoint and a Grafana address go over a connection pinned to the addresses checked (the store's default guard is `mcpEndpointGuard()`).
+    // Each native type's check is registered as its task lands (Plan 4 Tasks 13 to 17); a test may replace any of them through `connectionChecks.checks`.
+    checks: {
+      sentry: sentryConnectionCheck, datadog: datadogConnectionCheck, grafana: grafanaConnectionCheck, pagerduty: pagerdutyConnectionCheck, vercel: vercelConnectionCheck,
+      ...(dependencies.cloudwatchConnector === undefined ? {} : { cloudwatch: cloudwatchConnectionCheck(dependencies.cloudwatchConnector) }),
+    },
     ...dependencies.connectionChecks,
   });
 }
@@ -999,6 +1022,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     ...(dependencies.cloud === true ? { cloud: true } : {}),
     // Task 12b: the org's connections, on the broker's own table and audit outbox. An MCP endpoint is checked at save and before every call.
     ...(connections === undefined ? {} : { connections }),
+    ...(dependencies.brokerRoleArn === undefined ? {} : { brokerRoleArn: dependencies.brokerRoleArn }),
     // Task 21: what a write approval needs, so the routes and the settlement job's sweep both find it (Task 19's pieces).
     writeGate: writeGateRuntime(dependencies, tasks, signInStore),
     // Task 13: a project's connectors: the org's connections, the registration of each new revision (with the vendor preflight) and the live status of each connector.
@@ -2567,7 +2591,8 @@ async function authorizeGitHubConnector(dependencies: AwsBrokerDependencies, ide
  * Plan 2, Task 15: `scope` says whose work a GitHub token the connectors mint is for; it is asked only when one is minted. It is required, so
  * every caller names the scope its token is for and none inherits one by default.
  */
-export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud" | "mcpEndpointGuard">, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
+export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "githubMcp" | "credentialRegistry" | "orgConnections" | "cloud" | "mcpEndpointGuard" | "nativeFetch" | "cloudwatchConnector"> & { githubPullRequests?: Partial<Pick<AwsBrokerDependencies["githubPullRequests"], "createAgentInstallationToken">> }, orgId: OrgId | undefined, scope: () => Promise<GitHubTokenScope>): ConnectorTypeContext {
+  const github = dependencies.githubPullRequests;
   let credentialRegistry: ConnectorCredentials | undefined = dependencies.credentialRegistry;
   if (dependencies.cloud === true) {
     credentialRegistry = dependencies.orgConnections !== undefined && orgId !== undefined ? orgCredentialRegistry(dependencies.orgConnections, orgId) : undefined;
@@ -2576,6 +2601,13 @@ export function connectorTypeContext(dependencies: Pick<AwsBrokerDependencies, "
     ...(dependencies.githubMcp ? { githubMcp: githubMcpFor(dependencies.githubMcp, scope) } : {}),
     ...(credentialRegistry ? { credentialRegistry } : {}),
     ...(dependencies.mcpEndpointGuard ? { endpointGuard: dependencies.mcpEndpointGuard } : {}),
+    ...(dependencies.nativeFetch ? { nativeFetch: dependencies.nativeFetch } : {}),
+    ...(orgId === undefined ? {} : { orgId }),
+    ...(dependencies.cloudwatchConnector ? { cloudwatchAws: dependencies.cloudwatchConnector } : {}),
+    // Plan 4 Task 17: the GitHub Actions connector mints Plan 3's agent token (read-only by type, for the org's own installation) for every call.
+    ...(github?.createAgentInstallationToken === undefined ? {} : {
+      githubAgentTokens: { createAgentInstallationToken: (repository, permissions, tokenScope, options) => github.createAgentInstallationToken!(repository, permissions, tokenScope, options) },
+    }),
   };
 }
 
@@ -14080,7 +14112,11 @@ const secretsManager = new SecretsManagerClient(awsClientConfiguration);
 // Plan 3, ruling R62: a cloud org's connection secrets are read and written only in a ConnectorSecretsRole session tagged
 // with the org (OrgSecrets assumes it per org). Set only where the control plane created that role.
 const connectorSecretsRoleArn = process.env.CONNECTOR_SECRETS_ROLE_ARN;
+// The account this deployment runs in, from the ConnectorSecretsRole's own ARN: a CloudWatch connection may not name a role in it (Plan 4 Task 16).
+const cloudwatchSts = new STSClient(awsClientConfiguration);
+const ownAccountId = connectorSecretsRoleArn === undefined ? undefined : cloudwatchRoleAccount(connectorSecretsRoleArn);
 const orgConnections: OrgConnectionDeps | undefined = connectorSecretsRoleArn === undefined || connectorSecretsRoleArn === "" ? undefined : {
+  ownAccountId,
   documentClient,
   tableName: requiredEnvironment("STATE_TABLE_NAME"),
   env: installEnvironmentName(),
@@ -14300,6 +14336,9 @@ export const handler = createAwsBrokerHandler({
   // Task 12b's acceptance item: on Rovara Cloud every request to a company's MCP endpoint is checked again and connects only to what was checked.
   ...(cloudOrgResolver === undefined ? {} : { mcpEndpointGuard: mcpEndpointGuard() }),
   ...(orgConnections === undefined ? {} : { orgConnections }),
+  // Plan 4 Task 16: on the hosted cloud, where the control plane grants the cross-account assume, the CloudWatch connector assumes a customer's role through STS.
+  ...(cloudOrgResolver === undefined || orgConnections === undefined ? {} : { cloudwatchConnector: awsCloudWatchAccess({ ownAccountId, sts: { send: (command) => cloudwatchSts.send(command as never) } }) }),
+  ...(process.env.BROKER_ROLE_ARN === undefined || process.env.BROKER_ROLE_ARN === "" ? {} : { brokerRoleArn: process.env.BROKER_ROLE_ARN }),
   // Ruling R55: a cloud org's projects run on the foundation's EC2 workers, with the built-in GitHub App.
   ...(cloudProjectDefaults === undefined ? {} : { cloudProjects: cloudProjectDefaults }),
   // Ruling R6: with the cloud sign-in configured, membership decides who has an org; operators of the admin pool have none.

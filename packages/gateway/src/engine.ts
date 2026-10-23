@@ -4,6 +4,7 @@ import { connectMcp, McpUnauthorized, type McpConnection, type McpToolAnnotation
 import { CredentialUnavailable } from "./credentials.js";
 import {
   GuardRejection,
+  ToolRefusal,
   type Access,
   type CatalogTool,
   type ConnectorContext,
@@ -23,7 +24,7 @@ export interface SkippedTool { tool: string; reason: string }
 /** Derive schemas from discovery, narrow by admin policy, bind routing outside model arguments, and say why any approved tool is not offered. */
 export function reviewTools<Scope>(
   connection: Pick<McpConnection, "tools">,
-  connector: Pick<ConnectorDefinition<Scope>, "binder">,
+  connector: Pick<ConnectorDefinition<Scope>, "binder" | "unavailableTools">,
   context: ConnectorContext<Scope>,
 ): { tools: CatalogTool[]; skipped: SkippedTool[] } {
   const { tools, skipped } = review(connection, connector, context);
@@ -33,18 +34,21 @@ export function reviewTools<Scope>(
 /** reviewTools, keeping for each offered tool the bound properties a call on it sends. */
 function review<Scope>(
   connection: Pick<McpConnection, "tools">,
-  connector: Pick<ConnectorDefinition<Scope>, "binder">,
+  connector: Pick<ConnectorDefinition<Scope>, "binder" | "unavailableTools">,
   context: ConnectorContext<Scope>,
 ): { tools: Array<{ tool: CatalogTool; bound: string[] }>; skipped: SkippedTool[] } {
   const tools: Array<{ tool: CatalogTool; bound: string[] }> = [];
   const skipped: SkippedTool[] = [];
   const offered = new Set(connection.tools.map((tool) => tool.name));
+  const unavailable = new Map((connector.unavailableTools?.(context.scope) ?? []).map((entry) => [entry.tool, entry.reason]));
   for (const approval of context.policy.tools) {
-    if (!offered.has(approval.name)) skipped.push({ tool: approval.name, reason: "not offered by the vendor" });
+    const reason = unavailable.get(approval.name);
+    if (reason !== undefined) skipped.push({ tool: approval.name, reason });
+    else if (!offered.has(approval.name)) skipped.push({ tool: approval.name, reason: "not offered by the vendor" });
   }
   for (const upstream of connection.tools) {
     const policy = context.policy.tools.find((entry) => entry.name === upstream.name);
-    if (!policy) continue;
+    if (!policy || unavailable.has(upstream.name)) continue;
     if (JSON.stringify(upstream.inputSchema).length > 32_768) { skipped.push({ tool: upstream.name, reason: "schema exceeds 32768 characters" }); continue; }
     const flattened = flattenSchema(upstream.inputSchema);
     if ("unsupported" in flattened) { skipped.push({ tool: upstream.name, reason: flattened.unsupported }); continue; }
@@ -100,7 +104,7 @@ function toolHints(annotations: McpToolAnnotations | undefined): { hints: ToolHi
 
 export function approveTools<Scope>(
   connection: Pick<McpConnection, "tools">,
-  connector: Pick<ConnectorDefinition<Scope>, "binder">,
+  connector: Pick<ConnectorDefinition<Scope>, "binder" | "unavailableTools">,
   context: ConnectorContext<Scope>,
 ): CatalogTool[] {
   return reviewTools(connection, connector, context).tools;
@@ -319,11 +323,14 @@ export async function executeTool<Scope>(
       ? publicResult(request, "FAILED", `${label} is not connected for this project: ${error.message}. An administrator must fix its credential.`, "not_connected")
       : error instanceof DefinitionChanged
         ? publicResult(request, "FAILED", error.message, "schema_changed")
-        : error instanceof PolicyFailure || error instanceof GuardRejection
-          ? publicResult(request, "FAILED", error.message, "policy_denied")
-          : writeAttempted
-            ? publicResult(request, "UNKNOWN", `${label} write outcome is unknown. Inspect ${label} before issuing another request. Do not automatically retry.`)
-            : publicResult(request, "FAILED", `${label} MCP request failed before any write. Check ${connector.permissionsHint} and MCP availability.`, "vendor_error");
+        // A native connector's own words (the connection already scrubbed the token from them) are the call's failure.
+        : error instanceof ToolRefusal
+          ? publicResult(request, "FAILED", error.message, error.reason)
+          : error instanceof PolicyFailure || error instanceof GuardRejection
+            ? publicResult(request, "FAILED", error.message, "policy_denied")
+            : writeAttempted
+              ? publicResult(request, "UNKNOWN", `${label} write outcome is unknown. Inspect ${label} before issuing another request. Do not automatically retry.`)
+              : publicResult(request, "FAILED", `${label} MCP request failed before any write. Check ${connector.permissionsHint} and MCP availability.`, "vendor_error");
   } finally { await connection?.close().catch(() => undefined); }
   if (durable) {
     record = { ...record, updatedAt: new Date().toISOString(), result: response };

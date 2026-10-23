@@ -71,6 +71,13 @@ describe("pinnedFetch", () => {
     expect(seen[0]!.agent).toBe(false);
   });
 
+  it("refuses a URL with a login whether or not it is held to an origin, making no connection (review A-M1)", async () => {
+    const request = vi.fn(() => { throw new Error("stop before any network"); });
+    await expect(pinnedFetch([PUBLIC], { request: request })("https://user:pw@mcp.acme.dev/mcp")).rejects.toThrow(/login/u);
+    await expect(pinnedFetch([PUBLIC], { request: request, origin: "https://mcp.acme.dev" })("https://user:pw@mcp.acme.dev/mcp")).rejects.toThrow();
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("refuses a redirect instead of following it", async () => {
     const server = createServer((_request, response) => { response.writeHead(302, { location: "http://169.254.169.254/" }).end(); });
     server.listen(0, "127.0.0.1");
@@ -150,6 +157,8 @@ describe("the guard's fetch holds every request to the checked endpoint", () => 
   it.each([
     ["an IP literal", "https://127.0.0.1/mcp"], ["an IP literal in IPv6", "https://[::1]/mcp"], ["plain http", "http://mcp.acme.dev/mcp"],
     ["another host", "https://other.acme.dev/mcp"], ["another port", "https://mcp.acme.dev:8443/mcp"], ["a host that only starts like it", "https://mcp.acme.dev.evil.test/mcp"],
+    ["a username and password (review A-M1: the origin ignores them, and node would send them as a Basic header)", "https://user:pw@mcp.acme.dev/mcp"],
+    ["a username alone", "https://user@mcp.acme.dev/mcp"],
   ])("refuses %s and never opens a connection", async (_label, url) => {
     const request = vi.fn();
     await expect((await guarded(request))(url, { method: "POST", body: "{}" })).rejects.toThrow(/endpoint/u);
