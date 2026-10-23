@@ -39,6 +39,7 @@ const PRESENCE_PREFIX = "PRESENCE#";
 const DAY_SECONDS = 86_400;
 /** The most presence items one read looks at: a session open on many screens at once is still read in a bounded number of pages. */
 const PRESENCE_SCAN_MAX = 500;
+const PRESENCE_PAGE = 100;
 const TOO_MANY_FOLLOWERS = "This session has the most followers it can have.";
 
 const getItem = async (deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
@@ -74,7 +75,7 @@ export async function followSession(deps: SessionFollowerDependencies, caller: S
     {
       Update: {
         TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"), UpdateExpression: "ADD #followers :one",
-        ConditionExpression: "attribute_exists(pk) AND #followers < :max", ExpressionAttributeNames: { "#followers": "followerCount" },
+        ConditionExpression: "#followers < :max", ExpressionAttributeNames: { "#followers": "followerCount" },
         ExpressionAttributeValues: { ":one": 1, ":max": SESSION_FOLLOWERS_MAX },
       },
     },
@@ -120,7 +121,7 @@ export async function removeFollower(deps: Pick<SessionAccessDependencies, "docu
         {
           Update: {
             TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"), UpdateExpression: "ADD #followers :minusOne",
-            ConditionExpression: "attribute_exists(pk) AND #followers > :zero", ExpressionAttributeNames: { "#followers": "followerCount" },
+            ConditionExpression: "#followers > :zero", ExpressionAttributeNames: { "#followers": "followerCount" },
             ExpressionAttributeValues: { ":minusOne": -1, ":zero": 0 },
           },
         },
@@ -142,8 +143,8 @@ export async function removeFollower(deps: Pick<SessionAccessDependencies, "docu
 // ---- presence
 
 const fresh = (at: unknown, nowMs: number): boolean => {
-  const when = typeof at === "string" ? Date.parse(at) : Number.NaN;
-  return Number.isFinite(when) && nowMs - when < PRESENCE_TTL_SECONDS * 1000;
+  // A time that does not read is NaN, and no comparison with NaN holds: the item is not fresh.
+  return typeof at === "string" && nowMs - Date.parse(at) < PRESENCE_TTL_SECONDS * 1000;
 };
 
 /**
@@ -156,7 +157,7 @@ export async function viewingNow(deps: Pick<SessionAccessDependencies, "document
   let start: Record<string, unknown> | undefined;
   do {
     const page = await deps.documentClient.send(new QueryCommand({
-      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true,
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true, Limit: PRESENCE_PAGE,
       ExpressionAttributeValues: { ":pk": agentSessionKey(session.orgId, session.sessionId, "META").pk, ":prefix": PRESENCE_PREFIX },
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
     })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
@@ -188,7 +189,7 @@ export async function recordPresence(deps: SessionFollowerDependencies, caller: 
     },
     ReturnValues: "ALL_OLD",
   })) as { Attributes?: Item };
-  if (old.Attributes === undefined || !fresh(old.Attributes["at"], nowMs)) {
+  if (!fresh(old.Attributes?.["at"], nowMs)) {
     // The session's own channel only, no feed: a person arriving is not something to catch up on. The revision is the summary's, as the sink's notices carry.
     await publishNotices({ realtime: deps.realtimePublish, now: deps.now, log: deps.log }, [
       { channel: sessionChannel(session.orgId, session.sessionId), notice: { type: "session.updated", sessionId: session.sessionId, revision: session.summaryRevision } },

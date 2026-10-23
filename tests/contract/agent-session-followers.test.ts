@@ -28,6 +28,7 @@ afterEach(() => registerSessionNoticeSink(undefined));
 
 type Item = Record<string, unknown>;
 const ENDPOINT = "https://abcdefghij.appsync-api.us-east-1.amazonaws.com/event";
+const hex = (digit: string) => digit.repeat(64);
 const FOLLOWER_LIMIT_TEXT = "This session has the most followers it can have.";
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 
@@ -193,6 +194,55 @@ describe("following a session", () => {
   });
 });
 
+describe("following, when the table is not quiet", () => {
+  /** A table that runs `before` once, just before the first transaction, as another request might. */
+  const interfering = (f: ReturnType<typeof world>, before: () => Promise<void>) => {
+    let done = false;
+    return {
+      send: async (command: { constructor: { name: string } }) => {
+        if (!done && command.constructor.name === "TransactWriteCommand") { done = true; await before(); }
+        return f.w.db.send(command as never);
+      },
+    };
+  };
+
+  it("says the session is gone when it vanished between the look and the write, and not that it has too many followers", async () => {
+    const f = world();
+    const racing = interfering(f, async () => { f.w.db.delete(f.metaKey); });
+    expect(await code(followSession({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.session.sessionId))).toMatchObject({ code: "NOT_FOUND" });
+    expect(f.itemOf(ARJUN)).toBeUndefined();
+  });
+
+  it("passes on a failure that is not a lost condition, to follow and to unfollow", async () => {
+    const f = world();
+    const broken = { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "TransactWriteCommand") throw new Error("boom"); return f.w.db.send(command as never); } };
+    await expect(followSession({ ...f.deps, documentClient: broken }, f.w.caller(ARJUN), f.session.sessionId)).rejects.toThrow("boom");
+    await f.follow(ARJUN);
+    await expect(unfollowSession({ ...f.deps, documentClient: broken }, f.w.caller(ARJUN), f.session.sessionId)).rejects.toThrow("boom");
+    expect(f.itemOf(ARJUN)).toBeDefined();
+  });
+
+  it("when another request removed the follow first, takes nothing more off the count and says nothing was removed", async () => {
+    const f = world();
+    await f.follow(ARJUN);
+    await f.follow(MIA);
+    const racing = interfering(f, async () => { await f.unfollow(ARJUN); });
+    expect(await removeFollower({ ...f.deps, documentClient: racing }, f.session, ARJUN)).toBe(false);
+    expect(f.count()).toBe(1);
+    expect(f.itemOf(MIA)).toBeDefined();
+  });
+
+  it("answers that it removed the follow whose count had drifted, and passes on a failure that is not a lost condition", async () => {
+    const f = world();
+    f.w.follower(ORG_A, f.session.sessionId, ARJUN);
+    expect(await removeFollower(f.deps, f.session, ARJUN)).toBe(true);
+    f.w.follower(ORG_A, f.session.sessionId, MIA);
+    const broken = { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "TransactWriteCommand") throw new Error("boom"); return f.w.db.send(command as never); } };
+    await expect(removeFollower({ ...f.deps, documentClient: broken }, f.session, MIA)).rejects.toThrow("boom");
+    expect(f.itemOf(MIA)).toBeDefined();
+  });
+});
+
 describe("the people who follow are told", () => {
   it("puts a notice in a follower's changes feed when the session needs a person, and none after they unfollow", async () => {
     const f = world();
@@ -279,6 +329,36 @@ describe("who is looking now", () => {
     expect(await viewingNow(f.deps, f.session, T0)).toEqual([{ developerId: MAX, name: "Max" }]);
   });
 
+  it("lists people by name, whatever order their ids sort in", async () => {
+    const f = world();
+    await f.presence(MIA);
+    await f.presence(MAX);
+    expect((await viewingNow(f.deps, f.session, f.w.clock.now)).map((who) => who.name)).toEqual(["Max", "Mia"]);
+  });
+
+  it("leaves out an item whose person or name doesn't read", async () => {
+    const f = world();
+    const put = (id: string, extra: Item) => f.w.db.set({ ...agentSessionKey(ORG_A, f.session.sessionId, `PRESENCE#${id}`), entityType: "AGENT_SESSION_PRESENCE", orgId: ORG_A, sessionId: f.session.sessionId, developerId: id, name: "Someone", at: iso(T0), ...extra });
+    put(ARJUN, { name: "" });
+    put(MIA, { developerId: "not-a-developer" });
+    put(MAX, { name: "x".repeat(500) });
+    put(OLA, {});
+    expect((await viewingNow(f.deps, f.session, T0)).map((who) => who.developerId)).toEqual([OLA]);
+  });
+
+  it("looks at no more than 500 presence items in one read, a page of 100 at a time", async () => {
+    const f = world();
+    const stale = Array.from({ length: 500 }, (_, n) => `${String(n).padStart(3, "0")}${"a".repeat(61)}`);
+    for (const id of stale) f.w.db.set({ ...agentSessionKey(ORG_A, f.session.sessionId, `PRESENCE#${id}`), entityType: "AGENT_SESSION_PRESENCE", orgId: ORG_A, sessionId: f.session.sessionId, developerId: id, name: "Old", at: iso(T0 - 600_000) });
+    f.w.db.set({ ...agentSessionKey(ORG_A, f.session.sessionId, `PRESENCE#${hex("f")}`), entityType: "AGENT_SESSION_PRESENCE", orgId: ORG_A, sessionId: f.session.sessionId, developerId: hex("f"), name: "Late", at: iso(T0) });
+    const before = f.w.db.commandNames().length;
+    expect(await viewingNow(f.deps, f.session, T0)).toEqual([]);
+    expect(f.w.db.commandNames().slice(before).filter((name) => name === "QueryCommand")).toHaveLength(5);
+    // Fewer stale items and the late one is reached.
+    for (const id of stale.slice(0, 100)) f.w.db.delete(agentSessionKey(ORG_A, f.session.sessionId, `PRESENCE#${id}`));
+    expect((await viewingNow(f.deps, f.session, T0)).map((who) => who.name)).toEqual(["Late"]);
+  });
+
   it("shows at most 20 people", async () => {
     const f = world();
     for (let n = 0; n < 25; n += 1) {
@@ -310,6 +390,13 @@ describe("who is looking now", () => {
     expect(f.rec.calls).toHaveLength(3);
     // Nothing is written to anyone's changes feed for it.
     expect(f.w.db.find((item) => String(item.pk).includes("CHANGES#"))).toEqual([]);
+  });
+
+  it("tells the summary's revision, as the sink's notices do, not the session record's", async () => {
+    const f = world();
+    f.w.db.set({ ...f.w.db.get(f.metaKey)!, summaryRevision: 7, revision: 3 });
+    await f.presence(MIA);
+    expect(f.presenceNotices()).toEqual([{ type: "session.updated", sessionId: f.session.sessionId, revision: 7 }]);
   });
 
   it("does nothing more than keep the item when there is no events API, and a publish that fails changes nothing", async () => {
@@ -349,7 +436,7 @@ describe("the session's view and the routes", () => {
   const read = () => {
     const f = world();
     const deps: SessionReadDependencies = {
-      ...f.deps, signInStore: f.w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
+      documentClient: f.w.db, tableName: "state", now: () => f.w.clock.now, projectMembers: f.w.members, signInStore: f.w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
       taskView: async (task) => ({ taskId: task.taskId, title: "Bump the Stripe SDK", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }) as never,
     };
     return { f, deps };
