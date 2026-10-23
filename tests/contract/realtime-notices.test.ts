@@ -188,9 +188,10 @@ describe("followers", () => {
     const NEWCOMER = hex("7");
     p.w.member(ORG_A, NEWCOMER, "member");
     for (const [made, who] of [[session, ARJUN], [session, MIA], [session, ZED], [session, GONE], [undecided, ZED], [undecided, GONE], [sharedToProject, NEWCOMER], [sharedToProject, GONE]] as const) p.w.follower(ORG_A, made.sessionId, who);
+    const logs: Array<Record<string, unknown>> = [];
     const told = async (made: AgentSessionRecord) => {
       const rec = recorder();
-      await createRealtimeSink({ realtime: rec.config() })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now }, changeOf(made, { statusChanged: true, summary: { status: "needs_person", needsPeople: [] } }));
+      await createRealtimeSink({ realtime: rec.config() })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now, log: (entry) => logs.push(entry) }, changeOf(made, { statusChanged: true, summary: { status: "needs_person", needsPeople: [] } }));
       return (who: string) => rec.calls.some((call) => call.channel === userChannel(ORG_A, who));
     };
     const kept = (made: AgentSessionRecord, who: string) => p.w.db.get(agentSessionKey(ORG_A, made.sessionId, `FOLLOWER#${who}`)) !== undefined;
@@ -203,6 +204,8 @@ describe("followers", () => {
     const second = await told(undecided);
     expect(second(ZED)).toBe(false);
     expect(kept(undecided, ZED)).toBe(true);
+    // It is said, with a count and no name.
+    expect(logs).toContainEqual({ event: "realtime.followers_undecided", sessionId: undecided.sessionId, undecided: 1 });
     expect(kept(undecided, GONE)).toBe(false);
     // A share to another project the person may be in through its Slack channel: undecided, kept.
     const third = await told(sharedToProject);
