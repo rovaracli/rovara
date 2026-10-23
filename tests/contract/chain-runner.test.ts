@@ -300,7 +300,7 @@ describe("run events", () => {
     const { neutralText, runEventItem } = await runEvents();
     expect(neutralText("a\u2028b\u2029c")).toBe("a[U+2028]b[U+2029]c");
     expect(neutralText("x".repeat(500), 500)).toBe("x".repeat(500));
-    const item = runEventItem("T", { orgId: ORG_A, runId: "crn_aaaaaaaaaaaaaaaaaaaa", eventSeq: 0 }, { type: "started", text: "a\u0007b" }, "2026-10-22T09:00:00.000Z") as { Put: { Item: { text: string } } };
+    const item = runEventItem("T", { orgId: ORG_A, runId: "crn_aaaaaaaaaaaaaaaaaaaa", eventSeq: 0 }, { type: "started", text: "a\u0007b" }, "2026-10-22T09:00:00.000Z") as unknown as { Put: { Item: { text: string } } };
     expect(item.Put.Item.text).toBe("a[U+0007]b");
   });
 

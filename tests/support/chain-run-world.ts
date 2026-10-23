@@ -15,7 +15,7 @@ import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.
 import type { AdmissionDependencies } from "../../packages/broker/src/org/budget.js";
 import type { AgentOwner } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
-import { ChainDefinitionSchema, type ChainDefinitionInput, type ChainRunId } from "../../packages/contracts/src/chains.js";
+import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
 import { chainRunKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
