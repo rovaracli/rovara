@@ -155,7 +155,7 @@ function gateStatusOf(record: AnyApprovalRecord | undefined, attempt: StepAttemp
   return attempt.status === "waiting" ? "PENDING" : "EXPIRED";
 }
 
-async function gateSection(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined): Promise<ChainRunSection["gate"]> {
+async function gateSection(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined, withLink: boolean): Promise<ChainRunSection["gate"]> {
   if (attempt.approvalId === undefined) return undefined;
   const step = definition?.steps.find((candidate) => candidate.id === attempt.stepId);
   if (step === undefined || step.kind !== "gate") return undefined;
@@ -165,7 +165,8 @@ async function gateSection(deps: Deps, run: ChainRunRecord, attempt: StepAttempt
     prompt: clean(step.prompt),
     status: gateStatusOf(record, attempt),
     approvers: await wordsFor(deps, run, step),
-    confirmUrl: confirmUrlFor(deps, { approvalId: attempt.approvalId }),
+    // A session viewer never gets a confirm link: only the run's own route (a reader of the run) shows the gate's page.
+    ...(withLink ? { confirmUrl: confirmUrlFor(deps, { approvalId: attempt.approvalId }) } : {}),
     ...(decidedBy === undefined || record?.decidedAt === undefined ? {} : { decidedBy: { developerId: decidedBy, name: await displayNameOf(deps, decidedBy) }, decidedAt: record.decidedAt }),
   };
 }
@@ -187,10 +188,10 @@ async function taskFactsOf(deps: Deps, run: ChainRunRecord, attempt: StepAttempt
   }
 }
 
-async function sectionOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined): Promise<ChainRunSection> {
+async function sectionOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined, withLink: boolean): Promise<ChainRunSection> {
   const isGate = attempt.kind === "gate";
   const facts = isGate ? undefined : await taskFactsOf(deps, run, attempt);
-  const gate = isGate ? await gateSection(deps, run, attempt, definition) : undefined;
+  const gate = isGate ? await gateSection(deps, run, attempt, definition, withLink) : undefined;
   const branchTaken = branchSection(attempt, definition);
   const links: Link[] | undefined = attempt.result?.links;
   return {
@@ -240,7 +241,7 @@ export async function chainRunView(deps: Deps, caller: AgentCaller, runId: strin
   const { run } = await readableRun(deps, caller, runId, options);
   const [attempts, definition] = await Promise.all([readStepAttempts(deps, run.orgId, run.runId), definitionOf(deps, run)]);
   const [header, startedBy, chainOwner, sections] = await Promise.all([
-    summaryParts(deps, run), startedByOf(deps, run), chainOwnerOf(deps, run.chainOwner), Promise.all(attempts.map((attempt) => sectionOf(deps, run, attempt, definition))),
+    summaryParts(deps, run), startedByOf(deps, run), chainOwnerOf(deps, run.chainOwner), Promise.all(attempts.map((attempt) => sectionOf(deps, run, attempt, definition, options.actor === undefined))),
   ]);
   return ChainRunViewSchema.parse({
     ...header, chainOwner, startedBy,
@@ -271,6 +272,18 @@ export async function chainRunEvents(deps: Deps, caller: AgentCaller, runId: str
 
 // ---- a step's task
 
+/** A step's task as a viewer of the run sees it: its open approvals name what is asked, never the page that decides them (whoever decides finds it from their own approvals). */
+function withoutConfirmLinks(task: DeveloperTaskView): DeveloperTaskView {
+  const run = task.run;
+  if (run === undefined) return task;
+  return { ...task, run: { ...run, pendingApprovals: run.pendingApprovals.map((approval) => {
+    // Only the link goes: any other field is left for the strict schema to refuse.
+    const { ...kept } = approval;
+    delete kept.confirmUrl;
+    return kept;
+  }) } };
+}
+
 /**
  * `GET /v1/app/chain-runs/{id}/sections/{seq}/task`: the task of the step attempt `seq`, as Plan 3's task view shows it, for a reader of the run who holds `start_tasks`
  * on its project (a project viewer gets `NOT_FOUND` and keeps the section's summary). The attempt must have a task, and the task must be this run's, in this org.
@@ -286,7 +299,7 @@ export async function chainStepTask(deps: Deps, caller: AgentCaller, runId: stri
   const chain = stored?.["chain"] as { chainRunId?: unknown } | undefined;
   if (stored === undefined || stored["orgId"] !== run.orgId || chain?.chainRunId !== run.runId) throw notFound();
   if (deps.chainView === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "A step's task can't be shown in this deployment.");
-  const task = await deps.chainView.taskView(stored as unknown as DeveloperTaskRecord);
+  const task = withoutConfirmLinks(await deps.chainView.taskView(stored as unknown as DeveloperTaskRecord));
   const shown = ChainStepTaskViewSchema.safeParse({ seq, taskId: attempt.taskId, rovaraCode: attempt.agent?.agentId === ROVARA_CODE_AGENT_ID, task });
   // What the task layer gave is checked against the contract before a client sees it: an approval's arguments or a credential would not parse.
   if (!shown.success) throw agentXError("RUNTIME_UNAVAILABLE", "This step's task can't be shown right now.");

@@ -902,6 +902,8 @@ describe("the seams, edge by edge", () => {
 
 describe("no confirm link reaches a session viewer", () => {
   const LINK = `https://cell.example.com/v1/app/approve/apr_${"a".repeat(20)}`;
+  const call = (v: ViewWorld, who: string, path: string) =>
+    routeChainRequest(v.deps, callerOf(who), { method: "GET", path, requestId: "r", headers: {} }, new URL(`https://cell.example.com${path}`));
 
   it("drops the confirmUrl of a step task's open approvals at the source, for the route, the function and Plan 5's read alike", async () => {
     const v = world();

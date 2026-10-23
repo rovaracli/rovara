@@ -62,8 +62,8 @@ export const ChainRunSectionSchema = z
         status: z.enum(CHAIN_GATE_STATUSES),
         /** Who may decide, in words. */
         approvers: z.string(),
-        /** The bare confirmation page of the gate's approval: never a ticketed link. */
-        confirmUrl: z.string().url(),
+        /** The bare confirmation page of the gate's approval: never a ticketed link. Left out of what a session viewer is given. */
+        confirmUrl: z.string().url().optional(),
         decidedBy: z.object({ developerId: DeveloperId, name: Name }).strict().optional(),
         decidedAt: Instant.optional(),
       })
