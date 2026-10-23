@@ -48,6 +48,24 @@ function withoutDispatchDeadLettersAlarm(template: unknown): unknown {
 }
 
 /**
+ * Plan 4 Task 19 adds the public event-hook route to a named control plane, and nothing else: one route with no authorizer, to the broker's own integration (every
+ * delivery is verified by the broker over its own bytes). It is checked strictly to be exactly this, then taken out, so the rest of the template must still match the
+ * recorded snapshot.
+ */
+function withoutEventHookRoute(template: unknown): unknown {
+  const resources = (template as { Resources: Record<string, Resource> }).Resources;
+  const routes = Object.keys(resources).filter((id) => id.startsWith("EventHookRoute"));
+  expect(routes).toHaveLength(1);
+  const github = resources["GithubWebhookRoute"]!;
+  expect(resources[routes[0]!]).toStrictEqual({
+    Type: "AWS::ApiGatewayV2::Route",
+    Properties: { ApiId: github.Properties["ApiId"], AuthorizationType: "NONE", RouteKey: "POST /v1/hooks/{source}/{hookId}", Target: github.Properties["Target"] },
+  });
+  delete resources[routes[0]!];
+  return template;
+}
+
+/**
  * Issue 173 adds the reconciler backstop to a named control plane, and nothing else: three
  * environment variables, two statements and one alarm. Each is checked strictly to be exactly
  * this, then taken out, so the rest of the template must still match the recorded snapshot.
@@ -232,7 +250,7 @@ describe("named environment templates", () => {
   for (const stack of stacks) {
     it(`${stack.stackName} is unchanged`, () => {
       const template = normalizedTemplate(stack);
-      expect(stack.stackName === "agentx-staging-control-plane" ? withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template)))))) : template).toMatchSnapshot();
+      expect(stack.stackName === "agentx-staging-control-plane" ? withoutEventHookRoute(withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template))))))) : template).toMatchSnapshot();
     }, 120_000);
   }
 });
@@ -261,5 +279,24 @@ describe("the chain sweep schedule", () => {
 
   it("is not in the legacy template", () => {
     expect(schedules({}).map(([id]) => id).filter((id) => id.startsWith("ChainSweep"))).toStrictEqual([]);
+  });
+});
+
+// Plan 4 Task 19: the endpoint vendors post events to is in a named environment's API with no authorizer, and not in the legacy template (which stays as it was).
+describe("the event hook route", () => {
+  const routes = (context: Record<string, unknown>): Array<[string, { Properties: Record<string, unknown> }]> => {
+    const stack = buildAgentXApp(context).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+    return Object.entries(Template.fromStack(stack!).toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>).filter(([, resource]) => resource.Type === "AWS::ApiGatewayV2::Route");
+  };
+
+  it("is a POST route with no authorizer, to the broker's integration, in a named environment", () => {
+    const found = routes({ agentxEnv: "staging" }).filter(([, route]) => String(route.Properties["RouteKey"]).includes("/v1/hooks/"));
+    expect(found).toHaveLength(1);
+    const github = routes({ agentxEnv: "staging" }).find(([id]) => id === "GithubWebhookRoute")![1];
+    expect(found[0]![1].Properties).toStrictEqual({ ApiId: github.Properties["ApiId"], AuthorizationType: "NONE", RouteKey: "POST /v1/hooks/{source}/{hookId}", Target: github.Properties["Target"] });
+  });
+
+  it("is not in the legacy template", () => {
+    expect(routes({}).filter(([, route]) => String(route.Properties["RouteKey"]).includes("/v1/hooks/"))).toStrictEqual([]);
   });
 });

@@ -244,18 +244,21 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 3 final fix wave (review C1): a named environment's broker is given its generated names in one variable (AGENTX_NAMES), not whole, and derives
     // what its environment name decides, so Lambda's 4 KB limit on its variables holds; the named and foreign digests moved with it (the broker's
     // variables only, and the connector secrets role's one Deny); the legacy digests did not move, which is the check that its broker is untouched.
+    // Plan 4 Task 19: a named environment's API gains the public event-hook route (`POST /v1/hooks/{source}/{hookId}`, no authorizer, the broker verifies every delivery), so the
+    // named and foreign digests moved with it. They had also drifted from the earlier Plan 4 tasks' broker and role changes (the merge of plan 3, BROKER_ROLE_ARN in AGENTX_NAMES, the
+    // fixed role names), which no task had re-pinned: all four are taken from the synthesized templates now. The legacy digests did not move: its template has no such route.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "6ccc8a731d954e52efaf094a2d784d44fed2cd7b46eaecbeec055d5cb3baa365",
-        withoutRoute: "a56736c62060069412f9a6d5be1d7b0308f85574490af83968004a098db6f1b7",
+        withRoute: "a3794a38c3c272a631ad60c15e4578d2b3b6a699d37d7a7dd9c1c547f90433a2",
+        withoutRoute: "4bbbba1144fb2b6334b87153542dd6867292ee5d384af936e84dceb1750712b2",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "e102914180bdd02fe6cbbfeb5aa848752d40596d65c20fe3f0a6baa5b5581575",
-        withoutRoute: "e0727aef648dfc10f5d086842b44b0486067baed09160ebcb2179d34742d8409",
+        withRoute: "dfc3053735be62de053ae38bc537b14624a13c92838e4e1680267c65eb2827a8",
+        withoutRoute: "5419e73967cf382b179634736e1c4c6fa77265fad312cafed5f42ddd10eeda21",
       },
       {
         label: "legacy",
