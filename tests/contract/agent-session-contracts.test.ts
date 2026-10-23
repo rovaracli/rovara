@@ -191,6 +191,7 @@ describe("session ids", () => {
 
   it("builds a link from the origin and the session id", () => {
     expect(sessionLink("https://app.rovara.example", SESSION)).toBe(`https://app.rovara.example/s/${SESSION}`);
+    expect(sessionLink("https://app.rovara.example/", SESSION)).toBe(`https://app.rovara.example/s/${SESSION}`);
   });
 });
 
@@ -382,6 +383,8 @@ describe("the session record and its parts", () => {
     expect(parse({ peek: "p".repeat(SESSION_PEEK_MAX_CHARS) })).toBe(true);
     expect(parse({ peek: "p".repeat(SESSION_PEEK_MAX_CHARS + 1) })).toBe(false);
     expect(parse({ peek: "😀".repeat(SESSION_PEEK_MAX_CHARS) })).toBe(true);
+    expect(parse({ peek: "line one\nline two" })).toBe(true);
+    expect(parse({ peek: "bad\u0000peek" })).toBe(false);
     expect(parse({ needsPeople: Array.from({ length: 50 }, (_, index) => `p${String(index)}`) })).toBe(true);
     expect(parse({ needsPeople: Array.from({ length: 51 }, (_, index) => `p${String(index)}`) })).toBe(false);
     expect(parse({ costUsd: -1 })).toBe(false);
@@ -403,6 +406,10 @@ describe("the session record and its parts", () => {
     expect(SessionEventSchema.safeParse({ ...event, text: "t".repeat(SESSION_EVENT_TEXT_MAX) }).success).toBe(true);
     expect(SessionEventSchema.safeParse({ ...event, text: "t".repeat(SESSION_EVENT_TEXT_MAX + 1) }).success).toBe(false);
     expect(SessionEventSchema.safeParse({ ...event, source: "fax" }).success).toBe(false);
+    // Text may span lines, but holds no other control character.
+    expect(SessionEventSchema.safeParse({ ...event, text: "one\ntwo\tthree" }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...event, text: "one\u0000two" }).success).toBe(false);
+    expect(SessionEventSchema.safeParse({ ...event, text: "one\u001b[31mred" }).success).toBe(false);
     expect(SessionEventSchema.safeParse({ ...event, eventId: "evt_x" }).success).toBe(false);
     expect(SessionEventSchema.safeParse({ ...event, extra: 1 }).success).toBe(false);
   });
@@ -492,6 +499,9 @@ describe("the view schemas", () => {
     expect(SessionViewReaderSchema.safeParse({ ...view, title: undefined }).success).toBe(false);
     expect(SessionViewReaderSchema.safeParse({ ...view, summary: { ...summary, status: undefined } }).success).toBe(false);
     expect(SessionViewReaderSchema.safeParse({ ...view, summary: { ...summary, status: 7 } }).success).toBe(false);
+    // A kind it knows with a broken field is an error, not an "unknown" kind.
+    expect(SessionViewReaderSchema.safeParse({ ...view, where: { kind: "mac", deviceId: "dvc_bad", label: "Mac" } }).success).toBe(false);
+    expect(SessionViewReaderSchema.safeParse({ ...view, where: { kind: "mac", deviceId: DEVICE, label: "Mac" } }).success).toBe(true);
   });
 
   it("declares the home, project and confirmation shapes, strict and reader", () => {
@@ -604,6 +614,9 @@ describe("session keys", () => {
 
   it("refuses a segment that holds the key separator", () => {
     expect(() => mySessionsKey(ORG_A, "a#b", NOW, SESSION)).toThrow();
+    expect(() => mySessionsKey(ORG_A, "", NOW, SESSION)).toThrow();
+    expect(() => liveSessionKey(ORG_A, "")).toThrow();
+    expect(() => mySessionsKey(ORG_A, "a\u0000b", NOW, SESSION)).toThrow();
     expect(() => agentSessionKey(ORG_A, "ses_x#y", "META")).toThrow();
   });
 });
