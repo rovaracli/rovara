@@ -754,16 +754,37 @@ describe("GET /v1/app/changes", () => {
       expect(edge.next).toBe("2026-10-22T11:59:30.000Z#");
     });
 
-    it("lets a full page carry on from its own last item even when it is all inside the window", async () => {
-      const w = world();
+    // Task 9 review (minor 2): a full page's cursor is the older of its last item and the window's edge, unless the edge is no newer than the cursor given (then the last item).
+    it("holds a full page's cursor back to the window's edge when the page's last item is inside the window (a late item older than the last is still found)", async () => {
+      const w = world(); // now 12:00:00, edge 11:59:30
       for (let n = 0; n < 503; n += 1) put(w, PRIYA, iso(Date.parse("2026-10-22T11:59:40.000Z") + n), n);
       const first = await read(w, PRIYA);
       expect(first.notices).toHaveLength(500);
-      expect(first.next).toBe(first.notices[499]!.sk);
-      const rest = await read(w, PRIYA, first.next);
+      expect(first.next).toBe("2026-10-22T11:59:30.000Z#");
+      // An item committed late, older than the page's last: the next read still finds it.
+      put(w, PRIYA, "2026-10-22T11:59:35.000Z", 900);
+      const again = await read(w, PRIYA, first.next);
+      expect(sks(again)).toContain("2026-10-22T11:59:35.000Z#000900");
+    });
+
+    it("lets a burst carry on: with the edge no newer than the cursor given, the full page's cursor is its own last item", async () => {
+      const w = world();
+      for (let n = 0; n < 503; n += 1) put(w, PRIYA, iso(Date.parse("2026-10-22T11:59:40.000Z") + n), n);
+      const first = await read(w, PRIYA);
+      const second = await read(w, PRIYA, first.next);
+      expect(second.notices).toHaveLength(500);
+      expect(second.next).toBe(second.notices[499]!.sk);
+      const rest = await read(w, PRIYA, second.next);
       expect(sks(rest)).toEqual([500, 501, 502].map((n) => `${iso(Date.parse("2026-10-22T11:59:40.000Z") + n)}#${String(n).padStart(6, "0")}`));
       // The cursor is never held back behind the one it was given, so the next page is not the same page.
-      expect(rest.next).toBe(first.next);
+      expect(rest.next).toBe(second.next);
+    });
+
+    it("moves a full page of settled items to its own last item", async () => {
+      const w = world();
+      for (let n = 0; n < 501; n += 1) put(w, PRIYA, iso(Date.parse("2026-10-22T11:00:00.000Z") + n), n);
+      const first = await read(w, PRIYA);
+      expect(first.next).toBe(first.notices[499]!.sk);
     });
   });
 

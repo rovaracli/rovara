@@ -243,6 +243,67 @@ describe("following, when the table is not quiet", () => {
   });
 });
 
+describe("following, when another transaction holds the same items (TransactionConflict, Task 9 review)", () => {
+  const conflict = (reasons: string[], times = 1) => ({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: reasons.map((Code) => ({ Code })) }, times });
+  const transactions = (f: ReturnType<typeof world>) => f.w.db.commandNames().filter((name) => name === "TransactWriteCommand").length;
+
+  it("retries an unfollow that hit a conflict, so the count still drops (it never falls through to a lone delete)", async () => {
+    const f = world();
+    await f.follow(ARJUN);
+    await f.follow(MIA);
+    f.w.db.injectFault(conflict(["None", "TransactionConflict"]));
+    expect(await f.unfollow(ARJUN)).toEqual({ following: false });
+    expect(f.itemOf(ARJUN)).toBeUndefined();
+    expect(f.count()).toBe(1);
+    expect(f.w.db.commandNames()).not.toContain("DeleteCommand");
+  });
+
+  it("gives up after a bounded number of conflicts with a retryable error, and leaves the follow and the count as they were", async () => {
+    const f = world();
+    await f.follow(ARJUN);
+    const before = transactions(f);
+    f.w.db.injectFault(conflict(["TransactionConflict", "TransactionConflict"], 50));
+    expect(await code(f.unfollow(ARJUN))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(transactions(f) - before).toBe(4);
+    expect(f.itemOf(ARJUN)).toBeDefined();
+    expect(f.count()).toBe(1);
+    expect(f.w.db.commandNames()).not.toContain("DeleteCommand");
+  });
+
+  it("takes the lone delete only when the count refused and the follow was there: a follow that vanished is not removed again", async () => {
+    const f = world();
+    await f.follow(ARJUN);
+    // The follow's own condition failed (someone removed it): nothing is deleted on the side.
+    f.w.db.injectFault(conflict(["ConditionalCheckFailed", "None"]));
+    expect(await removeFollower(f.deps, f.session, ARJUN)).toBe(false);
+    expect(f.w.db.commandNames()).not.toContain("DeleteCommand");
+    expect(f.itemOf(ARJUN)).toBeDefined();
+  });
+
+  it("retries a follow that hit a conflict, and writes one item and one count", async () => {
+    const f = world();
+    f.w.db.injectFault(conflict(["None", "TransactionConflict"]));
+    expect(await f.follow(ARJUN)).toEqual({ following: true });
+    expect(f.count()).toBe(1);
+    expect(f.w.db.find((item) => String(item.sk).startsWith("FOLLOWER#"))).toHaveLength(1);
+  });
+
+  it("answers a follow that keeps hitting conflicts with a retryable error, not a raw failure, and writes nothing", async () => {
+    const f = world();
+    f.w.db.injectFault(conflict(["TransactionConflict", "TransactionConflict"], 50));
+    expect(await code(f.follow(ARJUN))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(f.itemOf(ARJUN)).toBeUndefined();
+    expect(f.count()).toBe(0);
+  });
+
+  it("treats the whole-call TransactionConflictException the same way", async () => {
+    const f = world();
+    f.w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionConflictException" } });
+    expect(await f.follow(ARJUN)).toEqual({ following: true });
+    expect(f.count()).toBe(1);
+  });
+});
+
 describe("the people who follow are told", () => {
   it("puts a notice in a follower's changes feed when the session needs a person, and none after they unfollow", async () => {
     const f = world();
