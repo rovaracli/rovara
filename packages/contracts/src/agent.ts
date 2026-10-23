@@ -14,7 +14,7 @@ export const ROVARA_CODE_AGENT_ID: BuiltinAgentId = "rovara-code";
 const PREFIXED_ID_BODY_LENGTH = 20;
 const MIN_RANDOM_BYTES = 16;
 
-export type IdPrefix = "agt" | "skl" | "spr" | "apr" | "src" | "con";
+export type IdPrefix = "agt" | "skl" | "spr" | "apr" | "src" | "con" | "ses" | "dvc" | "msg";
 
 function prefixedIdPattern(prefix: IdPrefix): RegExp {
   return new RegExp(`^${prefix}_[0-9a-z]{${PREFIXED_ID_BODY_LENGTH}}$`);

@@ -3,6 +3,7 @@
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { canonicalInstant, indexDay } from "./admin.js";
 import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
+import type { DeviceId, SessionBinding, SessionId } from "./agent-sessions.js";
 import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
@@ -73,7 +74,7 @@ export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string
   return { pk: memberGrantsPk(orgId, ownerKey), sk: `PROJECT#${project}` };
 }
 
-export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY";
+export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS";
 
 export function orgSettingsKey(orgId: OrgId, name: OrgSettingName): OrgKey {
   return { pk: orgScoped(orgId, "SETTINGS"), sk: name };
@@ -439,4 +440,133 @@ export function agentItemsPk(orgId: OrgId, taskId: string): string {
 /** One item the run created: `<connector>#<value>`, the value as the connector's item path names it. */
 export function agentItemKey(orgId: OrgId, taskId: string, connector: string, value: string): OrgKey {
   return { pk: agentItemsPk(orgId, taskId), sk: `${connector}#${value}` };
+}
+
+// ---- agent sessions (Plan 5 Task 1)
+
+/** A key segment: never empty and never holds the `#` that separates segments, so one segment can't be read as two. */
+function keyPart(value: string, what: string): string {
+  if (value.length === 0 || value.includes("#") || /[\p{Cc}\p{Cf}]/u.test(value)) throw new Error(`${what} can't be empty or hold a "#" or a control character`);
+  return value;
+}
+
+const SESSION_COUNTER_WIDTH = 6;
+
+function paddedCounter(value: number, what: string): string {
+  if (!Number.isInteger(value) || value < 0 || value >= 10 ** SESSION_COUNTER_WIDTH) throw new Error(`${what} is a whole number from 0 to ${String(10 ** SESSION_COUNTER_WIDTH - 1)}`);
+  return String(value).padStart(SESSION_COUNTER_WIDTH, "0");
+}
+
+/** The sort keys inside one session's partition. Events sort by time, then id (`sessionEventSk`); legs by number (`sessionLegSk`). */
+export type AgentSessionItemSk =
+  | "META"
+  | `SHARE#${string}`
+  | `FOLLOWER#${string}`
+  | `PRESENCE#${string}`
+  | `MESSAGE#${string}`
+  | `TURN#${string}`
+  | `EVENT#${string}`
+  | `BINDING#${string}`
+  | `LEG#${string}`;
+
+/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, bindings and legs. */
+export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
+  return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
+}
+
+/** An event's sort key: `EVENT#<instant>#<eventId>`, so a query on `EVENT#` reads them in order. */
+export function sessionEventSk(at: string, eventId: string): `EVENT#${string}` {
+  return `EVENT#${canonicalInstant(at)}#${keyPart(eventId, "an event id")}`;
+}
+
+/** A leg's sort key; six digits keep a query on `LEG#` in leg order. */
+export function sessionLegSk(seq: number): `LEG#${string}` {
+  return `LEG#${paddedCounter(seq, "a leg number")}`;
+}
+
+/** The org's live index: one item per open session (and recently ended ones), keyed by session id. */
+export function liveSessionKey(orgId: OrgId, sessionId: SessionId): OrgKey {
+  return { pk: orgScoped(orgId, "LIVE_SESSIONS"), sk: keyPart(sessionId, "a session id") };
+}
+
+/** The sessions one person owns, newest last; `createdAt` is an instant. */
+export function mySessionsKey(orgId: OrgId, developerId: string, createdAt: string, sessionId: SessionId): OrgKey {
+  return { pk: orgScoped(orgId, `MY_SESSIONS#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(createdAt)}#${keyPart(sessionId, "a session id")}` };
+}
+
+/** The sessions on one project, newest last; `createdAt` is an instant. */
+export function projectSessionsKey(orgId: OrgId, project: string, createdAt: string, sessionId: SessionId): OrgKey {
+  return { pk: orgScoped(orgId, `PROJECT_SESSIONS#${keyPart(project, "a project name")}`), sk: `${canonicalInstant(createdAt)}#${keyPart(sessionId, "a session id")}` };
+}
+
+/** The sessions shared with one principal (a member, a project or the org), for "Shared with me". */
+export function sharedSessionsKey(orgId: OrgId, principal: AgentPrincipal, sessionId: SessionId): OrgKey {
+  return { pk: orgScoped(orgId, `SHARED_SESSIONS#${principalKey(principal)}`), sk: keyPart(sessionId, "a session id") };
+}
+
+/** The item that remembers what one request on a session did (R18): one per (org, developer, request id), written in the change's own transaction. */
+export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: string): OrgKey {
+  return { pk: orgScoped(orgId, `SESSION_REQUEST#${keyPart(developerId, "a developer id")}`), sk: keyPart(requestId, "a request id") };
+}
+
+/** What one task has cost so far, added to when a model key settles, so a session shows cost without summing keys. */
+export function taskSpendKey(orgId: OrgId, taskId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TASK_SPENT#${keyPart(taskId, "a task id")}`), sk: "META" };
+}
+
+/** The global list of open sessions, swept every few minutes. A named exception to org scoping: ids and the org only; a reader re-checks `orgId` on the record. */
+export function openAgentSessionKey(orgId: OrgId, sessionId: SessionId): OrgKey {
+  return { pk: "OPEN_AGENT_SESSIONS", sk: `${orgId}#${keyPart(sessionId, "a session id")}` };
+}
+
+/** The global list of sessions that ended on one UTC day (`day` is `YYYY-MM-DD`), for the retention job. Ids and the org only. */
+export function endedSessionWorkKey(day: string, orgId: OrgId, sessionId: SessionId): OrgKey {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(day) || Number.isNaN(Date.parse(`${day}T00:00:00.000Z`))) throw new Error("a day is YYYY-MM-DD");
+  return { pk: `ENDED_AGENT_SESSIONS#${day}`, sk: `${orgId}#${keyPart(sessionId, "a session id")}` };
+}
+
+/** Where the sweep remembers how far it got. A global item holding no org. */
+export const SESSION_SWEEP_CURSOR_KEY: OrgKey = { pk: "SESSION_SWEEP_CURSOR", sk: "META" };
+
+/** The item that binds one outside surface (a Slack thread or a Linear issue) to one session: one binding per surface per org. */
+export function sessionSurfaceKey(orgId: OrgId, binding: SessionBinding): OrgKey {
+  const sk = binding.kind === "slack_thread"
+    ? `SLACK#${keyPart(binding.teamId, "a Slack team")}#${keyPart(binding.channelId, "a Slack channel")}#${keyPart(binding.threadTs, "a thread")}`
+    : `LINEAR#${keyPart(binding.issueId, "an issue id")}`;
+  return { pk: orgScoped(orgId, "SESSION_SURFACE"), sk };
+}
+
+/** One person's change notice (ids only), kept for the catch-up feed; `at` is an instant and `n` orders notices written in one instant. */
+export function changesKey(orgId: OrgId, developerId: string, at: string, n: number): OrgKey {
+  return { pk: orgScoped(orgId, `CHANGES#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(at)}#${paddedCounter(n, "a notice number")}` };
+}
+
+/** A Home card one person dismissed. */
+export function homeDismissKey(orgId: OrgId, developerId: string, cardId: string): OrgKey {
+  return { pk: orgScoped(orgId, `HOME_DISMISS#${keyPart(developerId, "a developer id")}`), sk: keyPart(cardId, "a card id") };
+}
+
+/** A project's session counts for one UTC month (`month` is `YYYY-MM`). */
+export function projectMonthStatsKey(orgId: OrgId, project: string, month: string): OrgKey {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/u.test(month)) throw new Error("a month is YYYY-MM");
+  return { pk: orgScoped(orgId, `PROJECT_SESSION_STATS#${keyPart(project, "a project name")}`), sk: month };
+}
+
+/** A registered Mac: its record and its command queue share this partition. */
+function devicePk(orgId: OrgId, deviceId: DeviceId): string {
+  return orgScoped(orgId, `DEVICE#${keyPart(deviceId, "a device id")}`);
+}
+
+export function deviceKey(orgId: OrgId, deviceId: DeviceId): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: "META" };
+}
+
+/** The list of one member's devices, for the per-member limit and the settings page. */
+export function memberDevicesKey(orgId: OrgId, developerId: string, deviceId: DeviceId): OrgKey {
+  return { pk: orgScoped(orgId, `MEMBER_DEVICES#${keyPart(developerId, "a developer id")}`), sk: keyPart(deviceId, "a device id") };
+}
+
+/** One command waiting for a device (stop, move to the cloud, a steering message); six digits keep them in order. */
+export function deviceCommandKey(orgId: OrgId, deviceId: DeviceId, seq: number): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: `COMMAND#${paddedCounter(seq, "a command number")}` };
 }

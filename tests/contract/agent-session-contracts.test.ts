@@ -81,7 +81,6 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 const ORG_A = OrgIdSchema.parse("org_aaaaaaaaaaaaaaaaaaaa");
 const ORG_B = OrgIdSchema.parse("org_bbbbbbbbbbbbbbbbbbbb");
 const DEV = "a".repeat(64);
-const OTHER_DEV = "b".repeat(64);
 const SESSION = "ses_0123456789abcdefghij";
 const CHAIN_RUN = "crn_0123456789abcdefghij";
 const DEVICE = "dvc_0123456789abcdefghij";
@@ -490,10 +489,9 @@ describe("the view schemas", () => {
   });
 
   it("keeps a missing required value an error in the reader, not an unknown", () => {
-    const { title: _title, ...withoutTitle } = view;
-    expect(SessionViewReaderSchema.safeParse(withoutTitle).success).toBe(false);
-    const { status: _status, ...withoutStatus } = summary;
-    expect(SessionViewReaderSchema.safeParse({ ...view, summary: withoutStatus }).success).toBe(false);
+    expect(SessionViewReaderSchema.safeParse({ ...view, title: undefined }).success).toBe(false);
+    expect(SessionViewReaderSchema.safeParse({ ...view, summary: { ...summary, status: undefined } }).success).toBe(false);
+    expect(SessionViewReaderSchema.safeParse({ ...view, summary: { ...summary, status: 7 } }).success).toBe(false);
   });
 
   it("declares the home, project and confirmation shapes, strict and reader", () => {

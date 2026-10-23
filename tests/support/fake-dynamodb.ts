@@ -119,6 +119,7 @@ export class FakeDynamoDb {
   readonly refusals: Array<{ command: string; message: string }> = [];
   /** Constructor names of every command sent, in order (spec 025 A3: no route scans). */
   private readonly sent: string[] = [];
+  private readonly transactionLog: Array<Array<Record<string, unknown>>> = [];
 
   private readonly faults: InjectedFault[] = [];
 
@@ -129,6 +130,11 @@ export class FakeDynamoDb {
 
   commandNames(): string[] {
     return [...this.sent];
+  }
+
+  /** The entries of each `TransactWriteCommand` sent, in order, one array per transaction (copies; a cancelled transaction is listed too). */
+  transactions(): Array<Array<Record<string, unknown>>> {
+    return this.transactionLog.map((entries) => structuredClone(entries));
   }
 
   /** Removes one item without a stream record, as seeding does. */
@@ -161,6 +167,7 @@ export class FakeDynamoDb {
 
   send = async (command: Command): Promise<unknown> => {
     this.sent.push(command.constructor.name);
+    if (command.constructor.name === "TransactWriteCommand") this.transactionLog.push(structuredClone((command.input.TransactItems ?? []) as Array<Record<string, unknown>>));
     // DynamoDB checks a request's expression attributes before it does anything else, each transaction entry on its own.
     try {
       if (this.validateExpressions) {
