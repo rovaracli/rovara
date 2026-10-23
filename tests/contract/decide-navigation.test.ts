@@ -20,7 +20,7 @@ async function setup() {
  const context: DecideRequestContext = { store, now: () => NOW, cellOrigin: CELL, kinds: { apr: { inspect, decide }, spr: { inspect, decide } }, authenticateBearer: async () => ({ orgId: ORG, developerId: WHO }) };
  await store.putSession(COOKIE, { orgId: ORG, developerId: WHO, approvalId: APR, signedInAt: NOW / 1000, method: "email_code", csrfHash: createHash("sha256").update(csrfTokenFor(COOKIE)).digest("hex"), expiresAt: NOW / 1000 + 600 });
  const path = "/v1/app/approve/" + APR;
- const page = (method: string, headers: Record<string, string> = {}) => routeDecidePage(context, { method, path, requestId: "fixture", headers: { cookie: `${DECIDE_COOKIE}=${COOKIE}`, ...(method === "POST" ? { origin: CELL, "content-type": "application/x-www-form-urlencoded" } : {}), ...headers }, ...(method === "POST" ? { body: new URLSearchParams({ decision: "approve", csrf: csrfTokenFor(COOKIE) }).toString() } : {}) }, new URL(path, CELL));
+ const page = (method: string, headers: Record<string, string | undefined> = {}) => routeDecidePage(context, { method, path, requestId: "fixture", headers: { cookie: `${DECIDE_COOKIE}=${COOKIE}`, ...(method === "POST" ? { origin: CELL, "content-type": "application/x-www-form-urlencoded" } : {}), ...headers }, ...(method === "POST" ? { body: new URLSearchParams({ decision: "approve", csrf: csrfTokenFor(COOKIE) }).toString() } : {}) }, new URL(path, CELL));
  return { db, store, inspect, decide, context, page, path };
 }
 describe("a person's own approval navigation", () => {
@@ -48,7 +48,8 @@ describe("a person's own approval navigation", () => {
   const s = await setup();
   for (const id of [APR, "spr_aaaaaaaaaaaaaaaaaaaa"]) for (const mode of ["cors", "same-origin", "no-cors"]) {
    const before = s.db.commandNames().length;
-   await expect(requireDecideSession(s.context, { method: "POST", path: `/v1/app/${id.startsWith("apr") ? "approvals" : "spend-requests"}/${id}/decide`, headers: { authorization: "Bearer fixture", "sec-fetch-mode": mode } })).rejects.toMatchObject({ code: "FORBIDDEN", statusCode: 403, message: expect.stringContaining("Open this approval from its link.") });
+   const refused = requireDecideSession(s.context, { method: "POST", path: `/v1/app/${id.startsWith("apr") ? "approvals" : "spend-requests"}/${id}/decide`, headers: { authorization: "Bearer fixture", "sec-fetch-mode": mode } });
+   await expect(refused).rejects.toMatchObject({ code: "FORBIDDEN", statusCode: 403 });await expect(refused).rejects.toThrow("Open this approval from its link.");
    expect(s.db.commandNames().slice(before)).toEqual([]);
   }
   await expect(requireDecideSession(s.context, { method: "POST", path: `/v1/app/approvals/${APR}/decide`, headers: { authorization: "Bearer fixture" } })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
