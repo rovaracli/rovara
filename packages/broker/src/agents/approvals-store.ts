@@ -4,7 +4,8 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type SessionId, type SessionLevel } from "@agentx/contracts";
+import type { SessionShareDependencies } from "../agent-sessions/shares.js";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
 import { auditApprovalRequested } from "../audit/events.js";
@@ -42,6 +43,8 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   mintConfirmUrl?: (caller: AgentCaller, approvalId: string) => Promise<string>;
   /** Task 22: what the agent-step engine needs of the broker (dispatching a step's operation, the creator and recipe checks, the parts of a task's end). Without it a run cannot go on. */
   agentRuns?: AgentRunHost;
+  /** Plan 5 Task 4: what company-wide session shares need (their rule and handler); without it a `session_share_org` change can't be decided or applied. */
+  agentSessions?: SessionShareDependencies;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -81,9 +84,15 @@ export interface ConnectorWidenSubject { kind: "connector_widen"; project: strin
  */
 export interface OptOutChangeSubject { kind: "opt_out"; project: string; repository: string; expectedDigest: string; files: string[]; reason: string }
 
-/** The kinds of change that are not about an agent itself: connector widenings (Task 13) and comment-trigger opt-outs (Task 14b). */
-export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject;
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject;
+/**
+ * Plan 5 Task 4: makes everyone in the company able to see a session at `level` (a share with the whole company needs the sharer's fresh sign-in, like
+ * handing over its ownership). It applies as the person who decided it, if they may still share the session.
+ */
+export interface SessionShareOrgSubject { kind: "session_share_org"; sessionId: SessionId; level: SessionLevel }
+
+/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b) and company-wide session shares (Plan 5). */
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -252,6 +261,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
+  z.object({ kind: z.literal("session_share_org"), sessionId: SessionIdSchema, level: SessionLevelSchema }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   z.object({
     kind: z.literal("opt_out"), project: z.string(), repository: z.string(), expectedDigest: Hex64, files: z.array(z.string()), reason: z.string(),

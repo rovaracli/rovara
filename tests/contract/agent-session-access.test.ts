@@ -1,14 +1,10 @@
 // Plan 5 Task 4: what a person may do on a session. The level is the highest of ownership, the caller's own project grant and org role, shares and
 // Task People roles, capped by a project viewer's rule and a Task People `denied` entry; another org, and no level at all, answer NOT_FOUND.
 import { describe, expect, it } from "vitest";
-import { agentXError } from "@agentx/contracts";
 import { requireSessionLevel, resolveSessionAccess, sessionActionsFor, type SessionAccessDependencies } from "../../packages/broker/src/agent-sessions/access.js";
-import { sessionOnMacMessage } from "../../packages/contracts/src/agent-sessions.js";
 import { ARJUN, BO, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
 
 const VIEWER_TEXT = "Viewers of web can only watch its sessions.";
-void agentXError;
-void sessionOnMacMessage;
 
 function depsOf(w: SessionWorld, extra: Partial<SessionAccessDependencies> = {}): SessionAccessDependencies {
   return {
@@ -251,7 +247,8 @@ describe("the read-only path", () => {
     expect(await read(PRIYA)).toBe("edit");
     expect(await read(ARJUN)).toBe("view");
     expect(await read(MAX)).toBe("edit");
-    expect(await read(OLA)).toBe("view");
+    // An org admin has a role on every project, so the project share reaches them.
+    expect(await read(OLA)).toBe("use");
     expect(await read(ZED)).toBe("use");
     expect(await read(MIA)).toBe("view");
   });

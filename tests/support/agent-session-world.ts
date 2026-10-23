@@ -103,18 +103,18 @@ export function sessionWorld() {
       ...(options.ended === true ? { endedAt: "2026-10-22T08:30:00.000Z" } : {}),
       summary: { status: options.ended === true ? "succeeded" : "running", costUsd: 0, needsPeople: [], pendingApprovals: 0, digest: "d".repeat(64), computedAt: createdAt },
     };
-    db.set({ ...agentSessionKey(orgId, sessionId, "META"), entityType: "AGENT_SESSION", ...record } as Item);
+    db.set({ ...agentSessionKey(orgId, sessionId, "META"), entityType: "AGENT_SESSION", ...record });
     if (kind === "task") {
       db.set({
         ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: options.taskOrgId ?? orgId, developerId: owner, developerName: NAMES[owner] ?? "Someone", provider: "oidc",
         project: projectName ?? "web", workspaceId: randomUUID(), ownerKey: `owner-${owner.slice(0, 6)}`, sessionId, createdAt, updatedAt: createdAt,
         ...(options.currentOwner === undefined ? {} : { currentOwner: { developerId: options.currentOwner, since: createdAt } }),
-      } as Item);
+      });
       if (options.people !== undefined) {
         db.set({
           pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false,
           people: options.people.map((entry, index) => ({ developerId: entry.developerId, slackUserId: `U0PERSON${String(index).padStart(2, "0")}`, name: NAMES[entry.developerId] ?? "Someone", role: entry.role })),
-        } as Item);
+        });
       }
     }
     return { sessionId, taskId, record };
@@ -126,10 +126,10 @@ export function sessionWorld() {
     db.set({
       ...agentSessionKey(orgId, sessionId, `SHARE#${key}`), entityType: "AGENT_SESSION_SHARE", orgId, sessionId, principal, level,
       sharedBy: { developerId: sharedBy, name: NAMES[sharedBy] ?? "Someone" }, sharedAt: "2026-10-22T08:10:00.000Z",
-    } as Item);
+    });
   };
 
-  const follower = (orgId: OrgId, sessionId: string, developerId: string) => db.set({ ...agentSessionKey(orgId, sessionId, `FOLLOWER#${developerId}`), entityType: "AGENT_SESSION_FOLLOWER", orgId, sessionId, developerId } as Item);
+  const follower = (orgId: OrgId, sessionId: string, developerId: string) => db.set({ ...agentSessionKey(orgId, sessionId, `FOLLOWER#${developerId}`), entityType: "AGENT_SESSION_FOLLOWER", orgId, sessionId, developerId });
 
   return { db, clock, members, signInStore, channelCalls, member, project, grant, caller, seedSession, seedShare, follower };
 }

@@ -6,7 +6,8 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, agentXError, type AuditProof } from "@agentx/contracts";
+import { ApprovalIdSchema, LEVEL_WORDS, agentXError, type AuditProof } from "@agentx/contracts";
+import { AgentSessionStore } from "../agent-sessions/store.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
@@ -28,6 +29,7 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
       case "agent_publish":
       case "agent_manager": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
       case "project_settings": return "a maintainer of this project";
+      case "session_share_org": return "the person who asked, while they can still share the session";
       default: return "the people it was asked of";
     }
   }
@@ -52,6 +54,7 @@ const TITLES: Record<string, string> = {
   guardrails: "Relax the company's agent guardrails",
   connector_widen: "Let a project's connector make changes",
   opt_out: "Let agents comment in a repository whose workflows act on comments",
+  session_share_org: "Share a session with everyone",
 };
 
 const fact = (label: string, value: string) => ({ label, value });
@@ -85,6 +88,11 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
     facts.push(fact("Project", subject.project), fact("Repository", subject.repository), fact("Reviewed workflows", subject.files.join("\n")), fact("Digest of what was reviewed", subject.expectedDigest), fact("Reason", subject.reason));
   } else if (subject.kind === "connector_widen") {
     facts.push(fact("Project", subject.project), fact("Connector", subject.name), fact("Project revision it applies to", String(subject.expectedRevision)));
+  }
+  if (subject.kind === "session_share_org") {
+    // The title is the session's own (redacted when it was stored); a session that can't be read is named by its id.
+    const session = deps.agentSessions === undefined ? undefined : await new AgentSessionStore(deps.agentSessions).get(record.orgId, subject.sessionId).catch(() => undefined);
+    facts.push(fact("Session", session === undefined ? subject.sessionId : shownText(session.title, NAME_MAX * 3)), fact("Everyone in your company", LEVEL_WORDS[subject.level]));
   }
   facts.push(expires);
   return { title: TITLES[subject.kind] ?? "Confirm a change", facts, paragraphs: record.changes };
