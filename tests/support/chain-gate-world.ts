@@ -14,7 +14,9 @@ import { registerChainRunner } from "../../packages/broker/src/chains/index.js";
 import type { ChainRunRecord, ChainRunnerDependencies, StepAttemptRecord } from "../../packages/broker/src/chains/runner.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { INVESTIGATE_THEN_FIX } from "./chain-examples.js";
-import { ARJUN, CARL, DANA, MAX, NAMES, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, setupWorld, type WorldOptions } from "./chain-run-world.js";
+import { ARJUN, CARL, DANA, MAX, NAMES, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, setupWorld, type ChainWorld, type RunEventRow, type WorldOptions } from "./chain-run-world.js";
+import type { ChainRecord } from "../../packages/broker/src/chains/store.js";
+import type { OrgId } from "../../packages/contracts/src/org.js";
 
 export { ARJUN, CARL, DANA, MAX, NAMES, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf };
 export const CELL = "https://cell.example.com";
@@ -30,7 +32,31 @@ export interface LoggedLine { event: string; fields: Record<string, unknown> }
 
 type PageOptions = { method?: "GET" | "POST"; cookie?: string; fields?: Record<string, string>; headers?: Record<string, string>; ticket?: string };
 
-export function setupGateWorld(options: WorldOptions = {}) {
+/** What the gate world adds to the chain-run world (spelled out, so the file's declarations name no type by a path through `node_modules`). */
+export interface GateWorld extends ChainWorld {
+  deps: ChainRunnerDependencies & ApprovalDependencies;
+  logs: LoggedLine[];
+  kind: ReturnType<typeof approvalDecideKind>;
+  decideStore: DecideStore;
+  context(kinds?: DecideKinds): DecideRequestContext;
+  session(developerId: string, approvalId: string, session?: { orgId?: OrgId; agoSeconds?: number }): Promise<string>;
+  page(approvalId: string, pageOptions?: PageOptions): ReturnType<typeof routeDecidePage>;
+  decide(approvalId: string, cookie: string, decision?: "approve" | "decline"): ReturnType<typeof routeDecidePage>;
+  decideAs(developerId: string, approvalId: string, decision?: "approve" | "decline", session?: { agoSeconds?: number }): ReturnType<typeof routeDecidePage>;
+  route(caller: AgentCaller, method: string, path: string, body?: unknown, over?: Partial<ApprovalDependencies>): Promise<Record<string, unknown>>;
+  tokenDecide(developerId: string, approvalId: string, authorization: string, decision?: "APPROVE" | "DECLINE"): ReturnType<typeof routeApprovalRequest>;
+  decideRoute(developerId: string, approvalId: string, decision?: "APPROVE" | "DECLINE"): ReturnType<typeof routeApprovalRequest>;
+  start(chainId: string, startedBy?: string, requestId?: string): Promise<ChainRunRecord>;
+  endLatest(extra?: Record<string, unknown>): Promise<void>;
+  runAtGate(startedBy?: string, definition?: ChainDefinitionInput): Promise<{ chain: ChainRecord; run: ChainRunRecord; gate: StepAttemptRecord; approvalId: string }>;
+  approval(approvalId: string): Promise<AnyApprovalRecord>;
+  stepApproval(approvalId: string): Promise<StepApprovalRecord>;
+  attempt(runId: string, seq: number): StepAttemptRecord | undefined;
+  decidedEvents(runId: string): RunEventRow[];
+  stranger(): AgentCaller;
+}
+
+export function setupGateWorld(options: WorldOptions = {}): GateWorld {
   const world = setupWorld(options);
   const logs: LoggedLine[] = [];
   // The people's names, as the sign-in store holds them: a decision's event names who decided.
@@ -43,7 +69,7 @@ export function setupGateWorld(options: WorldOptions = {}) {
   const deps: ChainRunnerDependencies & ApprovalDependencies = {
     ...world.deps, log: (event, fields) => logs.push({ event, fields }),
     mintConfirmUrl: (who, approvalId) => mintConfirmUrl(context(), { developerId: who.developerId, orgId: who.orgId }, approvalId),
-  } as ChainRunnerDependencies & ApprovalDependencies;
+  };
   // What the broker registers at start: the runner's handlers, the gate's rule and handler, and the autonomous write rule with its selector (chains/index.ts).
   disposers.push(registerChainRunner(() => deps));
   const kind = approvalDecideKind(deps);
@@ -89,11 +115,11 @@ export function setupGateWorld(options: WorldOptions = {}) {
   const request = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => ({ method, path, requestId: "r", headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   /** An approval route called as `caller` (what the app, the CLI and the MCP tools reach). */
   const route = (caller: AgentCaller, method: string, path: string, body?: unknown, over: Partial<ApprovalDependencies> = {}) =>
-    routeApprovalRequest({ ...deps, ...over } as ApprovalDependencies, caller, request(method, path, body), new URL(`${CELL}${path}`)) as Promise<Record<string, unknown>>;
+    routeApprovalRequest({ ...deps, ...over }, caller, request(method, path, body), new URL(`${CELL}${path}`)) as Promise<Record<string, unknown>>;
   /** The decide route as a CLI or MCP token reaches it: through the presence guard, which refuses a token. */
   const tokenDecide = (developerId: string, approvalId: string, authorization: string, decision: "APPROVE" | "DECLINE" = "APPROVE") => {
     const gate = (r: Parameters<typeof requireDecideSession>[1]) => requireDecideSession(context(), r);
-    return routeApprovalRequest({ ...deps, requireDecide: gate } as unknown as ApprovalDependencies, callerOf(developerId), {
+    return routeApprovalRequest({ ...deps, requireDecide: gate }, callerOf(developerId), {
       method: "POST", path: `/v1/app/approvals/${approvalId}/decide`, requestId: "r", headers: { authorization }, body: JSON.stringify({ requestId: randomUUID(), decision }),
     }, new URL(`${CELL}/v1/app/approvals/${approvalId}/decide`));
   };
@@ -126,15 +152,15 @@ export function setupGateWorld(options: WorldOptions = {}) {
     const gate = world.attempts(run.runId).find((attempt) => attempt.kind === "gate" && attempt.status === "waiting")!;
     return { chain, run, gate, approvalId: gate.approvalId! };
   };
-  const approval = async (approvalId: string): Promise<AnyApprovalRecord> => (await getAnyApproval(deps, ORG_A, approvalId as never))!;
+  const approval = async (approvalId: string): Promise<AnyApprovalRecord> => (await getAnyApproval(deps, ORG_A, approvalId))!;
   const stepApproval = async (approvalId: string): Promise<StepApprovalRecord> => (await approval(approvalId)) as StepApprovalRecord;
   const attempt = (runId: string, seq: number): StepAttemptRecord | undefined => world.attempts(runId).find((candidate) => candidate.seq === seq);
   /** The text of every `gate_decided` event of the run. */
   const decidedEvents = (runId: string) => world.events(runId).filter((event) => event.type === "gate_decided");
 
-  return {
-    ...world, deps, logs, kind, decideStore, context, session, page, decide, decideAs, route, tokenDecide, decideRoute, start, endLatest, runAtGate, approval, stepApproval, attempt, decidedEvents,
+  const added: Omit<GateWorld, keyof ChainWorld> & { deps: GateWorld["deps"] } = {
+    deps, logs, kind, decideStore, context, session, page, decide, decideAs, route, tokenDecide, decideRoute, start, endLatest, runAtGate, approval, stepApproval, attempt, decidedEvents,
     stranger: () => callerOf(STRANGER, ORG_B),
   };
+  return { ...world, ...added };
 }
-export type GateWorld = ReturnType<typeof setupGateWorld>;

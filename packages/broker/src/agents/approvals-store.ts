@@ -250,6 +250,31 @@ export function registerApprovalGaveUpHandler(kind: ApprovalSubject["kind"], han
   gaveUp.set(kind, handler);
 }
 
+/**
+ * What a rule says to someone it refuses: `text` is the whole sentence the decide API answers `FORBIDDEN` with, `who` the words the confirmation page puts in
+ * "Only <who> can decide this." A rule that can name its people (Plan 4's chain gates) registers it; Plan 3's own rules keep their fixed words.
+ */
+export interface ApproverRefusal { text: string; who: string }
+export type ApproverRefusalFor = (deps: ApprovalDependencies, record: AnyApprovalRecord) => Promise<ApproverRefusal | undefined>;
+const refusals = new Map<string, ApproverRefusalFor>();
+
+/** Registers (or replaces) how a rule words its refusal. Only words: it decides nothing, and a failure of it falls back to the generic text. */
+export function registerApproverRefusal(rule: string, refusal: ApproverRefusalFor): void {
+  refusals.set(rule, refusal);
+}
+
+/** The registered words for a record whose approvers are a rule that has some; undefined for any other record or when the rule's own lookup fails. */
+export async function approverRefusalFor(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<ApproverRefusal | undefined> {
+  if (record.approvers.kind !== "rule") return undefined;
+  const refusal = refusals.get(record.approvers.rule);
+  if (refusal === undefined) return undefined;
+  try {
+    return await refusal(deps, record);
+  } catch {
+    return undefined;
+  }
+}
+
 export const getApprovalGaveUpHandler = (kind: string): ApprovalSubjectHandler | undefined => gaveUp.get(kind);
 export const getApproverRule = (rule: string): ApproverRuleCheck | undefined => rules.get(rule);
 export const getApprovalSubjectHandler = (kind: string): ApprovalSubjectHandler | undefined => handlers.get(kind);

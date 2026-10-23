@@ -17,7 +17,7 @@ import {
 import { agentXError } from "@agentx/contracts";
 import { chainKey, chainRunKey, openChainRunKey, projectAiKey, projectMetaKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
-import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, START, STRANGER, VIV, callerOf, setupWorld, type ChainWorld } from "../support/chain-run-world.js";
+import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, START, STRANGER, VIV, callerOf, decisionBy, setupWorld, type ChainWorld } from "../support/chain-run-world.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -392,7 +392,7 @@ describe("the worked example: investigate, then fix", () => {
     expect(w.attempts(run.runId)[1]).toMatchObject({ seq: 2, stepId: "approve_fix", kind: "gate", status: "waiting" });
 
     // Task 8 fakes the decision: the gate is approved and Rovara Code starts with the report as context.
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     expect(w.starts).toHaveLength(2);
     expect(w.starts[1]).toMatchObject({
       agent: { agentId: "rovara-code", version: currentBuiltinVersion("rovara-code") }, chain: { chainRunId: run.runId, stepId: "fix" }, runLimitUsd: 29.25,
@@ -999,7 +999,7 @@ describe("onStepTaskEnded", () => {
     const run = await startAs(w, PRIYA, chain.chainId);
     await endTask(w, "task-1", { finalReport: "r", branch: "fix" });
     const { recordGateDecision } = await runner();
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     await endTask(w, "task-2", { outcome: "failed" });
     expect(w.run(run.runId)).toMatchObject({ status: "failed", failure: { reason: "step_failed", message: 'Step "Fix it" failed: it did not finish.' } });
   });
@@ -1010,7 +1010,7 @@ describe("onStepTaskEnded", () => {
     const run = await startAs(w, PRIYA, chain.chainId);
     await endTask(w, "task-1", { finalReport: "r", branch: "fix" });
     const { recordGateDecision } = await runner();
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     await endTask(w, "task-2", { outcome: "merged", pullRequests: [{ repository: "web", number: 1, url: "https://github.com/acme/web/pull/1" }, { repository: "web", number: 2, url: "http://github.com/acme/web/pull/2" }] });
     expect(w.attempts(run.runId)[2]).toMatchObject({ status: "succeeded", result: { report: "Rovara Code finished: merged.", links: [{ label: "Pull request web#1", url: "https://github.com/acme/web/pull/1" }] } });
   });
@@ -1291,7 +1291,7 @@ describe("onStepTaskPaused", () => {
     const run = await startAs(w, PRIYA, chain.chainId);
     await endTask(w, "task-1", { finalReport: "r", branch: "fix" });
     const { recordGateDecision, onStepTaskPaused } = await runner();
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     const before = JSON.stringify([...w.db.items.entries()]);
     await onStepTaskPaused(w.deps, { ...w.pauseEvent("task-2"), orgId: ORG_B });
     await onStepTaskPaused(w.deps, { ...w.pauseEvent("task-2"), chain: { chainRunId: "crn_nnnnnnnnnnnnnnnnnnnn", stepId: "fix" } });
@@ -1543,7 +1543,7 @@ describe("a run that has ended is never moved again", () => {
     await onStepTaskEnded(w.deps, w.endEvent("task-1", { finalReport: "again" }));
     await onStepTaskPaused(w.deps, w.pauseEvent("task-1"));
     await markStepResumed(w.deps, ORG_A, run.runId, "task-1");
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     expect(snapshot(w)).toBe(before);
     expect(w.starts).toHaveLength(1);
   });
@@ -1622,8 +1622,8 @@ describe("a change that lands between a read and the write is never overwritten"
     const w = setupWorld();
     const { run } = await atGate(w);
     const { recordGateDecision } = await runner();
-    w.beforeTransaction("was approved", () => w.touchRun(run.runId));
-    await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved")).rejects.toThrow();
+    w.beforeTransaction("gate_decided", () => w.touchRun(run.runId));
+    await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2))).rejects.toThrow();
     expect(w.attempts(run.runId)[1]).toMatchObject({ status: "waiting" });
     expect(w.starts).toHaveLength(1);
   });
@@ -1797,19 +1797,19 @@ describe("what a run is made of that is not in the worked example", () => {
     const w = setupWorld();
     const { run } = await atGate(w);
     const { recordGateDecision } = await runner();
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined", decisionBy(w, run.runId, 2));
     expect(w.attempts(run.runId)[1]).toMatchObject({ status: "succeeded", decision: "declined" });
     expect(w.run(run.runId)).toMatchObject({ status: "succeeded", traversals: { "investigate>approve_fix": 1, "approve_fix>$end": 1 } });
     expect(w.starts).toHaveLength(1);
-    expect(w.events(run.runId).find((event) => event.type === "gate_decided")!.text).toBe('Gate "Approve the fix" was sent back.');
+    expect(w.events(run.runId).find((event) => event.type === "gate_decided")!.text).toBe('Someone sent "Approve the fix" back');
   });
 
   it("takes an approved gate down its onApprove edge, once, however often it is told, and by one at a time", async () => {
     const w = setupWorld();
     const { run } = await atGate(w);
     const { recordGateDecision } = await runner();
-    await Promise.all([recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved"), recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined")]);
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await Promise.all([recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2)), recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined", decisionBy(w, run.runId, 2))]);
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     expect(w.events(run.runId).filter((event) => event.type === "gate_decided")).toHaveLength(1);
     expect(w.attempts(run.runId)[1]!.decision).toBeDefined();
     expect(w.starts.length).toBeLessThanOrEqual(2);
@@ -1820,15 +1820,15 @@ describe("what a run is made of that is not in the worked example", () => {
     const { run } = await atGate(w);
     const { recordGateDecision } = await runner();
     const before = snapshot(w);
-    await recordGateDecision(w.deps, ORG_A, run.runId, 1, "approved");
-    await recordGateDecision(w.deps, ORG_A, run.runId, 7, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 1, "approved", decisionBy(w, run.runId, 1));
+    await recordGateDecision(w.deps, ORG_A, run.runId, 7, "approved", decisionBy(w, run.runId, 7));
     expect(snapshot(w)).toBe(before);
     // An attempt of the gate that is no longer the current one is left alone, and so is a step that is not a gate.
     w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, currentSeq: 3 });
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, currentSeq: 1 });
     w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, stepSk(1)))!, status: "waiting" });
-    await recordGateDecision(w.deps, ORG_A, run.runId, 1, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 1, "approved", decisionBy(w, run.runId, 1));
     expect(w.attempts(run.runId)[0]!.status).toBe("waiting");
     expect(w.attempts(run.runId)[1]!.status).toBe("waiting");
   });
@@ -1838,7 +1838,7 @@ describe("what a run is made of that is not in the worked example", () => {
     const { run } = await atGate(w);
     const { recordGateDecision, advanceChainRun } = await runner();
     w.hooks.refuse.push(agentXError("RUNTIME_UNAVAILABLE", "socket hang up"));
-    await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved")).rejects.toThrow("socket hang up");
+    await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2))).rejects.toThrow("socket hang up");
     expect(w.run(run.runId)!.status).toBe("running");
     expect(w.attempts(run.runId)[1]).toMatchObject({ status: "succeeded", decision: "approved" });
     await advanceChainRun(w.deps, ORG_A, run.runId);
@@ -1965,7 +1965,7 @@ describe("what a run is made of that is not in the worked example", () => {
     const run = await startAs(w, PRIYA, chain.chainId);
     await endTask(w, "task-1", { finalReport: "r", branch: "fix" });
     const { recordGateDecision } = await runner();
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     const pullRequests = Array.from({ length: 25 }, (_unused, at) => ({ repository: "web", number: at + 1, url: `https://github.com/acme/web/pull/${String(at + 1)}` }));
     await endTask(w, "task-2", { pullRequests });
     expect(w.attempts(run.runId)[2]!.result!.links).toHaveLength(20);
@@ -2447,11 +2447,11 @@ describe("a run keeps the state a person can rely on when the next write fails",
     const { run } = await atGate(w);
     const { recordGateDecision } = await runner();
     w.beforeTransaction('"step_started"', () => { throw new Error("db down"); });
-    await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved")).rejects.toThrow("db down");
+    await expect(recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2))).rejects.toThrow("db down");
     expect(w.run(run.runId)!.status).toBe("running");
     expect(w.attempts(run.runId)[1]).toMatchObject({ status: "succeeded", decision: "approved" });
     const before = snapshot(w);
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined", decisionBy(w, run.runId, 2));
     expect(snapshot(w)).toBe(before);
     expect(w.starts).toHaveLength(1);
   });

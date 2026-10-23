@@ -10,7 +10,7 @@ import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js"
 import { agentXError } from "@agentx/contracts";
 import { chainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
-import { ORG_A, PRIYA, callerOf, setupWorld, type ChainWorld } from "../support/chain-run-world.js";
+import { ORG_A, PRIYA, callerOf, decisionBy, setupWorld, type ChainWorld } from "../support/chain-run-world.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 const runner = () => import("../../packages/broker/src/chains/runner.js");
@@ -291,7 +291,7 @@ describe("what a pick leaves in the step's result", () => {
     const run = await startAs(w, chain.chainId);
     const { recordGateDecision } = await runner();
     await endLatest(w, { branch: "fix" });
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     expect(w.starts[1]!.agent.agentId).toBe("rovara-code");
     expect(w.starts[1]).not.toHaveProperty("resultContract");
     await endLatest(w, { outcome: "merged", branch: "fix" });
@@ -387,12 +387,12 @@ describe("a loop stops at the bound of its edge", () => {
     const run = await startAs(w, chain.chainId);
     const { recordGateDecision } = await runner();
     await endLatest(w, {});
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "declined", decisionBy(w, run.runId, 2));
     await endLatest(w, {});
-    await recordGateDecision(w.deps, ORG_A, run.runId, 4, "declined");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 4, "declined", decisionBy(w, run.runId, 4));
     await endLatest(w, {});
     expect(w.run(run.runId)).toMatchObject({ status: "waiting", currentSeq: 6 });
-    await recordGateDecision(w.deps, ORG_A, run.runId, 6, "declined");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 6, "declined", decisionBy(w, run.runId, 6));
     expect(w.run(run.runId)).toMatchObject({
       status: "failed", stepRuns: 3, traversals: { "draft>approve": 3, "approve>draft": 2 },
       failure: { seq: 6, reason: "loop_limit", message: 'Step "draft" was reached 3 times from "approve", the most this chain allows.' },

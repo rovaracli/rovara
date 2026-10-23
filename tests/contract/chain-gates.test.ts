@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { expireApprovals } from "../../packages/broker/src/agents/approvals.js";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
 import { GATE_DEFAULT_TIMEOUT_HOURS, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { openChainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { createAgentXMcpServer, type ControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
@@ -43,7 +42,7 @@ const looping = (bound: number): ChainDefinitionInput => ({
   start: "look", limits: { maxRunUsd: 30 },
   steps: [
     agentStep("look", "Look into it", "root-cause-analyst", { kind: "go", to: "approve" }),
-    { kind: "gate", id: "approve", name: "Approve it", prompt: "Go ahead?", approvers: [{ kind: "starter" }, { kind: "project_maintainers" }], onApprove: { to: "$end" }, onReject: { to: "look", maxTraversals: bound } } as Step,
+    { kind: "gate", id: "approve", name: "Approve it", prompt: "Go ahead?", approvers: [{ kind: "starter" }, { kind: "project_maintainers" }], onApprove: { to: "$end" }, onReject: { to: "look", maxTraversals: bound } },
   ],
 });
 const startAsEvent = async (w: GateWorld, chainId: string, owner: string = PRIYA) => {
@@ -64,7 +63,7 @@ describe("opening a gate", () => {
     expect(record).toMatchObject({ orgId: ORG_A, kind: "step", status: "PENDING", prompt: "Should Rovara Code fix this?", subject: { kind: "chain_gate", chainRunId: run.runId, seq: 2 }, project: "web" });
     expect(record.approvers).toMatchObject({ kind: "rule", rule: "chain_gate" });
     // The starter, then the project's maintainers (an org admin is one): who sees it listed. Who may decide is read when they decide.
-    expect(new Set((record.approvers as { candidates: string[] }).candidates)).toEqual(new Set([PRIYA, MAX, DANA]));
+    expect(new Set((record.approvers as { candidates: readonly string[] }).candidates)).toEqual(new Set([PRIYA, MAX, DANA]));
     expect(record.expiresAt).toBe(new Date(w.clock.now + GATE_DEFAULT_TIMEOUT_HOURS * HOUR).toISOString());
     expect(gate).toMatchObject({ seq: 2, kind: "gate", status: "waiting", approvalId, stepId: "approve_fix" });
     expect(w.run(run.runId)).toMatchObject({ status: "waiting", currentSeq: 2 });
@@ -176,6 +175,15 @@ describe("who may decide a gate (checked when they decide)", () => {
     }
   });
 
+  it("lets the starter decide only when a rule names them: with `project_maintainers` alone, the person who started the run is refused", async () => {
+    const w = setupGateWorld();
+    const { run, approvalId } = await w.runAtGate(PRIYA, gated([{ kind: "project_maintainers" }]));
+    expect(await refusal(w.decideRoute(PRIYA, approvalId))).toEqual({ code: "FORBIDDEN", message: 'Only a maintainer of web can approve "Approve it".' });
+    expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(403);
+    expect((await w.decideAs(MAX, approvalId)).statusCode).toBe(200);
+    expect(w.run(run.runId)).toMatchObject({ currentSeq: 3 });
+  });
+
   it("refuses a viewer, a member with no role on the project, and a viewer who started the run", async () => {
     const w = setupGateWorld();
     const { approvalId } = await w.runAtGate();
@@ -203,7 +211,7 @@ describe("who may decide a gate (checked when they decide)", () => {
     const { approvalId } = await w.runAtGate();
     w.db.find((item) => item.entityType === "ORG_MEMBER" && item.developerId === PRIYA).forEach((item) => w.db.delete(String(item.pk), String(item.sk)));
     expect(await refusal(w.decideRoute(PRIYA, approvalId))).toMatchObject({ code: "NOT_FOUND" });
-    const other = await w.session(STRANGER, approvalId, { orgId: "org_bbbbbbbbbbbbbbbbbbbb" as never });
+    const other = await w.session(STRANGER, approvalId, { orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
     expect((await w.page(approvalId, { cookie: other })).statusCode).toBe(404);
     expect((await w.decide(approvalId, other)).statusCode).toBe(404);
     await expect(w.route(w.stranger(), "GET", `/v1/app/approvals/${approvalId}`)).rejects.toMatchObject({ code: "NOT_FOUND" });
@@ -213,7 +221,7 @@ describe("who may decide a gate (checked when they decide)", () => {
   it("matches the gate's own rules: `chain_owner` is the chain's member owner or a maintainer of its owning project, `members` the people listed", async () => {
     // A chain owned by Priya: only she (and nobody else who holds start_tasks) matches chain_owner.
     const own = setupGateWorld();
-    const mine = await own.runAtGate(CARL, gated([{ kind: "chain_owner" }]));
+    const mine = await own.runAtGate(PRIYA, gated([{ kind: "chain_owner" }]));
     expect(await refusal(own.decideRoute(CARL, mine.approvalId))).toMatchObject({ code: "FORBIDDEN" });
     expect(await refusal(own.decideRoute(MAX, mine.approvalId))).toMatchObject({ code: "FORBIDDEN" });
     expect((await own.decideAs(PRIYA, mine.approvalId)).statusCode).toBe(200);
@@ -241,7 +249,7 @@ describe("who may decide a gate (checked when they decide)", () => {
     expect(approverWords([{ kind: "chain_owner" }], context)).toBe("Fix flow's owner");
     expect(approverWords([{ kind: "members", developerIds: [CARL] }], context)).toBe("Carl");
     expect(approverWords([{ kind: "starter" }, { kind: "project_maintainers" }], context)).toBe("the person who started this run or a maintainer of web");
-    expect(approverWords([{ kind: "starter" }, { kind: "chain_owner" }, { kind: "members", developerIds: [CARL, VIV] }], context)).toBe("the person who started this run, Fix flow's owner or Carl, Viv");
+    expect(approverWords([{ kind: "starter" }, { kind: "chain_owner" }, { kind: "members", developerIds: [CARL, VIV] }], context)).toBe("the person who started this run, Fix flow's owner, Carl or Viv");
   });
 
   it("fails closed when the gate can't be read: a missing chain version, an attempt that is not this approval's", async () => {
@@ -394,7 +402,7 @@ describe("a gate is decided once (R18)", () => {
     expect(w.events(run.runId).map((event) => event.seq)).toEqual(w.events(run.runId).map((_, index) => index + 1));
   });
 
-  it("leaves a loop's earlier attempt alone: deciding the first attempt's approval again changes nothing in the run at attempt 3", async () => {
+  it("leaves a loop's earlier attempt alone: deciding the first attempt's approval again changes nothing in the run at attempt 3 of the gate", async () => {
     const { onChainGateDecided } = await gates();
     const w = setupGateWorld();
     const chain = await w.publish(looping(3));
@@ -408,14 +416,14 @@ describe("a gate is decided once (R18)", () => {
       if (round < 2) expect((await w.decideAs(PRIYA, gate.approvalId!, "decline")).statusCode).toBe(200);
     }
     expect(new Set(approvals).size).toBe(3);
-    expect(w.attempts(run.runId).map((attempt) => attempt.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(w.attempts(run.runId).map((attempt) => attempt.seq)).toEqual([1, 2, 3, 4, 5, 6]);
     const before = JSON.stringify([w.run(run.runId), w.attempts(run.runId), w.events(run.runId)]);
-    // The first attempt's approval was declined: another decision on it is refused, and telling the runner of it again does nothing to attempt 5.
+    // The first attempt's approval was declined: another decision on it is refused, and telling the runner of it again does nothing to the gate's third attempt.
     expect(await refusal(w.decideRoute(PRIYA, approvals[0]!, "APPROVE"))).toMatchObject({ code: "APPROVAL_CLOSED" });
     await onChainGateDecided(w.deps, { ...(await w.stepApproval(approvals[0]!)), status: "APPROVED", decidedBy: PRIYA, decision: "APPROVE" });
     await onChainGateDecided(w.deps, { ...(await w.stepApproval(approvals[1]!)), status: "APPROVED", decidedBy: PRIYA, decision: "APPROVE" });
     expect(JSON.stringify([w.run(run.runId), w.attempts(run.runId), w.events(run.runId)])).toBe(before);
-    expect(waitingGate(w, run.runId)).toMatchObject({ seq: 5, status: "waiting", approvalId: approvals[2] });
+    expect(waitingGate(w, run.runId)).toMatchObject({ seq: 6, status: "waiting", approvalId: approvals[2] });
     // Its own approval decides it.
     expect((await w.decideAs(MAX, approvals[2]!)).statusCode).toBe(200);
     expect(w.run(run.runId)).toMatchObject({ status: "succeeded" });
@@ -572,8 +580,8 @@ describe("the confirmation page and its tickets", () => {
     const { approvalId } = await w.runAtGate();
     expect((await w.decideAs(PRIYA, approvalId)).statusCode).toBe(200);
     const again = await w.page(approvalId, { cookie: await w.session(PRIYA, approvalId) });
-    expect(again.statusCode).toBe(200);
-    expect(again.body).toContain("already decided");
+    expect(again.statusCode).toBe(409);
+    expect(again.body).toContain("already decided by Priya");
   });
 });
 

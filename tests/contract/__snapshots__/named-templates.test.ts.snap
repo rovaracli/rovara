@@ -2880,6 +2880,22 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Type": "AWS::Logs::LogGroup",
       "UpdateReplacePolicy": "Delete",
     },
+    "BrokerLogsChainWriteApproverSelectorFailuresMetricEE7B1D18": {
+      "Properties": {
+        "FilterPattern": "{ $.event = "write_approver_selector.failed" }",
+        "LogGroupName": {
+          "Ref": "BrokerLogs003CD6FC",
+        },
+        "MetricTransformations": [
+          {
+            "MetricName": "ChainWriteApproverSelectorFailures",
+            "MetricNamespace": "AgentX/staging",
+            "MetricValue": "1",
+          },
+        ],
+      },
+      "Type": "AWS::Logs::MetricFilter",
+    },
     "BrokerLogsEvalBatchWatcherFailedMetricC5DFCB37": {
       "Properties": {
         "FilterPattern": "{ ($.event = "eval_batch_watch.*") && ($.level = "error") }",
@@ -3713,6 +3729,32 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         ],
       },
       "Type": "AWS::IAM::ManagedPolicy",
+    },
+    "ChainWriteApproverSelectorFailedAlarm2C845E82": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "OperatorAlertsA2431256",
+          },
+        ],
+        "AlarmDescription": "The selector that chooses who approves an autonomous chain run's write failed, so the write fell back to the default approvers (the run's owner and the project's maintainers). Check the broker logs for write_approver_selector.failed lines and the task they name.",
+        "AlarmName": "agentx-staging-ChainWriteApproverSelectorFailed",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "EvaluationPeriods": 1,
+        "MetricName": "ChainWriteApproverSelectorFailures",
+        "Namespace": "AgentX/staging",
+        "Period": 300,
+        "Statistic": "Sum",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "notBreaching",
+      },
+      "Type": "AWS::CloudWatch::Alarm",
     },
     "ChatGptConnectionKey03C49F9D": {
       "DeletionPolicy": "Delete",

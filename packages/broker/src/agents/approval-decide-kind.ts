@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { ApprovalIdSchema, agentXError, isBuiltinAgentId, type AuditProof, type OrgId } from "@agentx/contracts";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
+import { approverRefusalFor } from "./approvals-store.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 
@@ -29,7 +30,7 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
       case "agent_manager": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
       case "chain_publish": return "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin";
       case "project_settings": return "a maintainer of this project";
-      default: return "the people it was asked of";
+      default: return (await approverRefusalFor(deps, record))?.who ?? "the people it was asked of";
     }
   }
   return "the people it was asked of";

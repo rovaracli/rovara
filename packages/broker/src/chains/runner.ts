@@ -14,7 +14,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dyn
 import {
   AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema,
   StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
-  openChainRunKey, projectAllows, shortenToBytes, stepSk,
+  GATE_DEFAULT_TIMEOUT_HOURS, openChainRunKey, projectAllows, shortenToBytes, stepSk,
   type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge,
   type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin,
 } from "@agentx/contracts";
@@ -33,6 +33,7 @@ import { chooseEdge, takeEdge } from "./branches.js";
 import { admitChainRun, chainRunLimitUsd, chainRunPayer, runRaiseMessage, settleStepSpend, stepRunLimitUsd, type ChainRunOrigin } from "./budget.js";
 import { requireChainAccess, type ChainAccessDeps } from "./access.js";
 import { buildHandoff, HandoffTriggerSchema, redactSecrets, type EarlierReport, type HandoffTrigger } from "./handoff.js";
+import { onChainGateDecided, openGateApproval } from "./gates.js";
 import { neutralText, runEventItems, type RunEventInput } from "./run-events.js";
 import type { ChainRouteDependencies } from "./routes.js";
 import type { ChainRecord } from "./store.js";
@@ -211,6 +212,12 @@ async function queryPrefix(deps: Table, pk: string, prefix: string): Promise<Arr
 export async function readChainRun(deps: Table, orgId: OrgId, runId: ChainRunId): Promise<ChainRunRecord | undefined> {
   const item = await getItem(deps, chainRunKey(orgId, runId, "META"));
   return item === undefined || item["orgId"] !== orgId ? undefined : strip(item as { pk: string; sk: string; entityType: string }) as unknown as ChainRunRecord;
+}
+
+/** One attempt of the run, or undefined when the run has no such attempt. */
+export async function readStepAttempt(deps: Table, orgId: OrgId, runId: ChainRunId, seq: number): Promise<StepAttemptRecord | undefined> {
+  const item = await getItem(deps, chainRunKey(orgId, runId, stepSk(seq)));
+  return item === undefined || item["orgId"] !== orgId ? undefined : strip(item as { pk: string; sk: string; entityType: string }) as unknown as StepAttemptRecord;
 }
 
 /** Every attempt of the run, in order. */
@@ -575,6 +582,7 @@ async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptR
   const startedAt = iso(deps);
   let record: StepAttemptRecord;
   let events: RunEventInput[];
+  let opened: Awaited<ReturnType<typeof openGateApproval>> | undefined;
   if (target.kind === "agent") {
     const agent = { agentId: target.agent.agentId, name: (await agentFacts(deps, run.orgId, target.agent.agentId)).name, version: target.agent.version };
     const input = stepInput(run, target, attempts, seq);
@@ -584,16 +592,28 @@ async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptR
     };
     events = [{ type: "step_started", stepSeq: seq, text: `Step "${target.name}" started with ${agent.name} version ${String(agent.version)}${attempt > 1 ? ` (attempt ${String(attempt)})` : ""}.` }];
   } else {
-    record = { seq, stepId: target.id, stepName: target.name, kind: "gate", attempt, status: "waiting", inputDigest: digestOf({ gate: target.id, prompt: target.prompt }), startedAt };
-    events = [{ type: "gate_waiting", stepSeq: seq, text: `Waiting for approval of "${target.name}".` }];
+    // The gate's approval is made first (its id is a function of the run and the attempt, so a second try, or one after a crash, finds the same record); the attempt
+    // that waits on it is written after, in the one transaction that moves the run. An approval left behind by a lost race is never decidable: its gate is not live.
+    opened = await openGateApproval(deps, run, target, seq);
+    record = {
+      seq, stepId: target.id, stepName: target.name, kind: "gate", attempt, status: "waiting", approvalId: opened.record.approvalId,
+      inputDigest: digestOf({ gate: target.id, prompt: target.prompt }), startedAt,
+    };
+    events = [{ type: "gate_waiting", stepSeq: seq, text: opened.waitingText }];
   }
   const traversals = via?.traversals ?? run.traversals;
+  // The run is looked at when the gate expires if that is sooner than it was due: its open item moves with it, in the same transaction.
+  const dueAt = opened !== undefined && opened.record.expiresAt < run.dueAt ? opened.record.expiresAt : undefined;
   const items = [
     ...(via?.branchUpdate === undefined ? [] : [via.branchUpdate]),
     { Put: { TableName: deps.tableName, Item: { ...attemptKey(run, seq), entityType: "CHAIN_RUN_STEP", orgId: run.orgId, runId: run.runId, ...record }, ConditionExpression: NOT_EXISTS } },
     ...moveRun(deps, run, {
-      currentSeq: seq, stepRuns: run.stepRuns + (target.kind === "agent" ? 1 : 0), traversals, status: target.kind === "agent" ? "running" : "waiting",
+      currentSeq: seq, stepRuns: run.stepRuns + (target.kind === "agent" ? 1 : 0), traversals, status: target.kind === "agent" ? "running" : "waiting", ...(dueAt === undefined ? {} : { dueAt }),
     }, [...(via?.events ?? []), ...events]),
+    ...(dueAt === undefined ? [] : [
+      { Delete: { TableName: deps.tableName, Key: openChainRunKey(run.dueAt, run.orgId, run.runId), ConditionExpression: "attribute_exists(pk)" } },
+      { Put: { TableName: deps.tableName, Item: { ...openChainRunKey(dueAt, run.orgId, run.runId), entityType: "OPEN_CHAIN_RUN", orgId: run.orgId, runId: run.runId } } },
+    ]),
   ];
   try {
     await transact(deps, items);
@@ -601,7 +621,11 @@ async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptR
     if (await lostRace(deps, run, error)) return "raced";
     throw error;
   }
-  if (target.kind === "gate") return "done";
+  if (target.kind === "gate") {
+    // An approval that ended before its attempt existed (it expired while the process was down) is told to the gate now: nothing else would.
+    if (opened !== undefined && opened.record.status !== "PENDING") await onChainGateDecided(deps, opened.record);
+    return "done";
+  }
   const fresh = await readChainRun(deps, run.orgId, run.runId);
   if (fresh === undefined) return "done";
   return driveStart(deps, fresh, record, [...attempts, record], definition);
@@ -678,28 +702,68 @@ async function recordStarted(deps: Deps, run: ChainRunRecord, attempt: StepAttem
   throw agentXError("WORKSPACE_BUSY", "the chain run kept changing while a step was recorded; try again");
 }
 
-// ---- gates (Task 8 opens them with an approval; the decision comes back through here)
+// ---- gates (a gate is opened with an approval in `gates.ts`; its outcome comes back through here)
+
+/** Which approval a gate's outcome is for, and who decided it (for the event's words). */
+export interface GateOutcomeBy { approvalId: string; name: string }
 
 /**
- * A gate's decision, once someone eligible has made it (Task 8 checks who): the gate's attempt is passed with it and the run goes on by the gate's `onApprove` or
- * `onReject` edge. Only the run's current, waiting gate takes a decision, and only once.
+ * The run's current, waiting gate at `seq` when it waits on `approvalId`, or undefined: the run has ended or moved on, the attempt is not a gate, it was
+ * already passed, or it waits on another approval (an earlier attempt of the same gate in a loop, or one that was never this gate's).
  */
-export async function recordGateDecision(deps: Deps, orgId: OrgId, runId: ChainRunId, seq: number, decision: "approved" | "declined"): Promise<void> {
+async function liveGate(deps: Deps, orgId: OrgId, runId: ChainRunId, seq: number, approvalId: string): Promise<{ run: ChainRunRecord; attempt: StepAttemptRecord } | undefined> {
   const run = await readChainRun(deps, orgId, runId);
-  if (run === undefined || isTerminalStatus(run.status) || run.currentSeq !== seq) return;
-  const attempt = (await readStepAttempts(deps, orgId, runId)).find((candidate) => candidate.seq === seq);
-  if (attempt === undefined || attempt.kind !== "gate" || attempt.status !== "waiting") return;
+  if (run === undefined || isTerminalStatus(run.status) || run.currentSeq !== seq) return undefined;
+  const attempt = await readStepAttempt(deps, orgId, runId, seq);
+  if (attempt === undefined || attempt.kind !== "gate" || attempt.status !== "waiting" || attempt.approvalId !== approvalId) return undefined;
+  return { run, attempt };
+}
+
+/** An update of a gate's attempt that applies only while it still waits on this approval. */
+const gateAttemptUpdate = (deps: Table, run: ChainRunRecord, seq: number, approvalId: string, fields: Record<string, unknown>): TransactItem =>
+  update(deps, attemptKey(run, seq), fields, (aliases) => `${aliases.name("status")} = ${aliases.value("waiting")} AND ${aliases.name("approvalId")} = ${aliases.value(approvalId)}`);
+
+/**
+ * A gate's decision, once someone eligible has made it on its approval (`gates.ts` checks who and which approval): the gate's attempt is passed with it and the
+ * run goes on by the gate's `onApprove` or `onReject` edge. Only the run's current, waiting gate takes a decision, only when it waits on `by.approvalId`, and only
+ * once; the attempt, the run and the `gate_decided` event are one transaction.
+ */
+export async function recordGateDecision(deps: Deps, orgId: OrgId, runId: ChainRunId, seq: number, decision: "approved" | "declined", by: GateOutcomeBy): Promise<void> {
+  const live = await liveGate(deps, orgId, runId, seq, by.approvalId);
+  if (live === undefined) return;
+  const { run, attempt } = live;
+  const words = decision === "approved" ? `${by.name} approved "${attempt.stepName}"` : `${by.name} sent "${attempt.stepName}" back`;
   try {
     await transact(deps, [
-      moveAttempt(deps, run, seq, { status: "succeeded", decision, endedAt: iso(deps) }, ["waiting"]),
-      ...moveRun(deps, run, { status: "running" }, [{ type: "gate_decided", stepSeq: seq, text: `Gate "${attempt.stepName}" was ${decision === "approved" ? "approved" : "sent back"}.` }]),
+      gateAttemptUpdate(deps, run, seq, by.approvalId, { status: "succeeded", decision, endedAt: iso(deps) }),
+      ...moveRun(deps, run, { status: "running" }, [{ type: "gate_decided", stepSeq: seq, text: words }]),
     ]);
   } catch (error) {
     if (failedIndexes(error) === undefined) throw error;
-    const now = (await readStepAttempts(deps, orgId, runId)).find((candidate) => candidate.seq === seq);
+    const now = await readStepAttempt(deps, orgId, runId, seq);
     if (now !== undefined && now.status === "waiting") throw error;
   }
   await advanceChainRun(deps, orgId, runId);
+}
+
+/**
+ * A gate's approval expired with no decision: the gate's attempt and the run end `timed_out`, with the words of the plan. Only the approval's own expiry reaches this
+ * (`onChainGateDecided` for a record `EXPIRED`), so the ending can't be written for a gate that has a decision.
+ */
+export async function recordGateExpiry(deps: Deps, orgId: OrgId, runId: ChainRunId, seq: number, approvalId: string): Promise<void> {
+  for (let round = 0; round < 3; round += 1) {
+    const live = await liveGate(deps, orgId, runId, seq, approvalId);
+    if (live === undefined) return;
+    const { run, attempt } = live;
+    const gate = stepOf(await designOf(deps, run), attempt.stepId);
+    const hours = gate?.kind === "gate" ? gate.timeoutHours ?? GATE_DEFAULT_TIMEOUT_HOURS : GATE_DEFAULT_TIMEOUT_HOURS;
+    const ended = await endRun(deps, run, {
+      status: "timed_out", failure: { seq, reason: "gate_timeout", message: `No one approved "${attempt.stepName}" within ${String(hours)} hour${hours === 1 ? "" : "s"}, so the chain stopped.` },
+      attemptUpdate: gateAttemptUpdate(deps, run, seq, approvalId, { status: "timed_out", endedAt: iso(deps) }),
+    });
+    if (ended === "done") return;
+  }
+  throw agentXError("WORKSPACE_BUSY", "the chain run kept changing while its gate was closed; try again");
 }
 
 // ---- the end and the pause of a step's task

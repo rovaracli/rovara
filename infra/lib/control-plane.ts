@@ -1339,6 +1339,27 @@ export class ControlPlaneStack extends Stack {
       metricValue: "1",
     });
 
+    // Plan 4 Task 8 (R41), named environments only: an autonomous chain run's write must always have approvers. When the selector Plan 3's agent-tools call asks for them
+    // throws, times out or answers what it must not, the write falls back to Plan 3's default approvers and the broker logs `write_approver_selector.failed`. This counts
+    // those lines and alarms on any in 5 minutes, so a selector that has stopped working is seen, as the egress alarms are. The legacy template stays as it is.
+    if (naming.env !== undefined) {
+      broker.logGroup.addMetricFilter("ChainWriteApproverSelectorFailuresMetric", {
+        filterPattern: logs.FilterPattern.stringValue("$.event", "=", "write_approver_selector.failed"),
+        metricNamespace: naming.metricsNamespace,
+        metricName: "ChainWriteApproverSelectorFailures",
+        metricValue: "1",
+      });
+      new cloudwatch.Alarm(this, "ChainWriteApproverSelectorFailedAlarm", {
+        alarmName: naming.alarmName("ChainWriteApproverSelectorFailed"),
+        alarmDescription: "The selector that chooses who approves an autonomous chain run's write failed, so the write fell back to the default approvers (the run's owner and the project's maintainers). Check the broker logs for write_approver_selector.failed lines and the task they name.",
+        metric: agentxSum("ChainWriteApproverSelectorFailures", Duration.minutes(5)),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction(notifyOperator);
+    }
+
     new CfnOutput(this, "ApiEndpoint", { value: api.attrApiEndpoint });
     new CfnOutput(this, "StateTableName", { value: state.tableName });
     new CfnOutput(this, "ArtifactBucketName", { value: artifacts.bucketName });

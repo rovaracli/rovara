@@ -13,7 +13,7 @@ import { memoryRunCache } from "../../packages/broker/src/agents/run-cache.js";
 import type { ClassifyAgentWriteDependencies } from "../../packages/broker/src/agents/write-class.js";
 import { registerChainRunner } from "../../packages/broker/src/chains/index.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { ARJUN, CARL, CELL, DANA, MAX, ORG_A, PRIYA, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "../support/chain-gate-world.js";
+import { ARJUN, CARL, CELL, DANA, MAX, ORG_A, PRIYA, VIV, callerOf, disposeGateWorlds, setupGateWorld } from "../support/chain-gate-world.js";
 
 const runner = () => import("../../packages/broker/src/chains/runner.js");
 const writers = () => import("../../packages/broker/src/chains/write-approvers.js");
@@ -89,7 +89,7 @@ function setup() {
       classify: async () => ({ class: "consequential", reason: "a change", ignoredRules: [] }),
       ...(task.chain === undefined ? {} : { chain: task.chain }),
       ...over,
-    } as AgentWriteGateInput;
+    };
   };
   const ask = async (input: AgentWriteGateInput) => {
     const decision = await approvalsWriteGate(w.deps)(input);
@@ -275,7 +275,7 @@ describe("who may decide an autonomous write, read when they decide (R68, N5)", 
     const w = setup();
     const { record } = await w.autonomousWrite();
     const { writerEligible } = await writers();
-    expect(await writerEligible(w.deps, record, callerOf(PRIYA, "org_bbbbbbbbbbbbbbbbbbbb" as OrgId))).toBe(false);
+    expect(await writerEligible(w.deps, record, callerOf(PRIYA, "org_bbbbbbbbbbbbbbbbbbbb"))).toBe(false);
     const step = (await w.runAtGate()).approvalId;
     expect(await writerEligible(w.deps, await w.approval(step), callerOf(MAX))).toBe(false);
   });
@@ -330,14 +330,36 @@ describe("selectors (M3)", () => {
     expect(record.approvers).toMatchObject({ kind: "rule", rule: WRITER_RULE });
   });
 
+  it("asks no selector about a call that will not wait for a person: a read, a safe write or one a project rule denies", async () => {
+    const w = setup();
+    const task = await running(w);
+    disposeGateWorlds();
+    let asked = 0;
+    const off = registerWriteApproverSelector(async () => { asked += 1; return undefined; });
+    const offChain = registerChainRunner(() => w.deps);
+    const gate = approvalsWriteGate(w.deps);
+    expect(await gate(w.gateInput(task, { classify: async () => ({ class: "read", reason: "a read", ignoredRules: [] }) }))).toEqual({ decision: "run" });
+    expect(await gate(w.gateInput(task, { classify: async () => ({ class: "safe", reason: "safe", ignoredRules: [] }) }))).toEqual({ decision: "run" });
+    expect(await gate(w.gateInput(task, { classify: async () => ({ class: "consequential", reason: "denied", ignoredRules: [], denied: { rule: 1, reason: "no" } }) }))).toMatchObject({ decision: "refuse" });
+    expect(asked).toBe(0);
+    // A write that waits for a person is the one the selectors are asked about.
+    await w.ask(input(w, task));
+    off(); offChain();
+    expect(asked).toBe(1);
+  });
+
   it("asks selectors in registration order with the task and the run", async () => {
     const w = setup();
     const task = await running(w);
     const seen: unknown[] = [];
+    disposeGateWorlds();
     const first = registerWriteApproverSelector(async (_deps, selected, run) => { seen.push(["first", selected.taskId, selected.chain?.chainRunId, run]); return undefined; });
     const second = registerWriteApproverSelector(async () => { seen.push(["second"]); return undefined; });
-    await w.ask(input(w, task));
-    first(); second();
+    // The chain's own selector is registered after them: it is asked last, and answers.
+    const offChain = registerChainRunner(() => w.deps);
+    const record = await w.ask(input(w, task));
+    first(); second(); offChain();
+    expect(record.approvers).toMatchObject({ rule: WRITER_RULE });
     expect(seen).toEqual([["first", task.taskId, task.chain!.chainRunId, { orgId: ORG_A, project: "web", owner: { developerId: PRIYA, name: "Priya" } }], ["second"]]);
   });
 

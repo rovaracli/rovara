@@ -210,3 +210,6 @@ export function setupWorld(options: WorldOptions = {}) {
 }
 
 export type ChainWorld = ReturnType<typeof setupWorld>;
+
+/** Who and what decided a gate, as Task 8's handler tells the runner: the approval the gate's attempt waits on, and the decider's name. */
+export const decisionBy = (w: ChainWorld, runId: string, seq: number, name = "Someone") => ({ approvalId: w.attempts(runId).find((attempt) => attempt.seq === seq)?.approvalId ?? "apr_aaaaaaaaaaaaaaaaaaaa", name });
