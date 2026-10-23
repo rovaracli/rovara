@@ -82,6 +82,7 @@ import {
   guardrailsSet, guardrailsShow, projectAgentsChange, projectConnectorsList, projectConnectorsRemove, projectConnectorsSet, skillsAdd, skillsList, sourcesAdd,
   sourcesCheck, sourcesList, sourcesOrder, sourcesRemove, type AppResult,
 } from "./developer/agents.js";
+import { hooksCreate, hooksDelete, hooksList, hooksRotate } from "./developer/hooks.js";
 import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
@@ -1768,6 +1769,36 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   // administrator's, for a private install).
   const projectCommand = program.commands.find((candidate) => candidate.name() === "project");
   if (projectCommand === undefined) throw new Error("the project command is registered by registerSetupCommands");
+  // Plan 4 Task 19: the hooks vendors post a project's events to.
+  const hooks = projectCommand.command("hooks").description("the addresses vendors post a project's events to: list, create, rotate a secret, delete");
+  hooks
+    .command("list")
+    .description("list a project's event hooks")
+    .argument("<project>", "the project")
+    .action(async (project: string, _options: unknown, command: Command) => printResult(command, await hooksList(developerSession(), developerEnv(command), project)));
+  hooks
+    .command("create")
+    .description("make a hook for a source; a vendor's secret is read from a file, and one Rovara makes is shown once")
+    .argument("<project>", "the project")
+    .option("--source <source>", "the vendor: linear, jira, pagerduty, sentry, datadog, grafana or vercel")
+    .option("--tenant <tenant.json>", "what binds the hook to your account at the vendor, as JSON")
+    .option("--secret-file <file>", "the signing secret the vendor gave you (for sources whose vendor makes it)")
+    .action(async (project: string, options: { source?: string; tenant?: string; secretFile?: string }, command: Command) => printResult(command, await hooksCreate(developerSession(), developerEnv(command), project, {
+      ...(options.source === undefined ? {} : { source: options.source }), ...(options.tenant === undefined ? {} : { tenantFile: options.tenant }), ...(options.secretFile === undefined ? {} : { secretFile: options.secretFile }),
+    })));
+  hooks
+    .command("rotate")
+    .description("change a hook's secret; the old one keeps working for 24 hours")
+    .argument("<project>", "the project")
+    .argument("<hook-id>", "the hook's ID, from the list")
+    .option("--secret-file <file>", "the new secret the vendor gave you (for sources whose vendor makes it)")
+    .action(async (project: string, hookId: string, options: { secretFile?: string }, command: Command) => printResult(command, await hooksRotate(developerSession(), developerEnv(command), project, hookId, options.secretFile === undefined ? {} : { secretFile: options.secretFile })));
+  hooks
+    .command("delete")
+    .description("delete a hook: its address answers nothing and its secret is scheduled for deletion")
+    .argument("<project>", "the project")
+    .argument("<hook-id>", "the hook's ID, from the list")
+    .action(async (project: string, hookId: string, _options: unknown, command: Command) => printResult(command, await hooksDelete(developerSession(), developerEnv(command), project, hookId)));
   projectCommand
     .command("create")
     .description("create a project from a GitHub repository, on Rovara Cloud (an owner or admin of your organization)")

@@ -66,7 +66,7 @@ const BuiltinBodySchema = z.object({
   maxRunsPerHour: RunsPerHourSchema.optional(),
 }).strict();
 
-function decodeSegment(raw: string, what: string): string {
+export function decodeSegment(raw: string, what: string): string {
   try { return decodeURIComponent(raw); } catch { throw agentXError("NOT_FOUND", `no ${what} has that name`); }
 }
 
@@ -121,7 +121,7 @@ async function projectRoleOf(deps: Deps, caller: AgentCaller, project: string) {
   return role;
 }
 
-async function requireSettingsOn(deps: Deps, caller: AgentCaller, project: string): Promise<void> {
+export async function requireSettingsOn(deps: Deps, caller: AgentCaller, project: string): Promise<void> {
   const role = await projectRoleOf(deps, caller, project);
   if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", `Only a maintainer of ${shownText(project, NAME_MAX)} can set up its triggers.`);
 }

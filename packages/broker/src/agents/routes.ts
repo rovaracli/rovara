@@ -71,6 +71,7 @@ import type { OrgStore } from "../org/store.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import type { ChainStore } from "../chains/store.js";
 import type { TriggerStore } from "../triggers/store.js";
+import { routeEventHooks, type EventHookDependencies } from "../triggers/hooks.js";
 import { routeAgentTriggers, routeBuiltinTriggers } from "../triggers/routes.js";
 import type { ChainRunSpendReader } from "../spend/chain-run-spend.js";
 import type { ChainRunPorts } from "../chains/runner.js";
@@ -95,6 +96,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   chains?: ChainStore;
   /** Plan 4 Task 18: the trigger store, which the trigger routes, the rechecks and the member movers work on. Absent where triggers are not set up: their routes then answer 404. */
   triggers?: TriggerStore;
+  /** Plan 4 Task 19: the event hooks of a project (`/v1/app/projects/{p}/event-hooks*`). Absent where hooks are not set up: those routes then answer 404. */
+  eventHooks?: EventHookDependencies;
   /** Plan 4 Tasks 18 and 20: what the chain routes ask of the trigger code. Absent until it exists: a chain then has no triggers. */
   chainTriggers?: ChainTriggerHooks;
   /** Plan 4 Task 6: what a chain run says about one of its steps (the chain, and the limit the run had left at the step's start), for who approves a step's raise. Absent: every chain step's raise is read as a run-level raise. */
@@ -159,7 +162,7 @@ export function isAgentRoute(pathname: string): boolean {
   return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget)(\/|$)/.test(pathname)
     || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy)(\/|$)/.test(pathname)
     || /^\/v1\/app\/tasks\/[^/]+\/(continue-as-task|run-limit-request)$/.test(pathname)
-    || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors|builtin-triggers)(\/|$)/.test(pathname);
+    || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors|builtin-triggers|event-hooks)(\/|$)/.test(pathname);
 }
 
 // ---- bodies
@@ -1000,6 +1003,9 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (builtinTriggers !== undefined) return builtinTriggers;
   const agentTriggers = await routeAgentTriggers(deps, caller, request, url);
   if (agentTriggers !== undefined) return agentTriggers;
+  // Plan 4 Task 19: the hooks vendors post a project's events to.
+  const eventHooks = await routeEventHooks(deps, caller, request, url);
+  if (eventHooks !== undefined) return eventHooks;
   const skillPath = SKILL_PATH.exec(url.pathname);
   if (skillPath !== null) {
     const [, skillId, sub] = skillPath;

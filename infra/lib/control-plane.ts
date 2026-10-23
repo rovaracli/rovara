@@ -846,6 +846,16 @@ export class ControlPlaneStack extends Stack {
       target: `integrations/${integration.ref}`,
       authorizationType: "NONE",
     });
+    // Plan 4 Task 19: the endpoint vendors post events to. No authorizer: each delivery proves itself with its signature or token over its own bytes, checked by the broker
+    // before anything is written (triggers/ingress.ts). A named environment only: the legacy templates stay as they were.
+    if (naming.env !== undefined) {
+      new apigwv2.CfnRoute(this, "EventHookRoute", {
+        apiId: api.ref,
+        routeKey: "POST /v1/hooks/{source}/{hookId}",
+        target: `integrations/${integration.ref}`,
+        authorizationType: "NONE",
+      });
+    }
     // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post. No JWT: the broker checks the connect state against
     // GitHub, and the confirmation by cookie and Origin. A named environment only (the legacy deployment has no developer sign-in);
     // the stage throttles them like the other public routes (DeveloperSignIn applies `throttledRoutes`).

@@ -1,0 +1,34 @@
+// What a source's provider is to ingress (Plan 4 Task 19): how a delivery is verified and how its body becomes events. Tasks 22 to 25 write the providers; ingress is theirs
+// to call and never looks inside a body itself. The two comparisons here are the only ways a provider may compare a secret: both hash both sides to a fixed length and compare
+// the digests with `timingSafeEqual`, so neither the length of a secret nor the first byte that differs shows in how long a refusal takes.
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import type { HookRecord, HookSource, TriggerEvent } from "@agentx/contracts";
+
+export type HookHeaders = Record<string, string | undefined>;
+
+export type Normalized = { events: TriggerEvent[] } | { ignored: string } | { tenantMismatch: true };
+
+export interface HookProvider {
+  source: HookSource;
+  /** Who makes the secret: Rovara (shown once on creation) or the vendor (the person pastes it in). */
+  secretOrigin: "rovara" | "vendor";
+  auth: "hmac" | "token";
+  /** Whether `raw` (the bytes as they arrived) and the headers prove the sender holds `secret`. Never throws for a malformed delivery: it answers false. */
+  verify(raw: Buffer, headers: HookHeaders, secret: string): boolean;
+  /** The events of a verified, parsed body. Ingress sets `project` and `hookId` on each from the hook record afterwards, whatever this answers. */
+  normalize(body: unknown, headers: HookHeaders, hook: HookRecord): Normalized;
+}
+
+const digest = (value: string | Buffer): Buffer => createHash("sha256").update(value).digest();
+
+/** Whether two strings are equal, comparing their SHA-256 digests in constant time. An empty secret is never equal to anything: it is no secret. */
+export function tokenEquals(supplied: string, secret: string): boolean {
+  const equal = timingSafeEqual(digest(supplied), digest(secret));
+  return equal && secret.length > 0;
+}
+
+/** Whether `suppliedHex` is the hex HMAC (`algorithm`) of `raw` under `secret`, compared as digests in constant time. A secret that is empty never verifies. */
+export function hmacHexEquals(algorithm: "sha256" | "sha1", raw: Buffer, secret: string, suppliedHex: string): boolean {
+  const expected = createHmac(algorithm, secret).update(raw).digest("hex");
+  return tokenEquals(suppliedHex.trim().toLowerCase(), expected) && secret.length > 0;
+}

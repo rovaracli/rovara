@@ -100,3 +100,4 @@ export * from "./chain-session.js";
 export * from "./trigger-specs.js";
 export * from "./triggers.js";
 export * from "./builtin-triggers.js";
+export * from "./event-hooks.js";

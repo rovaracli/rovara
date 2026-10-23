@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { HOOK_BODY_MAX_BYTES, HOOK_FAILED_VERIFY_PER_MINUTE, HOOK_MAX_DELIVERIES_PER_MINUTE, HOOK_MAX_EVENTS_PER_DELIVERY, HOOK_PRE_VERIFY_PER_IP_PER_MINUTE } from "../../packages/contracts/src/event-hooks.js";
 import { hookEventKey, hookRateKey } from "../../packages/contracts/src/event-hooks.js";
 import { WindowCounter } from "../../packages/broker/src/triggers/ingress.js";
-import { HOOK_1, HOOK_2, HOOK_OTHER_ORG, LINEAR_TENANT, ORG_A, ORG_B, OTHER_TENANT, SECRET_1, SECRET_2, TEAM, iso, setupHookWorld, type HookWorld, type TestBody } from "../support/hook-fixtures.js";
+import { HOOK_2, HOOK_OTHER_ORG, LINEAR_TENANT, ORG_A, ORG_B, OTHER_TENANT, SECRET_1, SECRET_2, iso, setupHookWorld, type HookWorld, type TestBody } from "../support/hook-fixtures.js";
 
 const FORBIDDEN = { error: { code: "FORBIDDEN", message: "signature check failed" } };
 const HOUR = 3_600_000;
@@ -248,7 +248,7 @@ describe("replay and the window of time", () => {
     const { w, hook } = await linear();
     const delivery = w.delivery(hook, bodyOf(w, "g", { events: [{ id: "a" }, { id: "b" }] }));
     let calls = 0;
-    const original = w.deps.dispatch;
+    const original = w.deps.dispatch.bind(w.deps);
     w.deps.dispatch = async (orgId, event) => {
       calls += 1;
       if (calls === 2) throw new Error("second fails");

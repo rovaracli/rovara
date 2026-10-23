@@ -45,7 +45,7 @@ async function brokerWorld(options: { dispatch?: boolean } = { dispatch: true })
       headers: { "content-type": "application/json", ...(over.signed === false ? {} : { [SIGNATURE_HEADER.toUpperCase()]: signature }), ...over.headers },
       body: over.base64 === false ? raw.toString("utf8") : raw.toString("base64"), isBase64Encoded: over.base64 !== false,
       requestContext: { requestId: randomUUID(), http: { method: over.method ?? "POST", sourceIp: over.ip ?? "203.0.113.9" } },
-    } as never) as Promise<{ statusCode: number; headers: Record<string, string>; body: string }>;
+    }) as Promise<{ statusCode: number; headers: Record<string, string>; body: string }>;
   };
   return { h, secrets, memory, dispatched, store, post, members };
 }
@@ -131,8 +131,8 @@ describe("the hook routes and closing an org, through the broker", () => {
     const h = await createDeveloperTaskBroker({
       register: false, orgResolver: async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG),
       brokerExtra: { cloud: true, agents: { projectMembers: new FakeProjectMembers(), eventHooks: { secrets: new FakeHookSecrets(), providers: { linear: hmacProvider("linear") } } } },
-    } as never);
-    const secrets = (h.brokerInput as { agents: { eventHooks: { secrets: FakeHookSecrets } } }).agents.eventHooks.secrets;
+    });
+    const secrets = (h.brokerInput as unknown as { agents: { eventHooks: { secrets: FakeHookSecrets } } }).agents.eventHooks.secrets;
     for (const [who, orgId] of [[MAYA, TEST_ORG], [OMAR, ORG_B]] as const) {
       await h.orgOf(who);
       seedMembership(h.db, who.developerId, { orgId, role: "owner" });

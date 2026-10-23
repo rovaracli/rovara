@@ -2,6 +2,7 @@
 // routes use. /v1/dev/* has no API Gateway authorizer (D17): the broker verifies the developer
 // access token itself, then checks the environment, the method and the sign-in session on every
 // request (R12, R13), so a revoked session stops at once.
+import { clearOrgHooks } from "../triggers/hooks.js";
 import { deleteOrgTriggers } from "../triggers/lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -192,7 +193,7 @@ export interface DeveloperRouteDependencies {
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
-  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void> };
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void> };
   /**
    * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a
    * replay; a failure is logged and never undoes or fails the archive. Absent where agents are not set up.
@@ -1852,6 +1853,8 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
     const clearConnections = deps.closeOrgHooks?.clearConnections ?? (connections === undefined ? undefined : (orgId: OrgId) => clearOrgConnections({ store: connections }, orgId));
     const triggers = deps.agents?.triggers;
     const clearTriggers = deps.closeOrgHooks?.clearTriggers ?? (triggers === undefined ? undefined : (orgId: OrgId) => deleteOrgTriggers({ triggers }, orgId));
+    const eventHooks = deps.agents?.eventHooks;
+    const clearHooks = deps.closeOrgHooks?.clearHooks ?? (eventHooks === undefined ? undefined : (orgId: OrgId) => clearOrgHooks({ store: eventHooks.store, secrets: eventHooks.secrets }, orgId));
     const modelSources = deps.agents?.modelSources;
     const releaseModelSources = deps.closeOrgHooks?.releaseModelSources ?? (modelSources === undefined ? undefined : (orgId: OrgId) => releaseOrgModelSources(modelSources, orgId));
     await deps.orgs.closeOrg(caller.orgId, {
@@ -1860,6 +1863,8 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       ...(clearConnections === undefined ? {} : { clearConnections }),
       // Plan 4 Task 18: the org's triggers, their activity and their notices go with it.
       ...(clearTriggers === undefined ? {} : { clearTriggers }),
+      // Plan 4 Task 19: its event hooks stop receiving, and their secrets are scheduled for deletion.
+      ...(clearHooks === undefined ? {} : { clearHooks }),
       // The org's company AI sources leave the model proxy with it, vendor keys included (Task 24b).
       ...(releaseModelSources === undefined ? {} : { releaseModelSources }),
       emails,

@@ -2,7 +2,7 @@
 // that checks an HMAC-SHA256 (and one that checks a token) and a dispatcher that records what it was asked to start. Nothing here is Plan 4's code: the tests build deliveries the
 // way a vendor would (signed over the exact bytes) and read what ingress answered and what it left behind.
 import { createHmac, randomUUID } from "node:crypto";
-import { AgentXError, canonicalJson, HOOK_TENANT_SCHEMAS, hookKey, hookLookupKey, type HookRecord, type HookSource, type OrgId, type TriggerEvent } from "@agentx/contracts";
+import { agentXError, canonicalJson, HOOK_TENANT_SCHEMAS, hookKey, hookLookupKey, type HookRecord, type HookSource, type OrgId, type TriggerEvent } from "@agentx/contracts";
 import { HookStore, type HookSecrets } from "../../packages/broker/src/triggers/hooks.js";
 import { HookIngressMemory, receiveHook, type HookDelivery, type HookIngressDeps, type HookReply } from "../../packages/broker/src/triggers/ingress.js";
 import { hmacHexEquals, tokenEquals, type HookProvider, type Normalized } from "../../packages/broker/src/triggers/providers/types.js";
@@ -60,7 +60,7 @@ function normalizeTest(body: unknown, hook: HookRecord): Normalized {
     // What a provider might derive from a hostile body: ingress sets the hook's own.
     project: input.project ?? "elsewhere", ...(input.hookId === undefined ? {} : { hookId: input.hookId }),
     subject: { kind: "issue", id: entry.id, title: `Event ${entry.id}` }, fields: {}, actor: { kind: "external" },
-  } as TriggerEvent));
+  }));
   return { events };
 }
 
@@ -82,7 +82,7 @@ export class FakeHookSecrets implements HookSecrets {
     this.reads += 1;
     if (this.failReads !== undefined) throw this.failReads;
     const value = this.values.get(this.key(orgId, hookId));
-    if (value === undefined) throw new AgentXError("NOT_FOUND", "no secret is saved for that hook");
+    if (value === undefined) throw agentXError("NOT_FOUND", "no secret is saved for that hook");
     return value;
   }
   async scheduleDelete(orgId: string, hookId: string): Promise<void> { this.deleted.push(this.key(orgId, hookId)); }
@@ -108,7 +108,7 @@ export interface HookWorld {
   /** Stores a hook of `orgId` (and its secret, unless `secret` is null) the way creating one does. */
   hook(over?: Partial<HookRecord> & { secret?: string | null; secretJson?: string }): Promise<HookRecord>;
   /** A delivery to `hook` signed (or tokened) with `secret`, as a vendor would send `body`. */
-  delivery(hook: Pick<HookRecord, "source" | "hookId">, body: TestBody | string, options?: { secret?: string | null; ip?: string; headers?: Record<string, string | undefined>; raw?: Buffer }): HookDelivery;
+  delivery(hook: { source: string; hookId: string }, body: TestBody | string, options?: { secret?: string | null; ip?: string; headers?: Record<string, string | undefined>; raw?: Buffer }): HookDelivery;
   receive(delivery: HookDelivery): Promise<HookReply>;
   /** Every command sent since `mark`, by name. */
   commandsSince(mark: number): string[];
@@ -146,7 +146,7 @@ export function setupHookWorld(providers: Partial<Record<HookSource, HookProvide
     const full = {
       orgId: ORG_A, hookId: HOOK_1, source, project: "web", tenant: source === "linear" ? LINEAR_TENANT : defaultTenant(source), auth: providers[source]?.auth ?? "hmac", hasSecret: true,
       status: "active", createdBy: "d".repeat(64), createdAt: new Date(START).toISOString(), ...record,
-    } as HookRecord;
+    } as unknown as HookRecord;
     expectTenant(full);
     if (!await store.create(full)) throw new Error(`hook ${full.hookId} already exists (${String(counter)})`);
     if (secret !== null) secrets.values.set(`${full.orgId}|${full.hookId}`, secretJson ?? JSON.stringify({ current: secret ?? SECRET_1 }));

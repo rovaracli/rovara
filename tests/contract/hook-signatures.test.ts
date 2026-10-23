@@ -1,10 +1,11 @@
 // Plan 4 Task 19: the two comparisons a provider may use. Both compare SHA-256 digests with `timingSafeEqual`, so the length of a secret never short-circuits, an empty secret
 // verifies nothing, and a case or a space in a vendor's hex does not matter.
 import { createHmac } from "node:crypto";
+import type * as NodeCrypto from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("node:crypto", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:crypto")>();
+  const actual = await importOriginal<typeof NodeCrypto>();
   return { ...actual, timingSafeEqual: vi.fn(actual.timingSafeEqual) };
 });
 

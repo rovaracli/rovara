@@ -268,6 +268,7 @@ import {
   ResolvedRecipeSchema,
   cloudwatchRoleAccount,
   type AgentId,
+  type HookSource,
   type Payer,
   type Place,
   type RunEstimate,
@@ -375,7 +376,11 @@ import { grafanaConnectionCheck } from "./grafana-connector-type.js";
 import { pagerdutyConnectionCheck } from "./pagerduty-connector-type.js";
 import { sentryConnectionCheck } from "./sentry-connector-type.js";
 import { vercelConnectionCheck } from "./vercel-connector-type.js";
-import { OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
+import { HookSecretStore, OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
+import { HookStore, type HookSecrets } from "../triggers/hooks.js";
+import { HookIngressMemory, receiveHook, type HookIngressDeps } from "../triggers/ingress.js";
+import { hookProviders } from "../triggers/providers/index.js";
+import type { HookProvider } from "../triggers/providers/types.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import type { ModelAccess } from "../model-proxy/access.js";
@@ -621,7 +626,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -979,7 +984,16 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     }),
     // Plan 4 Task 18: the triggers of agents and chains, on the same table. The hooks that receive events (Task 19) and the scheduler (Task 26) are theirs to supply.
     triggers: agents.triggers ?? new TriggerStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
-    ...(agents.hooks === undefined ? {} : { hooks: agents.hooks }),
+    // Plan 4 Task 19: the hooks vendors post events to, and the routes that make them. A trigger's hook check reads the same store.
+    ...(agents.eventHooks === undefined ? {} : (() => {
+      const store = new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
+      const memory = hookMemoryOf(dependencies);
+      return {
+        eventHooks: { store, secrets: agents.eventHooks.secrets, providers: agents.eventHooks.providers ?? hookProviders(), origin: new URL(developer.issuer).origin, secretRotated: (hookId: string) => memory.remember(hookId, undefined) },
+        hooks: agents.hooks ?? store,
+      };
+    })()),
+    ...(agents.hooks === undefined || agents.eventHooks !== undefined ? {} : { hooks: agents.hooks }),
     ...(agents.triggerSchedules === undefined ? {} : { triggerSchedules: agents.triggerSchedules }),
     ...(agents.chainTriggers === undefined ? {} : { chainTriggers: agents.chainTriggers }),
     // Plan 4 Task 6: what the spend requests ask of a chain run (the chain, and what the run had left when a step started), answered from the run's own records.
@@ -1819,6 +1833,22 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (isGithubInstallPath(url.pathname)) return await routeGithubInstall(githubConnectionOf(dependencies), request, url);
       // Plan 3, Task 21a-presence: the confirmation page. A browser's decide cookie, CSRF field and Origin authorize it, never a bearer token.
       if (isDecidePagePath(url.pathname)) return await routeDecidePage(decideRequestContext(dependencies, agents), request, url);
+      // Plan 4 Task 19: the endpoint vendors post events to. No token: every delivery proves itself over its own bytes (see triggers/ingress.ts).
+      const hookPath = HOOK_DELIVERY_PATH.exec(url.pathname);
+      if (hookPath !== null) {
+        if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
+        const eventHooks = dependencies.agents?.eventHooks;
+        // Not set up, or nothing yet to start work with: nothing a vendor sent would be acted on, so it is told to try later.
+        if (eventHooks?.dispatch === undefined) return hookReply({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "try again" } } });
+        // The bytes as they arrived: a signature is over these, not over text decoded from them.
+        const raw = event.body === undefined ? Buffer.alloc(0) : Buffer.from(event.body, event.isBase64Encoded === true ? "base64" : "utf8");
+        const answer = await receiveHook({
+          documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+          hooks: new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
+          secrets: eventHooks.secrets, providers: eventHooks.providers ?? hookProviders(), dispatch: eventHooks.dispatch, memory: hookMemoryOf(dependencies),
+        }, { source: hookPath[1]!, hookId: hookPath[2]!, raw, headers: request.headers, sourceIp: event.requestContext?.http?.sourceIp });
+        return hookReply(answer);
+      }
       if (url.pathname === "/v1/github/webhooks") {
         if (request.method !== "POST") return json({ error: { code: "NOT_FOUND", message: "route not found" } }, request.requestId, 404);
         if (request.body === undefined || dependencies.githubWebhookSecret === undefined) {
@@ -14123,6 +14153,27 @@ function parseStoredEvent(item: Record<string, unknown>): {
   };
 }
 
+/** `/v1/hooks/{source}/{hookId}` (Plan 4 Task 19). */
+const HOOK_DELIVERY_PATH = /^\/v1\/hooks\/([^/]+)\/([^/]+)$/;
+const hookMemories = new WeakMap<object, HookIngressMemory>();
+
+/** What this broker's event hooks remember between requests: one table per broker, shared by the routes that rotate a secret and the endpoint that reads it. */
+function hookMemoryOf(dependencies: AwsBrokerDependencies): HookIngressMemory {
+  const configured = dependencies.agents?.eventHooks?.memory;
+  if (configured !== undefined) return configured;
+  let memory = hookMemories.get(dependencies);
+  if (memory === undefined) {
+    memory = new HookIngressMemory();
+    hookMemories.set(dependencies, memory);
+  }
+  return memory;
+}
+
+/** A hook's answer exactly as ingress made it: the uniform refusal carries nothing but its fixed body, not even a request id. */
+function hookReply(answer: { status: number; body: Record<string, unknown> }): { statusCode: number; headers: Record<string, string>; body: string } {
+  return { statusCode: answer.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(answer.body) };
+}
+
 function json(
   value: unknown,
   requestId: string,
@@ -14358,7 +14409,13 @@ export const handler = createAwsBrokerHandler({
   // Plan 3: the agent routes (`/v1/app/agents*`), on the real project members; they need the developer sign-in.
   // Rovara's roles that assume a Bedrock source's role (Task 24b), for the trust policy the sources page shows; unset until the control plane names them.
   // Plan 4 Task 6: the deployed broker listens for the end and the pause of a chain step's task (a test harness leaves it off, so Plan 3's own tests see no listener).
-  ...(developer ? { agents: bedrockTrustPrincipals.length === 0 ? { registerChainRunner: true } : { registerChainRunner: true, modelSources: { bedrockTrustPrincipals } } } : {}),
+  // Plan 4 Task 19: event hooks keep their secrets in the org's own tagged secrets (Plan 3's HookSecretStore). What starts the work an event asks for is Task 20's, and until it is
+  // wired a delivery is answered 503: nothing a vendor sends is accepted and lost.
+  ...(developer ? { agents: {
+    registerChainRunner: true,
+    ...(bedrockTrustPrincipals.length === 0 ? {} : { modelSources: { bedrockTrustPrincipals } }),
+    ...(orgConnections === undefined ? {} : { eventHooks: { secrets: new HookSecretStore({ env: orgConnections.env, secrets: orgConnections.secrets }) } }),
+  } } : {}),
   // Plan 3, Task 21a-wiring: the confirmation page and the decide routes exist on a cloud install with the developer sign-in (the grants on the sign-in
   // table's DECIDE_ keys are cloud only). Hard gate before any deploy: Task 37 confirms Cognito's `amr` first.
   ...(developer && cloudOrgResolver !== undefined ? { decide: {} } : {}),
