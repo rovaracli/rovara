@@ -1407,6 +1407,7 @@ describe("closing an approval, when the record changes under the close", () => {
   it.each([
     ["is no longer a step approval", { kind: "write" }],
     ["is another run's gate", { subject: { kind: "chain_gate", chainRunId: "crn_zzzzzzzzzzzzzzzzzzzz", seq: 2 } }],
+    ["is a step of an agent's run, not a gate", { subject: { kind: "agent_run", taskId: "task-1", stepId: "x" } }],
     ["is another org's", { orgId: ORG_B }],
   ])("leaves a record that %s between its read and its write", async (_name, change) => {
     const w = setupGateWorld();
@@ -1462,7 +1463,7 @@ describe("finishing an ending, in more detail", () => {
     expect(await openRunsOf(w, chain.chainId)).toBe(2);
     // The sweep's finishing is about to commit when the same request finishes it first.
     w.beforeTransaction('"openRuns"', async () => { await cancelChainRun(w.deps, callerOf(PRIYA), run.runId, { requestId }); });
-    await sweep(w);
+    expect((await sweep(w)).failed).toBe(0);
     expect(await openRunsOf(w, chain.chainId)).toBe(1);
   });
 });
