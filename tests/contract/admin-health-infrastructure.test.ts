@@ -162,6 +162,8 @@ describe("the health route's grants (A13)", () => {
       // Plan 5, Tasks 6 and 7a: the event log reads it back (and leaves it off an event it returns); a session's end sets it on the session and its live tile
       // (summary.ts); the drain sets it on an ended session's items and the sweep reads a presence item's (sweep.ts).
       "packages/broker/src/agent-sessions/events.ts", "packages/broker/src/agent-sessions/summary.ts", "packages/broker/src/agent-sessions/sweep.ts",
+      // Plan 5, Task 8: each person's change notices (the catch-up feed) expire a week after they are written.
+      "packages/broker/src/realtime/changes.ts",
       // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
       "packages/broker/src/spend/requests.ts",
     ]);

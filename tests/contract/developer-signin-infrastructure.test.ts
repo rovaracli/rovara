@@ -162,17 +162,22 @@ describe("developer sign-in infrastructure (named environments)", () => {
     const [keyId, key] = keys[0]!;
     expect(key.Properties.KeyUsage).toBe("SIGN_VERIFY");
     const denies = (key.Properties.KeyPolicy as { Statement: Statement[] }).Statement.filter((statement) => statement.Effect === "Deny");
-    expect(denies).toHaveLength(1);
-    const deny = denies[0]!;
-    expect(deny).toMatchObject({ Sid: "SignAndGetPublicKeyOnlyAsDeveloperIdentity", Principal: { AWS: "*" }, Resource: "*" });
-    expect(actionsOf(deny).sort()).toEqual(["kms:GetPublicKey", "kms:Sign"]);
-    const exempt = (deny.Condition as { ArnNotEquals: Record<string, unknown> }).ArnNotEquals["aws:PrincipalArn"] as { "Fn::GetAtt": [string, string] };
+    // Signing is the sign-in function's alone. Reading the public half is its and one more role's (Plan 5 Task 8: the realtime authorizer, which verifies tokens with it).
+    expect(denies).toHaveLength(2);
+    const sign = denies.find((statement) => statement.Sid === "SignOnlyAsDeveloperIdentity")!;
+    expect(sign).toMatchObject({ Principal: { AWS: "*" }, Resource: "*" });
+    expect(actionsOf(sign)).toEqual(["kms:Sign"]);
+    const exempt = (sign.Condition as { ArnNotEquals: Record<string, unknown> }).ArnNotEquals["aws:PrincipalArn"] as { "Fn::GetAtt": [string, string] };
     expect(withoutHash(exempt["Fn::GetAtt"][0])).toBe("DeveloperSignInFunctionServiceRole");
     expect(exempt["Fn::GetAtt"][1]).toBe("Arn");
-    // The only identity policies that grant kms:Sign or kms:GetPublicKey on this key (by name or pattern) are DeveloperIdentity's.
-    for (const action of ["kms:Sign", "kms:GetPublicKey"]) {
-      expect(rolesThatMay(named, action, keyId, SAMPLE_KEY_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
-    }
+    const read = denies.find((statement) => statement.Sid === "GetPublicKeyOnlyAsDeveloperIdentityAndTokenVerifiers")!;
+    expect(read).toMatchObject({ Principal: { AWS: "*" }, Resource: "*" });
+    expect(actionsOf(read)).toEqual(["kms:GetPublicKey"]);
+    const readers = (read.Condition as { ArnNotEquals: Record<string, unknown> }).ArnNotEquals["aws:PrincipalArn"] as Array<{ "Fn::GetAtt": [string, string] }>;
+    expect(readers.map((reader) => withoutHash(reader["Fn::GetAtt"][0]))).toEqual(["DeveloperSignInFunctionServiceRole", "RealtimeAuthorizerServiceRole"]);
+    // The only identity policies that grant kms:Sign on this key (by name or pattern) are DeveloperIdentity's; kms:GetPublicKey, also the authorizer's.
+    expect(rolesThatMay(named, "kms:Sign", keyId, SAMPLE_KEY_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
+    expect(rolesThatMay(named, "kms:GetPublicKey", keyId, SAMPLE_KEY_ARN)).toEqual(["DeveloperSignInFunctionServiceRole", "RealtimeAuthorizerServiceRole"]);
     const aliases = ofType(named, "AWS::KMS::Alias").map(([, resource]) => resource.Properties);
     expect(aliases.find((alias) => alias.AliasName === "alias/agentx/staging/developer-tokens")).toMatchObject({ TargetKeyId: { "Fn::GetAtt": [keyId, "Arn"] } });
   });
