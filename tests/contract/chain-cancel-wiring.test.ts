@@ -55,6 +55,8 @@ describe("the chain's cancel port, through Plan 3's cancel", () => {
     expect(t.operations().filter((operation) => operation.kind === "cancel")).toHaveLength(1);
     // It is the owner's own request that was made, under the id the chain gave.
     expect(t.h.db.find((item) => item.sk === `REQUEST#${requestId}`)).toHaveLength(1);
+    // Where the chain finds that its cancel was taken (the runner's step-timeout check): beside the task's owner key and workspace.
+    expect(t.h.db.get(`IDEMPOTENCY#${String(t.meta["ownerKey"])}#${t.meta.workspaceId}`, `REQUEST#${requestId}`)).toMatchObject({ action: "cancel" });
     await t.h.finish(t.meta.workspaceId, cancel!.id, "SUCCEEDED");
     expect(t.runState()).toMatchObject({ state: "CANCELLED" });
     expect(t.ended).toEqual([expect.objectContaining({ outcome: "cancelled", taskId: t.taskId, chain: CHAIN })]);

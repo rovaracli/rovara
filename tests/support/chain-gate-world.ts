@@ -13,6 +13,7 @@ import { DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, requireDecide
 import { registerChainRunner } from "../../packages/broker/src/chains/index.js";
 import type { ChainRunRecord, ChainRunnerDependencies, StepAttemptRecord } from "../../packages/broker/src/chains/runner.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import { capturingAuditDeps, type AuditCapture } from "./audit-capture.js";
 import { INVESTIGATE_THEN_FIX } from "./chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, NAMES, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, setupWorld, type ChainWorld, type RunEventRow, type WorldOptions } from "./chain-run-world.js";
 import type { ChainRecord } from "../../packages/broker/src/chains/store.js";
@@ -36,6 +37,8 @@ type PageOptions = { method?: "GET" | "POST"; cookie?: string; fields?: Record<s
 export interface GateWorld extends ChainWorld {
   deps: ChainRunnerDependencies & ApprovalDependencies;
   logs: LoggedLine[];
+  /** The audit outbox's capture; present only when the world was made with `audit: true`. */
+  audit: AuditCapture | undefined;
   kind: ReturnType<typeof approvalDecideKind>;
   decideStore: DecideStore;
   context(kinds?: DecideKinds): DecideRequestContext;
@@ -58,6 +61,9 @@ export interface GateWorld extends ChainWorld {
 
 export function setupGateWorld(options: WorldOptions = {}): GateWorld {
   const world = setupWorld(options);
+  // The Audit Ledger's outbox, bound to the world's table, when the test asks for it: what an audited action left behind is read back through `audit`.
+  const audit = options.audit === true ? capturingAuditDeps({ now: () => world.clock.now }) : undefined;
+  audit?.attach(world.db);
   const logs: LoggedLine[] = [];
   // The people's names, as the sign-in store holds them: a decision's event names who decided.
   for (const [developerId, name] of Object.entries(NAMES)) world.db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "oidc", displayName: name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
@@ -67,7 +73,7 @@ export function setupGateWorld(options: WorldOptions = {}): GateWorld {
   );
   // The runner's dependencies are also the approvals': the same object serves the decide page, the routes and the runner.
   const deps: ChainRunnerDependencies & ApprovalDependencies = {
-    ...world.deps, log: (event, fields) => logs.push({ event, fields }),
+    ...world.deps, log: (event, fields) => logs.push({ event, fields }), ...(audit === undefined ? {} : { audit: audit.audit }),
     mintConfirmUrl: (who, approvalId) => mintConfirmUrl(context(), { developerId: who.developerId, orgId: who.orgId }, approvalId),
   };
   // What the broker registers at start: the runner's handlers, the gate's rule and handler, and the autonomous write rule with its selector (chains/index.ts).
@@ -159,7 +165,7 @@ export function setupGateWorld(options: WorldOptions = {}): GateWorld {
   const decidedEvents = (runId: string) => world.events(runId).filter((event) => event.type === "gate_decided");
 
   const added: Omit<GateWorld, keyof ChainWorld> & { deps: GateWorld["deps"] } = {
-    deps, logs, kind, decideStore, context, session, page, decide, decideAs, route, tokenDecide, decideRoute, start, endLatest, runAtGate, approval, stepApproval, attempt, decidedEvents,
+    deps, logs, audit, kind, decideStore, context, session, page, decide, decideAs, route, tokenDecide, decideRoute, start, endLatest, runAtGate, approval, stepApproval, attempt, decidedEvents,
     stranger: () => callerOf(STRANGER, ORG_B),
   };
   return { ...world, ...added };

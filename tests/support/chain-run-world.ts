@@ -10,7 +10,7 @@ import type { ChainRunRecord, ChainRunnerDependencies, StepAttemptRecord } from 
 import type { RunEventType } from "../../packages/broker/src/chains/run-events.js";
 import { ChainStore, chainDigest, type ChainRecord } from "../../packages/broker/src/chains/store.js";
 import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
-import { taskAgentRunKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { taskAgentRunKey, taskKey, taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { AdmissionDependencies } from "../../packages/broker/src/org/budget.js";
 import type { AgentOwner } from "../../packages/contracts/src/agent.js";
@@ -18,7 +18,7 @@ import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js
 import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
-import { chainRunKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { chainRunKey, orgProjectCatalogKey, runRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
 import { agentXError, type AgentXError } from "@agentx/contracts";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
@@ -52,6 +52,8 @@ export interface FakeTask { taskId: string; request: AgentRunRequest; result: Ag
 export interface WorldOptions {
   /** Gives the runner the model proxy's admission, so a start is admitted against the chain's budget. */
   admission?: boolean;
+  /** Gives the gate world the Audit Ledger's outbox (`GateWorld.audit`). */
+  audit?: boolean;
 }
 
 export function setupWorld(options: WorldOptions = {}) {
@@ -98,6 +100,9 @@ export function setupWorld(options: WorldOptions = {}) {
     const failure = hooks.cancelFails.shift();
     if (failure !== undefined) throw failure;
     cancels.push(structuredClone(request));
+    // Plan 3's cancel leaves its idempotency item beside the task's owner key and workspace when it takes a request (`cancelTask` in developer-tasks.ts).
+    const task = db.get(taskKey(request.taskId));
+    if (task !== undefined) db.set({ pk: `IDEMPOTENCY#${String(task["ownerKey"])}#${String(task["workspaceId"])}`, sk: `REQUEST#${request.requestId}`, entityType: "IDEMPOTENCY", payloadHash: "cancel" });
   };
   const startAgentRun = async (request: AgentRunRequest): Promise<AgentRunResult> => {
     starts.push(structuredClone(request));
@@ -112,7 +117,12 @@ export function setupWorld(options: WorldOptions = {}) {
     const task: FakeTask = { taskId, request: structuredClone(request), result };
     tasks.set(taskId, task);
     byRequest.set(request.requestId, task);
-    db.set({ ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: request.orgId, developerId: request.owner.developerId, project: request.project, ...(request.chain === undefined ? {} : { chain: request.chain }) });
+    db.set({
+      ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: request.orgId, developerId: request.owner.developerId, project: request.project, ownerKey: taskOwnerKey(request.owner.developerId, taskId), workspaceId: `ws-${taskId}`,
+      ...(request.chain === undefined ? {} : { chain: request.chain }),
+    });
+    // Plan 3's run request item, written in the start's commit: how a task is found from the request that started it.
+    db.set({ ...runRequestKey(request.orgId, request.requestId), entityType: "RUN_REQUEST", orgId: request.orgId, taskId, fingerprint: "f".repeat(64), runLimitUsd: result.runLimitUsd, stopAtUsd: result.stopAtUsd, paused: result.paused });
     // An agent-step run keeps its state beside the task (a coding task has none).
     if (request.agent.agentId !== "rovara-code") db.set({ ...taskAgentRunKey(taskId), entityType: "AGENT_RUN", orgId: request.orgId, revision: 1, state: "RUNNING", cursor: 0, input: request.input, steps: [], reports: [] });
     hooks.onStarted?.(task);
