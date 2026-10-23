@@ -889,3 +889,10 @@ describe("the sign-in function asks the broker whether a member may decide (Plan
     }
   });
 });
+
+it("browser sign-out adds no broker write on ordinary sign-in sessions", () => {
+ const table = ofType(named, "AWS::DynamoDB::Table").find(([id]) => id.startsWith("DeveloperSignInTable"))![0];
+ expect(grants(named).some(({ role, statement }) => role.startsWith("BrokerServiceRole") && reaches(named, statement, table, SAMPLE_TABLE_ARN) && allows(statement, "dynamodb:GetItem"))).toBe(true);
+ const brokerWrites = grants(named).filter(({ role, statement }) => role.startsWith("BrokerServiceRole") && reaches(named, statement, table, SAMPLE_TABLE_ARN) && ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"].some(action => allows(statement, action)));
+ for (const { statement } of brokerWrites) expect(leadingKeysOf(statement).every(key => key.startsWith("DECIDE_"))).toBe(true);
+});
