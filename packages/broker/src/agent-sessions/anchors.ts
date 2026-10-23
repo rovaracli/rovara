@@ -9,7 +9,7 @@
 // a write to it is `NOT_FOUND`, and a comment already pinned to it reads as `gone` with no excerpt. `current`, `outdated` and `gone` are worked out on every read from the revision the person was
 // looking at against the revision now, the way GitHub marks a review comment outdated after a change. A view that can't be built answers `undefined`: a write is refused, a read says `gone`.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SessionAnchorRefSchema, type AgentSessionRecord, type SessionAnchor, type SessionAnchorRef, type SessionMessage } from "@agentx/contracts";
+import { SessionAnchorRefSchema, type AgentSessionRecord, type SessionAnchor, type SessionAnchorRef, type SessionGoneAnchor, type SessionMessage } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { SessionAccessDependencies } from "./access.js";
 import type { SessionReadDependencies } from "./read.js";
@@ -76,17 +76,24 @@ export async function anchorTargetsFor(deps: AnchorDependencies, session: AgentS
 }
 
 /** What a pinned comment's part is now, for the reader whose parts these are: as the person saw it, changed since, or not in their view (or the view could not be read). */
-export function anchorStateOf(anchor: Pick<SessionAnchor, "target" | "targetId" | "revision">, targets: readonly SessionAnchorRef[] | undefined): "current" | "outdated" | "gone" {
+export function anchorStateOf(anchor: Pick<SessionAnchor, "target" | "targetId" | "revision"> | SessionGoneAnchor, targets: readonly SessionAnchorRef[] | undefined): "current" | "outdated" | "gone" {
+  if (!("targetId" in anchor)) return "gone";
   const now = targets?.find((entry) => entry.target === anchor.target && entry.targetId === anchor.targetId);
   if (now === undefined) return "gone";
   return now.revision === anchor.revision ? "current" : "outdated";
 }
 
-/** An anchor without what it quoted. */
-export const withoutExcerpt = (anchor: SessionAnchor): SessionAnchor => ({ target: anchor.target, targetId: anchor.targetId, revision: anchor.revision });
+/** An anchor without what it quoted (an anchor that is only a kind has nothing to leave out). */
+export const withoutExcerpt = (anchor: SessionAnchor | SessionGoneAnchor): SessionAnchor | SessionGoneAnchor => ("targetId" in anchor ? { target: anchor.target, targetId: anchor.targetId, revision: anchor.revision } : anchor);
+
+/** What a reader who can't see the part reads of its anchor: the kind of part and nothing else (a changed file's id is its path). */
+export const goneAnchor = (anchor: Pick<SessionAnchor, "target">): SessionGoneAnchor => ({ target: anchor.target });
+
+/** Whether a stored anchor is on this part. */
+export const anchoredOn = (anchor: SessionMessage["anchor"], part: Pick<SessionAnchorRef, "target" | "targetId">): boolean => anchor !== undefined && "targetId" in anchor && anchor.target === part.target && anchor.targetId === part.targetId;
 
 /**
- * The messages as the reader sees them: a pinned comment carries `anchorState` for them, and a `gone` one loses its excerpt (a reader who can't see the part must not read what was quoted from
+ * The messages as the reader sees them: a pinned comment carries `anchorState` for them, and a `gone` one is reduced to its kind of part (a reader who can't see the part must not read its id, which for a file is its path, or what was quoted from
  * it). The view is built once, and only when some message is pinned; pass `targets` when they were read already.
  */
 export async function presentMessages(
@@ -97,6 +104,6 @@ export async function presentMessages(
   return messages.map((message) => {
     if (message.anchor === undefined) return message;
     const anchorState = anchorStateOf(message.anchor, now);
-    return { ...message, anchor: anchorState === "gone" ? withoutExcerpt(message.anchor) : message.anchor, anchorState };
+    return { ...message, anchor: anchorState === "gone" ? goneAnchor(message.anchor) : message.anchor, anchorState };
   });
 }

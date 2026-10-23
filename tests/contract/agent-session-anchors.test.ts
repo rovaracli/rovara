@@ -24,6 +24,8 @@ import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, MIA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
+/** What a message's anchor quotes: a gone anchor has no excerpt, and the type says so by not having the field. */
+const excerptOf = (anchor: unknown): string | undefined => (anchor as { excerpt?: string } | undefined)?.excerpt;
 const TOKEN = `ghp_${"A1b2C3d4E5".repeat(4).slice(0, 36)}`;
 const PLAN = { target: "plan_block", targetId: "p2", revision: "v2" } as const;
 const STEP = { target: "step", targetId: "build", revision: "running" } as const;
@@ -208,7 +210,7 @@ describe("sending a pinned comment", () => {
   it("redacts the excerpt like the text (a secret, mentions, direction marks), keeps it to one line of at most 200 characters, and leaves it out when nothing is left", async () => {
     const t = world();
     const message = await t.send(PRIYA, "see this", { anchor: { ...PLAN, excerpt: `key ${TOKEN}\n<@U0PRIYA01> <!channel>‮ done ${"y".repeat(300)}`.slice(0, 200) } });
-    const excerpt = message.anchor?.excerpt ?? "";
+    const excerpt = excerptOf(message.anchor) ?? "";
     expect(excerpt).toContain("[REDACTED]");
     expect(excerpt).not.toContain(TOKEN);
     expect(excerpt).not.toMatch(/<[@!#]/u);
@@ -217,7 +219,7 @@ describe("sending a pinned comment", () => {
     expect(t.everything()).not.toContain(TOKEN);
     // An excerpt that grows when redacted is cut to 200 after redaction.
     const grown = await t.send(PRIYA, "see this", { anchor: { ...PLAN, excerpt: Array.from({ length: 22 }, () => "pwd=x").join(" ").slice(0, 150) } });
-    expect([...(grown.anchor?.excerpt ?? "")].length).toBeLessThanOrEqual(200);
+    expect([...(excerptOf(grown.anchor) ?? "")].length).toBeLessThanOrEqual(200);
     // Nothing left of it: no excerpt at all.
     const blank = await t.send(PRIYA, "see this", { anchor: { ...PLAN, excerpt: "‮‮" } });
     expect(blank.anchor).toEqual(PLAN);
@@ -229,8 +231,8 @@ describe("sending a pinned comment", () => {
     const message = await t.send(PRIYA, `key ${split} done`, { anchor: { ...PLAN, excerpt: `quoted ${TOKEN.slice(0, 6)}\u200d${TOKEN.slice(6)}` } });
     expect(message.text).toContain("[REDACTED]");
     expect(message.text).not.toContain(TOKEN.slice(0, 8));
-    expect(message.anchor?.excerpt).toContain("[REDACTED]");
-    expect(message.anchor?.excerpt).not.toContain(TOKEN.slice(0, 6));
+    expect(excerptOf(message.anchor)).toContain("[REDACTED]");
+    expect(excerptOf(message.anchor)).not.toContain(TOKEN.slice(0, 6));
     expect(t.everything()).not.toContain(TOKEN.slice(0, 8));
     // An edit is the same, and a line break survives.
     const edited = await editSessionMessage(t.deps, t.w.caller(PRIYA), t.sid, message.messageId, { rev: 1, text: `again ${TOKEN.slice(0, 10)}\u00ad${TOKEN.slice(10)}\nsecond line` });
@@ -558,11 +560,13 @@ describe("the edges of pinned comments", () => {
     const onPlan = await t.send(PRIYA, "on the paragraph", { anchor: PLAN });
     expect([onStep.anchorState, onPlan.anchorState]).toEqual(["current", "current"]);
     t.w.clock.now += 1000;
-    // The step goes away; the paragraph stays: each is read as itself.
+    // Each list holds its own comments only.
+    expect((await t.list(PRIYA, { anchor: "step:p2" })).messages.map((m) => m.text)).toEqual(["on the step"]);
+    expect((await t.list(PRIYA, { anchor: "plan_block:p2" })).messages.map((m) => m.text)).toEqual(["on the paragraph"]);
+    // The step goes away; the paragraph stays: each is read as itself, and a part that is gone has no list.
     t.state.view = { ...baseView(), run: undefined };
     expect((await t.list(PRIYA)).messages.map((m) => m.anchorState)).toEqual(["gone", "current"]);
-    // And each list holds its own comments only.
-    expect((await t.list(PRIYA, { anchor: "step:p2" })).messages.map((m) => m.text)).toEqual(["on the step"]);
+    expect((await t.list(PRIYA, { anchor: "step:p2" })).messages).toEqual([]);
     expect((await t.list(PRIYA, { anchor: "plan_block:p2" })).messages.map((m) => m.text)).toEqual(["on the paragraph"]);
   });
 
@@ -579,7 +583,7 @@ describe("the edges of pinned comments", () => {
 
   it("flattens the excerpt to one line, takes out format characters, cuts it at exactly 200 characters after redaction, and leaves it out when nothing is left", async () => {
     const t = world();
-    const quoted = async (excerpt: string) => (await t.send(PRIYA, "x", { anchor: { ...PLAN, excerpt } })).anchor;
+    const quoted = async (excerpt: string) => { const anchor = (await t.send(PRIYA, "x", { anchor: { ...PLAN, excerpt } })).anchor; return anchor === undefined ? undefined : { ...anchor, excerpt: excerptOf(anchor) }; };
     expect((await quoted("a\n\n   b\tc \r\n d"))?.excerpt).toBe("a b c d");
     expect((await quoted("a\u200db\u00adc\ufeff"))?.excerpt).toBe("abc");
     expect((await quoted("\u200d\u200d  "))).toEqual(PLAN);

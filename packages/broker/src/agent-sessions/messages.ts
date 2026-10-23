@@ -38,7 +38,6 @@ import {
   sessionRequestKey,
   type AgentSessionRecord,
   type OrgId,
-  type SessionAnchor,
   type SessionAnchorInput,
   type SessionAnchorRef,
   type SessionMessage,
@@ -49,7 +48,7 @@ import { listTaskComments } from "../developer/page-comments.js";
 import { sessionNoteItems } from "../aws/developer-tasks.js";
 import { taskKey } from "../developer/task-records.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
-import { anchorKey, anchorTargetsFor, presentMessages, withoutExcerpt, type AnchorDependencies } from "./anchors.js";
+import { anchorKey, anchorTargetsFor, anchoredOn, presentMessages, withoutExcerpt, type AnchorDependencies } from "./anchors.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { planSteer, queuedSteersItem, steerNotDeliveredEvent, type SteerDependencies } from "./steer.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
@@ -125,9 +124,15 @@ export function parseMessageBody<T extends z.ZodTypeAny>(schema: T, body: unknow
 /** Slack's mention markup made plain (`<@U123>` reads `[@U123]`), so the text can't ping or name anyone wherever it is shown. */
 export const plainMentions = (text: string): string => text.replace(SLACK_MARKUP, "[$1$2]");
 
+/**
+ * The text with its control and format characters taken out (zero-width spaces and joiners, soft hyphens, direction marks), except the line breaks and tabs the text keeps. This comes BEFORE
+ * redaction: a secret split by an invisible character is one secret to whoever copies the text, and the redactor must see it whole.
+ */
+const withoutInvisible = (raw: string): string => raw.replace(/(?![\t\n\r])[\p{Cc}\p{Cf}]/gu, "");
+
 /** A comment's text as it is stored: cleaned and redacted (the page's rules), mentions made plain, and only then cut to the limit by characters. */
 function storedText(raw: string, tooLong: string = TOO_LONG_TEXT): string {
-  const cleaned = cleanCommentText(raw);
+  const cleaned = cleanCommentText(withoutInvisible(raw));
   if (!cleaned.ok) throw agentXError("CONFIG_INVALID", cleaned.reason === "empty" ? EMPTY_TEXT : tooLong);
   return [...plainMentions(cleaned.text)].slice(0, SESSION_MESSAGE_MAX_CHARS).join("");
 }
@@ -142,7 +147,7 @@ const PART_UNAVAILABLE_TEXT = "That part of the session can't be checked right n
  */
 function storedExcerpt(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
-  const cleaned = cleanCommentText(raw);
+  const cleaned = cleanCommentText(withoutInvisible(raw));
   if (!cleaned.ok) return undefined;
   const line = plainMentions(cleaned.text).replace(/\s+/gu, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim();
   const cut = [...line].slice(0, SESSION_ANCHOR_EXCERPT_MAX).join("").trim();
@@ -284,7 +289,7 @@ export async function sendSessionMessage(
   if (earlier !== undefined) return (await presentMessages(deps, session, access, [earlier]))[0]!;
 
   // Where a comment is pinned: its part, found in the view built for the writer (a part they can't see is not found); or its thread's anchor, which a reply takes as it is now (without the excerpt).
-  let anchor: SessionAnchor | undefined;
+  let anchor: SessionMessage["anchor"];
   let targets: SessionAnchorRef[] | undefined;
   if (anchorInput !== undefined) {
     targets = await anchorTargetsFor(deps, session, access);
@@ -531,8 +536,11 @@ export async function listSessionMessages(deps: SessionMessageDependencies, call
   const access = await requireSessionLevel(deps, caller, sessionId, "view", "read its comments");
   const { session } = access;
   // The comments of one part (and their replies, which hold its anchor) come from the session's own store: the task page's comments are never pinned.
-  const kept = (message: SessionMessage) => only === undefined || (message.anchor?.target === only.target && message.anchor.targetId === only.targetId);
-  const all = [...(await ownMessages(deps, session, cursor === undefined ? undefined : cursor.ms - REREAD_MS)).filter(kept), ...(only === undefined ? await pageMessages(deps, session) : [])].map(positioned).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const kept = (message: SessionMessage) => only === undefined || anchoredOn(message.anchor, only);
+  // A viewer who can't see the part can't list by its id either: it is the empty list, no different from a part nobody commented on. A view that can't be built is the same (fail closed).
+  const targets = only === undefined ? undefined : await anchorTargetsFor(deps, session, access);
+  const visible = only === undefined || targets?.some((part) => anchorKey(part) === anchorKey(only)) === true;
+  const all = [...(visible ? (await ownMessages(deps, session, cursor === undefined ? undefined : cursor.ms - REREAD_MS)).filter(kept) : []), ...(only === undefined ? await pageMessages(deps, session) : [])].map(positioned).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   let repeated: Positioned[] = [];
   let fresh: Positioned[];
   if (cursor === undefined) {
@@ -544,5 +552,5 @@ export async function listSessionMessages(deps: SessionMessageDependencies, call
   }
   fresh = fresh.slice(0, SESSION_MESSAGES_PAGE_MAX);
   const next = fresh.at(-1)?.key ?? query.after;
-  return { messages: await presentMessages(deps, session, access, [...repeated, ...fresh].map((entry) => entry.message)), ...(next === undefined ? {} : { next }) };
+  return { messages: await presentMessages(deps, session, access, [...repeated, ...fresh].map((entry) => entry.message), targets), ...(next === undefined ? {} : { next }) };
 }

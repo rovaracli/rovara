@@ -329,6 +329,10 @@ export const SessionAnchorSchema = z
   .strict();
 export type SessionAnchor = z.infer<typeof SessionAnchorSchema>;
 
+/** A pinned comment's anchor for a reader who can't see the part now (`anchorState: "gone"`): only the kind of part. No id (a changed file's id is its path), no revision and no excerpt. */
+export const SessionGoneAnchorSchema = z.object({ target: z.enum(SESSION_ANCHOR_TARGETS) }).strict();
+export type SessionGoneAnchor = z.infer<typeof SessionGoneAnchorSchema>;
+
 /** The anchor a client sends: the same, with an excerpt of any characters (at most 200), which the server cleans, redacts and flattens to one line before it stores it. */
 export const SessionAnchorInputSchema = z
   .object({
@@ -357,8 +361,8 @@ export const SessionMessageSchema = z
       .object({ state: z.enum(["queued", "delivered", "not_delivered"]), at: InstantSchema, reason: lineText(DELIVERY_REASON_MAX_CHARS).optional() })
       .strict()
       .optional(),
-    /** Task 10b, comments only: the part of the session the comment is pinned to. A reply holds its thread's anchor (without the excerpt). */
-    anchor: SessionAnchorSchema.optional(),
+    /** Task 10b, comments only: the part of the session the comment is pinned to. A reply holds its thread's anchor (without the excerpt). A reader who can't see the part reads only `{ target }` (`anchorState: "gone"`). */
+    anchor: z.union([SessionAnchorSchema, SessionGoneAnchorSchema]).optional(),
     /** Task 10b, on a read only (never stored): what the part is now, for the reader. */
     anchorState: z.enum(SESSION_ANCHOR_STATES).optional(),
     /** Task 10b, comments only: a reply holds the id of the first message of its thread. */
