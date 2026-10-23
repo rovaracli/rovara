@@ -10,7 +10,6 @@ import {
   AgentOwnerSchema,
   AgentXNameSchema,
   BUILTIN_AGENTS,
-  DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD,
   ModelSourceIdSchema,
   RecipeOverlaySchema,
   RunInputSchema,
@@ -25,6 +24,7 @@ import {
   defaultModelSourceOrder,
   diffRecipes,
   isBuiltinAgentId,
+  memberAcceptRunLimitUsd,
   projectAllows,
   recipeRunner,
   type AgentAccessLevel,
@@ -74,7 +74,7 @@ import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependen
 import { isProjectConnectorRoute, registerProjectConnectorApprovals, routeProjectConnectorRequest } from "../connections/project-connectors.js";
 import { routeModelSourceRequest, type ModelSourceRouteDependencies } from "../model-sources/routes.js";
 import {
-  applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicyWithRevision,
+  applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicy, readSpendPolicyWithRevision,
   writeProjectAi, writeSpendPolicy, type ProjectAiChange,
 } from "../spend/settings.js";
 import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type OwnerCap, type RequestMark } from "./store.js";
@@ -777,12 +777,14 @@ const waitingReplay = (result: unknown): StatusReply | undefined =>
 
 async function projectAiView(deps: AgentRouteDependencies, orgId: OrgId, stored: { settings: ProjectAiSettings; revision: number }): Promise<Shown> {
   const orgOrder = deps.orgSourceOrder === undefined ? defaultModelSourceOrder(false) : await deps.orgSourceOrder(orgId);
+  const policy = await readSpendPolicy(deps, orgId);
   return {
     settings: stored.settings,
     revision: stored.revision,
     effective: {
       sourceOrder: projectSourceOrder(stored.settings, orgOrder), planningLimitUsd: { QUICK: planningLimit(stored.settings, "QUICK"), FULL: planningLimit(stored.settings, "FULL") },
-      memberAcceptRunLimitUpToUsd: stored.settings.memberAcceptRunLimitUpToUsd ?? DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD,
+      // What a member can accept now, as the acceptance applies it: the setting or the lead threshold, held to the admin threshold.
+      memberAcceptRunLimitUpToUsd: memberAcceptRunLimitUsd(stored.settings, policy),
     },
   };
 }
@@ -806,6 +808,13 @@ async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentC
   if (replay !== undefined) return projectAiView(deps, caller.orgId, replay.result as { settings: ProjectAiSettings; revision: number });
   const current = await readProjectAiWithRevision(deps, caller.orgId, project);
   const next = applyProjectAiChange(current.settings, change as ProjectAiChange);
+  // Fix wave re-check N-1 (owner ruling): a member's allowance is never more than what a project maintainer may accept, the admin threshold; above it an org admin accepts.
+  if (next.memberAcceptRunLimitUpToUsd !== undefined && next.memberAcceptRunLimitUpToUsd !== current.settings.memberAcceptRunLimitUpToUsd) {
+    const adminThresholdUsd = (await readSpendPolicy(deps, caller.orgId)).adminApprovalThresholdUsd;
+    if (next.memberAcceptRunLimitUpToUsd > adminThresholdUsd) {
+      throw agentXError("CONFIG_INVALID", `memberAcceptRunLimitUpToUsd: can't be more than $${String(adminThresholdUsd)}, the amount above which your company needs an org admin's approval for a run limit`);
+    }
+  }
   await requireWithinTrial(deps, caller.orgId, "monthlyBudgetUsd", next.monthlyBudgetUsd, TRIAL_LIMITS_R49.projectMonthlyUsd, "project budget");
   if (next.sourceOrder !== undefined) {
     const allowed = new Set(deps.orgSourceOrder === undefined ? defaultModelSourceOrder(false) : await deps.orgSourceOrder(caller.orgId));
