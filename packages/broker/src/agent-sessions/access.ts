@@ -50,6 +50,14 @@ export interface ChainSessionReads {
   stepTask(actor: ChainSessionActor, runId: string, seq: number): Promise<DeveloperTaskView>;
 }
 
+/**
+ * `projectMembers` for a reader that only ever takes the read-only path (the realtime authorizer and sink): it asks nobody, and says so loudly if anything asks,
+ * so a code path that reaches Slack from there fails closed instead of making a call.
+ */
+export const NO_SLACK_PROJECT_MEMBERS: Pick<ProjectMembers, "roleOf"> = {
+  roleOf: async () => { throw new Error("the read-only path asks no one"); },
+};
+
 export interface SessionAccessDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;

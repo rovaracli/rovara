@@ -87,6 +87,7 @@ export function signedHeaders(input: { url: URL; body: string; region: string; s
   const day = stamp.slice(0, 8);
   const headers: Record<string, string> = { "content-type": "application/json", host: input.url.host, "x-amz-date": stamp };
   if (input.credentials.sessionToken !== undefined) headers["x-amz-security-token"] = input.credentials.sessionToken;
+  // SigV4 wants the signed headers sorted by name; sorted here whatever order they are added in.
   const names = Object.keys(headers).sort();
   const canonical = ["POST", input.url.pathname, input.url.search.slice(1), ...names.map((name) => `${name}:${headers[name]!.trim()}`), "", names.join(";"), sha256(input.body)].join("\n");
   const scope = `${day}/${input.region}/${input.service}/aws4_request`;

@@ -175,7 +175,9 @@ describe("subscribing", () => {
     // A project that is not in the catalog is nobody's, an admin's included; one removed from the org's members is refused.
     expect(await t.subscribe(await lookup(OLA), projectChannel(ORG_A, "nothere"))).toEqual(REFUSED);
     const gone = "9".repeat(63) + "8";
-    expect(await t.subscribe(await tokenFor(ORG_A, gone, "lookup"), projectChannel(ORG_A, "web"))).toEqual(REFUSED);
+    const logs: Array<Record<string, unknown>> = [];
+    expect(await t.run({ authorizationToken: await tokenFor(ORG_A, gone, "lookup"), requestContext: { operation: "EVENT_SUBSCRIBE", channel: projectChannel(ORG_A, "web") } }, { log: (entry) => logs.push(entry) })).toEqual(REFUSED);
+    expect(logs).toEqual([{ event: "realtime.refused", operation: "EVENT_SUBSCRIBE", reason: "project" }]);
     expect(t.w.channelCalls).toEqual([]);
   });
 
@@ -223,6 +225,17 @@ describe("subscribing", () => {
     expect(await t.subscribe(arjun, channel)).toEqual(REFUSED);
     expect(await t.run({ authorizationToken: arjun, requestContext: { operation: "EVENT_SUBSCRIBE", channel } }, { chainReadAccess: async (caller) => caller.developerId === ARJUN })).toEqual(ALLOWED);
     expect(await t.subscribe(await tokenFor(ORG_A, PRIYA, []), channel)).toEqual(ALLOWED);
+  });
+
+  it("refuses with the session as the reason when there is no level, and with the error's name when the session can't be read", async () => {
+    const t = world();
+    const logs: Array<Record<string, unknown>> = [];
+    const made = t.w.seedSession();
+    const ask = async (who: string) => t.run({ authorizationToken: await tokenFor(ORG_A, who, []), requestContext: { operation: "EVENT_SUBSCRIBE", channel: sessionChannel(ORG_A, made.sessionId) } }, { log: (entry) => logs.push(entry) });
+    expect(await ask(ZED)).toEqual(REFUSED);
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, made.sessionId, "META"))!, summary: { nonsense: true } });
+    expect(await ask(PRIYA)).toEqual(REFUSED);
+    expect(logs.map((entry) => entry.reason)).toEqual(["session", "AgentXError"]);
   });
 
   it("refuses, and logs only a reason, when the table can't be read", async () => {

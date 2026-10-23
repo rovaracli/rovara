@@ -49,7 +49,8 @@ export async function verifyRealtimeToken(publicKey: () => Promise<PublicSigning
   const jwk = await publicKey();
   try {
     const header = decodeProtectedHeader(token);
-    if (header.alg !== "RS256" || header.kid !== jwk.kid || header.crit !== undefined) return undefined;
+    // The algorithm and any critical extension are refused by the verification below, which accepts RS256 only.
+    if (header.kid !== jwk.kid) return undefined;
     const { payload } = await jwtVerify(token, await importJWK({ kty: "RSA", n: jwk.n, e: jwk.e }, "RS256"), {
       algorithms: ["RS256"], issuer: REALTIME_TOKEN_ISSUER, audience: REALTIME_TOKEN_AUDIENCE, clockTolerance: NOT_BEFORE_SKEW_SECONDS,
       currentDate: new Date(now), requiredClaims: ["exp", "nbf", "iat"],

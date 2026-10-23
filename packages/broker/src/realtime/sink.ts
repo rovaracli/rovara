@@ -4,7 +4,7 @@
 import { DeleteCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { SESSION_FOLLOWERS_MAX, agentSessionKey, orgMemberKey, projectMemberKey, type AgentSessionRecord } from "@agentx/contracts";
 import { grantRoleOf } from "../developer/project-roles.js";
-import { readSessionShares, readTaskPeople, effectiveOwnerOf, sessionLevelOf, type SessionAccessDependencies } from "../agent-sessions/access.js";
+import { NO_SLACK_PROJECT_MEMBERS, readSessionShares, readTaskPeople, effectiveOwnerOf, sessionLevelOf, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { registerSessionNoticeSink, type NoticeSinkDependencies, type SessionChange, type SessionNoticeSink } from "../agent-sessions/notice-sink.js";
 import { writeChanges } from "./changes.js";
 import { environmentCredentials, followersHear, noticesFor, publishNotices, type RealtimeConfig } from "./publish.js";
@@ -80,9 +80,9 @@ async function checkedFollowers(deps: NoticeSinkDependencies, access: SessionAcc
   return allowed;
 }
 
-/** Whether the project's channel may carry this session's change: no Task People entry on its task is `denied`, and the list reads. */
+/** Whether the project's channel may carry this session's change as far as Task People goes: no entry on its task is `denied`, and the list reads. (`noticesFor` decides which sessions have a project channel at all.) */
 async function projectMayHear(access: SessionAccessDependencies, session: AgentSessionRecord): Promise<boolean> {
-  if (session.kind !== "task" || session.where.kind !== "cloud" || session.project === undefined || session.subject.kind !== "task") return false;
+  if (session.subject.kind !== "task") return false;
   const people = await readTaskPeople(access, session.subject.taskId);
   return people === undefined || (people !== "unreadable" && ![...people.values()].includes("denied"));
 }
@@ -93,7 +93,7 @@ export function createRealtimeSink(options: RealtimeSinkOptions): SessionNoticeS
     const { session } = change;
     // The read-only path never asks the project's channel, so there is nothing to ask.
     const access: SessionAccessDependencies = {
-      documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, projectMembers: { roleOf: async () => undefined },
+      documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, projectMembers: NO_SLACK_PROJECT_MEMBERS,
       ...(options.chainReadAccess === undefined ? {} : { chainReadAccess: options.chainReadAccess }),
     };
     const owner = await effectiveOwnerOf(access, session);

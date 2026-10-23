@@ -1,9 +1,10 @@
 // Plan 5 Task 8: a session's change becomes notices (ids and numbers only) on the events API and in each person's changes feed. The feed is written first; the publish is
 // bounded; who hears what follows the session's own rules; followers are checked again; `GET /v1/app/changes` and the token route answer only for the caller.
 import { createHash } from "node:crypto";
+import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { SignatureV4 } from "@smithy/signature-v4";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CHANGES_FEED_DAYS,
   REALTIME_TOKEN_PROJECTS_MAX,
@@ -18,11 +19,12 @@ import {
   userChannel,
   type AgentSessionRecord,
   type OrgId,
+  type RealtimeNotice,
 } from "../../packages/contracts/src/index.js";
 import { notifySessionChange, registerSessionNoticeSink, type SessionChange } from "../../packages/broker/src/agent-sessions/notice-sink.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
-import { readChanges } from "../../packages/broker/src/realtime/changes.js";
-import { publishNotices, signedHeaders, type RealtimeConfig } from "../../packages/broker/src/realtime/publish.js";
+import { readChanges, writeChanges } from "../../packages/broker/src/realtime/changes.js";
+import { noticesFor, publishNotices, signedHeaders, type RealtimeConfig } from "../../packages/broker/src/realtime/publish.js";
 import { createRealtimeSink, installRealtimeSink, realtimeConfigFromEnvironment } from "../../packages/broker/src/realtime/sink.js";
 import { realtimeSocketEndpoint } from "../../packages/broker/src/realtime/token.js";
 import { ARJUN, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
@@ -82,6 +84,12 @@ describe("who hears a session's change", () => {
     expect(feedOf(p.w.db, PRIYA).map((item) => (item.notice as { type: string }).type).sort()).toEqual(["home.changed", "session.updated"]);
     expect(feedOf(p.w.db, ARJUN).map((item) => (item.notice as { type: string }).type)).toEqual(["session.updated"]);
     expect(p.w.db.find((item) => String(item.pk).includes("#CHANGES#"))).toHaveLength(3);
+    // Each item is kept a week from the write, says when the change was made and which org it is in, and sits where the feed reads it.
+    const summaryAt = p.sessionOf(s.sessionId).summary.computedAt;
+    for (const item of feedOf(p.w.db, PRIYA)) {
+      expect(item).toMatchObject({ entityType: "CHANGE_NOTICE", orgId: ORG_A, at: summaryAt, indexExpiresAt: Math.floor(p.w.clock.now / 1000) + CHANGES_FEED_DAYS * 86_400 });
+      expect(item.sk).toMatch(new RegExp(`^${summaryAt.replace(/[.]/g, "\\.")}#\\d{6}$`));
+    }
   });
 
   it("never tells a project's channel about a chain session, a local one, a task visible only through a share, or a task with a denied person; the session's own channel still hears", async () => {
@@ -355,6 +363,185 @@ describe("publishing", () => {
   });
 });
 
+describe("noticesFor, on its own", () => {
+  const session = (kind: "task" | "chain" | "local", over: Item = {}) => {
+    const w = sessionWorld();
+    return { ...w.seedSession({ kind }).record, ...over } as unknown as AgentSessionRecord;
+  };
+  const change = (over: Partial<Parameters<typeof noticesFor>[1]> = {}) => ({
+    summaryRevision: 7, statusChanged: false, ended: false, previous: { needsPeople: [] as string[] }, summary: { status: "running" as const, needsPeople: [] as string[] }, ...over,
+  });
+  const who = (planned: ReturnType<typeof noticesFor>, kind: string) => planned.filter((entry) => entry.notice.type === kind).map((entry) => entry.channel);
+  const people = { owner: PRIYA, followers: [] as string[], projectNotice: true };
+
+  it("gives a project channel only to a cloud task session that has a project, and only when the project may hear", () => {
+    const task = session("task");
+    expect(who(noticesFor(task, change(), people), "session.updated")).toContain(projectChannel(ORG_A, "web"));
+    expect(who(noticesFor(task, change(), { ...people, projectNotice: false }), "session.updated")).not.toContain(projectChannel(ORG_A, "web"));
+    for (const [name, other] of [["chain", session("chain")], ["local", session("local")], ["a task on a Mac", session("task", { where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Mac" } })], ["a task with no project", session("task", { project: undefined })]] as const) {
+      const planned = noticesFor(other, change(), people);
+      expect(planned.some((entry) => entry.channel.includes("/p/")), name).toBe(false);
+      expect(planned.some((entry) => entry.channel === sessionChannel(ORG_A, other.sessionId)), name).toBe(true);
+    }
+  });
+
+  it("tells Home when the status changed, when the end came, or when who is needed changed (more people, fewer, or others), and not otherwise", () => {
+    const task = session("task");
+    const homeFor = (over: Parameters<typeof change>[0]) => who(noticesFor(task, change(over), people), "home.changed");
+    const ours = [userChannel(ORG_A, PRIYA)];
+    expect(homeFor({})).toEqual([]);
+    expect(homeFor({ statusChanged: true })).toEqual(ours);
+    expect(homeFor({ ended: true })).toEqual(ours);
+    // Who is needed: one more person (the same ones are all still there), one fewer, and one for another.
+    expect(homeFor({ previous: { needsPeople: [ARJUN] }, summary: { status: "running", needsPeople: [ARJUN, MIA] } })).toContain(userChannel(ORG_A, MIA));
+    expect(homeFor({ previous: { needsPeople: [ARJUN, MIA] }, summary: { status: "running", needsPeople: [ARJUN] } })).toContain(userChannel(ORG_A, MIA));
+    expect(homeFor({ previous: { needsPeople: [ARJUN] }, summary: { status: "running", needsPeople: [MIA] } }).sort()).toEqual([userChannel(ORG_A, ARJUN), userChannel(ORG_A, MIA), ...ours].sort());
+    expect(homeFor({ previous: { needsPeople: [ARJUN, MIA] }, summary: { status: "running", needsPeople: [ARJUN, MIA] } })).toEqual([]);
+  });
+
+  it("tells a follower of an end even when the status was already an ended one, and a follower of a notable status only when it changed", () => {
+    const task = session("task");
+    const heard = (over: Parameters<typeof change>[0]) => who(noticesFor(task, change(over), { ...people, followers: [ARJUN] }), "session.updated").includes(userChannel(ORG_A, ARJUN));
+    expect(heard({ ended: true, statusChanged: false, summary: { status: "succeeded", needsPeople: [] } })).toBe(true);
+    expect(heard({ ended: false, statusChanged: true, summary: { status: "needs_person", needsPeople: [] } })).toBe(true);
+    expect(heard({ ended: false, statusChanged: false, summary: { status: "needs_person", needsPeople: [] } })).toBe(false);
+    expect(heard({ ended: false, statusChanged: true, summary: { status: "running", needsPeople: [] } })).toBe(false);
+    expect(heard({ ended: false, statusChanged: true, summary: { status: "starting", needsPeople: [] } })).toBe(false);
+  });
+
+  it("never tells a person twice of the same notice, and puts each person's notices only in their own feed", () => {
+    const task = session("task");
+    const planned = noticesFor(task, change({ statusChanged: true, previous: { needsPeople: [PRIYA, ARJUN] }, summary: { status: "needs_person", needsPeople: [PRIYA, ARJUN] } }), { ...people, followers: [ARJUN, MIA] });
+    const keys = planned.map((entry) => `${entry.channel}|${JSON.stringify(entry.notice)}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const entry of planned.filter((candidate) => candidate.channel.includes("/u/"))) expect(entry.feedTo).toHaveLength(1);
+    for (const entry of planned.filter((candidate) => !candidate.channel.includes("/u/"))) expect(entry.feedTo).toEqual([]);
+    expect(planned.find((entry) => entry.channel === userChannel(ORG_A, MIA))!.feedTo).toEqual([MIA]);
+    const notice: RealtimeNotice = planned[0]!.notice;
+    expect(notice).toEqual({ type: "session.updated", sessionId: task.sessionId, revision: 7 });
+  });
+});
+
+describe("what the sink does with its time and its readers", () => {
+  const needsPerson = { statusChanged: true, summary: { status: "needs_person", needsPeople: [] as string[] } };
+
+  it("does not look at followers, or drop any, for a change they would not be told of", async () => {
+    const p = projectorWorld();
+    const session = p.w.seedSession().record as unknown as AgentSessionRecord;
+    p.w.follower(ORG_A, session.sessionId, ZED);
+    await createRealtimeSink({ realtime: undefined })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now }, changeOf(session, { statusChanged: true, summary: { status: "running", needsPeople: [] } }));
+    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${ZED}`))).toBeDefined();
+    // The same follower is dropped by a change they would be told of.
+    await createRealtimeSink({ realtime: undefined })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now }, changeOf(session, needsPerson));
+    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${ZED}`))).toBeUndefined();
+  });
+
+  it("does not check the owner when the owner follows their own session", async () => {
+    const p = projectorWorld();
+    const session = p.w.seedSession().record as unknown as AgentSessionRecord;
+    p.w.follower(ORG_A, session.sessionId, PRIYA);
+    const reads: string[] = [];
+    const watching = { send: async (command: { constructor: { name: string }; input: { Key?: { pk: string; sk: string } } }) => { if (command.constructor.name === "GetCommand") reads.push(`${command.input.Key!.pk}|${command.input.Key!.sk}`); return p.w.db.send(command); } };
+    const rec = recorder();
+    await createRealtimeSink({ realtime: rec.config() })({ documentClient: watching, tableName: "state", now: () => p.w.clock.now }, changeOf(session, needsPerson));
+    expect(reads.filter((read) => read.includes(`MEMBER#${PRIYA}`))).toEqual([]);
+    expect(noticesOn(rec.calls, userChannel(ORG_A, PRIYA)).filter((notice) => notice.type === "session.updated")).toHaveLength(1);
+  });
+
+  it("tells apart followers who differ only in a share made to them, however they are ordered", async () => {
+    const p = projectorWorld();
+    // A session with no project: only its shares open it. Arjun has a share made to him; Zed has none, and is a member like him.
+    const session = p.w.seedSession({ project: null }).record as unknown as AgentSessionRecord;
+    p.w.seedShare(ORG_A, session.sessionId, { kind: "member", developerId: ARJUN }, "view");
+    p.w.follower(ORG_A, session.sessionId, ARJUN);
+    p.w.follower(ORG_A, session.sessionId, ZED);
+    const rec = recorder();
+    await createRealtimeSink({ realtime: rec.config() })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now }, changeOf(session, needsPerson));
+    expect(rec.calls.some((call) => call.channel === userChannel(ORG_A, ARJUN))).toBe(true);
+    expect(rec.calls.some((call) => call.channel === userChannel(ORG_A, ZED))).toBe(false);
+    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${ZED}`))).toBeUndefined();
+  });
+
+  it("reads at most the followers a session may have, and stops reading pages once it has them", async () => {
+    const p = projectorWorld();
+    const session = p.w.seedSession().record as unknown as AgentSessionRecord;
+    p.w.seedShare(ORG_A, session.sessionId, { kind: "org" }, "view");
+    const crowd = Array.from({ length: 205 }, (_, n) => `${String(n).padStart(4, "0")}${"0".repeat(60)}`);
+    for (const who of crowd) { p.w.member(ORG_A, who, "member"); p.w.follower(ORG_A, session.sessionId, who); }
+    let pages = 0;
+    const paged = { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      if (command.constructor.name === "QueryCommand" && (command.input.ExpressionAttributeValues as Record<string, unknown>)[":prefix"] === "FOLLOWER#") {
+        pages += 1;
+        return p.w.db.send(new QueryCommand({ ...command.input, Limit: 50 } as never));
+      }
+      return p.w.db.send(command);
+    } };
+    const rec = recorder();
+    await createRealtimeSink({ realtime: rec.config() })({ documentClient: paged, tableName: "state", now: () => p.w.clock.now }, changeOf(session, needsPerson));
+    expect(pages).toBe(4);
+    const told = crowd.filter((who) => rec.calls.some((call) => call.channel === userChannel(ORG_A, who)));
+    expect(told).toHaveLength(200);
+    expect(told).toEqual(crowd.slice(0, 200));
+  });
+});
+
+describe("publishing, in more detail", () => {
+  it("runs a few requests at a time, not one by one and not all at once", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const rec = recorder(async () => { inFlight += 1; most = Math.max(most, inFlight); await new Promise((resolve) => setTimeout(resolve, 20)); inFlight -= 1; return new Response("{}", { status: 200 }); });
+    const notice = { type: "home.changed" as const, revision: 1 };
+    const entries = Array.from({ length: 12 }, (_, n) => ({ channel: userChannel(ORG_A, `${String(n).padStart(2, "0")}${"0".repeat(62)}`), notice }));
+    await publishNotices({ realtime: rec.config(), now: () => T0 }, entries);
+    expect(rec.calls).toHaveLength(12);
+    expect(most).toBe(4);
+  });
+
+  it("starts no new request once the deadline has aborted the rest", async () => {
+    const hang = vi.fn((_url: string, init: { signal: AbortSignal }) => new Promise<Response>((_resolve, reject) => init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })))));
+    const logs: Array<Record<string, unknown>> = [];
+    const notice = { type: "home.changed" as const, revision: 1 };
+    const entries = Array.from({ length: 12 }, (_, n) => ({ channel: userChannel(ORG_A, `${String(n).padStart(2, "0")}${"0".repeat(62)}`), notice }));
+    const result = await publishNotices({ realtime: { ...recorder().config(), fetch: hang as unknown as typeof fetch }, now: () => T0, log: (entry) => logs.push(entry) }, entries);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(hang).toHaveBeenCalledTimes(4);
+    expect(result.requests).toBe(4);
+  });
+
+  it("leaves no timer behind once it is done", async () => {
+    vi.useFakeTimers();
+    try {
+      const rec = recorder();
+      await publishNotices({ realtime: rec.config(), now: () => T0 }, [{ channel: sessionChannel(ORG_A, "ses_00000000000000000001"), notice: { type: "home.changed", revision: 1 } }]);
+      expect(rec.calls).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("signs a request with a query string as the AWS signer does", async () => {
+    const at = new Date("2026-10-22T09:00:00.000Z");
+    const credentials = { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY" };
+    const url = new URL("https://abcdefghij.appsync-api.us-east-1.amazonaws.com/event?a=1");
+    const ours = signedHeaders({ url, body: "{}", region: "us-east-1", service: "appsync", credentials, at });
+    const reference = await new SignatureV4({ service: "appsync", region: "us-east-1", credentials, sha256: Sha256, applyChecksum: false }).sign({
+      method: "POST", protocol: url.protocol, hostname: url.hostname, path: url.pathname, query: { a: "1" }, headers: { "content-type": "application/json", host: url.host }, body: "{}",
+    }, { signingDate: at });
+    expect(ours["authorization"]).toBe(reference.headers["authorization"]);
+  });
+
+  it("counts the feed writes that failed, and says how many went through", async () => {
+    const w = sessionWorld();
+    const notice = { type: "home.changed" as const, revision: 1 };
+    let n = 0;
+    const flaky = { send: async (command: unknown) => { n += 1; if (n === 2) throw new Error("full"); return w.db.send(command); } };
+    const entries = [PRIYA, ARJUN, MIA].map((developerId) => ({ developerId, notice, at: iso(T0) }));
+    expect(await writeChanges({ documentClient: flaky, tableName: "state", now: () => T0, log: () => undefined }, ORG_A, entries)).toEqual({ written: 2, failed: 1 });
+    expect(await writeChanges({ documentClient: w.db, tableName: "state", now: () => T0 }, ORG_A, [])).toEqual({ written: 0, failed: 0 });
+  });
+});
+
 describe("the channels", () => {
   it("are names of the shape AppSync Events accepts, with no id, name or title in them", () => {
     const org = "org_0123456789abcdefghij" as OrgId;
@@ -374,7 +561,7 @@ describe("the channels", () => {
     expect(channels[3]).toBe(`/rovara/o-0123456789abcdefghij/p/p-${createHash("sha256").update(`${org}\nweb`).digest("hex").slice(0, 40)}`);
     expect(projectSegment(org, "web")).not.toBe(projectSegment(ORG_B, "web"));
     expect(channels.join()).not.toContain("web");
-    for (const bad of ["/rovara/o-0123456789abcdefghij/s/*", "/rovara/o-0123456789abcdefghij/*", "/rovara/*", "/other/o-0123456789abcdefghij/u/d-" + "a".repeat(40), "/rovara/o-0123456789abcdefghij/u/s-0123456789abcdefghij", "/rovara/o-0123456789abcdefghij/u/d-" + "a".repeat(41), "/rovara/o-0123456789abcdefghij/u/d-" + "a".repeat(40) + "/x", "rovara/o-0123456789abcdefghij/u/d-" + "a".repeat(40), "/rovara/o-0123456789ABCDEFGHIJ/u/d-" + "a".repeat(40)]) {
+    for (const bad of ["/rovara/o-0123456789abcdefghij/s/*", "/rovara/o-0123456789abcdefghij/*", "/rovara/*", "/other/o-0123456789abcdefghij/u/d-" + "a".repeat(40), "/rovara/o-0123456789abcdefghij/u/s-0123456789abcdefghij", "/rovara/o-0123456789abcdefghij/u/d-" + "a".repeat(41), `/rovara/o-0123456789abcdefghij/s/s-${"a".repeat(21)}`, `/rovara/o-0123456789abcdefghij/s/s-${"a".repeat(19)}`, `/rovara/o-0123456789abcdefghij/s/c-${"A".repeat(20)}`, "/rovara/o-0123456789abcdefghij/u/d-" + "a".repeat(40) + "/x", "rovara/o-0123456789abcdefghij/u/d-" + "a".repeat(40), "/rovara/o-0123456789ABCDEFGHIJ/u/d-" + "a".repeat(40)]) {
       expect(parseRealtimeChannel(bad), bad).toBeUndefined();
     }
     expect(() => userChannel("org_x", PRIYA)).toThrow();

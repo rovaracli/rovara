@@ -18,7 +18,7 @@ import {
   userSegment,
   type RealtimeTokenClaims,
 } from "@agentx/contracts";
-import { resolveSessionAccess, type SessionAccessDependencies } from "../agent-sessions/access.js";
+import { NO_SLACK_PROJECT_MEMBERS, resolveSessionAccess, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { kmsTokenSigner, type PublicSigningJwk } from "../developer/tokens.js";
 import { verifyRealtimeToken } from "./token.js";
@@ -96,7 +96,7 @@ export async function authorizeRealtime(event: RealtimeAuthorizerEvent, deps: Au
     }
     const sessionId = `${parsed.segment.startsWith("c-") ? "crn" : "ses"}_${parsed.segment.slice(2)}`;
     const access: SessionAccessDependencies = {
-      documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, projectMembers: { roleOf: async () => undefined },
+      documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, projectMembers: NO_SLACK_PROJECT_MEMBERS,
       ...(deps.chainReadAccess === undefined ? {} : { chainReadAccess: deps.chainReadAccess }),
     };
     try {
