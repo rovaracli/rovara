@@ -2333,7 +2333,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
 }
 
 /** The slots a month's request for `scope` may be in: each month, each asker. */
-const monthSlots = (months: readonly string[], scope: string, askers: readonly string[]): Array<{ subject: string; kind: string }> =>
+export const monthSlots = (months: readonly string[], scope: string, askers: readonly string[]): Array<{ subject: string; kind: string }> =>
   months.flatMap((month) => askers.map((asker) => ({ subject: `MONTH#${month}#${scope}#${asker}`, kind: "month" })));
 
 /** Plan 3, Task 32: what the view says of a task waiting for money: the pause and its request, what planning found, a test's offer to continue. */

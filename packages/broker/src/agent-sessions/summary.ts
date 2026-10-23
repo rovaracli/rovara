@@ -6,7 +6,8 @@
 // ended, a chain run in a terminal status, a local session whose device reported its end. A stopped task is `stopped` and a task between turns is
 // `waiting`; both stay open. An ended session never reopens.
 import { createHash } from "node:crypto";
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { z } from "zod";
+import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentSessionRecordSchema,
   ENDED_SESSION_STATUSES,
@@ -17,13 +18,18 @@ import {
   SESSION_PEEK_MAX_CHARS,
   SESSION_RETENTION_DAYS,
   SESSION_TITLE_MAX,
+  SessionStatusSchema,
+  SessionSummarySchema,
   STATUS_WORDS,
   agentSessionKey,
   canonicalJson,
   endedSessionWorkKey,
+  isRunLimitBlockReason,
   liveSessionKey,
   openAgentSessionKey,
+  planRunLimitSubject,
   redactText,
+  scopeKey,
   sessionEventId,
   spendRequestKey,
   spendRequestSlotKey,
@@ -39,7 +45,7 @@ import {
 import { getAnyApproval } from "../agents/approvals-store.js";
 import { agentRunView } from "../agents/run-engine.js";
 import { failedIndexes, type TableInput, type TransactItem } from "../agents/table-writes.js";
-import { taskPageStep } from "../aws/developer-tasks.js";
+import { monthSlots, taskPageStep } from "../aws/developer-tasks.js";
 import { deriveTaskStatus, recentTaskEvents, taskKey, taskPointerKey, type DeveloperTaskRecord, type OperationFacts, type StoredEvent } from "../developer/task-records.js";
 import { effectiveOwnerId } from "./access.js";
 import { notifySessionChange } from "./notice-sink.js";
@@ -53,8 +59,9 @@ export const ENDED_DRAIN_CURSOR_KEY: OrgKey = { pk: "ENDED_DRAIN_CURSOR", sk: "M
 
 // ---- the sources Plan 4 and Task 18 fill in (until then a chain or local session keeps the summary it has)
 
-/** What the summary needs of a chain run (Plan 4's record, read by its own code). */
+/** What the summary needs of a chain run (Plan 4's record, read by its own code). `orgId` is the org the record belongs to: it is checked against the session's. */
 export interface ChainFacts {
+  orgId: OrgId;
   status: "running" | "gate" | "paused" | "succeeded" | "failed" | "timed_out" | "cancelled";
   /** The current section's name. */
   stepName?: string;
@@ -72,8 +79,9 @@ export interface ChainSessionSource {
   targetOf?(record: Item): { orgId: OrgId; sessionId: SessionId } | undefined;
 }
 
-/** What a local session's device last said (Task 18). */
+/** What a local session's device last said (Task 18). `orgId` is the org the device's session belongs to: it is checked against the session's. */
 export interface LocalFacts {
+  orgId: OrgId;
   status: SessionStatus;
   step?: string;
   peek?: string;
@@ -87,6 +95,37 @@ export interface LocalFacts {
 export interface LocalSessionSource {
   read(session: AgentSessionRecord): Promise<LocalFacts | undefined>;
 }
+
+// What a seam hands back is data from another part of the system (and, for a device, from a person's machine): it is checked here before anything is computed from it.
+const InstantText = z.string().datetime();
+const MoneyUsd = z.number().finite().min(0);
+const ChainFactsSchema = z.object({
+  orgId: z.string(),
+  status: z.enum(["running", "gate", "paused", "succeeded", "failed", "timed_out", "cancelled"]),
+  stepName: z.string().max(2_000).optional(),
+  spentUsd: MoneyUsd,
+  stepTaskId: z.string().max(200).optional(),
+  needsPeople: z.array(z.string().max(2_000)).max(200).optional(),
+  endedAt: InstantText.optional(),
+});
+const LocalFactsSchema = z.object({
+  orgId: z.string(),
+  status: SessionStatusSchema,
+  step: z.string().max(2_000).optional(),
+  peek: z.string().max(20_000).optional(),
+  costUsd: MoneyUsd,
+  lastRunFailed: z.literal(true).optional(),
+  updatedAt: InstantText,
+  endedAt: InstantText.optional(),
+});
+
+/** A person's name or id as the summary lists it: one line, no control or format characters, cut to the limit; empty ones go. */
+const NEEDS_PERSON_MAX = 200;
+const cleanPeople = (people: readonly string[]): string[] =>
+  people.flatMap((person) => {
+    const line = [...person.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim()].slice(0, NEEDS_PERSON_MAX).join("").trimEnd();
+    return line === "" ? [] : [line];
+  });
 
 export interface SummaryDependencies extends TableInput {
   log?: Log | undefined;
@@ -102,6 +141,8 @@ export function sessionSummaryDigest(summary: Omit<SessionSummary, "digest" | "c
 }
 
 const SECONDS_PER_DAY = 86_400;
+/** How long an ended session's work item for the drain is kept if nothing drains it. */
+const ENDED_WORK_KEEP_DAYS = 30;
 const iso = (ms: number) => new Date(ms).toISOString();
 const seconds = (at: string) => Math.floor(Date.parse(at) / 1000);
 const cleanUsd = (value: number) => Math.round(value * 1e6) / 1e6;
@@ -187,30 +228,57 @@ async function peekOf(deps: SummaryDependencies, operationId: string): Promise<s
   return cut === "" ? undefined : cut;
 }
 
-/** The candidates of the approvals a run waits on and of the spend requests a paused task waits on, with how many decisions wait. */
+/**
+ * The slots the spend requests a task waits on are kept in, as the writer keys them (`spend/requests.ts` keeps a task's under `TASK#<id>`, a month's under
+ * `MONTH#<month>#<scope>#<asker>`, a plan's run limit under `TASK#<id>#IMPLEMENT`): the paused task's own request, as the task page looks for it, and the plan's
+ * when it is blocked on its run limit.
+ */
+function requestSlotsOf(task: DeveloperTaskRecord, now: number): Array<{ subject: string; kind: string }> {
+  const slots: Array<{ subject: string; kind: string }> = [];
+  const pause = task.budgetPause;
+  if (pause !== undefined) {
+    const own = `TASK#${task.taskId}`;
+    if (pause.scope.kind === "task") slots.push({ subject: own, kind: "run_limit" });
+    else if (pause.scope.kind === "max_per_run" || pause.scope.kind === "planning") slots.push({ subject: own, kind: pause.scope.kind });
+    else if (pause.scope.kind !== "test") {
+      // A month's budget: the pause's month and this month's, asked by the system, the run's starter or its owner.
+      const months = [...new Set([pause.at.slice(0, 7), iso(now).slice(0, 7)])];
+      const askers = [...new Set(["system", task.startedBy?.developerId ?? task.developerId, task.developerId])];
+      slots.push(...monthSlots(months, scopeKey(pause.scope), askers));
+    }
+  }
+  if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED" && isRunLimitBlockReason(task.workflow.blockReason)) slots.push({ subject: planRunLimitSubject(task.taskId), kind: "run_limit" });
+  return slots;
+}
+
+/**
+ * The candidates of the approvals a run waits on and of the spend requests a paused task, or a plan blocked on its run limit, waits on, with how many decisions wait.
+ * `approverIds` is who the request was routed to when it was made; who may decide is read live where the decision is made.
+ */
 async function decisionsWaiting(deps: SummaryDependencies, task: DeveloperTaskRecord, approvalIds: readonly string[]): Promise<{ people: string[]; count: number }> {
   const orgId = task.orgId as OrgId;
   const people: string[] = [];
   let count = 0;
   for (const id of approvalIds) {
-    const record = await getAnyApproval(deps, orgId, id as never).catch(() => undefined);
+    // A read that fails is thrown, not read as "no approval": the summary is left as it was.
+    const record = await getAnyApproval(deps, orgId, id);
     if (record === undefined || record.status !== "PENDING") continue;
     count += 1;
     const approvers = (record as { approvers?: { kind: string; ids?: readonly string[]; candidates?: readonly string[] } }).approvers;
     people.push(...(approvers?.kind === "ids" ? approvers.ids ?? [] : approvers?.candidates ?? []));
   }
-  if (task.budgetPause !== undefined) {
-    for (const kind of ["run_limit", "max_per_run", "planning"]) {
-      const slot = await getItem(deps, spendRequestSlotKey(orgId, task.taskId, kind));
-      const requestId = slot?.["spendRequestId"];
-      if (typeof requestId !== "string" || slot?.["orgId"] !== orgId) continue;
-      const request = await getItem(deps, spendRequestKey(orgId, requestId));
-      if (request === undefined || request["orgId"] !== orgId || request["status"] !== "PENDING") continue;
-      const expiresAt = request["expiresAt"];
-      if (typeof expiresAt === "string" && Date.parse(expiresAt) <= deps.now()) continue;
-      count += 1;
-      if (Array.isArray(request["approverIds"])) people.push(...(request["approverIds"] as unknown[]).filter((id): id is string => typeof id === "string"));
-    }
+  const counted = new Set<string>();
+  for (const { subject, kind } of requestSlotsOf(task, deps.now())) {
+    const slot = await getItem(deps, spendRequestSlotKey(orgId, subject, kind));
+    const requestId = slot?.["spendRequestId"];
+    if (typeof requestId !== "string" || slot?.["orgId"] !== orgId || counted.has(requestId)) continue;
+    const request = await getItem(deps, spendRequestKey(orgId, requestId));
+    if (request === undefined || request["orgId"] !== orgId || request["status"] !== "PENDING") continue;
+    const expiresAt = request["expiresAt"];
+    if (typeof expiresAt === "string" && Date.parse(expiresAt) <= deps.now()) continue;
+    counted.add(requestId);
+    count += 1;
+    if (Array.isArray(request["approverIds"])) people.push(...(request["approverIds"] as unknown[]).filter((id): id is string => typeof id === "string"));
   }
   return { people, count };
 }
@@ -237,7 +305,7 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   });
   const workflow = task.workflow;
   const run = task.agent !== undefined && workflow === undefined
-    ? await agentRunView({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: (event, fields) => log(deps, { event, ...fields }) }, task).catch(() => undefined)
+    ? await agentRunView({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: (event, fields) => log(deps, { event, ...fields }) }, task)
     : undefined;
 
   const runLimitUsd = typeof task.budgetUsd === "number" ? task.budgetUsd : undefined;
@@ -271,8 +339,10 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     step = workflow === undefined ? run?.currentStep?.name : taskPageStep(workflow, false);
   } else if (workflow !== undefined) {
     step = taskPageStep(workflow, false);
+    // Only a stage that waits on a person is not running: a plan under review needs its owner, a blocked task needs someone, a pull request waits to be merged. The checks and
+    // reviews also sit in WAITING between runs, but nobody is needed for them.
     if ((workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") || workflow.state === "BLOCKED") status = "needs_person";
-    else if (workflow.state === "WAITING") status = "waiting";
+    else if (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING") status = "waiting";
     else status = starting ? "starting" : "running";
   } else if (run !== undefined) {
     step = run.currentStep?.name;
@@ -296,13 +366,28 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   const needsPeople = [...waitingOn.people];
   if (status === "needs_person" && needsPeople.length === 0) needsPeople.push(effectiveOwnerId(session, task as unknown as Item));
   if (workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && !needsPeople.includes(effectiveOwnerId(session, task as unknown as Item))) needsPeople.push(effectiveOwnerId(session, task as unknown as Item));
-  const peek = derived.current === undefined ? undefined : await peekOf(deps, derived.current.id).catch(() => undefined);
+  // An event log that can't be read keeps the peek the summary had: a failed read is not a reason to blank it.
+  const peek = derived.current === undefined ? undefined : await peekOf(deps, derived.current.id).catch((error: unknown) => {
+    log(deps, { event: "agent_session.peek_unreadable", sessionId: session.sessionId, error: error instanceof Error ? error.name : "unknown" });
+    return session.summary.peek;
+  });
   return { summary: assemble({ status, step: step === undefined ? undefined : stepText(step), peek, lastRunFailed, needsPeople, pendingApprovals: waitingOn.count, ...costs }, now) };
+}
+
+/** Checks what a seam returned: its shape, and that it is this session's org's. Anything else is logged and read as "nothing to say" (the summary stays as it was). */
+function checkedFacts<T extends { orgId: string }>(deps: SummaryDependencies, session: AgentSessionRecord, seam: "chain" | "local", schema: z.ZodType<T>, facts: unknown): T | undefined {
+  if (facts === undefined) return undefined;
+  const parsed = schema.safeParse(facts);
+  if (!parsed.success || parsed.data.orgId !== session.orgId) {
+    log(deps, { event: "agent_session.facts_invalid", seam, sessionId: session.sessionId, problem: parsed.success ? "org" : parsed.error.issues[0]?.path.join(".") ?? "shape" });
+    return undefined;
+  }
+  return parsed.data;
 }
 
 async function chainState(deps: SummaryDependencies, session: AgentSessionRecord, chainRunId: string): Promise<Computed | undefined> {
   if (deps.chains === undefined) return undefined;
-  const facts = await deps.chains.read(session.orgId, chainRunId);
+  const facts = checkedFacts(deps, session, "chain", ChainFactsSchema, await deps.chains.read(session.orgId, chainRunId));
   if (facts === undefined) return undefined;
   const now = deps.now();
   const stepCost = facts.stepTaskId === undefined ? 0 : await taskSpend(deps, session.orgId, facts.stepTaskId);
@@ -314,13 +399,13 @@ async function chainState(deps: SummaryDependencies, session: AgentSessionRecord
     return { ended: { status, at: facts.endedAt ?? iso(now) }, summary: assemble({ status, step, costUsd }, now) };
   }
   const status: SessionStatus = facts.status === "gate" ? "needs_person" : facts.status === "paused" ? "paused" : "running";
-  const needsPeople = facts.needsPeople ?? (status === "needs_person" ? [session.owner.developerId] : []);
+  const needsPeople = facts.needsPeople === undefined ? (status === "needs_person" ? [session.owner.developerId] : []) : cleanPeople(facts.needsPeople);
   return { summary: assemble({ status, step, costUsd, needsPeople }, now) };
 }
 
 async function localState(deps: SummaryDependencies, session: AgentSessionRecord): Promise<Computed | undefined> {
   if (deps.local === undefined) return undefined;
-  const facts = await deps.local.read(session);
+  const facts = checkedFacts(deps, session, "local", LocalFactsSchema, await deps.local.read(session));
   if (facts === undefined) return undefined;
   const now = deps.now();
   const over = (ENDED_SESSION_STATUSES as readonly string[]).includes(facts.status);
@@ -372,6 +457,19 @@ function tileOf(session: AgentSessionRecord, summary: SessionSummary, revision: 
 }
 
 /**
+ * Saves the first day the drain should read, once: a read, and a write only when there is no cursor yet (never a write per end, so ends do not contend for it).
+ * Never throws: a drain with no cursor starts two days back.
+ */
+async function ensureDrainCursor(deps: SummaryDependencies, day: string): Promise<void> {
+  try {
+    if (await getItem(deps, ENDED_DRAIN_CURSOR_KEY) !== undefined) return;
+    await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...ENDED_DRAIN_CURSOR_KEY, entityType: "ENDED_DRAIN_CURSOR", day }, ConditionExpression: "attribute_not_exists(pk)" }));
+  } catch (error) {
+    if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) log(deps, { event: "agent_session.drain_cursor_not_saved", error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
+/**
  * Recomputes one session's summary and, when its digest differs, writes it: META `summary` and `summaryRevision + 1` (conditional on the revision read; one
  * re-read on a lost race), the live tile, and a `status` or `step` event when either changed (its id comes from the new revision, so it is told once).
  * The first ended summary also sets `endedAt`, takes the session out of the sweep's list, lists it for the drain and sets its retention. An ended session
@@ -394,6 +492,12 @@ export async function refreshSessionSummary(deps: SummaryDependencies, orgId: Or
       ? assemble({ ...state.summary, status: session.summary.status }, Date.parse(state.summary.computedAt))
       : state.summary;
     if (summary.digest === session.summary.digest) return "unchanged";
+    // What is written must be a summary the schema accepts: a committed one that fails it would make the session unreadable and no refresh could fix it.
+    const valid = SessionSummarySchema.safeParse(summary);
+    if (!valid.success) {
+      log(deps, { event: "agent_session.summary_invalid", orgId, sessionId, problem: valid.error.issues[0]?.path.join(".") ?? "summary" });
+      return "unchanged";
+    }
 
     const revision = session.summaryRevision + 1;
     const ending = !wasEnded && state.ended !== undefined;
@@ -401,29 +505,28 @@ export async function refreshSessionSummary(deps: SummaryDependencies, orgId: Or
     const statusChanged = summary.status !== session.summary.status;
     const stepChanged = (summary.step ?? "") !== (session.summary.step ?? "");
     const event = changeEvent(session, summary, revision, statusChanged, stepChanged, ending);
-    const legs = ending ? session.legs.map((leg, index) => index === session.legs.length - 1 && leg.endedAt === undefined ? { ...leg, endedAt: endedAt!, endedBy: "end" as const } : leg) : session.legs;
     const metaKey = agentSessionKey(orgId, sessionId, "META");
     const items: TransactItem[] = [
       { Update: {
         TableName: deps.tableName, Key: metaKey,
-        UpdateExpression: `SET summary = :summary, summaryRevision = :next, updatedAt = :at${ending ? ", endedAt = :ended, legs = :legs, #expires = :expires" : ""}`,
+        UpdateExpression: `SET summary = :summary, summaryRevision = :next, updatedAt = :at${ending ? ", endedAt = :ended, #expires = :expires" : ""}`,
         ConditionExpression: "attribute_exists(pk) AND orgId = :org AND summaryRevision = :read",
         ...(ending ? { ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE } } : {}),
         ExpressionAttributeValues: {
           ":summary": summary, ":next": revision, ":at": summary.computedAt, ":org": orgId, ":read": session.summaryRevision,
-          ...(ending ? { ":ended": endedAt, ":legs": legs, ":expires": seconds(endedAt!) + SESSION_RETENTION_DAYS * SECONDS_PER_DAY } : {}),
+          ...(ending ? { ":ended": endedAt, ":expires": seconds(endedAt!) + SESSION_RETENTION_DAYS * SECONDS_PER_DAY } : {}),
         },
       } },
       { Put: { TableName: deps.tableName, Item: tileOf(session, summary, revision, endedAt) } },
       ...(event === undefined ? [] : [sessionEventItem(deps, { orgId, sessionId }, event)]),
       ...(ending ? [
         { Delete: { TableName: deps.tableName, Key: openAgentSessionKey(orgId, sessionId) } },
-        { Put: { TableName: deps.tableName, Item: { ...endedSessionWorkKey(endedAt!.slice(0, 10), orgId, sessionId), entityType: "ENDED_AGENT_SESSION", orgId, sessionId, endedAt } } },
-        { Update: {
-          TableName: deps.tableName, Key: ENDED_DRAIN_CURSOR_KEY,
-          UpdateExpression: "SET entityType = if_not_exists(entityType, :type), #day = if_not_exists(#day, :day)",
-          ExpressionAttributeNames: { "#day": "day" }, ExpressionAttributeValues: { ":type": "ENDED_DRAIN_CURSOR", ":day": endedAt!.slice(0, 10) },
-        } },
+        // Filed under the day of this refresh, not of the end: the drain's day never passes yesterday, so an end found late (the stream was down, an old task was first
+        // looked at) is always on a day the drain still reads. The retention clock is the end's own. The item has its own expiry, so a drain that is lost cannot keep it.
+        { Put: { TableName: deps.tableName, Item: {
+          ...endedSessionWorkKey(summary.computedAt.slice(0, 10), orgId, sessionId), entityType: "ENDED_AGENT_SESSION", orgId, sessionId, endedAt,
+          [INDEX_EXPIRY_ATTRIBUTE]: seconds(summary.computedAt) + ENDED_WORK_KEEP_DAYS * SECONDS_PER_DAY,
+        } } },
       ] : []),
     ];
     try {
@@ -436,8 +539,17 @@ export async function refreshSessionSummary(deps: SummaryDependencies, orgId: Or
       }
       throw error;
     }
+    if (ending) await ensureDrainCursor(deps, summary.computedAt.slice(0, 10));
+    // The change is committed: a record that can't be built for the sink is logged, never thrown.
+    let written: AgentSessionRecord;
+    try {
+      written = AgentSessionRecordSchema.parse({ ...session, summary, summaryRevision: revision, updatedAt: summary.computedAt, ...(endedAt === undefined ? {} : { endedAt }) });
+    } catch (error) {
+      log(deps, { event: "agent_session.notice_record_invalid", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
+      return "updated";
+    }
     await notifySessionChange(deps, {
-      orgId, sessionId, session: AgentSessionRecordSchema.parse({ ...session, summary, summaryRevision: revision, updatedAt: summary.computedAt, legs, ...(endedAt === undefined ? {} : { endedAt }) }),
+      orgId, sessionId, session: written,
       previous: session.summary, summary, summaryRevision: revision, statusChanged, stepChanged, ended: ending, at: summary.computedAt,
     });
     return "updated";

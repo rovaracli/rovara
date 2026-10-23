@@ -1540,9 +1540,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     if (isSessionSweepEvent(event)) {
       const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
       const outcome: Record<string, unknown> = {};
+      const startedAt = Date.now();
       try { outcome.sweep = await sweepAgentSessions(table, Date.now()); }
       catch (error) { console.log(JSON.stringify({ component: "broker", event: "agent_session.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.sweep = "failed"; }
-      try { outcome.drain = await drainEndedSessions(table, Date.now()); }
+      // The function's timeout is 30 seconds: the drain gets what is left of 25 (a refresh or a page of updates that has started may run a second or two over).
+      try { outcome.drain = await drainEndedSessions(table, Date.now(), { budgetMs: Math.max(0, SESSION_EVENT_BUDGET_MS - (Date.now() - startedAt)) }); }
       catch (error) { console.log(JSON.stringify({ component: "broker", event: "agent_session.drain_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.drain = "failed"; }
       return json(outcome, "session-sweep");
     }
@@ -10941,6 +10943,9 @@ function isAuditDrainEvent(event: unknown): event is { source: "agentx.audit-dra
 function isGithubInstallRequestReminderEvent(event: unknown): event is { kind: "github-install-request-reminders" } {
   return event !== null && typeof event === "object" && (event as { kind?: unknown }).kind === "github-install-request-reminders";
 }
+
+/** What the session sweep event may spend in all (the sweep and then the drain), inside the broker's 30-second timeout. */
+const SESSION_EVENT_BUDGET_MS = 25_000;
 
 function isSessionSweepEvent(event: unknown): event is { source: "agentx.session-sweep" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.session-sweep";

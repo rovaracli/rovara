@@ -145,7 +145,8 @@ describe("I-3: an unreadable source leaves the summary as it was", () => {
     const send = p.w.db.send.bind(p.w.db);
     const spy = vi.spyOn(p.w.db, "send").mockImplementation(async (command: never) => {
       const input = (command as { input?: { KeyConditionExpression?: string; ExpressionAttributeValues?: Record<string, unknown> } }).input;
-      if (String(input?.ExpressionAttributeValues?.[":pk"] ?? "").startsWith("OPERATION#")) throw throttled();
+      const partition = input?.ExpressionAttributeValues?.[":pk"];
+      if (typeof partition === "string" && partition.startsWith("OPERATION#")) throw throttled();
       return send(command);
     });
     await p.refresh(s.sessionId);
@@ -313,7 +314,7 @@ describe("I-6: a summary is validated before it is written, and the seams are va
   ])("%s leaves the session as it was", async (_label, patch) => {
     const { p, session } = chain();
     const before = JSON.stringify(p.sessionOf(session.sessionId));
-    await p.refresh(session.sessionId, ORG_A, { chains: { read: async () => facts(patch as Item) } });
+    await p.refresh(session.sessionId, ORG_A, { chains: { read: async () => facts(patch) } });
     expect(JSON.stringify(p.sessionOf(session.sessionId))).toBe(before);
     expect(p.logs.map((entry) => entry.event)).toContain("agent_session.facts_invalid");
   });

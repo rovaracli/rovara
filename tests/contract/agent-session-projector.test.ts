@@ -148,7 +148,8 @@ describe("when a session ends", () => {
     expect(session.summary.status).toBe("succeeded");
     expect(session.endedAt).toBe(closedAt);
     expect(session.indexExpiresAt).toBe(Math.floor(Date.parse(closedAt) / 1000) + SESSION_RETENTION_DAYS * 86_400);
-    expect(session.legs.at(-1)).toMatchObject({ endedAt: closedAt, endedBy: "end" });
+    // The end leaves the session's legs alone (a take-over between the read and the write must not be overwritten; the leg's end is Task 11's).
+    expect(session.legs.at(-1)?.endedAt).toBeUndefined();
     expect(p.w.db.get(openAgentSessionKey(ORG_A, s.sessionId))).toBeUndefined();
     expect(p.w.db.get(endedSessionWorkKey("2026-10-22", ORG_A, s.sessionId))).toMatchObject({ orgId: ORG_A, sessionId: s.sessionId });
     expect(p.tile(s.sessionId)).toMatchObject({ endedAt: closedAt, indexExpiresAt: Math.floor(Date.parse(closedAt) / 1000) + LIVE_ENDED_KEEP_HOURS * 3600 });
@@ -246,7 +247,7 @@ describe("when a session ends", () => {
   it("a local session ends when its device says so, and shows 'offline' after ten silent minutes (read through its source)", async () => {
     const p = projectorWorld();
     const local = p.w.seedSession({ kind: "local", owner: PRIYA });
-    const facts = { status: "running" as const, step: "Writing tests", costUsd: 0.5, updatedAt: iso(T0) };
+    const facts = { orgId: ORG_A, status: "running" as const, step: "Writing tests", costUsd: 0.5, updatedAt: iso(T0) };
     const source = { read: vi.fn(async () => facts as Item) };
     await p.refresh(local.sessionId, ORG_A, { local: source });
     expect(p.sessionOf(local.sessionId).summary).toMatchObject({ status: "running", step: "Writing tests", costUsd: 0.5 });
@@ -265,11 +266,11 @@ describe("when a session ends", () => {
     const chain = p.w.seedSession({ kind: "chain" });
     const step = p.open();
     p.spent(step.taskId, 1.5);
-    const facts = { status: "gate" as const, stepName: "Review gate", spentUsd: 2, stepTaskId: step.taskId, needsPeople: [ARJUN] };
+    const facts = { orgId: ORG_A, status: "gate" as const, stepName: "Review gate", spentUsd: 2, stepTaskId: step.taskId, needsPeople: [ARJUN] };
     const source = { read: vi.fn(async () => facts as Item), targetOf: () => undefined };
     await p.refresh(chain.sessionId, ORG_A, { chains: source });
     expect(p.sessionOf(chain.sessionId).summary).toMatchObject({ status: "needs_person", step: "Review gate", costUsd: 3.5, needsPeople: [ARJUN] });
-    source.read.mockResolvedValue({ status: "timed_out", stepName: "Review gate", spentUsd: 2 });
+    source.read.mockResolvedValue({ orgId: ORG_A, status: "timed_out", stepName: "Review gate", spentUsd: 2 });
     await p.refresh(chain.sessionId, ORG_A, { chains: source });
     expect(p.sessionOf(chain.sessionId)).toMatchObject({ summary: { status: "failed" } });
     expect(p.sessionOf(chain.sessionId).endedAt).toBeDefined();

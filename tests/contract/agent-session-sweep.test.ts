@@ -114,7 +114,7 @@ describe("the session sweep", () => {
     expect(p.sessionOf(s.sessionId)).toMatchObject({ summary: { status: "succeeded" }, endedAt: "2026-10-20T08:30:00.000Z" });
     expect(p.tile(s.sessionId)).toMatchObject({ summary: { status: "succeeded" } });
     expect(p.w.db.get(openAgentSessionKey(ORG_A, s.sessionId))).toBeUndefined();
-    expect(p.w.db.get(endedSessionWorkKey("2026-10-20", ORG_A, s.sessionId))).toBeDefined();
+    expect(p.w.db.get(endedSessionWorkKey("2026-10-22", ORG_A, s.sessionId))).toBeDefined();
   });
 
   it("brings a session the projector skipped up to date, and one the stream never reported", async () => {
@@ -167,7 +167,7 @@ describe("retention: drainEndedSessions", () => {
     const { p, s, expires } = ended();
     const keys = seedItems(p, s.sessionId);
     await p.refresh(s.sessionId);
-    const work = endedSessionWorkKey("2026-10-20", ORG_A, s.sessionId);
+    const work = endedSessionWorkKey("2026-10-22", ORG_A, s.sessionId);
     expect(p.w.db.get(work)).toBeDefined();
     p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
     await drainEndedSessions(p.deps, p.w.clock.now);
@@ -185,7 +185,7 @@ describe("retention: drainEndedSessions", () => {
     const { p, s, expires } = ended();
     await p.refresh(s.sessionId);
     for (let n = 0; n < 250; n += 1) p.w.db.set({ ...agentSessionKey(ORG_A, s.sessionId, `MESSAGE#msg_${String(n).padStart(20, "0")}`), orgId: ORG_A, sessionId: s.sessionId });
-    const work = endedSessionWorkKey("2026-10-20", ORG_A, s.sessionId);
+    const work = endedSessionWorkKey("2026-10-22", ORG_A, s.sessionId);
     p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
     // A clock that jumps past the budget after the first page of 100.
     const base = p.w.db.send.bind(p.w.db);
@@ -234,7 +234,7 @@ describe("retention: drainEndedSessions", () => {
     const { p, s } = ended();
     await p.refresh(s.sessionId);
     seedItems(p, s.sessionId);
-    const work = endedSessionWorkKey("2026-10-20", ORG_A, s.sessionId);
+    const work = endedSessionWorkKey("2026-10-22", ORG_A, s.sessionId);
     p.w.db.set({ ...p.w.db.get(work)!, orgId: ORG_B });
     p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
     await drainEndedSessions(p.deps, p.w.clock.now);
