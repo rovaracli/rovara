@@ -188,7 +188,7 @@ describe("a comment on a session", () => {
     const f = world();
     expect(COMMENT_RATE.comments).toBe(30);
     for (let n = 0; n < 30; n += 1) await f.send(ARJUN, `Comment ${String(n)}`);
-    expect(await code(f.send(ARJUN, "One too many"))).toEqual({ code: "CONFIG_INVALID", message: RATE_TEXT });
+    expect(await code(f.send(ARJUN, "One too many"))).toEqual({ code: "TOO_MANY_REQUESTS", message: RATE_TEXT });
     expect(f.messageItems()).toHaveLength(30);
     expect(f.counter()).toMatchObject({ count: 30 });
     expect(f.eventItems()).toHaveLength(30);
@@ -485,7 +485,7 @@ describe("changing a comment", () => {
       await editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev, text: `Edit ${String(n)}` });
       rev += 1;
     }
-    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev, text: "One too many" }))).toEqual({ code: "CONFIG_INVALID", message: RATE_TEXT });
+    expect(await code(editSessionMessage(f.deps, f.w.caller(ARJUN), f.sid, mine.messageId, { rev, text: "One too many" }))).toEqual({ code: "TOO_MANY_REQUESTS", message: RATE_TEXT });
     expect(f.messageItems()[0]).toMatchObject({ rev });
   });
 
