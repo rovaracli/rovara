@@ -152,6 +152,14 @@ export function githubInstallationKey(installationId: number): OrgKey {
   return { pk: `GITHUB_INSTALLATION#${String(installationId)}`, sk: "ORG" };
 }
 
+/**
+ * The index GitHub's events find a project by: one item per (GitHub repository id, org, project), global and holding ids only. It is written in the transaction of each revision that
+ * pins the repository and deleted by the one that removes it. An event trusts it for nothing but a lead: the installation's org and the project's latest revision decide.
+ */
+export function githubRepoProjectKey(githubRepositoryId: number, orgId: OrgId, project: string): OrgKey {
+  return { pk: `GITHUB_REPO#${String(githubRepositoryId)}`, sk: `${orgId}#${project}` };
+}
+
 /** The same binding in the org's own partition, so closing the org finds its installations. */
 export function orgGithubInstallationKey(orgId: OrgId, installationId: number): OrgKey {
   return { pk: orgPk(orgId), sk: `GITHUB_INSTALLATION#${String(installationId)}` };

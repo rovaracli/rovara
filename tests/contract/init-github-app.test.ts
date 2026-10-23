@@ -51,15 +51,15 @@ async function githubContext(input: {
 }
 
 describe("GitHub App manifest", () => {
-  it("the manifest subscribes to the four PR events and points the webhook at the control plane", () => {
+  it("the manifest subscribes to the seven events and points the webhook at the control plane", () => {
     expect(githubAppManifest({ appName: "AgentX acme (staging)", redirectUrl: "http://127.0.0.1:50123/github/created", webhookUrl: WEBHOOK_URL, cloud: false, installCallbackUrl: INSTALL_CALLBACK_URL })).toEqual({
       name: "AgentX acme (staging)",
       url: "https://github.com/PrepLabsAI/Rovara",
       redirect_url: "http://127.0.0.1:50123/github/created",
       public: false,
       hook_attributes: { url: WEBHOOK_URL, active: true },
-      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read" },
-      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"],
+      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read" },
+      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues"],
     });
   });
 
@@ -74,8 +74,8 @@ describe("GitHub App manifest", () => {
       request_oauth_on_install: true,
       setup_on_update: true,
       hook_attributes: { url: WEBHOOK_URL, active: true },
-      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", members: "read" },
-      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"],
+      default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "read", deployments: "read", members: "read" },
+      default_events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues"],
     });
   });
 
@@ -280,7 +280,7 @@ describe("GitHub App step", () => {
     // An App made beforehand may have no webhook, and GitHub's API cannot switch it on.
     expect(context.lines).toContain("GitHub webhook: turn on Active at https://github.com/organizations/acme/settings/apps/agentx-acme-staging if it is off");
     // The App made beforehand may not listen for the events: say which and where, never the secret.
-    expect(context.lines).toContain("GitHub webhook: tick these events on https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions: pull_request_review, pull_request_review_comment, issue_comment");
+    expect(context.lines).toContain("GitHub webhook: tick these events on https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions: pull_request_review, pull_request_review_comment, issue_comment, deployment_status, workflow_run, issues");
     expect(context.lines.join("\n")).not.toContain(stored.webhookSecret);
   });
 

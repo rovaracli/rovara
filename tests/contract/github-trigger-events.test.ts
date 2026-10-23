@@ -14,7 +14,7 @@ import { githubWebhookChecks } from "../../packages/cli/src/doctor/github.js";
 import { doctorContext, doctorServices } from "../support/doctor-fakes.js";
 import { fakeGitHubApi } from "../support/init-fakes.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
-import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { FakeHookSecrets } from "../support/hook-fixtures.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -30,7 +30,10 @@ const SLUG = "rovara-app";
 const ONE_STEP: ChainDefinitionInput = { start: "look", steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: "root-cause-analyst", version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 5 } };
 const PR_OPENED = { kind: "event" as const, source: "github" as const, type: "pull_request.opened" };
 const NOW = "2026-10-22T09:00:00.000Z";
-const FRESH = "2026-10-22T08:59:00Z";
+const FIXED = "2026-10-22T08:59:00Z";
+/** The time a payload says it happened: a minute before the trigger world's clock, or (through the broker, which reads the real clock) a minute before now. */
+const stamp = { value: FIXED };
+const fresh = () => stamp.value;
 
 const sign = (raw: string) => `sha256=${createHmac("sha256", SECRET).update(raw).digest("hex")}`;
 const headers = (raw: string, event: string, delivery: string = randomUUID()) => ({ "x-hub-signature-256": sign(raw), "x-github-delivery": delivery, "x-github-event": event });
@@ -42,7 +45,7 @@ function pullRequest(over: { action?: string; installation?: number; repo?: numb
   return {
     action: over.action ?? "opened", installation: { id: over.installation ?? 55 }, repository: repository(over.repo ?? 101), sender: over.sender ?? user("alice"),
     pull_request: {
-      number: over.number ?? 42, title: over.title ?? "Fix the login redirect", html_url: `https://github.com/acme/web/pull/${String(over.number ?? 42)}`, updated_at: over.updatedAt ?? FRESH,
+      number: over.number ?? 42, title: over.title ?? "Fix the login redirect", html_url: `https://github.com/acme/web/pull/${String(over.number ?? 42)}`, updated_at: over.updatedAt ?? fresh(),
       author_association: over.association ?? "MEMBER", labels: (over.labels ?? ["bug"]).map((name) => ({ name })), base: { ref: over.base ?? "main" }, user: over.sender ?? user("alice"),
     },
   };
@@ -50,20 +53,20 @@ function pullRequest(over: { action?: string; installation?: number; repo?: numb
 const issue = (over: { association?: string; labels?: string[]; number?: number; asPullRequest?: boolean } = {}) => ({
   action: "opened", installation: { id: 55 }, repository: repository(), sender: user("alice"),
   issue: {
-    number: over.number ?? 7, title: "Checkout fails", html_url: `https://github.com/acme/web/issues/${String(over.number ?? 7)}`, created_at: FRESH, updated_at: FRESH,
+    number: over.number ?? 7, title: "Checkout fails", html_url: `https://github.com/acme/web/issues/${String(over.number ?? 7)}`, created_at: fresh(), updated_at: fresh(),
     author_association: over.association ?? "MEMBER", labels: (over.labels ?? ["bug"]).map((name) => ({ name })), user: user("alice"),
     ...(over.asPullRequest === true ? { pull_request: { url: "https://api.github.com/repos/acme/web/pulls/7" } } : {}),
   },
 });
 const deploymentStatus = (state: string, over: { id?: number; sender?: { login: string; type: string } } = {}) => ({
   action: "created", installation: { id: 55 }, repository: repository(), sender: over.sender ?? user("deployer"),
-  deployment_status: { id: over.id ?? 9001, state, environment: "production", created_at: FRESH, description: "shipped", target_url: "https://example.com/deploy" },
+  deployment_status: { id: over.id ?? 9001, state, environment: "production", created_at: fresh(), description: "shipped", target_url: "https://example.com/deploy" },
   deployment: { id: 77, environment: "production", creator: user("deployer") },
 });
 const workflowRun = (over: { id?: number; attempt?: number; conclusion?: string; actor?: { login: string; type: string } } = {}) => ({
   action: "completed", installation: { id: 55 }, repository: repository(), sender: user("alice"),
   workflow_run: {
-    id: over.id ?? 5001, run_attempt: over.attempt ?? 1, name: "CI", conclusion: over.conclusion ?? "failure", head_branch: "main", updated_at: FRESH, html_url: "https://github.com/acme/web/actions/runs/5001",
+    id: over.id ?? 5001, run_attempt: over.attempt ?? 1, name: "CI", conclusion: over.conclusion ?? "failure", head_branch: "main", updated_at: fresh(), html_url: "https://github.com/acme/web/actions/runs/5001",
     actor: over.actor ?? user("alice"), triggering_actor: over.actor ?? user("alice"),
   },
 });
@@ -89,6 +92,7 @@ function registerProject(db: FakeDynamoDb, orgId: OrgId, project: string, pin: {
 
 // ---- layer 1: the handler over the trigger world, with Task 20's real dispatch
 function world() {
+  stamp.value = FIXED;
   const v = setupTriggerWorld();
   const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
   (v.routeDeps as { log?: unknown }).log = (event: string, fields: Record<string, unknown>) => logs.push({ event, fields });
@@ -175,7 +179,7 @@ describe("a pull request event starts the right org's work", () => {
     expect((await w.deliver(pullRequest(), "pull_request")).status).not.toBe("IN_PROGRESS");
     expect(w.runs()).toEqual([]);
     expect(await githubTriggerEvents(w.github, { eventName: "pull_request", payload: pullRequest({ installation: 12345 }), installationId: 12345 })).toEqual([]);
-    expect(w.logs.filter((entry) => entry.event === "github.trigger_unbound")).toHaveLength(3);
+    expect(w.logs.filter((entry) => entry.event === "github.trigger_unbound")).toHaveLength(2);
   });
 
   it("starts no second run when the same signed body arrives under a new delivery id", async () => {
@@ -193,6 +197,7 @@ describe("a pull request event starts the right org's work", () => {
   it("de-duplicates per project: two projects of one org on the same repository each start their own", async () => {
     const w = world();
     registerProject(w.v.db, ORG_A, "web2", { installationId: 55, repositoryId: 101 });
+    w.v.projectMembers.grant(ORG_A, "web2", PRIYA, "contributor");
     const chain = await w.v.budgetedChain(ONE_STEP);
     for (const project of ["web", "web2"]) await w.v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: PR_OPENED, createdBy: DANA, project });
     await w.deliver(pullRequest(), "pull_request");
@@ -290,11 +295,11 @@ describe("the events GitHub sends and how they map", () => {
 
   it("takes only https github.com links as a subject url, and cuts and cleans the title", async () => {
     const w = world();
-    const payload = pullRequest({ title: `${"T".repeat(300)}\u0007` });
+    const payload = pullRequest({ title: `${"T".repeat(400)}\u0007` });
     (payload.pull_request as { html_url: string }).html_url = "https://evil.example/pull/42";
     const [found] = await githubTriggerEvents(w.github, { eventName: "pull_request", payload, installationId: 55 });
     expect(found!.event.subject.url).toBeUndefined();
-    expect([...found!.event.subject.title]).toHaveLength(200);
+    expect([...found!.event.subject.title]).toHaveLength(300);
     expect(found!.event.subject.title).not.toContain("\u0007");
   });
 
@@ -307,6 +312,7 @@ describe("the events GitHub sends and how they map", () => {
 
 // ---- layer 2: through the broker's own endpoint
 async function brokerWorld() {
+  stamp.value = new Date(Date.now() - 60_000).toISOString().replace(/\.\d+Z$/, "Z");
   const dispatched: Array<{ orgId: string; event: TriggerEvent }> = [];
   const fail = { next: false };
   const members = new FakeProjectMembers();

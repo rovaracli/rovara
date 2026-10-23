@@ -165,6 +165,8 @@ import {
   type CodeBuildCheckResult,
   type CodeBuildGateDefinition,
   type ProjectDefinition,
+  type TriggerEvent,
+  githubRepoProjectKey,
   type ProjectCommand,
   type WorkflowFeedbackApprovalBinding,
   type WorkflowDependencyInvocation,
@@ -403,6 +405,7 @@ import { ChainStore } from "../chains/store.js";
 import { TriggerStore } from "../triggers/store.js";
 import type { TriggerHookReader, TriggerScheduler } from "../triggers/ports.js";
 import { dispatchTriggerEvent } from "../triggers/dispatch.js";
+import { deliverGithubTriggerEvents } from "../triggers/github-events.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../triggers/lifecycle.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
@@ -1322,6 +1325,20 @@ function installChainRunner(dependencies: AwsBrokerDependencies, tasks: Develope
   removeChainRunner ??= registerChainRunner(() => chainRunnerDependencies);
 }
 
+/**
+ * What starts the work an event asks for: the broker's own `eventHooks.dispatch` when it was given one, else Task 20's `dispatchTriggerEvent` over the chain runner's dependencies (and the
+ * GitHub App's slug, which the loop guard reads). Undefined where agents, chains or sign-in are not set up. Hooks' deliveries and GitHub's events start work through the same one.
+ */
+function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ((orgId: OrgId, event: TriggerEvent) => Promise<unknown>) | undefined {
+  const given = dependencies.agents?.eventHooks?.dispatch;
+  if (given !== undefined) return given;
+  const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
+  const githubApp = dependencies.githubPullRequests;
+  return chainDependencies === undefined ? undefined : (orgId, event) => dispatchTriggerEvent({
+    ...chainDependencies, ...(githubApp.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
+  }, orgId, event);
+}
+
 /** What the chain runner and its sweep work with: the agent routes' dependencies with the chain store and Plan 3's run starter. Undefined where agents, chains or developer sign-in are not set up. */
 function chainRunnerDependenciesOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): ChainRunnerDependencies | undefined {
   const starter = agentRunStarterFrom(dependencies, tasks, agents);
@@ -1841,11 +1858,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         const eventHooks = dependencies.agents?.eventHooks;
         // What starts the work is Task 20's dispatch over the chain runner's dependencies, unless the broker was given another. Where there is none (agents, chains or sign-in are not
         // set up) nothing a vendor sent would be acted on, so it is told to try later.
-        const chainDependencies = eventHooks === undefined || eventHooks.dispatch !== undefined ? undefined : chainRunnerDependenciesOf(dependencies, tasks, agents);
-        const githubApp = dependencies.githubPullRequests;
-        const dispatch: HookIngressDeps["dispatch"] | undefined = eventHooks?.dispatch ?? (chainDependencies === undefined ? undefined : (orgId, hookEvent) => dispatchTriggerEvent({
-          ...chainDependencies, ...(githubApp?.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
-        }, orgId, hookEvent));
+        const dispatch = eventDispatchOf(dependencies, tasks, agents);
         if (eventHooks === undefined || dispatch === undefined) return hookReply({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "try again" } } });
         // The bytes as they arrived: a signature is over these, not over text decoded from them.
         const raw = event.body === undefined ? Buffer.alloc(0) : Buffer.from(event.body, event.isBase64Encoded === true ? "base64" : "utf8");
@@ -1870,6 +1883,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             throw error;
           }
         };
+        const triggerDispatch = eventDispatchOf(dependencies, tasks, agents);
         try {
           const secret = await readWebhookSecret(false);
           if (secret === undefined) return notConfigured();
@@ -1888,6 +1902,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               verifyRepository: (repositoryUrl, webhookScope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, webhookScope),
             }),
             process: (workflowEvent, deliveryId) => processGithubWorkflowEvent(dependencies, workflowEvent, deliveryId),
+            // Plan 4 Task 21: pull request, issue, deployment and workflow events start triggers' work, through the signature check above and Task 20's dispatch.
+            ...(triggerDispatch === undefined ? {} : {
+              triggerEvents: (trigger: { eventName: string; payload: unknown; installationId: number }) => deliverGithubTriggerEvents({
+                documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, dispatch: triggerDispatch,
+                ...(dependencies.githubPullRequests.appSlug === undefined ? {} : { githubAppSlug: () => dependencies.githubPullRequests.appSlug!() }),
+              }, trigger),
+            }),
             // Plan 2, Task 14: an approved request to a GitHub admin arrives as `installation.created` naming the requester.
             installationCreated: async (deliveryId, payload) => {
               const connection = githubConnectionOf(dependencies);
@@ -1916,8 +1937,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             result = await deliver(renewed);
           }
           if (result.status === "IN_PROGRESS") return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId, 503);
-          // An installation lifecycle delivery is accepted for processing, whatever it changed (or ignored).
-          return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId, result.lifecycle === true ? 202 : 200);
+          // An installation lifecycle delivery is accepted for processing, whatever it changed (or ignored); so is an event that went to triggers, or that nothing used.
+          return json({ delivery: result.status, deliveryId: result.deliveryId }, request.requestId, result.lifecycle === true || result.trigger === true || result.status === "IGNORED" ? 202 : 200);
         } catch (error) {
           if (error instanceof GithubWebhookRefusal) return json({ error: { code: "FORBIDDEN", message: error.message } }, request.requestId, 403);
           if (error instanceof GithubWebhookRetryableError) return json({ error: { code: "RUNTIME_UNAVAILABLE", message: "GitHub webhook processing will be retried" } }, request.requestId, 503);
@@ -2843,16 +2864,18 @@ export async function registerProjectFor(
     };
   };
   const key = projectRevisionKey(orgId, definition.name, definition.revision);
-  const readCatalogSnapshot = async (): Promise<{ catalog: { entityType?: string; name?: string; latestRevision?: number } | undefined; newestRevision: number }> => {
+  const readCatalogSnapshot = async (): Promise<{ catalog: { entityType?: string; name?: string; latestRevision?: number } | undefined; newestRevision: number; newestRepositories: ProjectDefinition["repositories"] }> => {
     const catalog = await getItem<{ entityType?: string; name?: string; latestRevision?: number }>(dependencies, orgProjectCatalogKey(orgId, definition.name));
     if (catalog !== undefined && (catalog.entityType !== "PROJECT_CATALOG" || catalog.name !== definition.name
       || (catalog.latestRevision !== undefined && (!Number.isSafeInteger(catalog.latestRevision) || catalog.latestRevision < 1)))) {
       throw agentXError("PROJECT_REVISION_MISMATCH", "project catalog is unavailable or invalid");
     }
     let newestRevision = 0;
+    let newestRepositories: ProjectDefinition["repositories"] = [];
     try {
       const newest = await requireLatestProject(dependencies, orgId, definition.name);
       newestRevision = newest.definition.revision;
+      newestRepositories = newest.definition.repositories;
       if (newest.definition.name !== definition.name || !Number.isSafeInteger(newestRevision) || newestRevision < 1) {
         throw agentXError("PROJECT_REVISION_MISMATCH", "registered project revision history is invalid");
       }
@@ -2862,7 +2885,7 @@ export async function registerProjectFor(
     if (catalog?.latestRevision !== undefined && catalog.latestRevision > newestRevision) {
       throw agentXError("PROJECT_REVISION_MISMATCH", "project catalog is ahead of registered revision history");
     }
-    return { catalog, newestRevision };
+    return { catalog, newestRevision, newestRepositories };
   };
   const repairCatalogPointerFromHistory = async (): Promise<void> => {
     // This is an index-only repair after the immutable revision has already been
@@ -2942,6 +2965,16 @@ export async function registerProjectFor(
     const snapshot = await readCatalogSnapshot();
     const latestRevision = Math.max(definition.revision, snapshot.newestRevision);
     const updateCatalog = snapshot.catalog?.latestRevision !== latestRevision;
+    // Plan 4 Task 21: GitHub's events find this project by each pinned repository's id. The rows are written with the revision that pins the repository (a repeat heals a missing one)
+    // and deleted by the one that no longer holds it, in the same transaction, so no revision leaves the index behind it.
+    const pinned = (repositories: ProjectDefinition["repositories"]) => new Map(repositories.flatMap((repository) => repository.installationId === undefined || repository.githubRepositoryId === undefined ? [] : [[repository.githubRepositoryId, repository.installationId] as const]));
+    const holds = pinned(definition.repositories);
+    const repositoryIndex = [
+      ...[...holds].map(([githubRepositoryId, installationId]) => ({ Put: { TableName: dependencies.tableName, Item: {
+        ...githubRepoProjectKey(githubRepositoryId, orgId, definition.name), entityType: "GITHUB_REPO_PROJECT", orgId, project: definition.name, installationId, githubRepositoryId,
+      } } })),
+      ...[...pinned(snapshot.newestRepositories).keys()].filter((githubRepositoryId) => !holds.has(githubRepositoryId)).map((githubRepositoryId) => ({ Delete: { TableName: dependencies.tableName, Key: githubRepoProjectKey(githubRepositoryId, orgId, definition.name) } })),
+    ];
     try {
       await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
@@ -2969,6 +3002,7 @@ export async function registerProjectFor(
           ...(snapshot.catalog?.latestRevision === undefined ? {} : { ":observed": snapshot.catalog.latestRevision }) },
       } }] : []),
       ...(setupAdmissionRows?.transactionItems ?? []),
+      ...repositoryIndex,
       // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
       ...(options.extraItems ?? []),
       ] }));

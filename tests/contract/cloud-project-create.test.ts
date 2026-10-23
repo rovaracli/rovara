@@ -111,7 +111,9 @@ describe("POST /v1/app/projects", () => {
     expect(h.db.get(projectMetaKey(TEST_ORG, "web"))).toMatchObject({ entityType: "PROJECT_META", status: "active", createdBy: MAYA.developerId });
     expect(h.db.get(orgProjectCatalogKey(TEST_ORG, "web"))).toMatchObject({ latestRevision: 1 });
     expect(h.db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "web"))).toMatchObject({ entityType: "MEMBERSHIP", role: "developer", ownerKey: MAYA.developerId });
-    expect(h.written().every((item) => String(item.pk).startsWith(`ORG#${TEST_ORG}#`))).toBe(true);
+    // Every row is the org's own, but GitHub's repository index (Plan 4 Task 21), which holds ids only and is found by GitHub's repository id before the org is known.
+    expect(h.written().every((item) => String(item.pk).startsWith(`ORG#${TEST_ORG}#`) || (String(item.pk) === "GITHUB_REPO#101" && item.sk === `${TEST_ORG}#web`))).toBe(true);
+    expect(h.db.get("GITHUB_REPO#101", `${TEST_ORG}#web`)).toMatchObject({ orgId: TEST_ORG, project: "web", installationId: 55, githubRepositoryId: 101 });
     expect(await h.listed(MAYA)).toEqual([{ name: "web", myRole: "maintainer" }]);
   });
 

@@ -167,10 +167,13 @@ export interface HookDelivery {
   sourceIp: string | undefined;
 }
 
+/** What remembering an event needs: the table and a log. GitHub's events use it with the hook id `github`. */
+export type EventMemoryDeps = Pick<HookIngressDeps, "documentClient" | "tableName" | "log">;
+
 const errorName = (error: unknown): string => (error instanceof Error ? error.name : "unknown");
 const errorCode = (error: unknown): unknown => (error as { code?: unknown } | null)?.code;
 
-function logOf(deps: HookIngressDeps): (event: string, fields: Record<string, unknown>) => void {
+function logOf(deps: Pick<HookIngressDeps, "log">): (event: string, fields: Record<string, unknown>) => void {
   return deps.log ?? ((event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })));
 }
 
@@ -247,12 +250,20 @@ async function withinRate(deps: HookIngressDeps, orgId: OrgId, hookId: string, n
   }
 }
 
+/** Whether an event's time is outside what is believed: older than `EVENT_MAX_AGE_HOURS` (`stale`) or more than `EVENT_MAX_FUTURE_MINUTES` ahead (`future`); undefined when inside. */
+export function outsideEventWindow(occurredAt: string, now: number): "stale" | "future" | undefined {
+  const at = Date.parse(occurredAt);
+  if (now - at > EVENT_MAX_AGE_HOURS * HOUR) return "stale";
+  if (at - now > EVENT_MAX_FUTURE_MINUTES * MINUTE) return "future";
+  return undefined;
+}
+
 /**
  * Writes the item that says this event was received, `pending` until its dispatch is recorded; false when it was already there (a replay). A pending item older than
  * `EVENT_PENDING_TAKEOVER_MS` is the trace of a delivery that died between the two: one retry takes it over (a conditional update on the time it read) and starts the event again,
  * which is safe because dispatch is idempotent by event id. An item with no status was written before it existed and counts as dispatched.
  */
-async function firstSight(deps: HookIngressDeps, orgId: OrgId, hookId: string, eventKey: string, now: number): Promise<boolean> {
+export async function firstSight(deps: EventMemoryDeps, orgId: OrgId, hookId: string, eventKey: string, now: number): Promise<boolean> {
   const key = hookEventKey(orgId, hookId, eventKey);
   const at = new Date(now).toISOString();
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -285,7 +296,7 @@ async function firstSight(deps: HookIngressDeps, orgId: OrgId, hookId: string, e
 }
 
 /** Marks an event as started, so its replay is a duplicate for good. Best effort: an item left pending is started once more by a retry after the window, which dispatch tolerates. */
-async function markDispatched(deps: HookIngressDeps, orgId: OrgId, hookId: string, event: TriggerEvent): Promise<void> {
+export async function markDispatched(deps: EventMemoryDeps, orgId: OrgId, hookId: string, event: TriggerEvent): Promise<void> {
   try {
     await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName, Key: hookEventKey(orgId, hookId, event.eventKey), UpdateExpression: "SET #status = :dispatched",
@@ -297,7 +308,7 @@ async function markDispatched(deps: HookIngressDeps, orgId: OrgId, hookId: strin
 }
 
 /** Forgets the events that were recorded as received but not started, so the vendor's retry starts them. Best effort: what cannot be forgotten is logged. */
-async function forget(deps: HookIngressDeps, orgId: OrgId, hookId: string, events: readonly TriggerEvent[]): Promise<void> {
+export async function forget(deps: EventMemoryDeps, orgId: OrgId, hookId: string, events: readonly TriggerEvent[]): Promise<void> {
   for (const event of events) {
     try {
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: hookEventKey(orgId, hookId, event.eventKey) }));
@@ -390,13 +401,9 @@ async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<H
     }
     const event = parsed.data;
     // 9. The age window: not older than a day, and not dated ahead by more than the clock's slack.
-    const at = Date.parse(event.occurredAt);
-    if (now - at > EVENT_MAX_AGE_HOURS * HOUR) {
-      log("hook.stale", { hookId: hook.hookId });
-      continue;
-    }
-    if (at - now > EVENT_MAX_FUTURE_MINUTES * MINUTE) {
-      log("hook.future", { hookId: hook.hookId });
+    const outside = outsideEventWindow(event.occurredAt, now);
+    if (outside !== undefined) {
+      log(`hook.${outside}`, { hookId: hook.hookId });
       continue;
     }
     // 10. De-duplication, by the event key the signed body names.
