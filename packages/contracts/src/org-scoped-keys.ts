@@ -356,6 +356,22 @@ export function openSpendRequestsKey(orgId: OrgId, createdAt: string, requestId:
   return { pk: orgScoped(orgId, "SPEND_REQUESTS#OPEN"), sk: `${canonicalInstant(createdAt)}#${requestId}` };
 }
 
+/**
+ * Every org's open spend requests, oldest first, for the settlement run's escalation and expiry (the ids and the org only; the reader re-checks `orgId` on the
+ * record it points at, as with `openApprovalKey`). `createdAt` is an instant.
+ */
+export function openSpendRequestDueKey(createdAt: string, orgId: OrgId, requestId: string): OrgKey {
+  return { pk: "OPEN_SPEND_REQUESTS", sk: `${canonicalInstant(createdAt)}#${orgId}#${requestId}` };
+}
+
+/**
+ * The one PENDING request of a kind for a subject (a task, or for `owner_cap` an agent or a person): put in the transaction that makes the request and
+ * deleted in the one that ends it, so a second pause on the same subject finds the first request instead of making another.
+ */
+export function spendRequestSlotKey(orgId: OrgId, subject: string, kind: string): OrgKey {
+  return { pk: orgScoped(orgId, `SPEND_REQUEST_FOR#${subject}`), sk: kind };
+}
+
 /** A task paused for a budget; `pauseKey` names what it waits for, so raising that budget finds every task to resume. */
 export function pausedTasksKey(orgId: OrgId, pauseKey: string, taskId: string): OrgKey {
   return { pk: orgScoped(orgId, `PAUSED_TASKS#${pauseKey}`), sk: taskId };

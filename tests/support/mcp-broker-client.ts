@@ -9,6 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CallToolResultSchema, ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { expect } from "vitest";
 import { agentxMcpServer } from "../../packages/cli/src/mcp/serve.js";
+import { DEVELOPER_TOOLS } from "../../packages/mcp/src/tools.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
 import { ADMIN_SUBJECT } from "./admin-read-broker.js";
@@ -85,7 +86,8 @@ export async function signedInClient(harness: Harness, who: Developer | undefine
   const client = new Client({ name: "claude-code", version: "2.1.0" });
   await client.connect(clientSide);
   // Ruling F3: listing first makes the client validate every structuredContent it gets back.
-  expect((await client.listTools()).tools).toHaveLength(29);
+  // The count is the server's own developer tool list, so adding a tool cannot leave this pin behind.
+  expect((await client.listTools()).tools.map((listed) => listed.name).sort()).toEqual(DEVELOPER_TOOLS.map((definition) => definition.name).sort());
   const answers: string[] = [];
   const tool = async (name: string, args: Record<string, unknown> = {}): Promise<ToolAnswer> => {
     const result = await client.callTool({ name, arguments: args });

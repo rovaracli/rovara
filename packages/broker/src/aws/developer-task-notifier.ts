@@ -851,7 +851,9 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
   // A reopened pull request is said once per reopening (its step's revision), even though its merge step was said before.
   const reopened = reopenedPullRequests !== undefined && workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING";
   const context: WorkflowMessageContext = { taskId: task.taskId, ownerSlackUserId: task.slackUserId, workflow, peopleEnabled: deps.peopleChangesEnabled === true,
-    ...(page === undefined ? {} : { findingsUrl: `${page}#findings`, taskPageUrl: page }), ...(reopened ? { pullRequestReopened: reopenedPullRequests } : {}) };
+    ...(page === undefined ? {} : { findingsUrl: `${page}#findings`, taskPageUrl: page }), ...(reopened ? { pullRequestReopened: reopenedPullRequests } : {}),
+    // Plan 3, Task 34: what the coding plan is expected to cost, kept on the task when the plan reached review.
+    ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate, agentName: task.agent?.name ?? "Rovara Code" }) };
   let approval: WorkflowArtifact | undefined;
   if (workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") {
     const document = await prepareDocumentLink(deps, task, workflow);

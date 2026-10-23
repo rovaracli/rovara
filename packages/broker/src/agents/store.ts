@@ -49,7 +49,7 @@ import {
 import { AGENT_KIND, OwnedStore, type AgentShareLevel, type MoveCause } from "./owned-store.js";
 import { SkillStore } from "./skills.js";
 import { ownerShare, withBudgetFields, type BudgetSubject } from "../spend/owner-total.js";
-import { OwnerBudgets, budgetGuard, ownerOverCap, totalsMoved, type OwnerCap } from "../spend/owner-budgets.js";
+import { OwnerBudgets, budgetGuard, overrideDetail, ownerOverCap, totalsMoved, withOverride, type OverrideCap, type OwnerCap } from "../spend/owner-budgets.js";
 import { cleanUsd } from "../spend/top-ups.js";
 import { auditBuiltinAdopted, auditGuardrailsChanged, auditOccurrence, auditPublished } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -189,6 +189,12 @@ export interface BudgetWriteOptions {
    * Left out for a change that is not held to the cap (Rovara's own moves, Task 11).
    */
   ownerCap?: OwnerCap;
+  /**
+   * Task 32: the approved `owner_cap` request this write applies. The approval is the override, so no cap is held; the event names the request, and
+   * `items` (the request's own end: its record, its index items, the audit of the decision) commit in the same transaction. `closed` is the error when
+   * one of them is refused (the request was decided meanwhile).
+   */
+  overrideCap?: OverrideCap;
 }
 
 const policyMoved = () => coded("AGENT_REVISION_CONFLICT", "Your company's spend policy changed just now. Reload and make your change again.");
@@ -545,15 +551,27 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
 
   /** The sum of the monthly budgets of the active agents (custom ones, and built-ins with an accountable person) that count for the owner `counts` asks about. */
   private async sumAgentBudgets(orgId: OrgId, counts: (subject: BudgetSubject) => Promise<boolean>): Promise<number> {
-    let total = 0;
+    return cleanUsd((await this.countedAgents(orgId, counts)).reduce((total, agent) => total + agent.monthlyBudgetUsd, 0));
+  }
+
+  /**
+   * Task 33: the active agents (and built-ins it is accountable for) whose monthly budgets count in `owner`'s total, each with that budget. An id that names a
+   * merged duplicate counts for its survivor.
+   */
+  async ownerAgents(orgId: OrgId, owner: string): Promise<Array<{ agentId: AgentId; monthlyBudgetUsd: number }>> {
+    return this.countedAgents(orgId, this.ownerBudgets.countsFor(orgId, owner));
+  }
+
+  private async countedAgents(orgId: OrgId, counts: (subject: BudgetSubject) => Promise<boolean>): Promise<Array<{ agentId: AgentId; monthlyBudgetUsd: number }>> {
+    const found: Array<{ agentId: AgentId; monthlyBudgetUsd: number }> = [];
     for (const agent of await this.list(orgId)) {
-      if (ownerShare(agent) !== undefined && await counts(agent)) total += agent.monthlyBudgetUsd ?? 0;
+      if (ownerShare(agent) !== undefined && await counts(agent)) found.push({ agentId: agent.agentId, monthlyBudgetUsd: agent.monthlyBudgetUsd ?? 0 });
     }
     for (const id of Object.keys(BUILTIN_AGENTS)) {
       const settings = await this.getBuiltinSettings(orgId, id);
-      if (settings !== undefined && ownerShare(settings) !== undefined && await counts(settings)) total += settings.monthlyBudgetUsd ?? 0;
+      if (settings !== undefined && ownerShare(settings) !== undefined && await counts(settings)) found.push({ agentId: id, monthlyBudgetUsd: settings.monthlyBudgetUsd ?? 0 });
     }
-    return cleanUsd(total);
+    return found;
   }
 
   /** Makes sure `owner` has a total to add to (built from every budget when there is none yet). */
@@ -589,11 +607,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const changed: AgentRecord = { ...agent, status, updatedAt };
     // An archived agent counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
     const totals = await this.totalsFor(orgId, agent, changed, options.ownerCap);
-    await this.commit([
+    await this.commit(...withOverride([
       this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
       ...totals.items,
-      this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by),
-    ], totals.refuse, request, changed);
+      this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
+    ], totals.refuse, options), request, changed);
     return changed;
   }
 
@@ -636,17 +654,17 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     const { monthlyBudgetUsd: _monthly, maxPerRunUsd: _perRun, ...others } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- replaced below
     const written = { ...others, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt, ...(isBuiltinAgentId(agentId) ? { updatedBy: by } : {}) };
     const totals = await this.totalsFor(orgId, current, written, options.ownerCap);
-    const event = this.newEvent(orgId, agentId, "budget_changed", by, withoutUndefined(detail));
+    const event = this.newEvent(orgId, agentId, "budget_changed", by, { ...withoutUndefined(detail), ...overrideDetail(options) });
     const audit = await this.audited(() => agentBudgetEvents({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId,
       before: { monthlyBudgetUsd: current.monthlyBudgetUsd, maxPerRunUsd: current.maxPerRunUsd }, after: { monthlyBudgetUsd, maxPerRunUsd },
     }));
-    await this.commit([
+    await this.commit(...withOverride([
       this.update(key, { set, ...(remove.length > 0 ? { remove } : {}), when: budgetGuard(current) }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, request, written);
+    ], totals.refuse, options), request, written);
     await flushAuditEvents(this.input, audit.events);
     return written;
   }
@@ -666,12 +684,12 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     // The agent's budget leaves the old owner's total and joins the new one's, which the cap holds when one is given.
     const totals = await this.totalsFor(orgId, agent, moved, options.ownerCap);
     const guard = budgetGuard(agent);
-    const event = this.newEvent(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }) });
+    const event = this.newEvent(orgId, agentId, "owner_changed", by, { from: agent.owner, to: owner, ...(accountable === undefined ? {} : { accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }), ...overrideDetail(options) });
     const audit = await this.audited(() => [ownerMovedEvent({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, from: agent.owner, to: owner,
       ...(accountable === undefined ? {} : { accountable: accountable.developerId }),
     })]);
-    await this.commit([
+    await this.commit(...withOverride([
       this.update(agentKey(orgId, agentId, "META"), {
         set: { owner, accountable, updatedAt },
         ...(accountable === undefined ? { remove: ["accountable"] } : {}),
@@ -680,7 +698,7 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, request, moved);
+    ], totals.refuse, options), request, moved);
     await flushAuditEvents(this.input, audit.events);
     return moved;
   }
@@ -694,17 +712,17 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (isBuiltinAgentId(agentId)) {
       const before = await this.ensureBuiltinSettings(orgId, agentId, by);
       const totals = await this.totalsFor(orgId, before, withBudgetFields(before, { accountable }), options.ownerCap);
-      const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }) });
+      const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(before.accountable === undefined ? {} : { from: before.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }), ...overrideDetail(options) });
       const audit = await this.audited(() => [accountableChangedEvent({
         orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
         ...(before.accountable === undefined ? {} : { previous: before.accountable.developerId }),
       })]);
-      await this.commit([
+      await this.commit(...withOverride([
         this.update(builtinSettingsKey(orgId, agentId), { set: { accountable, updatedBy: by, updatedAt }, when: budgetGuard(before) }),
         ...totals.items,
         event.item,
         ...audit.items,
-      ], totals.refuse, request, { accountable });
+      ], totals.refuse, options), request, { accountable });
       await flushAuditEvents(this.input, audit.events);
       return;
     }
@@ -712,17 +730,17 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     if (agent.owner.kind !== "project") throw coded("CONFIG_INVALID", "accountable: only a project's agent has an accountable maintainer");
     const totals = await this.totalsFor(orgId, agent, withBudgetFields(agent, { accountable }), options.ownerCap);
     const guard = budgetGuard(agent);
-    const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }) });
+    const event = this.newEvent(orgId, agentId, "owner_changed", by, { accountable, ...(agent.accountable === undefined ? {} : { from: agent.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }), ...overrideDetail(options) });
     const audit = await this.audited(() => [accountableChangedEvent({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId, accountable: accountable.developerId,
       ...(agent.accountable === undefined ? {} : { previous: agent.accountable.developerId }),
     })]);
-    await this.commit([
+    await this.commit(...withOverride([
       this.update(agentKey(orgId, agentId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${guard(a)}` }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, request, { accountable });
+    ], totals.refuse, options), request, { accountable });
     await flushAuditEvents(this.input, audit.events);
   }
 

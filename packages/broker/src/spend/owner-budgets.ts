@@ -6,13 +6,17 @@ import { PutCommand, UpdateCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { orgSettingsKey, ownerBudgetKey, type OrgId } from "@agentx/contracts";
 import type { OwnedKind } from "../agents/owned-store.js";
 import { NOT_EXISTS, coded, errorName, type Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
-import { budgetOwnerOf, ownerShare, ownerTotalItems, type BudgetSubject, type OwnerShare } from "./owner-total.js";
+import { budgetOwnerOf, ownerShare, ownerTotalItems, type BudgetSubject, type OwnerShare, type OwnerTotalSeen } from "./owner-total.js";
 import { cleanUsd } from "./top-ups.js";
 
-/** The cap a write is held to, with the revision of the spend policy it was read from (the write checks the policy is still at it). */
+/**
+ * The cap a write is held to, with the revision of the spend policy it was read from (the write checks the policy is still at it). The cap is on the owner's
+ * effective total (Plan 3 Task 33 fix round 1, I-1): `seen` is that total as read, and the write applies only while the owner counter is still at its version.
+ */
 export interface OwnerCap {
   usd: number;
   policyRevision: number;
+  seen?: OwnerTotalSeen;
 }
 
 /** What a refusal by the cap carries, so the route can answer in words with the figures as they are now (`isOwnerCapRefusal`). */
@@ -28,6 +32,25 @@ export const ownerOverCap = (owner: string, budgets: BudgetWords = "agent") => O
 export type BudgetWords = "agent" | "agent and chain";
 
 export const totalsMoved = (budgets: BudgetWords = "agent") => coded("AGENT_REVISION_CONFLICT", `Someone else changed this person's ${budgets} budgets just now. Reload and make your change again.`);
+
+/** What an approved `owner_cap` request adds to a budget write (Plan 3 Task 32): the request's own end rides in the write's transaction, so the approval is the override. */
+export interface OverrideCap {
+  spendRequestId: string;
+  items: TransactItem[];
+  /** The error when one of `items` is refused (the request was decided meanwhile). */
+  closed: () => Error;
+}
+
+/** The write's items with an approved request's own appended, and the refusal that names a refused one of those; the rest are `refuse`'s. Agents and chains share it. */
+export function withOverride(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined, options: { overrideCap?: OverrideCap }): [TransactItem[], (failed: Set<number>) => Error | undefined] {
+  const override = options.overrideCap;
+  if (override === undefined) return [items, refuse];
+  const start = items.length;
+  return [[...items, ...override.items], (failed) => ([...failed].some((index) => index >= start && index < start + override.items.length) ? override.closed() : refuse(failed))];
+}
+
+/** What an approved request adds to a change's event: the request that overrode the cap. */
+export const overrideDetail = (options: { overrideCap?: OverrideCap }): Record<string, unknown> => (options.overrideCap === undefined ? {} : { overrideCap: options.overrideCap.spendRequestId });
 
 /** Adds up the monthly budgets of the items of one kind that count for `owner`; `counts` says whether a subject's raw owner resolves to `owner`. */
 export interface OwnerBudgetSource {
@@ -98,16 +121,21 @@ export class OwnerBudgets {
     return this.input.resolveOwner === undefined ? Promise.resolve(developerId) : this.input.resolveOwner(orgId, developerId);
   }
 
-  /** The sum of the monthly budgets, from every source, that count for `owner`. */
-  async sum(orgId: OrgId, owner: string): Promise<number> {
+  /** Whether a subject's budget counts for `owner`: its raw owner, read as the person they were merged into, is `owner`. */
+  countsFor(orgId: OrgId, owner: string): (subject: BudgetSubject) => Promise<boolean> {
     const survivors = new Map<string, Promise<string>>();
-    const counts = async (subject: BudgetSubject): Promise<boolean> => {
+    return async (subject) => {
       const raw = budgetOwnerOf(subject);
       if (raw === undefined) return false;
       let found = survivors.get(raw);
       if (found === undefined) { found = this.survivorOf(orgId, raw); survivors.set(raw, found); }
       return (await found) === owner;
     };
+  }
+
+  /** The sum of the monthly budgets, from every source, that count for `owner`. */
+  async sum(orgId: OrgId, owner: string): Promise<number> {
+    const counts = this.countsFor(orgId, owner);
     let total = 0;
     for (const source of this.sources.values()) total += await source.sum(orgId, owner, counts);
     return cleanUsd(total);
@@ -123,7 +151,7 @@ export class OwnerBudgets {
     try {
       await this.input.documentClient.send(new PutCommand({
         TableName: this.input.tableName,
-        Item: { ...ownerBudgetKey(orgId, owner), entityType: "OWNER_AGENT_BUDGET", totalUsd, builtAt: this.iso() },
+        Item: { ...ownerBudgetKey(orgId, owner), entityType: "OWNER_AGENT_BUDGET", totalUsd, version: 0, builtAt: this.iso() },
         ConditionExpression: NOT_EXISTS,
       }));
     } catch (error) {
@@ -145,10 +173,11 @@ export class OwnerBudgets {
         await this.input.documentClient.send(new UpdateCommand({
           TableName: this.input.tableName,
           Key: ownerBudgetKey(orgId, owner),
-          UpdateExpression: "SET #total = :total, #type = :type, #built = :built",
+          // A rebuild changes the figure an approval summed at, so it moves the version too (Plan 3 Task 33, R4-6).
+          UpdateExpression: "SET #total = :total, #type = :type, #built = :built ADD #version :one",
           ConditionExpression: typeof seen === "number" ? "#total = :seen" : "attribute_not_exists(#total)",
-          ExpressionAttributeNames: { "#total": "totalUsd", "#type": "entityType", "#built": "builtAt" },
-          ExpressionAttributeValues: { ":total": total, ":type": "OWNER_AGENT_BUDGET", ":built": this.iso(), ...(typeof seen === "number" ? { ":seen": seen } : {}) },
+          ExpressionAttributeNames: { "#total": "totalUsd", "#type": "entityType", "#built": "builtAt", "#version": "version" },
+          ExpressionAttributeValues: { ":total": total, ":type": "OWNER_AGENT_BUDGET", ":built": this.iso(), ":one": 1, ...(typeof seen === "number" ? { ":seen": seen } : {}) },
         }));
         return total;
       } catch (error) {
@@ -178,7 +207,7 @@ export class OwnerBudgets {
       if (stale) await this.rebuild(orgId, owner);
       else await this.ensure(orgId, owner);
     }
-    const counters = ownerTotalItems(this.input, orgId, was.share, now.share, cap?.usd);
+    const counters = ownerTotalItems(this.input, orgId, was.share, now.share, cap?.usd, cap?.seen);
     const items = [...counters.items];
     let policyAt: number | undefined;
     if (cap !== undefined && counters.capped.length > 0) {

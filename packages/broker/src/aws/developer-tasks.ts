@@ -4,6 +4,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  SPEND_RESUME_INSTRUCTIONS,
+  scopeKey,
+  spendRequestKey,
+  spendRequestSlotKey,
   CHANNEL_PRIVACY_NOT_SET_UP,
   PLAN_WHY_REQUEST_MAX_CHARS,
   PRIVATE_CHANNEL_NOT_A_MEMBER,
@@ -126,6 +130,7 @@ import {
   type SlackThread,
   type WorkflowThreadNote,
   unblockWorkflowPublication,
+  blockWorkflow,
   workflowRequestId,
   workflowPublicationRetryable,
   workflowKeepPullRequestsOffered,
@@ -154,6 +159,8 @@ import {
   workflowVerificationPosition,
   capText,
   ROVARA_CODE_AGENT_ID,
+  RUN_LIMIT_BLOCK_PREFIX,
+  runLimitBlockText,
   type ProjectRole,
 } from "@agentx/contracts";
 import { z } from "zod";
@@ -161,6 +168,9 @@ import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDec
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { taskSpendBaseline, type SpendPath } from "../org/budget.js";
 import { admitWork } from "../spend/admission.js";
+import { acceptRunLimit, estimateRun, recordRunCost, type EstimateDependencies } from "../spend/estimate.js";
+import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
+import { cleanUsd } from "../spend/top-ups.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { chargeConflict, chargeItems, developerCharge, limitReached, readWorkspaceLimits, releaseConflict, releaseItems, type ChargeConflict, type WorkspaceLimits } from "../developer/limits.js";
 import {
@@ -179,6 +189,7 @@ import {
   TASK_OWNER_LABEL,
   startIdempotencyKey,
   taskIndexKey,
+  taskAgentRunKey,
   taskKey,
   taskOwnerKey,
   taskOwnerLabel,
@@ -224,8 +235,8 @@ import {
 import type { TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
-import { prepareRun, readRunRequest, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
-import { agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
+import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
+import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { onTaskEnded, type TaskEndOutcome } from "../agents/task-end.js";
 
 export interface DeveloperTaskRouteDependencies {
@@ -294,6 +305,16 @@ export interface DeveloperTaskRouteDependencies {
   agentRuns?: AgentRunDependencies;
   /** Plan 3, Task 22: the agent-step engine's dependencies (the same object as `agentRuns` where agents are set up); a cancel of a run that waits ends the run through it. */
   agentEngine?: AgentRunEngineDependencies;
+  /**
+   * Plan 3, Task 32: set only when a spend request's approval resumes the task as its owner. The approval already set the limits, and reset the cap window
+   * where it should (`keepWindow` false); otherwise a retry keeps the window instead of starting a new one as a person's retry does (R38).
+   */
+  spendResume?: { keepWindow: boolean };
+  /**
+   * Plan 3, Task 32 (fix round 1, I-3): the open spend request of the pause a person's Continue removes, ended in the Continue's own transaction (the items),
+   * with its audit flushed once that committed. Absent where agents are not set up.
+   */
+  withdrawSpendRequests?(task: DeveloperTaskRecord): Promise<{ items: TransactItems; flush(): Promise<void> }>;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -1287,13 +1308,16 @@ export async function taskView(
   // Plan 3, Task 22: an agent-step run's status is the run's, not the last operation's (a step that finished is not a run that finished).
   const run = task.agent === undefined || task.workflow !== undefined ? undefined : await agentRunView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, deps.issuer === undefined ? undefined : new URL(deps.issuer).origin);
   const derived = run === undefined ? derivedWithE2E : statusOfRun(derivedWithE2E, run, task);
+  // Plan 3, Task 32: a task waiting for money says so, with its request, what planning found and a test's offer.
+  const pausedView = await pauseViewOf(deps, task, operations);
   // #225: a task whose setup failed shows its prepare's events (the failure the broker recorded).
   const eventsOf = derived.current ?? derived.failedPrepare;
   const operationEvents = eventsOf === undefined || options.events === 0
     ? []
     : recentTaskEvents(await deps.actions.eventsNewestFirst(eventsOf.id, 200), options.events);
   // The run's own events and the approval events of its steps (Task 21 writes them in the task's partition) are the task's too.
-  const events = run === undefined || options.events === 0
+  // The run's events, and the spend requests' events of any agent task (Task 32), are the task's too.
+  const events = (run === undefined && (task.agent === undefined || task.workflow !== undefined)) || options.events === 0
     ? operationEvents
     : [...operationEvents, ...await taskLevelEvents({ documentClient: deps.documentClient, tableName: deps.tableName }, task)].sort((left, right) => left.at.localeCompare(right.at)).slice(-options.events);
   const details = options.details && derived.status !== "STARTING" && derived.status !== "RUNNING" ? await taskDetails(deps, task, operations) : {};
@@ -1364,6 +1388,8 @@ export async function taskView(
     ...(derived.closing ? { closing: true } : {}),
     ...(task.agent === undefined ? {} : { agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version, builtin: task.agent.builtin } }),
     ...(run === undefined ? {} : { run }),
+    ...pausedView,
+    ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
     updatedAt: derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt,
@@ -1455,6 +1481,28 @@ export const ADMISSION_REFUSALS: ReadonlySet<string> = new Set([
 ]);
 
 /** What a start needs left to be admitted: an agent-step run, a coding workflow (quick or full), a coding run an agent was chosen for, or a plain task. */
+/** What the spend settings and history are read through at a start. */
+const estimateDependencies = (deps: DeveloperTaskRouteDependencies): EstimateDependencies => ({
+  documentClient: deps.documentClient, tableName: deps.tableName, ...(deps.cloud === true ? { cloud: true } : {}), now: () => deps.now(),
+});
+
+/**
+ * Plan 3, Task 34: the limit a task starts with. A workflow task's is the project's planning limit for its path (the run limit is set when the plan is
+ * approved); a task with no workflow's is the TASK estimate's run limit, and an agent-step run's the AGENT estimate's.
+ */
+async function startingLimitUsd(
+  deps: DeveloperTaskRouteDependencies,
+  input: { project: string; asWorkflow: boolean; workflowPath: "QUICK" | "FULL"; prepared: PreparedRun | undefined },
+): Promise<number> {
+  const settings = estimateDependencies(deps);
+  if (input.asWorkflow) return planningLimit(await readProjectAi(settings, deps.orgId, input.project), input.workflowPath);
+  return (await estimateRun(settings, {
+    orgId: deps.orgId, project: input.project, agentId: input.prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID,
+    path: input.prepared?.runner === "agent_steps" ? "AGENT" : "TASK",
+    ...(input.prepared?.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: input.prepared.maxPerRunUsd }),
+  })).runLimitUsd;
+}
+
 function admissionPath(input: { asWorkflow: boolean; workflowPath: "QUICK" | "FULL"; prepared: PreparedRun | undefined }): SpendPath {
   if (input.prepared?.runner === "agent_steps") return "AGENT";
   if (input.asWorkflow) return input.workflowPath === "FULL" ? "FULL" : "QUICK";
@@ -1596,6 +1644,12 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
   const asWorkflow = request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding");
   const workflowPath = request.workflowPath ?? "QUICK";
+  // Plan 3, Task 34: with a model proxy a workflow task starts at its planning limit, a task with no workflow at the TASK estimate's run limit and an
+  // agent-step run at the AGENT estimate's; a request can only lower it. Without a proxy nothing is limited, as before.
+  const startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
+    project: request.project, asWorkflow, workflowPath, prepared,
+  });
+  if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
   // What a coding run is asked: the text as sent, or the text with its context rendered and cut to the request limit (G3).
   const requestText = prepared?.runner === "coding" && request.input !== undefined ? codingRequestText(request.input, DEVELOPER_INSTRUCTIONS_MAX_BYTES) : request.instructions;
   // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): after the agent is resolved, before the limit's counters are read
@@ -1633,11 +1687,11 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const revision = project.definition.revision;
   const title = redactedTitle(request);
   // The run limit is the task's budget. A task keeps one when the proxy admitted it or the run limit is not the usual one (a lower limit, or 0).
-  const budgetUsd = prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD;
+  const budgetUsd = prepared?.runLimitUsd ?? startLimitUsd ?? PER_TASK_BUDGET_USD;
   const keepsBudget = admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
   const task: DeveloperTaskRecord = {
     ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
-    ...(keepsBudget ? { budgetUsd } : {}), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
+    ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
@@ -1653,7 +1707,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(startedBy === undefined ? {} : { startedBy }),
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
-      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId } } } : {}),
+      // The pull requests the held preparation checks out are kept with the pause: its dispatch is built again when the run limit is raised (Task 32).
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }) } } } : {}),
     }),
   };
   const index: DeveloperTaskIndexRecord = {
@@ -1940,13 +1995,33 @@ function busy(error: unknown, taskId: string): never {
  * Undefined on an install with no model proxy, where there is no cap to reset.
  */
 async function capWindowBaseline(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<number | undefined> {
-  return deps.modelAccess === undefined ? undefined
+  // A spend approval's resume keeps the window the approval left (Task 32).
+  return deps.modelAccess === undefined || deps.spendResume?.keepWindow === true ? undefined
     : taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
 }
 
-/** The clause and values that record the window in the same update that moves the task, since one transaction cannot touch a record twice. */
-function capWindowUpdate(baseline: number | undefined): { clause: string; values: Record<string, number> } {
-  return baseline === undefined ? { clause: "", values: {} } : { clause: ", budgetBaselineUsd = :budgetBaseline", values: { ":budgetBaseline": baseline } };
+/** Task 32 (Task 31's concern 1): a pause written mid-run is stale once someone goes on with the task; a run held at its start keeps it until its approval. */
+const staleBudgetPause = (task: DeveloperTaskRecord): boolean => task.budgetPause !== undefined && task.budgetPause.firstDispatch === undefined;
+
+/**
+ * The clause and values that record the window in the same update that moves the task, since one transaction cannot touch a record twice. The clause comes
+ * last in its update: with `task`, it also removes a stale mid-run pause (Task 32).
+ */
+function capWindowUpdate(baseline: number | undefined, task?: DeveloperTaskRecord): { clause: string; values: Record<string, number> } {
+  const pause = task !== undefined && staleBudgetPause(task) ? " REMOVE budgetPause" : "";
+  return baseline === undefined ? { clause: pause, values: {} } : { clause: `, budgetBaselineUsd = :budgetBaseline${pause}`, values: { ":budgetBaseline": baseline } };
+}
+
+/** The task's update in a Continue: the new cap window (R38) and, Task 32, the removal of a stale mid-run pause; nothing when neither applies. */
+function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined): TransactItems {
+  const removes = staleBudgetPause(task) ? " REMOVE budgetPause" : "";
+  if (baseline === undefined && removes === "") return [];
+  return [{ Update: {
+    TableName: deps.tableName, Key: taskKey(task.taskId),
+    UpdateExpression: baseline === undefined ? `SET updatedAt = :now${removes}` : `SET budgetBaselineUsd = :baseline${removes}`,
+    ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)",
+    ExpressionAttributeValues: baseline === undefined ? { ":now": iso(deps) } : { ":baseline": baseline },
+  } }];
 }
 
 async function continueTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
@@ -1969,16 +2044,14 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   const baseline = deps.modelAccess === undefined ? undefined
     : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
   const receivedAt = iso(deps);
+  // Task 32: the request the stale pause asked for is withdrawn with it, so a later approval starts no second turn.
+  const withdrawal = staleBudgetPause(task) && deps.withdrawSpendRequests !== undefined ? await deps.withdrawSpendRequests(task) : undefined;
   try {
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
-      ...(baseline === undefined ? [] : [{ Update: {
-        TableName: deps.tableName, Key: taskKey(task.taskId),
-        UpdateExpression: "SET budgetBaselineUsd = :baseline",
-        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt)",
-        ExpressionAttributeValues: { ":baseline": baseline },
-      } }]),
+      ...windowAndPauseUpdate(deps, task, baseline),
+      ...(withdrawal?.items ?? []),
       // R12: the accepted record commits with the operation or not at all.
       putNew(turns, aiToolTurn({
         party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
@@ -1990,9 +2063,194 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "work");
     return busyOrClosing(deps, task, error);
   }
+  await withdrawal?.flush();
   const view = await taskView(deps, task, { events: 0, details: false });
   await syncIndex(deps, task, view.status, view.updatedAt);
   return { task: view };
+}
+
+// ---- Plan 3, Task 32: going on after a spend request was approved
+
+/** A request id derived from the spend request (one resume per request, so a repeat of the resume is the same request and starts nothing new, R18). */
+function resumeRequestId(spendRequestId: string, what: string): string {
+  const hex = createHash("sha256").update(`rovara-spend-resume|${what}|${spendRequestId}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = "89ab"[Number.parseInt(hex[16]!, 16) % 4]!;
+  const joined = hex.join("");
+  return `${joined.slice(0, 8)}-${joined.slice(8, 12)}-${joined.slice(12, 16)}-${joined.slice(16, 20)}-${joined.slice(20)}`;
+}
+
+/**
+ * A run held at its start (run limit 0) is dispatched now that its limit was raised (Task 15's paused start): in one transaction, conditional on the pause
+ * still naming that preparation, the workspace slot is taken, the preparation's outbox item is written (with a new capability and repository grant), its
+ * setup watch starts and the pause is removed. The preparation's success then starts the task, or wakes the agent-step engine.
+ */
+async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<void> {
+  const held = task.budgetPause?.firstDispatch;
+  if (held === undefined) return;
+  const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
+  if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${task.project}\` revision ${task.startingRevision} is no longer registered`);
+  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, held.checkout === undefined ? {} : { checkout: held.checkout });
+  const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
+  const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
+  const items: TransactItems = [
+    // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position.
+    ...chargeItems(deps.tableName, charge, limits, task.taskId),
+    ...outbox,
+    putNew(deps.tableName, { ...setupWatchKey(workspace.createdAt, workspace.id), entityType: "SETUP_WATCH", workspaceId: workspace.id, operationId: held.operationId, taskId: task.taskId, createdAt: workspace.createdAt }),
+    { Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET updatedAt = :now REMOVE budgetPause",
+      ConditionExpression: "budgetPause.firstDispatch.operationId = :operation AND attribute_not_exists(closedAt)",
+      ExpressionAttributeValues: { ":now": iso(deps), ":operation": held.operationId },
+    } },
+  ];
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+  } catch (error) {
+    const conflict = await chargeFailure(deps, charge, task.taskId, error);
+    if (conflict === "member" || conflict === "organization") throw await limitError(deps, { developerId: task.developerId } as DeveloperCaller, conflict, limits);
+    // Another resume dispatched it first, or the task closed meanwhile: either way there is nothing to dispatch.
+    if (isConditional(error)) return;
+    throw error;
+  }
+}
+
+/** The task's owner, as whom the system goes on with it (a retry or a Continue is theirs). */
+export interface SpendResumeInput {
+  orgId: OrgId;
+  taskId: string;
+  spendRequestId: string;
+  resetRunWindow: boolean;
+  firstDispatch: boolean;
+  /** `"implement"`: the approved request was for a plan blocked on its run limit (Task 34), and `runLimitUsd` is the limit approved. */
+  resume?: "implement";
+  runLimitUsd?: number;
+}
+
+/**
+ * `resumeTaskAfterSpendApproval`: the task goes on where it stopped once a spend request raised its limit. A run held at its start is dispatched
+ * (`firstDispatch`); an agent-step run runs the same step again (`advanceAgentRun`); a workflow task that the budget stopped runs its stage again (the owner's
+ * retry, made by the system); a task with no workflow gets the system's Continue, "Your AI budget was raised. Continue where you stopped." The cap window is
+ * reset only where the approval reset it (`resetRunWindow`). A task still paused on another limit, closed, or not the org's is left as it is.
+ */
+export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDependencies, owner: DeveloperCaller, input: SpendResumeInput): Promise<void | "STALE"> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
+  if (task === undefined || task.orgId !== deps.orgId || task.orgId !== input.orgId || task.closedAt !== undefined) return;
+  // Ruling R60, first: a task whose creator was removed is not resumed, nor a held start dispatched.
+  await creatorGuard(deps, task);
+  if (input.firstDispatch) {
+    await dispatchHeldStart(deps, task);
+    return;
+  }
+  // A plan blocked on its run limit starts coding by this approval and nothing else (`resumeAfterRunLimitApproval`); a repeat of it is the same request.
+  if (input.resume === "implement") {
+    if (input.runLimitUsd === undefined) throw agentXError("CONFIG_INVALID", "a run limit approval names the limit it approved");
+    // STALE (the plan was not blocked on its run limit any more) is answered, so a caller that counts starts does not count it.
+    return await resumeAfterRunLimitApproval(deps, task.taskId, { requestId: resumeRequestId(input.spendRequestId, "implement"), runLimitUsd: input.runLimitUsd }) === "STALE" ? "STALE" : undefined;
+  }
+  if (task.budgetPause !== undefined) return;
+  const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
+  if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
+    if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
+    await advanceAgentRun(deps.agentEngine, task.taskId);
+    return;
+  }
+  const requestId = resumeRequestId(input.spendRequestId, "resume");
+  if (task.workflow !== undefined) {
+    if (task.workflow.state !== "BLOCKED" || task.workflow.blockReason !== WORKFLOW_BLOCK_REASONS.budgetPaused) return;
+    await retryTaskWorkflow(resumed, owner, task.taskId, { requestId, instructions: SPEND_RESUME_INSTRUCTIONS, expectedRevision: task.workflow.revision });
+    return;
+  }
+  // A task with no workflow: the system's Continue (its window is the approval's).
+  await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt: SPEND_RESUME_INSTRUCTIONS }, () => [], { sharedTask: task.shared === true });
+  const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
+  if (fresh !== undefined) {
+    const view = await taskView(deps, fresh, { events: 0, details: false });
+    await syncIndex(deps, fresh, view.status, view.updatedAt);
+  }
+}
+
+const ContinueAsTaskSchema = z.object({ requestId: z.string().uuid() }).strict();
+
+/**
+ * `POST /v1/app/tasks/{id}/continue-as-task` [the task's owner]: a test run that reached its cap goes on as a normal task. It is paid as the owner's own start
+ * would be (`resolveRunPayer`, origin `app`), keeps its run limit, and resumes where it stopped; what it spent before stays on the testing allowance (the
+ * ledger lines already written name it). Conditional on the test's pause still being there, so a repeat changes nothing; anyone else gets the 404 a task
+ * they can't see gets.
+ */
+export async function continueAsTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
+  const request = parse(ContinueAsTaskSchema, value, deps, "continue-as-task");
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== deps.orgId || task.developerId !== caller.developerId) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
+  await creatorGuard(deps, task);
+  if (task.origin === "app" && task.budgetPause === undefined && task.startedBy !== undefined) return { task: await taskView(deps, task, { events: 0, details: false }) };
+  if (task.origin !== "test_run" || task.budgetPause?.scope.kind !== "test" || task.agent === undefined) {
+    throw agentXError("CONFIG_INVALID", "only a test run that reached its cap can continue as a normal task");
+  }
+  if (deps.agentRuns === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
+  const { payer, place } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: taskKey(taskId),
+      UpdateExpression: "SET origin = :app, payer = :payer, place = :place, startedBy = :startedBy, updatedAt = :now REMOVE budgetPause",
+      ConditionExpression: "origin = :test AND budgetPause.#scope.#kind = :testScope AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#scope": "scope", "#kind": "kind" },
+      ExpressionAttributeValues: { ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId }, ":now": iso(deps), ":test": "test_run", ":testScope": "test" },
+    }));
+  } catch (error) {
+    if (!isConditional(error)) throw error;
+    const now = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+    if (now?.origin === "app") return { task: await taskView(deps, now, { events: 0, details: false }) };
+    throw agentXError("TASK_BUSY", `task ${taskId} changed meanwhile; refresh it and try again`);
+  }
+  await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: request.requestId, resetRunWindow: false, firstDispatch: false });
+  const fresh = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  return { task: await taskView(deps, fresh ?? task, { events: 0, details: false }) };
+}
+
+/** The slots a month's request for `scope` may be in: each month, each asker. */
+const monthSlots = (months: readonly string[], scope: string, askers: readonly string[]): Array<{ subject: string; kind: string }> =>
+  months.flatMap((month) => askers.map((asker) => ({ subject: `MONTH#${month}#${scope}#${asker}`, kind: "month" })));
+
+/** Plan 3, Task 32: what the view says of a task waiting for money: the pause and its request, what planning found, a test's offer to continue. */
+async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, operations: readonly Operation[]): Promise<Pick<DeveloperTaskView, "paused" | "planningSoFar" | "testOffer">> {
+  const pause = task.budgetPause;
+  if (pause === undefined || task.orgId === undefined) return {};
+  const scope = Object.fromEntries(Object.entries(pause.scope).filter(([, value]) => typeof value === "string")) as Record<string, string>;
+  // A run's own limit has its task's request. A month's budget has the month's request: the one the pause asked for, else one the task's starter or owner
+  // asked for themselves (Task 33 fix round 1, M-4), looked for by the pause's month first and then this month's (M-3).
+  const months = [...new Set([pause.at.slice(0, 7), iso(deps).slice(0, 7)])];
+  const askers = [...new Set(["system", task.startedBy?.developerId ?? task.developerId, task.developerId])];
+  const slots: Array<{ subject: string; kind: string }> = pause.scope.kind === "task" ? [{ subject: `TASK#${task.taskId}`, kind: "run_limit" }]
+    : pause.scope.kind === "max_per_run" || pause.scope.kind === "planning" ? [{ subject: `TASK#${task.taskId}`, kind: pause.scope.kind }]
+      : pause.scope.kind === "test" ? []
+        : monthSlots(months, scopeKey(pause.scope), askers);
+  let spendRequestId: string | undefined;
+  let message: string | undefined;
+  for (const slotOf of slots) {
+    const slot: { spendRequestId?: string } | undefined = await get<{ spendRequestId?: string }>(deps, spendRequestSlotKey(task.orgId, slotOf.subject, slotOf.kind));
+    const id: string | undefined = slot?.spendRequestId;
+    const record: { orgId?: string; status?: string; reason?: string } | undefined = id === undefined ? undefined : await get<{ orgId?: string; status?: string; reason?: string }>(deps, spendRequestKey(task.orgId, id));
+    if (record?.orgId === task.orgId && record.status === "PENDING") {
+      spendRequestId = id;
+      message = record.reason;
+      break;
+    }
+  }
+  const out: Pick<DeveloperTaskView, "paused" | "planningSoFar" | "testOffer"> = {
+    paused: { reason: "budget", scope, ...(spendRequestId === undefined ? {} : { spendRequestId }), ...(message === undefined ? {} : { message: capText(message, 300).text }) },
+  };
+  if (pause.scope.kind === "test") {
+    const capUsd = (await readSpendPolicy(deps, task.orgId)).perTestCapUsd;
+    out.testOffer = { capUsd };
+    out.paused = { ...out.paused!, message: `This test reached its $${String(Number(capUsd.toFixed(2)))} cap. Continue it as a normal task? It will then count against your monthly limit and ${task.project}'s budget.` };
+  }
+  if (pause.scope.kind === "planning") {
+    const plan = [...operations].filter((operation) => operation.kind === "task" && operation.workflowMode === "PLAN").sort(byCreated).at(-1);
+    const said = plan === undefined ? undefined : lastAssistantResponse((await deps.actions.eventsNewestFirst(plan.id, 500)).reverse());
+    if (said !== undefined) out.planningSoFar = Array.from(said).slice(0, 4096).join("");
+  }
+  return out;
 }
 
 /**
@@ -2226,6 +2484,8 @@ export async function decideTaskWorkflow(
       : mode === "PLAN"
         ? `Prepare the next owner-review document for this request. The owner approved the ${planDocumentKindName(currentArtifactType)} (sha256 ${currentPlan.sha256}) below. Write the ${nextPhase === "DESIGN" ? "design" : "coding plan"} as the planning instructions describe, building on the approved document. Do not edit files.\n\n${previousMarkdownBlock(plan)}${comments}`
         : `Implement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. Do not push branches or create pull requests; AgentX handles publication after the required gates.\n\nApproved plan (sha256 ${currentPlan.sha256}):\n${plan}${comments}`;
+  // The decision's own transition: after the last document, coding is ready. A run limit that is not accepted blocks this, and coding is not started.
+  const decidedNext = next;
   next = { ...next, revision: next.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   // A planning step is told which claim IDs earlier versions dropped, so it does not number a new claim with one.
   const retired = mode === "PLAN" ? await retiredClaimIdList(deps, workflow) : [];
@@ -2252,22 +2512,64 @@ export async function decideTaskWorkflow(
     ExpressionAttributeValues: { ":lock": lock, ":one": 1, ":rev": comment.rev },
   } }));
   const lockOffset = 2 + detailItems.length;
+  // Plan 3, Task 34: approving the coding plan accepts its run limit (what the plan under review carried, or works out now) when the approver's tier allows it.
+  // Else the request is made first (a repeat of it is the same request) and the workflow blocks here with the decision recorded: its Retry coding, after the
+  // limit is raised, starts what the approval would have started.
+  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId) : undefined;
+  // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
+  const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
+    && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
+    && loaded?.format === "structured" && loaded.plan.e2e !== undefined;
+  if (runLimit !== undefined && !runLimit.accepted) {
+    const blocked = blockWorkflow(decidedNext, runLimit.message, receivedAt);
+    try {
+      await deps.actions.transact([
+        { Update: {
+          TableName: deps.tableName, Key: taskKey(taskId),
+          UpdateExpression: `SET workflow = :workflow, updatedAt = :now${correctedPlan ? " REMOVE e2ePlanCorrection" : ""}`,
+          ConditionExpression: `workflow.revision = :revision AND workflow.#state = :waiting AND attribute_not_exists(closedAt)${correctedPlan ? " AND e2ePlanCorrection.artifactId = :correctionArtifact AND e2ePlanCorrection.artifactSha256 = :correctionSha AND e2ePlanCorrection.candidateDigest = :correctionCandidate" : ""}`,
+          ExpressionAttributeNames: { "#state": "state" },
+          ExpressionAttributeValues: { ":workflow": blocked, ":now": receivedAt, ":revision": workflow.revision, ":waiting": "WAITING",
+            ...(correctedPlan ? { ":correctionArtifact": correction.artifactId, ":correctionSha": correction.artifactSha256, ":correctionCandidate": correction.candidateDigest } : {}) },
+        } },
+        putNew(turnTable(deps), aiToolTurn({
+          party: partyOfTaskActor(task, caller), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
+          request: request.reason, response: `Workflow ${request.decision.toLowerCase().replaceAll("_", " ")} accepted; coding waits for the run limit to be approved.`,
+        })),
+        ...detailItems,
+        ...lockItems,
+        ...(included.length === 0 ? [] : [counterTouch(deps, taskId)]),
+        accessFence(deps, access),
+      ]);
+    } catch (error) {
+      const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
+      if (fresh.workflow?.decisions.some((decision) => decision.requestId === request.requestId) === true) return { task: await taskView(deps, fresh, { events: 0, details: false }) };
+      if (fresh.workflow !== undefined && fresh.workflow.revision !== workflow.revision) throw refused(fresh.workflow);
+      const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.map((reason) => reason.Code ?? "None");
+      if (reasons !== undefined && lockItems.some((_, index) => reasons[lockOffset + index] === "ConditionalCheckFailed")) {
+        throw Object.assign(agentXError("IDEMPOTENCY_CONFLICT", COMMENT_CHANGED_MESSAGE), { pageReason: "comment_changed" });
+      }
+      return busyOrClosing(deps, task, error);
+    }
+    const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
+    const view = await taskView(deps, fresh, { events: 0, details: false });
+    await syncIndex(deps, fresh, view.status, view.updatedAt);
+    return { task: view };
+  }
   try {
     // Gap 2: replies posted in the task's thread and not yet given to a step go with this one, once.
     await withCurrentThreadNotes(deps, task, request.requestId, (current, notes) => {
       const fed = fedThroughUpdate(notes);
       return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: basePrompt + notes.suffix }, (operation) => {
         const workflowToStore = workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies);
-        const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
-          && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
-          && loaded?.format === "structured" && loaded.plan.e2e !== undefined;
         return [
           { Update: {
             TableName: deps.tableName, Key: taskKey(taskId),
-            UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}${correctedPlan ? " REMOVE e2ePlanCorrection" : ""}`,
-            ConditionExpression: `workflow.revision = :revision AND workflow.#state = :waiting${fed.condition}${correctedPlan ? " AND e2ePlanCorrection.artifactId = :correctionArtifact AND e2ePlanCorrection.artifactSha256 = :correctionSha AND e2ePlanCorrection.candidateDigest = :correctionCandidate" : ""}`,
+            UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}${runLimit === undefined ? "" : ", budgetUsd = :runLimit, budgetBaselineUsd = :runBaseline"}${correctedPlan ? " REMOVE e2ePlanCorrection" : ""}`,
+            ConditionExpression: `workflow.revision = :revision AND workflow.#state = :waiting${fed.condition}${runLimit === undefined ? "" : task.budgetUsd === undefined ? " AND attribute_not_exists(budgetUsd)" : " AND budgetUsd = :seenBudget"}${correctedPlan ? " AND e2ePlanCorrection.artifactId = :correctionArtifact AND e2ePlanCorrection.artifactSha256 = :correctionSha AND e2ePlanCorrection.candidateDigest = :correctionCandidate" : ""}`,
             ExpressionAttributeNames: { "#state": "state" },
             ExpressionAttributeValues: { ":workflow": workflowToStore, ":now": receivedAt, ":revision": workflow.revision, ":waiting": "WAITING", ...fed.values,
+              ...(runLimit === undefined || !runLimit.accepted ? {} : { ":runLimit": runLimit.runLimitUsd, ":runBaseline": runLimit.baselineUsd, ...(task.budgetUsd === undefined ? {} : { ":seenBudget": task.budgetUsd }) }),
               ...(correctedPlan ? { ":correctionArtifact": correction.artifactId, ":correctionSha": correction.artifactSha256,
                 ":correctionCandidate": correction.candidateDigest } : {}) },
           } },
@@ -2300,6 +2602,40 @@ export async function decideTaskWorkflow(
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
   return { task: view };
+}
+
+/** Plan 3, Task 34: what approving the coding plan did with its run limit. `baselineUsd` is what planning spent, where the run limit's window starts. */
+type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: number } | { accepted: false; message: string };
+
+/**
+ * Approving the coding plan accepts the plan's run limit by the approver's tier (`acceptRunLimit`). Accepted: the new window starts at what planning has spent
+ * (a proxy that can't say refuses the approval, as a Continue is). Not accepted: the `run_limit` request is made through Task 32's seam before anything is
+ * written, so a workflow is never blocked on a request that was not made; without the seam (until Task 32 is wired) no request is made and the words are the same.
+ */
+async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string): Promise<RunLimitOutcome> {
+  const decision = await acceptRunLimit(
+    // The approver's project role is read now: from the project's people where agents are set up, else through the caller's own project access.
+    { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
+    { task, approver: { developerId: caller.developerId, orgRole: caller.orgRole } },
+  );
+  if (decision.accepted) return { accepted: true, runLimitUsd: decision.runLimitUsd, baselineUsd: await capWindowBaseline(deps, task) ?? 0 };
+  const ask = deps.agentRuns?.requestRunLimit;
+  let asked = false;
+  if (ask !== undefined) {
+    try {
+      asked = await ask({
+        kind: "run_limit", resume: "implement", orgId: deps.orgId, taskId: task.taskId, requestId, newLimitUsd: decision.runLimitUsd,
+        amountUsd: Math.max(0, cleanUsd(decision.runLimitUsd - (task.budgetUsd ?? 0))), approverRole: decision.approverRole, requestedBy: { kind: "member", developerId: caller.developerId },
+        reason: `Approving this plan sets a run limit of $${String(decision.runLimitUsd)}, which needs ${decision.needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.`,
+      }) !== undefined;
+    } catch (error) {
+      if (error instanceof AgentXError) throw error;
+      log(deps, { event: "developer.run_limit_request_failed", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+      throw agentXError("RUNTIME_UNAVAILABLE", "the run limit could not be asked for just now; try approving again");
+    }
+  }
+  // "I've asked for it" only when a request exists.
+  return { accepted: false, message: runLimitBlockText(decision.runLimitUsd, decision.needs, asked) };
 }
 
 /** The claim IDs this task's earlier structured documents dropped (they may not come back), in order; a document that cannot be read is skipped. */
@@ -2449,7 +2785,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     const selected = workflowSelectedChecks({ ...policy, selectedOptionalIds, selectedProposedIds });
     if (selected.length === 0) throw agentXError("CONFIG_INVALID", "keep at least one check before retrying verification, or close the task");
     await actionableWorkspace(deps, task);
-    const cap = capWindowUpdate(await capWindowBaseline(deps, task));
+    const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
     const receivedAt = iso(deps);
     const { blockReason: _previousBlockReason, ...unblocked } = workflow;
     void _previousBlockReason;
@@ -2564,7 +2900,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
   await actionableWorkspace(deps, task);
-  const cap = capWindowUpdate(await capWindowBaseline(deps, task));
+  const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
   const unblocked = { ...task.workflow };
   delete unblocked.blockReason;
@@ -2774,7 +3110,7 @@ async function queueWorkflowCoding(
   const { task } = access;
   const { workflow } = task;
   // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew.
-  const cap = capWindowUpdate(await capWindowBaseline(deps, task));
+  const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
   try {
     await withCurrentThreadNotes(deps, task, input.requestId, (current, notes) => {
@@ -2820,12 +3156,68 @@ async function queueWorkflowCoding(
   return { task: view };
 }
 
+/** Said to anyone who tries to restart coding on a plan whose run limit nobody has accepted. */
+const RUN_LIMIT_NOT_APPROVED_REFUSAL = "Coding starts once the run limit is approved.";
+
+/** A plan blocked on its run limit (Task 34) is unblocked by the run-limit approval only (`resumeAfterRunLimitApproval`), never by a retry or a send-back. */
+const blockedOnRunLimit = (workflow: WorkflowSnapshot): boolean =>
+  workflow.stage === "IMPLEMENT" && workflow.state === "BLOCKED" && workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+
+/**
+ * Plan 3, Task 34: the run limit of a plan blocked on it was approved (Task 32's `resume: "implement"`). Sets `budgetUsd` to the approved limit and the window
+ * at what the task's keys have spent, and starts coding on the approved plan, in the one transaction that moves the workflow. `requestId` (the spend request's)
+ * makes the coding operation, so a repeat finds the workflow already moved. "STALE": the task is not blocked on a run limit (closed, moved on, or blocked for
+ * another reason), and nothing is written. A proxy that can't say what planning spent refuses (503) before anything is written.
+ */
+export async function resumeAfterRunLimitApproval(
+  deps: DeveloperTaskRouteDependencies, taskId: string, input: { requestId: string; runLimitUsd: number },
+): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+  if (!Number.isFinite(input.runLimitUsd) || input.runLimitUsd <= 0) throw agentXError("CONFIG_INVALID", "the approved run limit must be more than zero");
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  const workflow = task?.workflow;
+  if (task === undefined || task.orgId !== deps.orgId || task.closedAt !== undefined || workflow === undefined || !blockedOnRunLimit(workflow)) return "STALE";
+  await creatorGuard(deps, task);
+  const dispatchAccess = await systemTaskAccess(deps, task);
+  const workspace = await deps.actions.workspace(task.workspaceId);
+  if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
+  const plan = await approvedCodingPlan(deps, workflow);
+  const workflowDependencies = await approvedWorkflowDependencies(deps, task, dispatchAccess?.peopleRevision);
+  if (workflowDependencies !== undefined && deps.workflowDependenciesEnabled !== true) {
+    throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to start it");
+  }
+  const baselineUsd = await capWindowBaseline(deps, task) ?? 0;
+  const receivedAt = iso(deps);
+  const { blockReason: _blockReason, ...unblocked } = workflow;
+  void _blockReason;
+  const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
+  const prompt = `Implement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`;
+  const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: input.requestId, conversationId: task.conversationId, prompt }, (operation) => [
+    { Update: {
+      TableName: deps.tableName, Key: taskKey(task.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now, budgetUsd = :runLimit, budgetBaselineUsd = :baseline",
+      ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :blocked AND attribute_not_exists(closedAt)${task.budgetUsd === undefined ? " AND attribute_not_exists(budgetUsd)" : " AND budgetUsd = :seenBudget"}`,
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies), ":now": receivedAt,
+        ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":runLimit": input.runLimitUsd, ":baseline": baselineUsd,
+        ...(task.budgetUsd === undefined ? {} : { ":seenBudget": task.budgetUsd }) },
+    } },
+    putNew(turnTable(deps), aiToolTurn({
+      party: partyOfTask(task), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted", receivedAt, finishedAt: iso(deps),
+      request: "The run limit was approved", response: `Coding started as operation ${operation.id} once the run limit of $${String(input.runLimitUsd)} was approved.`, operationId: operation.id,
+    })),
+    ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
+  ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(next), ...taskBaseOption(task, next), ...(next.programStepId === undefined ? {} : { programStepId: next.programStepId }),
+    ...(workflowDependencies === undefined ? {} : { workflowDependencies }) });
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
 /** Task 16: the owner retries coding that stopped (IMPLEMENT/BLOCKED) on the same approved plan. */
 async function retryWorkflowImplementation(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const workflow = task.workflow!;
+  if (blockedOnRunLimit(workflow)) throw agentXError("CONFIG_INVALID", RUN_LIMIT_NOT_APPROVED_REFUSAL);
   if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
   }
@@ -2855,6 +3247,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   const { task } = access;
   const workflow = task.workflow;
   if (workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
+  if (blockedOnRunLimit(workflow)) throw agentXError("CONFIG_INVALID", RUN_LIMIT_NOT_APPROVED_REFUSAL);
   const prior = workflow.decisions.find((decision) => decision.requestId === request.requestId);
   if (prior !== undefined) {
     if (prior.source !== "SEND_BACK") throw agentXError("IDEMPOTENCY_CONFLICT", "this request ID was already used for another decision on this task; use a new one");
@@ -3394,7 +3787,10 @@ function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, 
         : { status: "Waiting for the owner's approval", nextStep: `The task owner approves or requests changes ${inSlack}.` };
     case "PLAN_REVIEW/BLOCKED": return { status: `Stopped before approval of the ${name}`, nextStep: `Close the task ${inSlack} and start again.` };
     case "IMPLEMENT/READY": case "IMPLEMENT/RUNNING": return { status: "Writing the code", nextStep: "The checks and reviews run when coding finishes." };
-    case "IMPLEMENT/BLOCKED": return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing
+    case "IMPLEMENT/BLOCKED": if (workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true) {
+      return { status: "Waiting for the run limit to be approved", nextStep: owner ? `Coding starts once a project maintainer or an admin approves it, or close the task ${inSlack}.` : "Coding starts once a project maintainer or an admin approves the run limit." };
+    }
+      return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing
       ? { status: "The approved fix didn't change any code", nextStep: workflowKeepPullRequestsOffered(workflow)
         ? `Retry coding, keep the pull request as it is, or close the task ${inSlack}.` : `Retry coding or close the task ${inSlack}.` }
       : { status: workflow.blockReason === WORKFLOW_BLOCK_REASONS.noCodeChanged ? "Coding finished, but no code changed" : "Coding stopped before it finished",
@@ -5462,7 +5858,36 @@ const RELEASABLE_WORKSPACE = new Set(["READY", "STOPPED", "UNHEALTHY"]);
 
 export type FinishedTaskRelease = "released" | "already_released" | "not_finished" | "busy";
 
-export type ReleaseDeps = { tableName: string; actions: DeveloperTaskActions; documentClient: { send(command: unknown): Promise<unknown> } };
+export type ReleaseDeps = {
+  tableName: string; actions: DeveloperTaskActions; documentClient: { send(command: unknown): Promise<unknown> };
+  /** The model proxy: what a finished run's keys spent, for the estimates (Task 34). Without it no cost is written. */
+  modelAccess?: ModelAccess;
+};
+
+/**
+ * Plan 3, Task 34: a run that merged (a workflow task whose pull requests all merged), passed every step of its own sequence, or completed (an agent-step run)
+ * writes what its keys cost, for the next estimate (`recordRunCost`). A run that failed, was cancelled or closed with its plan rejected writes nothing, and a
+ * task with no workflow is never recorded (the TASK estimate stays at its default until that has an end signal and a planned golden change). Never throws: a
+ * proxy that can't say is logged; the next release of the task before it is released tries again, and after that the run's cost is not in the history.
+ */
+export async function recordFinishedRunCost(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<void> {
+  if (deps.modelAccess === undefined || task.orgId === undefined || task.runCostRecordedAt !== undefined) return;
+  let ended: { path: "QUICK" | "FULL" | "AGENT"; endedAt: string };
+  if (task.agentRunEnd !== undefined) {
+    if (task.agentRunEnd.state !== "COMPLETE") return;
+    ended = { path: "AGENT", endedAt: task.agentRunEnd.at };
+  } else {
+    const outcome = workflowEndOutcome(task);
+    if ((outcome !== "merged" && outcome !== "succeeded") || task.workflow === undefined) return;
+    // The workflow's last change is the merge (or the last step); the clock would make the order of two runs depend on when their release ran.
+    ended = { path: task.workflow.path, endedAt: task.workflow.updatedAt };
+  }
+  try {
+    await recordRunCost({ documentClient: deps.documentClient, tableName: deps.tableName, modelAccess: deps.modelAccess }, task, ended);
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "run_cost.not_recorded", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
 
 /** The release's own audit record ID for a task: one per task, so a repeated release writes it once. */
 function releaseTurnId(taskId: string): string {
@@ -5487,6 +5912,7 @@ function releaseTurnId(taskId: string): string {
 export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<FinishedTaskRelease> {
   const closed = task.closedAt !== undefined;
   if (!closed && !workflowTaskFinished(task)) return "not_finished";
+  await recordFinishedRunCost(deps, task);
   // A merged or closed workflow task has ended: its end handlers hear it (an agent-step run's end is told by its engine).
   if (!closed && task.agentRunEnd === undefined) {
     const outcome = workflowEndOutcome(task);

@@ -72,6 +72,8 @@ export const WORKFLOW_BLOCK_REASONS = {
   pullRequestUpdateFailed: "I couldn't push the fix to the pull request.",
   /** Shown only in a task view, never stored: the document waiting for approval failed its digest check. */
   documentUnverified: "The saved document couldn't be checked, so I stopped. Close this task and start again.",
+  /** Plan 3, Task 32: a step ran out of its run's budget and a spend request is open; approving it retries the step. */
+  budgetPaused: "Paused: this task needs more AI budget. I've asked for it.",
 } as const;
 
 /** What the coder is told about tests a review-only rerun found regressed (`regressedChecks`). */

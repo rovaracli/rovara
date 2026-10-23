@@ -8,6 +8,7 @@ import {
   AGENT_ACCESS_LEVELS,
   AgentPrincipalSchema,
   BUILTIN_AGENT_IDS,
+  TRIAL_LIMITS_R49,
   agentXError,
   atLeast,
   isBuiltinAgentId,
@@ -466,4 +467,35 @@ export async function requireOwnerAllowed(deps: OwnedAccessDeps, caller: AgentCa
   }
   await requirePrincipalExists(deps, lookups, caller.orgId, "owner", owner);
   return owner;
+}
+
+/** Someone who may answer for a project's agent: in the org, holding `manage_agents` on the project. Returned as the survivor of any merge. */
+export async function requireAccountable(deps: AgentAccessDeps, orgId: OrgId, project: string, developerId: string): Promise<{ developerId: string }> {
+  const survivor = await resolveSurvivor(deps, orgId, developerId);
+  const orgRole = await orgRoleOf(deps, orgId, survivor);
+  if (orgRole === undefined) throw agentXError("CONFIG_INVALID", "accountable: nobody in your company has that ID");
+  const role = await deps.projectMembers.roleOf(orgId, project, { developerId: survivor, orgRole });
+  if (role === undefined || !projectAllows(role, "manage_agents")) throw agentXError("CONFIG_INVALID", `accountable: that person needs to be a maintainer of ${project}`);
+  return { developerId: survivor };
+}
+
+/**
+ * Refuses an agent budget the company's guardrails (Task 8's ceilings) or a trial org's limits (R49) don't allow: checked when the change is asked for, and
+ * again when an admin approves it over the owner cap (Task 32), since either may have changed meanwhile.
+ */
+export async function requireAgentBudgetAllowed(
+  deps: Pick<AgentAccessDeps, "documentClient" | "tableName"> & { orgs?: { getOrg(orgId: OrgId): Promise<{ plan?: string } | undefined> } },
+  orgId: OrgId, budget: { monthlyUsd?: number | null | undefined; maxPerRunUsd?: number | null | undefined },
+): Promise<void> {
+  const guardrails = await readGuardrails(deps, orgId);
+  if (typeof budget.monthlyUsd === "number" && budget.monthlyUsd > guardrails.maxAgentMonthlyUsd) {
+    throw agentXError("CONFIG_INVALID", `monthlyUsd: your company's guardrails allow at most $${String(guardrails.maxAgentMonthlyUsd)} a month for one agent`);
+  }
+  if (typeof budget.maxPerRunUsd === "number" && budget.maxPerRunUsd > guardrails.maxPerRunCeilingUsd) {
+    throw agentXError("CONFIG_INVALID", `maxPerRunUsd: your company's guardrails allow at most $${String(guardrails.maxPerRunCeilingUsd)} for one run`);
+  }
+  const trialCap = TRIAL_LIMITS_R49.agentMonthlyUsd;
+  if (typeof budget.monthlyUsd === "number" && budget.monthlyUsd > trialCap && (await deps.orgs?.getOrg(orgId))?.plan === "trial") {
+    throw agentXError("CONFIG_INVALID", `monthlyUsd: a trial organization's agent budget is at most $${String(trialCap)} a month; upgrade the plan to raise it`);
+  }
 }

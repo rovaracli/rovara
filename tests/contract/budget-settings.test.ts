@@ -634,7 +634,7 @@ describe("an agent's budget", () => {
     expect(totalOf(DANA.developerId)).toBe(10);
   });
 
-  it("counts toward its owner's total, and an over-the-cap raise is refused with the budget unchanged (Task 32 turns this into an admin request)", async () => {
+  it("counts toward its owner's total, and an over-the-cap raise waits for an org admin (202) with the budget unchanged (Task 32)", async () => {
     const { create, putBudget, store, totalOf } = await routeSetup();
     const first = await create(MAX);
     const second = await create(MAX);
@@ -643,9 +643,8 @@ describe("an agent's budget", () => {
     expect(totalOf(MAX.developerId)).toBe(90);
     const third = await create(MAX);
     const refused = await putBudget(MAX, third, { monthlyUsd: 11 });
-    expect(refused.status).toBe(400);
-    expect(errorOf(refused).code).toBe("CONFIG_INVALID");
-    expect(errorOf(refused).message).toBe("Max's agent budgets would total $101 a month, over the $100 limit for one person. An org admin will be able to approve this once approval requests exist; for now an org admin can raise the limit in the spend policy.");
+    expect(refused.status).toBe(202);
+    expect(refused.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL", message: "Max's agent budgets would total $101 a month, over the $100 limit for one person. I asked an org admin to approve it." });
     expect((await store.get(TEST_ORG, third))?.monthlyBudgetUsd).toBeUndefined();
     expect(totalOf(MAX.developerId)).toBe(90);
     expect((await putBudget(MAX, third, { monthlyUsd: 10 })).status).toBe(200); // exactly on the cap
@@ -678,7 +677,7 @@ describe("an agent's budget", () => {
 });
 
 describe("the owner total on archive, owner and accountable changes", () => {
-  it("keeps an agent archived when putting its budget back would pass the cap", async () => {
+  it("keeps an agent archived (202, an admin asked) when putting its budget back would pass the cap", async () => {
     const { create, putBudget, call, store, totalOf } = await routeSetup();
     const big = await create(MAX);
     expect((await putBudget(MAX, big, { monthlyUsd: 50 })).status).toBe(200);
@@ -687,9 +686,8 @@ describe("the owner total on archive, owner and accountable changes", () => {
     const others = [await create(MAX), await create(MAX)];
     for (const other of others) expect((await putBudget(MAX, other, { monthlyUsd: 40 })).status).toBe(200);
     const refused = await call(MAX, "POST", `/v1/app/agents/${big}/unarchive`, {});
-    expect(refused.status).toBe(400);
-    expect(errorOf(refused).code).toBe("CONFIG_INVALID");
-    expect(errorOf(refused).message).toContain("$130");
+    expect(refused.status).toBe(202);
+    expect(String(refused.body.message)).toContain("$130");
     expect((await store.get(TEST_ORG, big))?.status).toBe("archived");
     expect((await putBudget(MAX, others[0]!, { monthlyUsd: 10 })).status).toBe(200);
     expect((await call(MAX, "POST", `/v1/app/agents/${big}/unarchive`, {})).status).toBe(200);
@@ -705,8 +703,8 @@ describe("the owner total on archive, owner and accountable changes", () => {
     const carls2 = await create(CARL);
     expect((await putBudget(CARL, carls2, { monthlyUsd: 50 })).status).toBe(200);
     const refused = await call(DANA, "PUT", `/v1/app/agents/${mine}/owner`, { owner: { kind: "member", developerId: CARL.developerId } });
-    expect(refused.status).toBe(400);
-    expect(errorOf(refused).message).toContain("Carl's agent budgets would total $140 a month, over the $100 limit");
+    expect(refused.status).toBe(202);
+    expect(String(refused.body.message)).toContain("Carl's agent budgets would total $140 a month, over the $100 limit");
     expect((await store.get(TEST_ORG, mine))?.owner).toEqual({ kind: "member", developerId: MAX.developerId });
     expect(totalOf(MAX.developerId)).toBe(40);
     expect(totalOf(CARL.developerId)).toBe(100);
@@ -728,8 +726,8 @@ describe("the owner total on archive, owner and accountable changes", () => {
     for (const agentId of carls) expect((await putBudget(CARL, agentId, { monthlyUsd: 50 })).status).toBe(200);
     members.grant(TEST_ORG, "web", CARL.developerId, "maintainer");
     const refused = await call(MAX, "PUT", `/v1/app/agents/${projectAgent}/accountable`, { accountable: { developerId: CARL.developerId } });
-    expect(refused.status).toBe(400);
-    expect(errorOf(refused).message).toContain("Carl's agent budgets would total $130 a month");
+    expect(refused.status).toBe(202);
+    expect(String(refused.body.message)).toContain("Carl's agent budgets would total $130 a month");
     expect((await store.get(TEST_ORG, projectAgent))?.accountable).toEqual({ developerId: MAX.developerId });
     expect(totalOf(MAX.developerId)).toBe(30);
     expect(totalOf(CARL.developerId)).toBe(100);
@@ -877,14 +875,14 @@ describe("an owner merged into another counts for the survivor", () => {
     expect(totalOf(ALICE)).toBe(70);
   });
 
-  it("is refused by the route against the survivor's total, in the survivor's name", async () => {
+  it("is held by the route against the survivor's total, in the survivor's name", async () => {
     const { create, putBudget, store, db, totalOf } = await routeSetup();
     for (const agentId of [await create(MAX), await create(MAX)]) expect((await putBudget(MAX, agentId, { monthlyUsd: 50 })).status).toBe(200);
     db.set({ pk: `DEVELOPER#${GHOST}`, sk: "META", developerId: GHOST, provider: "oidc", displayName: "Ghost", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: MAX.developerId });
     const dup = await store.create({ orgId: TEST_ORG, name: "Duplicate's agent", owner: { kind: "member", developerId: GHOST }, createdBy: GHOST });
     const refused = await putBudget(DANA, dup.agentId, { monthlyUsd: 10 });
-    expect(refused.status).toBe(400);
-    expect(errorOf(refused).message).toContain("Max's agent budgets would total $110");
+    expect(refused.status).toBe(202);
+    expect(String(refused.body.message)).toContain("Max's agent budgets would total $110");
     expect(totalOf(MAX.developerId)).toBe(100);
     expect((await store.get(TEST_ORG, dup.agentId))?.monthlyBudgetUsd).toBeUndefined();
   });

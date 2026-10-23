@@ -28,12 +28,14 @@ import {
   type DeveloperTaskStatus,
   type Operation,
   type PauseScope,
+  type RunCheckout,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
   type OrgId,
   type Payer,
   type Place,
+  type RunEstimate,
   type WorkOrigin,
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
@@ -137,12 +139,21 @@ export interface DeveloperTaskRecord {
    * mid-run (`mintOperationKey`) has no `firstDispatch`, and keeps the first pause it was given. Task 32's approval of the raise clears this field
    * (and, for `firstDispatch`, takes the slot and writes the outbox and the watch).
    */
-  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string } };
+  budgetPause?: { scope: PauseScope; at: string; firstDispatch?: { operationId: string; checkout?: RunCheckout[] } };
   /**
    * Plan 3, Task 22: set in the transaction that ends an agent-step run (COMPLETE, FAILED or CANCELLED), with when. An ended run is finished the way a
    * merged workflow task is: it gives back its workspace slot and its workspace (`workflowTaskFinished`, `releaseFinishedTask`).
    */
   agentRunEnd?: { state: "COMPLETE" | "FAILED" | "CANCELLED"; at: string };
+  /**
+   * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches
+   * review on an install with a model proxy. Approving the plan accepts `runLimitUsd` (`acceptRunLimit`); the plan-ready message and the task view show it.
+   */
+  runEstimate?: RunEstimate;
+  /** Plan 3, Task 34: the run limit a start asked for (`runLimitUsd` of `startAgentRun`); approving the plan accepts no more than it. */
+  requestedRunLimitUsd?: number;
+  /** Plan 3, Task 34: when the run's cost was written for the estimates (`recordRunCost`), so a run is counted once. */
+  runCostRecordedAt?: string;
 }
 
 /** C1: a shared task's thread, as the task record keeps it. */

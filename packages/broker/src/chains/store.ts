@@ -36,7 +36,7 @@ import { CHAIN_KIND, OwnedStore, type AgentShareLevel, type MoveCause, type Owne
 import type { AgentStore, BudgetWriteOptions } from "../agents/store.js";
 import { Aliases, NOT_EXISTS, coded, strip, withoutUndefined, type Item, type RequestMark, type TransactItem } from "../agents/table-writes.js";
 import type { OwnerBudgets} from "../spend/owner-budgets.js";
-import { budgetGuard, ownerOverCap, totalsMoved, type OwnerCap } from "../spend/owner-budgets.js";
+import { budgetGuard, overrideDetail, ownerOverCap, totalsMoved, withOverride, type OwnerCap } from "../spend/owner-budgets.js";
 import { ownerShare, withBudgetFields, type BudgetSubject } from "../spend/owner-total.js";
 import { chainGraphProblems, formatChainProblem } from "./validate.js";
 import { cleanUsd } from "../spend/top-ups.js";
@@ -471,11 +471,23 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
 
   /** The sum of the monthly budgets of the active chains that count for the owner `counts` asks about. */
   private async sumChainBudgets(orgId: OrgId, counts: (subject: BudgetSubject) => Promise<boolean>): Promise<number> {
-    let total = 0;
+    return cleanUsd((await this.countedChains(orgId, counts)).reduce((total, chain) => total + chain.monthlyBudgetUsd, 0));
+  }
+
+  /**
+   * The active chains whose monthly budgets count in `owner`'s total, each with that budget (the chain side of the agent store's `ownerAgents`; the owner total's
+   * contributors read it). A chain whose owner is a merged duplicate counts for its survivor.
+   */
+  async ownerChains(orgId: OrgId, owner: string): Promise<Array<{ chainId: ChainId; monthlyBudgetUsd: number }>> {
+    return this.countedChains(orgId, this.ownerBudgets.countsFor(orgId, owner));
+  }
+
+  private async countedChains(orgId: OrgId, counts: (subject: BudgetSubject) => Promise<boolean>): Promise<Array<{ chainId: ChainId; monthlyBudgetUsd: number }>> {
+    const found: Array<{ chainId: ChainId; monthlyBudgetUsd: number }> = [];
     for (const chain of await this.list(orgId)) {
-      if (ownerShare(chain) !== undefined && await counts(chain)) total += chain.monthlyBudgetUsd ?? 0;
+      if (ownerShare(chain) !== undefined && await counts(chain)) found.push({ chainId: chain.chainId, monthlyBudgetUsd: chain.monthlyBudgetUsd ?? 0 });
     }
-    return cleanUsd(total);
+    return found;
   }
 
   /** The counter items that take a chain from `before` to `after`, and what their refusals mean. */
@@ -500,11 +512,11 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
     const changed: ChainRecord = { ...chain, status, updatedAt };
     // An archived chain counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
     const totals = await this.totalsFor(orgId, chain, changed, options.ownerCap);
-    await this.commit([
+    await this.commit(...withOverride([
       this.update(chainKey(orgId, chainId, "META"), { set: { status, updatedAt }, when: budgetGuard(chain) }),
       ...totals.items,
-      this.event(orgId, chainId, status === "archived" ? "archived" : "unarchived", by),
-    ], totals.refuse, request, changed);
+      this.event(orgId, chainId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
+    ], totals.refuse, options), request, changed);
     return changed;
   }
 
@@ -526,11 +538,11 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
     const updatedAt = this.iso();
     const written = withBudgetFields({ ...chain, updatedAt }, { monthlyBudgetUsd: monthlyUsd });
     const totals = await this.totalsFor(orgId, chain, written, options.ownerCap);
-    const event = this.newEvent(orgId, chainId, "budget_changed", by, withoutUndefined({ monthlyUsd, cleared: monthlyUsd === undefined }));
+    const event = this.newEvent(orgId, chainId, "budget_changed", by, { ...withoutUndefined({ monthlyUsd, cleared: monthlyUsd === undefined }), ...overrideDetail(options) });
     const audit = await this.audited(() => chainBudgetEvents({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, chainId, before: chain.monthlyBudgetUsd, after: monthlyUsd,
     }));
-    await this.commit([
+    await this.commit(...withOverride([
       this.update(chainKey(orgId, chainId, "META"), {
         set: { monthlyBudgetUsd: monthlyUsd, updatedAt },
         ...(monthlyUsd === undefined ? { remove: ["monthlyBudgetUsd"] } : {}),
@@ -539,7 +551,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, request, written);
+    ], totals.refuse, options), request, written);
     await flushAuditEvents(this.input, audit.events);
     return written;
   }
@@ -557,12 +569,12 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
     // The chain's budget leaves the old owner's total and joins the new one's, which the cap holds when one is given.
     const totals = await this.totalsFor(orgId, chain, moved, options.ownerCap);
     const guard = budgetGuard(chain);
-    const event = this.newEvent(orgId, chainId, "owner_changed", by, { from: chain.owner, to: owner, ...(accountable === undefined ? {} : { accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }) });
+    const event = this.newEvent(orgId, chainId, "owner_changed", by, { from: chain.owner, to: owner, ...(accountable === undefined ? {} : { accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }), ...overrideDetail(options) });
     const audit = await this.audited(() => [ownerMovedEvent({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId: chainId, from: chain.owner, to: owner,
       ...(accountable === undefined ? {} : { accountable: accountable.developerId }),
     }, "chain")]);
-    await this.commit([
+    await this.commit(...withOverride([
       this.update(chainKey(orgId, chainId, "META"), {
         set: { owner, accountable, updatedAt },
         ...(accountable === undefined ? { remove: ["accountable"] } : {}),
@@ -571,7 +583,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, request, moved);
+    ], totals.refuse, options), request, moved);
     await flushAuditEvents(this.input, audit.events);
     return moved;
   }
@@ -584,17 +596,17 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
     const changed: ChainRecord = { ...chain, accountable, updatedAt };
     const totals = await this.totalsFor(orgId, chain, withBudgetFields(chain, { accountable }), options.ownerCap);
     const guard = budgetGuard(chain);
-    const event = this.newEvent(orgId, chainId, "owner_changed", by, { accountable, ...(chain.accountable === undefined ? {} : { from: chain.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }) });
+    const event = this.newEvent(orgId, chainId, "owner_changed", by, { accountable, ...(chain.accountable === undefined ? {} : { from: chain.accountable }), ...(options.cause === undefined ? {} : { cause: options.cause }), ...overrideDetail(options) });
     const audit = await this.audited(() => [accountableChangedEvent({
       orgId, actor: auditActorOf(by), occurredAt: event.at, occurrence: event.sk, agentId: chainId, accountable: accountable.developerId,
       ...(chain.accountable === undefined ? {} : { previous: chain.accountable.developerId }),
     }, "chain")]);
-    await this.commit([
+    await this.commit(...withOverride([
       this.update(chainKey(orgId, chainId, "META"), { set: { accountable, updatedAt }, when: (a) => `${a.name("updatedAt")} = ${a.value(chain.updatedAt)} AND ${guard(a)}` }),
       ...totals.items,
       event.item,
       ...audit.items,
-    ], totals.refuse, request, changed);
+    ], totals.refuse, options), request, changed);
     await flushAuditEvents(this.input, audit.events);
     return changed;
   }

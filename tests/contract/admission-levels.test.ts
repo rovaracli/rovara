@@ -17,6 +17,7 @@ import { abandonKey, finalizeKey, readScopeCounters, registerKey, reserve, settl
 import { budgetScopesFor, mintTagsFor } from "../../packages/broker/src/spend/payer.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MAYA as DEV_MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
+import { seedTaskRunLimit } from "../support/run-history.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess, type FakeModelAccess } from "../support/fake-model-access.js";
@@ -147,7 +148,7 @@ describe("admitWork", () => {
     t.seedCounter({ kind: "member", developerId: MAYA }, { spentUsd: 3, committedUsd: 28.8 });
     const member = await rejection(admitWork(t.deps, memberWork()));
     expect(member).toMatchObject({ code: "BUDGET_EXCEEDED", statusCode: 402 });
-    expect(member.message).toBe("BUDGET_EXCEEDED: Your monthly AI budget is committed to work that is running ($28.80 of $29.00). Try again when it finishes, or ask an admin to raise it.");
+    expect(member.message).toBe("BUDGET_EXCEEDED: Your monthly AI budget is used or held for work that is running ($28.80 of $29.00). Try again when it finishes, or ask an admin to raise it.");
     expect(member.message).not.toContain("$3.00");
     const o = setup();
     o.limitOrg(10);
@@ -801,6 +802,8 @@ async function brokerSetup(options: { agents?: boolean; env?: (h: Awaited<Return
   const h = await createDeveloperTaskBroker({ brokerExtra: { ...(options.agents === false ? {} : { agents: {} }), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   access.setMemberSpent(TEST_ORG, DEV_MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
+  // A task with no workflow starts at the TASK estimate's run limit (Task 34); these tests are written for a task budget of $25.
+  seedTaskRunLimit(h.db);
   const limitProject = (limitUsd: number) => h.db.set({ pk: `ORG#${TEST_ORG}#PROJECT_AI#payments`, sk: "SETTINGS", entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: limitUsd, revision: 1 });
   const projectPays = () => h.db.set({ pk: `ORG#${TEST_ORG}#PROJECT_AI#payments`, sk: "SETTINGS", entityType: "PROJECT_AI", projectPays: true, revision: 1 });
   const seed = (scope: BudgetScope, counts: { spentUsd?: number; committedUsd?: number }) => h.db.set({ ...spendCounterKey(TEST_ORG, NOW_MONTH, scopeKey(scope)), entityType: "SPEND_COUNTER", ...counts });

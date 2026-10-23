@@ -45,6 +45,7 @@ import {
 } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { resolvePayer, type PayerFacts } from "../spend/payer.js";
+import type { RequestRunLimit } from "../spend/estimate.js";
 import { effectiveMaxPerRun, readProjectAiWithRevision } from "../spend/settings.js";
 import type { AgentCaller } from "./access.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
@@ -64,6 +65,11 @@ export type PullRequestHeadReader = (input: { orgId: OrgId; repositoryUrl: strin
 export interface AgentRunDependencies extends RosterDependencies {
   /** Without it, a run whose context names a pull request of a project repository is refused (it fails closed: it never reviews the wrong commit). */
   pullRequestHead?: PullRequestHeadReader;
+  /**
+   * Task 34's seam to Task 32: makes the `run_limit` request when approving a plan needs a higher tier than the approver's. Without it (until Task 32 is
+   * wired) the plan blocks with the same words and no request is made.
+   */
+  requestRunLimit?: RequestRunLimit;
 }
 
 /** H2: a start that is not necessarily a person at a keyboard. */
@@ -293,20 +299,20 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
   };
 }
 
-/** The limits of a run (H2): `stopAtUsd = min(runLimitUsd, maxPerRunUsd ?? Infinity)`, with a request lowering `runLimitUsd` and 0 starting it paused. */
-async function runLimits(deps: AgentRunDependencies, orgId: OrgId, ref: TaskAgentRef, requested: number | undefined): Promise<Pick<PreparedRun, "runLimitUsd" | "stopAtUsd" | "paused" | "maxPerRunUsd">> {
+/**
+ * The limits of a run (H2): the run limit is `base` unless a request lowers it, `stopAtUsd = min(runLimitUsd, maxPerRunUsd ?? Infinity)`, and a run limit
+ * of 0 starts the run paused. `base` is Plan 1's cap on one task here; `startTask` replaces it with the planning limit or the estimate's run limit (Task 34).
+ */
+export function runLimitsOf(base: number, requested: number | undefined, maxPerRunUsd: number | undefined): Pick<PreparedRun, "runLimitUsd" | "stopAtUsd" | "paused"> {
   if (requested !== undefined && (!Number.isFinite(requested) || requested < 0)) throw agentXError("CONFIG_INVALID", "runLimitUsd: must be zero or more");
-  // Task 34 replaces this with estimateRun and the project's planning limits; until then it is Plan 1's cap on one task.
-  const base = PER_TASK_BUDGET_USD;
   const runLimitUsd = requested === undefined ? base : Math.min(base, requested);
+  return { runLimitUsd, stopAtUsd: maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, maxPerRunUsd), paused: runLimitUsd === 0 };
+}
+
+async function runLimits(deps: AgentRunDependencies, orgId: OrgId, ref: TaskAgentRef, requested: number | undefined): Promise<Pick<PreparedRun, "runLimitUsd" | "stopAtUsd" | "paused" | "maxPerRunUsd">> {
   const record = ref.builtin ? await deps.store.getBuiltinSettings(orgId, ref.agentId) : await deps.store.get(orgId, ref.agentId);
   const maxPerRunUsd = record === undefined ? undefined : effectiveMaxPerRun(record, await readGuardrails(deps, orgId));
-  return {
-    runLimitUsd,
-    stopAtUsd: maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, maxPerRunUsd),
-    paused: runLimitUsd === 0,
-    ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }),
-  };
+  return { ...runLimitsOf(PER_TASK_BUDGET_USD, requested, maxPerRunUsd), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }) };
 }
 
 // ---- a pull request in the run's context (PF16)
