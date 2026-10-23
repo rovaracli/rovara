@@ -275,6 +275,46 @@ describe("the branch a finished step takes", () => {
   });
 });
 
+describe("what a pick leaves in the step's result", () => {
+  it("is not kept when it is not a branch id, and the default is taken", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const run = await startAs(w, chain.chainId);
+    await endLatest(w, { branch: "Not A Branch!" });
+    expect(w.attempts(run.runId)[0]!.result).toEqual({ report: "r" });
+    expect(w.attempts(run.runId)[0]).toMatchObject({ branch: { id: "no_fix", fellBack: true } });
+  });
+
+  it("is never kept for a coding step, which cannot choose, and the step after it still starts", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const run = await startAs(w, chain.chainId);
+    const { recordGateDecision } = await runner();
+    await endLatest(w, { branch: "fix" });
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved");
+    expect(w.starts[1]!.agent.agentId).toBe("rovara-code");
+    expect(w.starts[1]).not.toHaveProperty("resultContract");
+    await endLatest(w, { outcome: "merged", branch: "fix" });
+    expect(w.attempts(run.runId)[2]!.result).not.toHaveProperty("branch");
+    expect(w.attempts(run.runId)[2]).not.toHaveProperty("branch");
+    expect(w.starts).toHaveLength(3);
+  });
+
+  it("takes an end edge to a finished run, and a step with next end finishes it", async () => {
+    const w = setupWorld();
+    const chain = await w.publish({
+      start: "a", limits: { maxRunUsd: 30 },
+      steps: [agentStep("a", "First", "root-cause-analyst", { kind: "go", to: "b" }), agentStep("b", "Second", "code-reviewer", { kind: "end" })],
+    });
+    const run = await startAs(w, chain.chainId);
+    await endLatest(w, {});
+    await endLatest(w, {});
+    expect(w.run(run.runId)).toMatchObject({ status: "succeeded", currentSeq: 2, traversals: { "a>b": 1, "b>$end": 1 } });
+    expect(w.starts).toHaveLength(2);
+    expect((await w.chainOf(chain.chainId)).openRuns).toBe(0);
+  });
+});
+
 // ---- loops
 
 describe("a loop stops at the bound of its edge", () => {
@@ -419,6 +459,16 @@ describe("CHAIN_MAX_STEP_RUNS caps a run whatever its loops allow", () => {
     const taken = w.run(run.runId)!.traversals;
     for (const edge of ["b>a", "c>b", "c>a"]) expect(taken[edge] ?? 0).toBeLessThanOrEqual(5);
     expect((await w.chainOf(chain.chainId)).openRuns).toBe(0);
+  });
+
+  it("does not count a gate as a step run: at the cap, a branch to a gate still opens it", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const run = await startAs(w, chain.chainId);
+    w.db.set({ ...w.db.get(chainRunKey(ORG_A, run.runId, "META"))!, stepRuns: CHAIN_MAX_STEP_RUNS });
+    await endLatest(w, { branch: "fix" });
+    expect(w.run(run.runId)).toMatchObject({ status: "waiting", currentSeq: 2, stepRuns: CHAIN_MAX_STEP_RUNS });
+    expect(w.attempts(run.runId)[1]).toMatchObject({ kind: "gate", status: "waiting" });
   });
 
   it("records the branch the last allowed step chose, though the step it names was not started", async () => {
