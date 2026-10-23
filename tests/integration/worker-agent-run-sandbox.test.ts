@@ -213,7 +213,7 @@ describe("an agent step in the task sandbox", () => {
     expect(model).not.toHaveBeenCalled();
   });
 
-  it("does not start the project's devcontainer for workspace none, and does for read", async () => {
+  it("does not start the project's devcontainer for any agent step: workspace none or read (runs I-2)", async () => {
     // A project with a devcontainer: the manifest names one. Starting it would call the devcontainer CLI, which fails here.
     const withDevcontainer = async (root: string) => {
       const file = join(root, ".agentx/preparation-manifest.json");
@@ -225,6 +225,9 @@ describe("an agent step in the task sandbox", () => {
     const none = await runStep([fauxAssistantMessage("No files needed.")], agentStep({ workspace: "none" }), fakeDocker({}), { devcontainerCli }, withDevcontainer);
     expect(none.result.agentStepResult?.report).toBe("No files needed.");
     expect(attempts).not.toHaveBeenCalled();
-    await expect(runStep([fauxAssistantMessage("never")], agentStep({ workspace: "read" }), fakeDocker({}), { devcontainerCli }, withDevcontainer)).rejects.toThrow();
+    // A read step runs in the task sandbox too: a pull request's devcontainer lifecycle commands are the contributor's.
+    const read = await runStep([fauxAssistantMessage("Read what the sandbox shows.")], agentStep({ workspace: "read" }), fakeDocker({}), { devcontainerCli }, withDevcontainer);
+    expect(read.result.agentStepResult?.report).toBe("Read what the sandbox shows.");
+    expect(attempts).not.toHaveBeenCalled();
   });
 });
