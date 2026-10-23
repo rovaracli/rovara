@@ -349,6 +349,11 @@ export const DeveloperTaskViewSchema = z.object({
   testOffer: z.object({ capUsd: z.number().nonnegative() }).strict().optional(),
   /** Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit approving it accepts. */
   runEstimate: RunEstimateSchema.optional(),
+  /**
+   * Plan 3, Task 35b: a plan blocked on its run limit: the limit it waits for, the request that asks for it while one is open, and whether its owner may ask
+   * again (`POST /v1/app/tasks/{id}/run-limit-request`, once the last request was denied or ran out). Absent unless the plan is blocked on its run limit.
+   */
+  runLimit: z.object({ limitUsd: z.number().nonnegative(), spendRequestId: SpendRequestIdSchema.optional(), canAskAgain: z.boolean() }).strict().optional(),
 });
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
 

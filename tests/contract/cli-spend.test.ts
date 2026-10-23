@@ -265,7 +265,7 @@ describe("agentx task continue-as-task and ask-run-limit", () => {
   });
 
   it("ask-run-limit asks again for the run limit of a plan whose request was denied or ran out, and prints the new request", async () => {
-    const answer = { spendRequestId: SPR, created: true, task: { taskId: TASK, status: "BLOCKED", project: "payments" } };
+    const answer = { spendRequestId: SPR, created: true };
     const h = await agentsCli({ [`POST /v1/app/tasks/${TASK}/run-limit-request`]: Response.json(answer, { status: 201 }) });
     expect(await h.run(["task", "ask-run-limit", TASK])).toBe(0);
     expect(h.calls).toEqual([{ method: "POST", path: `/v1/app/tasks/${TASK}/run-limit-request`, query: "", body: { requestId: expect.stringMatching(UUID) as string } }]);
@@ -275,7 +275,7 @@ describe("agentx task continue-as-task and ask-run-limit", () => {
   });
 
   it("ask-run-limit says when the request it found was already open, and prints a refusal as written", async () => {
-    const open = { spendRequestId: SPR, created: false, task: { taskId: TASK, status: "BLOCKED", project: "payments" } };
+    const open = { spendRequestId: SPR, created: false };
     const h = await agentsCli({ [`POST /v1/app/tasks/${TASK}/run-limit-request`]: Response.json(open) });
     expect(await h.run(["task", "ask-run-limit", TASK])).toBe(0);
     expect(h.stdout()).toContain("already");

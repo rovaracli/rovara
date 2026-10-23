@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
   AgentIdSchema, AgentXError, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, orgMemberKey, orgRemovedKey, RUN_LIMIT_BLOCK_PREFIX,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, orgMemberKey, orgRemovedKey, RUN_LIMIT_BLOCK_PREFIX, planRunLimitSubject,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
@@ -18,7 +18,7 @@ import { roleOnProject } from "../agents/roster.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { budgetOwnerOf, ownerVersionItem } from "./owner-total.js";
 import { readGuardrails } from "../agents/guardrails.js";
-import type { RequestRunLimit } from "./estimate.js";
+import { askedRunLimit, type RequestRunLimit, type RunLimitRequest } from "./estimate.js";
 import { checkTime, registerMemberMover, registerOwnerCapConfirmation, type LifecycleDeps } from "../agents/lifecycle.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { failedIndexes, readRequest, requestMarkItem, type RequestMark, type TransactItem } from "../agents/table-writes.js";
@@ -551,14 +551,72 @@ export function runLimitRequester(deps: SpendRequestDependencies): RequestRunLim
   return async (request) => {
     const task = await readTask(deps, request.orgId, request.taskId);
     if (task === undefined) return undefined;
-    const { record } = await createSpendRequest(deps, {
-      orgId: request.orgId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, amountUsd: request.amountUsd, newLimitUsd: request.newLimitUsd,
-      reason: request.reason, requestedBy: request.requestedBy, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId }, resume: "implement",
-      // Its own slot: an open `run_limit` request that resumes nothing (the follow-up after a max-per-run raise) must not answer for the plan, since approving it would not start coding.
-      subject: `TASK#${task.taskId}#IMPLEMENT`,
-    });
+    const { record } = await createRunLimitRequest(deps, task, request);
     return { spendRequestId: record.spendRequestId };
   };
+}
+
+/** The `run_limit` request that resumes a blocked plan's coding, for the task's starter, in its own slot (so an open request that resumes nothing cannot answer for it). */
+function createRunLimitRequest(
+  deps: SpendRequestDependencies, task: DeveloperTaskRecord, request: Pick<RunLimitRequest, "orgId" | "amountUsd" | "newLimitUsd" | "reason" | "requestedBy">, mark?: RequestMark,
+) {
+  return createSpendRequest(deps, {
+    orgId: request.orgId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, amountUsd: request.amountUsd, newLimitUsd: request.newLimitUsd,
+    reason: request.reason, requestedBy: request.requestedBy, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId }, resume: "implement",
+    // Its own slot: an open `run_limit` request that resumes nothing (the follow-up after a max-per-run raise) must not answer for the plan, since approving it would not start coding.
+    subject: planRunLimitSubject(task.taskId),
+    ...(mark === undefined ? {} : { request: mark, requestResult: (record: SpendRequestRecord) => ({ spendRequestId: record.spendRequestId, created: true }) }),
+  });
+}
+
+const AskRunLimitSchema = z.object({ requestId: z.string().uuid() }).strict();
+const planBlockedOnRunLimit = (task: DeveloperTaskRecord): boolean =>
+  task.closedAt === undefined && task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED" && task.workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+
+/**
+ * `POST /v1/app/tasks/{id}/run-limit-request` [the task's owner]: `{ requestId }`. A plan blocked on its run limit has one way on, the approval of a `run_limit`
+ * request; once the last one was denied or ran out, the owner asks again here, for the same plan and limit, routed as the first was. It only asks (R66): coding
+ * starts when a person approves the new request on its page. While a request is open it answers that one (`created: false`); one whose time has run out but that
+ * the sweep has not ended yet is ended as EXPIRED first. R18: a repeat of the request ID answers what it first did. Anyone but the task's owner gets the
+ * answer a task they can't see gets.
+ */
+async function askRunLimitAgain(deps: SpendRequestDependencies, caller: AgentCaller, taskId: string, value: unknown): Promise<StatusReply> {
+  const parsed = AskRunLimitSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "is not valid"}`);
+  }
+  const task = await readTask(deps, caller.orgId, taskId);
+  const me = await resolveSurvivor(deps, caller.orgId, caller.developerId);
+  if (task === undefined || await resolveSurvivor(deps, caller.orgId, task.developerId) !== me) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
+  const mark: RequestMark = {
+    orgId: caller.orgId, developerId: caller.developerId, requestId: parsed.data.requestId,
+    fingerprint: createHash("sha256").update(JSON.stringify(["ask-run-limit", taskId])).digest("hex"),
+  };
+  const earlier = await readRequest(deps, caller.orgId, caller.developerId, parsed.data.requestId);
+  if (earlier !== undefined) {
+    if (earlier.fingerprint !== mark.fingerprint) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
+    return new StatusReply((earlier.result as { created?: boolean }).created === true ? 201 : 200, earlier.result as object);
+  }
+  if (!planBlockedOnRunLimit(task)) throw agentXError("CONFIG_INVALID", "this task is not waiting for a run limit");
+  let open = await openRequestFor(deps, caller.orgId, planRunLimitSubject(taskId), "run_limit");
+  if (open !== undefined && Date.parse(open.expiresAt) <= deps.now()) {
+    await expireOne(deps, open);
+    open = await openRequestFor(deps, caller.orgId, planRunLimitSubject(taskId), "run_limit");
+  }
+  if (open !== undefined) {
+    const answer = { spendRequestId: open.spendRequestId, created: false };
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [requestMarkItem(deps, mark, answer)] })).catch((error: unknown) => {
+      if (failedIndexes(error)?.has(0) !== true) throw error;
+    });
+    return new StatusReply(200, answer);
+  }
+  const { runLimitUsd, needs } = await askedRunLimit(deps, task);
+  const made = await createRunLimitRequest(deps, task, {
+    orgId: caller.orgId, newLimitUsd: runLimitUsd, amountUsd: Math.max(0, cleanUsd(runLimitUsd - (task.budgetUsd ?? 0))), requestedBy: { kind: "member", developerId: me },
+    reason: `Asked again: this plan's run limit is $${String(runLimitUsd)}, which needs ${needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.`,
+  }, mark);
+  return new StatusReply(made.created ? 201 : 200, { spendRequestId: made.record.spendRequestId, created: made.created });
 }
 
 /** A task event, written once per key: a pause message, an approval's note. */
@@ -1796,8 +1854,9 @@ async function askForMonth(deps: SpendRequestDependencies, caller: AgentCaller, 
 
 const SPEND_REQUESTS_PATH = /^\/v1\/app\/spend-requests(?:\/([^/]+)(?:\/(decide|confirm-link))?)?$/;
 const CONTINUE_AS_TASK_PATH = /^\/v1\/app\/tasks\/([^/]+)\/continue-as-task$/;
+const RUN_LIMIT_REQUEST_PATH = /^\/v1\/app\/tasks\/([^/]+)\/run-limit-request$/;
 
-export const isSpendRequestRoute = (pathname: string): boolean => SPEND_REQUESTS_PATH.test(pathname) || CONTINUE_AS_TASK_PATH.test(pathname);
+export const isSpendRequestRoute = (pathname: string): boolean => SPEND_REQUESTS_PATH.test(pathname) || CONTINUE_AS_TASK_PATH.test(pathname) || RUN_LIMIT_REQUEST_PATH.test(pathname);
 
 function jsonBody(request: Pick<AdaptedHttpRequest, "body">): unknown {
   if (request.body === undefined || request.body === "") return {};
@@ -1824,6 +1883,7 @@ async function maySee(deps: SpendRequestDependencies, caller: AgentCaller, recor
  *   POST /v1/app/spend-requests/{id}/decide        through `requireDecide` only (R66): a token gets REAUTH_REQUIRED with the page's link
  *   POST /v1/app/spend-requests/{id}/confirm-link  the ticketed link for a person who may decide it now
  *   POST /v1/app/tasks/{id}/continue-as-task       [the task's owner] a test run that reached its cap goes on as a normal task
+ *   POST /v1/app/tasks/{id}/run-limit-request      [the task's owner] ask again for a blocked plan's run limit, once the last request was denied or ran out
  */
 export async function routeSpendRequests(deps: SpendRequestDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   const continued = CONTINUE_AS_TASK_PATH.exec(url.pathname);
@@ -1831,6 +1891,11 @@ export async function routeSpendRequests(deps: SpendRequestDependencies, caller:
     if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
     if (deps.spendRequests?.continueAsTask === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
     return deps.spendRequests.continueAsTask(caller, decodeURIComponent(continued[1]!), jsonBody(request));
+  }
+  const asked = RUN_LIMIT_REQUEST_PATH.exec(url.pathname);
+  if (asked !== null) {
+    if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
+    return askRunLimitAgain(deps, caller, decodeURIComponent(asked[1]!), jsonBody(request));
   }
   const matched = SPEND_REQUESTS_PATH.exec(url.pathname);
   if (matched === null) throw agentXError("NOT_FOUND", "route not found");

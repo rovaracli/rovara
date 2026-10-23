@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import { escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { runCostKey, spendRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { SPEND_REQUEST_TTL_DAYS } from "../../packages/contracts/src/spend.js";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { BEN, CARL, PREPARED, setup, type World } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -62,7 +61,6 @@ describe("asking again for a run limit that was denied", () => {
     expect(open[0]!.approverIds).toContain(BEN.developerId);
     expect(requestsOfTask().find((record) => record.spendRequestId === first.spendRequestId)).toMatchObject({ status: "DENIED" });
     expect(answer.body).toMatchObject({ spendRequestId: open[0]!.spendRequestId, created: true });
-    expect(DeveloperTaskViewSchema.safeParse(answer.body.task).success).toBe(true);
     // Asking decided nothing: still blocked, no coding, the run limit not raised.
     expect(implementations()).toEqual([]);
     expect(w.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });

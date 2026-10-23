@@ -49,6 +49,12 @@ export const RUN_LIMIT_BLOCK_PREFIX = "This plan's run limit is $";
 export const runLimitBlockText = (runLimitUsd: number, needs: "maintainer" | "admin", asked = true): string =>
   `${RUN_LIMIT_BLOCK_PREFIX}${String(runLimitUsd)}, which needs ${needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.${asked ? " I've asked for it." : ""}`;
 
+/**
+ * The subject a plan's `run_limit` request (the one that resumes coding) keeps its one-open-request slot under: apart from the task's other `run_limit`
+ * request, which resumes nothing. The broker makes it, and the task view looks for the open one by it.
+ */
+export const planRunLimitSubject = (taskId: string): string => `TASK#${taskId}#IMPLEMENT`;
+
 /** The limit on a workflow task's planning phase, before a plan is approved. */
 export const DEFAULT_PLANNING_LIMIT_USD = { QUICK: 2, FULL: 6 } as const;
 
