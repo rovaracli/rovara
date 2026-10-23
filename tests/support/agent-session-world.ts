@@ -35,7 +35,6 @@ export const T0 = Date.parse("2026-10-22T09:00:00.000Z");
 export const CELL = "https://cell.example.com";
 
 export type SessionKind = AgentSessionRecord["kind"];
-type Item = Record<string, unknown>;
 
 export function sessionWorld() {
   const db = new FakeDynamoDb();
