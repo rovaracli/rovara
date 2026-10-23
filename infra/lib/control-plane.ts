@@ -76,6 +76,11 @@ export interface ControlPlaneStackProps extends StackProps {
    * environment; a legacy install keeps its recorded template). Only a test turns it off, to compare the permissions before and after.
    */
   mergeBrokerStatements?: boolean;
+  /**
+   * Whether the audit ledger's functions reserve Lambda concurrency (default true; the agentxReservedConcurrency context).
+   * Off only for an account whose concurrency limit is too low to reserve any.
+   */
+  reservedConcurrency?: boolean;
 }
 
 /**
@@ -1132,6 +1137,7 @@ export class ControlPlaneStack extends Stack {
         stateTable: state,
         notifyOperator,
         appenderRole: auditAppenderRole,
+        ...(props?.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
         ...(signInFunction === undefined ? {} : { signInFunction }),
         ...(props?.deploymentRegion === undefined ? {} : { deploymentRegion: props.deploymentRegion }),
       });

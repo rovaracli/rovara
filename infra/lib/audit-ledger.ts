@@ -216,6 +216,11 @@ export interface AuditLedgerProps {
   readonly appenderRole: iam.IRole;
   /** The region the environment installs in; it is part of the ledger bucket's name, which S3 caps at 63 characters. */
   readonly deploymentRegion?: string;
+  /**
+   * Whether the export and anchor functions reserve concurrency (default true). False sets no reservation, for an account whose
+   * Lambda concurrency limit is Lambda's minimum, where any reservation fails the deploy; production keeps it on.
+   */
+  readonly reservedConcurrency?: boolean;
 }
 
 export class AuditLedger extends Construct {
@@ -736,7 +741,7 @@ export class AuditLedger extends Construct {
       handler: "handler",
       timeout: Duration.seconds(AUDIT_EXPORT_TIMEOUT_SECONDS),
       memorySize: 1024,
-      reservedConcurrentExecutions: 5,
+      ...(props.reservedConcurrency === false ? {} : { reservedConcurrentExecutions: 5 }),
       role,
       logGroup,
       environment: {
@@ -878,7 +883,7 @@ export class AuditLedger extends Construct {
       handler: "handler",
       timeout: Duration.seconds(300),
       memorySize: 512,
-      reservedConcurrentExecutions: 1,
+      ...(props.reservedConcurrency === false ? {} : { reservedConcurrentExecutions: 1 }),
       role,
       logGroup,
       environment: {
