@@ -44,7 +44,7 @@ const ON_OFF = { on: true, off: false } as const;
 
 export async function projectAiSet(
   deps: DeveloperSessionDeps, env: string | undefined, project: string,
-  input: { budget?: string; projectPays?: string; planningQuick?: string; planningFull?: string },
+  input: { budget?: string; projectPays?: string; planningQuick?: string; planningFull?: string; memberAcceptRunLimit?: string },
 ): Promise<AppResult> {
   const monthlyBudgetUsd = parseUsdOrNone(input.budget, "--budget");
   if (input.projectPays !== undefined && !(input.projectPays in ON_OFF)) throw agentXError("CONFIG_INVALID", "--project-pays takes on or off");
@@ -53,8 +53,10 @@ export async function projectAiSet(
   const quick = parseUsdOrNone(input.planningQuick, "--planning-quick");
   const full = parseUsdOrNone(input.planningFull, "--planning-full");
   const planningLimitUsd = quick === undefined && full === undefined ? undefined : { ...(quick === undefined ? {} : { QUICK: quick }), ...(full === undefined ? {} : { FULL: full }) };
-  if (monthlyBudgetUsd === undefined && projectPays === undefined && planningLimitUsd === undefined) {
-    throw agentXError("CONFIG_INVALID", "give at least one of --budget, --project-pays, --planning-quick and --planning-full");
+  // What a member may accept as a run limit when the project pays (none puts the default back).
+  const memberAcceptRunLimitUpToUsd = parseUsdOrNone(input.memberAcceptRunLimit, "--member-accept-run-limit");
+  if (monthlyBudgetUsd === undefined && projectPays === undefined && planningLimitUsd === undefined && memberAcceptRunLimitUpToUsd === undefined) {
+    throw agentXError("CONFIG_INVALID", "give at least one of --budget, --project-pays, --planning-quick, --planning-full and --member-accept-run-limit");
   }
   const answer = await appRequest(deps, env, `/v1/app/projects/${seg(project)}/ai`, {
     method: "PUT",
@@ -63,6 +65,7 @@ export async function projectAiSet(
       ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }),
       ...(projectPays === undefined ? {} : { projectPays }),
       ...(planningLimitUsd === undefined ? {} : { planningLimitUsd }),
+      ...(memberAcceptRunLimitUpToUsd === undefined ? {} : { memberAcceptRunLimitUpToUsd }),
     },
   });
   const settings = (answer.body.settings ?? {}) as Body;
@@ -72,6 +75,7 @@ export async function projectAiSet(
     `  monthly budget: ${money(settings.monthlyBudgetUsd, "none")}`,
     `  the project pays for its runs: ${settings.projectPays === true ? "yes" : "no"}`,
     `  planning limits: quick ${money(effective.QUICK, "default")}, full ${money(effective.FULL, "default")}`,
+    `  a member accepts a run limit up to ${money(((answer.body.effective as Body | undefined)?.memberAcceptRunLimitUpToUsd), "$10")} when the project pays`,
     "",
   ].join("\n");
   return { env: answer.env, url: answer.url, data: jsonSafe(answer.body) as Body, text };

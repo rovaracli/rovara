@@ -7,14 +7,14 @@
 // `MAX_RUN_LIMIT_USD`. Plan 6 Task 7 builds on `estimateRun` and `RunEstimate`: keep both stable.
 import { QueryCommand, TransactWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, MAX_RUN_LIMIT_USD, ROVARA_CODE_AGENT_ID, agentRunsKey, runCostKey, runLimitBlockText,
+  DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, MAX_RUN_LIMIT_USD, ROVARA_CODE_AGENT_ID, agentRunsKey, runCostKey, runLimitBlockText, runLimitWaitingText, DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD,
   type AgentId, type OrgId, type OrgRole, type ProjectRole, type RunEstimate,
 } from "@agentx/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { taskKey } from "../developer/task-records.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { taskSpendBaseline } from "../org/budget.js";
-import { readSpendPolicy, type SpendSettingsDependencies } from "./settings.js";
+import { readProjectAi, readSpendPolicy, type SpendSettingsDependencies } from "./settings.js";
 import { cleanUsd } from "./top-ups.js";
 
 /** The kinds of run an estimate is kept for: a workflow task by its path, a task with no workflow, and an agent-step run. */
@@ -145,7 +145,7 @@ export interface RunLimitRequest {
   /** At most 300 characters. */
   reason: string;
   requestedBy: { kind: "member"; developerId: string };
-  approverRole: "project_maintainer" | "org_admin";
+  approverRole: "project_maintainer" | "org_admin" | "agent_owner";
 }
 
 /**
@@ -156,7 +156,7 @@ export type RequestRunLimit = (request: RunLimitRequest) => Promise<{ spendReque
 
 export type RunLimitDecision =
   | { accepted: true; runLimitUsd: number }
-  | { accepted: false; runLimitUsd: number; needs: "maintainer" | "admin"; approverRole: RunLimitRequest["approverRole"]; message: string };
+  | { accepted: false; runLimitUsd: number; needs: "maintainer" | "admin" | "agent_owner"; approverRole: RunLimitRequest["approverRole"]; message: string };
 
 export interface AcceptRunLimitDependencies extends EstimateDependencies {
   /** Where the approver's project role is read from. Without it, or when it fails, the approver is a member. */
@@ -217,11 +217,23 @@ export async function acceptRunLimit(
   if (task.orgId === undefined) throw new Error("a task with no org has no run limit to accept");
   const orgId = task.orgId;
   const runLimitUsd = await planRunLimit(deps, task);
+  const payer = task.payer;
+  // Owner decision 3 (option E), an agent's owner pays: a run limit within the agent's max per run is accepted by whoever approves the plan; above it nobody accepts it
+  // here, not even an org admin, and the request goes to the agent's owner (who may not decide a request they asked for themselves: Task 32's rule). An agent with no
+  // max per run has no allowance to measure by, and keeps the tiers.
+  if (payer?.kind === "agent" && task.maxPerRunUsd !== undefined) {
+    if (runLimitUsd <= task.maxPerRunUsd) return { accepted: true, runLimitUsd };
+    return { accepted: false, runLimitUsd, needs: "agent_owner", approverRole: "agent_owner", message: runLimitWaitingText(runLimitUsd, "agent_owner") };
+  }
   const [policy, tier] = await Promise.all([readSpendPolicy(deps, orgId), tierOf(deps, task, approver)]);
-  const may = tier === "admin" || (tier === "maintainer" ? runLimitUsd <= policy.adminApprovalThresholdUsd : runLimitUsd <= policy.leadApprovalThresholdUsd);
+  // The project pays: the member who approves accepts up to what the project allows (read now), not the lead threshold; a maintainer and an admin keep theirs.
+  const projectPays = payer?.kind === "project";
+  const memberLimitUsd = projectPays ? (await readProjectAi(deps, orgId, payer.project)).memberAcceptRunLimitUpToUsd ?? DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD : policy.leadApprovalThresholdUsd;
+  const may = tier === "admin" || (tier === "maintainer" ? runLimitUsd <= policy.adminApprovalThresholdUsd : runLimitUsd <= memberLimitUsd);
   if (may) return { accepted: true, runLimitUsd };
   const needs = needsOf(runLimitUsd, policy);
-  return { accepted: false, runLimitUsd, needs, approverRole: needs === "admin" ? "org_admin" : "project_maintainer", message: runLimitBlockText(runLimitUsd, needs) };
+  const message = projectPays && needs === "maintainer" ? runLimitWaitingText(runLimitUsd, "project_maintainer") : runLimitBlockText(runLimitUsd, needs);
+  return { accepted: false, runLimitUsd, needs, approverRole: needs === "admin" ? "org_admin" : "project_maintainer", message };
 }
 
 // ---- the cost of a finished run

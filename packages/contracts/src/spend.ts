@@ -43,6 +43,16 @@ export type RunEstimate = z.infer<typeof RunEstimateSchema>;
 /** How the words a workflow blocks with begin when approving its plan needs a higher tier to accept the run limit (Task 34). */
 export const RUN_LIMIT_BLOCK_PREFIX = "This plan's run limit is $";
 /**
+ * Owner decision 3 (option E): when the project or an agent's owner pays, the plan waits for the person who may accept the run limit, in these words. The block
+ * is still a run-limit block (`isRunLimitBlockReason`), which only that person's approval of the request lifts.
+ */
+export const RUN_LIMIT_WAITING_PREFIXES = ["Waiting for a project maintainer to accept the $", "Waiting for the agent's owner to accept the $"] as const;
+export const runLimitWaitingText = (runLimitUsd: number, waitingFor: "project_maintainer" | "agent_owner"): string =>
+  `${RUN_LIMIT_WAITING_PREFIXES[waitingFor === "project_maintainer" ? 0 : 1]}${String(runLimitUsd)} run limit.`;
+/** Whether a workflow's block reason is the wait for a run limit's acceptance, in either set of words. */
+export const isRunLimitBlockReason = (reason: string | undefined): boolean =>
+  reason !== undefined && (reason.startsWith(RUN_LIMIT_BLOCK_PREFIX) || RUN_LIMIT_WAITING_PREFIXES.some((prefix) => reason.startsWith(prefix)));
+/**
  * The words the workflow blocks with when the approver may not accept the run limit: who has to approve and, only when a request was actually made, that it
  * has been asked for.
  */
@@ -187,7 +197,14 @@ export const ProjectAiSettingsSchema = z.object({
     if (new Set(order).size !== order.length) context.addIssue({ code: "custom", message: "must not repeat a source" });
   }).optional(),
   planningLimitUsd: z.object({ QUICK: PlanningLimit.optional(), FULL: PlanningLimit.optional() }).strict().optional(),
+  /**
+   * Owner decision 3 (option E): when the project pays, the most a run limit may be for the member who approves the plan to accept it themselves. Above it a
+   * `run_limit` request goes to the project's maintainers. Absent: `DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD`. A project maintainer, an org owner or an admin sets it.
+   */
+  memberAcceptRunLimitUpToUsd: z.number().finite().min(0).max(1000).optional(),
 }).strict();
+/** What a member may accept as a run limit when the project pays and the project set nothing: the lead threshold's default, so a project that never set it behaves as before. */
+export const DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD = 10;
 export type ProjectAiSettings = z.infer<typeof ProjectAiSettingsSchema>;
 
 /** A project that has never set any of its AI settings. */

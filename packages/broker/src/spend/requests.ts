@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
   AgentIdSchema, AgentXError, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, RUN_LIMIT_BLOCK_PREFIX, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, ROVARA_CODE_AGENT_ID, spendCounterKey,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, ROVARA_CODE_AGENT_ID, spendCounterKey,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
@@ -339,7 +339,10 @@ export async function spendApprovers(deps: SpendRequestDependencies, request: Sp
     const policy = await readSpendPolicy(deps, orgId);
     const limit = newLimitFor(request, amountUsd);
     const project = task.place?.project ?? task.project;
-    if (limit <= policy.leadApprovalThresholdUsd) found = await payerOf(deps, orgId, task);
+    // Owner decision 3 (option E): an agent that pays has its owner decide a run limit of any size (its max per run and the company's ceiling bound what it can
+    // spend); when the owner has left, its managers (the owning project's maintainers) and then the org's admins.
+    if (task.payer?.kind === "agent") found = await agentOwners(deps, orgId, task.payer.agentId);
+    else if (limit <= policy.leadApprovalThresholdUsd) found = await payerOf(deps, orgId, task);
     else if (limit <= policy.adminApprovalThresholdUsd) found = await maintainersOrAdmins(deps, orgId, project, "project_maintainer");
     else found = await admins(deps, orgId);
   } else if (request.kind === "max_per_run") {
@@ -418,7 +421,9 @@ async function mayDecideNow(deps: SpendRequestDependencies, caller: Pick<AgentCa
     if (record.kind === "owner_cap") return answer(survivors.every((id) => id === me));
     if (record.kind === "month") return answer(await starterMayDecide(deps, record, me));
     const payer = await taskPayerId(deps, record);
-    return answer(payer !== undefined && await resolveSurvivor(deps, caller.orgId, payer) === me);
+    // Task 32's rule on every path: the one who asked decides only as the payer, or as the org's only owner or admin (nobody else could decide it).
+    const admins = await orgAdmins(deps, caller.orgId);
+    return answer((payer !== undefined && await resolveSurvivor(deps, caller.orgId, payer) === me) || (admins.length === 1 && admins[0] === me));
   }
   if (await starterOf(deps, record) === me && !await starterMayDecide(deps, record, me)) return answer(false);
   return answer(true);
@@ -573,7 +578,7 @@ function createRunLimitRequest(
 
 const AskRunLimitSchema = z.object({ requestId: z.string().uuid() }).strict();
 const planBlockedOnRunLimit = (task: DeveloperTaskRecord): boolean =>
-  task.closedAt === undefined && task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED" && task.workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+  task.closedAt === undefined && task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED" && isRunLimitBlockReason(task.workflow.blockReason);
 
 /**
  * `POST /v1/app/tasks/{id}/run-limit-request` [the task's owner]: `{ requestId }`. A plan blocked on its run limit has one way on, the approval of a `run_limit`
@@ -1115,7 +1120,7 @@ async function taskChange(deps: SpendRequestDependencies, record: SpendRequestRe
   // A plan's run limit request (`resume: "implement"`) applies only while the plan is still blocked on that limit, and only to the workflow as it was read:
   // once the plan moved on (another decision accepted a limit, coding runs), approving it rewrites nothing.
   const forPlan = record.kind === "run_limit" && record.resume === "implement";
-  const planBlocked = task.workflow !== undefined && task.workflow.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED" && task.workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+  const planBlocked = task.workflow !== undefined && task.workflow.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED" && isRunLimitBlockReason(task.workflow.blockReason);
   if (forPlan && planBlocked) {
     names["#workflow"] = "workflow";
     names["#wrevision"] = "revision";

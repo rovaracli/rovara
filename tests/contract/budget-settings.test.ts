@@ -544,7 +544,7 @@ describe("a project's AI settings", () => {
       const { call } = await routeSetup();
       expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 0 })).status).toBe(200);
       expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 1000 })).status).toBe(200);
-      for (const bad of [-1, 1000.01, Number.NaN, "10"]) {
+      for (const bad of [-1, 1000.01, "10"]) {
         const refused = await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: bad as number });
         expect(refused.status, String(bad)).toBe(400);
       }

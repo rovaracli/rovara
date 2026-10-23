@@ -10,6 +10,7 @@ import {
   AgentOwnerSchema,
   AgentXNameSchema,
   BUILTIN_AGENTS,
+  DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD,
   ModelSourceIdSchema,
   RecipeOverlaySchema,
   RunInputSchema,
@@ -173,6 +174,7 @@ const ProjectAiBodySchema = z.object({
   projectPays: z.boolean().optional(),
   sourceOrder: z.array(ModelSourceIdSchema).nullable().optional(),
   planningLimitUsd: z.object({ QUICK: Amount.nullable().optional(), FULL: Amount.nullable().optional() }).strict().optional(),
+  memberAcceptRunLimitUpToUsd: Amount.nullable().optional(),
 }).strict();
 const BudgetBodySchema = z.object({ requestId: RequestIdSchema, monthlyUsd: Amount.nullable().optional(), maxPerRunUsd: Amount.nullable().optional() }).strict();
 const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
@@ -756,7 +758,10 @@ async function projectAiView(deps: AgentRouteDependencies, orgId: OrgId, stored:
   return {
     settings: stored.settings,
     revision: stored.revision,
-    effective: { sourceOrder: projectSourceOrder(stored.settings, orgOrder), planningLimitUsd: { QUICK: planningLimit(stored.settings, "QUICK"), FULL: planningLimit(stored.settings, "FULL") } },
+    effective: {
+      sourceOrder: projectSourceOrder(stored.settings, orgOrder), planningLimitUsd: { QUICK: planningLimit(stored.settings, "QUICK"), FULL: planningLimit(stored.settings, "FULL") },
+      memberAcceptRunLimitUpToUsd: stored.settings.memberAcceptRunLimitUpToUsd ?? DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD,
+    },
   };
 }
 
@@ -766,11 +771,15 @@ async function getProjectAi(deps: AgentRouteDependencies, caller: AgentCaller, p
 }
 
 async function putProjectAiSettings(deps: AgentRouteDependencies, caller: AgentCaller, project: string, body: unknown): Promise<Shown> {
-  if (!isOrgAdmin(caller)) throw agentXError("FORBIDDEN", "Only an org owner or admin can change a project's AI settings.");
+  const admin = isOrgAdmin(caller);
   const input = parseBody(ProjectAiBodySchema, body);
   const { requestId: _requestId, ...change } = input; // eslint-disable-line @typescript-eslint/no-unused-vars -- the id is the request's, not a setting
-  if (Object.keys(change).length === 0) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyBudgetUsd, projectPays, sourceOrder and planningLimitUsd");
-  await roleOnProject(deps, caller, project);
+  if (Object.keys(change).length === 0) throw agentXError("CONFIG_INVALID", "body: name at least one of monthlyBudgetUsd, projectPays, sourceOrder, planningLimitUsd and memberAcceptRunLimitUpToUsd");
+  // Owner decision 3: a project maintainer may change what a member can accept as a run limit, and nothing else of the project's AI settings.
+  const acceptOnly = Object.keys(change).every((field) => field === "memberAcceptRunLimitUpToUsd");
+  if (!admin && !acceptOnly) throw agentXError("FORBIDDEN", "Only an org owner or admin can change a project's AI settings.");
+  const role = await roleOnProject(deps, caller, project);
+  if (!admin && role !== "maintainer") throw agentXError("FORBIDDEN", "Only a project maintainer, or an org owner or admin, can change what a member may accept as a run limit.");
   const { mark, replay } = await markRequest(deps, caller, "project-ai", project, input);
   if (replay !== undefined) return projectAiView(deps, caller.orgId, replay.result as { settings: ProjectAiSettings; revision: number });
   const current = await readProjectAiWithRevision(deps, caller.orgId, project);

@@ -161,6 +161,7 @@ import {
   ROVARA_CODE_AGENT_ID,
   RUN_LIMIT_ASK_COOLDOWN_MS,
   RUN_LIMIT_BLOCK_PREFIX,
+  isRunLimitBlockReason,
   heldPlanStartKey,
   planRunLimitSubject,
   runLimitAskedKey,
@@ -2681,7 +2682,7 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
       asked = await ask({
         kind: "run_limit", resume: "implement", orgId: deps.orgId, taskId: task.taskId, requestId, newLimitUsd: decision.runLimitUsd,
         amountUsd: Math.max(0, cleanUsd(decision.runLimitUsd - (task.budgetUsd ?? 0))), approverRole: decision.approverRole, requestedBy: { kind: "member", developerId: caller.developerId },
-        reason: `Approving this plan sets a run limit of $${String(decision.runLimitUsd)}, which needs ${decision.needs === "maintainer" ? "a project maintainer's" : "an admin's"} approval.`,
+        reason: `Approving this plan sets a run limit of $${String(decision.runLimitUsd)}, which needs ${decision.needs === "maintainer" ? "a project maintainer's" : decision.needs === "agent_owner" ? "the agent owner's" : "an admin's"} approval.`,
       }) !== undefined;
     } catch (error) {
       if (error instanceof AgentXError) throw error;
@@ -2690,7 +2691,8 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
     }
   }
   // "I've asked for it" only when a request exists.
-  return { accepted: false, message: runLimitBlockText(decision.runLimitUsd, decision.needs, asked) };
+  // Option E: when the project or an agent's owner pays, the wait is said as such, and the words are the same whether or not the seam made a request.
+  return { accepted: false, message: decision.message.startsWith(RUN_LIMIT_BLOCK_PREFIX) ? runLimitBlockText(decision.runLimitUsd, decision.needs as "maintainer" | "admin", asked) : decision.message };
 }
 
 /** The claim IDs this task's earlier structured documents dropped (they may not come back), in order; a document that cannot be read is skipped. */
@@ -3219,7 +3221,7 @@ const RUN_LIMIT_NOT_APPROVED_REFUSAL = "Coding starts once the run limit is appr
 
 /** A plan blocked on its run limit (Task 34) is unblocked by the run-limit approval only (`resumeAfterRunLimitApproval`), never by a retry or a send-back. */
 const blockedOnRunLimit = (workflow: WorkflowSnapshot): boolean =>
-  workflow.stage === "IMPLEMENT" && workflow.state === "BLOCKED" && workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true;
+  workflow.stage === "IMPLEMENT" && workflow.state === "BLOCKED" && isRunLimitBlockReason(workflow.blockReason);
 
 /**
  * Plan 3, Task 34: the run limit of a plan blocked on it was approved (Task 32's `resume: "implement"`). Sets `budgetUsd` to the approved limit and the window
@@ -3847,7 +3849,7 @@ function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, 
         : { status: "Waiting for the owner's approval", nextStep: `The task owner approves or requests changes ${inSlack}.` };
     case "PLAN_REVIEW/BLOCKED": return { status: `Stopped before approval of the ${name}`, nextStep: `Close the task ${inSlack} and start again.` };
     case "IMPLEMENT/READY": case "IMPLEMENT/RUNNING": return { status: "Writing the code", nextStep: "The checks and reviews run when coding finishes." };
-    case "IMPLEMENT/BLOCKED": if (workflow.blockReason?.startsWith(RUN_LIMIT_BLOCK_PREFIX) === true) {
+    case "IMPLEMENT/BLOCKED": if (isRunLimitBlockReason(workflow.blockReason)) {
       return { status: "Waiting for the run limit to be approved", nextStep: owner ? `Coding starts once a project maintainer or an admin approves it, or close the task ${inSlack}.` : "Coding starts once a project maintainer or an admin approves the run limit." };
     }
       return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing

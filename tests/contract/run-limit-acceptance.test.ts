@@ -124,9 +124,9 @@ describe("an agent's owner pays", () => {
 });
 
 describe("who is asked, and who may decide, on each path", () => {
-  const asRequest = (taskId: string, limit: number) => ({
-    orgId: TEST_ORG, kind: "run_limit" as const, taskId, amountUsd: limit - 2, newLimitUsd: limit, scope: { kind: "task" as const, taskId }, requestedBy: { kind: "member" as const, developerId: MAYA.developerId },
-    requestedFor: { developerId: MAYA.developerId }, resume: "implement" as const,
+  const asRequest = (taskId: string, limit: number, who = BEN) => ({
+    orgId: TEST_ORG, kind: "run_limit" as const, taskId, amountUsd: limit - 2, newLimitUsd: limit, scope: { kind: "task" as const, taskId }, requestedBy: { kind: "member" as const, developerId: who.developerId },
+    requestedFor: { developerId: who.developerId }, resume: "implement" as const,
   });
 
   it("an agent-paid run limit goes to the agent's owner at any size, not by the thresholds", async () => {
@@ -149,13 +149,13 @@ describe("who is asked, and who may decide, on each path", () => {
     await t.set(run.taskId, "SET payer = :payer", { ":payer": { kind: "agent", agentId: mine } });
     // Maya has left the organization: nobody of the owner's list is a member any more.
     t.db.delete({ pk: `ORG#${TEST_ORG}`, sk: `MEMBER#${MAYA.developerId}` } as never);
-    const admins = await spendApprovers(t.deps(), asRequest(run.taskId, 40) as never);
+    const admins = await spendApprovers(t.deps(), asRequest(run.taskId, 40, MAYA) as never);
     expect(admins).toMatchObject({ role: "org_admin" });
     expect([...admins.ids].sort()).toEqual([ADA.developerId, DEB.developerId].sort());
     const shared = await t.agentOf(TRIAGE, { by: BEN, name: "Shared looker", owner: { kind: "project", project: "payments" }, accountable: BEN });
     const second = await t.runOf(shared, { who: BEN });
     await t.set(second.taskId, "SET payer = :payer", { ":payer": { kind: "agent", agentId: shared } });
-    expect(await spendApprovers(t.deps(), asRequest(second.taskId, 40) as never)).toMatchObject({ role: "agent_owner", ids: [BEN.developerId] });
+    expect(await spendApprovers(t.deps(), asRequest(second.taskId, 40, MAYA) as never)).toMatchObject({ role: "agent_owner", ids: [BEN.developerId] });
   });
 
   it("the person who asked cannot decide their own request, except as the org's only owner or admin (Task 32's rule)", async () => {
@@ -180,6 +180,7 @@ describe("who is asked, and who may decide, on each path", () => {
       requestedBy: { kind: "member", developerId: MAYA.developerId }, requestedFor: { developerId: MAYA.developerId }, resume: "continue", subject: `TASK#${run2.taskId}#E`,
     });
     expect(await refusal(t2.decide(MAYA, own.record.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
-    expect(await refusal(decideSpendRequest(t2.deps(), t2.caller(DEB, "admin"), own.record.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }))).toMatchObject({ code: "FORBIDDEN" });
+    // The org's other admins are asked instead.
+    expect(await refusal(decideSpendRequest(t2.deps(), t2.caller(DEB, "admin"), own.record.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }))).toBeUndefined();
   });
 });
