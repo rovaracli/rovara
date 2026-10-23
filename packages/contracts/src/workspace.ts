@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { agentXError } from "./errors.js";
 import { OrgIdSchema } from "./org.js";
-import { AgentXNameSchema } from "./project.js";
+import { AgentXNameSchema } from "./project-node.js";
 
 export const WorkspaceStatusSchema = z.enum([
   "PREPARING",

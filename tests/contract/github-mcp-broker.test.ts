@@ -1,4 +1,4 @@
-import { slackTeamOrgKey } from "../../packages/contracts/src/org.js";
+import { slackTeamOrgKey } from "../../packages/contracts/src/org-node.js";
 import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";

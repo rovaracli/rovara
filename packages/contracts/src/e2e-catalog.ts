@@ -1,12 +1,10 @@
 import { createHash } from "node:crypto";
 import * as ts from "typescript";
-import {
-  E2EAppRecipeSchema, E2ERepositoryInspectionSchema, E2ESetupProposalSchema, type E2ERepositoryInspection, type E2ESetupProposal,
-} from "./e2e.js";
+import { E2EAppRecipeSchema, E2ERepositoryInspectionSchema, E2ESetupProposalSchema, type E2ERepositoryInspection, type E2ESetupProposal } from "./e2e-node.js";
 import { canonicalJson } from "./canonical-json.js";
 import { bindE2EApplicationAccountTargets, readE2EApplicationProjectContract, type E2EApplicationProjectContract } from "./e2e-application-accounts.js";
 import { verifyE2ESourceSnapshot, type E2ESourceSnapshot } from "./e2e-source.js";
-import type { CandidateManifest } from "./task-workflow.js";
+import type { CandidateManifest } from "./task-workflow-node.js";
 
 const MAX_SOURCE_FILES = 512;
 const MAX_SOURCE_FILE_BYTES = 512 * 1024;

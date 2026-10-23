@@ -1,6 +1,6 @@
 // Plan 3 Task 24a: company AI source contracts. The kinds stay off until each one's real-key checklist passes.
 import { describe, expect, it } from "vitest";
-import { canonicalModelName } from "../../packages/contracts/src/models.js";
+import { canonicalModelName } from "../../packages/contracts/src/models-node.js";
 import {
   BEDROCK_ROLE_ARN_PATTERN,
   MAX_CUSTOM_SOURCES_PER_ORG,

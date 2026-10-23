@@ -18,11 +18,11 @@ import { listVisibleAgents as listVisibleAgentsOf } from "../../packages/broker/
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { AgentGuardrailsSchema, DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
+import type { AgentId } from "../../packages/contracts/src/agent-node.js";
 import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest, EMPTY_RECIPE, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe.js";
-import type { ModelIdentifier } from "../../packages/contracts/src/models.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import { recipeDigest, EMPTY_RECIPE, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
+import type { ModelIdentifier } from "../../packages/contracts/src/models-node.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { DEFAULT_MAX_AGENT_MONTHLY_USD, DEFAULT_MAX_AUTONOMY, DEFAULT_MAX_PER_RUN_CEILING_USD } from "../../packages/contracts/src/spend.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";

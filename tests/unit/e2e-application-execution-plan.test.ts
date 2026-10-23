@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { E2EExpectedCaseSchema } from "../../packages/contracts/src/e2e.js";
+import { E2EExpectedCaseSchema } from "../../packages/contracts/src/e2e-node.js";
 import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
 import { E2EApplicationPlanIntentSchema, createCandidateManifest, e2eApplicationMetadataSourceRefs, inspectE2ERepository,
   E2ERegisteredRuntimeSchema, E2ERuntimeCapabilityDescriptorSchema, e2eRuntimeCapabilityDigest, e2eScenarioBundleDigest,

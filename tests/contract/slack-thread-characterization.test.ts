@@ -3,7 +3,7 @@ import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors.js";
+import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-node.js";
 import {
   GITHUB_LIST_ISSUES, SLACK_CHANNEL, SLACK_TEAM, createBroker, ensureWorkspace, fakeGitHubMcp, finishOperation,
   loadSlackBroker, registerSlackProject, serviceCall,

@@ -2,9 +2,11 @@
 // shapes a client may send and the server stores, and the launch gates that keep each kind off until its
 // real-key checklist passes. The store, the routes and the ChatGPT settings are Task 24b.
 import { z } from "zod";
-import { ModelSourceIdSchema, type ModelSourceId } from "./agent.js";
+import { ModelSourceIdSchema } from "./agent.js";
+import { type ModelSourceId } from "./agent-node.js";
 import { ChatGptModelIdSchema } from "./chatgpt.js";
-import { ModelIdentifierSchema, canonicalModelName, type ModelIdentifier } from "./models.js";
+import { ModelIdentifierSchema } from "./models.js";
+import { canonicalModelName, type ModelIdentifier } from "./models-node.js";
 import type { OrgId } from "./org.js";
 
 export const ModelSourceKindSchema = z.enum(["rovara", "personal-chatgpt", "anthropic", "openai", "openrouter", "bedrock", "endpoint"]);

@@ -17,7 +17,7 @@ import {
 } from "@agentx/contracts";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError } from "@agentx/contracts";
-import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
+import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

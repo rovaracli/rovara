@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowReviewBaseSchema } from "./task-workflow.js";
-import { ProjectCommandSchema, StoredProjectDefinitionSchema } from "./project.js";
-import { ModelSelectionSchema, type ModelSelection } from "./models.js";
-import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies.js";
-import { E2EFeaturePlanIntentSchema, E2EWorkflowAdmissionRefSchema } from "./e2e.js";
-import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks.js";
+import { ProjectCommandSchema } from "./project.js";
+import { StoredProjectDefinitionSchema } from "./project-node.js";
+import { ModelSelectionSchema } from "./models.js";
+import { type ModelSelection } from "./models-node.js";
+import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies-node.js";
+import { E2EFeaturePlanIntentSchema, E2EWorkflowAdmissionRefSchema } from "./e2e-node.js";
+import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks-node.js";
 import { AgentIdSchema, SkillIdSchema } from "./agent.js";
 import { MAX_RESOLVED_SKILLS, PI_TOOL_NAMES, PiToolNameSchema, StepIdSchema } from "./agent-recipe.js";
-import { ResultContractSchema, RunCheckoutSchema } from "./agent-run.js";
+import { ResultContractSchema, RunCheckoutSchema } from "./agent-run-node.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 

@@ -9,8 +9,8 @@ import type { ApprovalDependencies } from "../../packages/broker/src/agents/appr
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { createProjectMembers } from "../../packages/broker/src/org/project-members.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import type { AgentId } from "../../packages/contracts/src/agent-node.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
 import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";

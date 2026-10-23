@@ -2,10 +2,10 @@
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { AgentStore, resolveAgent, updateAvailable, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
+import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent-node.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import { agentKey, agentNameKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 

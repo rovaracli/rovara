@@ -9,11 +9,11 @@ import { isAgentRoute } from "../../packages/broker/src/agents/routes.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
+import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent-node.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The broker runs on the built package, so an error a fake throws into it must come from there too.
 import { agentXError } from "@agentx/contracts";

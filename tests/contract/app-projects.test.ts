@@ -8,7 +8,7 @@ import {
   AppProjectDetailSchema, AppProjectsResponseSchema, PROJECT_PERMISSIONS, ProjectSetupStatusSchema, agentXError, formatCommandLine, parseCommandLine,
   projectAllows, projectMetaKey, type OrgId, type OrgRole, type ProjectCommand, type ProjectPermission, type ProjectRole,
 } from "../../packages/contracts/src/index.js";
-import { orgMemberKey as orgMemberKeyOf } from "../../packages/contracts/src/org.js";
+import { orgMemberKey as orgMemberKeyOf } from "../../packages/contracts/src/org-node.js";
 import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { checkProjectAccess, effectiveProjectRole, requireNewWorkAllowed, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, registerRevision, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -16,7 +16,7 @@ import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, serviceCall } from "../support/slack-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { developerTaskIdentity, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow.js";
+import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const OTHER_ORG: OrgId = "org_bbbbbbbbbbbbbbbbbbbb";

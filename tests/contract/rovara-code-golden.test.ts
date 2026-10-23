@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
+import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 

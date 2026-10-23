@@ -2,6 +2,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 import { nativeP0Files, sharedVitestSettings } from "./tests/support/vitest-shared-config.js";
 
 export default defineConfig({
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     ...sharedVitestSettings,
     exclude: [...configDefaults.exclude, ...nativeP0Files],

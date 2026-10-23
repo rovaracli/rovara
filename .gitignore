@@ -45,3 +45,6 @@ tests/eval/results/
 .the-loop/learnings-pending/
 work-item-state.lock
 graph-state.lock
+
+# TypeScript browser-test build output
+.test-build/

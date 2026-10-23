@@ -2,10 +2,11 @@ import { z } from "zod";
 import { RelativeWorkspacePathSchema } from "./project.js";
 import { canonicalJson, sortKeys } from "./canonical-json.js";
 import { redactText } from "./redaction.js";
-import { WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckProposal } from "./task-workflow.js";
+import { WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck } from "./task-workflow.js";
+import { type WorkflowCheckProposal } from "./task-workflow-node.js";
 import { extractProposedChecks, hasControlCharacter, isNotChangingReference, lastFencedBlock, notChangingReference, proposedCheckTextIssues } from "./workflow-proposed-checks.js";
-import { TaskGraphV1Schema, taskGraphOrder, type TaskGraphV1 } from "./workflow-dependencies.js";
-import { E2EFeaturePlanIntentSchema, type E2EFeaturePlanIntent } from "./e2e.js";
+import { TaskGraphV1Schema, taskGraphOrder, type TaskGraphV1 } from "./workflow-dependencies-node.js";
+import { E2EFeaturePlanIntentSchema, type E2EFeaturePlanIntent } from "./e2e-node.js";
 
 /** The info string of the fenced block that holds a plan document. */
 export const PLAN_DOCUMENT_INFO_STRING = "agentx-plan";

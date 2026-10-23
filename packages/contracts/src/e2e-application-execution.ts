@@ -4,9 +4,7 @@ import { canonicalJson } from "./canonical-json.js";
 import { E2EApplicationApprovalBindingSchema, E2EAppArtifactRefSchema, E2EAppBuildManifestSchema,
   E2EApplicationPlanIntentSchema, PlanApprovalRefSchema, SourceRefSchema,
   type E2EApplicationApprovalBinding, type E2EAppArtifactRef, type E2EAppBuildManifest } from "./e2e-application.js";
-import { E2EExecutionPlanSchema, E2EPolicySchema, E2ERoundSchema, E2ERunBindingSchema,
-  E2ERuntimeAvailabilitySchema, E2EScenarioBundleSchema, E2EScenarioSchema, E2ESetupProposalSchema,
-  type E2ERound, type E2ERunBinding, type E2EExecutionPlan, type E2EScenarioBundle } from "./e2e.js";
+import { E2EExecutionPlanSchema, E2EPolicySchema, E2ERoundSchema, E2ERunBindingSchema, E2ERuntimeAvailabilitySchema, E2EScenarioBundleSchema, E2EScenarioSchema, E2ESetupProposalSchema, type E2ERound, type E2ERunBinding, type E2EExecutionPlan, type E2EScenarioBundle } from "./e2e-node.js";
 import { CandidateManifestSchema } from "./task-workflow.js";
 import { isSafeE2ESourcePath } from "./e2e-source.js";
 import { E2ERegisteredRuntimeSchema, type E2ERegisteredRuntime } from "./e2e-runtime-registration.js";

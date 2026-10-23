@@ -3,7 +3,7 @@
 // The broker side (the operation's route, the key's `models`, the live re-check, Slack turns) is tests/contract/model-routing-broker.test.ts.
 import { describe, expect, it } from "vitest";
 import { ModelSourceSchema, defaultModelSourceOrder, egressDomainsKey, modelSourcesKey, sourceAlias, type ModelIdentifier, type ModelSource, type OrgId } from "@agentx/contracts";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
+import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { chatGptServing, modelNotAllowedText, routeModel, routeOnWire, servableModels, servingRoutes, type RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel, routeStep } from "../../packages/broker/src/agents/dispatch.js";

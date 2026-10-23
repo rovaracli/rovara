@@ -3,7 +3,8 @@
 // decides which changes to it wait for a person (packages/broker/src/agents/guardrails.ts).
 import { z } from "zod";
 import { AutonomySchema, BuiltinAgentIdSchema } from "./agent.js";
-import { ModelIdentifierSchema, canonicalModelName } from "./models.js";
+import { ModelIdentifierSchema } from "./models.js";
+import { canonicalModelName } from "./models-node.js";
 import { DEFAULT_MAX_AGENT_MONTHLY_USD, DEFAULT_MAX_AUTONOMY, DEFAULT_MAX_PER_RUN_CEILING_USD } from "./spend.js";
 
 export const MAX_FORBIDDEN_MODELS = 50;

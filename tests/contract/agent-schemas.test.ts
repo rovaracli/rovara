@@ -13,7 +13,7 @@ import {
   ROVARA_CODE_AGENT_ID,
   atLeast,
   newPrefixedId,
-} from "../../packages/contracts/src/agent.js";
+} from "../../packages/contracts/src/agent-node.js";
 import {
   AGENT_STEP_KINDS,
   ApprovalRulesSchema,
@@ -29,11 +29,11 @@ import {
   TRIGGER_KINDS_AT_LAUNCH,
   ToolGrantSchema,
   TriggerSpecSchema,
-} from "../../packages/contracts/src/agent-recipe.js";
+} from "../../packages/contracts/src/agent-recipe-node.js";
 import { AgentXErrorCodeSchema, errorStatus } from "../../packages/contracts/src/errors.js";
 import { PROJECT_PERMISSIONS, projectAllows } from "../../packages/contracts/src/app-projects.js";
-import { canonicalModelName, modelCompany } from "../../packages/contracts/src/models.js";
-import { OrgIdSchema, orgScoped } from "../../packages/contracts/src/org.js";
+import { canonicalModelName, modelCompany } from "../../packages/contracts/src/models-node.js";
+import { OrgIdSchema, orgScoped } from "../../packages/contracts/src/org-node.js";
 import {
   agentDirectoryKey,
   agentKey,

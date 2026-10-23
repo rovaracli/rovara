@@ -12,7 +12,7 @@ import type { AuditExportClientDeps, AuditExportEvent } from "../../packages/bro
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
 import type { AuditReadDeps } from "../../packages/broker/src/audit/reader.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
-import { orgMetaKey } from "../../packages/contracts/src/org.js";
+import { orgMetaKey } from "../../packages/contracts/src/org-node.js";
 import { FakeAuditSqs } from "./fake-audit-sqs.js";
 import { FakeKms } from "./fake-kms.js";
 import { A, B, LEDGER, SEALS, at, harness, iso, run, type Harness } from "./audit-anchor-harness.js";

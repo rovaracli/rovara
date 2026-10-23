@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { DeveloperTaskFailureCategorySchema } from "./developer-tasks.js";
 import { looseCopy } from "./loose.js";
-import { DeveloperTaskPolicySchema } from "./project.js";
+import { DeveloperTaskPolicySchema } from "./project-node.js";
 import { SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema } from "./slack.js";
 
 /** A1 (25d Q1) and E18 (25e Q11): 1.1 adds the change routes and GET /v1/admin/changes. */

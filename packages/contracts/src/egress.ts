@@ -3,7 +3,8 @@
 // decided about each; every request, decision and removal is also written as an audit item that never expires.
 import { z } from "zod";
 import { AGENTX_NAME_PATTERN } from "./names.js";
-import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
+import { OrgIdSchema, type OrgId } from "./org.js";
+import { orgScoped, type OrgKey } from "./org-node.js";
 
 /** The partition of every owner's egress item, and of the sync marker (Task 19), which is the one item whose sort key is not an org's. */
 export const EGRESS_DOMAINS_PK = "EGRESS_DOMAINS";

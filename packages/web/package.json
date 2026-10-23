@@ -1,0 +1,19 @@
+{
+  "name": "@agentx/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@agentx/ui": "0.1.0",
+    "@agentx/contracts": "0.1.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "get-nonce": "1.0.1",
+    "react-router": "7.18.4"
+  }
+}

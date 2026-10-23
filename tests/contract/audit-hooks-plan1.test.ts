@@ -13,7 +13,7 @@ import {
   type AuditEventInput,
 } from "../../packages/contracts/src/index.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";

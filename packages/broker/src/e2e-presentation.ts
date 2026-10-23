@@ -1,4 +1,4 @@
-import type { E2ESharedView } from "../../contracts/src/e2e-view.js";
+import type { E2ESharedView } from "../../contracts/src/e2e-view-node.js";
 
 const LIST_LIMIT = 8;
 const SCOPE_NOTE = "Portable source and mock checks are scoped evidence. Browser, native, live-service, authentication, and internal-callable behavior remain unverified unless separately qualified.";

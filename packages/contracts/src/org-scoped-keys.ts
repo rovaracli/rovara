@@ -2,9 +2,11 @@
 // grant on it, the workspace limits) or that list across tenants (the usage and failure indexes).
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { canonicalInstant, indexDay } from "./admin.js";
-import type { AgentId, AgentPrincipal, ApprovalId, SkillId } from "./agent.js";
-import type { DeviceId, SessionBinding, SessionId } from "./agent-sessions.js";
-import { OrgIdSchema, orgScoped, type OrgId, type OrgKey } from "./org.js";
+import type { AgentId } from "./agent.js";
+import type { AgentPrincipal, ApprovalId, SkillId } from "./agent-node.js";
+import type { DeviceId, SessionBinding, SessionId } from "./agent-sessions-node.js";
+import { OrgIdSchema, type OrgId } from "./org.js";
+import { orgScoped, type OrgKey } from "./org-node.js";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
 const REVISION_WIDTH = 12;

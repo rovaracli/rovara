@@ -12,7 +12,7 @@ import type { ProjectAuthorityWitness } from "../../packages/broker/src/develope
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey } from "../../packages/contracts/src/org.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";

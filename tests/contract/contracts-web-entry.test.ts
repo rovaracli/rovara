@@ -1,5 +1,8 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
+import { sha256Hex } from "../../packages/contracts/src/web-hash.js";
 import ts from "typescript";
 import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
@@ -29,6 +32,11 @@ describe("browser contracts entry", () => {
     const results = await new ESLint().lintText('import { createHash } from "node:crypto"; export const hash = createHash;', { filePath: "packages/contracts/src/web.ts" });
     expect(results.flatMap(result => result.messages).some(message => message.ruleId === "no-restricted-imports")).toBe(true);
   });
+  it("keeps schema fingerprints byte-compatible with stored Node hashes", () => {
+    for (const text of ["", "abc", "a".repeat(1000), "é 😀", "\\ud800", JSON.stringify({ repository: "acme/payments", revision: 1 })]) {
+      expect(sha256Hex(text)).toBe(createHash("sha256").update(text, "utf8").digest("hex"));
+    }
+  });
   it("configures Zod without runtime code generation", async () => {
     const { configureZodForCsp, SessionIdSchema } = await import("../../packages/contracts/src/web.js");
     const { z } = await import("zod");
@@ -40,7 +48,11 @@ describe("browser contracts entry", () => {
     const directory = "packages/web/dist/app/assets";
     for (const file of await readdir(directory)) {
       if (!file.endsWith(".js")) continue;
-      expect(await readFile(path.join(directory, file), "utf8")).not.toMatch(/node:|ts\.createSourceFile/);
+      const original = await readFile(path.join(directory, file));
+      expect(brotliDecompressSync(await readFile(path.join(directory, file + ".br")))).toEqual(original);
+      expect(gunzipSync(await readFile(path.join(directory, file + ".gz")))).toEqual(original);
+      const source = original.toString("utf8");
+      expect(/["'`]node:|ts\.createSourceFile/.test(source), file).toBe(false);
     }
   });
 });

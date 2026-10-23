@@ -11,7 +11,7 @@
     "infra"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && npm run build:web",
     "clean": "tsc -b --clean",
     "lint": "node --max-old-space-size=6144 node_modules/eslint/bin/eslint.js .",
     "agentx": "node packages/cli/dist/bin.js",
@@ -33,7 +33,8 @@
     "release:verify": "tsx scripts/release/verify.ts",
     "release:pack-cli": "tsx scripts/release/pack-cli.ts",
     "swebench:runner-image": "tsx scripts/swebench-runner-image.ts",
-    "infra:synth": "npm run build --workspace @agentx/infra && cdk synth --app 'node infra/dist/bin/agentx.js'"
+    "infra:synth": "npm run build --workspace @agentx/infra && cdk synth --app 'node infra/dist/bin/agentx.js'",
+    "build:web": "npm run build --workspace @agentx/web && npx tsx scripts/web-precompress.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-cloudformation": "3.1134.0",
@@ -44,14 +45,26 @@
     "@aws-sdk/client-sfn": "3.1134.0",
     "@aws-sdk/client-ssm": "3.1134.0",
     "@aws-sdk/client-sts": "3.1134.0",
+    "@axe-core/playwright": "4.13.0",
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.64.0",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
     "@types/node": "22.20.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "axe-core": "4.13.0",
     "e2e": "file:upstream/e2e-0.20.0.tgz",
     "esbuild": "0.28.2",
     "eslint": "10.10.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "jsdom": "29.1.1",
     "tsx": "4.23.13",
     "typescript": "5.9.3",
     "typescript-eslint": "8.70.0",
+    "vite": "8.3.0",
     "vitest": "5.0.1"
   }
 }

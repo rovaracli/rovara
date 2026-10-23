@@ -20,17 +20,17 @@ import {
 } from "../../packages/broker/src/agents/approvals.js";
 import { writeApproversFor } from "../../packages/broker/src/agents/write-gate.js";
 import { readGuardrailsWithRevision } from "../../packages/broker/src/agents/guardrails.js";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks.js";
-import { AgentRunStateSchema, SHORTENED_MARKER, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
+import { AgentRunStateSchema, SHORTENED_MARKER, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run-node.js";
 import { agentXError, orgScoped } from "@agentx/contracts";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
+import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { approvalKey, approverIndexKey, projectAgentKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
+import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
+import type { AgentId } from "../../packages/contracts/src/agent-node.js";
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, grantProject, recordStream, unbindChannel, type Developer } from "../support/developer-task-broker.js";
 import { taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";
 import { agentRunDispatchItem, operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
@@ -1457,7 +1457,7 @@ describe("the agent step's payload", () => {
 
   it("refuses instructions too long for the worker, and puts the step's own name in its operation", async () => {
     const { applyAgentStep } = await import("../../packages/broker/src/agents/dispatch.js");
-    const { EMPTY_RECIPE } = await import("../../packages/contracts/src/agent-recipe.js");
+    const { EMPTY_RECIPE } = await import("../../packages/contracts/src/agent-recipe-node.js");
     const { DEFAULT_AGENT_GUARDRAILS } = await import("../../packages/contracts/src/agent-guardrails.js");
     const step = { id: "work", name: "Work", kind: "agent" as const, workspace: "none" as const, settings: { instructions: [{ agentName: "A", text: "y".repeat(70_000) }] } };
     const recipe = { ...structuredClone(EMPTY_RECIPE), chain: [{ agentId: "agt_aaaaaaaaaaaaaaaaaaaa" as AgentId, name: "A", version: 1, builtin: false }], steps: [step] };

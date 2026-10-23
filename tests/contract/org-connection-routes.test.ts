@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { connectionKey } from "../../packages/contracts/src/connections.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { BEING_REMOVED_MESSAGE, OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";

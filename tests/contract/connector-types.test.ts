@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ConnectorConfigSchema } from "../../packages/contracts/src/connectors.js";
+import { ConnectorConfigSchema } from "../../packages/contracts/src/connectors-node.js";
 import { BUILT_IN_CONNECTOR_TYPES, githubConnectorType, resolveConnectors } from "../../packages/broker/src/aws/connector-types.js";
 import { CredentialRegistry } from "../../packages/broker/src/aws/credentials.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

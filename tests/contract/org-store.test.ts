@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { OrgId } from "../../packages/contracts/src/org.js";
-import { orgInviteKey, orgMetaKey, slackTeamOrgKey } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
+import { orgInviteKey, orgMetaKey, slackTeamOrgKey } from "../../packages/contracts/src/org-node.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

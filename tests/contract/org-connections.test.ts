@@ -22,7 +22,7 @@ import {
   connectionsKey,
   type OrgConnection,
 } from "../../packages/contracts/src/connections.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
