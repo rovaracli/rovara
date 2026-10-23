@@ -2,6 +2,10 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
+import { posix } from "node:path";
+import { CandidateManifestSchema as BrowserCandidate, workflowFindingFingerprint as browserFingerprint } from "../../packages/contracts/src/task-workflow.js";
+import { RelativeWorkspacePathSchema as BrowserPath } from "../../packages/contracts/src/project.js";
+import { CandidateManifestSchema as NodeCandidate, workflowFindingFingerprint as nodeFingerprint, RelativeWorkspacePathSchema as NodePath } from "@agentx/contracts";
 import { sha256Hex } from "../../packages/contracts/src/web-hash.js";
 import ts from "typescript";
 import { ESLint } from "eslint";
@@ -36,6 +40,23 @@ describe("browser contracts entry", () => {
     for (const text of ["", "abc", "a".repeat(1000), "é 😀", "\ud800", JSON.stringify({ repository: "acme/payments", revision: 1 })]) {
       expect(sha256Hex(text)).toBe(createHash("sha256").update(text, "utf8").digest("hex"));
     }
+  });
+  it("preserves browser and Node schema acceptance, path normalization and stored digests", () => {
+    for (const value of ["src/index.ts", "a/b", ".hidden/file", "a/../b", "a//b", "a/", "./a", "../a", "/a", "a\\b", "", "a".repeat(513)]) {
+      const priorAcceptance = value.length >= 1 && value.length <= 512 && !value.startsWith("/") && !value.includes("\\") && !value.split("/").some(part => part === "" || part === "." || part === "..") && posix.normalize(value) === value;
+      expect(BrowserPath.safeParse(value).success, value).toBe(priorAcceptance);
+      expect(NodePath.safeParse(value).success, value).toBe(priorAcceptance);
+    }
+    const repositories = [{ repositoryId: "repo", commitSha: "a".repeat(40), treeSha: "b".repeat(40) }];
+    const digest = createHash("sha256").update(JSON.stringify({ schemaVersion: 1, repositories })).digest("hex");
+    for (const manifest of [{ schemaVersion: 1, repositories, digest }, { schemaVersion: 1, repositories, digest: "0".repeat(64) }]) {
+      expect(BrowserCandidate.safeParse(manifest).success).toBe(NodeCandidate.safeParse(manifest).success);
+      expect(BrowserCandidate.safeParse(manifest).success).toBe(manifest.digest === digest);
+    }
+    const finding = { text: "A stored finding", file: "src/index.ts", line: 7 };
+    const expected = createHash("sha256").update(JSON.stringify(["CRITIC", finding.text, finding.file, finding.line]), "utf8").digest("hex");
+    expect(browserFingerprint("CRITIC", finding)).toBe(expected);
+    expect(nodeFingerprint("CRITIC", finding)).toBe(expected);
   });
   it("configures Zod without runtime code generation", async () => {
     const { configureZodForCsp, SessionIdSchema } = await import("../../packages/contracts/src/web.js");
