@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ProjectDefinition } from "@agentx/contracts";
+import type { OrgId, ProjectDefinition } from "@agentx/contracts";
 import {
   InMemoryProjectRegistry,
   InMemoryRegistry,
@@ -15,6 +15,7 @@ import {
 import { WorkerCancellationController } from "../../packages/worker/src/cancel.js";
 import { classifyFailure, createDiagnostic } from "../../packages/worker/src/diagnostics.js";
 import { describe, expect, it, vi } from "vitest";
+import { TEST_ORG } from "../support/orgs.js";
 
 describe("task and lifecycle controls", () => {
   it("cooperatively aborts pi and terminates a real child process group without rolling back files", async () => {
@@ -44,8 +45,8 @@ describe("task and lifecycle controls", () => {
     const registry = new InMemoryRegistry();
     const alice = "a".repeat(64);
     const bob = "b".repeat(64);
-    const aliceWorkspace = await registry.createDefault(workspace(alice));
-    const bobWorkspace = await registry.createDefault(workspace(bob));
+    const aliceWorkspace = await registry.createDefault(workspace(alice, TEST_ORG));
+    const bobWorkspace = await registry.createDefault(workspace(bob, TEST_ORG));
     const operations = new OperationStore(registry);
     await operations.acceptTask(aliceWorkspace.id, alice, request("alice first"));
     await expect(operations.acceptTask(aliceWorkspace.id, alice, request("alice overlap"))).rejects.toThrow(
@@ -67,13 +68,17 @@ describe("task and lifecycle controls", () => {
     const projects = new InMemoryProjectRegistry();
     projects.register(admin, project(1), memberships);
     projects.register(admin, project(2), memberships);
-    const ready = await registry.createDefault(workspace(developer.ownerKey));
+    const ready = await registry.createDefault(workspace(developer.ownerKey, TEST_ORG));
     const lifecycle = new LifecycleService({ registry, memberships });
     await expect(lifecycle.stop(admin, ready.id)).rejects.toThrow(/manual compute stop is not supported/);
     // The idle reaper, rather than an administrator's stop request, stops EC2 compute.
     await registry.setLifecycleStatus(ready.id, "STOPPED");
 
     const resume = new ResumeCoordinator({ registry, projects });
+    // A caller of another org, even with the owner's key, cannot resume the workspace.
+    await expect(
+      resume.begin({ ...developer, orgId: "org_zzzzzzzzzzzzzzzzzzzz" as OrgId }, ready.id),
+    ).rejects.toThrow(/workspace not found/i);
     const resuming = await resume.begin(developer, ready.id);
     expect(resuming.status).toBe("RESUMING");
     expect(resuming.projectRevision).toBe(1);
@@ -99,12 +104,13 @@ function request(prompt: string) {
   return { requestId: randomUUID(), conversationId: randomUUID(), prompt };
 }
 
-function workspace(ownerKey: string) {
+function workspace(ownerKey: string, orgId: OrgId) {
   const now = new Date().toISOString();
   return {
     deploymentMode: "ec2-ebs" as const,
     id: randomUUID(),
     ownerKey,
+    orgId,
     projectName: "payments",
     projectRevision: 1,
     rootPath: "/mnt/workspace" as const,
@@ -122,6 +128,7 @@ function identity(ownerKey: string, isAdministrator: boolean): AuthenticatedIden
     issuer: "https://identity.example.test",
     subject: ownerKey,
     ownerKey,
+    orgId: TEST_ORG,
     isAdministrator,
     claims: {},
   };

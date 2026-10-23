@@ -3,7 +3,7 @@ import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ProjectDefinition } from "@agentx/contracts";
+import type { OrgId, ProjectDefinition } from "@agentx/contracts";
 import {
   InMemoryProjectRegistry,
   InMemoryRegistry,
@@ -12,6 +12,9 @@ import {
   type ProjectMembership,
 } from "../../packages/broker/src/index.js";
 import { describe, expect, it } from "vitest";
+import { TEST_ORG } from "../support/orgs.js";
+
+const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz" as OrgId;
 
 const run = promisify(execFile);
 
@@ -28,8 +31,8 @@ describe("per-developer workspace isolation", () => {
     const projects = new InMemoryProjectRegistry();
     projects.register(admin, projectDefinition(), memberships);
     const registry = new InMemoryRegistry();
-    const aliceWorkspace = await registry.createDefault(workspace(alice.ownerKey));
-    const bobWorkspace = await registry.createDefault(workspace(bob.ownerKey));
+    const aliceWorkspace = await registry.createDefault(workspace(alice.ownerKey, TEST_ORG));
+    const bobWorkspace = await registry.createDefault(workspace(bob.ownerKey, TEST_ORG));
     const resolver = new WorkspaceResolver({ projects, registry, memberships });
 
     await expect(resolver.resolveDefault(alice, "payments", 1)).resolves.toMatchObject({
@@ -63,6 +66,21 @@ describe("per-developer workspace isolation", () => {
       artifact: "alice diff",
     });
     await expect(readPrivateResources(alice, bobWorkspace.id)).rejects.toThrow(/not found/i);
+  });
+
+  it("reads a workspace of another org, or a caller with no org, as not found even for the same owner", async () => {
+    const alice = identity("b", false);
+    const memberships: ProjectMembership[] = [{ ownerKey: alice.ownerKey, project: "payments", role: "developer" }];
+    const registry = new InMemoryRegistry();
+    const ownWorkspace = await registry.createDefault(workspace(alice.ownerKey, TEST_ORG));
+    const foreignOrg = await registry.createDefault({ ...workspace(alice.ownerKey, OTHER_ORG), projectName: "billing" });
+    const resolver = new WorkspaceResolver({ projects: new InMemoryProjectRegistry(), registry, memberships });
+
+    await expect(resolver.getById(alice, ownWorkspace.id)).resolves.toMatchObject({ id: ownWorkspace.id });
+    await expect(resolver.getById(alice, foreignOrg.id)).rejects.toThrow(/workspace not found/i);
+    await expect(resolver.getById({ ...alice, orgId: OTHER_ORG }, ownWorkspace.id)).rejects.toThrow(/workspace not found/i);
+    const { orgId: _orgId, ...noOrg } = alice;
+    await expect(resolver.getById(noOrg, ownWorkspace.id)).rejects.toThrow(/workspace not found/i);
   });
 
   it("keeps private edits invisible until the owner explicitly publishes and the peer integrates", async () => {
@@ -102,17 +120,19 @@ function identity(key: string, isAdministrator = true): AuthenticatedIdentity {
     issuer: "https://identity.example.test",
     subject: key,
     ownerKey: key.repeat(64),
+    orgId: TEST_ORG,
     isAdministrator,
     claims: {},
   };
 }
 
-function workspace(ownerKey: string) {
+function workspace(ownerKey: string, orgId: OrgId) {
   const now = new Date().toISOString();
   return {
     deploymentMode: "ec2-ebs" as const,
     id: crypto.randomUUID(),
     ownerKey,
+    orgId,
     projectName: "payments",
     projectRevision: 1,
     environmentDigest: `registry.example.test/worker@sha256:${"a".repeat(64)}`,
