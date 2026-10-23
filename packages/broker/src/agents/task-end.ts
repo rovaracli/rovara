@@ -53,11 +53,16 @@ export interface TaskEndDependencies {
   agentRuns?: TaskEndHost | undefined;
 }
 
+/** What a resume handler is told: a task that was paused for money goes on because its limit was raised. */
+export interface TaskResumeEvent { orgId: OrgId; taskId: string; chain?: { chainRunId: string; stepId: string } }
+
 export type TaskEndHandler = (deps: TaskEndDependencies, event: TaskEndEvent) => Promise<void>;
 export type TaskPauseHandler = (deps: TaskEndDependencies, event: TaskPauseEvent) => Promise<void>;
+export type TaskResumeHandler = (deps: TaskEndDependencies, event: TaskResumeEvent) => Promise<void>;
 
 const endHandlers: TaskEndHandler[] = [];
 const pauseHandlers: TaskPauseHandler[] = [];
+const resumeHandlers: TaskResumeHandler[] = [];
 
 /**
  * Registers a handler that is told, once per task, how the task ended (`TaskEndEvent`). Handlers are called in the order they were registered. Returns
@@ -77,6 +82,15 @@ export function registerTaskPauseHandler(handler: TaskPauseHandler): () => void 
   return () => {
     const at = pauseHandlers.indexOf(handler);
     if (at >= 0) pauseHandlers.splice(at, 1);
+  };
+}
+
+/** Registers a handler that is told when a task paused for money goes on after its limit was raised (`TaskResumeEvent`). Returns the function that removes it. */
+export function registerTaskResumeHandler(handler: TaskResumeHandler): () => void {
+  resumeHandlers.push(handler);
+  return () => {
+    const at = resumeHandlers.indexOf(handler);
+    if (at >= 0) resumeHandlers.splice(at, 1);
   };
 }
 
@@ -228,4 +242,20 @@ export async function onTaskPaused(deps: TaskEndDependencies, task: DeveloperTas
     }
   }
   if (failure !== undefined) throw failure instanceof Error ? failure : new Error("a pause handler failed");
+}
+
+/**
+ * A task that was paused for money goes on (its raise was approved): tells every resume handler, in order. Best effort: a handler that fails is logged and the
+ * rest are still told, and nothing is thrown, because the task must go on whatever a listener's view of it says (a listener that missed this is put right by the task's end).
+ */
+export async function onTaskResumed(deps: TaskEndDependencies, task: DeveloperTaskRecord): Promise<void> {
+  if (task.orgId === undefined) return;
+  const event: TaskResumeEvent = { orgId: task.orgId, taskId: task.taskId, ...(task.chain === undefined ? {} : { chain: task.chain }) };
+  for (const handler of [...resumeHandlers]) {
+    try {
+      await handler(deps, event);
+    } catch (error) {
+      log(deps, "task_resume.handler_failed", { taskId: task.taskId, error: errorName(error) });
+    }
+  }
 }

@@ -22,7 +22,7 @@ import { requireAgentAccess, type AgentCaller } from "../agents/access.js";
 import type { AgentRunRequest, AgentRunResult, AgentRunStarter } from "../agents/runs.js";
 import { resolveAgentForAutonomousRun, resolveAgentForTask, roleOnProject, type RosterDependencies } from "../agents/roster.js";
 import { startAgentRun } from "../agents/runs.js";
-import type { TaskEndEvent, TaskPauseEvent } from "../agents/task-end.js";
+import type { TaskEndEvent, TaskPauseEvent, TaskResumeEvent } from "../agents/task-end.js";
 import { Aliases, NOT_EXISTS, failedIndexes, strip, type TransactItem } from "../agents/table-writes.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { taskAgentRunKey } from "../developer/task-records.js";
@@ -171,11 +171,21 @@ const reasonOf = (error: AgentXError): string => trimStop(error.message.startsWi
 const trimStop = (text: string): string => text.replace(/\.+$/u, "");
 const textOf = (error: AgentXError): string => (error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message);
 
-/** A refusal that may pass on its own: the start is left as it is, to be driven again with the same request id. */
+/** A failure that may pass on its own, anywhere the runner moves a run along and an unknown failure is better left for the next try than thrown at a caller. */
 function isTransient(error: unknown): boolean {
   if (!(error instanceof AgentXError)) return true;
   return error.statusCode >= 500 || error.code === "WORKSPACE_BUSY" || error.code === "TOO_MANY_REQUESTS";
 }
+
+/** The codes of Plan 3's `startAgentRun` that mean "try again later": the start is left as it is, to be driven again with the same request id. */
+const RETRY_LATER_CODES: ReadonlySet<string> = new Set(["WORKSPACE_BUSY", "TOO_MANY_REQUESTS", "RUNTIME_UNAVAILABLE", "MODEL_PROXY_UNAVAILABLE", "SLACK_UNAVAILABLE", "AUDIT_UNAVAILABLE"]);
+
+/** Only an `AgentXError` with one of those codes is retried. Anything else (a TypeError, a schema error) would be retried for ever, so it ends the attempt. */
+const isRetryLater = (error: unknown): boolean => error instanceof AgentXError && RETRY_LATER_CODES.has(error.code);
+
+/** What a step that could not start for an unexpected reason says: never the error's own words, which may hold a secret or an internal detail. */
+const UNEXPECTED_START_REASON = "start_failed";
+const unexpectedStartMessage = (stepName: string): string => `Step "${stepName}" could not start because of an unexpected error. Nothing was started.`;
 
 // ---- reading
 
@@ -621,8 +631,16 @@ async function driveStart(deps: Deps, run: ChainRunRecord, attempt: StepAttemptR
   try {
     started = await deps.chainRuns.startAgentRun(request);
   } catch (error) {
-    if (isTransient(error)) throw error;
-    const refused = error as AgentXError;
+    if (isRetryLater(error)) throw error;
+    if (!(error instanceof AgentXError)) {
+      (deps.log ?? ((event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))))("chain_run.start_failed", { runId: run.runId, seq: attempt.seq, error: errorName(error) });
+      return endRun(deps, run, {
+        status: "failed", failure: { seq: attempt.seq, reason: UNEXPECTED_START_REASON, message: unexpectedStartMessage(attempt.stepName) },
+        events: [{ type: "step_ended", stepSeq: attempt.seq, text: `Step "${attempt.stepName}" could not start.` }],
+        attemptUpdate: moveAttempt(deps, run, attempt.seq, { status: "failed", failure: { reason: UNEXPECTED_START_REASON, message: "it could not be started" }, endedAt: iso(deps) }, ["starting"]),
+      });
+    }
+    const refused = error;
     const message = neutralText(redactSecrets(textOf(refused)), REASON_MAX);
     const failure = { reason: refused.code, message };
     return endRun(deps, run, {
@@ -689,9 +707,21 @@ async function findStepAttempt(deps: Deps, event: { orgId: OrgId; taskId: string
   if (!runId.success) return undefined;
   const run = await readChainRun(deps, event.orgId, runId.data);
   if (run === undefined) return undefined;
-  const attempt = (await readStepAttempts(deps, event.orgId, run.runId)).find((candidate) => candidate.taskId === event.taskId && candidate.stepId === event.chain!.stepId);
-  return attempt === undefined ? undefined : { run, attempt };
+  const attempts = await readStepAttempts(deps, event.orgId, run.runId);
+  const stepId = event.chain.stepId;
+  const named = attempts.find((candidate) => candidate.taskId === event.taskId && candidate.stepId === stepId);
+  if (named !== undefined) return { run, attempt: named };
+  // The task exists from Plan 3's start commit but the attempt learns its id only when `startAgentRun` returns. A task that ends or pauses in between (a crash after the
+  // start, then a short run) belongs to the run's current attempt of that step that is still starting with no task: the end or pause handler writes the id with its own move.
+  const starting = attempts.find((candidate) => candidate.seq === run.currentSeq && candidate.stepId === stepId && candidate.status === "starting" && candidate.taskId === undefined);
+  return starting === undefined ? undefined : { run, attempt: starting };
 }
+
+/** An attempt whose task has not ended: still starting (its task id not yet written), running or paused. */
+const isLive = (attempt: StepAttemptRecord): boolean => attempt.status === "starting" || attempt.status === "running" || attempt.status === "paused";
+
+/** The task id an end or a pause writes with its own move, for an attempt that was still starting and so had none. */
+const taskFields = (attempt: StepAttemptRecord, taskId: string): Record<string, unknown> => (attempt.taskId === undefined ? { taskId } : {});
 
 /** What a task ended with, as the attempt's result, or why it did not succeed. */
 async function resultOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, event: TaskEndEvent): Promise<{ status: "succeeded"; result: StepResult } | { status: "failed" | "cancelled"; failure: { reason: string; message: string } }> {
@@ -728,7 +758,7 @@ export async function onStepTaskEnded(deps: Deps, event: TaskEndEvent): Promise<
   if (found === undefined) return;
   const { run, attempt } = found;
   if (isTerminalStatus(run.status)) return;
-  if (attempt.status !== "running" && attempt.status !== "paused") {
+  if (!isLive(attempt)) {
     await advanceChainRun(deps, run.orgId, run.runId);
     return;
   }
@@ -744,14 +774,14 @@ export async function onStepTaskEnded(deps: Deps, event: TaskEndEvent): Promise<
   const fields = outcome.status === "succeeded" ? { status: "succeeded", result: outcome.result } : { status: outcome.status, failure: outcome.failure };
   try {
     await transact(deps, [
-      moveAttempt(deps, run, attempt.seq, { ...fields, endedAt: iso(deps) }, ["running", "paused"]),
+      moveAttempt(deps, run, attempt.seq, { ...fields, ...taskFields(attempt, event.taskId), endedAt: iso(deps) }, ["starting", "running", "paused"]),
       ...moveRun(deps, run, { status: run.status === "paused" ? "running" : run.status, spentUsd: settled.run.spentUsd, runLimitUsd: settled.run.runLimitUsd }, events),
     ]);
   } catch (error) {
     if (failedIndexes(error) === undefined) throw error;
     // Another telling of the same end got there first (or the run moved): read it again, and go on if the attempt has ended.
     const again = await findStepAttempt(deps, event);
-    if (again !== undefined && again.attempt.status !== "running" && again.attempt.status !== "paused") {
+    if (again !== undefined && !isLive(again.attempt)) {
       await advanceChainRun(deps, run.orgId, run.runId);
       return;
     }
@@ -768,16 +798,16 @@ export async function onStepTaskPaused(deps: Deps, event: TaskPauseEvent): Promi
   const found = await findStepAttempt(deps, event);
   if (found === undefined) return;
   const { run, attempt } = found;
-  if (isTerminalStatus(run.status) || attempt.status !== "running") return;
+  if (isTerminalStatus(run.status) || (attempt.status !== "running" && attempt.status !== "starting")) return;
   try {
     await transact(deps, [
-      moveAttempt(deps, run, attempt.seq, { status: "paused" }, ["running"]),
+      moveAttempt(deps, run, attempt.seq, { status: "paused", ...taskFields(attempt, event.taskId) }, ["starting", "running"]),
       ...moveRun(deps, run, { status: "paused" }, [{ type: "paused", stepSeq: attempt.seq, text: `Step "${attempt.stepName}" is paused until its spending limit is raised.` }]),
     ]);
   } catch (error) {
     if (failedIndexes(error) === undefined) throw error;
     const again = await findStepAttempt(deps, event);
-    if (again === undefined || again.attempt.status !== "running") return;
+    if (again === undefined || (again.attempt.status !== "running" && again.attempt.status !== "starting")) return;
     throw error;
   }
 }
@@ -798,6 +828,14 @@ export async function markStepResumed(deps: Deps, orgId: OrgId, runId: ChainRunI
     const now = (await readStepAttempts(deps, orgId, runId)).find((candidate) => candidate.taskId === taskId);
     if (now !== undefined && now.status === "paused") throw error;
   }
+}
+
+/** A step's task went on after a raise (registered with `registerTaskResumeHandler`): the step and the run are `running` again. Ignores a task with no chain. */
+export async function onStepTaskResumed(deps: Deps, event: TaskResumeEvent): Promise<void> {
+  if (event.chain === undefined) return;
+  const runId = ChainRunIdSchema.safeParse(event.chain.chainRunId);
+  if (!runId.success) return;
+  await markStepResumed(deps, event.orgId, runId.data, event.taskId);
 }
 
 // ---- the spend seam

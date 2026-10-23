@@ -242,7 +242,7 @@ import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
-import { END_LEASE_MS, hasTaskEndHandlers, onTaskEnded, onTaskPaused, type TaskEndOutcome } from "../agents/task-end.js";
+import { END_LEASE_MS, hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -2178,6 +2178,8 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
     return await resumeAfterRunLimitApproval(deps, task.taskId, { requestId: resumeRequestId(input.spendRequestId, "implement"), runLimitUsd: input.runLimitUsd }) === "STALE" ? "STALE" : undefined;
   }
   if (task.budgetPause !== undefined) return;
+  // A chain's step hears that its task went on, so the step and the run show running again before the task ends and a second stop can be told as a pause.
+  if (task.chain !== undefined) await onTaskResumed({ documentClient: deps.documentClient, tableName: deps.tableName, now: Date.now }, task);
   const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
   if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
     if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");

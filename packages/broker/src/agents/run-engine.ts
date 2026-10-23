@@ -34,7 +34,7 @@ import { WRITE_APPROVER_RULE, writeApproversFor } from "./write-gate.js";
 import { END_LEASE_MS, onTaskEnded, onTaskPaused, type TaskEndHost, type TaskEndOutcome } from "./task-end.js";
 
 export type { TaskEndEvent, TaskEndHandler, TaskEndOutcome, TaskPauseEvent, TaskPauseHandler } from "./task-end.js";
-export { hasTaskEndHandlers, onTaskEnded, onTaskPaused, registerTaskEndHandler, registerTaskPauseHandler } from "./task-end.js";
+export { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, registerTaskEndHandler, registerTaskPauseHandler, registerTaskResumeHandler } from "./task-end.js";
 export { CHATOPS_PATTERNS, prepareSlackReport } from "./slack-report.js";
 export type { PreparedSlackReport } from "./slack-report.js";
 
