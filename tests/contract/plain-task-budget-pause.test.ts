@@ -140,6 +140,8 @@ describe("M-6: a plain task stopped on a budget is paused, not ended", () => {
     t.access.setKeySpent(t.access.mintedKeys()[0]!, 14);
     await t.pauseAndEnd(task, "none");
     expect(t.requestOf(task.taskId)[0]).toMatchObject({ kind: "run_limit" });
+    // The ask that worked the pause out recorded the operation it stopped (M-6 I-1).
+    expect(t.meta(task.taskId).budgetStopOf).toBe(task.operationId);
     expect(paused).toEqual([expect.objectContaining({ taskId: task.taskId, scope: { kind: "task", taskId: task.taskId } })]);
     expect(ended).toEqual([]);
     expect(endRecords(t, task.taskId)).toEqual([]);
@@ -315,18 +317,25 @@ describe("M-6 review m-1: a stale stop is not told as a later operation's pause"
     expect(second).not.toBe(task.stoppedOperationId);
     expect(paused).toEqual([expect.objectContaining({ taskId: task.taskId })]);
     expect(t.meta(task.taskId).budgetPauseToldFor).toBe(second);
-    dueNow(t, task.taskId);
+    // The row of op1 (still due later) is looked at with op2's result, or by the sweep: either way it tells nothing.
+    if (rowsOf(t, task.taskId).length > 0) dueNow(t, task.taskId);
     await recover(t);
     expect(paused).toHaveLength(1);
     expect(t.meta(task.taskId).budgetPauseToldFor).toBe(second);
+    expect(rowsOf(t, task.taskId)).toEqual([]);
     expect(ended).toEqual([]);
   });
 });
 
 describe("M-6 review m-2: a `closed` end that could not be told is left to the recovery sweep", () => {
-  it("a handler that throws once leaves a row; the sweep tells `closed`, then once", async () => {
+  it("a handler that throws leaves a row; the sweep tells `closed` once the handler can, then never again", async () => {
     const t = await setup();
-    const ended = failingOnce<TaskEndEvent>(registerTaskEndHandler);
+    const ended: TaskEndEvent[] = [];
+    let down = true;
+    unregister.push(registerTaskEndHandler(async (_deps, event) => {
+      if (down) throw new Error("down");
+      ended.push(event);
+    }));
     pauseHandler();
     const task = await stopped(t);
     const closing = await t.api(MAYA, "POST", `/v1/dev/tasks/${task.taskId}/close`, {});
@@ -336,6 +345,16 @@ describe("M-6 review m-2: a `closed` end that could not be told is left to the r
     expect(t.meta(task.taskId)).toHaveProperty("closedAt");
     expect(ended).toEqual([]);
     expect(rowsOf(t, task.taskId)[0]).toMatchObject({ kind: "operation_end", endOf: "closed" });
+    down = false;
+    // Another call holds the end: the row stays, still a `closed` row, due after the lease.
+    const record = t.db.get(`DEVTASK#${task.taskId}`, "TASK_END")!;
+    t.db.set({ ...record, leaseUntil: Date.now() + 120_000 });
+    dueNow(t, task.taskId);
+    await recover(t);
+    expect(ended).toEqual([]);
+    expect(rowsOf(t, task.taskId)[0]).toMatchObject({ kind: "operation_end", endOf: "closed" });
+    expect(Date.parse(String(rowsOf(t, task.taskId)[0]!.nextAttemptAt))).toBeGreaterThan(Date.now());
+    t.db.set({ ...record, leaseUntil: 1 });
     dueNow(t, task.taskId);
     await recover(t);
     expect(ended).toEqual([expect.objectContaining({ taskId: task.taskId, outcome: "closed" })]);
@@ -358,10 +377,10 @@ describe("M-6 review m-3: a pause that could not be worked out is not told as a 
     // The write of the worked-out pause fails (a transient DynamoDB error).
     const original = t.db.send.bind(t.db);
     let down = true;
-    t.db.send = (async (command: { input?: { UpdateExpression?: string } }) => {
+    t.db.send = async (command: { input?: { UpdateExpression?: string } }) => {
       if (down && command.input?.UpdateExpression?.startsWith("SET #pause = :pause")) throw new Error("ProvisionedThroughputExceededException");
       return original(command as never);
-    }) as typeof t.db.send;
+    };
     await t.pauseAndEnd(task, "none");
     expect(ended).toEqual([]);
     expect(paused).toEqual([]);

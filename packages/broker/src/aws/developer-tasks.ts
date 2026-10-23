@@ -206,7 +206,7 @@ import {
   type TurnParty,
   type WorkspaceCharge,
 } from "../developer/task-records.js";
-import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
+import { GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, hashJson, isConditional, operationEndDispatchItem, planDocumentKindName, previousPlanDocumentBlock, workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../developer/plan-evidence-jobs.js";
 import { loadPlanEvidence, loadWorkflowDocument, shortenMarkdown, type LoadedDocument } from "../developer/plan-artifacts.js";
 import type { DeveloperTaskActions, TransactItems } from "./developer-task-actions.js";
@@ -241,7 +241,7 @@ import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
-import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, type TaskEndOutcome } from "../agents/task-end.js";
+import { END_LEASE_MS, hasTaskEndHandlers, onTaskEnded, onTaskPaused, type TaskEndOutcome } from "../agents/task-end.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -5912,7 +5912,7 @@ export async function noteTaskPaused(deps: { tableName: string; documentClient: 
 
 /**
  * Plan 3, M-6: a plain task (no workflow, no agent-step run) that was closed while its end was still owed (it stopped on a budget, so its end was not told) has ended: tells `closed`. The first
- * end a task has is the one told, so a task that already ended tells nobody again. Never throws; a close that could not tell is left for the next close or end.
+ * end a task has is the one told, so a task that already ended tells nobody again. Never throws; a close that could not tell is left for the recovery sweep (an `operation_end` row with `endOf: "closed"`).
  */
 async function tellClosedTaskEnd(deps: { tableName: string; documentClient: { send(command: unknown): Promise<unknown> } }, task: DeveloperTaskRecord): Promise<void> {
   if (!hasTaskEndHandlers() || task.workflow !== undefined) return;
@@ -5921,7 +5921,16 @@ async function tellClosedTaskEnd(deps: { tableName: string; documentClient: { se
     if (fresh.budgetPause === undefined && fresh.budgetPauseToldFor === undefined) return;
     // An agent-step run's end is its engine's (the close cancels the run above).
     if (fresh.agent !== undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) return;
-    await noteTaskEnded(deps, fresh, "closed");
+    const told = await noteTaskEnded(deps, fresh, "closed");
+    // An end that is not finished (a handler threw, or another call is telling it) is left to the recovery sweep, as a plain task's operation end is (Task 22, N1).
+    if (told !== "told" && fresh.orgId !== undefined) {
+      const now = Date.now();
+      const row = operationEndDispatchItem(deps.tableName, {
+        taskId: task.taskId, orgId: fresh.orgId, workspaceId: task.workspaceId, operationId: "close", now: new Date(now).toISOString(),
+        dueAt: new Date(now + (told === "in_progress" ? END_LEASE_MS + 5_000 : 60_000)).toISOString(), endOf: "closed",
+      }) as { Put: { Item: Record<string, unknown> } };
+      await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: row.Put.Item }));
+    }
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "task_end.close_not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
   }

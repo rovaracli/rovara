@@ -147,6 +147,11 @@ export interface DeveloperTaskRecord {
    */
   budgetPauseToldFor?: string;
   /**
+   * Plan 3, M-6 (I-1): the operation that a budget refusal stopped, written with the pause (and by the ask that works out a pause that was never written) and kept when
+   * an approval removes the pause. It says that operation's end is a pause answered, not a failure, however early the approval came.
+   */
+  budgetStopOf?: string;
+  /**
    * Plan 3, Task 22: set in the transaction that ends an agent-step run (COMPLETE, FAILED or CANCELLED), with when. An ended run is finished the way a
    * merged workflow task is: it gives back its workspace slot and its workspace (`workflowTaskFinished`, `releaseFinishedTask`).
    */
