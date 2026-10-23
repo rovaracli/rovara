@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { requireSessionLevel, resolveSessionAccess, sessionActionsFor, type SessionAccessDependencies } from "../../packages/broker/src/agent-sessions/access.js";
 import { deleteSessionShare, putSessionShare, type SessionShareDependencies } from "../../packages/broker/src/agent-sessions/shares.js";
-import { ARJUN, MAX, MIA, OLA, ORG_A, PRIYA, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
+import { ARJUN, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
 
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 
@@ -86,6 +86,15 @@ describe("I-2: a project share counts a role only from a grant row or the channe
     expect((await accessOf(w, OLA, sessionId)).level).toBe("edit");
   });
 
+  it("still reaches an org admin who has a seat in the project's Slack channel, on the full path only", async () => {
+    const w = sessionWorld();
+    const { sessionId } = w.seedSession({ kind: "local" });
+    w.seedShare(ORG_A, sessionId, { kind: "project", project: "ops" }, "use");
+    w.members.channel(ORG_A, "ops", OLA);
+    expect((await accessOf(w, OLA, sessionId)).level).toBe("use");
+    expect(await code(resolveSessionAccess(depsOf(w), w.caller(OLA), sessionId, { readOnlyPath: true }))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("gives an org admin with no grant no edit or take-over from a project share of a task session", async () => {
     const w = sessionWorld();
     const { sessionId } = w.seedSession();
@@ -131,6 +140,14 @@ describe("m-2: the notice and its undo go to the effective owner", () => {
     expect(reply.status).toBe(200);
     expect(noticeFor(w, ARJUN)).toHaveLength(1);
     expect(noticeFor(w, PRIYA)).toHaveLength(0);
+  });
+
+  it("ignores a take-over recorded on a task of another org", async () => {
+    const w = sessionWorld();
+    const { sessionId } = w.seedSession({ currentOwner: ARJUN, taskOrgId: ORG_B });
+    await putSessionShare(depsOf(w), w.caller(MAX), sessionId, { requestId: crypto.randomUUID(), principal: { kind: "member", developerId: ZED }, level: "view" });
+    expect(noticeFor(w, PRIYA)).toHaveLength(1);
+    expect(noticeFor(w, ARJUN)).toHaveLength(0);
   });
 
   it("sends no notice when the taker shares, and one to the taker when the session's first owner does", async () => {
