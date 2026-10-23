@@ -4,10 +4,11 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, ownerBudgetKey, scopeKey, spendCounterKey, topUpKey, chainKey, agentGuardrailsKey,
+  DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, ownerBudgetKey, scopeKey, spendCounterKey, topUpKey, chainKey, agentGuardrailsKey, ledgerKey,
   type BudgetScope, type Payer, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { PayerSchema } from "../../packages/contracts/src/agent-run.js";
+import { ModelAccessRequestSchema } from "../../packages/broker/src/model-proxy/protocol.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { SCOPE_ERRORS, admitWork, mintOperationKey, type MintOperationKeyInput } from "../../packages/broker/src/spend/admission.js";
@@ -70,6 +71,20 @@ describe("resolvePayer and the chain payer", () => {
     expect(PayerSchema.safeParse({ kind: "chain", chainId: CHAIN }).success).toBe(true);
     expect(PayerSchema.safeParse({ kind: "chain", chainId: "chn_short" }).success).toBe(false);
     expect(PayerSchema.safeParse({ kind: "chain", chainId: CHAIN, extra: 1 }).success).toBe(false);
+  });
+
+  it("an event or a schedule that names neither a chain nor an agent is refused, never charged to someone by default", () => {
+    for (const origin of ["event", "schedule"] as const) {
+      const { agentId: _agentId, ...rest } = base({ origin }); // eslint-disable-line @typescript-eslint/no-unused-vars -- the point is that there is none
+      expect(() => resolvePayer(rest)).toThrow(/needs the agent that pays/);
+    }
+  });
+
+  it("the model proxy's protocol carries the chain payer and the chain tags", () => {
+    const tags = mintTagsFor({ payer: { kind: "chain", chainId: CHAIN }, place: WEB_PLACE, agentId: AGENT, origin: "chain", chain: { chainId: CHAIN, chainRunId: RUN } });
+    const args = { orgId: TEST_ORG, purpose: "task", refId: "task-1", maxBudgetUsd: 2, ttlSeconds: 60, tags };
+    expect(ModelAccessRequestSchema.safeParse({ op: "mintKey", args }).success).toBe(true);
+    expect(ModelAccessRequestSchema.safeParse({ op: "mintKey", args: { ...args, tags: { ...tags, payerKind: "robot" } } }).success).toBe(false);
   });
 
   it("names the chain as who pays in a key's tags and the ledger, and mints in no member's name", () => {
@@ -693,6 +708,42 @@ describe("one monthly total for an owner's agent and chain budgets (R65)", () =>
     expect(counterOf(t, MAYA)?.version).toBe(start + 1);
     expect((await setChainBudget(t, MAYA, chainId, 12)).status).toBe(200);
     expect(counterOf(t, MAYA)?.version).toBe(start + 2);
+  });
+
+  it("shows the chain and the run on a ledger line", async () => {
+    const t = await setupWorld();
+    const at = new Date().toISOString();
+    t.db.set({ ...ledgerKey(TEST_ORG, month(), at, "key1", 1), entityType: "LEDGER", orgId: TEST_ORG, month: month(), at, keyId: "key1", usd: 1, settledUsd: 1, finalized: false, agentId: AGENT, chainId: CHAIN, chainRunId: RUN, payerKind: "chain", payerId: CHAIN, source: "rovara", origin: "chain" });
+    const reply = await t.api(ADA, "GET", `/v1/app/org/spend/ledger?month=${month()}`);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(JSON.stringify(reply.body)).toContain(RUN);
+    expect(JSON.stringify(reply.body)).toContain(`"chainId":"${CHAIN}"`);
+  });
+
+  it("checks the guardrail again when an admin approves a chain budget over the cap, and leaves the request PENDING when it no longer holds", async () => {
+    const t = await setupWorld();
+    await t.budgeted(40);
+    await t.budgeted(40);
+    const chainId = await chainOf(t);
+    const reply = await setChainBudget(t, MAYA, chainId, 30);
+    expect(reply.status).toBe(202);
+    t.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: ADA.developerId, updatedAt: "2026-10-21T00:00:00.000Z", guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxAgentMonthlyUsd: 20 } });
+    expect(await refusal(t.decide(DEB, String(reply.body.spendRequestId)))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(t.requests().find((record) => record.spendRequestId === reply.body.spendRequestId)?.status).toBe("PENDING");
+    expect(chainRecord(t, chainId)?.monthlyBudgetUsd).toBeUndefined();
+  });
+
+  it("this month's top-up of a chain goes with it to the owner it moves to, and counts there", async () => {
+    const t = await setupWorld();
+    await t.budgeted(40, CARL);
+    await t.budgeted(40, CARL);
+    const chainId = await chainOf(t);
+    expect((await setChainBudget(t, MAYA, chainId, 10)).status).toBe(200);
+    t.db.set({ ...topUpKey(TEST_ORG, month(), { kind: "chain", chainId }), entityType: "TOPUP", amountUsd: 12 });
+    // Carl has $80: with the chain's $10 base he would be at $90, but its $12 top-up goes with it ($102).
+    const reply = await t.api(DEB, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "member", developerId: CARL.developerId } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    expect(reply.body.message).toBe(OVER("Carl Contributor", 102));
   });
 
   it("registers chains as a contributor to the owner's effective total beside agents", () => {
