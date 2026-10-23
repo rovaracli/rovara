@@ -497,7 +497,7 @@ describe("listing sessions", () => {
     const memo = newSessionRoleMemo();
     r.w.members.calls.length = 0;
     for (const id of [first, second]) await requireSessionLevel(r.deps, r.w.caller(OLA), id, "view", "view it", { memo });
-    expect(r.w.members.calls.filter((call) => call === "roleOf web").length).toBeLessThanOrEqual(2); // once as an admin, once as a member
+    expect(r.w.members.calls.filter((call) => call === "roleOf web")).toHaveLength(1); // as a plain member (an admin's own role needs no lookup), for both sessions
   });
 
   it("drops an index row that names another org, and refuses a limit outside 1 to 100", async () => {
