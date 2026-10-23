@@ -224,18 +224,19 @@ describe("the named TEST proof-only installation gate", () => {
     // (legacy-templates snapshot, +45 lines, additions only), so the legacy digests moved with them; the legacy broker policy is unchanged.
     // Plan 3, Task 22: the notifier's stream filter also takes AGENT_REPORT_POST items (one more value in an existing filter), so the named and foreign
     // digests moved with it; the legacy template has no notifier and is unchanged.
+    // Plan 5, Task 5: the sign-in stack's `ANY /s/{proxy+}` route (a session's link) moved the named and foreign digests; legacy has no sign-in stack.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "a431108e72d5ac263b6993ce448dd87ef339690d2b4b76ae381500fec2d6d137",
-        withoutRoute: "79d41d64d68f69a899da33af3e6c2e5f34a972556ef13f5a2921c6f8545b70b0",
+        withRoute: "82a1d23319893234fa31c25a3a7997eafee04884478f705d48dee41e95e53a85",
+        withoutRoute: "4be7fe0be92d1babd842caea381381602d45e99b6ff51706f5beec2facbae366",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "0e565c95b1da60093ec1cac60b851b77b8c302757500e9e58d46a60182cd3534",
-        withoutRoute: "09fc211f13d1de330bc7034b212775d712d27c47d47dbefe1ec78cf3be8154b1",
+        withRoute: "d649d2b8e07b73ebcd006a4004339b677fdaad0cb0ca1ec2be95786131ec98e6",
+        withoutRoute: "d8fa48ebd3d11406debffb7d0a38861c1c03c3348d49af762b3d01ee4dd1ef0d",
       },
       {
         label: "legacy",

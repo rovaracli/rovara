@@ -11,6 +11,8 @@ const DEV_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 /** The hosted app's routes (`GET /v1/app/me`): authorizer-free like the dev routes, the broker verifies the developer token itself. */
 const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
+/** A session's link (Plan 5): `/s/<sessionId>`, served to a browser like the review pages (its own session cookie, the broker checks access). */
+const SESSION_LINK_ROUTE_KEY = "ANY /s/{proxy+}";
 
 export interface DeveloperSignInParameters {
   slackTeamId: CfnParameter; slack: CfnParameter; oidcIssuer: CfnParameter; oidcClientId: CfnParameter;
@@ -323,12 +325,15 @@ export class DeveloperSignIn extends Construct {
     const feedbackReviewRoute = new apigwv2.CfnRoute(this, "FeedbackReviewRoute", {
       apiId: props.api.ref, routeKey: FEEDBACK_REVIEW_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
     });
+    const sessionLinkRoute = new apigwv2.CfnRoute(this, "SessionLinkRoute", {
+      apiId: props.api.ref, routeKey: SESSION_LINK_ROUTE_KEY, target: `integrations/${props.brokerIntegration.ref}`, authorizationType: "NONE",
+    });
     // Public routes are stage-capped: bursts of 50, 20 requests a second on average,
     // across all callers. A developer signs in a few times a week, so this only bites a flood.
     const throttle = { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 };
     const throttledRoutes = props.throttledRoutes ?? [];
     props.stage.routeSettings = {
-      [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle,
+      [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle, [SESSION_LINK_ROUTE_KEY]: throttle,
       ...Object.fromEntries(throttledRoutes.map((route) => [route.routeKey, throttle])),
     };
     // Route settings must name routes that already exist.
@@ -336,6 +341,7 @@ export class DeveloperSignIn extends Construct {
     props.stage.addDependency(devRoute);
     props.stage.addDependency(appRoute);
     props.stage.addDependency(feedbackReviewRoute);
+    props.stage.addDependency(sessionLinkRoute);
     for (const route of throttledRoutes) props.stage.addDependency(route);
 
     const broker = props.broker;

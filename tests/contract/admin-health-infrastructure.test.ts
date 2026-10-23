@@ -133,6 +133,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/model-sources/store.ts",
       // A run's cost item (Plan 3, Task 34): kept a year for the max-per-run suggestion, then deleted by the TTL.
       "packages/broker/src/spend/estimate.ts",
+      // Plan 5, Tasks 2 and 4: a session's events, and the shares, share index items and request items written for an ended session, expire with it.
+      "packages/broker/src/agent-sessions/store.ts", "packages/broker/src/agent-sessions/shares.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

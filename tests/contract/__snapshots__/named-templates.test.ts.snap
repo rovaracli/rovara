@@ -4017,6 +4017,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "DeveloperSignInAuthRoute98555360",
         "DeveloperSignInDevRoute4BB932E2",
         "DeveloperSignInFeedbackReviewRoute881C7CFE",
+        "DeveloperSignInSessionLinkRoute06DE5874",
         "GithubInstallCallbackRoute",
         "GithubInstallConfirmRoute",
       ],
@@ -4027,6 +4028,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "AutoDeploy": true,
         "RouteSettings": {
           "ANY /review/{proxy+}": {
+            "ThrottlingBurstLimit": 50,
+            "ThrottlingRateLimit": 20,
+          },
+          "ANY /s/{proxy+}": {
             "ThrottlingBurstLimit": 50,
             "ThrottlingRateLimit": 20,
           },
@@ -4644,6 +4649,27 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "PayloadFormatVersion": "2.0",
       },
       "Type": "AWS::ApiGatewayV2::Integration",
+    },
+    "DeveloperSignInSessionLinkRoute06DE5874": {
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApi",
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "ANY /s/{proxy+}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "BrokerIntegration",
+              },
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::ApiGatewayV2::Route",
     },
     "DeveloperSignInTable26CE739E": {
       "DeletionPolicy": "RetainExceptOnCreate",

@@ -137,13 +137,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(authorizers.map((properties) => properties.Name)).toEqual(["agentx-jwt"]);
   });
 
-  it("routes /v1/dev/* and /review/* to the broker without JWT, keeps /v1/auth/* on DeveloperIdentity, and leaves ANY /{proxy+} protected", () => {
+  it("routes /v1/dev/* and /review/* and /s/* to the broker without JWT, keeps /v1/auth/* on DeveloperIdentity, and leaves ANY /{proxy+} protected", () => {
     const routes = Object.fromEntries(ofType(named, "AWS::ApiGatewayV2::Route").map(([, resource]) => [resource.Properties.RouteKey as string, resource.Properties]));
     const authorizerId = (name: string) => ({ Ref: ofType(named, "AWS::ApiGatewayV2::Authorizer").find(([, r]) => r.Properties.Name === name)![0] });
     expect(routes["ANY /v1/dev/{proxy+}"]).toMatchObject({ AuthorizationType: "NONE", Target: routes["ANY /{proxy+}"]!.Target });
     expect(routes["ANY /v1/dev/{proxy+}"]!.AuthorizerId).toBeUndefined();
     expect(routes["ANY /review/{proxy+}"]).toMatchObject({ AuthorizationType: "NONE", Target: routes["ANY /{proxy+}"]!.Target });
     expect(routes["ANY /review/{proxy+}"]!.AuthorizerId).toBeUndefined();
+    // Plan 5: a session's link, `/s/<sessionId>`, is a browser page like the review pages: the broker's integration, no JWT.
+    expect(routes["ANY /s/{proxy+}"]).toMatchObject({ AuthorizationType: "NONE", Target: routes["ANY /{proxy+}"]!.Target });
+    expect(routes["ANY /s/{proxy+}"]!.AuthorizerId).toBeUndefined();
     expect(routes["ANY /{proxy+}"]).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: authorizerId("agentx-jwt") });
     const auth = routes["ANY /v1/auth/{proxy+}"]!;
     expect(auth.AuthorizationType).toBe("NONE");
@@ -314,6 +317,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "ANY /v1/dev/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /v1/app/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /review/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      "ANY /s/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post.
       "GET /v1/github/install/callback": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "POST /v1/github/install/confirm": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
@@ -325,6 +329,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(dependsOn).toContain(routeId("ANY /v1/dev/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /v1/app/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
+    expect(dependsOn).toContain(routeId("ANY /s/{proxy+}"));
     expect(dependsOn).toContain(routeId("GET /v1/github/install/callback"));
     expect(dependsOn).toContain(routeId("POST /v1/github/install/confirm"));
     // The app route is served by the broker, which verifies the developer token itself: no API Gateway authorizer.
