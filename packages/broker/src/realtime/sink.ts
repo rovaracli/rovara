@@ -1,11 +1,12 @@
 // The notice sink (Plan 5 Task 8): what happens after a session's summary change commits. It works out who hears the change (`noticesFor`), checks the session's
 // followers again (a person who can no longer see it is dropped and their follow deleted), writes each person's feed items, and only then publishes. Nothing here
 // throws into the refresh: a notice is never a reason for a refresh to fail (`notifySessionChange` logs what escapes).
-import { DeleteCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { SESSION_FOLLOWERS_MAX, agentSessionKey, orgMemberKey, projectMemberKey, type AgentSessionRecord } from "@agentx/contracts";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { NO_SLACK_PROJECT_MEMBERS, readSessionShares, readTaskPeople, effectiveOwnerOf, followerStanding, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { registerSessionNoticeSink, type NoticeSinkDependencies, type SessionChange, type SessionNoticeSink } from "../agent-sessions/notice-sink.js";
+import { removeFollower } from "../agent-sessions/followers.js";
 import { writeChanges } from "./changes.js";
 import { environmentCredentials, followersHear, noticesFor, publishNotices, type RealtimeConfig } from "./publish.js";
 
@@ -83,7 +84,7 @@ async function checkedFollowers(deps: NoticeSinkDependencies, access: SessionAcc
       continue;
     }
     if (found !== "lost") { allowed.push(developerId); continue; }
-    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, `${FOLLOWER_PREFIX}${developerId}`) }));
+    await removeFollower(deps, session, developerId);
   }
   if (unjudged > 0) log({ event: "realtime.followers_unchecked", sessionId: session.sessionId, unchecked: unjudged });
   if (undecided > 0) log({ event: "realtime.followers_undecided", sessionId: session.sessionId, undecided });

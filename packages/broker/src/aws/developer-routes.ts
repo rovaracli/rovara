@@ -126,6 +126,7 @@ import {
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
+import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionShareDependencies } from "../agent-sessions/shares.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
@@ -1475,6 +1476,8 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
     ...sessions, origin: new URL(deps.developer.issuer).origin,
     taskView: (task, options) => taskView(taskDeps, task, options),
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
+    // Plan 5 Task 9: a person arriving on a session is told to its channel through the same API the sink publishes to.
+    realtimePublish: realtimeConfigFromEnvironment(),
     // Plan 5 Task 8: the realtime token. Without the sign-in function's signing, or without an events API, the route says live updates are unavailable.
     realtime: {
       endpoint: deps.developer.realtimeEndpoint,

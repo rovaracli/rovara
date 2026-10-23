@@ -33,7 +33,8 @@ import { AGENTX_NAME_PATTERN } from "./names.js";
 
 const UNKNOWN = "unknown" as const;
 const InstantSchema = z.string().datetime();
-const PRESENCE_VIEWERS_MAX = 20;
+/** The most people `viewingNow` names. */
+export const PRESENCE_VIEWERS_MAX = 20;
 const NEEDS_CONFIRMATION_CHANGES_MAX = 10;
 const CHANGE_TEXT_MAX = 300;
 const URL_MAX = 2048;
@@ -195,6 +196,13 @@ export const SessionSharePutResponseReaderSchema = forwardReader(SessionSharePut
 /** `DELETE /v1/app/sessions/{id}/shares/{principalKey}`. */
 export const SessionShareDeleteResponseSchema = z.object({ removed: z.boolean() }).strict();
 export const SessionShareDeleteResponseReaderSchema = forwardReader(SessionShareDeleteResponseSchema);
+
+/** `POST` and `DELETE /v1/app/sessions/{id}/follow`: whether the caller follows now (the session's owner always does, with no item). */
+export const SessionFollowResponseSchema = z.object({ following: z.boolean() }).strict();
+export const SessionFollowResponseReaderSchema = forwardReader(SessionFollowResponseSchema);
+/** `POST /v1/app/sessions/{id}/presence`: who is looking at the session now, counting this heartbeat. */
+export const SessionPresenceResponseSchema = z.object({ viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX) }).strict();
+export const SessionPresenceResponseReaderSchema = forwardReader(SessionPresenceResponseSchema);
 
 /** One session on the Live wall, a project page or a Home card: the header's short form. */
 export const SessionTileSchema = z

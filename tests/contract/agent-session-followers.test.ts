@@ -21,14 +21,13 @@ import { sessionView, type SessionReadDependencies } from "../../packages/broker
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { createRealtimeSink } from "../../packages/broker/src/realtime/sink.js";
 import type { RealtimeConfig } from "../../packages/broker/src/realtime/publish.js";
-import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
+import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED } from "../support/agent-session-world.js";
 import { iso, projectorWorld } from "../support/agent-session-projector-world.js";
 
 afterEach(() => registerSessionNoticeSink(undefined));
 
 type Item = Record<string, unknown>;
 const ENDPOINT = "https://abcdefghij.appsync-api.us-east-1.amazonaws.com/event";
-const hex = (digit: string) => digit.repeat(64);
 const FOLLOWER_LIMIT_TEXT = "This session has the most followers it can have.";
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 
@@ -185,7 +184,7 @@ describe("following a session", () => {
           injected = true;
           await f.follow(ARJUN);
         }
-        return f.w.db.send(command as never);
+        return f.w.db.send(command);
       },
     };
     const reply = await followSession({ ...f.deps, documentClient: racing }, f.w.caller(ARJUN), f.session.sessionId);

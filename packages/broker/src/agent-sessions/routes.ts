@@ -11,9 +11,11 @@ import { StatusReply } from "../aws/status-reply.js";
 import { SESSION_COOKIE, escapeHtml, parseCookie, safeResponse, signInLocation, type WebResponse } from "../aws/web-session.js";
 import { randomBytes } from "node:crypto";
 import { readSessionEvents } from "./events.js";
+import { followSession, recordPresence, unfollowSession } from "./followers.js";
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadDependencies } from "./read.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
 import { readChanges } from "../realtime/changes.js";
+import type { RealtimeConfig } from "../realtime/publish.js";
 import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/token.js";
 
 /** What the session routes need: the read dependencies, and (for a company-wide share and the decisions a caller may make) Plan 3's approvals core. */
@@ -21,12 +23,14 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
   approvals?: ApprovalDependencies & Partial<AgentRouteDependencies>;
   /** What the realtime token route needs (Task 8). Without it the route answers `RUNTIME_UNAVAILABLE`. */
   realtime?: RealtimeTokenDependencies;
+  /** The events API a presence notice is posted to (Task 9); without it a heartbeat is kept and nothing is posted. */
+  realtimePublish?: RealtimeConfig | undefined;
 }
 
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events))?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence))?)?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
 const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
@@ -88,7 +92,7 @@ function queryOf(url: URL): SessionListQuery {
 
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
- * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `GET /v1/app/changes?since=` (the caller's own change notices) and
+ * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET /v1/app/changes?since=` (the caller's own change notices) and
  * `POST /v1/app/realtime/token`. Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
@@ -103,7 +107,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();
-  const [, rawId, shares, rawKey, rawSeq, events] = matched;
+  const [, rawId, shares, rawKey, rawSeq, events, person] = matched;
   const read: SessionReadDependencies = deps.deciding !== undefined || deps.approvals === undefined ? deps : { ...deps, deciding: decidingOf(deps.approvals) };
   const method = request.method;
   if (rawId === undefined) {
@@ -117,6 +121,16 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   if (events !== undefined) {
     if (method !== "GET") throw notFound();
     return readSessionEvents(read, caller, sessionId, { after: url.searchParams.get("after") ?? undefined });
+  }
+  if (person !== undefined) {
+    const peopleDeps = { ...read, realtimePublish: deps.realtimePublish };
+    if (person === "presence") {
+      if (method !== "POST") throw notFound();
+      return recordPresence(peopleDeps, caller, sessionId);
+    }
+    if (method === "POST") return followSession(peopleDeps, caller, sessionId);
+    if (method === "DELETE") return unfollowSession(peopleDeps, caller, sessionId);
+    throw notFound();
   }
   if (shares === undefined && rawSeq === undefined) {
     if (method !== "GET") throw notFound();

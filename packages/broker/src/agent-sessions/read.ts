@@ -30,6 +30,7 @@ import {
 } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
+import { viewingNow } from "./followers.js";
 import type { SessionShareDependencies } from "./shares.js";
 
 /** Who reads: `DeveloperCaller` fits. */
@@ -224,8 +225,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     },
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
     followers: session.followerCount,
-    viewingNow: [],
-    you: { level: levelOf(access), owner: access.owner, following: followerItem !== undefined, actions: sessionActionsFor(access) },
+    viewingNow: await viewingNow(deps, session, deps.now()),
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: sessionActionsFor(access) },
     link: sessionLink(deps.origin, session.sessionId),
     bindings: await bindingsOf(deps, session),
     legs: session.legs,

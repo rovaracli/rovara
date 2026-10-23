@@ -89,7 +89,7 @@ describe("reading a task session", () => {
     expect(session).toMatchObject({
       contractVersion: 1, sessionId, kind: "task", mode: "delegate", title: "Bump the Stripe SDK", project: "web", owner: { developerId: PRIYA, name: "Priya" },
       where: { kind: "cloud" }, link: `${CELL}/s/${sessionId}`, body: { kind: "task", task: { taskId } }, approvals: [], viewingNow: [], bindings: [],
-      you: { level: "edit", owner: true, following: false }, followers: 0, revision: 1,
+      you: { level: "edit", owner: true, following: true }, followers: 0, revision: 1,
     });
     expect(session.you.actions).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff"]);
   });
@@ -219,7 +219,7 @@ describe("reading a task session", () => {
     });
     const asArjun = await view(r, ARJUN, sessionId);
     expect(asArjun).toMatchObject({ followers: 3, you: { following: true } });
-    expect((await view(r, PRIYA, sessionId)).you.following).toBe(false);
+    expect((await view(r, PRIYA, sessionId)).you.following).toBe(true); // the effective owner always follows, with no item (Task 9)
     expect(asArjun.bindings).toEqual([
       { kind: "slack_thread", url: "https://app.slack.com/client/T0123ABC/C0123ABC/thread/C0123ABC-1760000000.123456" },
       { kind: "linear_issue", url: "https://linear.app/acme/issue/ENG-1" },
