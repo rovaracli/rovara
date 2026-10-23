@@ -5,17 +5,21 @@ import { agentSessionKey, liveSessionKey, openAgentSessionKey, taskSpendKey, typ
 import { projectSessions } from "../../packages/broker/src/agent-sessions/projector.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
-import { ORG_A, PRIYA, T0, sessionWorld } from "./agent-session-world.js";
+import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
+import type { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { ORG_A, PRIYA, T0, sessionWorld, type SessionWorld } from "./agent-session-world.js";
 
 type Item = Record<string, unknown>;
+/** Named so the world's inferred type can be written in a declaration (its caller and sign-in store come from the broker package). */
+export type WorldTypes = { caller: DeveloperCaller; signInStore: DeveloperSignInStore };
 export const DAY_MS = 86_400_000;
 export const iso = (ms: number) => new Date(ms).toISOString();
 export const workflow = (stage: string, state: string, extra: Record<string, unknown> = {}) => ({ stage, state, revision: 3, path: "QUICK", artifacts: [], decisions: [], ...extra });
 
-type Item = Record<string, unknown>;
+
 
 export function projectorWorld() {
-  const w = sessionWorld();
+  const w: SessionWorld = sessionWorld();
   const logs: Array<Record<string, unknown>> = [];
   const deps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, log: (entry: Record<string, unknown>) => logs.push(entry) };
   const sessionOf = (sessionId: string) => w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as unknown as AgentSessionRecord & Item;
@@ -25,6 +29,8 @@ export function projectorWorld() {
     const seeded = w.seedSession({ owner: options.owner ?? PRIYA, ...(options.orgId === undefined ? {} : { orgId: options.orgId }) });
     const workspaceId = randomUUID();
     const orgId = options.orgId ?? ORG_A;
+    const meta = w.db.get(agentSessionKey(orgId, seeded.sessionId, "META"))!;
+    w.db.set({ ...meta, legs: [{ seq: 1, subject: meta.subject, where: meta.where, startedAt: "2026-10-22T08:00:00.000Z" }] });
     w.db.set({ ...w.db.get(taskKey(seeded.taskId))!, workspaceId, ...(options.task ?? {}) });
     w.db.set({ pk: `WORKSPACE#${workspaceId}`, sk: "META", entityType: "WORKSPACE", status: "READY" });
     w.db.set({ ...taskPointerKey(workspaceId), entityType: "DEVELOPER_TASK_POINTER", taskId: seeded.taskId, developerId: options.owner ?? PRIYA });
@@ -49,13 +55,11 @@ export function projectorWorld() {
   const stream = (item: Item, previous?: Item, eventName = "MODIFY") => ({
     eventName, eventID: randomUUID(), dynamodb: { NewImage: marshall(item, { removeUndefinedValues: true }), ...(previous === undefined ? {} : { OldImage: marshall(previous, { removeUndefinedValues: true }) }) },
   });
-  const project = (items: Item[], deadline = Date.now() + 60_000, extra: Record<string, unknown> = {}) => projectSessions(items.map((item) => stream(item)), { ...deps, ...extra } as never, { deadline });
-  const refresh = (sessionId: string, orgId = ORG_A, extra: Record<string, unknown> = {}) => refreshSessionSummary({ ...deps, ...extra } as never, orgId, sessionId as never);
+  const project = (items: Item[], deadline = Date.now() + 60_000, extra: Record<string, unknown> = {}) => projectSessions(items.map((item) => stream(item)), { ...deps, ...extra }, { deadline });
+  const refresh = (sessionId: string, orgId = ORG_A, extra: Record<string, unknown> = {}) => refreshSessionSummary({ ...deps, ...extra }, orgId, sessionId);
   const tile = (sessionId: string, orgId = ORG_A) => w.db.get(liveSessionKey(orgId, sessionId)) as Item | undefined;
-  const events = (sessionId: string) => w.db.find((item) => item.pk === agentSessionKey(ORG_A, sessionId as never, "META").pk && String(item.sk).startsWith("EVENT#"));
+  const events = (sessionId: string) => w.db.find((item) => item.pk === agentSessionKey(ORG_A, sessionId, "META").pk && String(item.sk).startsWith("EVENT#"));
   return { w, deps, logs, sessionOf, open, patchTask, operation, setOperation, eventOf, spent, stream, project, refresh, tile, events };
 }
- = (stage: string, state: string, extra: Item = {}) => ({ stage, state, revision: 3, path: "QUICK", artifacts: [], decisions: [], ...extra });
-
 
 export type PW = ReturnType<typeof projectorWorld>;

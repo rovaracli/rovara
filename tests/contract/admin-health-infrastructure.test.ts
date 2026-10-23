@@ -135,6 +135,9 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/spend/estimate.ts",
       // Plan 5, Tasks 2 and 4: a session's events, and the shares, share index items and request items written for an ended session, expire with it.
       "packages/broker/src/agent-sessions/store.ts", "packages/broker/src/agent-sessions/shares.ts",
+      // Plan 5, Tasks 6 and 7a: the event log reads it back (and leaves it off an event it returns); a session's end sets it on the session and its live tile
+      // (summary.ts); the drain sets it on an ended session's items and the sweep reads a presence item's (sweep.ts).
+      "packages/broker/src/agent-sessions/events.ts", "packages/broker/src/agent-sessions/summary.ts", "packages/broker/src/agent-sessions/sweep.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

@@ -384,6 +384,7 @@ import { escalateOwnerRequests, requestForPausedTask, runLimitRequester, spendDe
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { slackReplyAuthor } from "../agent-sessions/events.js";
+import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.js";
 import { readTaskRecipe, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
@@ -1465,7 +1466,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const agents = agentRouteDependencies(dependencies, tasks);
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Plan 3, Task 21a-wiring (hand-off 1): the sign-in function asks whether a member may decide an approval, by a direct invoke (never through
     // API Gateway). The same live evaluation as the page, answered as one word (and the words for a refusal); a failure here is an error, never "open".
     if (isDecideInspectEvent(event)) {
@@ -1510,6 +1511,17 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         console.log(JSON.stringify({ component: "broker", event: "github.install_request_reminders_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "reminders_failed" }, "github-install-request-reminders", 500);
       }
+    }
+    // Plan 5, Task 7a: every 5 minutes, the session sweep (refreshes the open sessions from a saved cursor) and then the retention drain. Each has its own deadline
+    // and a failure of one never stops the other. Plan 4's chain reads and Task 18's device reads are wired here when those land.
+    if (isSessionSweepEvent(event)) {
+      const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
+      const outcome: Record<string, unknown> = {};
+      try { outcome.sweep = await sweepAgentSessions(table, Date.now()); }
+      catch (error) { console.log(JSON.stringify({ component: "broker", event: "agent_session.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.sweep = "failed"; }
+      try { outcome.drain = await drainEndedSessions(table, Date.now()); }
+      catch (error) { console.log(JSON.stringify({ component: "broker", event: "agent_session.drain_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.drain = "failed"; }
+      return json(outcome, "session-sweep");
     }
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
     if (isSpendSettlementEvent(event)) {
@@ -10892,6 +10904,10 @@ function isAuditDrainEvent(event: unknown): event is { source: "agentx.audit-dra
 
 function isGithubInstallRequestReminderEvent(event: unknown): event is { kind: "github-install-request-reminders" } {
   return event !== null && typeof event === "object" && (event as { kind?: unknown }).kind === "github-install-request-reminders";
+}
+
+function isSessionSweepEvent(event: unknown): event is { source: "agentx.session-sweep" } {
+  return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.session-sweep";
 }
 
 function isSpendSettlementEvent(event: unknown): event is { source: "agentx.spend-settlement" } {

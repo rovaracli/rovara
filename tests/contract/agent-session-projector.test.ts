@@ -18,17 +18,15 @@ import {
   spendRequestSlotKey,
   taskSpendKey,
   PROJECTOR_CONCURRENCY,
-  type AgentSessionRecord,
-  type SessionSummary,
 } from "../../packages/contracts/src/index.js";
 import { registerSessionNoticeSink, type SessionChange } from "../../packages/broker/src/agent-sessions/notice-sink.js";
 import { projectSessions } from "../../packages/broker/src/agent-sessions/projector.js";
-import { computeSessionSummary, refreshSessionSummary, sessionSummaryDigest } from "../../packages/broker/src/agent-sessions/summary.js";
+import { computeSessionSummary, sessionSummaryDigest } from "../../packages/broker/src/agent-sessions/summary.js";
 import { sessionView } from "../../packages/broker/src/agent-sessions/read.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
 import { createWriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { createOutboxPublisherHandler, indexTogether } from "../../packages/broker/src/aws/outbox-publisher.js";
-import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
+import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, CELL, ORG_A, ORG_B, PRIYA, T0 } from "../support/agent-session-world.js";
 import { DAY_MS, iso, projectorWorld, workflow, type PW } from "../support/agent-session-projector-world.js";
 
@@ -230,7 +228,7 @@ describe("when a session ends", () => {
     p.w.clock.now = T0 + 11 * 60_000;
     await p.refresh(local.sessionId, ORG_A, { local: source });
     expect(p.sessionOf(local.sessionId).summary.offline).toBe(true);
-    source.read.mockResolvedValue({ ...facts, status: "succeeded", endedAt: iso(T0 + 12 * 60_000) } as never);
+    source.read.mockResolvedValue({ ...facts, status: "succeeded", endedAt: iso(T0 + 12 * 60_000) });
     await p.refresh(local.sessionId, ORG_A, { local: source });
     expect(p.sessionOf(local.sessionId)).toMatchObject({ summary: { status: "succeeded" }, endedAt: iso(T0 + 12 * 60_000) });
     expect(p.sessionOf(local.sessionId).summary.offline).toBeUndefined();
@@ -245,7 +243,7 @@ describe("when a session ends", () => {
     const source = { read: vi.fn(async () => facts as Item), targetOf: () => undefined };
     await p.refresh(chain.sessionId, ORG_A, { chains: source });
     expect(p.sessionOf(chain.sessionId).summary).toMatchObject({ status: "needs_person", step: "Review gate", costUsd: 3.5, needsPeople: [ARJUN] });
-    source.read.mockResolvedValue({ status: "timed_out", stepName: "Review gate", spentUsd: 2 } as never);
+    source.read.mockResolvedValue({ status: "timed_out", stepName: "Review gate", spentUsd: 2 });
     await p.refresh(chain.sessionId, ORG_A, { chains: source });
     expect(p.sessionOf(chain.sessionId)).toMatchObject({ summary: { status: "failed" } });
     expect(p.sessionOf(chain.sessionId).endedAt).toBeDefined();
@@ -271,7 +269,7 @@ describe("who is needed", () => {
     p.operation(s.workspaceId, "task", "SUCCEEDED");
     p.w.db.set({
       pk: `DEVTASK#${s.taskId}`, sk: "AGENT_RUN", entityType: "AGENT_RUN", orgId: ORG_A, revision: 1, state: "WAITING_FOR_APPROVAL", cursor: 0, input: { text: "Triage the inbox" },
-      steps: [{ id: "work", status: "waiting", operationIds: [], approvalIds: [] }], reports: [],
+      steps: [{ id: "work", status: "waiting", operationIds: [], approvalIds: ["apr_aaaaaaaaaaaaaaaaaaaa"] }], reports: [],
     });
     const approvalId = "apr_aaaaaaaaaaaaaaaaaaaa";
     expect(await createWriteApprovalRecord({ documentClient: p.w.db, tableName: "state", now: () => T0 }, {
@@ -318,12 +316,13 @@ describe("cost, order and the notice sink", () => {
     const p = projectorWorld();
     const s = p.open();
     p.operation(s.workspaceId, "task", "RUNNING");
+    p.patchTask(s.taskId, { workflow: workflow("IMPLEMENT", "RUNNING") });
     const seen: SessionChange[] = [];
     registerSessionNoticeSink(async (_deps, change) => { seen.push(change); throw new Error("sink down"); });
     expect(await p.refresh(s.sessionId)).toBe("updated");
     expect(await p.refresh(s.sessionId)).toBe("unchanged");
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ orgId: ORG_A, sessionId: s.sessionId, statusChanged: true, ended: false, summaryRevision: 2, summary: { status: "running" } });
+    expect(seen[0]).toMatchObject({ orgId: ORG_A, sessionId: s.sessionId, statusChanged: false, stepChanged: true, ended: false, summaryRevision: 2, summary: { status: "running", step: "Coding" } });
     expect(p.logs.map((entry) => entry.event)).toContain("agent_session.notice_sink_failed");
     expect(p.sessionOf(s.sessionId).summaryRevision).toBe(2);
   });
@@ -332,6 +331,7 @@ describe("cost, order and the notice sink", () => {
     const p = projectorWorld();
     const s = p.open();
     p.operation(s.workspaceId, "task", "RUNNING");
+    p.patchTask(s.taskId, { workflow: workflow("IMPLEMENT", "RUNNING") });
     const results = await Promise.all([p.refresh(s.sessionId), p.refresh(s.sessionId)]);
     expect(results.filter((result) => result === "updated")).toHaveLength(1);
     expect(p.sessionOf(s.sessionId).summaryRevision).toBe(2);
@@ -356,13 +356,13 @@ describe("cost, order and the notice sink", () => {
     const p = projectorWorld();
     const s = p.open();
     p.operation(s.workspaceId, "task", "RUNNING");
-    const session = (await new AgentSessionStore(p.deps).get(ORG_A, s.sessionId as never))!;
+    const session = (await new AgentSessionStore(p.deps).get(ORG_A, s.sessionId))!;
     const one = await computeSessionSummary(p.deps, session);
     p.w.clock.now += 5000;
     const two = await computeSessionSummary(p.deps, session);
     expect(one.digest).toBe(two.digest);
     expect(one.computedAt).not.toBe(two.computedAt);
-    const { digest: _d, computedAt: _c, ...rest } = one as SessionSummary; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+    const { digest: _d, computedAt: _c, ...rest } = one; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
     expect(sessionSummaryDigest(rest)).toBe(one.digest);
     expect(sessionSummaryDigest({ ...rest, costUsd: 1 })).not.toBe(one.digest);
   });
@@ -371,8 +371,9 @@ describe("cost, order and the notice sink", () => {
     const p = projectorWorld();
     const s = p.open();
     p.operation(s.workspaceId, "task", "RUNNING");
+    p.patchTask(s.taskId, { workflow: workflow("IMPLEMENT", "RUNNING") });
     await p.refresh(s.sessionId);
-    expect(p.events(s.sessionId)[0]!.eventId).toBe(sessionEventId("status", `${s.sessionId}:2`));
+    expect(p.events(s.sessionId)[0]!.eventId).toBe(sessionEventId("step", `${s.sessionId}:2`));
   });
 });
 
@@ -452,13 +453,13 @@ describe("the projector's budget", () => {
       running += 1;
       peak = Math.max(peak, running);
       try {
-        for (let n = 0; n < 4; n += 1) await timed.send({ constructor: { name: "GetCommand" }, input: { TableName: "state", Key: agentSessionKey(ORG_A, id as never, "META"), ConsistentRead: true } });
+        for (let n = 0; n < 4; n += 1) await timed.send({ constructor: { name: "GetCommand" }, input: { TableName: "state", Key: agentSessionKey(ORG_A, id, "META"), ConsistentRead: true } });
         return "updated" as const;
       } finally { running -= 1; }
     };
     const deadline = T0 + 2000;
     const deps = { ...p.deps, now: () => clock.now, refresh };
-    const result = await projectSessions(sessions.map((s) => p.stream(taskOf(p, s.taskId))), deps as never, { deadline });
+    const result = await projectSessions(sessions.map((s) => p.stream(taskOf(p, s.taskId))), deps, { deadline });
     expect(peak).toBeLessThanOrEqual(PROJECTOR_CONCURRENCY);
     expect(peak).toBeGreaterThan(1);
     expect(started.length).toBeGreaterThan(0);
@@ -476,7 +477,7 @@ describe("the projector's budget", () => {
     const sessions = Array.from({ length: 105 }, () => p.open());
     const calls: string[] = [];
     const refresh = async (_deps: unknown, _org: unknown, id: string) => { calls.push(id); return "unchanged" as const; };
-    const result = await projectSessions(sessions.map((s) => p.stream(taskOf(p, s.taskId))), { ...p.deps, refresh } as never, { deadline: Date.now() + 60_000 });
+    const result = await projectSessions(sessions.map((s) => p.stream(taskOf(p, s.taskId))), { ...p.deps, refresh }, { deadline: Date.now() + 60_000 });
     expect(calls).toHaveLength(100);
     expect(result.skipped).toBe(5);
   });
@@ -489,7 +490,7 @@ describe("the publisher with the projector", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const outbox = { eventName: "INSERT", dynamodb: { NewImage: marshall({ pk: "OUTBOX#o1", sk: "OUTBOX", entityType: "OUTBOX", status: "PENDING", id: "o1", operationId: "op", workspaceId: "ws" }) } };
     const activity = vi.fn(async () => ({ failures: 0 }));
-    const sessions = vi.fn(async () => { throw Object.assign(new Error("slow down"), { name: "ThrottlingException" }); });
+    const sessions = vi.fn(async (...args: unknown[]) => { void args; throw Object.assign(new Error("slow down"), { name: "ThrottlingException" }); });
     const handler = createOutboxPublisherHandler({ send, markQueued, index: indexTogether({ activity, sessions }) });
     expect(await handler({ Records: [outbox] })).toEqual({ published: 1 });
     expect(send).toHaveBeenCalledTimes(1);

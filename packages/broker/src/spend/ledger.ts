@@ -12,7 +12,7 @@
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   BUDGET_ALERT_LEVELS, FINALIZE_DELAY_MS, FINALIZED_SETTLE_WINDOW_MS, KEY_EXPIRY_GRACE_MS, OrgIdSchema,
-  agentRunsKey, agentXError, budgetAlertKey, ledgerKey, modelCounter, modelKeyKey, openModelKeysKey, originCounter, scopeKey, sourceCounter,
+  agentRunsKey, agentXError, budgetAlertKey, ledgerKey, modelCounter, modelKeyKey, openModelKeysKey, originCounter, scopeKey, sourceCounter, taskSpendKey,
   spendCounterKey, spendOriginKind, type BudgetScope, type OrgId,
 } from "@agentx/contracts";
 import type { MintTags, ModelAccess } from "../model-proxy/access.js";
@@ -270,6 +270,9 @@ async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Pro
       ...ledgerKey(orgId, record.month, iso(at), record.keyId, seq), entityType: "LEDGER", orgId, month: record.month, at: iso(at), keyId: record.keyId,
       usd: deltaUsd, settledUsd: spent, finalized: record.finalized, model: record.model, ...record.tags,
     }), ConditionExpression: NOT_EXISTS } },
+    // Plan 5, Task 7a (N5): what the task has cost so far, added in this same conditional transaction so a raced or replayed settle adds nothing. A session shows cost
+    // from this one counter and never sums keys. Tasks started before this deploy show cost from the deploy onward.
+    ...(record.tags.taskId === undefined ? [] : [upsert(deps, taskSpendKey(orgId, record.tags.taskId), "TASK_SPENT", { set: { orgId }, add: { settledUsd: deltaUsd } })]),
     // A run is the task, or the operation of Slack-thread work. A Slack turn's key has neither (R50), so each turn is a run of its own, keyed by its key's
     // token id; the routes never show that key.
     upsert(deps, agentRunsKey(orgId, record.month, record.tags.agentId, record.tags.taskId ?? record.tags.operationId ?? record.keyId), "AGENT_RUN", {

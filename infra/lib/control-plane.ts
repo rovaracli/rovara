@@ -902,6 +902,20 @@ export class ControlPlaneStack extends Stack {
           retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
         },
       });
+      // Plan 5, Task 7a: every 5 minutes the session sweep refreshes the open sessions from a saved cursor and the retention drain gives ended sessions' items
+      // their expiry. Its own schedule, not a settlement job: the settlement run's seconds (`SETTLEMENT_BUDGETS_MS`) are all given to money and audit jobs.
+      // Named environments only, on the same role as the schedules above; the broker already reads and writes the State table.
+      new scheduler.CfnSchedule(this, "AgentSessionSweepSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(5 minutes)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.session-sweep" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
     }
     // Gap 6: re-run any workflow dispatch (an automatic review start) left behind after its result committed.
     const workflowDispatchRecoveryRole = new iam.Role(this, "WorkflowDispatchRecoveryRole", {

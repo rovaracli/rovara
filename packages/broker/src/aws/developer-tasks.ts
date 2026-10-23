@@ -3904,7 +3904,7 @@ const TASK_PAGE_DOCUMENTS: ReadonlyArray<{ type: "requirements" | "design" | "pl
 const HISTORY_REASON_MAX_CHARS = 200;
 
 /** The progress strip's current step, spelled as the page spells it; `Complete` once merged (every step done); empty when no step is current. */
-function taskPageStep(workflow: WorkflowSnapshot | undefined, closed: boolean): string {
+export function taskPageStep(workflow: WorkflowSnapshot | undefined, closed: boolean): string {
   if (workflow?.stage === "MERGED") return "Complete";
   if (closed || workflow === undefined) return "";
   switch (workflow.stage) {

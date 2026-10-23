@@ -22,6 +22,8 @@ import {
 import { ENDED_DRAIN_CURSOR_KEY, DRAIN_BUDGET_MS, drainEndedSessions, sweepAgentSessions } from "../../packages/broker/src/agent-sessions/sweep.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
+import "../support/skip-bundling.js";
+import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { ORG_A, ORG_B, PRIYA, T0, sessionWorld } from "../support/agent-session-world.js";
 import { DAY_MS, iso, projectorWorld } from "../support/agent-session-projector-world.js";
 
@@ -33,7 +35,7 @@ function openList(w: ReturnType<typeof sessionWorld>, perOrg: number) {
   for (const orgId of [ORG_A, ORG_B, ORG_C]) {
     for (let n = 0; n < perOrg; n += 1) {
       const sessionId = `ses_${orgId.slice(4, 5)}${String(n).padStart(19, "0")}`;
-      w.db.set({ ...openAgentSessionKey(orgId, sessionId as never), entityType: "OPEN_AGENT_SESSION", orgId, sessionId });
+      w.db.set({ ...openAgentSessionKey(orgId, sessionId), entityType: "OPEN_AGENT_SESSION", orgId, sessionId });
       ids.push({ orgId, sessionId });
     }
   }
@@ -53,7 +55,7 @@ describe("the session sweep", () => {
     // 100 refreshes at 10 ms each fill a 1,000 ms budget exactly: one page a run.
     for (let run = 0; run < 13; run += 1) {
       current = [];
-      await sweepAgentSessions(deps as never, clock.now, { budgetMs: 1000 });
+      await sweepAgentSessions(deps, clock.now, { budgetMs: 1000 });
       seen.push(current);
     }
     expect(SESSION_SWEEP_PAGE).toBe(100);
@@ -71,9 +73,9 @@ describe("the session sweep", () => {
     const order: string[] = [];
     const refresh = async (_deps: unknown, orgId: string, sessionId: string) => { clock.now += 100; order.push(`${orgId}#${sessionId}`); return "unchanged" as const; };
     const deps = { documentClient: w.db, tableName: "state", now: () => clock.now, log: () => undefined, refresh };
-    await sweepAgentSessions(deps as never, clock.now, { budgetMs: 1000 });
+    await sweepAgentSessions(deps, clock.now, { budgetMs: 1000 });
     expect(order).toHaveLength(10);
-    await sweepAgentSessions(deps as never, clock.now, { budgetMs: 1000 });
+    await sweepAgentSessions(deps, clock.now, { budgetMs: 1000 });
     expect(order.slice(10, 20)).not.toEqual(order.slice(0, 10));
     expect(new Set(order).size).toBe(20);
     expect(SESSION_SWEEP_BUDGET_MS).toBe(20_000);
@@ -82,12 +84,12 @@ describe("the session sweep", () => {
   it("refreshes each session under the org its own record names, and skips and logs one whose key says another", async () => {
     const w = sessionWorld();
     const good = { orgId: ORG_A, sessionId: "ses_00000000000000000001" };
-    w.db.set({ ...openAgentSessionKey(good.orgId, good.sessionId as never), entityType: "OPEN_AGENT_SESSION", ...good });
-    w.db.set({ ...openAgentSessionKey(ORG_A, "ses_00000000000000000002" as never), entityType: "OPEN_AGENT_SESSION", orgId: ORG_B, sessionId: "ses_00000000000000000002" });
+    w.db.set({ ...openAgentSessionKey(good.orgId, good.sessionId), entityType: "OPEN_AGENT_SESSION", ...good });
+    w.db.set({ ...openAgentSessionKey(ORG_A, "ses_00000000000000000002"), entityType: "OPEN_AGENT_SESSION", orgId: ORG_B, sessionId: "ses_00000000000000000002" });
     const logs: Array<Record<string, unknown>> = [];
     const calls: string[] = [];
     const refresh = async (_d: unknown, orgId: string, sessionId: string) => { calls.push(`${orgId}#${sessionId}`); return "unchanged" as const; };
-    await sweepAgentSessions({ documentClient: w.db, tableName: "state", now: () => T0, log: (entry: Record<string, unknown>) => logs.push(entry), refresh } as never, T0);
+    await sweepAgentSessions({ documentClient: w.db, tableName: "state", now: () => T0, log: (entry: Record<string, unknown>) => logs.push(entry), refresh }, T0);
     expect(calls).toEqual([`${ORG_A}#ses_00000000000000000001`]);
     expect(logs.map((entry) => entry.event)).toContain("agent_session.sweep_org_mismatch");
   });
@@ -98,7 +100,7 @@ describe("the session sweep", () => {
     p.operation(s.workspaceId, "task", "SUCCEEDED");
     p.patchTask(s.taskId, { closedAt: "2026-10-20T08:30:00.000Z" });
     expect(p.tile(s.sessionId)?.status).toBe("starting");
-    await sweepAgentSessions(p.deps as never, T0);
+    await sweepAgentSessions(p.deps, T0);
     expect(p.sessionOf(s.sessionId)).toMatchObject({ summary: { status: "succeeded" }, endedAt: "2026-10-20T08:30:00.000Z" });
     expect(p.tile(s.sessionId)).toMatchObject({ summary: { status: "succeeded" } });
     expect(p.w.db.get(openAgentSessionKey(ORG_A, s.sessionId))).toBeUndefined();
@@ -109,7 +111,7 @@ describe("the session sweep", () => {
     const p = projectorWorld();
     const sessions = Array.from({ length: 5 }, () => p.open());
     for (const s of sessions) p.operation(s.workspaceId, "task", "RUNNING");
-    await sweepAgentSessions(p.deps as never, T0);
+    await sweepAgentSessions(p.deps, T0);
     expect(sessions.map((s) => p.sessionOf(s.sessionId).summary.status)).toEqual(Array(5).fill("running"));
   });
 
@@ -120,7 +122,7 @@ describe("the session sweep", () => {
     const nowSeconds = Math.floor(T0 / 1000);
     p.w.db.set({ ...agentSessionKey(ORG_A, s.sessionId, `PRESENCE#${"a".repeat(64)}`), entityType: "AGENT_SESSION_PRESENCE", orgId: ORG_A, sessionId: s.sessionId, indexExpiresAt: nowSeconds - 5 });
     p.w.db.set({ ...agentSessionKey(ORG_A, s.sessionId, `PRESENCE#${"b".repeat(64)}`), entityType: "AGENT_SESSION_PRESENCE", orgId: ORG_A, sessionId: s.sessionId, indexExpiresAt: nowSeconds + 60 });
-    await sweepAgentSessions(p.deps as never, T0);
+    await sweepAgentSessions(p.deps, T0);
     const left = p.w.db.find((item) => item.pk === agentSessionKey(ORG_A, s.sessionId, "META").pk && String(item.sk).startsWith("PRESENCE#")).map((item) => item.sk);
     expect(left).toEqual([`PRESENCE#${"b".repeat(64)}`]);
   });
@@ -138,15 +140,15 @@ describe("retention: drainEndedSessions", () => {
   const seedItems = (p: ReturnType<typeof projectorWorld>, sessionId: string, orgId = ORG_A) => {
     const put = (key: { pk: string; sk: string }, extra: Record<string, unknown> = {}) => { p.w.db.set({ ...key, orgId, sessionId, ...extra }); return key; };
     return {
-      share: put(agentSessionKey(orgId, sessionId as never, "SHARE#MEMBER#x"), { entityType: "AGENT_SESSION_SHARE", principal: { kind: "member", developerId: "x".repeat(64) }, level: "view" }),
-      follower: put(agentSessionKey(orgId, sessionId as never, "FOLLOWER#x")),
-      binding: put(agentSessionKey(orgId, sessionId as never, "BINDING#slack_thread"), { binding: { kind: "slack_thread", teamId: "T1", channelId: "C1", threadTs: "1695500000.000100" } }),
-      leg: put(agentSessionKey(orgId, sessionId as never, sessionLegSk(1))),
-      message: put(agentSessionKey(orgId, sessionId as never, "MESSAGE#msg_0123456789abcdefghij")),
-      turn: put(agentSessionKey(orgId, sessionId as never, "TURN#2026-10-20T08:00:00.000Z#1")),
-      mine: put(mySessionsKey(orgId, PRIYA, "2026-10-22T08:00:00.000Z", sessionId as never)),
-      project: put(projectSessionsKey(orgId, "web", "2026-10-22T08:00:00.000Z", sessionId as never)),
-      shared: put(sharedSessionsKey(orgId, { kind: "member", developerId: "x".repeat(64) }, sessionId as never)),
+      share: put(agentSessionKey(orgId, sessionId, "SHARE#MEMBER#x"), { entityType: "AGENT_SESSION_SHARE", principal: { kind: "member", developerId: "x".repeat(64) }, level: "view" }),
+      follower: put(agentSessionKey(orgId, sessionId, "FOLLOWER#x")),
+      binding: put(agentSessionKey(orgId, sessionId, "BINDING#slack_thread"), { binding: { kind: "slack_thread", teamId: "T1", channelId: "C1", threadTs: "1695500000.000100" } }),
+      leg: put(agentSessionKey(orgId, sessionId, sessionLegSk(1))),
+      message: put(agentSessionKey(orgId, sessionId, "MESSAGE#msg_0123456789abcdefghij")),
+      turn: put(agentSessionKey(orgId, sessionId, "TURN#2026-10-20T08:00:00.000Z#1")),
+      mine: put(mySessionsKey(orgId, PRIYA, "2026-10-22T08:00:00.000Z", sessionId)),
+      project: put(projectSessionsKey(orgId, "web", "2026-10-22T08:00:00.000Z", sessionId)),
+      shared: put(sharedSessionsKey(orgId, { kind: "member", developerId: "x".repeat(64) }, sessionId)),
       surface: put(sessionSurfaceKey(orgId, { kind: "slack_thread", teamId: "T1", channelId: "C1", threadTs: "1695500000.000100" })),
     };
   };
@@ -158,14 +160,14 @@ describe("retention: drainEndedSessions", () => {
     const work = endedSessionWorkKey("2026-10-20", ORG_A, s.sessionId);
     expect(p.w.db.get(work)).toBeDefined();
     p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
-    await drainEndedSessions(p.deps as never, p.w.clock.now);
+    await drainEndedSessions(p.deps, p.w.clock.now);
     for (const [name, key] of Object.entries(keys)) expect(p.w.db.get(key)?.indexExpiresAt, name).toBe(expires);
     expect(p.w.db.get(work)).toBeUndefined();
     // An item the session never had is not made by the drain.
     expect(p.w.db.get(agentSessionKey(ORG_A, s.sessionId, "SHARE#ORG"))).toBeUndefined();
     // And a second run changes nothing.
     const before = p.w.db.transactions().length;
-    await drainEndedSessions(p.deps as never, p.w.clock.now);
+    await drainEndedSessions(p.deps, p.w.clock.now);
     expect(p.w.db.transactions().length).toBe(before);
   });
 
@@ -179,13 +181,13 @@ describe("retention: drainEndedSessions", () => {
     const base = p.w.db.send.bind(p.w.db);
     let updates = 0;
     const timed = { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "UpdateCommand") { updates += 1; if (updates === 100) p.w.clock.now += DRAIN_BUDGET_MS + 1; } return base(command as never); } };
-    await drainEndedSessions({ ...p.deps, documentClient: timed } as never, p.w.clock.now);
+    await drainEndedSessions({ ...p.deps, documentClient: timed }, p.w.clock.now);
     const partial = p.w.db.get(work)!;
     expect(partial.cursor).toBeDefined();
     const stamped = () => p.w.db.find((item) => String(item.sk).startsWith("MESSAGE#") && item.indexExpiresAt === expires).length;
     expect(stamped()).toBeGreaterThanOrEqual(100);
     expect(stamped()).toBeLessThan(250);
-    await drainEndedSessions(p.deps as never, p.w.clock.now);
+    await drainEndedSessions(p.deps, p.w.clock.now);
     expect(stamped()).toBe(250);
     expect(p.w.db.get(work)).toBeUndefined();
   });
@@ -201,7 +203,7 @@ describe("retention: drainEndedSessions", () => {
     expect(p.w.db.get(ENDED_DRAIN_CURSOR_KEY)).toMatchObject({ day: "2026-10-12" });
     // The next run is ten days later.
     p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
-    await drainEndedSessions(p.deps as never, p.w.clock.now);
+    await drainEndedSessions(p.deps, p.w.clock.now);
     expect(p.w.db.get(keys.share)?.indexExpiresAt).toBe(Math.floor(Date.parse("2026-10-12T08:30:00.000Z") / 1000) + SESSION_RETENTION_DAYS * DAY);
     expect(p.w.db.get(endedSessionWorkKey("2026-10-12", ORG_A, old.sessionId))).toBeUndefined();
     expect(p.w.db.get(ENDED_DRAIN_CURSOR_KEY)?.day).toBe("2026-10-21");
@@ -214,7 +216,7 @@ describe("retention: drainEndedSessions", () => {
     const work = endedSessionWorkKey("2026-10-20", ORG_A, s.sessionId);
     p.w.db.set({ ...p.w.db.get(work)!, orgId: ORG_B });
     p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
-    await drainEndedSessions(p.deps as never, p.w.clock.now);
+    await drainEndedSessions(p.deps, p.w.clock.now);
     expect(p.w.db.find((item) => item.indexExpiresAt !== undefined && String(item.sk).startsWith("SHARE#"))).toHaveLength(0);
     expect(p.logs.map((entry) => entry.event)).toContain("agent_session.drain_org_mismatch");
   });
@@ -227,6 +229,19 @@ describe("retention: drainEndedSessions", () => {
     expect(DAY_MS).toBe(86_400_000);
     expect(iso(T0)).toBe("2026-10-22T09:00:00.000Z");
     expect(liveSessionKey(ORG_A, s.sessionId).pk).toContain("LIVE_SESSIONS");
+  });
+});
+
+describe("the broker's sweep event", () => {
+  it("answers { source: agentx.session-sweep } with the sweep, then the drain, and a failure of the first never stops the second", async () => {
+    const harness = await createDeveloperTaskBroker();
+    const result = JSON.parse((await harness.handler({ source: "agentx.session-sweep" })).body) as { sweep: unknown; drain: unknown };
+    expect(result.sweep).toMatchObject({ refreshed: 0, unchanged: 0, failed: 0 });
+    expect(result.drain).toMatchObject({ drained: 0, pending: false });
+    harness.db.injectFault({ command: "QueryCommand", match: (input) => input.KeyConditionExpression === "pk = :pk" && (input.ExpressionAttributeValues as { ":pk"?: string })[":pk"] === "OPEN_AGENT_SESSIONS", error: { name: "ThrottlingException" }, times: 1 });
+    const failed = JSON.parse((await harness.handler({ source: "agentx.session-sweep" })).body) as { sweep: unknown; drain: unknown };
+    expect(failed.sweep).toBe("failed");
+    expect(failed.drain).toMatchObject({ pending: false });
   });
 });
 
