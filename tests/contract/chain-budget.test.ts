@@ -812,6 +812,61 @@ describe("one monthly total for an owner's agent and chain budgets (R65)", () =>
     expect(reply.body.message).toBe(OVER("Carl Contributor", 102));
   });
 
+  /** An owner at $95 of the $100 cap, with a chain whose base is $0 (the route allows it), and a month top-up asked for by Carl. */
+  async function zeroBaseWorld() {
+    const t = await setupWorld();
+    await t.budgeted(40);
+    await t.budgeted(40);
+    await t.budgeted(15);
+    const chainId = await chainOf(t);
+    expect((await setChainBudget(t, MAYA, chainId, 0)).status).toBe(200);
+    const topUp = (amountUsd: number) => createSpendRequest(t.deps(), {
+      orgId: TEST_ORG, kind: "month", scope: { kind: "chain", chainId }, subject: `MONTH#${month()}#CHAIN#${chainId}#${CARL.developerId}`, amountUsd, newLimitUsd: amountUsd,
+      requestedBy: { kind: "member", developerId: CARL.developerId }, requestedFor: { developerId: CARL.developerId }, reason: "More, please.",
+    });
+    return { t, chainId, topUp };
+  }
+
+  it("two successive owner-approved top-ups of a $0-base chain near the cap: the first applies, the second goes to the admins (review I-2)", async () => {
+    const { t, chainId, topUp } = await zeroBaseWorld();
+    const first = await topUp(5);
+    expect(first.record.approverRole).toBe("chain_owner");
+    await t.decide(MAYA, first.record.spendRequestId);
+    expect((await effectiveLimits(t.deps(), { orgId: TEST_ORG, month: month(), scopes: [{ kind: "chain", chainId }] })).get(`CHAIN#${chainId}`)).toBe(5);
+    // The $5 is in the owner's effective total now: $95 + $5 = $100.
+    expect((await ownerEffectiveTotal(t.deps(), { orgId: TEST_ORG, owner: MAYA.developerId, month: month() })).totalUsd).toBe(100);
+    const second = await topUp(5);
+    expect(second.record.approverRole).toBe("org_admin");
+    expect(second.record.approverIds.sort()).toEqual([ADA.developerId, DEB.developerId].sort());
+    // The owner can't approve it; an admin can, and it applies.
+    expect(await refusal(t.decide(MAYA, second.record.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
+    await t.decide(DEB, second.record.spendRequestId);
+    expect((await effectiveLimits(t.deps(), { orgId: TEST_ORG, month: month(), scopes: [{ kind: "chain", chainId }] })).get(`CHAIN#${chainId}`)).toBe(10);
+  });
+
+  it("a $0-base chain's month top-up goes with it to the owner it moves to, and counts there", async () => {
+    const { t, chainId } = await zeroBaseWorld();
+    t.db.set({ ...topUpKey(TEST_ORG, month(), { kind: "chain", chainId }), entityType: "TOPUP", amountUsd: 12 });
+    await t.budgeted(40, CARL);
+    await t.budgeted(40, CARL);
+    await t.budgeted(15, CARL);
+    // Carl has $95; the chain adds no base but its $12 top-up goes with it: $107.
+    const reply = await t.api(DEB, "PUT", `/v1/app/chains/${chainId}/owner`, { owner: { kind: "member", developerId: CARL.developerId } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    expect(reply.body.message).toBe(OVER("Carl Contributor", 107));
+    expect(chainRecord(t, chainId)?.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
+  });
+
+  it("unarchiving a $0-base chain brings its month top-up back into the owner's total, held to the cap", async () => {
+    const { t, chainId } = await zeroBaseWorld();
+    t.db.set({ ...topUpKey(TEST_ORG, month(), { kind: "chain", chainId }), entityType: "TOPUP", amountUsd: 12 });
+    expect((await t.api(MAYA, "POST", `/v1/app/chains/${chainId}/archive`, {})).status).toBe(200);
+    const reply = await t.api(MAYA, "POST", `/v1/app/chains/${chainId}/unarchive`, {});
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    expect(reply.body.message).toBe(OVER("Maya Chen", 107));
+    expect(chainRecord(t, chainId)?.status).toBe("archived");
+  });
+
   it("registers chains as a contributor to the owner's effective total beside agents", () => {
     expect(OWNER_TOTAL_CONTRIBUTORS.length).toBeGreaterThanOrEqual(2);
   });
