@@ -49,8 +49,8 @@ beforeAll(async () => {
 
 type Item = Record<string, unknown>;
 
-async function setup(options: { brokerExtra?: Record<string, unknown> } = {}) {
-  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, ...options.brokerExtra } });
+async function setup(options: { brokerExtra?: Record<string, unknown>; memberLimit?: number } = {}) {
+  const h = await createDeveloperTaskBroker({ ...(options.memberLimit === undefined ? {} : { memberLimit: options.memberLimit }), brokerExtra: { agents: {}, ...options.brokerExtra } });
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
   const start = async (who: Developer, body: Record<string, unknown>) => {
     const reply = await h.dev(who, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", ...body });
@@ -242,6 +242,25 @@ describe("the runs that get no session", () => {
     expect(person.status).toBeGreaterThanOrEqual(400);
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
     expect(t.sessionPartitions()).toEqual([]);
+  });
+
+  it("leaves no session when the start is refused for a full workspace limit, and keeps the charge conflict reading its own items", async () => {
+    const t = await setup({ memberLimit: 1 });
+    expect((await t.start(MAYA, {})).status).toBe(200);
+    const second = await t.start(MAYA, {});
+    expect(second.status, JSON.stringify(second.body)).toBe(409);
+    expect((second.body.error as { code: string }).code).toBe("WORKSPACE_LIMIT");
+    expect(t.sessionRecords()).toHaveLength(1);
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(1);
+  });
+
+  it("puts the session items after everything else the start writes, as the last items of its transaction", async () => {
+    const t = await setup();
+    const { task } = await t.start(MAYA, {});
+    const [entries] = t.db.transactions().filter((transaction) => transaction.some((entry) => (entry.Put as { Item?: Item } | undefined)?.Item?.pk === `DEVTASK#${task.taskId}`));
+    const first = entries!.findIndex((entry) => String((entry.Put as { Item?: Item } | undefined)?.Item?.pk).includes("AGENT_SESSION#"));
+    expect(first).toBeGreaterThan(0);
+    expect(entries!.slice(first).every((entry) => /AGENT_SESSION#|LIVE_SESSIONS|MY_SESSIONS#|PROJECT_SESSIONS#|OPEN_AGENT_SESSIONS/.test(String((entry.Put as { Item?: Item } | undefined)?.Item?.pk)))).toBe(true);
   });
 
   it("creates none when agents are not set up", async () => {
