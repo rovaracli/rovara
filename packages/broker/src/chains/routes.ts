@@ -38,7 +38,7 @@ import {
 import { withBudgetFields } from "../spend/owner-total.js";
 import { chainLessSafeChanges, type ChainLessSafeLookups } from "./less-safe.js";
 import { chainDigest, type ChainRecord, type ChainStore, type ChainVersion } from "./store.js";
-import { startChainRun, type ChainRunRecord, type ChainRunnerDependencies } from "./runner.js";
+import { startChainRun, type ChainRunRecord } from "./runner.js";
 import { chainGraphProblems, formatChainProblem, validateChainForPublish, validatePinnedChainForOrg, type ChainProblem } from "./validate.js";
 
 /** What the chain routes ask of the trigger code (Plan 4 Tasks 18 and 20), which builds it: until then there are no triggers and all three do nothing. */
@@ -462,7 +462,7 @@ function runStartView(run: ChainRunRecord): Shown {
 async function startRun(deps: ChainRouteDependencies, caller: AgentCaller, chainId: ChainId, body: unknown): Promise<StatusReply> {
   if (deps.chainRuns === undefined) throw agentXError("NOT_FOUND", "chain runs are not set up in this deployment");
   const input = parseBody(StartRunBodySchema, body);
-  const run = await startChainRun({ ...deps, chainRuns: deps.chainRuns } as ChainRunnerDependencies, caller, {
+  const run = await startChainRun({ ...deps, chainRuns: deps.chainRuns }, caller, {
     orgId: caller.orgId, chainId, project: input.project, origin: "app", startedBy: { kind: "member", developerId: caller.developerId }, requestId: input.requestId,
     ...(input.input === undefined ? {} : { input: input.input }),
   });

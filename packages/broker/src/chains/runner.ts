@@ -357,8 +357,8 @@ async function startOnce(deps: Deps, caller: AgentCaller | SystemCaller, input: 
   // 3: every agent step resolves at its pinned version.
   for (const step of steps) {
     try {
-      if (person !== undefined) await resolveAgentForTask(deps as RosterDependencies, person, { project: input.project, agent: { agentId: step.agent.agentId, version: step.agent.version }, role: role! });
-      else await resolveAgentForAutonomousRun(deps as RosterDependencies, { orgId: input.orgId, project: input.project, agentId: step.agent.agentId, version: step.agent.version });
+      if (person !== undefined) await resolveAgentForTask(deps, person, { project: input.project, agent: { agentId: step.agent.agentId, version: step.agent.version }, role: role! });
+      else await resolveAgentForAutonomousRun(deps, { orgId: input.orgId, project: input.project, agentId: step.agent.agentId, version: step.agent.version });
     } catch (error) {
       if (!(error instanceof AgentXError)) throw error;
       throw unavailable(chain.name, step.name, (await agentFacts(deps, input.orgId, step.agent.agentId)).name, step.agent.version, reasonOf(error));

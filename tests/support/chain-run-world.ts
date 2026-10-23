@@ -6,7 +6,8 @@ import { addToRoster } from "../../packages/broker/src/agents/roster.js";
 import type { AgentCaller, AgentAccessDeps } from "../../packages/broker/src/agents/access.js";
 import type { AgentRunRequest, AgentRunResult } from "../../packages/broker/src/agents/runs.js";
 import type { TaskEndEvent, TaskPauseEvent } from "../../packages/broker/src/agents/task-end.js";
-import type { ChainRunnerDependencies } from "../../packages/broker/src/chains/runner.js";
+import type { ChainRunRecord, ChainRunnerDependencies, StepAttemptRecord } from "../../packages/broker/src/chains/runner.js";
+import type { RunEventType } from "../../packages/broker/src/chains/run-events.js";
 import { ChainStore, chainDigest, type ChainRecord } from "../../packages/broker/src/chains/store.js";
 import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
 import { taskAgentRunKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
@@ -16,6 +17,7 @@ import type { AgentOwner } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
+import type { ChainRunId } from "../../packages/contracts/src/chains.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
 import { chainRunKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
@@ -25,7 +27,7 @@ import { fakeModelAccess } from "./fake-model-access.js";
 import { FakeProjectMembers } from "./fake-project-members.js";
 import { TEST_ORG } from "./orgs.js";
 
-export const ORG_A = TEST_ORG as OrgId;
+export const ORG_A = TEST_ORG;
 export const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 export const PRIYA = "a".repeat(64); // a member, contributor on web
 export const MAX = "b".repeat(64); // a member, maintainer of web
@@ -41,6 +43,9 @@ const SCRATCH: RecipeOverlay = { instructions: "x", sequence: [{ id: "work", nam
 const DIGEST = "d".repeat(64);
 
 export const callerOf = (developerId: string, orgId: OrgId = ORG_A): AgentCaller => ({ orgId, developerId, orgRole: ROLES[developerId] ?? "member" });
+
+/** One stored event of a run. */
+export interface RunEventRow { seq: number; at: string; type: RunEventType; stepSeq?: number; text: string }
 
 /** What the fake `startAgentRun` kept of one task. */
 export interface FakeTask { taskId: string; request: AgentRunRequest; result: AgentRunResult }
@@ -143,11 +148,11 @@ export function setupWorld(options: WorldOptions = {}) {
   };
 
   // ---- reads of what the runner wrote
-  const run = (runId: string, orgId: OrgId = ORG_A) => db.get(chainRunKey(orgId, runId as never, "META")) as Record<string, any> | undefined; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const run = (runId: string, orgId: OrgId = ORG_A) => db.get(chainRunKey(orgId, runId, "META")) as unknown as ChainRunRecord | undefined;
   const items = (runId: string, prefix: "STEP#" | "EVENT#", orgId: OrgId = ORG_A) =>
-    db.find((item) => item.pk === chainRunKey(orgId, runId as never, "META").pk && String(item.sk).startsWith(prefix)).sort((a, b) => String(a.sk).localeCompare(String(b.sk))) as Array<Record<string, any>>; // eslint-disable-line @typescript-eslint/no-explicit-any
-  const attempts = (runId: string, orgId: OrgId = ORG_A) => items(runId, "STEP#", orgId);
-  const events = (runId: string, orgId: OrgId = ORG_A) => items(runId, "EVENT#", orgId);
+    db.find((item) => item.pk === chainRunKey(orgId, runId, "META").pk && String(item.sk).startsWith(prefix)).sort((a, b) => String(a.sk).localeCompare(String(b.sk)));
+  const attempts = (runId: string, orgId: OrgId = ORG_A) => items(runId, "STEP#", orgId) as unknown as StepAttemptRecord[];
+  const events = (runId: string, orgId: OrgId = ORG_A) => items(runId, "EVENT#", orgId) as unknown as RunEventRow[];
   const chainOf = async (chainId: string) => (await chains.get(ORG_A, chainId))!;
   const openItems = () => db.find((item) => item.pk === "OPEN_CHAIN_RUNS");
 

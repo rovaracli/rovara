@@ -605,7 +605,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -1230,22 +1230,28 @@ function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: Develop
 
 /** The latest broker's chain runner dependencies, which the one registration of the chain runner's end and pause handlers reads (Plan 4 Task 6). */
 let chainRunnerDependencies: ChainRunnerDependencies | undefined;
-let chainRunnerRegistered = false;
+let removeChainRunner: (() => void) | undefined;
+
+/** Takes the chain runner's handlers off again (for the tests that install them; a deployed broker never does). */
+export function uninstallChainRunner(): void {
+  removeChainRunner?.();
+  removeChainRunner = undefined;
+  chainRunnerDependencies = undefined;
+}
 
 /**
  * Plan 4 Task 6, at broker start: a chain step is an ordinary task, so the runner hears that it ended or was paused through Plan 3's handlers. They are registered
- * once per process and read the dependencies of the latest broker built; they do nothing where there are no agents or chains.
+ * once per process and read the dependencies of the latest broker built; they do nothing where there are no agents or chains, or where the broker is not asked
+ * to (`agents.registerChainRunner`, which the deployed broker sets).
  */
 function installChainRunner(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): void {
+  if (dependencies.agents?.registerChainRunner !== true) return;
   const starter = agentRunStarterFrom(dependencies, tasks, agents);
   if (agents?.chains === undefined || starter === undefined) return;
   const admission = dependencies.modelAccess === undefined ? undefined
     : { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, now: Date.now, cloud: dependencies.cloud === true };
   chainRunnerDependencies = { ...agents, chains: agents.chains, chainRuns: agents.chainRuns ?? chainRunPortsFor(starter, admission) };
-  if (!chainRunnerRegistered) {
-    registerChainRunner(() => chainRunnerDependencies);
-    chainRunnerRegistered = true;
-  }
+  removeChainRunner ??= registerChainRunner(() => chainRunnerDependencies);
 }
 
 /** Spec 025 phase 25d: what the admin read routes need, from the broker's own dependencies. */
@@ -14177,7 +14183,8 @@ export const handler = createAwsBrokerHandler({
   ...(developer ? { developer } : {}),
   // Plan 3: the agent routes (`/v1/app/agents*`), on the real project members; they need the developer sign-in.
   // Rovara's roles that assume a Bedrock source's role (Task 24b), for the trust policy the sources page shows; unset until the control plane names them.
-  ...(developer ? { agents: bedrockTrustPrincipals.length === 0 ? {} : { modelSources: { bedrockTrustPrincipals } } } : {}),
+  // Plan 4 Task 6: the deployed broker listens for the end and the pause of a chain step's task (a test harness leaves it off, so Plan 3's own tests see no listener).
+  ...(developer ? { agents: bedrockTrustPrincipals.length === 0 ? { registerChainRunner: true } : { registerChainRunner: true, modelSources: { bedrockTrustPrincipals } } } : {}),
   // Plan 3, Task 21a-wiring: the confirmation page and the decide routes exist on a cloud install with the developer sign-in (the grants on the sign-in
   // table's DECIDE_ keys are cloud only). Hard gate before any deploy: Task 37 confirms Cognito's `amr` first.
   ...(developer && cloudOrgResolver !== undefined ? { decide: {} } : {}),

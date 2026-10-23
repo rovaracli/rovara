@@ -3,8 +3,8 @@
 // binding hand-offs are tested here too: a budget pause is a pause (never a failure, never a second task, nothing released), each end is handled once whatever
 // replays, and report text is neutralised before anyone is shown it.
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { registerTaskEndHandler, registerTaskPauseHandler, onTaskEnded, onTaskPaused, type TaskEndHost } from "../../packages/broker/src/agents/task-end.js";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { hasTaskEndHandlers, registerTaskEndHandler, registerTaskPauseHandler, onTaskEnded, onTaskPaused, type TaskEndHost } from "../../packages/broker/src/agents/task-end.js";
 import { setChainShares } from "../../packages/broker/src/chains/access.js";
 import { STARTER_CHAIN_DEFINITION, type ChainRouteDependencies } from "../../packages/broker/src/chains/routes.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -30,6 +30,7 @@ const branches = () => import("../../packages/broker/src/chains/branches.js");
 const index = () => import("../../packages/broker/src/chains/index.js");
 
 beforeAll(async () => { await loadSlackBroker(); });
+afterAll(async () => { (await loadSlackBroker() as unknown as { uninstallChainRunner(): void }).uninstallChainRunner(); });
 
 const unregister: Array<() => void> = [];
 afterEach(() => { for (const off of unregister.splice(0)) off(); });
@@ -76,7 +77,7 @@ const startAsEvent = async (w: ChainWorld, chainId: string, owner: string, extra
 };
 const endTask = async (w: ChainWorld, taskId: string, extra: Record<string, unknown> = {}) => {
   const { onStepTaskEnded } = await runner();
-  await onStepTaskEnded(w.deps, w.endEvent(taskId, extra as never));
+  await onStepTaskEnded(w.deps, w.endEvent(taskId, extra));
 };
 
 // ---- redactSecrets
@@ -148,7 +149,7 @@ describe("buildHandoff", () => {
   ])("makes a %s event's start item a %s item, with the event key as its ref and the title as its title", async (subject, kind) => {
     const { buildHandoff, contextKindOf } = await handoff();
     expect(contextKindOf(subject as never)).toBe(kind);
-    const [start] = buildHandoff(input({ trigger: SENTRY({ subject: { kind: subject, title: "Refund errors" } }) }) as never)!;
+    const [start] = buildHandoff(input({ trigger: SENTRY({ subject: { kind: subject, title: "Refund errors" } }) }));
     expect(start).toMatchObject({ kind, ref: "sentry:evt-1", title: "Refund errors" });
     expect(start!.body).toContain("sentry issue.created");
   });
@@ -164,19 +165,19 @@ describe("buildHandoff", () => {
   it("cuts a title to 200 characters ending in an ellipsis, the start item's and a report's", async () => {
     const { buildHandoff } = await handoff();
     const long = "x".repeat(300);
-    const [start, second] = buildHandoff(input({ trigger: SENTRY({ subject: { kind: "alert", title: long } }), earlier: [report(1, "r", { agentName: long })] }) as never)!;
+    const [start, second] = buildHandoff(input({ trigger: SENTRY({ subject: { kind: "alert", title: long } }), earlier: [report(1, "r", { agentName: long })] }));
     expect(start!.title).toBe(`${"x".repeat(CONTEXT_TITLE_MAX - 1)}…`);
     expect(start!.title).toHaveLength(CONTEXT_TITLE_MAX);
     expect(second!.title).toHaveLength(CONTEXT_TITLE_MAX);
     expect(second!.title!.endsWith("…")).toBe(true);
     const exactly = "y".repeat(CONTEXT_TITLE_MAX);
-    expect(buildHandoff(input({ trigger: SENTRY({ subject: { kind: "alert", title: exactly } }) }) as never)![0]!.title).toBe(exactly);
+    expect(buildHandoff(input({ trigger: SENTRY({ subject: { kind: "alert", title: exactly } }) }) as never)[0]!.title).toBe(exactly);
   });
 
   it("does not cut a character in two when it cuts a title", async () => {
     const { buildHandoff } = await handoff();
     const title = `${"a".repeat(198)}${"😀".repeat(5)}`;
-    const cut = buildHandoff(input({ trigger: SENTRY({ subject: { kind: "alert", title } }) }) as never)![0]!.title!;
+    const cut = buildHandoff(input({ trigger: SENTRY({ subject: { kind: "alert", title } }) }))[0]!.title!;
     expect(cut.length).toBeLessThanOrEqual(CONTEXT_TITLE_MAX);
     expect(cut.endsWith("…")).toBe(true);
     expect(cut).not.toMatch(/[\uD800-\uDBFF]…$/u);
@@ -184,7 +185,7 @@ describe("buildHandoff", () => {
 
   it("gives each earlier report as a report item, newest first, after the start item", async () => {
     const { buildHandoff } = await handoff();
-    const items = buildHandoff(input({ startInput: "go", mode: "all", earlier: [report(1, "first"), report(3, "third", { stepName: "Check" }), report(4, "fourth", { agentName: "Code reviewer", version: 2 })] }) as never)!;
+    const items = buildHandoff(input({ startInput: "go", mode: "all", earlier: [report(1, "first"), report(3, "third", { stepName: "Check" }), report(4, "fourth", { agentName: "Code reviewer", version: 2 })] }));
     expect(items.map((item) => item.kind)).toEqual(["text", "report", "report", "report"]);
     expect(items.slice(1)).toEqual([
       { kind: "report", ref: "chain:crn_aaaaaaaaaaaaaaaaaaaa:4", title: 'Step "Step 4" (Code reviewer version 2)', body: "fourth" },
@@ -195,21 +196,21 @@ describe("buildHandoff", () => {
 
   it("gives only the last report for previous, whatever order they came in", async () => {
     const { buildHandoff } = await handoff();
-    const items = buildHandoff(input({ mode: "previous", earlier: [report(1, "first"), report(2, "second")] }) as never)!;
+    const items = buildHandoff(input({ mode: "previous", earlier: [report(1, "first"), report(2, "second")] }));
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ ref: "chain:crn_aaaaaaaaaaaaaaaaaaaa:2", body: "second" });
   });
 
   it("appends the links of a report to its body", async () => {
     const { buildHandoff } = await handoff();
-    const [item] = buildHandoff(input({ earlier: [report(1, "Opened a fix", { result: { report: "Opened a fix", links: [{ label: "Pull request web#12", url: "https://github.com/acme/web/pull/12" }] } })] }) as never)!;
+    const [item] = buildHandoff(input({ earlier: [report(1, "Opened a fix", { result: { report: "Opened a fix", links: [{ label: "Pull request web#12", url: "https://github.com/acme/web/pull/12" }] } })] }));
     expect(item!.body).toBe("Opened a fix\n\nLinks:\n- Pull request web#12: https://github.com/acme/web/pull/12");
   });
 
   it("gives ten items from eleven earlier reports: the start item and the nine newest", async () => {
     const { buildHandoff } = await handoff();
     const earlier = Array.from({ length: 11 }, (_unused, at) => report(at + 1, `report ${String(at + 1)}`));
-    const items = buildHandoff(input({ startInput: "go", mode: "all", earlier }) as never)!;
+    const items = buildHandoff(input({ startInput: "go", mode: "all", earlier }));
     expect(items).toHaveLength(HANDOFF_MAX_ITEMS);
     expect(items[0]).toMatchObject({ kind: "text", ref: "start" });
     expect(items.slice(1).map((item) => item.body)).toEqual(Array.from({ length: 9 }, (_unused, at) => `report ${String(11 - at)}`));
@@ -217,23 +218,23 @@ describe("buildHandoff", () => {
 
   it("redacts secrets in every body, the start item's too", async () => {
     const { buildHandoff } = await handoff();
-    const items = buildHandoff(input({ startInput: `use ghp_${"a".repeat(36)}`, earlier: [report(1, `token ghs_${"b".repeat(36)} and AKIAABCDEFGHIJKLMNOP`)] }) as never)!;
+    const items = buildHandoff(input({ startInput: `use ghp_${"a".repeat(36)}`, earlier: [report(1, `token ghs_${"b".repeat(36)} and AKIAABCDEFGHIJKLMNOP`)] }));
     expect(items.map((item) => item.body)).toEqual(["use [redacted]", "token [redacted] and [redacted]"]);
   });
 
   it("cuts a body to the item limit, ending in … (shortened)", async () => {
     const { buildHandoff } = await handoff();
-    const [item] = buildHandoff(input({ earlier: [report(1, "é".repeat(20_000))] }) as never)!;
+    const [item] = buildHandoff(input({ earlier: [report(1, "é".repeat(20_000))] }));
     expect(Buffer.byteLength(item!.body!, "utf8")).toBeLessThanOrEqual(HANDOFF_ITEM_MAX_BYTES);
     expect(item!.body!.endsWith("… (shortened)")).toBe(true);
-    const [fits] = buildHandoff(input({ earlier: [report(1, "a".repeat(HANDOFF_ITEM_MAX_BYTES))] }) as never)!;
+    const [fits] = buildHandoff(input({ earlier: [report(1, "a".repeat(HANDOFF_ITEM_MAX_BYTES))] }));
     expect(fits!.body).toBe("a".repeat(HANDOFF_ITEM_MAX_BYTES));
   });
 
   it("drops the oldest reports first when the items together pass the total limit, and never the start item", async () => {
     const { buildHandoff } = await handoff();
     const earlier = Array.from({ length: 6 }, (_unused, at) => report(at + 1, `${String(at + 1)}`.repeat(16_000)));
-    const items = buildHandoff(input({ startInput: "go", mode: "all", earlier }) as never)!;
+    const items = buildHandoff(input({ startInput: "go", mode: "all", earlier }));
     expect(items[0]).toMatchObject({ kind: "text", ref: "start" });
     const total = items.reduce((sum, item) => sum + Buffer.byteLength(item.body ?? "", "utf8"), 0);
     expect(total).toBeLessThanOrEqual(HANDOFF_MAX_BYTES);
@@ -243,7 +244,7 @@ describe("buildHandoff", () => {
 
   it("leaves a report with no text without a body, which Plan 3's context item does not accept empty", async () => {
     const { buildHandoff } = await handoff();
-    const [item] = buildHandoff(input({ earlier: [report(1, "")] }) as never)!;
+    const [item] = buildHandoff(input({ earlier: [report(1, "")] }));
     expect(item).toEqual({ kind: "report", ref: "chain:crn_aaaaaaaaaaaaaaaaaaaa:1", title: 'Step "Step 1" (Root-cause analyst version 1)' });
   });
 });
@@ -364,7 +365,7 @@ describe("the worked example: investigate, then fix", () => {
     const w = setupWorld();
     const chain = await w.publish(ONE_STEP);
     const run = await startAs(w, PRIYA, chain.chainId);
-    const created = w.run(run.runId)!.createdAt as string;
+    const created = w.run(run.runId)!.createdAt;
     expect(w.db.find((item) => String(item.pk).includes(`CHAIN_RUNS#${chain.chainId}`))).toHaveLength(1);
     expect(w.db.find((item) => String(item.pk).includes("CHAIN_RUNS_P#web"))).toHaveLength(1);
     expect(created).toBe(new Date(START).toISOString());
@@ -389,7 +390,7 @@ describe("the worked example: investigate, then fix", () => {
 
   it("fails the run when the agent picks a branch the design does not have and there is no default", async () => {
     const w = setupWorld();
-    const design: ChainDefinitionInput = { ...INVESTIGATE_THEN_FIX, steps: INVESTIGATE_THEN_FIX.steps.map((step) => (step.kind === "agent" && step.id === "investigate" && step.next.kind === "branch" ? { ...step, next: { ...step.next, default: undefined } } : step)) as never };
+    const design: ChainDefinitionInput = { ...INVESTIGATE_THEN_FIX, steps: INVESTIGATE_THEN_FIX.steps.map((step) => (step.kind === "agent" && step.id === "investigate" && step.next.kind === "branch" ? { ...step, next: { ...step.next, default: undefined } } : step)) };
     const chain = await w.publish(design);
     const run = await startAs(w, PRIYA, chain.chainId);
     await endTask(w, "task-1", { finalReport: "Deploy it", branch: "deploy" });
@@ -810,7 +811,7 @@ describe("startChainRun replays (R18)", () => {
     const real = w.db.send;
     (w.deps.documentClient as { send: unknown }).send = async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
       if (command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("STEP#0001")) throw new Error("the process died");
-      return real(command as never);
+      return real(command);
     };
     await fail(startAs(w, PRIYA, chain.chainId, { requestId }));
     (w.deps.documentClient as { send: unknown }).send = real;
@@ -913,12 +914,13 @@ describe("onStepTaskEnded", () => {
     const run = await startAs(w, PRIYA, chain.chainId);
     w.db.set({ ...w.db.get({ pk: "DEVTASK#task-1", sk: "AGENT_RUN" })!, endReason: `The tool said ‮evil\u0007 with ghp_${"a".repeat(36)} ${"y".repeat(400)}` });
     await endTask(w, "task-1", { outcome: "failed" });
-    const message = w.run(run.runId)!.failure.message as string;
+    const message = w.run(run.runId)!.failure!.message;
     expect(message.startsWith('Step "Look into it" failed: The tool said [U+202E]evil[U+0007] with [redacted] ')).toBe(true);
-    expect(message).not.toMatch(/[‮\u0007]/u);
+    expect(message.includes("\u202e") || message.includes("\u0007")).toBe(false);
     expect(message.endsWith("….")).toBe(true);
     expect(message.length).toBeLessThan(400);
-    expect(w.events(run.runId).at(-1)!.text).not.toMatch(/[‮\u0007]/u);
+    const lastText = w.events(run.runId).at(-1)!.text;
+    expect(lastText.includes("\u202e") || lastText.includes("\u0007")).toBe(false);
   });
 
   it("says why a coding task failed in its own words when the task has none", async () => {
@@ -1254,7 +1256,6 @@ describe("registerChainRunner", () => {
   it("is removed again by the function it returns, so the handlers it added are gone", async () => {
     const w = setupWorld();
     const { registerChainRunner } = await index();
-    const { hasTaskEndHandlers } = await import("../../packages/broker/src/agents/task-end.js");
     expect(hasTaskEndHandlers()).toBe(false);
     const off = registerChainRunner(() => w.deps);
     expect(hasTaskEndHandlers()).toBe(true);
@@ -1309,7 +1310,7 @@ describe("chainRunBudgets.stepLimits", () => {
     expect(deps.chainRunBudgets).toBeDefined();
     const w = setupWorld();
     h.db.set({ ...chainRunKey(TEST_ORG, "crn_aaaaaaaaaaaaaaaaaaaa", "META"), entityType: "CHAIN_RUN", orgId: TEST_ORG, runId: "crn_aaaaaaaaaaaaaaaaaaaa", chainId: "chn_aaaaaaaaaaaaaaaaaaaa", currentSeq: 1 });
-    h.db.set({ ...chainRunKey(TEST_ORG, "crn_aaaaaaaaaaaaaaaaaaaa", stepSk(1) as never), entityType: "CHAIN_STEP", seq: 1, stepId: "look", status: "running", remainingAtStartUsd: 7 });
+    h.db.set({ ...chainRunKey(TEST_ORG, "crn_aaaaaaaaaaaaaaaaaaaa", stepSk(1)), entityType: "CHAIN_STEP", seq: 1, stepId: "look", status: "running", remainingAtStartUsd: 7 });
     expect(await deps.chainRunBudgets!.stepLimits(TEST_ORG, { chainRunId: "crn_aaaaaaaaaaaaaaaaaaaa", stepId: "look" })).toEqual({ chainId: "chn_aaaaaaaaaaaaaaaaaaaa", remainingAtStartUsd: 7 });
     expect(w).toBeDefined();
   });
@@ -1324,12 +1325,12 @@ describe("POST /v1/app/chains/{id}/runs", () => {
   const ERIN = person("4", "Erin"); // no role anywhere
   const ORG_OF = async (subject: { developerId: string }) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 
-  async function routeSetup() {
+  async function routeSetup(register = true) {
     const world = setupWorld();
     const members = new FakeProjectMembers();
     const h = await createDeveloperTaskBroker({
       orgResolver: ORG_OF, register: false,
-      brokerExtra: { agents: { projectMembers: members, chainRuns: { startAgentRun: world.startAgentRun, callerFor: async (orgId: string, developerId: string) => ({ orgId, developerId, orgRole: "member" as const }) } } },
+      brokerExtra: { agents: { projectMembers: members, ...(register ? { registerChainRunner: true } : {}), chainRuns: { startAgentRun: world.startAgentRun, callerFor: async (orgId: string, developerId: string) => ({ orgId, developerId, orgRole: "member" as const }) } } },
     } as never);
     const enroll = async (who: Developer) => {
       h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
@@ -1342,40 +1343,72 @@ describe("POST /v1/app/chains/{id}/runs", () => {
     h.db.set({ pk: `ORG#${TEST_ORG}#PROJECT_CATALOG#web`, sk: "META", name: "web" });
     members.grant(TEST_ORG, "web", CAROLINE.developerId, "contributor");
     members.grant(TEST_ORG, "web", VERA.developerId, "viewer");
-    return { h, world, members };
+    const loaded = await loadSlackBroker() as unknown as { createAgentRouteDependencies(input: never): ChainRouteDependencies | undefined };
+    const routeDeps = loaded.createAgentRouteDependencies(h.brokerInput as never)!;
+    /** A published one-step chain owned by Caroline, in the broker's own table. */
+    const publishStarter = async () => {
+      const chain = await routeDeps.chains.create({ orgId: TEST_ORG, name: `Starter ${randomUUID().slice(0, 6)}`, owner: { kind: "member", developerId: CAROLINE.developerId }, definition: STARTER_CHAIN_DEFINITION, createdBy: CAROLINE.developerId });
+      const checked = await (await import("../../packages/broker/src/chains/validate.js")).validateChainForPublish(routeDeps, { orgId: TEST_ORG, developerId: CAROLINE.developerId, orgRole: "member" }, TEST_ORG, (await routeDeps.chains.getDraft(TEST_ORG, chain.chainId))!.definition);
+      expect(checked.problems).toEqual([]);
+      await routeDeps.chains.publish({ orgId: TEST_ORG, chainId: chain.chainId, expectedDraftRevision: 1, pinned: checked.pinned, digest: (await import("../../packages/broker/src/chains/store.js")).chainDigest(checked.pinned), guardrailsRevision: checked.guardrailsRevision, by: CAROLINE.developerId });
+      return chain;
+    };
+    return { h, world, members, routeDeps, publishStarter };
   }
   const post = (h: Awaited<ReturnType<typeof routeSetup>>["h"], who: Developer, chainId: string, body: Record<string, unknown>) =>
     h.dev(who, "POST", `/v1/app/chains/${chainId}/runs`, body);
 
   it("starts a run for a person who can use the chain and answers 202 with the run, and answers a repeat with the same run", async () => {
-    const { h, world } = await routeSetup();
-    const loaded = await loadSlackBroker() as unknown as { createAgentRouteDependencies(input: never): ChainRouteDependencies | undefined };
-    const routeDeps = loaded.createAgentRouteDependencies(h.brokerInput as never)!;
-    const chain = await routeDeps.chains.create({ orgId: TEST_ORG, name: "Starter", owner: { kind: "member", developerId: CAROLINE.developerId }, definition: STARTER_CHAIN_DEFINITION, createdBy: CAROLINE.developerId });
-    const checked = await (await import("../../packages/broker/src/chains/validate.js")).validateChainForPublish(routeDeps, { orgId: TEST_ORG, developerId: CAROLINE.developerId, orgRole: "member" }, TEST_ORG, (await routeDeps.chains.getDraft(TEST_ORG, chain.chainId))!.definition);
-    expect(checked.problems).toEqual([]);
-    await routeDeps.chains.publish({ orgId: TEST_ORG, chainId: chain.chainId, expectedDraftRevision: 1, pinned: checked.pinned, digest: (await import("../../packages/broker/src/chains/store.js")).chainDigest(checked.pinned), guardrailsRevision: checked.guardrailsRevision, by: CAROLINE.developerId });
+    const { h, world, publishStarter } = await routeSetup(false);
+    const chain = await publishStarter();
     const requestId = randomUUID();
     const reply = await post(h, CAROLINE, chain.chainId, { requestId, project: "web", input: "Refunds fail" });
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
     const shown = (reply.body as { run: Record<string, unknown> }).run;
-    expect(shown).toMatchObject({ chainId: chain.chainId, chainName: "Starter", project: "web", status: "running", owner: { developerId: CAROLINE.developerId }, input: "Refunds fail", runLimitUsd: 20, spentUsd: 0 });
-    expect(shown.runId).toMatch(/^crn_[0-9a-z]{20}$/);
+    expect(shown).toMatchObject({ chainId: chain.chainId, project: "web", status: "running", owner: { developerId: CAROLINE.developerId }, input: "Refunds fail", runLimitUsd: 20, spentUsd: 0, origin: "app" });
+    expect(shown["chainName"]).toMatch(/^Starter /u);
+    expect(shown["runId"]).toMatch(/^crn_[0-9a-z]{20}$/);
     expect(shown).not.toHaveProperty("payer");
     expect(world.starts).toHaveLength(1);
     const again = await post(h, CAROLINE, chain.chainId, { requestId, project: "web", input: "Refunds fail" });
     expect(again.status).toBe(202);
-    expect((again.body as { run: { runId: string } }).run.runId).toBe(shown.runId);
+    expect((again.body as { run: { runId: string } }).run.runId).toBe(shown["runId"]);
     expect(world.starts).toHaveLength(1);
+  });
 
-    for (const bad of [{ project: "web" }, { requestId, project: "web", extra: 1 }, { requestId: "not-a-uuid", project: "web" }, { requestId: randomUUID(), project: "web", input: "x".repeat(8001) }, { requestId: randomUUID() }]) {
-      const refused = await post(h, CAROLINE, chain.chainId, bad as never);
+  it("refuses a body that is not exactly {requestId, project, input?}", async () => {
+    const { h, world, publishStarter } = await routeSetup(false);
+    const chain = await publishStarter();
+    for (const bad of [{ project: "web" }, { requestId: randomUUID(), project: "web", extra: 1 }, { requestId: "not-a-uuid", project: "web" }, { requestId: randomUUID(), project: "web", input: "x".repeat(8001) }, { requestId: randomUUID() }, { requestId: randomUUID(), project: "Not A Project" }]) {
+      const refused = await post(h, CAROLINE, chain.chainId, bad);
       expect(refused.status, JSON.stringify(bad)).toBe(400);
     }
-    expect((await post(h, VERA, chain.chainId, { requestId: randomUUID(), project: "web" })).status).toBe(404);
-    expect((await post(h, ERIN, chain.chainId, { requestId: randomUUID(), project: "web" })).status).toBe(404);
-    expect((await post(h, OMAR, chain.chainId, { requestId: randomUUID(), project: "web" })).status).toBe(404);
+    expect(world.starts).toEqual([]);
+  });
+
+  it("answers 404 to a person who can't see the chain, has no role on the project or is in another org, and 403 to a project viewer who can use it", async () => {
+    const { h, world, routeDeps, publishStarter } = await routeSetup(false);
+    const chain = await publishStarter();
+    for (const who of [VERA, ERIN, OMAR]) expect((await post(h, who, chain.chainId, { requestId: randomUUID(), project: "web" })).status, who.name).toBe(404);
     expect((await post(h, CAROLINE, "chn_nnnnnnnnnnnnnnnnnnnn", { requestId: randomUUID(), project: "web" })).status).toBe(404);
+    expect((await post(h, CAROLINE, "not-a-chain", { requestId: randomUUID(), project: "web" })).status).toBe(404);
+    await (await import("../../packages/broker/src/chains/access.js")).setChainShares({ ...routeDeps, store: routeDeps.chains }, { orgId: TEST_ORG, chainId: chain.chainId, shares: [{ principal: { kind: "member", developerId: VERA.developerId }, level: "use" }], by: CAROLINE.developerId });
+    expect((await post(h, VERA, chain.chainId, { requestId: randomUUID(), project: "web" })).status).toBe(403);
+    expect(world.starts).toEqual([]);
+  });
+
+  it("is listening for a step's end only where the broker is asked to, and then finishes the run when Plan 3 tells it a step ended", async () => {
+    expect(hasTaskEndHandlers()).toBe(false);
+    await routeSetup(false);
+    expect(hasTaskEndHandlers()).toBe(false);
+    const { h, world, publishStarter } = await routeSetup(true);
+    expect(hasTaskEndHandlers()).toBe(true);
+    const chain = await publishStarter();
+    const reply = await post(h, CAROLINE, chain.chainId, { requestId: randomUUID(), project: "web" });
+    const runId = (reply.body as { run: { runId: string } }).run.runId;
+    const task = { pk: "DEVTASK#task-1", sk: "META", taskId: "task-1", orgId: TEST_ORG, chain: { chainRunId: runId, stepId: "look_into_it" } } as unknown as DeveloperTaskRecord;
+    expect(await onTaskEnded({ documentClient: h.db, tableName: "state", now: Date.now }, task, "succeeded", { finalReport: "Done" }, { record: true })).toBe("called");
+    expect(h.db.get(chainRunKey(TEST_ORG, runId as never, "META"))).toMatchObject({ status: "succeeded" });
     expect(world.starts).toHaveLength(1);
   });
 });
