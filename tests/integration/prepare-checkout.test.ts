@@ -144,7 +144,7 @@ describe("preparing a workspace for a run that looks at a pull request", () => {
         devcontainer: { repository: "demo" },
       };
     }
-    const withoutDevcontainer = (definition: ProjectDefinition): ProjectDefinition => { const { devcontainer: _devcontainer, ...rest } = definition; return rest; };
+    const withoutDevcontainer = (definition: ProjectDefinition): ProjectDefinition => { const { devcontainer: _devcontainer, ...rest } = definition; return rest; }; // eslint-disable-line @typescript-eslint/no-unused-vars -- taken out of the copy, not read
     const exists = (path: string) => readFile(path, "utf8").then(() => true, () => false);
 
     it("runs no setup command, starts no devcontainer, and a failing readiness does not fail it", async () => {

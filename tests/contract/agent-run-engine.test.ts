@@ -2747,7 +2747,7 @@ describe("final fix wave, runs I-1: a budget stop the broker has not turned into
       const askForPause = vi.fn(async (_task: unknown, operationId: string) => {
         await t.db.send(new UpdateCommand({ ...META(run.taskId), UpdateExpression: "SET budgetPause = :pause, budgetStopOf = :operation", ExpressionAttributeValues: { ":pause": { scope, at: new Date().toISOString() }, ":operation": operationId } }));
       });
-      await driveAgentRun({ ...deps, agentRuns: { ...deps.agentRuns!, askForPause } } as ApprovalDependencies, run.taskId);
+      await driveAgentRun({ ...deps, agentRuns: { ...deps.agentRuns!, askForPause } }, run.taskId);
       expect(askForPause).toHaveBeenCalledExactlyOnceWith(expect.anything(), first.id);
       expect(paused).toEqual([{ orgId: TEST_ORG, taskId: run.taskId, scope }]);
       expect(t.runItem(run.taskId)).toMatchObject({ state: "PAUSED_BUDGET", pause: { scope, notifiedAt: expect.any(String) as string } });
@@ -2799,7 +2799,7 @@ describe("final fix wave, runs minors: the dispatch row, the stop of a step, and
     const racing = { ...t.routeDeps(), documentClient: { send: async (command: { constructor: { name: string } }) => {
       if (command.constructor.name === "DeleteCommand") t.db.set(row(999));
       return t.db.send(command as never);
-    } } } as unknown as ApprovalDependencies;
+    } } };
     await cancelAgentRun(racing, run.taskId);
     expect(rowOf(t, run.taskId)).toMatchObject({ workflowRevision: 999 });
     // And an unraced one is deleted, as before.
@@ -2816,7 +2816,7 @@ describe("final fix wave, runs minors: the dispatch row, the stop of a step, and
     const racing = { ...t.routeDeps(), documentClient: { send: async (command: { constructor: { name: string } }) => {
       if (command.constructor.name === "PutCommand" && (command as unknown as { input: { Item: { kind?: string } } }).input.Item.kind === "agent_run") t.db.set(newer);
       return t.db.send(command as never);
-    } } } as unknown as ApprovalDependencies;
+    } } };
     await driveAgentRun(racing, run.taskId);
     expect(rowOf(t, run.taskId)).toMatchObject({ workflowRevision: 999, nextAttemptAt: "2026-10-22T00:00:00.000Z" });
   });

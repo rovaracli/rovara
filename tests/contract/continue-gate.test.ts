@@ -3,12 +3,14 @@
 // agent, a person's Continue, workflow retry or send-back neither resets the window, clears the pause nor withdraws the request unless `mayDecideNow` holds.
 // A plain task keeps R38 as accepted (spend-requests-run "P2").
 import { randomUUID } from "node:crypto";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
+import { pausedTaskGate } from "../../packages/broker/src/spend/requests.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { BEN, CODING, TRIAGE, refusal, setup, type World } from "../support/spend-world.js";
+import { BEN, CODING, DEB, TRIAGE, refusal, setup, type World } from "../support/spend-world.js";
 
 const PAUSED = WORKFLOW_BLOCK_REASONS.budgetPaused;
 
@@ -65,7 +67,7 @@ describe("an agent-step run takes no free-form turn (runs I-3)", () => {
     const task = t.meta(run.taskId) as unknown as Parameters<typeof developerTaskIdentity>[0];
     // The step the engine started is finished (the workspace is idle), so only the backstop can refuse.
     const workspace = t.db.get(`WORKSPACE#${run.workspaceId}`, "META") as Record<string, unknown>;
-    const { activeOperationId: _active, ...idle } = workspace;
+    const { activeOperationId: _active, ...idle } = workspace; // eslint-disable-line @typescript-eslint/no-unused-vars -- taken out of the copy, not read
     t.db.set({ ...idle, status: "READY" });
     const before = t.taskOps(run.workspaceId).length;
     const refused = await refusal(t.actions.acceptTask(developerTaskIdentity(task, TEST_ORG), run.workspaceId, { requestId: randomUUID(), conversationId: t.meta(run.taskId).conversationId as string, prompt: "do something else" }, () => [], {}));
@@ -171,5 +173,61 @@ describe("a coding agent's max-per-run pause is not skipped by a retry or a send
     expect(retried.status, JSON.stringify(retried.body)).toBe(409);
     expect(retried.body).toMatchObject({ error: { code: "WORKSPACE_BUSY", message: expect.stringContaining("waiting for") as unknown } });
     expect(snapshot(t, taskId, workspaceId, request.spendRequestId)).toEqual(before);
+  });
+});
+
+describe("the gate holds where the other tests do not reach it", () => {
+  it("a plain task (no agent, so no workflow and no agent run) paused at a max per run is not skipped by its starter's Continue: a max per run holds for every task", async () => {
+    const t = await setup();
+    // Ben started and pays for it, but a max per run with no agent to own it is the org admins' to decide.
+    const { taskId, workspaceId } = await t.plainTask(BEN);
+    await t.set(taskId, "SET maxPerRunUsd = :max", { ":max": 4 });
+    await t.pauseAndEnd({ taskId, workspaceId }, { kind: "max_per_run", taskId });
+    const before = snapshot(t, taskId, workspaceId, "none");
+    const continued = await t.api(BEN, "POST", `/v1/dev/tasks/${taskId}/continue`, { instructions: "Go on" });
+    expect(continued.status, JSON.stringify(continued.body)).toBe(409);
+    expect(continued.body).toMatchObject({ error: { code: "WORKSPACE_BUSY", message: expect.stringContaining("waiting for") as unknown } });
+    expect(snapshot(t, taskId, workspaceId, "none")).toEqual(before);
+    expect(t.meta(taskId).budgetPause).toBeDefined();
+  });
+
+  it("the open request decides who may go on, not the request the pause would ask for now: once it is escalated, an admin may", async () => {
+    const t = await setup();
+    const { taskId, request } = await maxPaused(t, TRIAGE);
+    const task = t.meta(taskId) as unknown as Parameters<typeof pausedTaskGate>[2];
+    // Asked of the agent's owner (Maya) alone: Deb, an admin, is not asked.
+    expect(await pausedTaskGate(t.deps(), t.caller(DEB, "admin"), task)).toMatchObject({ allowed: false });
+    expect(await pausedTaskGate(t.deps(), t.caller(MAYA), task)).toEqual({ allowed: true });
+    // The escalation adds the org's admins to that request; the request that would be asked now (never escalated) would not.
+    t.db.set({ ...t.requests().find((record) => record.spendRequestId === request.spendRequestId)!, escalatedAt: new Date().toISOString() });
+    expect(await pausedTaskGate(t.deps(), t.caller(DEB, "admin"), task)).toEqual({ allowed: true });
+  });
+
+  it("an approval's own resume is the approval, so the gate does not refuse it, even when another pause landed on the task in between", async () => {
+    const t = await setup();
+    const { taskId, workspaceId, request } = await maxPaused(t, CODING);
+    const before = t.taskOps(workspaceId).length;
+    // The resume runs as the run's owner (Ben), who may not decide this request himself. Just after the approval took the pause off, another one is written
+    // (a concurrent stop): the resume reads the task again, finds a pause that is not the approval's, and must still go on, as the approval it is.
+    const send = t.db.send;
+    let approved = false;
+    let reads = 0;
+    t.db.send = async (command) => {
+      const input = (command as { input?: { Key?: { pk?: string; sk?: string }; TransactItems?: Array<{ Update?: { Key?: { pk?: string } } }> } }).input;
+      if (command instanceof GetCommand && approved && input?.Key?.pk === `DEVTASK#${taskId}` && input.Key.sk === "META") {
+        reads += 1;
+        // The third read after the approval is the resume's own read of the task, after its check that no pause is left.
+        if (reads === 3) await t.set(taskId, "SET budgetPause = :pause", { ":pause": { scope: { kind: "max_per_run", taskId }, at: new Date().toISOString() } });
+      }
+      const sent = await send(command);
+      if (input?.TransactItems?.some((item) => item.Update?.Key?.pk === `DEVTASK#${taskId}`) === true) approved = true;
+      return sent;
+    };
+    await t.decide(MAYA, request.spendRequestId);
+    t.db.send = send;
+    expect(reads).toBeGreaterThanOrEqual(3);
+    expect(t.meta(taskId).workflow).toMatchObject({ state: "RUNNING" });
+    expect(t.meta(taskId).budgetPause).toBeUndefined();
+    expect(t.taskOps(workspaceId)).toHaveLength(before + 1);
   });
 });

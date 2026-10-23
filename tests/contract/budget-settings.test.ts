@@ -545,10 +545,10 @@ describe("a project's AI settings", () => {
       expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 0 })).status).toBe(200);
       expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 1000 })).status).toBe(200);
       for (const bad of [-1, 1000.01, "10"]) {
-        const refused = await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: bad as number });
+        const refused = await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: bad });
         expect(refused.status, String(bad)).toBe(400);
       }
-      expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpTo: 5 } as never)).status).toBe(400);
+      expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpTo: 5 })).status).toBe(400);
       const cleared = await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: null });
       expect(cleared.body).toMatchObject({ effective: { memberAcceptRunLimitUpToUsd: 10 } });
       expect((cleared.body.settings as Record<string, unknown>).memberAcceptRunLimitUpToUsd).toBeUndefined();

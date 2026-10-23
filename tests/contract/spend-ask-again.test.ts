@@ -64,6 +64,20 @@ describe("an owner asks again for a task-level pause", () => {
     expect(t.taskOps(workspaceId)).toHaveLength(before + 1);
   });
 
+  it("a request past its expiry that the sweep has not ended yet is ended first, and the owner's ask makes a new one at once", async () => {
+    const t = await setup();
+    const { taskId, request } = await maxPaused(t);
+    // Its time is up but nothing has swept it: it is still the open request.
+    t.db.set({ ...t.requests().find((record) => record.spendRequestId === request.spendRequestId)!, expiresAt: new Date(Date.now() - 60_000).toISOString() });
+    expect(t.openItems()).toHaveLength(1);
+    const asked = await ask(t, BEN, taskId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(201);
+    expect(asked.body).toMatchObject({ created: true });
+    expect(asked.body.spendRequestId).not.toBe(request.spendRequestId);
+    expect(t.requestOf(taskId, "max_per_run").find((record) => record.spendRequestId === request.spendRequestId)).toMatchObject({ status: "EXPIRED" });
+    expect(t.requestOf(taskId, "max_per_run").filter((record) => record.status === "PENDING")).toHaveLength(1);
+  });
+
   it("an agent-step run paused on its run limit, whose request ran out, is asked for again by its owner", async () => {
     const t = await setup();
     const agentId = await t.agentOf(TRIAGE);
@@ -187,5 +201,19 @@ describe("a new month resumes the tasks the last month stopped", () => {
     await escalateOwnerRequests(t.deps(() => nextMonthStart()), { budgetMs: 5_000 });
     expect(t.taskOps(task.workspaceId)).toHaveLength(before);
     expect(t.db.find((item) => item.pk === "MONTH_PAUSED_TASKS")).toEqual([]);
+  });
+
+  it("drops the scope's own listing too, when no request is left to settle that scope (the month's request ended with the month)", async () => {
+    const t = await setup();
+    const task = await t.plainTask();
+    await t.pauseAndEnd(task, MEMBER);
+    await t.set(task.taskId, "SET closedAt = :now", { ":now": new Date().toISOString() });
+    // Nothing is open any more, as when the request was swept in the month it was made.
+    for (const record of t.requests()) t.db.delete({ pk: String(record.pk), sk: String(record.sk) } as never);
+    for (const item of t.openItems()) t.db.delete({ pk: String(item.pk), sk: String(item.sk) } as never);
+    expect(t.db.find((item) => item.entityType === "PAUSED_TASK")).toHaveLength(1);
+    await escalateOwnerRequests(t.deps(() => nextMonthStart()), { budgetMs: 5_000 });
+    expect(t.db.find((item) => item.entityType === "MONTH_PAUSED_TASK")).toEqual([]);
+    expect(t.db.find((item) => item.entityType === "PAUSED_TASK")).toEqual([]);
   });
 });

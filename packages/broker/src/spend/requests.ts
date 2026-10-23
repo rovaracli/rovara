@@ -5,7 +5,7 @@
 // page (Task 21a's `requireDecideSession`, R66); an approval changes the limit in the same transaction that ends the request, and then the task goes on where
 // it stopped (`SpendRequestHost.resumeTask`, which is `resumeTaskAfterSpendApproval` in developer-tasks.ts).
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   AgentIdSchema, AgentXError, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
@@ -1781,7 +1781,7 @@ export async function pausedTaskGate(
   if (pause === undefined || kind === undefined || task.orgId === undefined) return { allowed: true };
   const withAgent = task.agent !== undefined && !(task.agent.builtin && task.agent.agentId === ROVARA_CODE_AGENT_ID);
   if (kind !== "max_per_run" && !withAgent) return { allowed: true };
-  const orgId = task.orgId as OrgId;
+  const orgId = task.orgId;
   const open = await openRequestFor(deps, orgId, `TASK#${task.taskId}`, kind);
   let record = open !== undefined && Date.parse(open.expiresAt) > deps.now() ? open : undefined;
   if (record === undefined) {
