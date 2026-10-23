@@ -395,6 +395,9 @@ import { followMerges, orgRoleOf, type ProjectMembers } from "../agents/access.j
 import { escalateOwnerRequests, requestForPausedTask, runLimitRequester, spendDecideKind, type SpendRequestHost } from "../spend/requests.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { ChainStore } from "../chains/store.js";
+import { TriggerStore } from "../triggers/store.js";
+import type { TriggerHookReader, TriggerScheduler } from "../triggers/ports.js";
+import { chainTriggerHooksFor, triggerHooksFor } from "../triggers/lifecycle.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
 import { sweepChainRuns } from "../chains/lifecycle.js";
@@ -618,7 +621,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -974,6 +977,10 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, agents: agentStore,
       ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     }),
+    // Plan 4 Task 18: the triggers of agents and chains, on the same table. The hooks that receive events (Task 19) and the scheduler (Task 26) are theirs to supply.
+    triggers: agents.triggers ?? new TriggerStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
+    ...(agents.hooks === undefined ? {} : { hooks: agents.hooks }),
+    ...(agents.triggerSchedules === undefined ? {} : { triggerSchedules: agents.triggerSchedules }),
     ...(agents.chainTriggers === undefined ? {} : { chainTriggers: agents.chainTriggers }),
     // Plan 4 Task 6: what the spend requests ask of a chain run (the chain, and what the run had left when a step started), answered from the run's own records.
     chainRunBudgets: agents.chainRunBudgets ?? chainRunSpendReader({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
@@ -1044,6 +1051,9 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
   };
   // Plan 3, Task 22: what the agent-step engine needs of the broker, on the same dependencies (it reads the approvals through them).
   routeDependencies.agentRuns = agentRunHostOf(dependencies, tasks, routeDependencies);
+  // Plan 4 Task 18: what the agent and chain routes, the confirmations and the member movers ask of the trigger code, over these same dependencies.
+  routeDependencies.triggerHooks ??= triggerHooksFor(routeDependencies);
+  routeDependencies.chainTriggers ??= chainTriggerHooksFor(routeDependencies);
   // Plan 3, Task 32: what an approved spend request does with its task (the owner's resume, continue-as-task) and what a task's keys have spent.
   routeDependencies.spendRequests = spendRequestHostOf(dependencies, tasks, routeDependencies);
   // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding

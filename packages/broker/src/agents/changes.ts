@@ -312,6 +312,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
     skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe",
     ...(subject.note === undefined ? {} : { note: subject.note }),
   });
+  await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
 
 async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
@@ -327,6 +328,7 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   if (recipeDigest(target) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
   await requireWithinGuardrails(deps, record.orgId, target);
   await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by });
+  await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
 
 async function confirmAdopt(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
@@ -341,6 +343,7 @@ async function confirmAdopt(deps: ApprovalDependencies, record: ApprovalRecord):
   }
   if (recipeDigest(deps.store.builtinRecipe(subject.agentId, subject.version)) !== subject.digest) throw stale("That version changed after this was asked. Adopt again.");
   await deps.store.adoptBuiltinVersion({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedPinnedVersion: subject.expectedPinnedVersion, by });
+  await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
 
 async function confirmShare(deps: ApprovalDependencies, record: ApprovalRecord): Promise<void> {
@@ -365,6 +368,7 @@ async function confirmGuardrails(deps: ApprovalDependencies, record: ApprovalRec
     throw stale("The company's agent guardrails changed after this was asked. Ask again.");
   }
   await writeGuardrails(deps, record.orgId, subject.next, by, { expectedRevision: subject.expectedRevision, widened: true });
+  await deps.triggerHooks?.recheckBuiltinTriggers(record.orgId);
 }
 
 /** The owner, an accountable or managing maintainer of the owning project, or an org owner or admin: whoever holds `manage` on the agent now (R68). */

@@ -55,6 +55,7 @@ const TITLES: Record<string, string> = {
   chain_publish: "Publish a chain",
   chain_rollback: "Roll a chain back",
   chain_share: "Share a chain with the whole company",
+  trigger_enable: "Turn on a trigger",
   connector_widen: "Let a project's connector make changes",
   opt_out: "Let agents comment in a repository whose workflows act on comments",
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
@@ -126,7 +127,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
-  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share") {
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable") {
     facts.push(...await agentChangeFacts(deps, record.orgId, subject));
   }
   if (subject.kind === "opt_out") {

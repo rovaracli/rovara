@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin } from "@agentx/contracts";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
 import { auditApprovalRequested } from "../audit/events.js";
@@ -12,6 +12,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import type { ChainStore } from "../chains/store.js";
+import type { TriggerHookReader, TriggerHooks, TriggerLookup, TriggerScheduler } from "../triggers/ports.js";
 import { orgRoleOf, type AgentAccessDeps, type AgentCaller, type AgentShare } from "./access.js";
 import type { ServableModels } from "./guardrails.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
@@ -24,6 +25,15 @@ import type { AgentRunHost } from "./run-engine.js";
 export interface ApprovalDependencies extends AgentAccessDeps {
   /** Plan 4: the chain store, where a chain's change names the chain it is about on the confirmation page. Absent where chains are not set up. */
   chains?: ChainStore;
+  /**
+   * Plan 4 Task 18: the trigger store (a lookup of who created a trigger, for who approves an autonomous run's writes, and the whole store where the broker builds it), what
+   * the changes that confirm and the member movers ask of the trigger code (`triggerHooks`), the hooks that receive events (`hooks`, Task 19) and the scheduler (`triggerSchedules`,
+   * Task 26). Each is absent where its code is not set up.
+   */
+  triggers?: TriggerLookup;
+  triggerHooks?: TriggerHooks;
+  hooks?: TriggerHookReader;
+  triggerSchedules?: TriggerScheduler;
   now: () => number;
   /** The cell's origin, where `/v1/app/approve/<id>` is served. */
   confirmOrigin: string;
@@ -106,7 +116,13 @@ export type ChainChangeSubject =
   /** Make `shares` the chain's share set (it includes a company-wide share, or a wider one than there is), while it is still at `expectedSharesRevision`. */
   | { kind: "chain_share"; chainId: string; shares: AgentShare[]; expectedSharesRevision: number };
 
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject;
+/**
+ * Plan 4 Task 18: turning a trigger on is a person's decision (N6). The approval is bound to the digest of the spec the person was shown, so a trigger edited in between
+ * does not turn on under it.
+ */
+export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string };
+
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -316,6 +332,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
     project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
   }).strict(),
+  z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64 }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   z.object({
     kind: z.literal("opt_out"), project: z.string(), repository: z.string(), expectedDigest: Hex64, files: z.array(z.string()), reason: z.string(),

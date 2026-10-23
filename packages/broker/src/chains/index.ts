@@ -3,6 +3,8 @@
 // runner dependencies (a deployment without agents or chains). Task 8 registers the gate's approval rule and handler and the autonomous write approvers beside them.
 import { registerTaskEndHandler, registerTaskPauseHandler, registerTaskResumeHandler, type TaskEndDependencies } from "../agents/task-end.js";
 import { registerChainGates } from "./gates.js";
+// What chains do when a member leaves or is merged registers itself when this loads (Plan 4 Task 18).
+import "./members.js";
 import { onStepTaskEnded, onStepTaskPaused, onStepTaskResumed, type ChainRunnerDependencies } from "./runner.js";
 import { registerChainWriteApprovers } from "./write-approvers.js";
 

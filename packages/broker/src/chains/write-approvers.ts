@@ -29,7 +29,6 @@ type Deps = ApprovalDependencies & { triggers?: TriggerReader | undefined };
 
 /** The member who created the trigger that started the run of the task a write approval is about, now; undefined when any link of that chain is missing. */
 async function creatorOf(deps: Deps, record: Extract<AnyApprovalRecord, { kind: "write" }>): Promise<string | undefined> {
-  if (deps.triggers === undefined) return undefined;
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(record.subject.taskId), ConsistentRead: true })) as { Item?: { orgId?: unknown; chain?: { chainRunId?: unknown } } };
   const task = response.Item;
   // A task partition is global: the record's org is checked on the item.
@@ -38,6 +37,11 @@ async function creatorOf(deps: Deps, record: Extract<AnyApprovalRecord, { kind: 
   if (!runId.success) return undefined;
   const run = await readChainRun(deps, record.orgId, runId.data);
   if (run === undefined || (run.startedBy.kind !== "event" && run.startedBy.kind !== "schedule")) return undefined;
+  if (deps.triggers === undefined) {
+    // An autonomous run whose trigger can't be read: its creator never decides, only the project's maintainers do. A broker built without the trigger store says so.
+    (deps.log ?? ((event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))))("chain_writer.triggers_missing", { orgId: record.orgId, approvalId: record.approvalId, runId: run.runId });
+    return undefined;
+  }
   return (await deps.triggers.get(record.orgId, run.startedBy.triggerId))?.createdBy;
 }
 

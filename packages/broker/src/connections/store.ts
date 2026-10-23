@@ -195,13 +195,13 @@ function atRevision(revision: number | undefined): { expression: string; values?
   return revision === undefined ? { expression: "attribute_not_exists(revision)" } : { expression: "revision = :read", values: { ":read": revision } };
 }
 
-async function readItem(deps: OrgConnectionDeps, orgId: OrgId, connectionId: string): Promise<Item | undefined> {
+async function readItem(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: OrgId, connectionId: string): Promise<Item | undefined> {
   if (!ConnectionIdSchema.safeParse(connectionId).success) return undefined;
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: connectionKey(orgId, connectionId), ConsistentRead: true })) as { Item?: Item };
   return response.Item;
 }
 
-async function listItems(deps: OrgConnectionDeps, orgId: OrgId): Promise<Item[]> {
+async function listItems(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: OrgId): Promise<Item[]> {
   const directory: Item[] = [];
   let start: Record<string, unknown> | undefined;
   const pk = connectionsKey(orgId, "x").pk;
@@ -221,7 +221,7 @@ async function listItems(deps: OrgConnectionDeps, orgId: OrgId): Promise<Item[]>
 }
 
 /** The vendor account ids this org's connections of one type have checked as, to tell their own writes from a person's. */
-export async function connectionActorIds(deps: OrgConnectionDeps, orgId: string, type: ConnectionType): Promise<Set<string>> {
+export async function connectionActorIds(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: string, type: ConnectionType): Promise<Set<string>> {
   const org = parseOrg(orgId);
   const ids = new Set<string>();
   for (const item of await listItems(deps, org)) {

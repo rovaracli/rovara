@@ -82,6 +82,7 @@ import {
   guardrailsSet, guardrailsShow, projectAgentsChange, projectConnectorsList, projectConnectorsRemove, projectConnectorsSet, skillsAdd, skillsList, sourcesAdd,
   sourcesCheck, sourcesList, sourcesOrder, sourcesRemove, type AppResult,
 } from "./developer/agents.js";
+import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
@@ -761,7 +762,47 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument("<chain-id>", "the chain's ID")
     .option("--file <shares.json>", "the shares, as a JSON array")
     .action(async (chainId: string, options: { file?: string }, command: Command) => printResult(command, await chainsShare(developerSession(), developerEnv(command), chainId, options.file)));
+
+  /** `agentx chains triggers ...` and `agentx agents triggers ...`: the same four commands on a chain and on an agent (Plan 4 Task 18). */
+  const addTriggerCommands = (parent: Command, kind: TriggerOwnerKind, noun: string) => {
+    const triggers = parent.command("triggers").description(`what starts a ${noun} without a person: events and schedules`);
+    triggers
+      .command("list")
+      .description(`list a ${noun}'s triggers`)
+      .argument(`<${noun}-id>`, `the ${noun}'s ID`)
+      .action(async (id: string, _options: unknown, command: Command) => printResult(command, await triggersList(developerSession(), developerEnv(command), kind, id)));
+    triggers
+      .command("set")
+      .description("add a trigger or change one; turning one on waits for a person on the confirmation page")
+      .argument(`<${noun}-id>`, `the ${noun}'s ID`)
+      .option("--trigger-id <id>", "the trigger to change; without it a new one is added")
+      .option("--project <name>", "the project the trigger works on")
+      .option("--file <spec.json>", "what starts it, as JSON: an event or a schedule")
+      .option("--hook <hook-id>", "the hook that receives the events of a source other than GitHub")
+      .option("--max-runs-per-hour <n>", "the most runs it may start in an hour")
+      .option("--off", "store it turned off", false)
+      .action(async (id: string, options: { triggerId?: string; project?: string; file?: string; hook?: string; maxRunsPerHour?: string; off: boolean }, command: Command) =>
+        printResult(command, await triggersSet(developerSession(), developerEnv(command), kind, id, {
+          ...(options.triggerId === undefined ? {} : { triggerId: options.triggerId }), ...((options.project ?? globalOptions(command).project) === undefined ? {} : { project: (options.project ?? globalOptions(command).project)! }),
+          ...(options.file === undefined ? {} : { file: options.file }), ...(options.hook === undefined ? {} : { hookId: options.hook }),
+          ...(options.maxRunsPerHour === undefined ? {} : { maxRunsPerHour: options.maxRunsPerHour }), ...(options.off ? { enabled: false } : {}),
+        })));
+    triggers
+      .command("remove")
+      .description("delete a trigger")
+      .argument(`<${noun}-id>`, `the ${noun}'s ID`)
+      .argument("<trigger-id>", "the trigger's ID, from the list")
+      .action(async (id: string, triggerId: string, _options: unknown, command: Command) => printResult(command, await triggersRemove(developerSession(), developerEnv(command), kind, id, triggerId)));
+    triggers
+      .command("activity")
+      .description("what a trigger did lately: the runs it started and why it skipped or was turned off")
+      .argument(`<${noun}-id>`, `the ${noun}'s ID`)
+      .argument("<trigger-id>", "the trigger's ID, from the list")
+      .action(async (id: string, triggerId: string, _options: unknown, command: Command) => printResult(command, await triggersActivity(developerSession(), developerEnv(command), kind, id, triggerId)));
+  };
+  addTriggerCommands(chains, "chains", "chain");
   const agents = program.command("agents").description("build, publish, share, run and govern your organization's agents");
+  addTriggerCommands(agents, "agents", "agent");
   agents
     .command("list")
     .description("list the agents you can see: all, yours, those shared with you, the built-in ones, or a project's")

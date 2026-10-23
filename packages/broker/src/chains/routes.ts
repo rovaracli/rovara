@@ -42,6 +42,7 @@ import { chainDigest, type ChainRecord, type ChainStore, type ChainVersion } fro
 import { cancelChainRun } from "./lifecycle.js";
 import { chainRunEvents, chainRunView, chainStepTask, listChainRuns } from "./view.js";
 import { startChainRun, type ChainRunRecord } from "./runner.js";
+import { routeChainTriggers } from "../triggers/routes.js";
 import { chainGraphProblems, formatChainProblem, validateChainForPublish, validatePinnedChainForOrg, type ChainProblem } from "./validate.js";
 
 /** What the chain routes ask of the trigger code (Plan 4 Tasks 18 and 20), which builds it: until then there are no triggers and all three do nothing. */
@@ -448,7 +449,8 @@ async function putBudget(deps: ChainRouteDependencies, caller: AgentCaller, chai
   const written = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { monthlyBudgetUsd: monthlyUsd }), { op: "set_budget", budget: { monthlyUsd: input.monthlyUsd } }, mark,
     (options) => deps.chains.setBudget(chain.orgId, chain.chainId, monthlyUsd, caller.developerId, mark, options));
   if (written instanceof StatusReply) return written;
-  return { chain: chainView(written, access) };
+  // A chain whose budget is gone can't be started by an event or a schedule: the triggers that no longer qualify are turned off, and the answer says which.
+  return { chain: chainView(written, access), disabledTriggers: await recheck(deps, chain) };
 }
 
 // ---- starting a run
@@ -532,6 +534,9 @@ export async function routeChainRequest(deps: ChainRouteDependencies, caller: Ag
     if (request.method !== "GET") throw agentXError("NOT_FOUND", "route not found");
     return readRuns(deps, caller, reading, url);
   }
+  // Plan 4 Task 18: a chain's triggers (`/v1/app/chains/{id}/triggers*`).
+  const triggers = await routeChainTriggers(deps, caller, request, url);
+  if (triggers !== undefined) return triggers;
   const matched = CHAIN_PATH.exec(url.pathname);
   if (matched === null) throw agentXError("NOT_FOUND", "that isn't available yet");
   const [, rawId, sub, rawVersion] = matched;

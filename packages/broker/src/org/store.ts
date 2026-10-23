@@ -456,7 +456,7 @@ export class OrgStore {
    * `closedAt` is set and the sole member removed without a ban. `emails` are the leaving person's email pointers, which must go so an invite
    * to another org can index them. The org's TRIAL_GITHUB claim stays. Safe to run again after a stop part-way.
    */
-  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; /** Takes the org's company AI sources out of the model proxy and deletes their record (Task 24b); absent where there are none. */ releaseModelSources?: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
+  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; /** Deletes the org's triggers, their activity and their notices (Plan 4 Task 18); absent where there are none. */ clearTriggers?: (orgId: OrgId) => Promise<void>; /** Takes the org's company AI sources out of the model proxy and deletes their record (Task 24b); absent where there are none. */ releaseModelSources?: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
     const members = await this.listMembers(orgId);
     if (members.length > 1 || members.some((member) => member.role !== "owner")) throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
     const meta = await this.get(orgMetaKey(orgId));
@@ -484,6 +484,7 @@ export class OrgStore {
     await deps.clearEgress(orgId);
     // The secrets go before the org closes: a failure here stops the close, and running it again finishes the clearing.
     await deps.clearConnections?.(orgId);
+    await deps.clearTriggers?.(orgId);
     await deps.releaseModelSources?.(orgId);
     const [sole] = members;
     if (sole === undefined) return;
