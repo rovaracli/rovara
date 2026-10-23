@@ -169,13 +169,46 @@ describe("followers", () => {
     for (const who of [ARJUN, MIA, ZED, OLA]) p.w.follower(ORG_A, session.sessionId, who);
     const rec = recorder();
     await createRealtimeSink({ realtime: rec.config() })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now }, changeOf(session, { statusChanged: true, summary: { status: "needs_person", needsPeople: [] } }));
-    // Arjun (contributor) and Mia (viewer) and Ola (an org admin) may see it; Zed has no role on web and no share.
+    // Arjun (contributor) and Mia (viewer) and Ola (an org admin) may see it. Zed has no grant on web and no share: the read-only path can't tell whether web's Slack
+    // channel has him, so he is not told this time, and his follow stays (Task 8 review, ruling 3).
     for (const who of [ARJUN, MIA, OLA]) expect(rec.calls.some((call) => call.channel === userChannel(ORG_A, who)), who).toBe(true);
     expect(rec.calls.some((call) => call.channel === userChannel(ORG_A, ZED))).toBe(false);
     expect(feedOf(p.w.db, ZED)).toEqual([]);
-    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${ZED}`))).toBeUndefined();
+    expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${ZED}`))).toBeDefined();
     for (const who of [ARJUN, MIA, OLA]) expect(p.w.db.get(agentSessionKey(ORG_A, session.sessionId, `FOLLOWER#${who}`)), who).toBeDefined();
-    // A follower of the same person who is the owner needs no check and gets one notice of each kind, not two.
+  });
+
+  it("are dropped only when the check positively says they lost access: someone who left the company, or a Task People denial; one the read-only path can't decide is kept and not told", async () => {
+    const p = projectorWorld();
+    const GONE = hex("8");
+    const session = p.w.seedSession({ people: [{ developerId: MIA, role: "denied" }, { developerId: ZED, role: "denied" }] }).record as unknown as AgentSessionRecord;
+    const undecided = p.w.seedSession().record as unknown as AgentSessionRecord;
+    const sharedToProject = p.w.seedSession({ project: null }).record as unknown as AgentSessionRecord;
+    p.w.seedShare(ORG_A, sharedToProject.sessionId, { kind: "project", project: "ops" }, "view");
+    const NEWCOMER = hex("7");
+    p.w.member(ORG_A, NEWCOMER, "member");
+    for (const [made, who] of [[session, ARJUN], [session, MIA], [session, ZED], [session, GONE], [undecided, ZED], [undecided, GONE], [sharedToProject, NEWCOMER], [sharedToProject, GONE]] as const) p.w.follower(ORG_A, made.sessionId, who);
+    const told = async (made: AgentSessionRecord) => {
+      const rec = recorder();
+      await createRealtimeSink({ realtime: rec.config() })({ documentClient: p.w.db, tableName: "state", now: () => p.w.clock.now }, changeOf(made, { statusChanged: true, summary: { status: "needs_person", needsPeople: [] } }));
+      return (who: string) => rec.calls.some((call) => call.channel === userChannel(ORG_A, who));
+    };
+    const kept = (made: AgentSessionRecord, who: string) => p.w.db.get(agentSessionKey(ORG_A, made.sessionId, `FOLLOWER#${who}`)) !== undefined;
+    const first = await told(session);
+    // Denied (Mia, and Zed whom the Slack channel could not save from a denial) and gone: dropped. Arjun: told.
+    expect(first(ARJUN)).toBe(true);
+    for (const who of [MIA, ZED, GONE]) { expect(first(who), who).toBe(false); expect(kept(session, who), who).toBe(false); }
+    expect(kept(session, ARJUN)).toBe(true);
+    // Zed on a plain web session: not told, follow kept. Gone: dropped.
+    const second = await told(undecided);
+    expect(second(ZED)).toBe(false);
+    expect(kept(undecided, ZED)).toBe(true);
+    expect(kept(undecided, GONE)).toBe(false);
+    // A share to another project the person may be in through its Slack channel: undecided, kept.
+    const third = await told(sharedToProject);
+    expect(third(NEWCOMER)).toBe(false);
+    expect(kept(sharedToProject, NEWCOMER)).toBe(true);
+    expect(kept(sharedToProject, GONE)).toBe(false);
   });
 
   it("are grouped by the facts that decide their level: followers alike in those are resolved once", async () => {
@@ -599,14 +632,14 @@ describe("GET /v1/app/changes", () => {
     put(w, PRIYA, "2026-10-22T09:45:00.000Z", 4, {}, ORG_B);
     const page = await read(w, PRIYA);
     expect(page.notices).toEqual([
-      { type: "home.changed", revision: 1, at: "2026-10-22T09:00:00.000Z" },
-      { type: "session.updated", sessionId: "ses_0123456789abcdefghij", revision: 4, at: "2026-10-22T09:00:00.000Z" },
-      { type: "home.changed", revision: 2, at: "2026-10-22T10:00:00.000Z" },
+      { type: "home.changed", revision: 1, at: "2026-10-22T09:00:00.000Z", sk: "2026-10-22T09:00:00.000Z#000001" },
+      { type: "session.updated", sessionId: "ses_0123456789abcdefghij", revision: 4, at: "2026-10-22T09:00:00.000Z", sk: "2026-10-22T09:00:00.000Z#000007" },
+      { type: "home.changed", revision: 2, at: "2026-10-22T10:00:00.000Z", sk: "2026-10-22T10:00:00.000Z#000002" },
     ]);
     expect(page.next).toBe("2026-10-22T10:00:00.000Z#000002");
     expect(page.reset).toBeUndefined();
-    expect((await read(w, ARJUN)).notices).toEqual([{ type: "home.changed", revision: 3, at: "2026-10-22T09:30:00.000Z" }]);
-    expect((await read(w, PRIYA, undefined, ORG_B)).notices).toEqual([{ type: "home.changed", revision: 4, at: "2026-10-22T09:45:00.000Z" }]);
+    expect((await read(w, ARJUN)).notices).toEqual([{ type: "home.changed", revision: 3, at: "2026-10-22T09:30:00.000Z", sk: "2026-10-22T09:30:00.000Z#000003" }]);
+    expect((await read(w, PRIYA, undefined, ORG_B)).notices).toEqual([{ type: "home.changed", revision: 4, at: "2026-10-22T09:45:00.000Z", sk: "2026-10-22T09:45:00.000Z#000004" }]);
     expect((await read(w, ZED)).notices).toEqual([]);
   });
 
@@ -616,11 +649,12 @@ describe("GET /v1/app/changes", () => {
     put(w, PRIYA, "2026-10-22T10:00:00.000Z", 2);
     const first = await read(w, PRIYA);
     const after = await read(w, PRIYA, "2026-10-22T09:00:00.000Z#000001");
-    expect(after.notices).toEqual([{ type: "home.changed", revision: 2, at: "2026-10-22T10:00:00.000Z" }]);
+    expect(after.notices).toEqual([{ type: "home.changed", revision: 2, at: "2026-10-22T10:00:00.000Z", sk: "2026-10-22T10:00:00.000Z#000002" }]);
     expect(await read(w, PRIYA, first.next)).toEqual({ notices: [], next: first.next });
     // An empty feed starts the caller at now: what is written after that is theirs.
     const empty = await read(w, ZED);
-    expect(empty).toEqual({ notices: [], next: "2026-10-22T12:00:00.000Z#" });
+    // (30 seconds back, the settle window: a notice made just before now may still be on its way to the table.)
+    expect(empty).toEqual({ notices: [], next: "2026-10-22T11:59:30.000Z#" });
     put(w, ZED, "2026-10-22T12:00:00.000Z", 0);
     expect((await read(w, ZED, empty.next)).notices).toHaveLength(1);
   });
@@ -638,7 +672,7 @@ describe("GET /v1/app/changes", () => {
     const w = world();
     const edge = Date.parse("2026-10-22T12:00:00.000Z") - CHANGES_FEED_DAYS * 86_400_000;
     put(w, PRIYA, iso(edge + 5), 1);
-    expect(await read(w, PRIYA, `${iso(edge - 1)}#000001`)).toEqual({ notices: [], next: "2026-10-22T12:00:00.000Z#", reset: true });
+    expect(await read(w, PRIYA, `${iso(edge - 1)}#000001`)).toEqual({ notices: [], next: "2026-10-22T11:59:30.000Z#", reset: true });
     expect((await read(w, PRIYA, `${iso(edge)}#000000`)).notices).toHaveLength(1);
   });
 
@@ -663,7 +697,70 @@ describe("GET /v1/app/changes", () => {
   it("tells the share notice an old share left, with its undo", async () => {
     const w = world();
     w.db.set({ ...changesKey(ORG_A, PRIYA, "2026-10-22T09:00:00.000Z", 5), entityType: "CHANGE_NOTICE", orgId: ORG_A, type: "session_shared", sessionId: "ses_0123456789abcdefghij", revision: 3, by: ARJUN, undo: { principalKey: `MEMBER#${ZED}` }, at: "2026-10-22T09:00:00.000Z" });
-    expect((await read(w, PRIYA)).notices).toEqual([{ type: "session_shared", sessionId: "ses_0123456789abcdefghij", revision: 3, by: ARJUN, undo: { principalKey: `MEMBER#${ZED}` }, at: "2026-10-22T09:00:00.000Z" }]);
+    expect((await read(w, PRIYA)).notices).toEqual([{ type: "session_shared", sessionId: "ses_0123456789abcdefghij", revision: 3, by: ARJUN, undo: { principalKey: `MEMBER#${ZED}` }, at: "2026-10-22T09:00:00.000Z", sk: "2026-10-22T09:00:00.000Z#000005" }]);
+  });
+
+  describe("the settle window (Task 8 review, I-2): a notice that is committed late is still given", () => {
+    const sks = (page: { notices: Array<{ sk: string }> }) => page.notices.map((notice) => notice.sk);
+
+    it("holds the cursor back 30 seconds, so an item written after a newer one was read is found by the next read", async () => {
+      const w = world(); // now 12:00:00
+      put(w, PRIYA, "2026-10-22T11:59:50.000Z", 1);
+      const first = await read(w, PRIYA);
+      expect(sks(first)).toEqual(["2026-10-22T11:59:50.000Z#000001"]);
+      expect(first.next).toBe("2026-10-22T11:59:30.000Z#");
+      // The change made at 11:59:45 is written only now (the summary's time is taken before the follower checks and the Put).
+      put(w, PRIYA, "2026-10-22T11:59:45.000Z", 2);
+      w.clock.now += 5_000;
+      const second = await read(w, PRIYA, first.next);
+      expect(sks(second)).toEqual(["2026-10-22T11:59:45.000Z#000002", "2026-10-22T11:59:50.000Z#000001"]);
+    });
+
+    it("gives repeats while an item is inside the window, and a client that drops repeats by sk ends with each notice once", async () => {
+      const w = world();
+      put(w, PRIYA, "2026-10-22T11:59:50.000Z", 1);
+      const seen = new Map<string, unknown>();
+      let cursor: string | undefined;
+      let given = 0;
+      for (const step of [0, 5_000, 5_000]) {
+        w.clock.now += step;
+        const page = await read(w, PRIYA, cursor);
+        given += page.notices.length;
+        for (const notice of page.notices) seen.set(notice.sk, notice);
+        cursor = page.next;
+      }
+      expect(given).toBe(3);
+      expect([...seen.keys()]).toEqual(["2026-10-22T11:59:50.000Z#000001"]);
+      // Past the window the item is settled: the cursor moves onto it and it is not given again.
+      w.clock.now += 60_000;
+      const settled = await read(w, PRIYA, cursor);
+      expect(sks(settled)).toEqual(["2026-10-22T11:59:50.000Z#000001"]);
+      expect(settled.next).toBe("2026-10-22T11:59:50.000Z#000001");
+      expect(await read(w, PRIYA, settled.next)).toEqual({ notices: [], next: "2026-10-22T11:59:50.000Z#000001" });
+    });
+
+    it("never moves the cursor back from the one it was given, and gives the same one while nothing new is inside the window", async () => {
+      const w = world();
+      put(w, PRIYA, "2026-10-22T09:00:00.000Z", 1);
+      const ahead = "2026-10-22T11:59:55.000Z#000003";
+      expect(await read(w, PRIYA, ahead)).toEqual({ notices: [], next: ahead });
+      // The newest item is at the window's start: the cursor is the window's start (an item at that instant is read again, and dropped by its sk).
+      put(w, PRIYA, "2026-10-22T11:59:30.000Z", 5);
+      const edge = await read(w, PRIYA, "2026-10-22T10:00:00.000Z#000000");
+      expect(edge.next).toBe("2026-10-22T11:59:30.000Z#");
+    });
+
+    it("lets a full page carry on from its own last item even when it is all inside the window", async () => {
+      const w = world();
+      for (let n = 0; n < 503; n += 1) put(w, PRIYA, iso(Date.parse("2026-10-22T11:59:40.000Z") + n), n);
+      const first = await read(w, PRIYA);
+      expect(first.notices).toHaveLength(500);
+      expect(first.next).toBe(first.notices[499]!.sk);
+      const rest = await read(w, PRIYA, first.next);
+      expect(sks(rest)).toEqual([500, 501, 502].map((n) => `${iso(Date.parse("2026-10-22T11:59:40.000Z") + n)}#${String(n).padStart(6, "0")}`));
+      // The cursor is never held back behind the one it was given, so the next page is not the same page.
+      expect(rest.next).toBe(first.next);
+    });
   });
 
   it("is reached through the session routes by GET only, as the caller", async () => {
