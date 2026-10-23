@@ -18,6 +18,8 @@ import {
   SESSION_STATUSES,
   STATUS_WORDS,
   SessionBindingSchema,
+  SessionOwnerSchema,
+  cleanSessionName,
   SessionEventSchema,
   SessionIdSchema,
   SessionLegSchema,
@@ -442,6 +444,31 @@ describe("the session record and its parts", () => {
     expect(SessionBindingSchema.safeParse({ kind: "linear_issue", issueId: "a#b", url: "https://linear.app/acme/issue/ENG-1" }).success).toBe(false);
     expect(SessionBindingSchema.safeParse({ kind: "linear_issue", issueId: "abc", url: "javascript:alert(1)" }).success).toBe(false);
     expect(SessionBindingSchema.safeParse({ kind: "linear_issue", issueId: "abc", url: "not a url" }).success).toBe(false);
+  });
+});
+
+describe("names in a session", () => {
+  it("keeps the joiners that real names and emoji need, and strips every other control or format character", () => {
+    for (const name of ["Priya \u{1F469}\u200D\u{1F4BB}", "\u0639\u0644\u06CC\u200C\u0631\u0636\u0627", "Sam \u{1F1EC}\u{1F1E7}", "Ana \u2764\uFE0F", "Ana \u2764\uFE0E"]) {
+      expect(cleanSessionName(name), name).toBe(name);
+    }
+    expect(cleanSessionName("Sam \u{1F3F4}\u{E0067}\u{E007F}")).toBe("Sam \u{1F3F4}");
+    expect(cleanSessionName("Eve \u202Eevil\u202C")).toBe("Eve evil");
+    expect(cleanSessionName("Ann\u00ADa")).toBe("Anna");
+    expect(cleanSessionName("a\tb\nc")).toBe("a b c");
+    expect(cleanSessionName("\u202E\u200B")).toBeUndefined();
+    expect([...cleanSessionName("n".repeat(200))!]).toHaveLength(80);
+  });
+
+  it("is the same rule the schema applies: a name the helper leaves alone is valid, and one it would change is not", () => {
+    const parse = (name: string) => SessionOwnerSchema.safeParse({ developerId: DEV, name }).success;
+    expect(parse("Priya \u{1F469}\u200D\u{1F4BB}")).toBe(true);
+    expect(parse("\u0639\u0644\u06CC\u200C\u0631\u0636\u0627")).toBe(true);
+    expect(parse("Eve \u202Eevil")).toBe(false);
+    expect(parse("Ann\u00ADa")).toBe(false);
+    expect(parse("Sam \u{1F3F4}\u{E0067}")).toBe(false);
+    expect(parse("a\u0000b")).toBe(false);
+    expect(parse("n".repeat(81))).toBe(false);
   });
 });
 

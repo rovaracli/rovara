@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
-import { createTaskSessionItems } from "../../packages/broker/src/agent-sessions/create.js";
+import { createTaskSessionItems, sessionStarterFor } from "../../packages/broker/src/agent-sessions/create.js";
 import { readRunRequest, runRequestFingerprint, startAgentRun, type AgentRunRequest } from "../../packages/broker/src/agents/runs.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe.js";
@@ -82,9 +82,9 @@ async function setup(options: { brokerExtra?: Record<string, unknown>; memberLim
     return found[0]!.flatMap((entry) => ((entry.Put as { Item?: Item } | undefined)?.Item === undefined ? [] : [(entry.Put as { Item: Item }).Item]));
   };
   /** A custom agent made by Maya, published and (unless told otherwise) not on the payments roster. */
-  const agentOf = async (): Promise<string> => {
+  const agentOf = async (name = `Agent ${randomUUID().slice(0, 8)}`): Promise<string> => {
     const overlay = { instructions: "Summarise the open tickets.", sequence: [{ id: "work", name: "work", kind: "agent" as const, workspace: "none" as const }] };
-    const created = await h.dev(MAYA, "POST", "/v1/app/agents", { requestId: randomUUID(), name: `Agent ${randomUUID().slice(0, 8)}`, overlay });
+    const created = await h.dev(MAYA, "POST", "/v1/app/agents", { requestId: randomUUID(), name, overlay });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const agentId = (created.body.agent as { agentId: string }).agentId as never;
     const draft = (await store.getDraft(TEST_ORG, agentId))!;
@@ -180,6 +180,10 @@ describe("a person's start creates its session in the start transaction", () => 
     const mine = t.indexItems().filter((item) => String(item.pk).includes("MY_SESSIONS#") && item.sessionId === sessionId);
     expect(mine.map((item) => item.developerId).sort()).toEqual([KIT.developerId, MAYA.developerId].sort());
     expect(t.sessionOf(sessionId)).toMatchObject({ owner: { developerId: MAYA.developerId }, startedBy: { kind: "member", developerId: KIT.developerId } });
+    // M1: the started event names the person who really started the run, and who it is for.
+    const event = t.sessionPartitions().find((item) => String(item.pk).includes(sessionId) && String(item.sk).startsWith("EVENT#"))!;
+    expect(event.text).toBe(`Kit Alvarez started Rovara Code for Maya Chen: ${String(t.sessionOf(sessionId)!.title)}`);
+    expect(event.actor).toEqual({ kind: "member", developerId: KIT.developerId, name: "Kit Alvarez" });
   });
 });
 
@@ -411,6 +415,75 @@ describe("createTaskSessionItems", () => {
     const event = puts(createTaskSessionItems(table(fake), input({ title: "t".repeat(300), owner: { developerId: MAYA.developerId, name: "n".repeat(80) } }))).find((put) => String(put.Item.sk).startsWith("EVENT#"))!.Item;
     expect([...String(event.text)].length).toBeLessThanOrEqual(SESSION_EVENT_TEXT_MAX);
     expect(String(event.text)).not.toContain("—");
+  });
+});
+
+describe("names a start never refuses", () => {
+  const table = { documentClient: { send: async () => ({}) } as never, tableName: "state", now: () => Date.parse("2026-10-22T09:30:00.000Z") };
+  const make = (ownerName: string, agentName = "Rovara Code") => {
+    const items = createTaskSessionItems(table, {
+      orgId: TEST_ORG, sessionId: "ses_0123456789abcdefghij", taskId: "5c2f4f0e-2d7e-4a53-9a3c-2f1d0f6f6b11", project: "payments",
+      agent: { agentId: "rovara-code", name: agentName, version: 3 }, title: "Bump the Stripe SDK", owner: { developerId: MAYA.developerId, name: ownerName },
+      startedBy: { kind: "member", developerId: MAYA.developerId }, origin: "app", payer: { kind: "member", developerId: MAYA.developerId }, now: "2026-10-22T09:30:00.000Z",
+    }).map((item) => (item.Put as { Item: Item }).Item);
+    const meta = items.find((item) => item.sk === "META")!;
+    const event = items.find((item) => String(item.sk).startsWith("EVENT#"))!;
+    return { meta, event, record: AgentSessionRecordSchema.parse(Object.fromEntries(Object.entries(meta).filter(([key]) => !["pk", "sk", "entityType"].includes(key)))) };
+  };
+
+  it("keeps a ZWJ emoji, a ZWNJ and a flag in a person's name, as they are", () => {
+    for (const name of ["Priya \u{1F469}\u200D\u{1F4BB}", "\u0639\u0644\u06CC\u200C\u0631\u0636\u0627", "Sam \u{1F1EC}\u{1F1E7}", "Ana \u2764\uFE0F", "Ana \u2764\uFE0E"]) {
+      const made = make(name);
+      expect(made.record.owner.name, name).toBe(name);
+      expect(String(made.event.text), name).toContain(name);
+    }
+  });
+
+  it("keeps a ZWJ emoji in an agent's name", () => {
+    const agent = "Helper \u{1F9D1}\u200D\u{1F527}";
+    const made = make("Maya Chen", agent);
+    expect(made.record.agent?.name).toBe(agent);
+    expect(String(made.event.text)).toContain(agent);
+  });
+
+  it("strips bidi, tag and other format characters from names instead of refusing the start", () => {
+    // The Scottish flag is a black flag and tag characters; the tags go and the flag stays.
+    expect(make("Sam \u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}").record.owner.name).toBe("Sam \u{1F3F4}");
+    expect(make("Eve \u202Eevil\u202C").record.owner.name).toBe("Eve evil");
+    expect(make("Ann\u00ADa\u2060\uFEFF").record.owner.name).toBe("Anna");
+    expect(make("Maya Chen", "Bot\u202E 2\u{E0041}").record.agent?.name).toBe("Bot 2");
+    expect(make("Line\none\u0000two").record.owner.name).toBe("Line one two");
+  });
+
+  it("falls back to a plain name when nothing is left, and never throws on a long one", () => {
+    expect(make("\u202E\u200B\u2060").record.owner.name).toBe("Someone");
+    expect(make("Maya Chen", "\u202E").record.agent?.name).toBe("rovara-code");
+    const long = make("n".repeat(300), "a".repeat(300));
+    expect([...long.record.owner.name]).toHaveLength(80);
+    expect([...long.record.agent!.name]).toHaveLength(80);
+  });
+
+  it("starts a run whose agent's name holds a ZWJ emoji, for a caller whose name does", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf("Fixer \u{1F9D1}\u200D\u{1F527}");
+    const started = await t.start(MAYA, { agent: { agentId }, input: { text: "Fix the retry bug" } });
+    expect(started.status, JSON.stringify(started.body)).toBe(200);
+    expect(t.sessionOf(started.task.sessionId!)).toMatchObject({ agent: { agentId, name: "Fixer \u{1F9D1}\u200D\u{1F527}" } });
+  });
+});
+
+describe("who a task session names as its starter", () => {
+  const member = { developerId: MAYA.developerId };
+  it("is the trigger, else the person who started it, and never a guess", () => {
+    expect(sessionStarterFor({ trigger: { kind: "schedule", triggerId: TRIGGER }, startedBy: undefined, chain: undefined })).toEqual({ kind: "schedule", triggerId: TRIGGER });
+    expect(sessionStarterFor({ trigger: { kind: "event", triggerId: TRIGGER }, startedBy: undefined, chain: undefined })).toEqual({ kind: "event", triggerId: TRIGGER });
+    expect(sessionStarterFor({ trigger: undefined, startedBy: member, chain: undefined })).toEqual({ kind: "member", developerId: MAYA.developerId });
+  });
+
+  it("is nothing for a run no one and no trigger started, and for a chain step, so a lazy creation skips them instead of throwing", () => {
+    expect(sessionStarterFor({ trigger: undefined, startedBy: undefined, chain: undefined })).toBeUndefined();
+    expect(sessionStarterFor({ trigger: undefined, startedBy: member, chain: { chainRunId: "crn_0123456789abcdefghij", stepId: "triage" } })).toBeUndefined();
+    expect(sessionStarterFor({ trigger: { kind: "schedule", triggerId: TRIGGER }, startedBy: undefined, chain: { chainRunId: "crn_0123456789abcdefghij", stepId: "x" } })).toBeUndefined();
   });
 });
 
