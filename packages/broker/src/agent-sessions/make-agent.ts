@@ -12,6 +12,7 @@ import {
   isBuiltinAgentId,
   redactText,
   AGENT_NAME_MAX,
+  MAKE_AGENT_NOT_COPIED_REASON,
   type AgentId,
   type AgentOrigin,
   type AgentOwner,
@@ -59,20 +60,28 @@ export async function mayCreateAgentIn(agents: ApprovalDependencies, caller: Age
   }
 }
 
-/** The session's agent as the new agent's base, when the person may use it now; otherwise the agent is built from nothing (no refusal, and nothing said about an agent they can't see). */
-async function baseOf(agents: ApprovalDependencies, caller: AgentCaller, session: AgentSessionRecord): Promise<AgentId | undefined> {
+/** What the answer says about the session's agent: `copied: true` (it is the base, or the session ran none), or `copied: false` with a fixed reason code (the person can't use it, so the draft is built from nothing). */
+export type CopiedReport = { copied: true } | { copied: false; reason: typeof MAKE_AGENT_NOT_COPIED_REASON };
+const COPIED: CopiedReport = { copied: true };
+const NOT_COPIED: CopiedReport = { copied: false, reason: MAKE_AGENT_NOT_COPIED_REASON };
+
+/**
+ * The session's agent as the new agent's base, when the person may use it now; otherwise the agent is built from nothing (no refusal, and nothing said about the agent they can't see: only the fixed reason
+ * code `AGENT_NOT_USABLE`, never its id or name).
+ */
+async function baseOf(agents: ApprovalDependencies, caller: AgentCaller, session: AgentSessionRecord): Promise<{ base?: AgentId; report: CopiedReport }> {
   const baseId = session.agent?.agentId;
-  if (baseId === undefined) return undefined;
+  if (baseId === undefined) return { report: COPIED };
   try {
     await requireAgentAccess(agents, caller, baseId, "use");
     await requireBaseEnabled(agents, caller.orgId, baseId);
     if (!isBuiltinAgentId(baseId)) {
       const base = await agents.store.get(caller.orgId, baseId);
-      if (base === undefined || base.status !== "active" || base.currentVersion === undefined) return undefined;
+      if (base === undefined || base.status !== "active" || base.currentVersion === undefined) return { report: NOT_COPIED };
     }
-    return baseId;
+    return { base: baseId, report: COPIED };
   } catch (error) {
-    if (isAgentXError(error)) return undefined;
+    if (isAgentXError(error)) return { report: NOT_COPIED };
     throw error;
   }
 }
@@ -116,7 +125,7 @@ export interface MakeAgentDependencies extends SessionAccessDependencies {
 }
 
 /**
- * `POST /v1/app/sessions/{id}/agent` [view, and the right to create agents in the project]: `201 { agent, draft }`. The agent is the one `POST /v1/app/agents` would make, with the draft's `origin` shown as the
+ * `POST /v1/app/sessions/{id}/agent` [view, and the right to create agents in the project]: `201 { agent, draft, copied, reason? }`: `copied` says whether the session's agent became the base, and `reason` (`AGENT_NOT_USABLE`) why not. The agent is the one `POST /v1/app/agents` would make, with the draft's `origin` shown as the
  * caller may read it. A repeat of the same request answers the same agent and writes nothing.
  */
 export async function makeAgentFromSession(deps: MakeAgentDependencies, caller: MakeAgentCaller, sessionId: SessionId, body: unknown): Promise<StatusReply> {
@@ -139,11 +148,13 @@ export async function makeAgentFromSession(deps: MakeAgentDependencies, caller: 
     const earlier = replay.result as AgentRecord;
     const { agent } = await requireAgentAccess(agents, agentCaller, earlier.agentId, "view");
     const draft = await agents.store.getDraft(agentCaller.orgId, earlier.agentId);
-    return new StatusReply(201, { agent: await view(agents, agentCaller, agent), ...(draft === undefined ? {} : { draft: await withOriginView(agents, agentCaller, draft) }) });
+    // The same report as the first answer: the session's agent was copied when the draft builds on it (or the session ran none).
+    const report = session.agent === undefined || draft?.extends?.agentId === session.agent.agentId ? COPIED : NOT_COPIED;
+    return new StatusReply(201, { agent: await view(agents, agentCaller, agent), ...(draft === undefined ? {} : { draft: await withOriginView(agents, agentCaller, draft) }), ...report });
   }
   const right = await createRightIn(agents, agentCaller, session.project);
   if (right === undefined) throw agentXError("FORBIDDEN", `Only a maintainer of ${session.project} can make an agent in it.`);
-  const base = await baseOf(agents, agentCaller, session);
+  const { base, report } = await baseOf(agents, agentCaller, session);
   const goal = await goalOf(deps, session);
   const overlay: RecipeOverlay = goal === "" ? {} : { instructions: goal };
   const origin: AgentOrigin = { kind: "session", sessionId: session.sessionId, taskId: session.subject.taskId, createdBy: caller.developerId, createdAt: new Date(deps.now()).toISOString() };
@@ -152,5 +163,5 @@ export async function makeAgentFromSession(deps: MakeAgentDependencies, caller: 
     ...(base === undefined ? {} : { extends: base }),
   });
   const draft = await agents.store.getDraft(agentCaller.orgId, agent.agentId);
-  return new StatusReply(201, { agent: await view(agents, agentCaller, agent), ...(draft === undefined ? {} : { draft: await withOriginView(agents, agentCaller, draft) }) });
+  return new StatusReply(201, { agent: await view(agents, agentCaller, agent), ...(draft === undefined ? {} : { draft: await withOriginView(agents, agentCaller, draft) }), ...report });
 }

@@ -408,6 +408,12 @@ export const AgentOriginViewSchema = z.union([
 ]);
 export type AgentOriginView = z.infer<typeof AgentOriginViewSchema>;
 
+/** The fixed reason `POST /v1/app/sessions/{id}/agent` gives with `copied: false`: the caller can't use the session's agent now (not shared with them, not published, archived or turned off), so the draft is built from nothing. Never the agent's id or name. */
+export const MAKE_AGENT_NOT_COPIED_REASON = "AGENT_NOT_USABLE" as const;
+/** What the 201 says about the session's agent: `copied: true`, or `copied: false` with the reason. */
+export const SessionMakeAgentCopiedSchema = z.union([z.object({ copied: z.literal(true) }).strict(), z.object({ copied: z.literal(false), reason: z.literal(MAKE_AGENT_NOT_COPIED_REASON) }).strict()]);
+export type SessionMakeAgentCopied = z.infer<typeof SessionMakeAgentCopiedSchema>;
+
 /** `POST /v1/app/sessions/{id}/agent`: the name is the session's title when left out. The project, the agent kind and the goal come from the session; nothing else is taken from the body. */
 export const SessionMakeAgentBodySchema = z.object({ requestId: z.string().uuid(), name: z.string().optional() }).strict();
 export type SessionMakeAgentBody = z.infer<typeof SessionMakeAgentBodySchema>;
