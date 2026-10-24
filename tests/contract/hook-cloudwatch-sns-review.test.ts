@@ -38,6 +38,15 @@ describe("I-1: the SNS region must be a real AWS region", () => {
     expect(snsHostOfTopic(`arn:aws-us-gov:sns:us-gov-west-1:${SNS_ACCOUNT}:t`)).toBeUndefined();
   });
 
+  it("refuses a topic of another partition that names a commercial region, and a region with two digits or none", () => {
+    for (const topicArn of [`arn:aws-cn:sns:us-east-1:${SNS_ACCOUNT}:t`, `arn:aws-us-gov:sns:us-east-1:${SNS_ACCOUNT}:t`, `arn:aws-iso:sns:us-east-1:${SNS_ACCOUNT}:t`]) {
+      expect(HOOK_TENANT_SCHEMAS.cloudwatch.safeParse({ awsAccountId: SNS_ACCOUNT, topicArn }).success, topicArn).toBe(false);
+      expect(snsHostOfTopic(topicArn), topicArn).toBeUndefined();
+    }
+    expect(snsHostOfTopic(`arn:aws:sns:us-east-11:${SNS_ACCOUNT}:t`)).toBeUndefined();
+    expect(snsHostOfTopic(`arn:aws:sns:us-east-:${SNS_ACCOUNT}:t`)).toBeUndefined();
+  });
+
   it("builds no host for an unreal region, and the host of a real one", () => {
     for (const region of ["s3", "foo", ""]) expect(snsHostOfTopic(topicIn(region)), region).toBeUndefined();
     expect(snsHostOfTopic(topicIn("us-west-2"))).toBe("sns.us-west-2.amazonaws.com");
@@ -151,7 +160,8 @@ describe("M-2: removing the connection turns the account's hooks off", () => {
     let fail = false;
     const store = new OrgConnectionStore({
       documentClient: db, tableName: "T", env: "staging", secrets, now: () => START, checkEndpoint: async () => undefined,
-      afterRemove: async (removed) => { seen.push(removed); if (fail) throw new Error("boom"); },
+      // The callback takes a moment: the removal is not over until it is.
+      afterRemove: async (removed) => { await new Promise((resolve) => setTimeout(resolve, 5)); seen.push(removed); if (fail) throw new Error("boom"); },
     });
     const role = `arn:aws:iam::${SNS_ACCOUNT}:role/rovara-read`;
     const connection = (connectionId: string) => ({ connectionId, type: "cloudwatch", label: "AWS prod", access: "read", roleArn: role, regions: [SNS_REGION] }) as const;
