@@ -12,10 +12,10 @@ import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
 import { navFixture } from "./support/fixtures.js";
 import { sessionFixture, messageFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
-function setup(initialMessages: ReturnType<typeof messageFixture>[] = []) {
+function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor?: string) {
  let session = sessionFixture(), messages = initialMessages;
  const f = fakeHost(async request => {
- if (request.path.endsWith("/messages")) { if (request.method === "POST") { messages = [messageFixture()];return { status: 200, body: messages[0] }; }return { status: 200, body: { messages } }; }
+ if (request.path.split("?", 1)[0]!.endsWith("/messages")) { if (request.method === "POST") { messages = [messageFixture()];return { status: 200, body: messages[0] }; }return { status: 200, body: { messages: request.path.includes("?") ? [] : messages, ...(cursor === undefined ? {} : { next: cursor }) } }; }
  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
  if (request.path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
  if (request.path.endsWith("/follow")) { session = sessionFixture({ you: { ...session.you, following: true } });return { status: 200, body: { following: true } }; }
@@ -47,4 +47,12 @@ it("retains an unsaved comment edit when inspecting the task outside the tray", 
  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
  fireEvent.click(await screen.findByRole("button", { name: "Edit comment" }));
  expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Keep my revised explanation");f.close();
+});
+
+it("stops offering more conversation when the endpoint returns its unchanged cursor", async () => {
+ const f = setup([messageFixture()], "2026-10-23T12:00:00.000Z#msg_aaaaaaaaaaaaaaaaaaaa");
+ await screen.findByRole("heading", { name: "Fix duplicate refunds" });fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Load more conversation" }));
+ await waitFor(() => expect(screen.queryByRole("button", { name: "Load more conversation" })).toBeNull());
+ expect(screen.getAllByText("Check refunds before retrying.")).toHaveLength(1);f.close();
 });
