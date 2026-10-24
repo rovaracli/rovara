@@ -524,10 +524,11 @@ async function refreshSummaryOnly(deps: SummaryDependencies, orgId: OrgId, sessi
       { Update: {
         TableName: deps.tableName, Key: metaKey,
         UpdateExpression: `SET summary = :summary, summaryRevision = :next, updatedAt = :at${ending ? ", endedAt = :ended, #expires = :expires" : ""}`,
-        ConditionExpression: "attribute_exists(pk) AND orgId = :org AND summaryRevision = :read",
-        ...(ending ? { ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE } } : {}),
+        // Also on the session's own revision: the tile written below carries the owner this read saw, so a take-over (or any change of the header) in between sends the refresh back to read again.
+        ConditionExpression: "attribute_exists(pk) AND orgId = :org AND summaryRevision = :read AND #sessionRevision = :sessionRevision",
+        ExpressionAttributeNames: { "#sessionRevision": "revision", ...(ending ? { "#expires": INDEX_EXPIRY_ATTRIBUTE } : {}) },
         ExpressionAttributeValues: {
-          ":summary": summary, ":next": revision, ":at": summary.computedAt, ":org": orgId, ":read": session.summaryRevision,
+          ":summary": summary, ":next": revision, ":at": summary.computedAt, ":org": orgId, ":read": session.summaryRevision, ":sessionRevision": session.revision,
           ...(ending ? { ":ended": endedAt, ":expires": seconds(endedAt!) + SESSION_RETENTION_DAYS * SECONDS_PER_DAY } : {}),
         },
       } },

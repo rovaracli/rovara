@@ -44,7 +44,7 @@ import { auditSessionOwnerChanged } from "../audit/events.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { loadTaskPeople, takeOverTaskPeopleItems } from "../developer/task-people.js";
-import { effectiveTaskOwner, ownerFenceOf, taskIndexKey, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { UNNAMED_MEMBER, effectiveTaskOwner, ownerFenceOf, taskIndexKey, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { followerIds } from "../realtime/sink.js";
 import { writeChanges } from "../realtime/changes.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
@@ -84,7 +84,8 @@ const getItem = async (deps: Pick<SessionTakeOverDependencies, "documentClient" 
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
 const isoOf = (ms: number) => new Date(ms).toISOString();
 const isAgentXError = (error: unknown): boolean => error instanceof Error && error.name === "AgentXError";
-const nameOrSomeone = (name: string | undefined) => (name === undefined ? undefined : cleanSessionName(name)) ?? "Someone";
+/** A person's name as people read it; a person with none is "a member", the same words the task records for an owner they know no name for. */
+const nameOrMember = (name: string | undefined) => (name === undefined ? undefined : cleanSessionName(name)) ?? UNNAMED_MEMBER;
 
 function parseBody(body: unknown): z.infer<typeof BodySchema> {
   const parsed = BodySchema.safeParse(body);
@@ -184,11 +185,11 @@ export async function askTakeOver(deps: SessionTakeOverDependencies, caller: Sha
   const task = await taskOfSession(deps, session);
   const { payer } = await payerOfSession(deps, session, task);
   await admitTaker(deps, session, task, payer, caller.developerId);
-  const taker = nameOrSomeone(caller.name);
+  const taker = nameOrMember(caller.name);
   const record = await createPendingChange(approvals, {
     orgId: caller.orgId, requestId: input.requestId, requestedBy: caller.developerId,
     subject: { kind: "session_owner", sessionId: session.sessionId, to: caller.developerId, sessionRevision: session.revision },
-    changes: [`${taker} becomes the owner of "${session.title}".`, `New AI spend counts against ${payerWords(payer, taker, session)}.`, `${nameOrSomeone(access.effectiveOwner.name)} keeps "can edit".`],
+    changes: [`${taker} becomes the owner of "${session.title}".`, `New AI spend counts against ${payerWords(payer, taker, session)}.`, `${nameOrMember(access.effectiveOwner.name)} keeps "can edit".`],
     approvers: { kind: "rule", rule: TAKE_OVER_RULE, candidates: [caller.developerId] },
   });
   // A replay of a request that was decided since is not waiting any more.
@@ -208,11 +209,11 @@ export async function takeOverFacts(deps: SessionTakeOverDependencies | undefine
     if (session === undefined) return [fact("Session", subject.sessionId)];
     const task = await taskOfSession(deps, session);
     const now = task === undefined ? session.owner : effectiveTaskOwnerNamed(task, session);
-    const taker = nameOrSomeone(await nameOf(deps, subject.to));
+    const taker = nameOrMember(await nameOf(deps, subject.to));
     const { payer } = await payerOfSession(deps, session, task);
     return [
       fact("Session", session.title), ...(session.project === undefined ? [] : [fact("Project", session.project)]),
-      fact("Owner now", nameOrSomeone(now.name)), fact("New owner", taker), fact("Who pays from now", payerWords(payer, taker, session)),
+      fact("Owner now", nameOrMember(now.name)), fact("New owner", taker), fact("Who pays from now", payerWords(payer, taker, session)),
     ];
   } catch {
     return [fact("Session", subject.sessionId)];
@@ -258,6 +259,9 @@ async function taskItems(deps: SessionTakeOverDependencies, task: DeveloperTaskR
       }),
     },
   });
+  // The owner the task had until now: when it is not the creator (A to B to C) their task-list row goes; the creator's stays as history.
+  const previousOwner = effectiveTaskOwner(task).developerId;
+  if (previousOwner !== task.developerId && previousOwner !== taker.developerId) items.push({ Delete: { TableName: deps.tableName, Key: taskIndexKey(previousOwner, task.createdAt, task.taskId) } });
   const people = await loadTaskPeople(deps, task.taskId);
   if (people !== undefined) items.push(...takeOverTaskPeopleItems(deps, task, people, taker.developerId));
   return items;
@@ -305,13 +309,13 @@ export function registerSessionTakeOverApprovals(): void {
     await admitTaker(sessions, session, task, payer, takerId);
     const takerRecord = await sessions.signInStore.getDeveloper(takerId);
     if (takerRecord === undefined) throw agentXError("NOT_FOUND", "the person taking this over could not be found");
-    const takerName = nameOrSomeone(takerRecord.displayName);
+    const takerName = nameOrMember(takerRecord.displayName);
     const taker = {
       developerId: takerId, provider: takerRecord.provider,
       ...(cleanSessionName(takerRecord.displayName) === undefined ? {} : { name: cleanSessionName(takerRecord.displayName)! }),
       ...(takerRecord.slackUserId !== undefined && SlackUserIdSchema.safeParse(takerRecord.slackUserId).success ? { slackUserId: takerRecord.slackUserId } : {}),
     };
-    const previous = { developerId: access.effectiveOwner.developerId, name: nameOrSomeone(access.effectiveOwner.name) };
+    const previous = { developerId: access.effectiveOwner.developerId, name: nameOrMember(access.effectiveOwner.name) };
     const nowMs = deps.now();
     const at = isoOf(nowMs);
     const newPayer: Payer = payer.kind === "member" ? { kind: "member", developerId: takerId } : payer;
@@ -358,12 +362,16 @@ export function registerSessionTakeOverApprovals(): void {
       { Put: { TableName: sessions.tableName, Item: { ...agentSessionKey(orgId, sessionId, `SHARE#${principalKey(principal)}`), entityType: "AGENT_SESSION_SHARE", orgId, sessionId, principal, level: "edit", sharedBy: { developerId: takerId, name: takerName }, sharedAt: at } } },
       { Put: { TableName: sessions.tableName, Item: { ...sharedSessionsKey(orgId, principal, sessionId), entityType: "SHARED_SESSION", orgId, sessionId, principal, level: "edit", sharedAt: at } } },
       { Put: { TableName: sessions.tableName, Item: { ...mySessionsKey(orgId, takerId, session.createdAt, sessionId), entityType: "MY_SESSION", orgId, sessionId, developerId: takerId, createdAt: session.createdAt } } },
+      // It is no longer the previous owner's own: it lists for them as shared (the share above), not under "mine".
+      { Delete: { TableName: sessions.tableName, Key: mySessionsKey(orgId, previous.developerId, session.createdAt, sessionId) } },
     );
     // The live tile, when there is one (a session from before tiles has none).
     if (await getItem(sessions, liveSessionKey(orgId, sessionId)) !== undefined) {
       items.push({
         Update: {
-          TableName: sessions.tableName, Key: liveSessionKey(orgId, sessionId), UpdateExpression: "SET ownerId = :owner", ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":owner": takerId },
+          TableName: sessions.tableName, Key: liveSessionKey(orgId, sessionId), UpdateExpression: "SET ownerId = :ownerId, #owner = :owner, #revision = :revision",
+          ConditionExpression: "attribute_exists(pk)", ExpressionAttributeNames: { "#owner": "owner", "#revision": "revision" },
+          ExpressionAttributeValues: { ":ownerId": takerId, ":owner": { developerId: takerId, name: takerName }, ":revision": session.revision + 1 },
         },
       });
     }
