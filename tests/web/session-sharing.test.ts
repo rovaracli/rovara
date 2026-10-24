@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ShareDialog } from "../../packages/ui/src/screens/session/ShareDialog.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -19,5 +19,8 @@ it("treats company sharing as pending until the actual selected level is fetched
  let shares = [{ principal: { kind: "org" }, level: "view", sharedBy: sessionPerson, sharedAt }];const query = createQueryClient();
  const f = fakeHost(async request => request.method === "PUT" ? { status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["Everyone in Acme can use this session."] } } : { status: 200, body: request.path.endsWith("/org/members") ? { members: [arjun] } : { shares } });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ShareDialog, { id: SESSION_FIXTURE_ID, orgName: "Acme" }) }) }));fireEvent.click(screen.getByRole("button", { name: "Share" }));await screen.findByRole("button", { name: "Arjun" });fireEvent.change(screen.getByRole("combobox", { name: "Share with" }), { target: { value: "org" } });fireEvent.change(screen.getByRole("combobox", { name: "Access level" }), { target: { value: "use" } });fireEvent.click(screen.getByRole("button", { name: "Add share" }));await screen.findByText("Waiting for you to confirm in your browser");expect(screen.queryByText("Shared")).toBeNull();
- await query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID, "shares"] });expect(screen.queryByText("Done")).toBeNull();shares = [{ ...shares[0]!, level: "use" }];await query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID, "shares"] });expect(await screen.findByText("Done")).toBeTruthy();ui.unmount();query.clear();
+ await act(async () => { await query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID, "shares"] }); });expect(screen.queryByText("Done")).toBeNull();shares = [{ ...shares[0]!, level: "use" }];await act(async () => { await query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID, "shares"] }); });expect(await screen.findByText("Done")).toBeTruthy();
+ fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));fireEvent.click(screen.getByRole("button", { name: "Share" }));
+ fireEvent.change(screen.getByRole("combobox", { name: "Share with" }), { target: { value: "member" } });
+ expect((await screen.findByRole("button", { name: "Arjun" }) as HTMLButtonElement).disabled).toBe(false);ui.unmount();query.clear();
 });
