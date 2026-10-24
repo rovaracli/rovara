@@ -7,6 +7,7 @@ import { agentSessionKey, agentXError, changesKey, liveSessionKey, mySessionsKey
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getAnyApproval, getApprovalSubjectHandler, getApproverRule, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { onMembersMerged, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
 import { resolveSessionAccess } from "../../packages/broker/src/agent-sessions/access.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
@@ -768,5 +769,43 @@ describe("what the first round of mutation showed was not yet pinned", () => {
     const { decidingOf } = await import("../../packages/broker/src/agent-sessions/routes.js");
     const listed = await decidingOf(w.deps).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId: mine.sessionId, subject: { kind: "task", taskId: "t" } } as never);
     expect(listed).toEqual([]);
+  });
+});
+
+describe("a taker merged into another member between the request and the decision (12b review I-1)", () => {
+  /** Max's account is merged into Arjun's: the sign-in record says so, and the member movers run as the merge sweep runs them. */
+  const mergeMaxIntoArjun = async (w: World) => {
+    w.db.set({ ...(w.db.get(`DEVELOPER#${MAX}`, "META") as Item), mergedInto: ARJUN });
+    await onMembersMerged(w.deps as unknown as LifecycleDeps, { orgId: ORG_A, survivorId: ARJUN, duplicateId: MAX });
+  };
+
+  it("moves the pending take-over to the survivor, who decides it, and the merged-away id never becomes the owner", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    const { approvalId } = await w.asked(MAX, sessionId);
+    await mergeMaxIntoArjun(w);
+    expect(await w.approvalOf(approvalId)).toMatchObject({ status: "PENDING", subject: { kind: "session_owner", to: ARJUN } });
+    const done = await w.confirm(ARJUN, approvalId);
+    expect(done.statusCode, done.body).toBe(200);
+    expect(await w.approvalOf(approvalId)).toMatchObject({ status: "APPROVED_DONE", decidedBy: ARJUN });
+    expect(w.meta(sessionId)).toMatchObject({ owner: { developerId: ARJUN, name: "Arjun" }, payer: { kind: "member", developerId: ARJUN } });
+    expect(w.taskOf(taskId).currentOwner).toMatchObject({ developerId: ARJUN });
+    expect(w.taskOf(taskId).payer).toEqual({ kind: "member", developerId: ARJUN });
+    expect(w.db.get(mySessionsKey(ORG_A, ARJUN, CREATED_AT, sessionId))).toBeDefined();
+    expect(w.db.get(mySessionsKey(ORG_A, MAX, CREATED_AT, sessionId))).toBeUndefined();
+    expect(w.db.get(taskIndexKey(MAX, CREATED_AT, taskId))).toBeUndefined();
+    expect(w.db.get(liveSessionKey(ORG_A, sessionId))).toMatchObject({ ownerId: ARJUN });
+  });
+
+  it("applies when only the stored target is the merged-away id (a record the mover has not reached yet)", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    const { approvalId } = await w.asked(MAX, sessionId);
+    w.db.set({ ...(w.db.get(`DEVELOPER#${MAX}`, "META") as Item), mergedInto: ARJUN });
+    const record = { ...(await w.approvalOf(approvalId)), status: "EXECUTING" as const, decidedBy: ARJUN };
+    await getApprovalSubjectHandler("session_owner")!(w.deps, record);
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: ARJUN });
   });
 });
