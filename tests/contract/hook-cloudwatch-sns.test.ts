@@ -12,7 +12,7 @@ import { hookProviders } from "../../packages/broker/src/triggers/providers/inde
 import { cloudwatchProvider, confirmationTarget } from "../../packages/broker/src/triggers/providers/cloudwatch-sns.js";
 import { SnsCertMemory, parseSnsMessage, snsStringToSign, verifySnsMessage, type SnsMessage } from "../../packages/broker/src/triggers/sns-verify.js";
 import type { HookRecord } from "@agentx/contracts";
-import { HOOK_1, ORG_A, ORG_B, setupHookWorld, type HookWorld } from "../support/hook-fixtures.js";
+import { HOOK_1, LINEAR_TENANT, ORG_A, ORG_B, setupHookWorld, type HookWorld } from "../support/hook-fixtures.js";
 import { START } from "../support/chain-run-world.js";
 import {
   FakeSnsNetwork, OTHER_ACCOUNT, OTHER_SIGNING_KEY_PEM, OTHER_TOPIC_ARN, SNS_ACCOUNT, SNS_CERT_URL, SNS_REGION, SNS_SUBSCRIPTION_ARN, SNS_TOKEN, SNS_TOPIC_ARN, TEST_CERT_EXPIRED_PEM, TEST_CERT_FUTURE_PEM,
@@ -969,7 +969,11 @@ describe("pins: the provider and the route", () => {
   it("answers 403 to a delivery for a hook of another source that is waiting for confirmation, which only an SNS hook may do", async () => {
     const w = setupHookWorld();
     const hook = await w.hook({ source: "linear", hookId: HOOK_1, status: "pending_confirmation" });
-    expect(await w.receive(w.delivery(hook, { id: "a" }))).toEqual(FORBIDDEN);
+    const body = { id: "a", tenant: LINEAR_TENANT };
+    expect(await w.receive(w.delivery(hook, body))).toEqual(FORBIDDEN);
     expect(w.dispatched).toEqual([]);
+    // The same signed delivery is taken by an active hook, so the refusal above is the status's.
+    const active = await w.hook({ source: "linear", hookId: `hk_${"5".repeat(26)}`, status: "active" });
+    expect((await w.receive(w.delivery(active, body))).status).toBe(202);
   });
 });
