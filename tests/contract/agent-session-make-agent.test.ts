@@ -182,6 +182,22 @@ describe("review minors on making an agent", () => {
     expect(await code(t.make(MAX, body))).toMatchObject({ code: "NOT_FOUND" });
   });
 
+  it("cuts off at exactly the retention: a session that ended that long ago to the millisecond is still a source, one millisecond later it is not", async () => {
+    const t = world();
+    const meta = agentSessionKey(ORG_A, t.sid, "META");
+    const record = t.w.db.get(meta)!;
+    t.w.db.set({ ...record, endedAt: new Date(T0 - SESSION_RETENTION_DAYS * day).toISOString() });
+    expect((await t.make(MAX, { name: "On the line" }))["agent"]).toMatchObject({ name: "On the line" });
+    t.w.db.set({ ...record, endedAt: new Date(T0 - SESSION_RETENTION_DAYS * day - 1).toISOString() });
+    expect(await code(t.make(MAX, { name: "A millisecond late" }))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("trims the default name", async () => {
+    const t = world();
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, title: "  Padded title  " });
+    expect(((await t.make(MAX))["agent"] as { name: string }).name).toBe("Padded title");
+  });
+
   it("makes the default name from the title through the same clean-and-redact path as the goal: no secret and no mention", async () => {
     const t = world();
     t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, title: `Rotate ${TOKEN} <@U0PRIYA01> now` });
