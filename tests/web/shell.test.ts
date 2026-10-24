@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
-import { createMemoryRouter, RouterProvider } from "react-router";
+import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, type AppNav } from "@agentx/contracts/web";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
@@ -49,8 +49,8 @@ it("signs out through the host and begins a deliberate sign in", async () => {
  await waitFor(() => expect(f.host.signIn).toHaveBeenCalledWith("/app"));expect(f.host.signOut).toHaveBeenCalledTimes(1);f.close();
 });
 it("uses exact trial guidance", () => {
- const f = fakeHost();const { unmount } = renderUi(h(AppHostProvider, { host: f.host, children: h(TrialBanner, { state: "locked" }) }));expect(screen.getByText("Connect GitHub to start your free trial.")).toBeTruthy();unmount();
- const other = renderUi(h(AppHostProvider, { host: f.host, children: h(TrialBanner, { state: "github_used" }) }));expect(screen.getByText("This GitHub account already started a free trial for another organization. Connect a different GitHub account, or ask us about a plan.")).toBeTruthy();other.unmount();
+ const f = fakeHost();const { unmount } = renderUi(h(AppHostProvider, { host: f.host, children: h(MemoryRouter, { children: h(TrialBanner, { state: "locked" }) }) }));expect(screen.getByText("Connect GitHub to start your free trial.")).toBeTruthy();expect(screen.getByRole("link", { name: "Connect GitHub" }).getAttribute("href")).toBe("/app/onboard");unmount();
+ const other = renderUi(h(AppHostProvider, { host: f.host, children: h(MemoryRouter, { children: h(TrialBanner, { state: "github_used" }) }) }));expect(screen.getByText("This GitHub account already started a free trial for another organization. Connect a different GitHub account, or ask us about a plan.")).toBeTruthy();other.unmount();
 });
 it("distinguishes a failed chunk import from another page error", () => {
  const first = renderUi(h(PageError, { error: new TypeError("Failed to fetch dynamically imported module") }));expect(screen.getByText("Rovara was updated. Reload to continue.")).toBeTruthy();expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();first.unmount();
