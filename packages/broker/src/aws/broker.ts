@@ -405,7 +405,7 @@ import { ChainStore } from "../chains/store.js";
 import { TriggerStore } from "../triggers/store.js";
 import type { TriggerHookReader, TriggerScheduler } from "../triggers/ports.js";
 import { dispatchTriggerEvent } from "../triggers/dispatch.js";
-import { deliverGithubTriggerEvents } from "../triggers/github-events.js";
+import { deliverGithubTriggerEvents, healGithubRepoIndex } from "../triggers/github-events.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../triggers/lifecycle.js";
 import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
@@ -2929,6 +2929,8 @@ export async function registerProjectFor(
       throw agentXError("PROJECT_REVISION_MISMATCH", "registered project revisions and runtime bindings are immutable");
     }
     await repairCatalogPointerFromHistory();
+    // Plan 4 Task 22: a project registered before the GitHub index existed has no rows; a repeat writes those of its latest revision (whichever revision is repeated).
+    await healGithubRepoIndex(dependencies, orgId, definition.name);
     // A revision stored before the static checks existed stays idempotent: report, never refuse.
     const preflight = checked?.preflight
       ?? (wantsPreflight ? await preflightConnectors(connectors(), definition, actor.ownerKey) : undefined);

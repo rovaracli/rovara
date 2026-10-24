@@ -7,9 +7,9 @@
 //   4. a replay (the same body under a new delivery id) is the same event key, remembered per project for a day;
 //   5. dispatch (Task 20) decides everything else, including what Rovara's own bot did (the loop guard).
 // Only ids, codes and counts are logged: never a title, a branch, a label or a body.
-import { QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgIdSchema, RUN_START_TITLE_MAX, TriggerEventSchema, githubInstallationKey, type OrgId, type TriggerEvent } from "@agentx/contracts";
+import { OrgIdSchema, RUN_START_TITLE_MAX, TriggerEventSchema, githubInstallationKey, githubRepoProjectKey, type OrgId, type TriggerEvent } from "@agentx/contracts";
 import { GithubWebhookRetryableError } from "../aws/github-webhooks.js";
 import { latestRevision } from "../org/project-settings.js";
 import { firstSight, forget, markDispatched, outsideEventWindow, type EventMemoryDeps } from "./ingress.js";
@@ -220,6 +220,26 @@ async function projectsOf(deps: Pick<EventMemoryDeps, "documentClient" | "tableN
     projects.push(project);
   }
   return projects;
+}
+
+/**
+ * Writes the index rows (`GITHUB_REPO#<id>`) of the repositories the project's LATEST revision pins, under the project's own org: nothing for a repository without a pin, nothing for a
+ * project with no readable revision, and no row is ever deleted here. A project registered before the index existed has none, so its GitHub triggers could not find it; each call
+ * is repeatable and a row already there is written again as it is. Only the latest revision is read, so an older one never decides what the index says.
+ */
+export async function healGithubRepoIndex(deps: Pick<EventMemoryDeps, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<number> {
+  const latest = await latestRevision(deps, orgId, project);
+  const pinned = new Map<number, number>();
+  for (const repository of latest?.definition.repositories ?? []) {
+    if (repository.installationId !== undefined && repository.githubRepositoryId !== undefined) pinned.set(repository.githubRepositoryId, repository.installationId);
+  }
+  for (const [githubRepositoryId, installationId] of pinned) {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName,
+      Item: { ...githubRepoProjectKey(githubRepositoryId, orgId, project), entityType: "GITHUB_REPO_PROJECT", orgId, project, installationId, githubRepositoryId },
+    }));
+  }
+  return pinned.size;
 }
 
 /**
