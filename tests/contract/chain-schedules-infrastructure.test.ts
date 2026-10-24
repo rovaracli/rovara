@@ -124,15 +124,26 @@ describe("the broker's grants", () => {
     expect(sends).toHaveLength(1);
   });
 
-  it("alarms the operator when the oldest message in the queue is an hour old (Review M-4): a parked or stuck letter is seen", () => {
+  it("alarms the operator when any message has sat in the queue for three periods (Task 27 review I-1): visible plus in-flight, because the age metric stops counting a message received three times", () => {
     const alarms = Object.entries(named.findResources("AWS::CloudWatch::Alarm")).filter(([id]) => id.startsWith("ChainScheduleDeadLettersAlarm"));
     expect(alarms).toHaveLength(1);
     const alarm = alarms[0]![1] as { Properties: Record<string, unknown> };
     expect(alarm.Properties).toMatchObject({
-      AlarmName: "agentx-staging-ChainScheduleDeadLetters", Namespace: "AWS/SQS", MetricName: "ApproximateAgeOfOldestMessage", Statistic: "Maximum", Period: 300,
-      Threshold: 3600, EvaluationPeriods: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
-      Dimensions: [{ Name: "QueueName", Value: { "Fn::GetAtt": [queueId, "QueueName"] } }],
+      AlarmName: "agentx-staging-ChainScheduleDeadLetters", Threshold: 0, EvaluationPeriods: 3, DatapointsToAlarm: 3, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching",
     });
+    expect(alarm.Properties["MetricName"]).toBeUndefined();
+    const metrics = alarm.Properties["Metrics"] as Array<{ Id: string; Expression?: string; ReturnData?: boolean; MetricStat?: { Period: number; Stat: string; Metric: { MetricName: string; Namespace: string; Dimensions: unknown } } }>;
+    const stats = metrics.filter((entry) => entry.MetricStat !== undefined);
+    expect(stats.map((entry) => entry.MetricStat!.Metric.MetricName).sort()).toEqual(["ApproximateNumberOfMessagesNotVisible", "ApproximateNumberOfMessagesVisible"]);
+    for (const entry of stats) {
+      expect(entry.MetricStat).toMatchObject({ Period: 300, Stat: "Maximum", Metric: { Namespace: "AWS/SQS", Dimensions: [{ Name: "QueueName", Value: { "Fn::GetAtt": [queueId, "QueueName"] } }] } });
+      expect(entry.ReturnData).toBe(false);
+    }
+    const expression = metrics.filter((entry) => entry.Expression !== undefined);
+    expect(expression).toHaveLength(1);
+    for (const entry of stats) expect(expression[0]!.Expression).toContain(entry.Id);
+    expect(expression[0]!.Expression).toMatch(/^FILL\(\w+, 0\) \+ FILL\(\w+, 0\)$/);
+    expect(JSON.stringify(alarm.Properties)).not.toContain("ApproximateAgeOfOldestMessage");
     expect(alarm.Properties["AlarmActions"]).toHaveLength(1);
     expect(HEALTH_ALARM_SUFFIXES).toContain("ChainScheduleDeadLetters");
     expect(byType(build("SchedLegacy2", { env: null }), "AWS::CloudWatch::Alarm").filter(([id]) => id.startsWith("ChainScheduleDeadLettersAlarm"))).toEqual([]);
