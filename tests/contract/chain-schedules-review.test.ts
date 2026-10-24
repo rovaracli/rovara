@@ -352,3 +352,117 @@ describe("M-5: deleting a trigger whose schedule could not be deleted", () => {
     expect(JSON.stringify(logs)).not.toContain("SECRET");
   });
 });
+
+// ---- pins from the mutation pass
+
+describe("pins: the claim, the hold and the record", () => {
+  const holdOf = async (s: ReturnType<typeof setup>, triggerId: string) => (await s.v.triggers.get(ORG_A, triggerId))! as unknown as { startClaim?: { slot: string; at: string }; lastTaskId?: string; lastFiredAt?: string };
+  /** Replaces the agent start so that, in the middle of it, the trigger's hold is taken by `claim`. */
+  const takeOverDuring = (s: ReturnType<typeof setup>, triggerId: string, claim: { slot: string; at: string }, then: "throw" | "start") => {
+    const ports = (s.deps as unknown as { chainRuns: { startAgentRun: (request: unknown) => Promise<unknown> } }).chainRuns;
+    const original = ports.startAgentRun.bind(ports);
+    ports.startAgentRun = async (request) => {
+      const current = (await s.v.triggers.get(ORG_A, triggerId))!;
+      await s.v.triggers.update({ trigger: current, patch: { startClaim: claim } });
+      if (then === "throw") throw new Error("socket hang up");
+      return original(request);
+    };
+  };
+
+  it("a task open exactly 168 hours is over (the limit is inclusive)", async () => {
+    const s = setup();
+    const { trigger } = await agentTrigger(s.v);
+    expect((await s.fire(trigger.triggerId, s.iso(-10_000))).outcome).toBe("started");
+    const taskId = (await s.v.triggers.get(ORG_A, trigger.triggerId))!.lastTaskId!;
+    s.v.db.set({ ...s.v.db.get(taskKey(taskId))!, createdAt: new Date(s.v.clock.now - 168 * HOUR).toISOString() });
+    expect((await s.fire(trigger.triggerId, s.iso(-5_000))).outcome).toBe("started");
+  });
+
+  it("a task whose start time cannot be read keeps blocking (it cannot be aged)", async () => {
+    const s = setup();
+    const { trigger } = await agentTrigger(s.v);
+    await s.fire(trigger.triggerId, s.iso(-10_000));
+    const taskId = (await s.v.triggers.get(ORG_A, trigger.triggerId))!.lastTaskId!;
+    const record = { ...s.v.db.get(taskKey(taskId))! } as Record<string, unknown>;
+    delete record["createdAt"];
+    s.v.db.set(record);
+    expect(await s.fire(trigger.triggerId, s.iso(-5_000))).toMatchObject({ outcome: "skipped", reason: "previous_run_still_running" });
+  });
+
+  it("a late slot whose start is refused keeps its claim, so the slots behind it are covered, and its hold goes", async () => {
+    const s = setup();
+    const { trigger } = await agentTrigger(s.v);
+    s.v.hooks.refuse.push(agentXError("CONFIG_INVALID", "not allowed"));
+    expect(await s.fire(trigger.triggerId, s.iso(-2 * HOUR))).toMatchObject({ outcome: "failed", reason: "CONFIG_INVALID" });
+    const after = await holdOf(s, trigger.triggerId);
+    expect(after.startClaim).toBeUndefined();
+    expect(after.lastFiredAt).toBeDefined();
+    expect(await s.fire(trigger.triggerId, s.iso(-3 * HOUR))).toMatchObject({ outcome: "missed", reason: "covered_by_a_later_run" });
+  });
+
+  it("a release leaves a hold another fire took meanwhile, even one on the same slot", async () => {
+    const s = setup();
+    const { trigger } = await agentTrigger(s.v);
+    const slot = s.iso(-5_000);
+    const other = { slot: s.iso(-1_000), at: s.iso(-500) };
+    takeOverDuring(s, trigger.triggerId, other, "throw");
+    await expect(s.fire(trigger.triggerId, slot)).rejects.toThrow();
+    expect((await holdOf(s, trigger.triggerId)).startClaim).toEqual(other);
+    const same = await agentTrigger(s.v);
+    const sameClaim = { slot, at: s.iso(-400) };
+    takeOverDuring(s, same.trigger.triggerId, sameClaim, "throw");
+    await expect(s.fire(same.trigger.triggerId, slot)).rejects.toThrow();
+    expect((await holdOf(s, same.trigger.triggerId)).startClaim).toEqual(sameClaim);
+  });
+
+  it("noting the started work leaves a hold another slot took meanwhile", async () => {
+    const s = setup();
+    const { trigger } = await agentTrigger(s.v);
+    const other = { slot: s.iso(-1_000), at: s.iso(-500) };
+    takeOverDuring(s, trigger.triggerId, other, "start");
+    expect((await s.fire(trigger.triggerId, s.iso(-5_000))).outcome).toBe("started");
+    const after = await holdOf(s, trigger.triggerId);
+    expect(after.startClaim).toEqual(other);
+    expect(after.lastTaskId).toBeDefined();
+  });
+
+  it("a counter that cannot be written lets go of the hold and throws", async () => {
+    const s = setup();
+    const { trigger } = await chainTrigger(s.v);
+    s.v.db.injectFault({ command: "UpdateCommand", match: (input) => JSON.stringify(input).includes("RATE"), error: { name: "ProvisionedThroughputExceededException" } });
+    await expect(s.fire(trigger.triggerId, s.iso(-5_000))).rejects.toThrow();
+    expect((await holdOf(s, trigger.triggerId)).startClaim).toBeUndefined();
+    expect((await s.fire(trigger.triggerId, s.iso(-4_000))).outcome).toBe("started");
+  });
+
+  it("the record of a failed fire: the answer carries the code, the slot is written as an instant whatever its spelling, a name that is not a word is `unknown`, and a refusal's code must be one", async () => {
+    const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const put: string[] = [];
+    const fail = (error: Error): TriggerDispatchDependencies => ({ triggers: { get: async () => { throw error; } }, log: (event: string, fields: Record<string, unknown>) => logs.push({ event, fields }) } as unknown as TriggerDispatchDependencies);
+    const input = { orgId: TEST_ORG, triggerId: "ctr_00000000000000000001", scheduledAt: "2026-10-24T10:00:00+02:00" };
+    const answer = await fireChainSchedule(fail(Object.assign(new Error("x"), { name: "ThrottlingException" })), input, Date.parse("2026-10-24T08:00:30.000Z"), { put: async (body) => { put.push(body); } });
+    expect(answer).toEqual({ outcome: "dead_lettered", reason: "ThrottlingException" });
+    expect(JSON.parse(put[0]!)).toMatchObject({ scheduledAt: "2026-10-24T08:00:00.000Z", failure: "ThrottlingException" });
+    expect(logs).toContainEqual({ event: "schedule.fire_failed", fields: { orgId: TEST_ORG, triggerId: "ctr_00000000000000000001", error: "ThrottlingException" } });
+    await fireChainSchedule(fail(Object.assign(new Error("x"), { name: "Boom", code: "has spaces and a secret" })), input, Date.parse("2026-10-24T08:00:30.000Z"), { put: async (body) => { put.push(body); } });
+    expect((JSON.parse(put[1]!) as { failure: string }).failure).toBe("Boom");
+  });
+
+  it("with no queue, the failure is logged by its code only, and thrown", async () => {
+    const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const deps = { triggers: { get: async () => { throw agentXError("RUNTIME_UNAVAILABLE", "try again"); } }, log: (event: string, fields: Record<string, unknown>) => logs.push({ event, fields }) } as unknown as TriggerDispatchDependencies;
+    await expect(fireChainSchedule(deps, { orgId: TEST_ORG, triggerId: "ctr_00000000000000000001", scheduledAt: new Date().toISOString() }, Date.now(), undefined)).rejects.toThrow();
+    expect(logs).toEqual([{ event: "schedule.fire_failed_unrecorded", fields: { error: "RUNTIME_UNAVAILABLE" } }]);
+  });
+
+  it("reads a receive count that is missing or not a count as the first receive", async () => {
+    const answers: Array<Record<string, unknown>> = [
+      { Body: "a", ReceiptHandle: "h1" },
+      { Body: "b", ReceiptHandle: "h2", Attributes: { ApproximateReceiveCount: "garbage" } },
+      { Body: "c", ReceiptHandle: "h3", Attributes: { ApproximateReceiveCount: "0" } },
+      { Body: "d", ReceiptHandle: "h4", Attributes: { ApproximateReceiveCount: "4" } },
+    ];
+    const letters = createDeadLetters({ sqs: { send: async () => ({ Messages: answers }) }, queueUrl: QUEUE_URL });
+    expect((await letters.receive(10)).map((message) => message.receives)).toEqual([1, 1, 1, 4]);
+  });
+});
