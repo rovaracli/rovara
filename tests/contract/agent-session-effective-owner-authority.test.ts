@@ -22,8 +22,8 @@ const refusal = async (promise: Promise<unknown>) => {
 function taken(fixture: ReturnType<typeof pageTask>, taker = SAM): DeveloperTaskRecord {
   const record = fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord;
   const next = { ...record, currentOwner: { developerId: taker.developerId, name: taker.name, provider: taker.amr, ...(taker.slackUserId === undefined ? {} : { slackUserId: taker.slackUserId }), since: SINCE } };
-  fixture.db.set(next as never);
-  return next as DeveloperTaskRecord;
+  fixture.db.set(next);
+  return next;
 }
 
 describe("the person who took a task over is its owner on the task page", () => {
@@ -48,7 +48,7 @@ describe("the person who took a task over is its owner on the task page", () => 
   it("fails closed on a current owner it can't read: nobody is the owner, the creator included", async () => {
     const fixture = pageTask();
     const record = fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord;
-    fixture.db.set({ ...record, currentOwner: { developerId: "" } } as never);
+    fixture.db.set({ ...record, currentOwner: { developerId: "" } });
     expect((await refusal(resolveTaskAccess(fixture.deps, PRIYA, fixture.taskId, "decide"))).code).toBe("TASK_ACCESS_DENIED");
     expect((await refusal(loadOwnedTask(fixture.deps, PRIYA, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
   });
@@ -86,25 +86,25 @@ describe("a task's owner as it is read for its list, its index rows and its why 
     taken(fixture);
     await expect(loadOwnedTask(fixture.deps, SAM, fixture.taskId)).resolves.toMatchObject({ taskId: fixture.taskId });
     expect((await refusal(loadOwnedTask(fixture.deps, PRIYA, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
-    await expect(loadOwnedTask(fixture.deps, { ...SAM, orgId: "org_zzzzzzzzzzzzzzzzzzzz" as never }, fixture.taskId)).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+    await expect(loadOwnedTask(fixture.deps, { ...SAM, orgId: "org_zzzzzzzzzzzzzzzzzzzz" }, fixture.taskId)).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
   });
 
   it("syncs the creator's index row and the taker's, and only the creator's for a task nobody took over", async () => {
     const fixture = pageTask();
     const plain = fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord;
     const row = (developerId: string) => taskIndexKey(developerId, plain.createdAt, fixture.taskId);
-    const seed = (developerId: string) => fixture.db.set({ ...row(developerId), entityType: "DEVELOPER_TASK_INDEX", taskId: fixture.taskId, orgId: TEST_ORG, status: "RUNNING", updatedAt: plain.createdAt } as never);
+    const seed = (developerId: string) => fixture.db.set({ ...row(developerId), entityType: "DEVELOPER_TASK_INDEX", taskId: fixture.taskId, orgId: TEST_ORG, status: "RUNNING", updatedAt: plain.createdAt });
     seed(PRIYA.developerId);
     seed(SAM.developerId);
     expect(ownerIndexRowOf(plain)).toBeUndefined();
-    await syncIndex(fixture.deps, plain, "WAITING");
-    expect(fixture.db.get(row(PRIYA.developerId).pk, row(PRIYA.developerId).sk)).toMatchObject({ status: "WAITING" });
+    await syncIndex(fixture.deps, plain, "SUCCEEDED");
+    expect(fixture.db.get(row(PRIYA.developerId).pk, row(PRIYA.developerId).sk)).toMatchObject({ status: "SUCCEEDED" });
     expect(fixture.db.get(row(SAM.developerId).pk, row(SAM.developerId).sk)).toMatchObject({ status: "RUNNING" });
     const task = taken(fixture);
     expect(ownerIndexRowOf(task)).toEqual(row(SAM.developerId));
-    await syncIndex(fixture.deps, task, "REVIEW");
-    expect(fixture.db.get(row(PRIYA.developerId).pk, row(PRIYA.developerId).sk)).toMatchObject({ status: "REVIEW" });
-    expect(fixture.db.get(row(SAM.developerId).pk, row(SAM.developerId).sk)).toMatchObject({ status: "REVIEW" });
+    await syncIndex(fixture.deps, task, "FAILED");
+    expect(fixture.db.get(row(PRIYA.developerId).pk, row(PRIYA.developerId).sk)).toMatchObject({ status: "FAILED" });
+    expect(fixture.db.get(row(SAM.developerId).pk, row(SAM.developerId).sk)).toMatchObject({ status: "FAILED" });
   });
 
   it("quotes the request as the creator's words and a teammate's note as the owner's, which is the taker after a take-over", async () => {
@@ -171,9 +171,9 @@ describe("the creator-still-a-member check follows the task's owner", () => {
   const casey = "c".repeat(64);
   function world(options: { removed?: string[]; members?: string[]; currentOwner?: unknown } = {}) {
     const db = new FakeDynamoDb();
-    db.set({ ...orgMetaKey(ORG), entityType: "ORG_META", name: "Acme" } as never);
-    for (const developerId of options.members ?? [priya, max, casey]) db.set({ ...orgMemberKey(ORG, developerId), entityType: "ORG_MEMBER", orgId: ORG, developerId, role: "member" } as never);
-    for (const developerId of options.removed ?? []) db.set({ ...orgRemovedKey(ORG, developerId), entityType: "ORG_REMOVED", orgId: ORG, developerId } as never);
+    db.set({ ...orgMetaKey(ORG), entityType: "ORG_META", name: "Acme" });
+    for (const developerId of options.members ?? [priya, max, casey]) db.set({ ...orgMemberKey(ORG, developerId), entityType: "ORG_MEMBER", orgId: ORG, developerId, role: "member" });
+    for (const developerId of options.removed ?? []) db.set({ ...orgRemovedKey(ORG, developerId), entityType: "ORG_REMOVED", orgId: ORG, developerId });
     const task = {
       pk: `DEVTASK#${TASK}`, sk: "META", entityType: "DEVELOPER_TASK", taskId: TASK, orgId: ORG, developerId: priya, developerName: "Priya", provider: "slack", project: "payments",
       ownerKey: taskOwnerKey(priya, TASK), workspaceId: randomUUID(),
@@ -212,12 +212,12 @@ describe("the creator-still-a-member check follows the task's owner", () => {
   it("writes the removal only while the removed owner still owns the task: a take-over that lands first makes it check the new owner", async () => {
     const w = world({ members: [priya, casey], removed: [max], currentOwner: MAX_OWNER });
     let flipped = false;
-    const racing = { ...w.deps, documentClient: { async send(command: unknown, options?: unknown) {
+    const racing = { ...w.deps, documentClient: { async send(command: unknown) {
       if (!flipped && (command as { constructor: { name: string } }).constructor.name === "UpdateCommand") {
         flipped = true;
-        w.db.set({ ...stored(w.db), currentOwner: { developerId: casey, name: "Casey", provider: "oidc", since: after } } as never);
+        w.db.set({ ...stored(w.db), currentOwner: { developerId: casey, name: "Casey", provider: "oidc", since: after } });
       }
-      return w.db.send(command as never, options as never);
+      return w.db.send(command as never);
     } } };
     await expect(requireCreatorStillMember(racing, w.task)).resolves.toBeUndefined();
     expect(flipped).toBe(true);

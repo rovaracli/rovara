@@ -628,7 +628,7 @@ describe("a removed creator's work stops (ruling R60)", () => {
     const bea = person(harness, "Bea", "member");
     const { taskId, workspaceId, finishImplementation } = await implementing(harness, MAYA);
     const taken = taskRecord(harness, taskId);
-    harness.db.set({ ...taken, currentOwner: { developerId: bea.developerId, name: "Bea", provider: "oidc", since: new Date().toISOString() } } as never);
+    harness.db.set({ ...taken, currentOwner: { developerId: bea.developerId, name: "Bea", provider: "oidc", since: new Date().toISOString() } });
     expect((await harness.remove(OMAR, MAYA)).status).toBe(200);
     await finishImplementation();
     // The next dispatch runs: the task's owner is Bea, who is still a member.
@@ -640,7 +640,7 @@ describe("a removed creator's work stops (ruling R60)", () => {
     const harness = await org();
     const bea = person(harness, "Bea", "member");
     const { taskId, workspaceId, candidate, finishImplementation } = await implementing(harness, MAYA);
-    harness.db.set({ ...taskRecord(harness, taskId), currentOwner: { developerId: bea.developerId, name: "Bea", provider: "oidc", since: new Date().toISOString() } } as never);
+    harness.db.set({ ...taskRecord(harness, taskId), currentOwner: { developerId: bea.developerId, name: "Bea", provider: "oidc", since: new Date().toISOString() } });
     expect((await harness.remove(OMAR, bea)).status).toBe(200);
     await finishImplementation();
     expect(operations(harness, workspaceId).filter((operation) => operation.workflowMode === "REVIEW")).toEqual([]);

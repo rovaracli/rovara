@@ -55,7 +55,7 @@ function task(taken: boolean | { slackUserId: string }): DeveloperTaskRecord {
     createdAt: new Date(START).toISOString(), updatedAt: new Date(START).toISOString(),
     workflow: { revision: 7, stage: "IMPLEMENT", state: "RUNNING" } as never,
     ...(taken === false ? {} : { currentOwner: { developerId: MAX, name: "Max", provider: "oidc", since: SINCE, ...(taken === true ? {} : { slackUserId: taken.slackUserId }) } }),
-  } as DeveloperTaskRecord;
+  };
 }
 
 /** The checks Slack would give: Priya and Casey are eligible channel members; Max has a Slack proof only when `maxOnSlack` says so, else the proof throws. */
@@ -206,14 +206,14 @@ describe("a People list written before the take-over", () => {
     let first = true;
     const racing = {
       ...h.deps,
-      documentClient: { async send(command: unknown, options?: unknown) {
+      documentClient: { async send(command: unknown) {
         if (first && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") {
           first = false;
-          h.db.set({ ...h.task(), currentOwner: { developerId: MAX, name: "Max", provider: "oidc", since: SINCE } } as never);
+          h.db.set({ ...h.task(), currentOwner: { developerId: MAX, name: "Max", provider: "oidc", since: SINCE } });
         }
-        return h.db.send(command as never, options as never);
+        return h.db.send(command as never);
       } },
-    } as TaskPeopleDependencies;
+    };
     const before = structuredClone(h.sidecar());
     const outcome = await refusal(changeTaskPeople(racing, PRIYA_CALLER, TASK_ID, { requestId: randomUUID(), expectedPeopleRevision: 4, targetDeveloperId: CASEY, role: "viewer" }));
     expect(outcome.code).toBeDefined();
@@ -260,7 +260,7 @@ function dispatch(options: { maxRole?: "developer" | "viewer" | undefined; maxOn
   // What dispatcher.ts hands the guard: the runtime's identity check, and the dispatch witness.
   const guard = () => guardTaskDispatch({
     documentClient: h.db, tableName: "state", orgId: TEST_ORG, admission,
-    checkTaskPerson: (record, developerId) => h.checkTaskPerson(record, developerId) as never,
+    checkTaskPerson: (record, developerId) => h.checkTaskPerson(record, developerId),
     stateAuthorityWitnessForOwnerActor: (record, ownerActorId) => stateAuthorityWitnessForDispatch(runtime, record, ownerActorId),
   }, outbox);
   return { ...h, outbox, guard, ports, membershipFor, runtime };
@@ -300,18 +300,18 @@ describe("dispatch of a task a person with no Slack link took over", () => {
     const key = projectMemberKey(TEST_ORG, MAX, "payments");
     let removed = false;
     const documentClient = {
-      async send(command: unknown, options?: unknown) {
+      async send(command: unknown) {
         const input = (command as { input?: { TransactItems?: Array<{ ConditionCheck?: { Key?: { pk?: string; sk?: string } } }> } }).input;
         if (!removed && input?.TransactItems?.some((item) => item.ConditionCheck?.Key?.sk === key.sk && item.ConditionCheck.Key.pk === key.pk)) {
           removed = true;
           d.db.delete(key.pk, key.sk);
         }
-        return d.db.send(command as never, options as never);
+        return d.db.send(command as never);
       },
     };
     const admission = createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 });
     const outcome = await guardTaskDispatch({
-      documentClient, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: d.checkTaskPerson as never,
+      documentClient, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: d.checkTaskPerson,
       stateAuthorityWitnessForOwnerActor: (record, ownerActorId) => stateAuthorityWitnessForDispatch(d.runtime, record, ownerActorId),
     }, d.outbox).catch((error: { code?: string }) => error.code);
     expect(removed).toBe(true);
@@ -321,8 +321,8 @@ describe("dispatch of a task a person with no Slack link took over", () => {
 
   it("uses the Slack identity witness when the taker has an eligible in-channel Slack proof", async () => {
     const d = dispatch({ maxOnSlack: true });
-    d.ports.projectAuthorityReader.memberships = vi.fn(async (_orgId: string, developerId: string) => ({ items: developerId === MAX ? [d.membershipFor(MAX, "developer")] as never : [], complete: true })) as never;
-    d.ports.taskPersonProof = vi.fn(async () => ({ result: { ok: true as const, user: { id: S_MAX, teamId: TEAM, name: "Max" }, memberOf: [CHANNEL] }, slackCallsUsed: 1 })) as never;
+    d.ports.projectAuthorityReader.memberships = vi.fn(async (_orgId: string, developerId: string) => ({ items: developerId === MAX ? [d.membershipFor(MAX, "developer")] as never : [], complete: true }));
+    d.ports.taskPersonProof = vi.fn(async () => ({ result: { ok: true as const, user: { id: S_MAX, teamId: TEAM, name: "Max" }, memberOf: [CHANNEL] }, slackCallsUsed: 1 }));
     d.db.set(d.membershipFor(MAX, "developer"));
     d.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: `PERSON_SUBJECT#${MAX}`, schemaVersion: 1, personId: randomUUID(), developerId: MAX, createdAt: new Date(START).toISOString() });
     await expect(d.guard()).resolves.toBe("ALLOWED");
@@ -335,21 +335,21 @@ describe("dispatch of a task a person with no Slack link took over", () => {
     let transactions = 0;
     let taken = false;
     const documentClient = {
-      async send(command: unknown, options?: unknown) {
+      async send(command: unknown) {
         const input = (command as { input?: { TransactItems?: Array<{ ConditionCheck?: { Key?: { sk?: string } } }> } }).input;
         if (input?.TransactItems?.some((item) => item.ConditionCheck?.Key?.sk === "META")) {
           transactions += 1;
           if (!taken) {
             taken = true;
-            d.db.set({ ...d.task(), currentOwner: { developerId: CASEY, name: "Casey", provider: "oidc", since: "2026-10-22T12:00:00.000Z" } } as never);
+            d.db.set({ ...d.task(), currentOwner: { developerId: CASEY, name: "Casey", provider: "oidc", since: "2026-10-22T12:00:00.000Z" } });
           }
         }
-        return d.db.send(command as never, options as never);
+        return d.db.send(command as never);
       },
     };
     const admission = createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 });
     await expect(guardTaskDispatch({
-      documentClient, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: d.checkTaskPerson as never,
+      documentClient, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: d.checkTaskPerson,
       stateAuthorityWitnessForOwnerActor: (record, ownerActorId) => stateAuthorityWitnessForDispatch(d.runtime, record, ownerActorId),
     }, d.outbox)).resolves.toBe("ALLOWED");
     // The first attempt's fence (decided for Max) failed on the changed owner; the second, decided for Casey, held.
@@ -358,7 +358,7 @@ describe("dispatch of a task a person with no Slack link took over", () => {
 
   it("parks a task whose current owner can't be read, and never judges the creator instead", async () => {
     const d = dispatch({ maxRole: "developer" });
-    d.db.set({ ...d.task(), currentOwner: { developerId: MAX } } as never);
+    d.db.set({ ...d.task(), currentOwner: { developerId: MAX } });
     d.db.set(d.membershipFor(PRIYA, "developer"));
     await expect(d.guard()).resolves.toBe("PARKED");
     expect(d.db.get(`OUTBOX#${d.outbox.id}`, "TASK_ACCESS_PAUSE")).toMatchObject({ reason: "OWNERLESS" });
