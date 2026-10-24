@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeResponseReaderSchema } from "@agentx/contracts/web";
 import { createApiClient } from "../../packages/ui/src/api/client.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
@@ -18,7 +18,8 @@ function browser(implementation: (input: string, init: RequestInit | undefined) 
  return { win, fetch, assign, local, session };
 }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-afterEach(() => { vi.useRealTimers(); });
+beforeEach(() => { vi.spyOn(Math, "random").mockReturnValue(0); });
+afterEach(() => { vi.useRealTimers();vi.restoreAllMocks(); });
 describe("browser host and shared API client", () => {
  it("maps only app paths to same-origin cookie requests and keeps credentials in memory", async () => {
   const b = browser(async (path) => json(path.endsWith("/me") ? me() : empty));const host = createBrowserHost(b.win);
@@ -88,4 +89,21 @@ it("shares the sign-in guard across clients and preserves terminal host authenti
 it("refuses an unrecognized pending status even when it resembles admin approval", async () => {
  const f = fakeHost(async () => ({ status: 202, body: { status: "FUTURE_APPROVAL", spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", message: "Still pending" } }));
  await expect(createApiClient(f.host).send("POST", "/v1/app/agents", {}, HomeResponseReaderSchema)).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+});
+
+it("retries server failures twice for reads and never retries a server-refused write", async () => {
+ vi.useFakeTimers();const f = fakeHost(async () => ({ status: 503, body: { error: { code: "UNAVAILABLE", message: "Try later." } } }));
+ const result = createApiClient(f.host).get("/v1/app/home", HomeResponseReaderSchema).catch((error: unknown) => error);
+ await vi.advanceTimersByTimeAsync(0);expect(f.request).toHaveBeenCalledTimes(1);
+ await vi.advanceTimersByTimeAsync(1000);expect(f.request).toHaveBeenCalledTimes(2);
+ await vi.advanceTimersByTimeAsync(2000);expect(f.request).toHaveBeenCalledTimes(3);expect(await result).toMatchObject({ status: 503 });
+ const write = fakeHost(async () => ({ status: 503, body: { error: { code: "UNAVAILABLE", message: "Try later." } } }));
+ await expect(createApiClient(write.host).send("POST", "/v1/app/agents", { requestId: "same" }, HomeResponseReaderSchema)).rejects.toMatchObject({ status: 503 });expect(write.request).toHaveBeenCalledTimes(1);
+});
+it("adds up to thirty percent jitter to a retry delay", async () => {
+ vi.useFakeTimers();vi.mocked(Math.random).mockReturnValue(1);let count = 0;
+ const f = fakeHost(async () => ++count === 1 ? { status: 429, body: {} } : { status: 200, body: empty });
+ const pending = createApiClient(f.host).get("/v1/app/home", HomeResponseReaderSchema);
+ await vi.advanceTimersByTimeAsync(1299);expect(f.request).toHaveBeenCalledTimes(1);
+ await vi.advanceTimersByTimeAsync(1);expect(f.request).toHaveBeenCalledTimes(2);expect(await pending).toEqual(empty);
 });
