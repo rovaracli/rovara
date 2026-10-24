@@ -25,7 +25,7 @@ const get = async (deps: NoticeSinkDependencies, key: { pk: string; sk: string }
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
 
 /** The people following the session, from their `FOLLOWER#` items (at most what the session may have). */
-async function followerIds(deps: NoticeSinkDependencies, session: AgentSessionRecord): Promise<string[]> {
+export async function followerIds(deps: NoticeSinkDependencies, session: AgentSessionRecord): Promise<string[]> {
   const ids: string[] = [];
   let start: Record<string, unknown> | undefined;
   do {

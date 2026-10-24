@@ -3,7 +3,7 @@
 // The shapes clients read (view, tile, event page) and their forward-compatible readers are in session-views.ts.
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { AgentIdSchema } from "./agent.js";
+import { AgentIdSchema, ApprovalIdSchema } from "./agent.js";
 import { cleanDisplayName } from "./display-name.js";
 import { PayerSchema, WorkOriginSchema } from "./agent-run.js";
 import { OrgIdSchema } from "./org.js";
@@ -268,6 +268,8 @@ export const AgentSessionRecordSchema = z
     summary: SessionSummarySchema,
     summaryRevision: CountSchema,
     revision: CountSchema,
+    /** The approval whose take-over last moved the owner (Plan 5 Task 12b): a handler called again for it finds the work done. */
+    lastTakeOverApprovalId: ApprovalIdSchema.optional(),
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
     endedAt: InstantSchema.optional(),

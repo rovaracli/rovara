@@ -215,6 +215,14 @@ export function auditOwnerChanged(input: AuditBuilderBase & { scope: "agent" | "
   return build(input.scope === "agent" ? "agent.owner_changed" : "chain.owner_changed", input, { kind: input.scope, id: input.targetId }, { field: input.field });
 }
 
+/**
+ * `occurrence`: the approval id. A session changed owner by a confirmed take-over (Plan 5 Task 12b): the actor is the taker, the target the session, `related` the previous
+ * owner and the task or chain run, and the facts say what kind of session it is and whether who pays moved with it. Never a name or a title.
+ */
+export function auditSessionOwnerChanged(input: AuditBuilderBase & { sessionId: string; sessionKind: string; payerMoved: boolean }): AuditEventInput {
+  return build("session.owner_changed", input, { kind: "session", id: input.sessionId }, { sessionKind: input.sessionKind, payerMoved: input.payerMoved });
+}
+
 /** `occurrence`: the store's `EVENT#` sort key. `scope` picks `agent.published` or `chain.published`. */
 export function auditPublished(input: AuditBuilderBase & { scope: "agent" | "chain"; targetId: string; version: number; safety: string }): AuditEventInput {
   return build(input.scope === "agent" ? "agent.published" : "chain.published", input, { kind: input.scope, id: input.targetId }, { version: input.version, safety: input.safety });

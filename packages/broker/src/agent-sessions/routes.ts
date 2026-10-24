@@ -17,6 +17,7 @@ import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage,
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadDependencies } from "./read.js";
 import type { ChainSteerReads } from "./steer.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
+import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
 import { readChanges } from "../realtime/changes.js";
 import type { RealtimeConfig } from "../realtime/publish.js";
 import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/token.js";
@@ -35,7 +36,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent))?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over))?)?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
 const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
@@ -71,6 +72,7 @@ export function decidingOf(approvals: ApprovalDependencies & Partial<AgentRouteD
         let text: string | undefined;
         if (record.kind === "change") {
           if (record.subject.kind === "session_share_org" && record.subject.sessionId === session.sessionId) text = record.changes[0] ?? "Share this session with everyone in your company";
+          else if (record.subject.kind === "session_owner" && record.subject.sessionId === session.sessionId) text = record.changes[0] ?? "Take this session over";
         } else if (session.subject.kind === "task" && record.subject.kind === "agent_run" && record.subject.taskId === session.subject.taskId) {
           text = record.kind === "write" ? record.summary : record.prompt;
         } else if (session.subject.kind === "chain" && record.kind === "step" && record.subject.kind === "chain_gate" && record.subject.chainRunId === session.subject.chainRunId) {
@@ -98,7 +100,7 @@ function queryOf(url: URL): SessionListQuery {
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
  * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET` and `POST …/messages` and `PATCH` and
- * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `GET /v1/app/changes?since=` (the caller's own change notices) and
+ * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `POST …/take-over` (Task 12b: ask to take the session over, answered `202` with the link to confirm it); `GET /v1/app/changes?since=` (the caller's own change notices) and
  * `POST /v1/app/realtime/token`. Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
@@ -113,7 +115,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();
-  const [, rawId, shares, rawKey, rawSeq, events, person, messages, rawMessageId, makeAgent] = matched;
+  const [, rawId, shares, rawKey, rawSeq, events, person, messages, rawMessageId, makeAgent, takeOver] = matched;
   const approvals = deps.approvals;
   const read: SessionReadDependencies = {
     ...(deps.deciding !== undefined || approvals === undefined ? deps : { ...deps, deciding: decidingOf(approvals) }),
@@ -137,6 +139,12 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     // Task 10c: make an agent, with its draft, from this session.
     if (method !== "POST") throw notFound();
     return makeAgentFromSession({ ...read, approvals }, caller, sessionId, jsonBody(request));
+  }
+  if (takeOver !== undefined) {
+    // Task 12b: ask to take the session over; the answer is `202` with the link where the asker confirms it.
+    if (method !== "POST") throw notFound();
+    const reply = await askTakeOver(read, caller, sessionId, jsonBody(request), deps.approvals);
+    return new StatusReply(reply.status, reply.body);
   }
   if (messages !== undefined) {
     // Comments (Task 10) and messages to the agent (Task 11a: `kind: "steer"`, which needs "can use").
@@ -246,3 +254,4 @@ export async function sessionRedirect(deps: SessionLinkDependencies, request: Ad
 
 // Loading this module registers the company-wide share's approver rule and handler, as the agent routes register theirs.
 registerSessionShareApprovals();
+registerSessionTakeOverApprovals();

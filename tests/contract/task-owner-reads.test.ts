@@ -25,6 +25,11 @@ import { guardedRoots, problemsOf, programOf, rowsOf, scanProgram, sourceFiles, 
 
 const ROWS: readonly Row[] = [
   ["agents/write-gate.ts", "executeWrite", "principal", ".ownerKey"],
+  // a take-over (Plan 5 Task 12b): the default payer of a task that recorded none is its creator's (money, as in `paymentOfTask`; the take-over then writes it explicitly), and the
+  // creator's task-list row is the one the taker's row is copied from (it calls `ownerFenceOf` for the owner the write is fenced on)
+  ["agent-sessions/take-over.ts", "payerOfSession", "money", ".developerId"],
+  ["agent-sessions/take-over.ts", "registerSessionTakeOverApprovals", "money", ".developerId"],
+  ["agent-sessions/take-over.ts", "taskItems", "index", ".developerId"],
   ["spend/payer.ts", "paymentOfTask", "money", ".developerId", ".startedBy"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId", ".provider", ".slackUserId"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId", ".provider", ".slackUserId"],

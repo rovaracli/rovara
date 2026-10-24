@@ -38,7 +38,7 @@ function world(options: { audit?: boolean; sessions?: boolean; chain?: boolean }
   const chain: ChainOwnerMover = {
     read: async () => ({ payer: live.chainPayer ?? { kind: "member", developerId: PRIYA }, ...(live.stepTaskId === undefined ? {} : { runningStepTaskId: live.stepTaskId }) }),
     ownerItems: (input) => {
-      chainCalls.push(input as never);
+      chainCalls.push(input);
       return [{ Put: { TableName: "state", Item: { pk: `CHAIN_RUN#${input.chainRunId}`, sk: "OWNER", owner: input.to.developerId, payerMovesTo: input.payer.kind === "member" ? input.to.developerId : undefined } } }];
     },
   };
@@ -177,7 +177,7 @@ describe("asking to take a session over", () => {
     const { sessionId } = sessionSeed(w, { ended: true });
     expect(await code(w.ask(MAX, sessionId))).toMatchObject({ code: "SESSION_ENDED" });
     const open = sessionSeed(w);
-    expect(await code(askTakeOver(w.sessionDeps, w.caller(BO, "org_bbbbbbbbbbbbbbbbbbbb" as OrgId), open.sessionId, { requestId: randomUUID() }, w.deps))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(askTakeOver(w.sessionDeps, w.caller(BO, "org_bbbbbbbbbbbbbbbbbbbb"), open.sessionId, { requestId: randomUUID() }, w.deps))).toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("refuses a body with a field it does not take or a bad request id, and with no approvals set up says it is unavailable", async () => {
@@ -242,7 +242,7 @@ describe("confirming a take-over", () => {
     expect((Object.values(transaction.at(-1)!)[0] as { Item?: Item }).Item?.pk).not.toBeUndefined();
     const audited = w.audit!.recordedBy("session.owner_changed");
     expect(audited).toHaveLength(1);
-    expect(audited[0]).toMatchObject({ actor: { kind: "member" }, target: { kind: "session", id: sessionId }, facts: { sessionKind: "task", payerMoved: true }, related: expect.arrayContaining([PRIYA]) });
+    expect(audited[0]).toMatchObject({ actor: { kind: "member" }, target: { kind: "session", id: sessionId }, facts: { sessionKind: "task", payerMoved: true }, related: [PRIYA, taskId] });
     expect(JSON.stringify(audited[0])).not.toMatch(/Priya|Max|Stripe/u);
     expect(w.audit!.recordedBy("approval.decided")).toHaveLength(1);
   });
@@ -367,7 +367,7 @@ describe("confirming a take-over", () => {
     // The ask has its own dependencies; the approvals' own are the ones missing.
     const { approvalId } = await w.asked(MAX, sessionId);
     const record = await w.approvalOf(approvalId);
-    await expect(getApprovalSubjectHandler("session_owner")!(w.deps, { ...record, status: "EXECUTING", decidedBy: MAX })).rejects.toMatchObject({ message: expect.stringContaining(NOT_SET_UP) });
+    await expect(getApprovalSubjectHandler("session_owner")!(w.deps, { ...record, status: "EXECUTING", decidedBy: MAX })).rejects.toThrow(NOT_SET_UP);
   });
 
   it("refuses to apply for a taker who lost edit, an owner who is now the taker, or a session that ended, with words, and writes nothing", async () => {
@@ -382,7 +382,9 @@ describe("confirming a take-over", () => {
     await expect(getApprovalSubjectHandler("session_owner")!(w.deps, record)).rejects.toMatchObject({ code: "SESSION_ENDED" });
     expect(w.meta(sessionId).owner).toMatchObject({ developerId: PRIYA });
     // An approval nobody decided is never applied: the take-over would be credited to the asker.
-    await expect(getApprovalSubjectHandler("session_owner")!(w.deps, { ...record, decidedBy: undefined })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    const undecided: Partial<typeof record> = { ...record };
+    delete undecided.decidedBy;
+    await expect(getApprovalSubjectHandler("session_owner")!(w.deps, undecided as typeof record)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 });
 

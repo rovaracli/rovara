@@ -128,7 +128,7 @@ import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
-import type { SessionShareDependencies } from "../agent-sessions/shares.js";
+import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
@@ -258,7 +258,7 @@ export interface DeveloperRouteDependencies {
    * Plan 5, Task 5: what session levels, shares and reads need. The broker supplies it with `agents` (as `agents.agentSessions`) and on the browser pages
    * (`/s/…`, `/review/…`), which don't carry `agents`. Without it the session routes answer NOT_FOUND and the task page admits nobody on a session level.
    */
-  agentSessions?: SessionShareDependencies;
+  agentSessions?: SessionTakeOverDependencies;
   /**
    * Plan 3 final review (access m-2): what follows a person's project role changing or their grant being removed, on the agents platform (`onProjectMemberChanged`:
    * the agents they were accountable for move when they no longer hold `manage_agents`). Called after the change applied, also on a replay (it is repeatable);
@@ -1462,7 +1462,7 @@ async function startAppRun(
 }
 
 /** What session levels and reads need, from the route dependencies: the broker's own, or those it gave the agent routes. */
-function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionShareDependencies | undefined {
+function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionTakeOverDependencies | undefined {
   return deps.agentSessions ?? deps.agents?.agentSessions;
 }
 

@@ -32,7 +32,7 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 import { anchorTargetsOf } from "./anchors.js";
 import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
 import { viewingNow } from "./followers.js";
-import type { SessionShareDependencies } from "./shares.js";
+import type { SessionTakeOverDependencies } from "./take-over.js";
 
 /** Who reads: `DeveloperCaller` fits. */
 export interface SessionReadCaller extends SessionCaller { orgRole: OrgRole }
@@ -45,7 +45,7 @@ export interface SessionDeciding {
   spend(caller: SessionReadCaller, spendRequestId: string): Promise<boolean>;
 }
 
-export interface SessionReadDependencies extends SessionShareDependencies {
+export interface SessionReadDependencies extends SessionTakeOverDependencies {
   /** The origin links point at: the broker's issuer origin. */
   origin: string;
   /** The task's own view, built for this caller (the broker binds the task dependencies); `actor` is `owner` only for the session's effective owner. */
