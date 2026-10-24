@@ -279,18 +279,25 @@ const memoryKey = (event: TriggerEvent): string => `${event.project}\0${event.ev
  * is forgotten again and answered with a retryable fault, so that GitHub's redelivery starts it (dispatch's own identity makes a second attempt harmless).
  */
 export async function deliverGithubTriggerEvents(deps: GithubTriggerDependencies, input: GithubTriggerInput): Promise<{ events: number; duplicates: number }> {
-  const found = await githubTriggerEvents(deps, input);
-  const now = deps.now();
   const fresh: Array<{ orgId: OrgId; event: TriggerEvent }> = [];
   let duplicates = 0;
-  for (const entry of found) {
-    const outside = outsideEventWindow(entry.event.occurredAt, now);
-    if (outside !== undefined) {
-      log(deps)(`github.trigger_${outside}`, { orgId: entry.orgId, project: entry.event.project });
-      continue;
+  try {
+    const found = await githubTriggerEvents(deps, input);
+    const now = deps.now();
+    for (const entry of found) {
+      const outside = outsideEventWindow(entry.event.occurredAt, now);
+      if (outside !== undefined) {
+        log(deps)(`github.trigger_${outside}`, { orgId: entry.orgId, project: entry.event.project });
+        continue;
+      }
+      if (await firstSight(deps, entry.orgId, GITHUB_HOOK, memoryKey(entry.event), now)) fresh.push(entry);
+      else duplicates += 1;
     }
-    if (await firstSight(deps, entry.orgId, GITHUB_HOOK, memoryKey(entry.event), now)) fresh.push(entry);
-    else duplicates += 1;
+  } catch (error) {
+    // A table fault while the events were found or remembered: what was remembered is forgotten, and GitHub is asked to deliver again (a 503, not a failure of ours it would not retry).
+    log(deps)("github.trigger_unavailable", { error: error instanceof Error ? error.name : "unknown" });
+    for (const left of fresh) await forget(deps, left.orgId, GITHUB_HOOK, [{ ...left.event, eventKey: memoryKey(left.event) }]);
+    throw new GithubWebhookRetryableError("GitHub trigger events will be retried");
   }
   for (const [index, entry] of fresh.entries()) {
     try {
