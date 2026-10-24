@@ -28,6 +28,15 @@ function task(extra: Record<string, unknown> = {}): DeveloperTaskRecord {
     ownerKey: taskOwnerKey(PRIYA, TASK_ID), project: "web", ...extra,
   } as unknown as DeveloperTaskRecord;
 }
+/** What a call refused with, as the error's code and message; `undefined` when it did not refuse. */
+function refusal(call: () => unknown): { code?: string; message: string } | undefined {
+  try {
+    call();
+  } catch (error) {
+    return error as { code?: string; message: string };
+  }
+  return undefined;
+}
 const taken = (extra: Record<string, unknown> = {}) => task({ currentOwner: { developerId: MAX, name: "Max", provider: "oidc", since: SINCE, ...extra } });
 
 describe("the one function that says who owns a task", () => {
@@ -72,22 +81,23 @@ describe("the one function that says who owns a task", () => {
     ["a Slack id that is not a string", { slackUserId: 12 }],
     ["an empty Slack id", { slackUserId: "" }],
   ])("fails closed on a taker with %s: nobody owns the task, and it is never the creator", (_name, change) => {
-    const bad = taken(change as Record<string, unknown>);
-    expect(() => effectiveTaskOwner(bad)).toThrow(expect.objectContaining({ code: "TASK_ACCESS_DENIED", message: expect.stringContaining(TASK_OWNER_UNREADABLE_MESSAGE) }));
-    expect(() => ownerActorIdOf(bad)).toThrow(expect.objectContaining({ code: "TASK_ACCESS_DENIED" }));
-    expect(() => ownerFenceOf(bad)).toThrow(expect.objectContaining({ code: "TASK_ACCESS_DENIED" }));
+    const bad = taken(change);
+    expect(refusal(() => effectiveTaskOwner(bad))?.code).toBe("TASK_ACCESS_DENIED");
+    expect(refusal(() => effectiveTaskOwner(bad))?.message).toContain(TASK_OWNER_UNREADABLE_MESSAGE);
+    expect(refusal(() => ownerActorIdOf(bad))?.code).toBe("TASK_ACCESS_DENIED");
+    expect(refusal(() => ownerFenceOf(bad))?.code).toBe("TASK_ACCESS_DENIED");
     expect(tryEffectiveTaskOwner(bad)).toBeUndefined();
   });
 
   it.each([null, "Max", 5, [], [MAX], true])("fails closed on a `currentOwner` that is %j, not a taker", (value) => {
     const bad = task({ currentOwner: value });
-    expect(() => effectiveTaskOwner(bad)).toThrow(expect.objectContaining({ code: "TASK_ACCESS_DENIED" }));
+    expect(refusal(() => effectiveTaskOwner(bad))?.code).toBe("TASK_ACCESS_DENIED");
     expect(tryEffectiveTaskOwner(bad)).toBeUndefined();
   });
 
   it("fails closed on a task with no creator, and `tryEffectiveTaskOwner` answers the owner when there is one", () => {
-    expect(() => effectiveTaskOwner(task({ developerId: "" }))).toThrow(expect.objectContaining({ code: "TASK_ACCESS_DENIED" }));
-    expect(() => effectiveTaskOwner(task({ developerName: undefined }))).toThrow(expect.objectContaining({ code: "TASK_ACCESS_DENIED" }));
+    expect(refusal(() => effectiveTaskOwner(task({ developerId: "" })))?.code).toBe("TASK_ACCESS_DENIED");
+    expect(refusal(() => effectiveTaskOwner(task({ developerName: undefined })))?.code).toBe("TASK_ACCESS_DENIED");
     expect(tryEffectiveTaskOwner(taken())).toEqual({ developerId: MAX, name: "Max", provider: "oidc" });
     expect(tryEffectiveTaskOwner(task())?.developerId).toBe(PRIYA);
   });
