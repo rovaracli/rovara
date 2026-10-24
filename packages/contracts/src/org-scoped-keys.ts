@@ -468,9 +468,11 @@ export type AgentSessionItemSk =
   | `EVENT#${string}`
   | `BINDING#${string}`
   | `LEG#${string}`
-  | `TAKE_OVER_FOLLOW_UP#${string}`;
+  | `TAKE_OVER_FOLLOW_UP#${string}`
+  | `REQUEST#${string}`
+  | "RETRIED";
 
-/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, bindings, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`). */
+/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, bindings, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
 export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
 }

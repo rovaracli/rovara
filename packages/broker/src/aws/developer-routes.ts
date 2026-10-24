@@ -122,7 +122,7 @@ import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeopleCapabilities, getTaskPeopleForPage, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskPageUrl, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskPageUrl, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
@@ -1474,6 +1474,17 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
   const mint = deps.developer.realtimeToken;
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
+    // Plan 5 Task 13: Plan 3's cancel, workflow retry and run start, bound to this person. They are called only after the session routes read the person's level on the session.
+    control: {
+      cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      startAgentRun: async (request) => {
+        const starter = agentRunStarterOf(deps);
+        if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");
+        return startAgentRun(starter, { ...request, caller });
+      },
+    },
+    ...(deps.audit === undefined ? {} : { audit: deps.audit }),
     taskView: (task, options) => taskView(taskDeps, task, options),
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
     // Plan 5 Task 9: a person arriving on a session is told to its channel through the same API the sink publishes to.

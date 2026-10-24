@@ -439,11 +439,12 @@ async function finishFollowUp(deps: SessionTakeOverDependencies, orgId: OrgId, s
 }
 
 /** After the commit: the previous owner (feed and channel), the followers and the session's own channel hear that it changed, ids and a revision only. Never throws. */
-async function tell(deps: SessionTakeOverDependencies, session: AgentSessionRecord, previous: string, taker: string, at: string): Promise<void> {
+export async function tell(deps: SessionTakeOverDependencies, session: AgentSessionRecord, previous: string, taker: string, at: string): Promise<void> {
   try {
     const log = deps.log ?? ((entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })));
     const followers = (await followerIds({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log }, session)).filter((id) => id !== taker);
-    const hear = [...new Set([previous, ...followers])];
+    // The person who acted is not told of their own act.
+    const hear = [...new Set([previous, ...followers])].filter((id) => id !== taker);
     const notice = { type: "session.updated" as const, sessionId: session.sessionId, revision: session.summaryRevision };
     await writeChanges({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log }, session.orgId, hear.map((developerId) => ({ developerId, notice, at })));
     await publishNotices({ realtime: deps.realtimePublish, now: deps.now, log }, [

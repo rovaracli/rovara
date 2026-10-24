@@ -61,7 +61,7 @@ function world(options: { audit?: boolean } = {}) {
   const deps: SessionReadDependencies = {
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
     taskView: async (task) => ({ taskId: task.taskId, title: "Bump the Stripe SDK", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }) as never,
-    control, chainControl,
+    control, chainControl, chain: { runView: async (_actor, runId) => ({ runId, status: "running" }), stepTask: async () => { throw new Error("not asked"); } },
     admitPayer: async (input) => { calls.admissions.push({ payer: input.payer, project: input.project }); if (live.budgetRefusal !== undefined) throw agentXError("BUDGET_EXCEEDED", live.budgetRefusal); },
     realtimePublish: {
       endpoint: "https://events.example.com/event", region: "us-east-1", credentials: async () => ({ accessKeyId: "AKIA", secretAccessKey: "secret" }),
@@ -70,7 +70,8 @@ function world(options: { audit?: boolean } = {}) {
     ...(audit === undefined ? {} : { audit: audit.audit }),
   };
   const events = (sessionId: string) => w.db.find((item) => item.pk === agentSessionKey(ORG_A, sessionId, "META").pk && String(item.sk).startsWith("EVENT#"));
-  const eventTexts = (sessionId: string) => events(sessionId).map((event) => event.text);
+  /** The session's `stopped` and `retried` events (the summary refresh adds its own status events beside them). */
+  const eventTexts = (sessionId: string) => events(sessionId).filter((event) => event.type === "stopped" || event.type === "retried").map((event) => event.text);
   const meta = (sessionId: string) => w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as Item;
   const taskOf = (taskId: string) => w.db.get(taskKey(taskId)) as Item;
   const patchTask = (taskId: string, fields: Record<string, unknown>) => w.db.set({ ...taskOf(taskId), ...fields });
@@ -103,7 +104,6 @@ function world(options: { audit?: boolean } = {}) {
   const feed = (developerId: string) => w.db.find((item) => item.pk === changesKey(ORG_A, developerId, "2026-10-22T09:00:00.000Z", 0).pk);
   return { ...w, audit, calls, live, started, control, deps, events, eventTexts, meta, taskOf, patchTask, patchSession, stop, retry, blocked, agentRun, feed };
 }
-type World = ReturnType<typeof world>;
 
 describe("stopping a session", () => {
   it("cancels the task through Plan 3, leaves the session open, writes the exact event and the request, and answers the session", async () => {
@@ -354,7 +354,7 @@ describe("retrying a session", () => {
     expect(w.calls.start).toHaveLength(1);
     expect(w.calls.start[0]).toEqual({
       requestId: retryRunRequestId(ORG_A, old.sessionId), orgId: ORG_A, project: "web", agent: { agentId: "ticket-triage", version: 2 }, input: { text: "Triage ticket 42", context: [{ kind: "text", ref: "ticket-42", title: "Ticket 42" }] },
-      origin: "app", owner: { developerId: MAX }, startedBy: { developerId: MAX }, caller: expect.objectContaining({ developerId: MAX }),
+      origin: "app", owner: { developerId: MAX }, startedBy: { developerId: MAX },
     });
     const created = w.started.get(retryRunRequestId(ORG_A, old.sessionId))!;
     expect(reply.session.sessionId).toBe(created.sessionId);
@@ -447,7 +447,7 @@ describe("retrying a session", () => {
     w.patchSession(sessionId, { endedAt: "2026-10-22T08:30:00.000Z", summary: { ...(w.meta(sessionId).summary as Item), status: "failed" } });
     const requestId = randomUUID();
     const reply = await w.retry(MAX, sessionId, requestId);
-    expect(w.calls.chainRetry).toEqual([{ actor: { kind: "session", developerId: MAX }, runId: sessionId, requestId }]);
+    expect(w.calls.chainRetry).toEqual([{ actor: { kind: "session", developerId: MAX }, runId: sessionId, requestId: retryRunRequestId(ORG_A, sessionId) }]);
     expect(w.meta(reply.session.sessionId)).toMatchObject({ retryOf: sessionId });
     expect(w.eventTexts(sessionId)).toEqual(["Max retried this in a new session."]);
     const bare = world();
