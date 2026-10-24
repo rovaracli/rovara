@@ -113,7 +113,7 @@ export class FakeDeadLetterQueue {
       if (this.failReceive !== undefined) throw this.failReceive;
       const max = Number(command.input["MaxNumberOfMessages"] ?? 1);
       this.received.push(max);
-      return { Messages: this.messages.slice(0, Math.min(max, 10)).map((message) => ({ MessageId: message.handle, ReceiptHandle: message.handle, Body: message.body })) };
+      return { Messages: this.messages.slice(0, max).map((message) => ({ MessageId: message.handle, ReceiptHandle: message.handle, Body: message.body })) };
     }
     if (name === "DeleteMessageCommand") {
       const handle = String(command.input["ReceiptHandle"]);

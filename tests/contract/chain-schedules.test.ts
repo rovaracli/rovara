@@ -2,11 +2,11 @@
 // budget and caps), one slot starts at most one run however often it arrives, a backlog after an outage starts one run, and a trigger that is off, ownerless or gone is never started
 // and its schedule goes. Layer 1 drives the expression and the scheduler calls, Layer 2 the handler over the trigger world, Layer 3 the dead letters and the repair sweep.
 import { afterEach, describe, expect, it } from "vitest";
-import { agentXError, chainRunKey, orgAutonomousKey, triggerKey, triggerRateKey } from "@agentx/contracts";
+import { agentXError, chainRunKey, orgAutonomousKey, pendingTriggerScheduleKey, triggerKey, triggerRateKey } from "@agentx/contracts";
 import { taskEndKey } from "../../packages/broker/src/agents/task-end.js";
 import { deleteOrgTriggers } from "../../packages/broker/src/triggers/lifecycle.js";
 import {
-  CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, handleChainSchedule, putSchedule, scheduleExpression, sweepSchedules, type ScheduleSettings,
+  CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, handleChainSchedule, putSchedule, scheduleExpression, scheduleSettingsFromEnvironment, sweepSchedules, type ScheduleSettings,
 } from "../../packages/broker/src/triggers/schedules.js";
 import type { TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
@@ -649,5 +649,150 @@ describe("a schedule that is still pending is repaired by the sweep", () => {
     await s.v.triggers.delete({ trigger });
     expect(await sweepSchedules(s.deps, { now: s.v.clock.now })).toMatchObject({ repaired: 0 });
     expect(s.client.schedules.size).toBe(0);
+  });
+});
+
+// ---- pins from the mutation pass
+
+describe("pins: settings, scheduler calls and edges", () => {
+  const ENV = { AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AWS_LAMBDA_FUNCTION_NAME: "agentx-staging-broker", CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/staging/r", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/q" };
+  it("accepts the settings as they should be, and refuses a role of another account, an account that is not 12 digits, a function name or a queue name with odd characters", () => {
+    expect(scheduleSettingsFromEnvironment(ENV)).toBeDefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::999999999999:role/agentx/staging/r" })).toBeUndefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:user/x" })).toBeUndefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, AGENTX_ACCOUNT_ID: "12345" })).toBeUndefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, AWS_LAMBDA_FUNCTION_NAME: "a:b" })).toBeUndefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/q%2Fx" })).toBeUndefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/${"q".repeat(81)}` })).toBeUndefined();
+  });
+
+  it("putSchedule refuses an org id that is not one, and sends nothing", async () => {
+    const s = setup();
+    await expect(putSchedule({ client: s.client, settings: SETTINGS }, { orgId: "nope", triggerId: "ctr_00000000000000000007", spec: daily() })).rejects.toThrow();
+    expect(s.client.calls).toEqual([]);
+  });
+
+  it("disable of a schedule that is already DISABLED sends no update", async () => {
+    const s = setup();
+    await s.putOwn("ctr_00000000000000000007");
+    await s.scheduler.disable({ orgId: ORG_A, triggerId: "ctr_00000000000000000007" });
+    await s.scheduler.disable({ orgId: ORG_A, triggerId: "ctr_00000000000000000007" });
+    expect(s.client.commands("UpdateScheduleCommand")).toHaveLength(1);
+  });
+
+  it("a slot equal to the trigger's last claim is covered by it", async () => {
+    const s = setup();
+    const slot = s.iso(-2 * HOUR);
+    const { trigger } = await chainTrigger(s.v, { lastFiredAt: slot });
+    expect(await s.fire(trigger.triggerId, slot)).toMatchObject({ outcome: "missed", reason: "covered_by_a_later_run" });
+    expect(s.runs()).toEqual([]);
+  });
+
+  it("the same slot written in two spellings is one slot (one run, the second a duplicate)", async () => {
+    const s = setup();
+    const { trigger } = await chainTrigger(s.v);
+    const at = new Date(s.v.clock.now - 5_000);
+    await s.fire(trigger.triggerId, at.toISOString());
+    expect((await s.fire(trigger.triggerId, at.toISOString().replace("Z", "+00:00"))).outcome).toBe("duplicate");
+    expect(s.runs()).toHaveLength(1);
+  });
+
+  it("a store failure that is not a lost race is thrown, not retried as one", async () => {
+    const s = setup();
+    const { trigger } = await chainTrigger(s.v);
+    const update = s.v.triggers.update.bind(s.v.triggers);
+    s.v.triggers.update = (async () => { throw Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" }); }) as never;
+    await expect(s.fire(trigger.triggerId, s.iso(-2 * HOUR))).rejects.toThrow("throttled");
+    s.v.triggers.update = update;
+  });
+
+  it("gives back only its own claim: a claim another fire moved on is left", async () => {
+    const s = setup();
+    await s.v.builtinBudget("code-reviewer");
+    const { trigger } = await agentTrigger(s.v);
+    const ports = (s.deps as unknown as { chainRuns: { startAgentRun: (r: unknown) => Promise<unknown> } }).chainRuns;
+    ports.startAgentRun = async () => {
+      const current = (await s.v.triggers.get(ORG_A, trigger.triggerId))!;
+      await s.v.triggers.update({ trigger: current, patch: { lastFiredAt: "2099-01-01T00:00:00.000Z" } });
+      throw new Error("socket hang up");
+    };
+    await expect(s.fire(trigger.triggerId, s.iso(-2 * HOUR))).rejects.toThrow("socket hang up");
+    expect((await s.v.triggers.get(ORG_A, trigger.triggerId))!.lastFiredAt).toBe("2099-01-01T00:00:00.000Z");
+  });
+
+  it("never lets a trigger's own allowance pass the platform's 60 an hour", async () => {
+    const s = setup();
+    const { trigger } = await chainTrigger(s.v, { maxRunsPerHour: 1000 });
+    s.v.db.set({ ...triggerRateKey(ORG_A, trigger.triggerId, new Date(s.v.clock.now).toISOString().slice(0, 13)), entityType: "TRIGGER_RATE", count: 60 });
+    expect(await s.fire(trigger.triggerId, s.iso(-1_000))).toMatchObject({ outcome: "skipped", reason: "rate_limited" });
+  });
+
+  it("another org's task with the same id is not the trigger's open work", async () => {
+    const s = setup();
+    const { trigger } = await agentTrigger(s.v);
+    const first = await s.fire(trigger.triggerId, s.iso(-10_000));
+    const record = s.v.db.get({ pk: `DEVTASK#${first.taskId!}`, sk: "META" })!;
+    s.v.db.set({ ...record, orgId: ORG_B });
+    expect((await s.fire(trigger.triggerId, s.iso(-5_000))).outcome).toBe("started");
+  });
+
+  it("asks the queue for 10 at most and takes 10 at most, whatever the caller allows", async () => {
+    const s = setup();
+    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) as never });
+    for (let index = 0; index < 12; index += 1) s.queue.add({ source: "agentx.chain-schedule", orgId: ORG_A, triggerId: trigger.triggerId, scheduledAt: s.iso(-(index + 1) * HOUR) });
+    const report = await sweepSchedules(s.deps, { deadLetters: createDeadLetters({ sqs: s.queue, queueUrl: "https://sqs/q" }), now: s.v.clock.now, maxDeadLetters: 50 });
+    expect(report.deadLetters).toBe(10);
+    expect(s.queue.received).toEqual([10]);
+  });
+
+  it("a letter for a trigger that is gone leaves no activity, and one that is not from the scheduler is not handled", async () => {
+    const s = setup();
+    const { trigger } = await chainTrigger(s.v);
+    await s.v.triggers.delete({ trigger });
+    s.queue.add({ source: "agentx.chain-schedule", orgId: ORG_A, triggerId: trigger.triggerId, scheduledAt: s.iso(-5_000) });
+    await sweepSchedules(s.deps, { deadLetters: createDeadLetters({ sqs: s.queue, queueUrl: "https://sqs/q" }), now: s.v.clock.now });
+    expect(await s.v.triggers.listActivity(ORG_A, trigger.triggerId, 10)).toEqual([]);
+    const other = await chainTrigger(s.v);
+    s.queue.add({ source: "elsewhere", orgId: ORG_A, triggerId: other.trigger.triggerId, scheduledAt: s.iso(-5_000) });
+    await sweepSchedules(s.deps, { deadLetters: createDeadLetters({ sqs: s.queue, queueUrl: "https://sqs/q" }), now: s.v.clock.now });
+    expect(s.runs()).toEqual([]);
+    expect(await s.activity(other.trigger.triggerId)).toEqual([]);
+  });
+
+  it("throws when a sweep part failed and nothing else got done, and answers when something did", async () => {
+    const s = setup();
+    s.queue.failReceive = new Error("queue away");
+    await expect(sweepSchedules(s.deps, { deadLetters: createDeadLetters({ sqs: s.queue, queueUrl: "https://sqs/q" }), now: s.v.clock.now })).rejects.toThrow("queue away");
+    await chainTrigger(s.v, { scheduleStatus: "pending" });
+    expect(await sweepSchedules(s.deps, { deadLetters: createDeadLetters({ sqs: s.queue, queueUrl: "https://sqs/q" }), now: s.v.clock.now })).toMatchObject({ repaired: 1 });
+  });
+
+  it("drops a pending entry whose trigger is gone, and ignores one whose key does not name its own org and trigger", async () => {
+    const s = setup();
+    const gone = "ctr_00000000000000000042";
+    s.v.db.set({ ...pendingTriggerScheduleKey(ORG_A, gone), entityType: "TRIGGER_SCHEDULE_PENDING", orgId: ORG_A, triggerId: gone });
+    s.v.db.set({ pk: "PENDING_TRIGGER_SCHEDULES", sk: `${ORG_A}#ctr_00000000000000000043`, entityType: "TRIGGER_SCHEDULE_PENDING", orgId: ORG_A, triggerId: "ctr_00000000000000000044" });
+    expect(await s.v.triggers.listPendingSchedules(10)).toEqual([{ orgId: ORG_A, triggerId: gone }]);
+    await sweepSchedules(s.deps, { now: s.v.clock.now });
+    expect(s.v.db.get(pendingTriggerScheduleKey(ORG_A, gone))).toBeUndefined();
+  });
+
+  it("keeps the pending list equal to the triggers that are pending: a trigger that becomes pending is listed, and deleting a pending one unlists it", async () => {
+    const s = setup();
+    const { trigger } = await chainTrigger(s.v);
+    expect(await s.v.triggers.listPendingSchedules(10)).toEqual([]);
+    const pending = await s.v.triggers.update({ trigger, patch: { scheduleStatus: "pending" } });
+    expect(await s.v.triggers.listPendingSchedules(10)).toEqual([{ orgId: ORG_A, triggerId: trigger.triggerId }]);
+    await s.v.triggers.delete({ trigger: pending });
+    expect(s.v.db.get(pendingTriggerScheduleKey(ORG_A, trigger.triggerId))).toBeUndefined();
+  });
+
+  it("closeOrg asks the scheduler to delete schedules of schedule triggers only", async () => {
+    const s = setup();
+    const { chain, trigger } = await chainTrigger(s.v);
+    const event = await s.v.seed({ target: { kind: "chain", chainId: chain.chainId } });
+    await deleteOrgTriggers(s.deps, ORG_A);
+    expect(s.client.commands("DeleteScheduleCommand").map((input) => input["Name"])).toEqual([trigger.triggerId]);
+    expect(event.triggerId).not.toBe(trigger.triggerId);
   });
 });
