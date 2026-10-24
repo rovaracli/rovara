@@ -3,9 +3,9 @@
 // transaction, conditional on the session's revision and on the task's owner; the previous owner keeps "can edit"; and it is audited.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentSessionKey, agentXError, changesKey, liveSessionKey, mySessionsKey, sessionChannel, sharedSessionsKey, userChannel, type OrgId, type Payer } from "@agentx/contracts";
+import { agentSessionKey, agentXError, changesKey, liveSessionKey, mySessionsKey, sessionChannel, sessionEventId, sharedSessionsKey, userChannel, type OrgId, type Payer } from "@agentx/contracts";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
-import { getAnyApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
+import { getAnyApproval, getApprovalSubjectHandler, getApproverRule, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { resolveSessionAccess } from "../../packages/broker/src/agent-sessions/access.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
@@ -661,5 +661,112 @@ describe("faults and races", () => {
     expect(await w.approvalOf(approvalId)).toMatchObject({ status: "APPROVED_DONE" });
     expect(effectiveTaskOwner(w.taskOf(taskId))).toMatchObject({ developerId: MAX, name: "a member" });
     expect(w.meta(sessionId).owner).toMatchObject({ developerId: MAX, name: "Someone" });
+  });
+});
+
+describe("what the first round of mutation showed was not yet pinned", () => {
+  it("does not wait on a request that was declined: asking again under the same request id says it was decided", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    const requestId = randomUUID();
+    const first = NeedsConfirmationSchema.parse((await w.ask(MAX, sessionId, requestId)).body);
+    const approvalId = new URL(first.confirmUrl).pathname.split("/").pop()!;
+    expect((await w.decide(approvalId, await w.browser(MAX, approvalId), "decline")).statusCode).toBe(200);
+    expect(await code(w.ask(MAX, sessionId, requestId))).toMatchObject({ code: "APPROVAL_CLOSED" });
+  });
+
+  it("lets only the person the take-over names decide it: a record whose target is not its asker, or an asker who is not the caller, is refused even for someone who could take the session over", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    const { approvalId } = await w.asked(MAX, sessionId);
+    const record = await w.approvalOf(approvalId);
+    const rule = getApproverRule("session_take_over")!;
+    const caller = (developerId: string) => ({ orgId: ORG_A, developerId, orgRole: "member" as const });
+    expect(await rule(w.deps, record, caller(MAX))).toBe(true);
+    // Arjun holds edit and a role that starts work, but is not the asker.
+    expect(await rule(w.deps, record, caller(ARJUN))).toBe(false);
+    // A record naming someone else as the taker is not the asker's to decide.
+    const other = { ...record, subject: { ...(record.subject as object), to: ARJUN } } as typeof record;
+    expect(await rule(w.deps, other, caller(MAX))).toBe(false);
+  });
+
+  it("says exactly who may decide, on the page, to someone who may not", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    const { approvalId } = await w.asked(MAX, sessionId);
+    expect(await w.kind.inspect({ orgId: ORG_A, developerId: PRIYA, approvalId })).toEqual({ status: "forbidden", who: "the person who asked, while they can still take the session over" });
+  });
+
+  it("applies with the exact event id, the decision's proof in the audit event, and the taker's Slack id on the task when they have one", async () => {
+    const w = world({ audit: true });
+    const { sessionId, taskId } = sessionSeed(w);
+    w.db.set({ pk: `DEVELOPER#${MAX}`, sk: "META", developerId: MAX, provider: "slack", displayName: "Max", slackUserId: "U0MAX00001", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    const { approvalId } = await w.asked(MAX, sessionId);
+    await w.confirm(MAX, approvalId);
+    expect(w.events(sessionId).map((event) => event.eventId)).toEqual([sessionEventId("take_over", approvalId)]);
+    expect(w.audit!.recordedBy("session.owner_changed")[0]).toMatchObject({ proof: { kind: "fresh_sign_in", method: "email_code" } });
+    expect(w.taskOf(taskId).currentOwner).toMatchObject({ developerId: MAX, provider: "slack", slackUserId: "U0MAX00001" });
+  });
+
+  it("does not tell the taker as if someone else had changed their session: a taker who follows it gets no feed notice", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    w.follower(ORG_A, sessionId, MAX);
+    w.follower(ORG_A, sessionId, ARJUN);
+    await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
+    expect(w.feed(MAX)).toEqual([]);
+    expect(w.feed(ARJUN).length).toBeGreaterThan(0);
+  });
+
+  it("ends with the code CONFIG_INVALID, not a retryable fault, when no session dependencies are set up", async () => {
+    const w = world({ sessions: false });
+    const { sessionId } = sessionSeed(w);
+    const record = { ...(await w.approvalOf((await w.asked(MAX, sessionId)).approvalId)), status: "EXECUTING" as const, decidedBy: MAX };
+    await expect(getApprovalSubjectHandler("session_owner")!(w.deps, record)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("refuses an approval nobody decided with the words that say so", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    const record: Partial<AnyApprovalRecord> = { ...(await w.approvalOf((await w.asked(MAX, sessionId)).approvalId)), status: "EXECUTING" };
+    delete record.decidedBy;
+    await expect(getApprovalSubjectHandler("session_owner")!(w.deps, record as AnyApprovalRecord)).rejects.toThrow("has not been decided by anyone");
+  });
+
+  it("is refused whole when the live tile vanished between the read and the write", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    const { approvalId } = await w.asked(MAX, sessionId);
+    const record = { ...(await w.approvalOf(approvalId)), status: "EXECUTING" as const, decidedBy: MAX };
+    let gone = false;
+    const original = w.db.send;
+    w.db.send = async (command) => {
+      if (!gone && command.constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("lastTakeOverApprovalId")) { gone = true; w.db.delete(liveSessionKey(ORG_A, sessionId)); }
+      return original(command);
+    };
+    await expect(getApprovalSubjectHandler("session_owner")!(w.deps, record)).rejects.toMatchObject({ code: "SESSION_REVISION_CONFLICT" });
+    expect(gone).toBe(true);
+    expect(w.taskOf(taskId).currentOwner).toBeUndefined();
+  });
+
+  it("names the owner now from the task when the session's own copy of the owner is stale", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    w.grant(ARJUN, "web", "maintainer");
+    w.db.set({ ...w.taskOf(taskId), currentOwner: { developerId: MAX, name: "Max", provider: "oidc", since: "2026-10-22T08:30:00.000Z" } });
+    const { approvalId } = await w.asked(ARJUN, sessionId);
+    const view = (await w.kind.inspect({ orgId: ORG_A, developerId: ARJUN, approvalId })) as { view: { facts: Array<{ label: string; value: string }> } };
+    expect(view.view.facts.find((fact) => fact.label === "Owner now")?.value).toBe("Max");
+  });
+
+  it("lists only the take-over of this session among what the asker may decide on it", async () => {
+    const w = world();
+    const mine = sessionSeed(w);
+    const other = sessionSeed(w);
+    await w.asked(MAX, other.sessionId);
+    const { decidingOf } = await import("../../packages/broker/src/agent-sessions/routes.js");
+    const listed = await decidingOf(w.deps).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId: mine.sessionId, subject: { kind: "task", taskId: "t" } } as never);
+    expect(listed).toEqual([]);
   });
 });

@@ -43,6 +43,14 @@ describe("lowering the other owners at a take-over", () => {
     expect(roles(db)).toEqual({ [A]: "commenter", [B]: "commenter", [C]: "owner" });
   });
 
+  it("clears an orphaned list even when no owner needed lowering, and bumps the revision", async () => {
+    const db = seed([entry(A, "U0AAAAAAA1", "Ann", "commenter")], 7, true);
+    const people = (await loadTaskPeople({ documentClient: db, tableName: "state" }, TASK_ID))!;
+    await db.send(new TransactWriteCommand({ TransactItems: takeOverTaskPeopleItems({ tableName: "state" }, task, people, C) }));
+    expect(db.get(`DEVTASK#${TASK_ID}`, "PEOPLE")).toMatchObject({ revision: 8, orphaned: false });
+    expect(roles(db)).toEqual({ [A]: "commenter" });
+  });
+
   it("writes nothing when no one else is an owner and the task is not orphaned", async () => {
     const db = seed([entry(A, "U0AAAAAAA1", "Ann", "commenter"), entry(C, "U0CCCCCCC1", "Cy", "owner")]);
     const people = (await loadTaskPeople({ documentClient: db, tableName: "state" }, TASK_ID))!;
