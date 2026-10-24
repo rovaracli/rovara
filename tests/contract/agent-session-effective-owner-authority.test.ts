@@ -360,3 +360,22 @@ describe("a taker who was merged into another member (12a review M-3)", () => {
     expect((await refusal(loadOwnedTask(fixture.deps, SAM, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
   });
 });
+
+describe("the merge follow-up (12a review M-3), bounds", () => {
+  it("follows a merge only for a task someone took over: the creator's own tasks are not read through a merge", async () => {
+    const fixture = pageTask();
+    const deps = { ...fixture.deps, resolveMember: async (id: string) => (id === "9".repeat(64) ? PRIYA.developerId : id) };
+    expect((await refusal(loadOwnedTask(deps, { ...SAM, developerId: "9".repeat(64) }, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
+    await expect(loadOwnedTask(deps, PRIYA, fixture.taskId)).resolves.toMatchObject({ taskId: fixture.taskId });
+  });
+
+  it("is wired into the route dependencies from the sign-in records' merge chain", async () => {
+    const { developerTaskRouteDependencies } = await import("../../packages/broker/src/aws/developer-routes.js");
+    const records: Record<string, { mergedInto?: string }> = { ["8".repeat(64)]: { mergedInto: "7".repeat(64) }, ["7".repeat(64)]: {} };
+    const routes = developerTaskRouteDependencies({
+      documentClient: { send: async (command: { input: { Key: { pk: string } } }) => ({ Item: { developerId: "x", ...records[command.input.Key.pk.replace("DEVELOPER#", "")] } }) },
+      tableName: "state", signInTableName: "sign-ins", developer: { issuer: "https://issuer.example/v1/auth" }, now: Date.now,
+    } as never, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", orgRole: "member", developerId: "d", sessionId: "s", amr: "oidc", name: "D" });
+    expect(await routes.resolveMember!("8".repeat(64))).toBe("7".repeat(64));
+  });
+});

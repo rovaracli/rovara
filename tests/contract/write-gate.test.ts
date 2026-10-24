@@ -1994,6 +1994,19 @@ describe("after a take-over (Plan 5 Task 12a)", () => {
     expect(w.vendor.state.vendorCalls).toHaveLength(1);
   });
 
+  it("gives up after a few owner changes in a row, with a retryable fault, leaving the approval pending", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    let flips = 0;
+    const racing = { ...w.deps, documentClient: { async send(command: unknown) {
+      if ((command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { flips += 1; w.task(taken(flips % 2 === 0 ? CARA : DANA, "Someone")); }
+      return w.db.send(command as never);
+    } } };
+    expect(await code(decideApproval(racing, w.caller(BOB), id, { requestId: REQ(912), decision: "APPROVE" }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(flips).toBe(4);
+    expect((await w.write(id)).status).toBe("PENDING");
+  });
+
   it("a task whose taker can't be read decides nothing: nobody may decide, the creator who handed it over is not named, and nothing runs", async () => {
     const w = world();
     const id = await w.waiting(1);
