@@ -162,6 +162,13 @@ describe("the health route's grants (A13)", () => {
       // Plan 5, Tasks 6 and 7a: the event log reads it back (and leaves it off an event it returns); a session's end sets it on the session and its live tile
       // (summary.ts); the drain sets it on an ended session's items and the sweep reads a presence item's (sweep.ts).
       "packages/broker/src/agent-sessions/events.ts", "packages/broker/src/agent-sessions/summary.ts", "packages/broker/src/agent-sessions/sweep.ts",
+      // Plan 5, Task 9: a follower item expires with its ended session, and a presence item (who is looking now) expires in minutes (followers.ts writes both).
+      "packages/broker/src/agent-sessions/followers.ts",
+      // Plan 5, Task 10: a session's comments, its per-hour comment rate item, its message count and its request items (replay keys) expire on it (messages.ts
+      // writes them, drops a comment the table hasn't deleted yet, and replays a request only while its item lives).
+      "packages/broker/src/agent-sessions/messages.ts",
+      // Plan 5, Task 11a: the queued-steer count of a session expires with the session; the steer messages share messages.ts's items (steer.ts writes the count).
+      "packages/broker/src/agent-sessions/steer.ts",
       // Plan 5, Task 8: each person's change notices (the catch-up feed) expire a week after they are written.
       "packages/broker/src/realtime/changes.ts",
       // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
