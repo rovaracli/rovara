@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { SessionIdSchema } from "@agentx/contracts/web";
-import { appHeaders, assetOrigin, type AppEnvironment } from "./headers.js";
+import { HSTS, appHeaders, assetOrigin, type AppEnvironment } from "./headers.js";
 import { notFound, serveAsset, type AppResponse } from "./assets.js";
 import { renderShell } from "./shell.js";
 export interface AppEvent { rawPath?: string; headers?: Record<string, string | undefined>; requestContext?: { http?: { method?: string } } }
@@ -10,7 +10,7 @@ export interface AppHandlerOptions extends AppEnvironment { appDirectory: string
 export function createAppHandler(options: AppHandlerOptions): (event: AppEvent) => Promise<AppResponse> {
  const env = { ...options, assetOrigin: assetOrigin(options.assetOrigin) };
  return async event => {
-  if (event.requestContext?.http?.method !== "GET") return { statusCode: 405, headers: { allow: "GET", "cache-control": "no-store" }, body: "This address answers GET only." };
+  if (event.requestContext?.http?.method !== "GET") return { statusCode: 405, headers: { "strict-transport-security": HSTS, allow: "GET", "cache-control": "no-store" }, body: "This address answers GET only." };
   const path = event.rawPath ?? "";
   if (path.startsWith("/app/assets/")) {
    if (env.assetOrigin !== "") return notFound();
