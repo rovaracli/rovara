@@ -367,6 +367,82 @@ describe("Jira: a signed issue creation from the hook's site and project starts 
   });
 });
 
+describe("what the first mutation pass found unpinned", () => {
+  it("reads the signature headers whatever the case of their names", async () => {
+    const { w, hook } = await linearWorld();
+    const body = linearBody(w);
+    const linear = linearDelivery(hook, body);
+    expect((await w.receive({ ...linear, headers: { "Linear-Signature": linear.headers["linear-signature"] } })).status).toBe(202);
+    const jira = await w.hook({ source: "jira", hookId: HOOK_2, project: "web", tenant: JIRA_TENANT as never });
+    const signed = jiraDelivery(jira, jiraBody(w));
+    expect((await w.receive({ ...signed, headers: { "X-Hub-Signature": signed.headers["x-hub-signature"] } })).status).toBe(202);
+    // A header value with white space round it (a proxy's doing) is still the signature.
+    const spaced = jiraDelivery(jira, jiraBody(w, { id: "5" }));
+    expect((await w.receive({ ...spaced, headers: { "x-hub-signature": ` ${spaced.headers["x-hub-signature"]!} ` } })).status).toBe(202);
+  });
+
+  it("leaves out a link with a port or on a host that only ends like linear.app, and a Jira site that only ends like the hook's", async () => {
+    const { w, hook } = await linearWorld();
+    await w.receive(linearDelivery(hook, linearBody(w, { id: "p1", url: "https://linear.app:8443/acme/issue/ENG-7" })));
+    await w.receive(linearDelivery(hook, linearBody(w, { id: "p2", url: "https://notlinear.app/acme/issue/ENG-7" })));
+    expect(w.dispatched.map((entry) => entry.event.subject.url)).toEqual([undefined, undefined]);
+    const jira = await w.hook({ source: "jira", hookId: HOOK_2, project: "web", tenant: JIRA_TENANT as never });
+    expect((await w.receive(jiraDelivery(jira, jiraBody(w, { host: "notacme.atlassian.net" })))).status).toBe(403);
+  });
+
+  it("takes the link from the issue or, when it has none, from the top of the body, and prefers the issue's own", async () => {
+    const { w, hook } = await linearWorld();
+    const top = linearBody(w, { id: "u1" });
+    delete (top["data"] as Record<string, unknown>)["url"];
+    top["url"] = "https://linear.app/acme/issue/ENG-7/top";
+    const both = linearBody(w, { id: "u2", url: "https://linear.app/acme/issue/ENG-7/data" });
+    both["url"] = "https://linear.app/acme/issue/ENG-7/top";
+    await w.receive(linearDelivery(hook, top));
+    await w.receive(linearDelivery(hook, both));
+    expect(w.dispatched.map((entry) => entry.event.subject.url)).toEqual(["https://linear.app/acme/issue/ENG-7/top", "https://linear.app/acme/issue/ENG-7/data"]);
+  });
+
+  it("names the issue by its id when it has a number but the body names no team, and starts events for issues with no labels, no label list or a label list that is not a list", async () => {
+    const { w, hook } = await linearWorld();
+    const noTeam = linearBody(w, { id: "n1", identifier: null });
+    delete (noTeam["data"] as Record<string, unknown>)["team"];
+    await w.receive(linearDelivery(hook, noTeam));
+    const noLabels = linearBody(w, { id: "n2" });
+    delete (noLabels["data"] as Record<string, unknown>)["labels"];
+    await w.receive(linearDelivery(hook, noLabels));
+    const oddLabels = linearBody(w, { id: "n3" });
+    (oddLabels["data"] as Record<string, unknown>)["labels"] = "bug";
+    await w.receive(linearDelivery(hook, oddLabels));
+    expect(w.dispatched.map((entry) => [entry.event.subject.id, entry.event.fields["label"]])).toEqual([["n1", ["bug"]], ["ENG-7", []], ["ENG-7", []]]);
+    const jira = await w.hook({ source: "jira", hookId: HOOK_2, project: "web", tenant: { siteHost: "acme.atlassian.net" } as never });
+    const bare = jiraBody(w, { id: "j1" });
+    delete ((bare["issue"] as { fields: Record<string, unknown> }).fields)["labels"];
+    delete ((bare["issue"] as { fields: Record<string, unknown> }).fields)["issuetype"];
+    await w.receive(jiraDelivery(jira, bare));
+    const odd = jiraBody(w, { id: "j2" });
+    ((odd["issue"] as { fields: Record<string, unknown> }).fields)["labels"] = "bug";
+    ((odd["issue"] as { fields: Record<string, unknown> }).fields)["issuetype"] = null;
+    await w.receive(jiraDelivery(jira, odd));
+    expect(w.dispatched.slice(3).map((entry) => entry.event.fields)).toEqual([{ label: [], issueType: [] }, { label: [], issueType: [] }]);
+  });
+
+  it("ignores a time of 0 or past what a date can hold, and logs a body that is not an object as a tenant refusal (not as a failure to read it)", async () => {
+    const { w, hook } = await linearWorld();
+    const jira = await w.hook({ source: "jira", hookId: HOOK_2, project: "web", tenant: JIRA_TENANT as never });
+    for (const at of [0, 8_700_000_000_000_000]) {
+      expect(await w.receive(linearDelivery(hook, { ...linearBody(w), webhookTimestamp: at }))).toEqual({ status: 202, body: { delivery: "IGNORED" } });
+      expect(await w.receive(jiraDelivery(jira, { ...jiraBody(w), timestamp: at }))).toEqual({ status: 202, body: { delivery: "IGNORED" } });
+    }
+    expect(w.dispatched).toEqual([]);
+    for (const body of [[], "text", null]) {
+      await w.receive(linearDelivery(hook, body));
+      await w.receive(jiraDelivery(jira, body));
+    }
+    expect(w.logs.filter((entry) => entry.event === "hook.tenant_mismatch")).toHaveLength(6);
+    expect(w.logs.filter((entry) => entry.event === "hook.normalize_failed")).toEqual([]);
+  });
+});
+
 describe("the providers are the ones the broker uses", () => {
   it("registers Linear (vendor secret, hmac) and Jira (Rovara's secret, hmac) and no one else yet", () => {
     const providers = hookProviders();

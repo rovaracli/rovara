@@ -7,6 +7,7 @@ import type { TriggerEvent } from "@agentx/contracts";
 import { githubInstallationKey, githubRepoProjectKey, hookEventKey, orgGithubInstallationKey, orgProjectCatalogKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { GithubWebhookRetryableError, handleGithubWebhook } from "../../packages/broker/src/aws/github-webhooks.js";
+import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { expireApprovals } from "../../packages/broker/src/agents/approvals-decide.js";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";
 import { deliverGithubTriggerEvents, githubTriggerEvents, type GithubTriggerDependencies } from "../../packages/broker/src/triggers/github-events.js";
@@ -531,6 +532,39 @@ describe("turning a GitHub trigger on heals the repository index of its project 
     expect(indexRows(w.v.db)).toEqual([]);
   });
 
+  it("heals the rows of the trigger's own project, whatever its name, and a confirmation told again after it was applied heals them again", async () => {
+    const { w, chain } = await legacy();
+    w.v.projectMembers.grant(ORG_A, "api", PRIYA, "contributor");
+    registerProject(w.v.db, ORG_A, "api", { installationId: 55, repositoryId: 202 }, { index: false });
+    const asked = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("h")), { project: "api", spec: PR_OPENED });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    const approvalId = String(asked.body["confirmUrl"]).split("/").pop()!;
+    await w.v.decideAs(DANA, approvalId);
+    expect(indexRows(w.v.db)).toEqual([own(202, "api")]);
+    // The sweep tells the handler again (it did not hear the first time) after the rows were lost: the handler finishes by writing them again.
+    w.v.db.delete(githubRepoProjectKey(202, ORG_A, "api"));
+    await getApprovalSubjectHandler("trigger_enable")!(w.v.routeDeps, await w.v.approval(approvalId));
+    expect(indexRows(w.v.db)).toEqual([own(202, "api")]);
+  });
+
+  it("writes no row for a repository whose pin is only half there", async () => {
+    const { w, chain } = await legacy();
+    w.v.db.set({
+      ...projectRevisionKey(ORG_A, "web", 2), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-02T00:00:00.000Z", runtimeBinding: {},
+      definition: {
+        name: "web", revision: 2, setup: [], readiness: [], orchestratorInstructions: "Delegate work.",
+        repositories: [
+          { name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app", installationId: 55 },
+          { name: "docs", url: "https://github.com/acme/docs.git", path: "repo/docs", defaultBranch: "main", credentialRef: "github-app", githubRepositoryId: 303 },
+        ],
+      },
+    });
+    w.v.db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web", latestRevision: 2 });
+    const asked = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("i")), { project: "web", spec: PR_OPENED });
+    await w.v.decideAs(DANA, String(asked.body["confirmUrl"]).split("/").pop()!);
+    expect(indexRows(w.v.db)).toEqual([]);
+  });
+
   it("turns nothing on while the rows can't be written, on the page and on the direct route, and goes through when it is tried again", async () => {
     const { w, chain } = await legacy();
     const asked = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("f")), { project: "web", spec: PR_OPENED });
@@ -566,8 +600,21 @@ describe("a DynamoDB fault while GitHub's events are handled is retried by GitHu
     w.v.db.injectFault({ command: "QueryCommand", match: indexRead, error: { name: "InternalServerError" } });
     await expect(w.deliver(pullRequest(), "pull_request")).rejects.toBeInstanceOf(GithubWebhookRetryableError);
     expect(w.runs()).toEqual([]);
+    expect(w.logs.filter((entry) => entry.event === "github.trigger_unavailable")).toEqual([{ event: "github.trigger_unavailable", fields: { error: "InternalServerError" } }]);
     expect((await w.deliver(pullRequest(), "pull_request")).status).toBe("ACCEPTED");
     expect(w.runs()).toHaveLength(1);
+  });
+
+  it("forgets the events it had already remembered when a later one can't be, so the redelivery starts both projects' work", async () => {
+    const w = world();
+    registerProject(w.v.db, ORG_A, "api", { installationId: 55, repositoryId: 101 });
+    let writes = 0;
+    w.v.db.injectFault({ command: "PutCommand", match: (input) => eventWrite(input) && ++writes === 2, error: { name: "InternalServerError" } });
+    await expect(w.deliver(pullRequest(), "pull_request")).rejects.toBeInstanceOf(GithubWebhookRetryableError);
+    expect(writes).toBe(2);
+    expect(w.v.db.find((item) => String(item["pk"]).includes("#HOOK_EVENT#"))).toEqual([]);
+    expect(await w.deliver(pullRequest(), "pull_request")).toMatchObject({ status: "ACCEPTED" });
+    expect(w.v.db.find((item) => String(item["pk"]).includes("#HOOK_EVENT#"))).toHaveLength(2);
   });
 
   it("does the same for a fault reading the installation and for one remembering the event", async () => {
