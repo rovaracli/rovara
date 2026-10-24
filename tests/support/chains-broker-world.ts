@@ -5,6 +5,8 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, projectMemberKey, projectAgentKey, projectMetaKey, projectRevisionKey, DEFAULT_AGENT_GUARDRAILS, type OrgId, type OrgRole } from "@agentx/contracts";
+import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
+import { call as callHandler } from "./slack-broker.js";
 import { onTaskEnded } from "../../packages/broker/src/agents/task-end.js";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
@@ -161,11 +163,11 @@ export async function chainsBrokerWorld() {
   const agentOf = async (overlay: RecipeOverlay, name: string, orgId: OrgId = ORG_A, by: Developer = MAX): Promise<string> => {
     const body = await created(api(by, "POST", "/v1/app/agents", { name, overlay }));
     const agentId = (body.agent as { agentId: string }).agentId;
-    const draft = (await agents.getDraft(orgId, agentId as never))!;
-    await agents.saveDraft({ orgId, agentId: agentId as never, overlay, expectedRevision: draft.revision, by: by.developerId });
-    const agent = (await agents.get(orgId, agentId as never))!;
+    const draft = (await agents.getDraft(orgId, agentId))!;
+    await agents.saveDraft({ orgId, agentId: agentId, overlay, expectedRevision: draft.revision, by: by.developerId });
+    const agent = (await agents.get(orgId, agentId))!;
     await agents.publish({ orgId, agentId: agent.agentId, expectedDraftRevision: agent.draftRevision, digest: recipeDigest(await resolveAgent(agents, orgId, agent.agentId, "draft")), by: by.developerId });
-    db.set({ ...projectAgentKey(orgId, "web", agentId as never), entityType: "PROJECT_AGENT", orgId, project: "web", agentId, addedBy: by.developerId, addedAt: "2026-10-01T00:00:00.000Z" });
+    db.set({ ...projectAgentKey(orgId, "web", agentId), entityType: "PROJECT_AGENT", orgId, project: "web", agentId, addedBy: by.developerId, addedAt: "2026-10-01T00:00:00.000Z" });
     return agentId;
   };
 
@@ -210,7 +212,7 @@ export async function chainsBrokerWorld() {
   const endStep = async (runId: string, detail: { finalReport?: string; branch?: string } = {}, stepId?: string) => {
     const task = stepTask(runId, stepId);
     if (task === undefined) throw new Error(`run ${runId} has no step task`);
-    return onTaskEnded({ documentClient: db as never, tableName: "state", now: Date.now }, db.get(`DEVTASK#${task.taskId}`, "META") as never, "succeeded", { finalReport: "The report.", ...detail }, { record: true });
+    return onTaskEnded({ documentClient: db, tableName: "state", now: Date.now }, db.get(`DEVTASK#${task.taskId}`, "META") as never, "succeeded", { finalReport: "The report.", ...detail }, { record: true });
   };
 
   const runItem = (runId: string) => db.find((item) => item.entityType === "CHAIN_RUN" && item.runId === runId)[0] as Item | undefined;
@@ -249,7 +251,11 @@ export async function isolationWorld() {
   expect(added.status, JSON.stringify(added.body)).toBeLessThan(300);
 
   // A's Linear connection L and connector (a write tool among them), added the way a confirmed change leaves the project.
-  const L = ((await w.created(w.api(DANA, "POST", "/v1/app/connections", { connection: { type: "linear", label: "A Linear", access: "read_write" }, secret: { apiKey: LINEAR_KEY } }))).connection as { connectionId: string }).connectionId;
+  const L = ((await w.created(w.api(DANA, "POST", "/v1/app/connections", { connection: { type: "linear", label: "A Linear", access: "read_write", identity: "service" }, secret: { apiKey: LINEAR_KEY } }))).connection as { connectionId: string }).connectionId;
+  // The check records the account the key belongs to: the events that account causes are Rovara's own, and no trigger starts work for them.
+  const checked = await w.api(DANA, "POST", `/v1/app/connections/${L}/check`, {});
+  expect(checked.status, JSON.stringify(checked.body)).toBe(200);
+  expect(checked.body.ok, JSON.stringify(checked.body)).toBe(true);
   w.addConnector(ORG_A, "web", { name: "linear", type: "linear", credentialRef: L, scopes: [{ alias: "eng", teamId: w.CHARTERARC_TEAM_ID }], tools: [{ name: "get_issue", access: "read" }, { name: "save_issue", access: "write" }] });
 
   // The permission-leak chain: an investigator granted Sentry (read) and Linear (read and write), then a summarizer granted nothing.
@@ -299,3 +305,25 @@ export async function isolationWorld() {
   return { w, N, L, C, P, investigator, summarizer, H, H2, BH, BC, T, R, G, fingerprint, aState };
 }
 export type IsolationWorld = Awaited<ReturnType<typeof isolationWorld>>;
+
+// ---- a step's task, prepared, with the capability its agent step holds
+const SIGNING = { callbackSigningKey: "c".repeat(64) };
+const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
+/** The step's task, its preparation finished, and the capability its agent step would hold. */
+export async function stepCapability(x: IsolationWorld, runId: string, stepId: string) {
+  const task = x.w.stepTask(runId, stepId)!;
+  const workspaceId = task.workspaceId;
+  const operations = () => x.w.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION") as Array<Item & { id: string; kind: string; status: string; fence: number; programStepId?: string }>;
+  const prepare = operations().find((operation) => operation.kind === "prepare")!;
+  await x.w.h.finish(workspaceId, prepare.id, "SUCCEEDED", PREPARED);
+  const active = String((x.w.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
+  const operation = operations().find((entry) => entry.id === active)!;
+  const capability = issueCapability(SIGNING, workspaceId, active, operation.fence, { agentTools: true });
+  const headers = { "x-agentx-callback-capability": capability };
+  return {
+    taskId: task.taskId, workspaceId, operationId: active, operation,
+    tools: () => callHandler(x.w.h.handler, { method: "GET", path: "/v1/internal/agent-tools", headers }),
+    callTool: (body: Record<string, unknown>) => callHandler(x.w.h.handler, { method: "POST", path: "/v1/internal/agent-tools/call", headers, body }),
+  };
+}
+
