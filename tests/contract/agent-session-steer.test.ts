@@ -429,11 +429,11 @@ describe("a task that cannot take a message", () => {
     expect(f.events().find((item) => item.type === "steer_not_delivered")).toMatchObject({ text: `The agent can't take messages right now: ${PLAIN_REASON}.` });
   });
 
-  it("does not take a message for an agent-step run or a session on a Mac before their tasks (11b, 18), and writes nothing", async () => {
+  it("takes a message for an agent-step run (Task 11b: its next agent step reads it), and does not take one for a session on a Mac before Task 18, writing nothing", async () => {
     const run = steerWorld({ workflow: false });
     run.w.db.set({ ...run.task(), agent: { agentId: "ticket-triage", name: "Ticket triage", version: 1 } });
-    expect(await code(run.send(ARJUN, "go"))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "Messages to this kind of session aren't available yet." });
-    expect(run.messageItems()).toHaveLength(0);
+    expect((await run.send(ARJUN, "go")).delivery).toMatchObject({ state: "queued" });
+    expect(run.messageItems()).toHaveLength(1);
     const local = steerWorld({ kind: "local" });
     expect(await code(local.send(PRIYA, "go"))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(local.messageItems()).toHaveLength(0);
