@@ -8,6 +8,8 @@ import { approvalDecideKind } from "../../packages/broker/src/agents/approval-de
 import { getAnyApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { resolveSessionAccess } from "../../packages/broker/src/agent-sessions/access.js";
+import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
+import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { registerSessionTakeOverApprovals, askTakeOver, type ChainOwnerMover, type SessionTakeOverDependencies } from "../../packages/broker/src/agent-sessions/take-over.js";
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import type { DecideKinds } from "../../packages/broker/src/developer/decide-kinds.js";
@@ -552,5 +554,39 @@ describe("old data", () => {
     expect(w.meta(sessionId).owner).toMatchObject({ developerId: MAX });
     expect(w.db.get(liveSessionKey(ORG_A, sessionId))).toBeUndefined();
     expect(w.db.get(taskIndexKey(MAX, CREATED_AT, taskId))).toMatchObject({ taskId, orgId: ORG_A });
+  });
+});
+
+describe("the route", () => {
+  const route = (w: World, who: string, method: string, sessionId: string, body?: unknown) => routeAgentSessionRequest(
+    { ...w.sessionDeps, origin: CELL, approvals: w.deps, taskView: async () => ({}) as never },
+    w.caller(who), { method, path: `/v1/app/sessions/${sessionId}/take-over`, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
+    new URL(`${CELL}/v1/app/sessions/${sessionId}/take-over`),
+  );
+
+  it("answers POST /v1/app/sessions/{id}/take-over with a 202 whose body is the confirmation, and refuses any other method", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    const answer = await route(w, MAX, "POST", sessionId, { requestId: randomUUID() });
+    expect(answer).toBeInstanceOf(StatusReply);
+    expect((answer as StatusReply).statusCode).toBe(202);
+    expect(NeedsConfirmationSchema.parse((answer as StatusReply).body)).toMatchObject({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED" });
+    for (const method of ["GET", "PUT", "DELETE"]) expect(await code(route(w, MAX, method, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("answers a body that is not JSON with CONFIG_INVALID, and the owner with the exact words", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    expect(await code(route(w, PRIYA, "POST", sessionId, { requestId: randomUUID() }))).toEqual({ code: "CONFIG_INVALID", message: "You already own this session." });
+    expect(await code(route(w, MAX, "POST", sessionId, { requestId: 5 }))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("lists a pending take-over among what the asker may decide on the session", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    const { approvalId } = await w.asked(MAX, sessionId);
+    const { decidingOf } = await import("../../packages/broker/src/agent-sessions/routes.js");
+    const listed = await decidingOf(w.deps).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId, subject: { kind: "task", taskId: "t" } } as never);
+    expect(listed).toEqual([{ approvalId, title: 'Max becomes the owner of "Bump the Stripe SDK".' }]);
   });
 });
