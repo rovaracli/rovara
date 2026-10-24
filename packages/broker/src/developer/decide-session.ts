@@ -256,9 +256,9 @@ export interface DecideRequestContext {
 }
 export interface DecideRequest { method: string; path: string; headers: Record<string, string | undefined>; body?: string }
 export const DECIDE_NAVIGATION_MESSAGE = "Open this approval from its link.";
-/** Fetch metadata is browser-controlled; no-metadata clients retain the existing presence rules. */
+/** Sec-Fetch-Site identifies browser requests; Node fetch also sends mode cors without Site and retains the existing presence rules. */
 export function requireDecideNavigation(request: DecideRequest): void {
-  if (!Object.entries(request.headers).some(([key, value]) => key.toLowerCase().startsWith("sec-fetch-") && value !== undefined)) return;
+  if (!Object.entries(request.headers).some(([key, value]) => key.toLowerCase() === "sec-fetch-site" && value !== undefined)) return;
   // RULING Q10: both JSON decision handlers use this shared guard before any ticket is minted.
   if (request.path.endsWith("/decide")) {
     if (["cors", "same-origin", "no-cors"].includes(request.headers["sec-fetch-mode"] ?? "")) throw agentXError("FORBIDDEN", DECIDE_NAVIGATION_MESSAGE);
