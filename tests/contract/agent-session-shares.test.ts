@@ -449,6 +449,17 @@ describe("removing a share", () => {
     expect(await deleteSessionShare(w.shareDeps, w.caller(PRIYA), sessionId, `MEMBER#${ZED}`)).toEqual({ removed: true });
   });
 
+  it("tells a person who may not remove a share to ask the session's owner now, not the one who handed it over (Plan 5 Task 12a)", async () => {
+    const w = world();
+    const { sessionId } = w.seedSession({ currentOwner: ARJUN });
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ZED }, "view", PRIYA);
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: MIA }, "view");
+    const refused = await code(deleteSessionShare(w.shareDeps, w.caller(MIA), sessionId, `MEMBER#${ZED}`));
+    expect(refused).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(refused?.message).toContain("Arjun");
+    expect(refused?.message).not.toContain("Priya");
+  });
+
   it("answers a share that isn't there as removed: false and writes nothing, and refuses a bad key", async () => {
     const w = world();
     const { sessionId } = w.seedSession();

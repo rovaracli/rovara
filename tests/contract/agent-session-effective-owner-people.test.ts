@@ -3,7 +3,7 @@
 // claim it), dispatch asks for a witness for the taker first, and with no Slack proof for them it rests on their project authority.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { orgMemberKey } from "../../packages/contracts/src/org.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
@@ -17,6 +17,7 @@ import {
 } from "../../packages/broker/src/developer/task-people.js";
 import { taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import type { TaskPeopleDisplayAdmission } from "../../packages/broker/src/developer/task-people-display-budget.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -109,6 +110,8 @@ describe("the first People read after a take-over, with no People list yet", () 
     const h = people({ taken: { slackUserId: S_MAX }, maxOnSlack: true });
     const view = await getTaskPeople(h.deps, caller(MAX, S_MAX, "Max"), TASK_ID);
     expect(roles(h.sidecar())).toEqual({ [MAX]: "owner", [PRIYA]: "commenter" });
+    // Seeded as it should stay: nothing had to be corrected after it was written.
+    expect(h.sidecar().revision).toBe(1);
     expect(h.sidecar().orphaned).toBe(false);
     expect(view.people.map((person) => [person.name, person.role, person.effectiveRole]).sort()).toEqual([["Max", "owner", "owner"], ["Priya", "commenter", "commenter"]]);
     expect(view).toMatchObject({ orphaned: false, canManage: true, canTakeOwnership: false });
@@ -118,6 +121,7 @@ describe("the first People read after a take-over, with no People list yet", () 
     const h = people({ taken: true });
     const view = await getTaskPeople(h.deps, MAX_CALLER, TASK_ID);
     expect(roles(h.sidecar())).toEqual({ [PRIYA]: "commenter" });
+    expect(h.sidecar().revision).toBe(1);
     expect(h.sidecar().orphaned).toBe(false);
     expect(view.canManage).toBe(true);
     expect(view.people.map((person) => [person.name, person.role])).toEqual([["Priya", "commenter"]]);
@@ -218,6 +222,74 @@ describe("a People list written before the take-over", () => {
     const outcome = await refusal(changeTaskPeople(racing, PRIYA_CALLER, TASK_ID, { requestId: randomUUID(), expectedPeopleRevision: 4, targetDeveloperId: CASEY, role: "viewer" }));
     expect(outcome.code).toBeDefined();
     expect(h.sidecar()).toEqual(before);
+  });
+});
+
+describe("a task nobody took over keeps its old rules", () => {
+  it("refuses to seed a People list for a creator Slack can't vouch for, writing nothing", async () => {
+    const h = people({ taken: false });
+    h.checks.set(PRIYA, { ...h.checks.get(PRIYA)!, channelMember: false });
+    expect((await refusal(getTaskPeople(h.deps, CASEY_CALLER, TASK_ID))).code).toBe("TASK_ACCESS_DENIED");
+    expect(h.db.get(`DEVTASK#${TASK_ID}`, "PEOPLE")).toBeUndefined();
+  });
+});
+
+describe("the taker's own entry in a People list", () => {
+  const setup = (change: (h: ReturnType<typeof people>) => void, entries: Array<{ developerId: string; slackUserId: string; name: string; role: string }>) => {
+    const h = people({ taken: { slackUserId: S_MAX }, maxOnSlack: true });
+    h.seedPerson(PRIYA); h.seedPerson(CASEY); h.seedPerson(MAX);
+    h.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, revision: 4, orphaned: false, people: entries });
+    change(h);
+    return h;
+  };
+  const priya = { developerId: PRIYA, slackUserId: S_PRIYA, name: "Priya", role: "commenter" };
+  const casey = { developerId: CASEY, slackUserId: S_CASEY, name: "Casey", role: "commenter" };
+  const max = (role: string) => ({ developerId: MAX, slackUserId: S_MAX, name: "Max", role });
+
+  it("is kept as it is when Slack can't be asked about the taker right now: their ownership never rests on it", async () => {
+    const h = setup((world) => world.checks.delete(MAX), [priya, casey, max("owner")]);
+    await resolveTaskPeopleAccess(h.deps, h.task(), MAX);
+    expect(roles(h.sidecar())[MAX]).toBe("owner");
+    expect(h.sidecar().revision).toBe(4);
+  });
+
+  it("is lowered to commenter when Slack says the taker has left the channel, though they stay the owner", async () => {
+    const h = setup((world) => world.checks.set(MAX, { ...world.checks.get(MAX)!, channelMember: false }), [priya, casey, max("owner")]);
+    const access = await resolveTaskPeopleAccess(h.deps, h.task(), MAX);
+    expect(roles(h.sidecar())[MAX]).toBe("commenter");
+    expect(access).toMatchObject({ role: "owner", orphaned: false });
+    expect(access?.ownerActorIds).toEqual([taskOwnerKey(MAX, TASK_ID)]);
+  });
+
+  it("is added as an owner entry for a taker Slack knows and who is in the channel", async () => {
+    const h = setup(() => undefined, [priya, casey]);
+    await resolveTaskPeopleAccess(h.deps, h.task(), MAX);
+    expect(roles(h.sidecar())).toEqual({ [PRIYA]: "commenter", [CASEY]: "commenter", [MAX]: "owner" });
+  });
+
+  it("is not added for a taker who is only a project viewer, nor when Slack's answer is for someone else", async () => {
+    const viewer = setup((world) => world.checks.set(MAX, { ...world.checks.get(MAX)!, projectViewer: true }), [priya, casey]);
+    await resolveTaskPeopleAccess(viewer.deps, viewer.task(), MAX);
+    expect(roles(viewer.sidecar())[MAX]).toBeUndefined();
+    const other = setup((world) => world.checks.set(MAX, { ...world.checks.get(MAX)!, identity: { ...world.checks.get(MAX)!.identity, subject: "U0SOMEONE01" } }), [priya, casey]);
+    await resolveTaskPeopleAccess(other.deps, other.task(), MAX);
+    expect(roles(other.sidecar())[MAX]).toBeUndefined();
+  });
+
+  it("is never raised from denied or revived once the taker was denied: the entry stays as the owner wrote it", async () => {
+    const h = setup(() => undefined, [priya, casey, max("denied")]);
+    const access = await resolveTaskPeopleAccess(h.deps, h.task(), MAX);
+    expect(roles(h.sidecar())[MAX]).toBe("denied");
+    // They are still the task's owner by taking it over: a denied entry does not take that away.
+    expect(access).toMatchObject({ role: "owner" });
+  });
+
+  it("is listed first among the owner actors, ahead of another owner of the list", async () => {
+    const h = setup(() => undefined, [priya, { ...casey, role: "owner" }, max("owner")]);
+    const access = await resolveTaskPeopleAccess(h.deps, h.task(), CASEY);
+    expect(access?.ownerActorIds).toEqual([taskOwnerKey(MAX, TASK_ID), taskOwnerKey(CASEY, TASK_ID)]);
+    const dispatch = await resolveTaskDispatchPeople(h.deps, h.task());
+    expect(dispatch?.ownerActorIds).toEqual([taskOwnerKey(MAX, TASK_ID), taskOwnerKey(CASEY, TASK_ID)]);
   });
 });
 
@@ -375,5 +447,146 @@ describe("dispatch of a task with no People list", () => {
     const creatorDemoted = dispatch({ maxRole: "developer", withSidecar: false });
     creatorDemoted.db.set(creatorDemoted.membershipFor(PRIYA, "viewer"));
     await expect(creatorDemoted.guard()).resolves.toBe("ALLOWED");
+  });
+});
+
+describe("dispatch of a task whose taker is on Slack and holds the project through its channel", () => {
+  const MAX_NATIVE = developerIdForSlackUser(S_MAX);
+  /** The production wiring end to end: the runtime's own identity check (Max has a task person record), the witness the dispatcher composes, and no grant for Max at all. */
+  function slackWorld(options: { proof: boolean }) {
+    const h = people({ taken: false });
+    const task: DeveloperTaskRecord = { ...h.task(), currentOwner: { developerId: MAX_NATIVE, name: "Max", provider: "slack", slackUserId: S_MAX, since: SINCE } };
+    h.db.set(task as never);
+    const personId = randomUUID();
+    const createdAt = new Date(START).toISOString();
+    h.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: `PERSON#${personId}`, schemaVersion: 1, personId, developerId: MAX_NATIVE, slackUserId: S_MAX, name: "Max", method: "slack", issuer: "https://slack.com", subject: S_MAX, createdAt });
+    h.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: `PERSON_SUBJECT#${MAX_NATIVE}`, schemaVersion: 1, personId, developerId: MAX_NATIVE, createdAt });
+    h.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, revision: 4, orphaned: false, people: [{ developerId: PRIYA, slackUserId: S_PRIYA, name: "Priya", role: "owner" }] });
+    const operationId = randomUUID();
+    const outbox: Ec2OutboxRecord = {
+      id: randomUUID(), entityType: "OUTBOX", status: "QUEUED", operationId, workspaceId: WORKSPACE_ID, deploymentMode: "ec2-ebs",
+      invocation: { protocolVersion: 1, kind: "task", operationId, workspaceId: WORKSPACE_ID, fence: 4, projectRevision: 1, callbackCapability: "c".repeat(64), payload: { conversationId: randomUUID(), prompt: "continue", conversationStarted: true } },
+    };
+    h.db.set({ pk: `WORKSPACE#${WORKSPACE_ID}`, sk: "DEVELOPER_TASK", entityType: "DEVELOPER_TASK_POINTER", taskId: TASK_ID, developerId: PRIYA });
+    h.db.set({ pk: `OUTBOX#${outbox.id}`, sk: "OUTBOX", ...outbox });
+    h.db.set({ pk: `WORKSPACE#${WORKSPACE_ID}`, sk: `OPERATION#${operationId}`, status: "DISPATCHING", fence: 4 });
+    h.db.set({ pk: `WORKSPACE#${WORKSPACE_ID}`, sk: "META", status: "BUSY", activeOperationId: operationId, fence: 4 });
+    const revision = { ...projectRevisionKey(TEST_ORG, "payments", 7), definition: { revision: 7, developerTasks: { enabled: true, channelMembersMayUse: true } } };
+    const binding = { ...slackBindingKey(TEST_ORG, TEAM, CHANNEL), teamId: TEAM, channelId: CHANNEL, projectName: "payments", updatedAt: "2026-10-01T00:00:00.000Z" };
+    h.db.set(revision);
+    h.db.set(binding);
+    const admission = createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 });
+    const ports = {
+      readTaskRecord: vi.fn(async ({ sortKey }: { taskId: string; sortKey: string }) => h.db.get(`DEVTASK#${TASK_ID}`, sortKey)),
+      readDeveloperRecord: vi.fn(async () => undefined),
+      projectAuthorityReader: {
+        latestRevision: vi.fn(async () => ({ revision: { ...revision, revision: 7 }, complete: true })),
+        memberships: vi.fn(async () => ({ items: [], complete: true })),
+        bindings: vi.fn(async () => ({ items: [binding] as never, complete: true })),
+        orgMember: vi.fn(async () => ({ complete: true })),
+      },
+      taskPersonProof: vi.fn(async () => {
+        if (!options.proof) throw new Error("Slack is unavailable");
+        return { result: { ok: true as const, user: { id: S_MAX, teamId: TEAM, name: "Max" }, memberOf: [CHANNEL] }, slackCallsUsed: 1 };
+      }),
+    } as unknown as TaskPersonRuntimePorts;
+    const runtime = createTaskPersonRuntime({ orgId: TEST_ORG, admission, ports, stateTableName: "state", slackTeamId: TEAM, now: () => START, uuid: () => randomUUID() });
+    const guard = () => guardTaskDispatch({
+      documentClient: h.db, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: runtime.checkTaskPerson,
+      stateAuthorityWitnessForOwnerActor: (record, ownerActorId) => stateAuthorityWitnessForDispatch(runtime, record, ownerActorId),
+    }, outbox);
+    return { ...h, task, runtime, guard, outbox };
+  }
+
+  it("rests on the Slack identity witness: ALLOWED with no grant at all", async () => {
+    const w = slackWorld({ proof: true });
+    await expect(w.guard()).resolves.toBe("ALLOWED");
+  });
+
+  it("with Slack unable to vouch for the taker, falls to their project authority, which a channel alone never gives: it fails closed", async () => {
+    const w = slackWorld({ proof: false });
+    await expect(w.guard()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.db.get(`OUTBOX#${w.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
+  });
+
+  it("asks for a project witness only for the task's taker, never for another actor or for a task nobody took over", async () => {
+    const w = slackWorld({ proof: false });
+    const grant = { ...projectMemberKey(TEST_ORG, MAX_NATIVE, "payments"), projectName: "payments", role: "developer" };
+    // A runtime whose project reads give the taker a grant of their own.
+    const granted = createTaskPersonRuntime({
+      orgId: TEST_ORG, admission: createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 }), stateTableName: "state", slackTeamId: TEAM, now: () => START, uuid: () => randomUUID(),
+      ports: { readTaskRecord: async () => undefined, readDeveloperRecord: async () => undefined, taskPersonProof: async () => { throw new Error("unused"); },
+        projectAuthorityReader: {
+          latestRevision: async () => ({ revision: { ...projectRevisionKey(TEST_ORG, "payments", 7), revision: 7, definition: { developerTasks: { enabled: true, channelMembersMayUse: false } } }, complete: true }),
+          memberships: async () => ({ items: [grant] as never, complete: true }), bindings: async () => ({ items: [], complete: true }), orgMember: async () => ({ complete: true }),
+        } },
+    });
+    await expect(stateAuthorityWitnessForDispatch(granted, w.task, taskOwnerKey(MAX_NATIVE, TASK_ID))).resolves.toMatchObject({ developerId: MAX_NATIVE, access: "granted", taskId: TASK_ID });
+    await expect(stateAuthorityWitnessForDispatch(granted, w.task, taskOwnerKey(CASEY, TASK_ID))).resolves.toBeUndefined();
+    await expect(stateAuthorityWitnessForDispatch(granted, w.task, taskOwnerKey(PRIYA, TASK_ID))).resolves.toBeUndefined();
+    // A task nobody took over has no taker: even its creator's actor id gets no project witness from here.
+    const { currentOwner: _taker, ...untaken } = w.task as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out of the copy
+    await expect(stateAuthorityWitnessForDispatch(granted, untaken as unknown as DeveloperTaskRecord, taskOwnerKey(PRIYA, TASK_ID))).resolves.toBeUndefined();
+  });
+});
+
+describe("dispatch fences and pauses under a changing owner", () => {
+  it("fences a task with no workflow on the owner too", async () => {
+    const d = dispatch({ maxRole: "developer", withSidecar: false });
+    d.db.set(d.membershipFor(CASEY, "developer"));
+    const { workflow: _workflow, ...bare } = d.task() as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out of the copy
+    d.db.set(bare);
+    let transactions = 0;
+    let taken = false;
+    const documentClient = {
+      async send(command: unknown) {
+        const input = (command as { input?: { TransactItems?: Array<{ ConditionCheck?: { Key?: { pk?: string; sk?: string } } }> } }).input;
+        if (input?.TransactItems?.some((item) => item.ConditionCheck?.Key?.sk === "META" && item.ConditionCheck.Key.pk === `DEVTASK#${TASK_ID}`)) {
+          transactions += 1;
+          if (!taken) {
+            taken = true;
+            d.db.set({ ...d.task(), currentOwner: { developerId: CASEY, name: "Casey", provider: "oidc", since: "2026-10-22T12:00:00.000Z" } });
+          }
+        }
+        return d.db.send(command as never);
+      },
+    };
+    const admission = createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 });
+    await expect(guardTaskDispatch({ documentClient, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: d.checkTaskPerson }, d.outbox)).resolves.toBe("ALLOWED");
+    expect(transactions).toBe(2);
+  });
+
+  it("writes a pause only while the owner it was decided for still owns the task", async () => {
+    const d = dispatch({ maxRole: "viewer", withSidecar: false });
+    let taken = false;
+    const documentClient = {
+      async send(command: unknown) {
+        const input = (command as { input?: { TransactItems?: Array<{ Put?: { Item?: { sk?: string } } }> } }).input;
+        if (!taken && input?.TransactItems?.some((item) => item.Put?.Item?.sk === "TASK_ACCESS_PAUSE")) {
+          taken = true;
+          d.db.set({ ...d.task(), currentOwner: { developerId: CASEY, name: "Casey", provider: "oidc", since: "2026-10-22T12:00:00.000Z" } });
+        }
+        return d.db.send(command as never);
+      },
+    };
+    const admission = createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 });
+    const outcome = await guardTaskDispatch({ documentClient, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: d.checkTaskPerson }, d.outbox).catch((error: { code?: string }) => error.code ?? "error");
+    expect(taken).toBe(true);
+    // The pause for Max, a viewer, was refused because the task is Casey's now; nothing was parked on the old judgement.
+    expect(d.db.get(`OUTBOX#${d.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
+    expect(outcome).not.toBe("PARKED");
+  });
+
+  it("parks a People task whose creator became a project viewer as ownerless, as before: the viewer check is the taker's alone", async () => {
+    const d = dispatch({ maxRole: "developer", withSidecar: false });
+    // No take-over here: Priya's own People list, Priya lowered to viewer.
+    const { currentOwner: _taker, ...plain } = d.task() as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out of the copy
+    d.db.set(plain);
+    d.seedPerson(PRIYA);
+    d.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, revision: 4, orphaned: false, people: [{ developerId: PRIYA, slackUserId: S_PRIYA, name: "Priya", role: "owner" }] });
+    d.checks.set(PRIYA, { ...d.checks.get(PRIYA)!, projectViewer: true });
+    d.db.set(d.membershipFor(PRIYA, "viewer"));
+    await expect(d.guard()).resolves.toBe("PARKED");
+    expect(d.db.get(`OUTBOX#${d.outbox.id}`, "TASK_ACCESS_PAUSE")).toMatchObject({ reason: "OWNERLESS" });
   });
 });

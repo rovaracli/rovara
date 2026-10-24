@@ -3,7 +3,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { MAYA } from "../support/developer-task-broker.js";
-import { BEN, CARL, CODING, setup, type World } from "../support/spend-world.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { orgMemberKey, orgRemovedKey } from "@agentx/contracts";
+import { taskIndexKey } from "../../packages/broker/src/developer/task-records.js";
+import { BEN, CARL, CODING, TRIAGE, setup, type World } from "../support/spend-world.js";
 
 const SINCE = "2026-10-22T11:00:00.000Z";
 
@@ -90,5 +93,71 @@ describe("a budget pause on a task Ben took over from Maya", () => {
     const seen = await t.view(BEN, taskId);
     expect(seen.paused).toMatchObject({ reason: expect.any(String) as unknown });
     expect((await t.api(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).status).toBe(404);
+  });
+});
+
+describe("a taken-over task's list rows and test-run continuation", () => {
+  const listOf = async (t: World, who: typeof MAYA  ) => ((await t.api(who, "GET", "/v1/dev/tasks")).body.tasks as Array<{ taskId: string; status: string }>);
+
+  it("re-derives a task's status for the person who owns it now, and leaves the creator's own row as it was", async () => {
+    const t = await setup();
+    const started = await t.plainTask(MAYA);
+    const mayaRow = t.db.find((item) => item.entityType === "DEVELOPER_TASK_INDEX" && item.taskId === started.taskId)[0]!;
+    const before = String(mayaRow["status"]);
+    // Ben's own list row, as the take-over writes it (Task 12b), and the task's run ends.
+    t.db.set({ ...mayaRow, ...taskIndexKey(BEN.developerId, String(t.meta(started.taskId).createdAt), started.taskId) });
+    await t.set(started.taskId, "SET currentOwner = :owner", { ":owner": { developerId: BEN.developerId, name: BEN.name, provider: BEN.provider, since: SINCE } });
+    await t.finish(started.workspaceId, started.operationId, "SUCCEEDED");
+    // The creator's list is not re-derived for a task that is no longer hers, so her row still says what it said.
+    expect((await listOf(t, MAYA)).find((row) => row.taskId === started.taskId)!.status).toBe(before);
+    // The owner's list is: it shows the status the task has now, and keeps both rows in step.
+    const seen = (await listOf(t, BEN)).find((row) => row.taskId === started.taskId)!.status;
+    expect(seen).not.toBe(before);
+    expect((await listOf(t, MAYA)).find((row) => row.taskId === started.taskId)!.status).toBe(seen);
+  });
+
+  it("is the taker's to continue as a normal task once the test run hit its cap, and not the creator's", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(TRIAGE, { publish: false });
+    const run = await t.runOf(agentId, { version: "draft" });
+    await t.pauseAndEnd(run, { kind: "test", taskId: run.taskId });
+    await t.set(run.taskId, "SET currentOwner = :owner", { ":owner": { developerId: BEN.developerId, name: BEN.name, provider: BEN.provider, since: SINCE } });
+    expect((await t.api(MAYA, "POST", `/v1/app/tasks/${run.taskId}/continue-as-task`, {})).status).toBe(404);
+    const continued = await t.api(BEN, "POST", `/v1/app/tasks/${run.taskId}/continue-as-task`, {});
+    expect(continued.status, JSON.stringify(continued.body)).toBe(200);
+    expect(t.meta(run.taskId).budgetPause).toBeUndefined();
+  });
+
+  it("shows a spend request to the person who owns the task now, and no longer to the creator who may not decide it", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(CODING);
+    const run = await t.runOf(agentId);
+    await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+    await t.set(run.taskId, "SET currentOwner = :owner", { ":owner": { developerId: CARL.developerId, name: CARL.name, provider: CARL.provider, since: SINCE } });
+    await t.pauseAndEnd(run, { kind: "task", taskId: run.taskId });
+    const request = t.requestOf(run.taskId, "run_limit")[0]!;
+    // A raise to $21 is a maintainer's to decide: neither Maya nor Carl may.
+    expect(request).toMatchObject({ approverRole: "project_maintainer", approverIds: [BEN.developerId] });
+    expect((await t.api(CARL, "GET", `/v1/app/spend-requests/${request.spendRequestId}`)).status).toBe(200);
+    expect((await t.api(MAYA, "GET", `/v1/app/spend-requests/${request.spendRequestId}`)).status).toBe(404);
+  });
+});
+
+describe("a spend approval resumes a taken-over task as its owner now", () => {
+  it("goes on as the taker even though the creator who handed the task over has since left the org", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(CODING);
+    const run = await t.runOf(agentId);
+    await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
+    await t.pauseAndEnd(run, { kind: "task", taskId: run.taskId });
+    const request = t.requestOf(run.taskId, "run_limit")[0]!;
+    expect(request.approverIds).toEqual([BEN.developerId]);
+    await t.set(run.taskId, "SET currentOwner = :owner", { ":owner": { developerId: CARL.developerId, name: CARL.name, provider: CARL.provider, since: SINCE } });
+    t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+    t.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: MAYA.developerId, removedAt: "2026-10-22T10:00:00.000Z" });
+    await t.decide(BEN, request.spendRequestId);
+    expect(t.requests().find((record) => record.spendRequestId === request.spendRequestId)).toMatchObject({ status: "APPROVED" });
+    expect(t.meta(run.taskId).budgetPause).toBeUndefined();
+    expect(t.meta(run.taskId).outcome).toBeUndefined();
   });
 });

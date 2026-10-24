@@ -6,8 +6,10 @@ import { orgMemberKey, orgMetaKey, orgRemovedKey } from "@agentx/contracts";
 import { getTaskDocumentView, loadOwnedTask, ownerIndexRowOf, planWhyEntries, syncIndex } from "../../packages/broker/src/aws/developer-tasks.js";
 import { resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
-import { effectiveTaskOwner, ownerActorIdOf, ownerDecisionCounts, taskIndexKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, ownerDecisionCounts, takenOverSince, taskIndexKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { loadSlackBroker } from "../support/slack-broker.js";
 import { OMAR, PRIYA, SAM, pagePlan, pageTask } from "../support/page-tasks.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -157,6 +159,22 @@ describe("the owner functions applied to a task's decisions", () => {
     expect(ownerDecisionCounts(record, priya, after, [sam])).toBe(false);
   });
 
+  it("tells a task someone took over from one nobody did: an absent or explicitly undefined current owner is nobody's take-over, an unreadable one still is", () => {
+    expect(isTaskTakenOver(task())).toBe(false);
+    expect(isTaskTakenOver({ ...task(), currentOwner: undefined } as unknown as DeveloperTaskRecord)).toBe(false);
+    expect(isTaskTakenOver(task(SAM))).toBe(true);
+    expect(isTaskTakenOver({ ...task(), currentOwner: { developerId: "" } } as unknown as DeveloperTaskRecord)).toBe(true);
+    expect(takenOverSince(task())).toBeUndefined();
+    expect(takenOverSince(task(SAM))).toBe(SINCE);
+    expect(takenOverSince({ ...task(), currentOwner: { developerId: "" } } as unknown as DeveloperTaskRecord)).toBeUndefined();
+  });
+
+  it("counts a decision made at the very moment of the take-over as the taker's, not the creator's", () => {
+    const record = task(SAM);
+    expect(ownerDecisionCounts(record, taskOwnerKey(SAM.developerId, record.taskId), SINCE)).toBe(true);
+    expect(ownerDecisionCounts(record, taskOwnerKey(PRIYA.developerId, record.taskId), SINCE)).toBe(false);
+  });
+
   it("names the owner actor of a taker as the taker's task-scoped key", () => {
     expect(ownerActorIdOf(task(SAM))).toBe(taskOwnerKey(SAM.developerId, task().taskId));
     expect(effectiveTaskOwner(task(SAM)).developerId).toBe(SAM.developerId);
@@ -224,11 +242,69 @@ describe("the creator-still-a-member check follows the task's owner", () => {
     expect(stored(w.db).outcome).toBeUndefined();
   });
 
+  it("gives up after a few take-overs in a row rather than chasing the owner for ever: it refuses naming the owner it last read, recording nothing", async () => {
+    const w = world({ members: [], removed: [priya, max, casey], currentOwner: MAX_OWNER });
+    const owners = [priya, max, casey];
+    let flips = 0;
+    const racing = { ...w.deps, documentClient: { async send(command: unknown) {
+      if ((command as { constructor: { name: string } }).constructor.name === "UpdateCommand") {
+        flips += 1;
+        if (flips > 50) throw new Error("it chased the owner without end");
+        w.db.set({ ...stored(w.db), currentOwner: { developerId: owners[flips % owners.length], name: `Owner ${String(flips)}`, provider: "oidc", since: `2026-10-22T12:00:${String(flips % 60).padStart(2, "0")}.000Z` } });
+      }
+      return w.db.send(command as never);
+    } } };
+    await expect(requireCreatorStillMember(racing, w.task)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(flips).toBe(4);
+    expect(stored(w.db).outcome).toBeUndefined();
+  });
+
   it("answers an earlier recorded removal as before (a repeat leaves the first reason)", async () => {
     const w = world({ members: [priya, casey], removed: [max], currentOwner: MAX_OWNER });
     await expect(requireCreatorStillMember(w.deps, w.task)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
     const first = stored(w.db).outcomeAt;
-    await expect(requireCreatorStillMember(w.deps, stored(w.db))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    let updates = 0;
+    const counting = { ...w.deps, documentClient: { async send(command: unknown) {
+      if ((command as { constructor: { name: string } }).constructor.name === "UpdateCommand") updates += 1;
+      return w.db.send(command as never);
+    } } };
+    await expect(requireCreatorStillMember(counting, stored(w.db))).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
     expect(stored(w.db).outcomeAt).toBe(first);
+    // One refused write, then it knows the removal was already recorded: no more attempts.
+    expect(updates).toBe(1);
+  });
+});
+
+describe("the caller the broker's own steps act as for a task", () => {
+  const brokerModule = () => loadSlackBroker().then(() => import("../../packages/broker/src/aws/broker.js"));
+  const task = (extra: Record<string, unknown> = {}): DeveloperTaskRecord => ({
+    pk: "DEVTASK#t", sk: "META", entityType: "DEVELOPER_TASK", taskId: "11111111-1111-4111-8111-111111111111", orgId: TEST_ORG, developerId: PRIYA.developerId, developerName: "Priya", provider: "slack",
+    slackUserId: PRIYA.slackUserId, ...extra,
+  } as unknown as DeveloperTaskRecord);
+
+  it("is the creator for a task nobody took over, as before", async () => {
+    const h = await createDeveloperTaskBroker();
+    const { ownerCallerOf } = await brokerModule();
+    expect(await ownerCallerOf(h.brokerInput as never, task(), "workflow-dispatch")).toEqual({
+      developerId: PRIYA.developerId, sessionId: "workflow-dispatch", amr: "slack", name: "Priya", orgId: TEST_ORG, orgRole: "member", slackUserId: PRIYA.slackUserId,
+    });
+  });
+
+  it("is the person who took the task over, with their own sign-in method, name and Slack id, so the owner actor id is theirs", async () => {
+    const h = await createDeveloperTaskBroker();
+    const { ownerCallerOf } = await brokerModule();
+    const taken = task({ currentOwner: { developerId: SAM.developerId, name: "Sam Lee", provider: "oidc", slackUserId: SAM.slackUserId, since: SINCE } });
+    const caller = await ownerCallerOf(h.brokerInput as never, taken, "github-webhook");
+    expect(caller).toEqual({ developerId: SAM.developerId, sessionId: "github-webhook", amr: "oidc", name: "Sam Lee", orgId: TEST_ORG, orgRole: "member", slackUserId: SAM.slackUserId });
+    expect(taskOwnerKey(caller.developerId, taken.taskId)).toBe(ownerActorIdOf(taken));
+    // No Slack id for a taker who has none: the caller carries none either, never the creator's.
+    const none = await ownerCallerOf(h.brokerInput as never, task({ currentOwner: { developerId: SAM.developerId, name: "Sam Lee", provider: "oidc", since: SINCE } }), "workflow-dispatch");
+    expect(none).not.toHaveProperty("slackUserId");
+  });
+
+  it("is no one for a task whose current owner can't be read", async () => {
+    const h = await createDeveloperTaskBroker();
+    const { ownerCallerOf } = await brokerModule();
+    await expect(ownerCallerOf(h.brokerInput as never, task({ currentOwner: { developerId: "" } }), "workflow-dispatch")).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
   });
 });

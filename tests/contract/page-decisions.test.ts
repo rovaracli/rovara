@@ -5,7 +5,7 @@ import { DeveloperTaskViewSchema, WorkflowDecisionSchema, createCandidateManifes
 import { decideTaskWorkflow, promptTagId, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { ownerAnswersFor, refusalMessage } from "../../packages/broker/src/developer/owner-answers.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer } from "../support/plan-documents.js";
 import { pagePlan } from "../support/page-tasks.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -245,6 +245,23 @@ describe("page decisions", () => {
     expect(operations(t.harness, t.workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
     // The same request ID with another answer is not the same decision.
     expect((await refusal(t.page({ requestId, expectedRevision, answers: [{ decisionId: "d1", optionId: "below", opened: true }, { decisionId: "d2", optionId: "five", opened: true }], includedCommentIds: ids }))).message).toMatch(/already used/);
+  });
+
+  it("after a take-over, a decision that lost the race is refused naming the taker who decided, not the creator (Plan 5 Task 12a)", async () => {
+    const t = await waitingPlan();
+    const taskRow = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>;
+    t.harness.db.set({ ...taskRow, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: "oidc", since: "2026-10-01T00:00:00.000Z" } });
+    const omar: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: OMAR.developerId, sessionId: OMAR.sessionId, amr: "oidc", name: OMAR.name };
+    const expectedRevision = workflowOf(t.harness, t.taskId).revision;
+    const decide = () => decideTaskWorkflow(routeDeps(t.harness), omar, t.taskId, {
+      requestId: randomUUID(), expectedRevision, decision: "APPROVE", artifactDigest: t.digest(), reason: "Approved on the task page.",
+      answers: [{ decisionId: "d1", optionId: "below", opened: false }, { decisionId: "d2", optionId: "three", opened: false }], includedCommentIds: [],
+    }, { via: "PAGE" });
+    await decide();
+    const lost = await refusal(decide());
+    expect(lost.code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(lost.message).toContain(`Already approved by ${OMAR.name} a moment ago.`);
+    expect(lost.message).not.toContain(MAYA.name);
   });
 
   it("first decision wins; the second is refused with who and when", async () => {

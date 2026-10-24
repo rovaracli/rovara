@@ -73,6 +73,17 @@ async function waitingTask(options: { fromTool?: boolean; queue?: false | ((sent
 }
 
 describe("asking AgentX to answer a page comment", () => {
+  it("asks as the owner's Slack user, which after a take-over is the taker's and never the creator's, for a person who signed in without Slack (Plan 5 Task 12a)", async () => {
+    const t = await waitingTask();
+    const TAKER_SLACK = "U0TAKER001";
+    const taker: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member" as const, developerId: "6".repeat(64), sessionId: "s-taker", amr: "oidc", name: "Tess Taker" };
+    t.harness.db.set({ ...(t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>), currentOwner: { developerId: taker.developerId, name: taker.name, provider: "oidc", slackUserId: TAKER_SLACK, since: "2026-10-01T00:00:00.000Z" } });
+    const asked = await t.comment({ as: taker, text: "Why below the button?" });
+    expect(asked.comment.agentx).toBe("answering");
+    expect(t.sent).toHaveLength(1);
+    expect(SlackPageCommentMessageSchema.parse(JSON.parse(t.sent[0]!.body))).toMatchObject({ userId: TAKER_SLACK });
+  });
+
   it("Ask AgentX queues one message per comment, grouped per task", async () => {
     const t = await waitingTask();
     const requestId = randomUUID();

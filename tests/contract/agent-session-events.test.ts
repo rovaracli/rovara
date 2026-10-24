@@ -345,6 +345,16 @@ describe("a Slack thread reply on a task's session", () => {
     expect((await n.read(PRIYA)).events).toHaveLength(3);
   });
 
+  it("saves a reply from the person who took the task over as the owner's, and one from the creator who handed it over as a teammate's (Plan 5 Task 12a)", async () => {
+    const n = noteWorld();
+    n.w.db.set({ ...n.w.db.get(taskKey(n.taskId))!, currentOwner: { developerId: ARJUN, name: "Arjun", provider: "slack", slackUserId: "U0ARJUN", since: "2026-10-22T08:00:00.000Z" } });
+    expect(await n.note({ eventId: "EvTaker", messageTs: "1695500001.000200" })).toEqual({ outcome: "captured" });
+    expect(n.notes().map((item) => item["isOwner"])).toEqual([true]);
+    const untaken = noteWorld();
+    expect(await untaken.note({ eventId: "EvOther", messageTs: "1695500001.000300" })).toEqual({ outcome: "captured" });
+    expect(untaken.notes().map((item) => item["isOwner"])).toEqual([false]);
+  });
+
   describe("adds no new way for a note to fail", () => {
     it("saves the note of a task that has no session", async () => {
       const n = noteWorld({ sessionId: "none" });

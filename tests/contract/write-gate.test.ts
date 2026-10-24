@@ -1896,6 +1896,16 @@ describe("after a take-over (Plan 5 Task 12a)", () => {
     expect((await w.write(id)).owner).toEqual({ developerId: ALICE, name: "Alice" });
   });
 
+  it("keeps the owner the member movers wrote on the record when nobody took the task over: the stored owner is the owner until a take-over", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    // A merge moved the approval's owner from Alice to Cara; the task still names Alice as its creator and nobody took it over.
+    const stored = w.db.get(approvalKey(ORG_A, id))!;
+    w.db.set({ ...stored, owner: { developerId: CARA, name: "Cara" } });
+    expect(await code(w.approve(ALICE, id))).toEqual({ code: "FORBIDDEN", message: "Only Cara or a project maintainer can decide this." });
+    expect(await w.approve(CARA, id)).toEqual({ status: "APPROVED_DONE" });
+  });
+
   it("a maintainer may still decide it, as before", async () => {
     const w = world();
     const id = await w.waiting(1);

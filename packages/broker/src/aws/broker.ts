@@ -9226,7 +9226,7 @@ async function logCallbackRefusal<T>(action: string, operation: OperationRecord,
  * The task's owner as a caller for the broker's own steps (a webhook, a dispatch, a worker start): the effective owner (Plan 5 Task 12a), the person who took the task over
  * else its creator, so `taskOwnerKey(caller.developerId, taskId)` is `ownerActorIdOf(task)`. A task whose owner can't be read gives no caller (it throws, and nothing runs).
  */
-async function ownerCallerOf(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, sessionId: string): Promise<DeveloperCaller> {
+export async function ownerCallerOf(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, sessionId: string): Promise<DeveloperCaller> {
   const owner = effectiveTaskOwner(task);
   return {
     developerId: owner.developerId, sessionId, amr: owner.provider, name: owner.name, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const,
