@@ -7,6 +7,7 @@ import type { TriggerEvent } from "@agentx/contracts";
 import { githubInstallationKey, githubRepoProjectKey, hookEventKey, orgGithubInstallationKey, orgProjectCatalogKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { GithubWebhookRetryableError, handleGithubWebhook } from "../../packages/broker/src/aws/github-webhooks.js";
+import { expireApprovals } from "../../packages/broker/src/agents/approvals-decide.js";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";
 import { deliverGithubTriggerEvents, githubTriggerEvents, type GithubTriggerDependencies } from "../../packages/broker/src/triggers/github-events.js";
 import { GITHUB_WEBHOOK_EVENTS, githubAppManifest, githubWebhookUrl } from "../../packages/cli/src/init/github-app.js";
@@ -446,5 +447,110 @@ describe("the GitHub App asks for what the events need", () => {
     expect((await githubWebhookChecks(doctorContext({ services: doctorServices({ github: silent }) })))[1]).toMatchObject({ status: "ok" });
     // A stronger permission than the one asked for is enough.
     expect((await githubWebhookChecks(context({ permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "write", deployments: "write" } })))[1]).toMatchObject({ status: "ok" });
+  });
+});
+
+// ---- Task 22 Step 0: a project registered before the index existed has no `GITHUB_REPO#` rows; turning a GitHub trigger on heals them
+describe("turning a GitHub trigger on heals the repository index of its project (Plan 4 Task 22 Step 0)", () => {
+  const TRIGGER = (letter: string) => `ctr_${letter.repeat(20)}`;
+  const indexRows = (db: FakeDynamoDb) => db.find((item) => String(item["pk"]).startsWith("GITHUB_REPO#")).map((item) => `${String(item["pk"])}|${String(item["sk"])}`).sort();
+  const own = (id: number, project = "web", org: OrgId = ORG_A) => `GITHUB_REPO#${String(id)}|${org}#${project}`;
+  const pathOf = (chainId: string, triggerId: string) => `/v1/app/chains/${chainId}/triggers/${triggerId}`;
+  /** A world whose project web was registered before the index: its revision pins the repository and no row names it. */
+  async function legacy() {
+    const w = world();
+    w.v.db.delete(githubRepoProjectKey(101, ORG_A, "web"));
+    expect(indexRows(w.v.db)).toEqual([]);
+    const chain = await w.v.budgetedChain(ONE_STEP);
+    return { w, chain };
+  }
+
+  it("writes the project's rows when a person confirms the trigger on the page, and a pull request then starts the run (not before)", async () => {
+    const { w, chain } = await legacy();
+    // Another org's project of the same name, also with no row: it must stay as it is.
+    registerProject(w.v.db, ORG_B, "web", { installationId: 66, repositoryId: 303 }, { index: false });
+    const asked = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("a")), { project: "web", spec: PR_OPENED });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    // Stored off and waiting: nothing is on yet, so nothing is healed.
+    expect(indexRows(w.v.db)).toEqual([]);
+    await w.deliver(pullRequest(), "pull_request");
+    expect(w.runs()).toEqual([]);
+    const approvalId = String(asked.body["confirmUrl"]).split("/").pop()!;
+    expect((await w.v.decideAs(DANA, approvalId)).statusCode).toBe(200);
+    expect(indexRows(w.v.db)).toEqual([own(101)]);
+    expect(w.v.db.get(githubRepoProjectKey(101, ORG_A, "web"))).toMatchObject({ orgId: ORG_A, project: "web", installationId: 55, githubRepositoryId: 101 });
+    expect((await w.deliver(pullRequest({ number: 77 }), "pull_request")).status).toBe("ACCEPTED");
+    expect(w.runs()).toHaveLength(1);
+  });
+
+  it("writes them when a trigger that is already on is saved again and applied at once", async () => {
+    const { w, chain } = await legacy();
+    const on = await w.chainTrigger({ triggerId: TRIGGER("b"), target: { kind: "chain", chainId: chain.chainId } });
+    expect(on.enabled).toBe(true);
+    expect(indexRows(w.v.db)).toEqual([]);
+    const saved = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, on.triggerId), { project: "web", spec: PR_OPENED, enabled: true });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(indexRows(w.v.db)).toEqual([own(101)]);
+  });
+
+  it("writes nothing for a trigger that is turned off, nor for another source's trigger", async () => {
+    const { w, chain } = await legacy();
+    expect((await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("c")), { project: "web", spec: PR_OPENED, enabled: false })).status).toBe(201);
+    expect(indexRows(w.v.db)).toEqual([]);
+    w.v.hook("sentry");
+    const asked = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("d")), { project: "web", spec: { kind: "event", source: "sentry", type: "issue.created" }, hookId: `hk_${"a".repeat(26)}` });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    expect((await w.v.decideAs(DANA, String(asked.body["confirmUrl"]).split("/").pop()!)).statusCode).toBe(200);
+    expect(indexRows(w.v.db)).toEqual([]);
+  });
+
+  it("writes only the rows of repositories the project pins, under its own org, and nothing when the project has no revision", async () => {
+    const { w, chain } = await legacy();
+    // The project's latest revision also holds a repository with no pin; and a project of another org pins the same repository.
+    w.v.db.set({
+      ...projectRevisionKey(ORG_A, "web", 2), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-02T00:00:00.000Z", runtimeBinding: {},
+      definition: {
+        name: "web", revision: 2, setup: [], readiness: [], orchestratorInstructions: "Delegate work.",
+        repositories: [
+          { name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app", installationId: 55, githubRepositoryId: 101 },
+          { name: "docs", url: "https://github.com/acme/docs.git", path: "repo/docs", defaultBranch: "main", credentialRef: "github-app" },
+        ],
+      },
+    });
+    w.v.db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web", latestRevision: 2 });
+    registerProject(w.v.db, ORG_B, "web", { installationId: 66, repositoryId: 101 }, { index: false });
+    const asked = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("e")), { project: "web", spec: PR_OPENED });
+    await w.v.decideAs(DANA, String(asked.body["confirmUrl"]).split("/").pop()!);
+    expect(indexRows(w.v.db)).toEqual([own(101)]);
+    // A trigger on a project that has no revision stored heals nothing and does not fail.
+    w.v.db.delete(projectRevisionKey(ORG_A, "web", 1));
+    w.v.db.delete(projectRevisionKey(ORG_A, "web", 2));
+    w.v.db.delete(githubRepoProjectKey(101, ORG_A, "web"));
+    const again = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("e")), { project: "web", spec: PR_OPENED, enabled: true });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(indexRows(w.v.db)).toEqual([]);
+  });
+
+  it("turns nothing on while the rows can't be written, on the page and on the direct route, and goes through when it is tried again", async () => {
+    const { w, chain } = await legacy();
+    const asked = await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("f")), { project: "web", spec: PR_OPENED });
+    const approvalId = String(asked.body["confirmUrl"]).split("/").pop()!;
+    w.v.db.injectFault({ command: "PutCommand", match: (input) => String((input["Item"] as { pk?: unknown }).pk).startsWith("GITHUB_REPO#"), error: { name: "InternalServerError" }, times: 1 });
+    await w.v.decideAs(DANA, approvalId);
+    // A fault of ours is not a refusal: the approval is not ended, nothing is on and no row is half written, and the sweep drives it again.
+    expect((await w.v.approval(approvalId)).status).not.toBe("APPROVED_FAILED");
+    expect((await w.v.triggers.get(ORG_A, TRIGGER("f")))?.enabled).toBe(false);
+    expect(indexRows(w.v.db)).toEqual([]);
+    await expireApprovals(w.v.deps, w.v.clock.now + 3_600_000);
+    expect((await w.v.triggers.get(ORG_A, TRIGGER("f")))?.enabled).toBe(true);
+    expect(indexRows(w.v.db)).toEqual([own(101)]);
+    w.v.db.delete(githubRepoProjectKey(101, ORG_A, "web"));
+    // A fault on the direct route is a refusal that stores nothing new, and the same request repeated goes through.
+    w.v.db.injectFault({ command: "PutCommand", match: (input) => String((input["Item"] as { pk?: unknown }).pk).startsWith("GITHUB_REPO#"), error: { name: "InternalServerError" }, times: 1 });
+    await w.chainTrigger({ triggerId: TRIGGER("g"), target: { kind: "chain", chainId: chain.chainId } });
+    await expect(w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("g")), { project: "web", spec: PR_OPENED, enabled: true })).rejects.toMatchObject({ name: "InternalServerError" });
+    expect(indexRows(w.v.db)).toEqual([]);
+    expect((await w.v.chainCall(DANA, "PUT", pathOf(chain.chainId, TRIGGER("g")), { project: "web", spec: PR_OPENED, enabled: true })).status).toBe(200);
+    expect(indexRows(w.v.db)).toEqual([own(101)]);
   });
 });
