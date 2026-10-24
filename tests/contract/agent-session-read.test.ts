@@ -91,7 +91,17 @@ describe("reading a task session", () => {
       where: { kind: "cloud" }, link: `${CELL}/s/${sessionId}`, body: { kind: "task", task: { taskId } }, approvals: [], viewingNow: [], bindings: [],
       you: { level: "edit", owner: true, following: true }, followers: 0, revision: 1,
     });
-    expect(session.you.actions).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff"]);
+    expect(session.you.actions).toEqual(["watch", "comment", "steer", "stop", "take_over", "share", "handoff"]);
+  });
+
+  it("offers retry only once the session has failed or been cancelled (13 review)", async () => {
+    const r = readWorld();
+    const { sessionId, record } = r.w.seedSession();
+    const meta = r.w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as Record<string, unknown>;
+    for (const [status, offered] of [["running", false], ["succeeded", false], ["failed", true], ["cancelled", true]] as const) {
+      r.w.db.set({ ...meta, summaryRevision: 2, summary: { ...record.summary, status } });
+      expect((await view(r, PRIYA, sessionId)).you.actions.includes("retry"), status).toBe(offered);
+    }
   });
 
   it("builds a sharee's view with the viewer's presentation, and gives them watch and comment only", async () => {

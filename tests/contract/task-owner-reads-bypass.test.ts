@@ -153,6 +153,23 @@ export function aPerson(person: { developerId: string }) { return person.develop
     ]);
   });
 
+  it("finds a read on a NAMED interface or alias with an owner field, such as `TaskLike`, under the same rules as a literal type (13 review)", () => {
+    const hits = scanVirtual(BROKER_ROOT, "__bypass__/named-interface.ts", `
+interface TaskLike { developerId: string; developerName: string }
+interface RunLike { taskId: string; slackUserId?: string }
+type OwnerAlias = { taskId: string; developerId: string };
+interface PersonLike { developerId: string }
+export function viaName(task: TaskLike) { return task.developerId; }
+export function viaShape(record: RunLike) { return record.slackUserId; }
+export function viaAlias(record: OwnerAlias) { return record.developerId; }
+export function aPerson(person: PersonLike) { return person.developerId; }`);
+    expect(problemsOf(hits, new Map<string, Klass>()).unclassified).toEqual([
+      hit("__bypass__/named-interface.ts", "viaAlias", ".developerId"),
+      hit("__bypass__/named-interface.ts", "viaName", ".developerId"),
+      hit("__bypass__/named-interface.ts", "viaShape", ".slackUserId"),
+    ]);
+  });
+
   it("does not let a row cover a second read of the same field in the same function: each read is a row of its own", () => {
     const source = `${IMPORT}
 export function owns(task: DeveloperTaskRecord, other: DeveloperTaskRecord) {

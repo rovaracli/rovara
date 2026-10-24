@@ -15,7 +15,7 @@ const followers = (w: SessionWorld) => w.db.find((item) => String(item.sk).start
 const accessOf = async (w: SessionWorld, who: string, sessionId: string) => {
   const deps: SessionAccessDependencies = depsOf(w);
   const access = await resolveSessionAccess(deps, w.caller(who), sessionId);
-  return { level: access.level, projectRole: access.projectRole, actions: sessionActionsFor(access) };
+  return { level: access.level, projectRole: access.projectRole, actions: sessionActionsFor(access, { status: "running" }) };
 };
 
 describe("I-1: removing a share re-checks followers on the full path", () => {

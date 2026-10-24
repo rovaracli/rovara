@@ -1,6 +1,7 @@
 // Plan 5 Task 4: what a person may do on a session. The level is the highest of ownership, the caller's own project grant and org role, shares and
 // Task People roles, capped by a project viewer's rule and a Task People `denied` entry; another org, and no level at all, answer NOT_FOUND.
 import { describe, expect, it } from "vitest";
+import type { SessionStatus } from "@agentx/contracts";
 import { requireSessionLevel, resolveSessionAccess, sessionActionsFor, type SessionAccessDependencies } from "../../packages/broker/src/agent-sessions/access.js";
 import { ARJUN, BO, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
 
@@ -21,7 +22,7 @@ function depsOf(w: SessionWorld, extra: Partial<SessionAccessDependencies> = {})
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 const levelOf = async (w: SessionWorld, who: string, sessionId: string, extra: Partial<SessionAccessDependencies> = {}) => {
   const access = await resolveSessionAccess(depsOf(w, extra), w.caller(who), sessionId);
-  return { level: access.level, owner: access.owner, orgAdmin: access.orgAdmin, projectRole: access.projectRole, actions: sessionActionsFor(access) };
+  return { level: access.level, owner: access.owner, orgAdmin: access.orgAdmin, projectRole: access.projectRole, actions: sessionActionsFor(access, { status: "running" }) };
 };
 
 describe("a task session on a project", () => {
@@ -277,8 +278,8 @@ describe("the read-only path", () => {
 });
 
 describe("sessionActionsFor", () => {
-  const actions = (level: "none" | "view" | "use" | "edit", extra: { owner?: boolean; orgAdmin?: boolean; projectRole?: "viewer" | "contributor" | "maintainer" } = {}) =>
-    sessionActionsFor({ level, owner: extra.owner ?? false, orgAdmin: extra.orgAdmin ?? false, ...(extra.projectRole === undefined ? {} : { projectRole: extra.projectRole }) });
+  const actions = (level: "none" | "view" | "use" | "edit", extra: { owner?: boolean; orgAdmin?: boolean; projectRole?: "viewer" | "contributor" | "maintainer" } = {}, status: SessionStatus = "failed") =>
+    sessionActionsFor({ level, owner: extra.owner ?? false, orgAdmin: extra.orgAdmin ?? false, ...(extra.projectRole === undefined ? {} : { projectRole: extra.projectRole }) }, { status });
   it("lists what each level may do", () => {
     expect(actions("none")).toEqual([]);
     expect(actions("view")).toEqual(["watch", "comment"]);
@@ -287,6 +288,16 @@ describe("sessionActionsFor", () => {
     expect(actions("edit", { owner: true })).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff"]);
     expect(actions("view", { orgAdmin: true })).toEqual(["watch", "comment", "stop"]);
     expect(actions("edit", { orgAdmin: true })).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share"]);
+  });
+
+  it("offers retry only for a failed or cancelled session (13 review)", () => {
+    for (const status of ["failed", "cancelled"] as const) expect(actions("edit", {}, status)).toContain("retry");
+    for (const status of ["starting", "running", "needs_person", "paused", "waiting", "stopped", "succeeded"] as const) {
+      expect(actions("edit", { owner: true }, status), status).not.toContain("retry");
+      expect(actions("edit", { owner: true }, status), status).toEqual(expect.arrayContaining(["stop", "take_over", "share", "handoff"]));
+    }
+    // A lower level never gets it, whatever the status.
+    expect(actions("use", {}, "failed")).not.toContain("retry");
   });
 
   it("gives a project viewer who isn't the owner only watching, and an owner who is a viewer everything", () => {

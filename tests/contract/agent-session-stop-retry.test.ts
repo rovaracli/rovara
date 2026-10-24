@@ -4,9 +4,10 @@
 // through the real broker, where stop is the cancel the dev route runs.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentSessionKey, agentXError, changesKey, sessionChannel, sessionEventId, userChannel, type OrgId, type Payer } from "@agentx/contracts";
+import { agentSessionKey, agentXError, changesKey, runRequestKey, sessionChannel, sessionEventId, userChannel, type OrgId, type Payer } from "@agentx/contracts";
 import { SessionResponseReaderSchema, SessionEventSchema } from "../../packages/contracts/src/index.js";
 import { stopSession, type ChainControl, type SessionControlHost } from "../../packages/broker/src/agent-sessions/stop.js";
+import { RUN_RECORD_MEMORY_DAYS } from "../../packages/broker/src/agents/runs.js";
 import { retryRunRequestId, retrySession } from "../../packages/broker/src/agent-sessions/retry.js";
 import type { SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
 import { taskAgentRunKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
@@ -48,6 +49,8 @@ function world(options: { audit?: boolean } = {}) {
       const meta = w.db.get(agentSessionKey(ORG_A, seeded.sessionId, "META")) as Item;
       w.db.set({ ...meta, payer: { kind: "member", developerId: request.owner.developerId }, agent: { agentId: request.agent.agentId, name: "Ticket triage", version: request.agent.version ?? 1 }, origin: request.origin });
       started.set(request.requestId, { taskId: seeded.taskId, sessionId: seeded.sessionId, owner: request.owner.developerId });
+      // As Plan 3's start leaves it: the request's own item, naming the run, its session and its starter.
+      w.db.set({ ...runRequestKey(ORG_A, request.requestId), entityType: "RUN_REQUEST", orgId: ORG_A, taskId: seeded.taskId, developerId: request.owner.developerId, sessionId: seeded.sessionId });
       return { taskId: seeded.taskId, runLimitUsd: 5, stopAtUsd: 5, paused: false };
     },
   };
@@ -679,5 +682,55 @@ describe("a workflow retry that fails after Plan 3 committed it (13 review I-1)"
     expect(await code(w.retry(MAX, sessionId, requestId))).toMatchObject({ code: "TASK_NOT_FOUND" });
     expect(w.eventTexts(sessionId)).toEqual([]);
     expect(w.db.get(agentSessionKey(ORG_A, sessionId, `REQUEST#${requestId}`))).toBeUndefined();
+  });
+});
+
+describe("what a retry leaves behind (13 review minors)", () => {
+  it("keeps the one-time RETRIED mark and the request item as long as Plan 3 keeps the run's own request", async () => {
+    const w = world();
+    const { sessionId } = w.agentRun("FAILED");
+    await w.retry(MAX, sessionId);
+    const expected = Math.floor(w.clock.now / 1000) + RUN_RECORD_MEMORY_DAYS * 86_400;
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, "RETRIED"))).toMatchObject({ indexExpiresAt: expected });
+    const requests = w.db.find((item) => item.pk === agentSessionKey(ORG_A, sessionId, "META").pk && String(item.sk).startsWith("REQUEST#"));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ indexExpiresAt: expected });
+  });
+
+  it("repairs a link that was lost after the run started: the next retry of the session, by anyone, links it, and only the starter is answered with the new session", async () => {
+    const w = world({ audit: true });
+    const { sessionId } = w.agentRun("FAILED");
+    // The link's transaction is lost once (the process died before it landed): Plan 3 already started the run.
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"RETRIED"'), error: { name: "InternalServerError" } });
+    expect(await code(w.retry(MAX, sessionId))).toBeDefined();
+    expect(w.calls.start).toHaveLength(1);
+    expect(w.eventTexts(sessionId)).toEqual([]);
+    const newSession = [...w.started.values()][0]!.sessionId;
+    expect(w.meta(newSession).retryOf).toBeUndefined();
+    // Another editor retries: the link is made for the person who started the run, and she is told it was already retried.
+    expect(await code(w.retry(PRIYA, sessionId))).toEqual({ code: "CONFIG_INVALID", message: "This session was already retried." });
+    expect(w.meta(newSession).retryOf).toBe(sessionId);
+    expect(w.eventTexts(sessionId)).toEqual(["Max retried this in a new session."]);
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, "RETRIED"))).toMatchObject({ by: MAX, sessionId: newSession });
+    expect(w.calls.start).toHaveLength(1);
+    // The starter asking again is answered with the new session, and nothing more is written.
+    const before = w.db.items.size;
+    const again = await w.retry(MAX, sessionId);
+    expect(again.session.sessionId).toBe(newSession);
+    expect(w.db.items.size).toBeLessThanOrEqual(before + 1);
+    expect(w.eventTexts(sessionId)).toHaveLength(1);
+  });
+
+  it("repairs the link for the starter's own repeat too, under their request id", async () => {
+    const w = world();
+    const { sessionId } = w.agentRun("FAILED");
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"RETRIED"'), error: { name: "InternalServerError" } });
+    const requestId = randomUUID();
+    expect(await code(w.retry(MAX, sessionId, requestId))).toBeDefined();
+    const answer = await w.retry(MAX, sessionId, requestId);
+    expect(answer.session.retryOf).toBe(sessionId);
+    expect(w.eventTexts(sessionId)).toEqual(["Max retried this in a new session."]);
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, `REQUEST#${requestId}`))).toMatchObject({ action: "retry", by: MAX });
+    expect(w.calls.start).toHaveLength(1);
   });
 });
