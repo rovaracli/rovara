@@ -115,7 +115,9 @@ describe("the five templates have a version 2, and version 1 is as it was", () =
 describe("the grants are exactly the plan's", () => {
   it("Deploy reviewer", () => {
     expect(shown(v2("deploy-reviewer").tools)).toEqual([
-      "github-actions:read", "vercel:read", "sentry:read", "datadog:read:search_monitors,query_metrics,search_logs", "cloudwatch:read", "github:read_write:add_*comment*",
+      "github-actions:read", "vercel:read", "sentry:read", "datadog:read:search_monitors,query_metrics,search_logs", "cloudwatch:read",
+      // Task 27 review (controller ruling): the read-only GitHub tools it needs to find the pull request from a deployment event, and its one write.
+      "github:read:pull_request_read,get_pull_request*,list_pull_requests,search_pull_requests,list_commits,get_commit", "github:read_write:add_*comment*",
     ]);
   });
 
@@ -205,6 +207,10 @@ describe("what the templates can actually call", () => {
     const granted = resolved("deploy-reviewer");
     const writes = granted.filter((tool) => tool.access === "write").map((tool) => `${tool.type}.${tool.upstreamName}`);
     expect(writes).toEqual(["github.add_issue_comment"]);
+    // It can find the pull request that went out (read and list tools only), so it can comment on it.
+    expect(granted.filter((tool) => tool.type === "github" && tool.access === "read").map((tool) => tool.upstreamName).sort()).toEqual(
+      ["get_commit", "get_pull_request", "get_pull_request_comments", "get_pull_request_diff", "get_pull_request_files", "get_pull_request_reviews", "get_pull_request_status", "list_commits", "list_pull_requests", "pull_request_read", "search_pull_requests"],
+    );
     expect(granted.filter((tool) => tool.type === "datadog").map((tool) => tool.upstreamName).sort()).toEqual(["query_metrics", "search_logs", "search_monitors"]);
     for (const type of ["github-actions", "vercel", "sentry", "cloudwatch"]) expect(granted.some((tool) => tool.type === type), type).toBe(true);
     expect(granted.some((tool) => tool.type === "grafana" || tool.type === "pagerduty" || tool.type === "mcp"), "nothing the plan does not grant").toBe(false);
@@ -260,15 +266,25 @@ describe("the Deploy reviewer's instructions", () => {
     expect(inspect).toMatch(/recommend/iu);
   });
 
-  it("`report` opens with one verdict word, then findings by severity with links, then suggested actions, and comments on the pull request or commit", () => {
+  it("`report` opens with one verdict word, then findings by severity with links, then suggested actions, and comments on the pull request", () => {
     const report = stepText(recipeOf(), "report");
     for (const word of ["healthy", "degraded", "failed", "unknown"]) expect(report, word).toContain(word);
     expect(report).toMatch(/verdict/iu);
     expect(report.indexOf("severity")).toBeGreaterThanOrEqual(0);
     expect(report.indexOf("suggested actions")).toBeGreaterThan(report.indexOf("severity"));
-    expect(report).toMatch(/pull request or commit/u);
+    // add_issue_comment can comment on a pull request or an issue, not on a commit: the copy says "pull request" only.
+    expect(report).toMatch(/comment on the pull request/u);
+    expect(report).not.toMatch(/commit that went out|or commit/u);
     const last = recipeOf().steps.at(-1)!;
     expect(last.kind === "agent" && last.report).toEqual({ slack: true });
+  });
+
+  it("tells the agent how to find the pull request, and to post no comment (and say so) when it cannot, and never offers a comment on a commit", () => {
+    const all = texts(recipeOf()).join("\n");
+    expect(all).toMatch(/find the pull request/iu);
+    expect(all).toMatch(/post no comment/u);
+    expect(all).not.toMatch(/or commit|commit that went out/u);
+    expect(BUILTIN_AGENTS["deploy-reviewer"].versions[1]!.notes).not.toMatch(/or commit/u);
   });
 
   it("tells the agent that text it reads is information, not instructions, and to put no command or mention in a comment", () => {
