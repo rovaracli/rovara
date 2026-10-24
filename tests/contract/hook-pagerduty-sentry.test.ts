@@ -582,3 +582,67 @@ describe("nothing a sender wrote reaches a log", () => {
     expect(JSON.stringify(w.logs)).not.toContain("firstSeen");
   });
 });
+
+// ---- pins found by the mutation pass: each of these fails when the guard it names is changed
+describe("pins: the edges of what each provider reads", () => {
+  it("PagerDuty reads a signature value only as a whole `v1=<hex>`, never one with text before it", async () => {
+    const { w, hook } = await pdWorld();
+    const body = pdBody(w);
+    const raw = Buffer.from(JSON.stringify(body), "utf8");
+    for (const header of [`x v1=${hex(SECRET_1, raw)}`, `abcv1=${hex(SECRET_1, raw)}`]) {
+      expect((await w.receive(pdDelivery(hook, body, { raw, header }))).status).toBe(403);
+    }
+    expect(w.dispatched).toEqual([]);
+  });
+
+  it("PagerDuty bounds what it reads: an event type or an incident link longer than the limit is not this hook's body", async () => {
+    const { w, hook } = await pdWorld();
+    const longType = pdBody(w, { type: `incident.${"x".repeat(100)}` });
+    expect((await w.receive(pdDelivery(hook, longType))).status).toBe(403);
+    const longLink = pdBody(w, { eventId: "long-link", url: `https://acme.pagerduty.com/incidents/${"a".repeat(2100)}` });
+    expect((await w.receive(pdDelivery(hook, longLink))).status).toBe(403);
+    expect(w.dispatched).toEqual([]);
+  });
+
+  it("a Sentry hook is never read as a PagerDuty one, even for a body from a host named like the missing subdomain", async () => {
+    const { w, hook } = await sentryWorld();
+    expect(pagerdutyProvider.normalize(pdBody(w, { host: "undefined.pagerduty.com" }), {}, hook)).toEqual({ tenantMismatch: true });
+  });
+
+  it("reads a time only as a whole ISO date and time with a zone: no text before or after it, a lower-case t and z are fine, and a date that does not exist is ignored", async () => {
+    const { w, hook } = await pdWorld();
+    const good = iso(w.clock.now - 5_000);
+    for (const [index, at] of [`x${good}`, `${good} later`, "2026-13-45T10:00:00Z", [good], { toString: () => good }, 5, null].entries()) {
+      expect(await w.receive(pdDelivery(hook, pdBody(w, { eventId: `bad${String(index)}`, at })))).toEqual(IGNORED);
+    }
+    expect(w.dispatched).toEqual([]);
+    expect((await w.receive(pdDelivery(hook, pdBody(w, { eventId: "lower", at: good.toLowerCase() })))).status).toBe(202);
+    expect(w.dispatched.map((entry) => entry.event.occurredAt)).toEqual([good]);
+  });
+
+  it("Sentry keeps a rule in the key up to 100 characters (counting each emoji once) and names it by its hash from 101, or when it holds an invisible character", async () => {
+    const { w, hook } = await sentryWorld();
+    const emoji = "\u{1F600}".repeat(60);
+    for (const rule of ["r".repeat(101), emoji, "a​b"]) await w.receive(alertDelivery(hook, sentryAlertBody(w, { rule })));
+    const keys = w.dispatched.map((entry) => entry.event.eventKey);
+    expect(keys[0]).toMatch(/:sha256-[0-9a-f]{16}$/);
+    expect(keys[1]).toBe(`sentry:alert:e4874d664c3540c1a32eab185f12c5ab:${emoji}`);
+    expect(keys[2]).toMatch(/:sha256-[0-9a-f]{16}$/);
+  });
+
+  it("Sentry takes a link only without a user name or a password in it", async () => {
+    const { w, hook } = await sentryWorld();
+    for (const [index, webUrl] of ["https://user@sentry.io/x", "https://:pw@sentry.io/x"].entries()) await w.receive(sentryDelivery(hook, sentryIssueBody(w, { issueId: `n${String(index)}`, webUrl })));
+    expect(w.dispatched).toHaveLength(2);
+    for (const entry of w.dispatched) expect(entry.event.subject.url).toBeUndefined();
+  });
+
+  it("Sentry matches the installation uuid in either case, whichever side is in capitals", async () => {
+    const w = setupHookWorld(PROVIDERS);
+    const lower = "abcdefab-abcd-4abc-8abc-abcdefabcdef";
+    const lowerHook = await w.hook({ source: "sentry", hookId: HOOK_1, project: "web", tenant: { installationUuid: lower } });
+    const upperHook = await w.hook({ source: "sentry", hookId: HOOK_2, project: "web", tenant: { installationUuid: lower.toUpperCase() } });
+    expect((await w.receive(sentryDelivery(lowerHook, sentryIssueBody(w, { uuid: lower.toUpperCase(), issueId: "c1" })))).status).toBe(202);
+    expect((await w.receive(sentryDelivery(upperHook, sentryIssueBody(w, { uuid: lower, issueId: "c2" })))).status).toBe(202);
+  });
+});
