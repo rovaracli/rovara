@@ -554,3 +554,39 @@ describe("turning a GitHub trigger on heals the repository index of its project 
     expect(indexRows(w.v.db)).toEqual([own(101)]);
   });
 });
+
+// ---- Task 21 review minor 2: a table fault while the events are found or remembered is a retryable fault, so GitHub redelivers
+describe("a DynamoDB fault while GitHub's events are handled is retried by GitHub (Plan 4 Task 22, Task 21 review)", () => {
+  const indexRead = (input: Record<string, unknown>) => String((input["ExpressionAttributeValues"] as Record<string, unknown> | undefined)?.[":pk"]).startsWith("GITHUB_REPO#");
+  const eventWrite = (input: Record<string, unknown>) => String((input["Item"] as { pk?: unknown } | undefined)?.pk).includes("#HOOK_EVENT#");
+
+  it("makes a fault reading the repository's index a GithubWebhookRetryableError, and starts the event on the redelivery", async () => {
+    const w = world();
+    await w.chainTrigger();
+    w.v.db.injectFault({ command: "QueryCommand", match: indexRead, error: { name: "InternalServerError" } });
+    await expect(w.deliver(pullRequest(), "pull_request")).rejects.toBeInstanceOf(GithubWebhookRetryableError);
+    expect(w.runs()).toEqual([]);
+    expect((await w.deliver(pullRequest(), "pull_request")).status).toBe("ACCEPTED");
+    expect(w.runs()).toHaveLength(1);
+  });
+
+  it("does the same for a fault reading the installation and for one remembering the event", async () => {
+    const w = world();
+    await w.chainTrigger();
+    w.v.db.injectFault({ command: "GetCommand", match: (input) => String((input["Key"] as { pk?: unknown } | undefined)?.pk).startsWith("GITHUB_INSTALLATION#"), error: { name: "ProvisionedThroughputExceededException" } });
+    await expect(w.deliver(pullRequest(), "pull_request")).rejects.toBeInstanceOf(GithubWebhookRetryableError);
+    w.v.db.injectFault({ command: "PutCommand", match: eventWrite, error: { name: "InternalServerError" } });
+    await expect(w.deliver(pullRequest(), "pull_request")).rejects.toBeInstanceOf(GithubWebhookRetryableError);
+    expect(w.runs()).toEqual([]);
+    expect((await w.deliver(pullRequest(), "pull_request")).status).toBe("ACCEPTED");
+  });
+
+  it("answers 503 through the broker, and 202 on the redelivery", async () => {
+    const w = await brokerWorld();
+    w.h.db.injectFault({ command: "QueryCommand", match: indexRead, error: { name: "InternalServerError" } });
+    expect((await w.post(pullRequest(), "pull_request")).statusCode).toBe(503);
+    expect(w.dispatched).toEqual([]);
+    expect((await w.post(pullRequest(), "pull_request")).statusCode).toBe(202);
+    expect(w.dispatched).toHaveLength(1);
+  });
+});
