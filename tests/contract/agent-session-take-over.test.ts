@@ -590,3 +590,76 @@ describe("the route", () => {
     expect(listed).toEqual([{ approvalId, title: 'Max becomes the owner of "Bump the Stripe SDK".' }]);
   });
 });
+
+describe("faults and races", () => {
+  const handler = () => getApprovalSubjectHandler("session_owner")!;
+  const decided = async (w: World, sessionId: string) => ({ ...(await w.approvalOf((await w.asked(MAX, sessionId)).approvalId)), status: "EXECUTING" as const, decidedBy: MAX });
+
+  it("answers a budget check that could not be made (the proxy is down) with a retryable fault at the ask and at the apply, never a refusal of the person", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    const down = Object.assign(new Error("proxy"), { name: "AgentXError", code: "MODEL_PROXY_UNAVAILABLE" });
+    w.sessionDeps.admitPayer = async () => { throw down; };
+    expect(await code(w.ask(MAX, sessionId))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    w.sessionDeps.admitPayer = async () => undefined;
+    const record = await decided(w, sessionId);
+    w.sessionDeps.admitPayer = async () => { throw down; };
+    await expect(handler()(w.deps, record)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: PRIYA });
+  });
+
+  it("never applies a take-over that someone other than the person it names decided", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    const record = await decided(w, sessionId);
+    await expect(handler()(w.deps, { ...record, decidedBy: ARJUN })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: PRIYA });
+  });
+
+  it("is refused whole when the session ended between the read and the write", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    const record = await decided(w, sessionId);
+    let ended = false;
+    const original = w.db.send;
+    w.db.send = async (command) => {
+      if (!ended && command.constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("lastTakeOverApprovalId")) { ended = true; w.db.set({ ...w.meta(sessionId), endedAt: "2026-10-22T09:00:00.000Z" }); }
+      return original(command);
+    };
+    await expect(handler()(w.deps, record)).rejects.toThrow(`SESSION_REVISION_CONFLICT: ${CHANGED_TEXT}`);
+    expect(ended).toBe(true);
+    expect(w.taskOf(taskId).currentOwner).toBeUndefined();
+  });
+
+  it("tries again later when another transaction holds the same items at that moment, and is refused whole on any other fault", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    const record = await decided(w, sessionId);
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] } });
+    await expect(handler()(w.deps, record)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    await expect(handler()(w.deps, record)).rejects.toMatchObject({ name: "InternalServerError" });
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: PRIYA });
+    expect(w.taskOf(taskId).currentOwner).toBeUndefined();
+    // And then it applies, once.
+    await handler()(w.deps, record);
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: MAX });
+  });
+
+  it("reads a session whose task is another org's as no session", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w, { taskOrgId: "org_bbbbbbbbbbbbbbbbbbbb" });
+    expect(await code(w.ask(MAX, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("applies when the person who took it over has no recorded name: they are shown as 'a member' and stay the owner by id", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    w.db.set({ pk: `DEVELOPER#${MAX}`, sk: "META", developerId: MAX, provider: "oidc", displayName: "", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    const { approvalId } = await w.asked(MAX, sessionId);
+    expect((await w.confirm(MAX, approvalId)).statusCode).toBe(200);
+    expect(await w.approvalOf(approvalId)).toMatchObject({ status: "APPROVED_DONE" });
+    expect(effectiveTaskOwner(w.taskOf(taskId))).toMatchObject({ developerId: MAX, name: "a member" });
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: MAX, name: "Someone" });
+  });
+});
