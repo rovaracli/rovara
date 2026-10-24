@@ -1,13 +1,10 @@
-import { z } from "zod";
-import { type OrgId, OrgIdSchema } from "./org.js";
+import { type OrgId, OrgIdSchema, type OrgRole } from "./org.js";
 import { randomBytes, createHash } from "node:crypto";
 import { normalizeEmail } from "./email.js";
 import { GITHUB_INSTALLATION_TAKEN_MESSAGE } from "./errors.js";
 
 
-export const OrgRoleSchema = z.enum(["owner", "admin", "member"]);
-
-export type OrgRole = z.infer<typeof OrgRoleSchema>;
+export { OrgRoleSchema, type OrgRole } from "./org.js";
 
 
 export interface OrgRecord {

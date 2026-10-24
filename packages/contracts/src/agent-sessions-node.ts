@@ -1,3 +1,4 @@
+import type { SessionId } from "./agent-sessions.js";
 import { cleanDisplayName } from "./display-name.js";
 import { z } from "zod";
 import { AGENTX_NAME_PATTERN } from "./names.js";
@@ -82,7 +83,7 @@ export const SessionTriggerSchema = z.object({ kind: z.enum(["event", "schedule"
 
 export type SessionTrigger = z.infer<typeof SessionTriggerSchema>;
 
-export type SessionId = z.infer<typeof SessionIdSchema>;
+export type { SessionId } from "./agent-sessions.js";
 
 export type DeviceId = z.infer<typeof DeviceIdSchema>;
 

@@ -96,3 +96,6 @@ export * from "./egress.js";
 export * from "./refusal-words.js";
 export * from "./agent-sessions-node.js";
 export * from "./session-views.js";
+
+export * from "./realtime.js";
+export * from "./realtime-node.js";

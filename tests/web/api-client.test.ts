@@ -98,7 +98,8 @@ it("retries server failures twice for reads and never retries a server-refused w
  await vi.advanceTimersByTimeAsync(1000);expect(f.request).toHaveBeenCalledTimes(2);
  await vi.advanceTimersByTimeAsync(2000);expect(f.request).toHaveBeenCalledTimes(3);expect(await result).toMatchObject({ status: 503 });
  const write = fakeHost(async () => ({ status: 503, body: { error: { code: "UNAVAILABLE", message: "Try later." } } }));
- await expect(createApiClient(write.host).send("POST", "/v1/app/agents", { requestId: "same" }, HomeResponseReaderSchema)).rejects.toMatchObject({ status: 503 });expect(write.request).toHaveBeenCalledTimes(1);
+ const refused = createApiClient(write.host).send("POST", "/v1/app/agents", { requestId: "same" }, HomeResponseReaderSchema).catch((error: unknown) => error);
+ await vi.advanceTimersByTimeAsync(4000);expect(write.request).toHaveBeenCalledTimes(1);expect(await refused).toMatchObject({ status: 503 });
 });
 it("adds up to thirty percent jitter to a retry delay", async () => {
  vi.useFakeTimers();vi.mocked(Math.random).mockReturnValue(1);let count = 0;

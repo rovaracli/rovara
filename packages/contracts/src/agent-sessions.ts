@@ -85,6 +85,7 @@ export const triggerIdPlaceholder = z.string().regex(/^ctr_[0-9a-z]{20}$/);
 
 /** A session id: `ses_` for a task or local session, the chain run's own id for a chain session (Plan 4 pins `sessionId = ChainRunId`). */
 export const SessionIdSchema = z.union([z.string().regex(SESSION_ID_PATTERN), chainRunIdPlaceholder]);
+export type SessionId = z.infer<typeof SessionIdSchema>;
 
 export const DeviceIdSchema = z.string().regex(/^dvc_[0-9a-z]{20}$/);
 
