@@ -33,7 +33,7 @@ import type { HookStore } from "./hooks.js";
 import type { HookProvider, HookHeaders } from "./providers/types.js";
 
 export interface HookReply {
-  status: 200 | 202 | 403 | 413 | 429 | 503;
+  status: 200 | 202 | 400 | 403 | 413 | 429 | 503;
   body: Record<string, unknown>;
 }
 
@@ -374,8 +374,10 @@ async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<H
   let body: unknown;
   try {
     body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(delivery.raw));
-  } catch {
-    return forbidden();
+  } catch (error) {
+    // The sender is proven by now, so this is a bad request, not a failed check; only the hook id and the kind of fault are logged, never a byte of the body.
+    log("hook.body_unreadable", { hookId: hook.hookId, error: errorName(error) });
+    return { status: 400, body: { error: { code: "BAD_REQUEST", message: "the delivery body can't be read" } } };
   }
   let normalized: ReturnType<HookProvider["normalize"]>;
   try {

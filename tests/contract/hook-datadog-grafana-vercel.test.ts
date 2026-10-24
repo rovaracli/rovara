@@ -269,7 +269,8 @@ describe("Datadog: an unsigned webhook is proven by the hook's token in X-Rovara
 
   it("titles a monitor by its alert id when the body (from the new template) has no title, and still reads the title of a body made from the older template", async () => {
     const { w, hook } = await ddWorld();
-    const { title: _title, ...noTitle } = ddBody(w, { id: "n1", alertId: "4321" }) as Record<string, unknown>;
+    const noTitle = ddBody(w, { id: "n1", alertId: "4321" });
+    delete noTitle["title"];
     await w.receive(ddDelivery(hook, noTitle));
     await w.receive(ddDelivery(hook, ddBody(w, { id: "n2", alertId: "4322", title: "Old template title" })));
     expect(w.dispatched.map((entry) => entry.event.subject.title)).toEqual(["4321", "Old template title"]);
@@ -741,8 +742,8 @@ describe("pins: the edges of what each provider reads", () => {
     expect(vercelProvider.normalize(vcBody(w), {}, { ...asVercel, source: "datadog" })).toEqual({ tenantMismatch: true });
   });
 
-  it("the setup text says what to set: four steps for Datadog including that the form encoding is off, and Grafana's bearer and HMAC choices", () => {
-    expect(datadogProvider.setup?.steps).toHaveLength(4);
+  it("the setup text says what to set: five steps for Datadog including that the form encoding is off, and Grafana's bearer and HMAC choices", () => {
+    expect(datadogProvider.setup?.steps).toHaveLength(5);
     expect(datadogProvider.setup?.steps.join("\n")).toContain("Encode as form off");
     expect(grafanaProvider.setup?.steps).toHaveLength(4);
     expect(grafanaProvider.setup?.steps.join("\n")).toContain("Timestamp Header empty");

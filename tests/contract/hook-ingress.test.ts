@@ -360,9 +360,9 @@ describe("unreadable input fails closed", () => {
       expect(await w.receive(w.delivery(hook, "", { raw })), raw.toString("hex")).toEqual({ status: 400, body: BAD_BODY });
     }
     expect(w.logs).toEqual([
-      { event: "hook.body_unreadable", hookId: hook.hookId, error: "TypeError" },
-      { event: "hook.body_unreadable", hookId: hook.hookId, error: "SyntaxError" },
-      { event: "hook.body_unreadable", hookId: hook.hookId, error: "SyntaxError" },
+      { event: "hook.body_unreadable", fields: { hookId: hook.hookId, error: "TypeError" } },
+      { event: "hook.body_unreadable", fields: { hookId: hook.hookId, error: "SyntaxError" } },
+      { event: "hook.body_unreadable", fields: { hookId: hook.hookId, error: "SyntaxError" } },
     ]);
     expect(w.dispatched).toEqual([]);
   });
@@ -526,10 +526,11 @@ describe("what the secret cache and the checks may not do", () => {
     expect(await w.receive(w.delivery(hook, bodyOf(w, "b"), { secret: SECRET_2 }))).toEqual({ status: 403, body: FORBIDDEN });
   });
 
-  it("refuses a validly signed body whose bytes are not UTF-8 even where the JSON would otherwise read", async () => {
+  it("answers 400 to a validly signed body whose bytes are not UTF-8 even where the JSON would otherwise read", async () => {
     const { w, hook } = await linear();
     const raw = Buffer.concat([Buffer.from(`{"id":"e1","tenant":${JSON.stringify(LINEAR_TENANT)},"occurredAt":"${iso(w.clock.now)}","note":"`), Buffer.from([0xff]), Buffer.from('"}')]);
-    expect(await w.receive(w.delivery(hook, "", { raw }))).toEqual({ status: 403, body: FORBIDDEN });
+    expect(await w.receive(w.delivery(hook, "", { raw }))).toEqual({ status: 400, body: BAD_BODY });
+    expect(w.dispatched).toEqual([]);
   });
 
   it("answers 503, not a refusal or a count, when the table fails for a verified delivery, and keeps the minute's count and the de-duplication item exact", async () => {

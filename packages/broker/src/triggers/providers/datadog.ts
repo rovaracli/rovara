@@ -4,7 +4,7 @@
 // What the documentation says of the variables: `$DATE` is the event time in epoch MILLISECONDS (the plan says only "from `date`"; an ISO time is read too), `$ALERT_TRANSITION` is
 // `Triggered`, `Re-Triggered`, `Recovered`, `No Data`, `Re-No Data`, `Warn`, `Re-Warn` or `Renotify` (only `Triggered` starts work), `$PRIORITY` is `normal` or `low`, `$TAGS` is a
 // comma-separated list (`monitor, name:myService`; each is trimmed), `$ORG_ID` is the Datadog organisation. The documentation does not say how a variable holding a quote is escaped in
-// a JSON payload: such a body is not JSON and is refused after its token verified (check against a live alert in the staging round).
+// a JSON payload, so the template holds none of the free-text ones; a body that still is not JSON answers 400 after its token verified (check against a live alert in the staging round).
 // A body is believed only for the hook's own Datadog organisation (`orgId`), read first from every kind of body. Rovara's Datadog connection is read-only, so no monitor is Rovara's
 // doing and there is no actor to guard against.
 import { z } from "zod";
@@ -13,8 +13,10 @@ import { tokenEquals, type HookHeaders, type HookProvider, type Normalized } fro
 import { headerOf, httpsLinkOnAnyDomain, isoOfInstant, titleOf, valuesOf } from "./shared.js";
 
 export const DATADOG_TOKEN_HEADER = "X-Rovara-Hook-Token";
-/** The payload the person pastes into Datadog's webhook, exactly. */
-export const DATADOG_PAYLOAD_TEMPLATE = '{"id":"$ID","date":"$DATE","transition":"$ALERT_TRANSITION","alertId":"$ALERT_ID","title":"$EVENT_TITLE","priority":"$PRIORITY","tags":"$TAGS","link":"$LINK","orgId":"$ORG_ID"}';
+/** The payload the person pastes into Datadog's webhook, exactly. Datadog puts a variable into the JSON as it is, with no escaping, so no variable that holds text a person wrote (`$EVENT_TITLE`, `$EVENT_MSG`) is
+ * in it: a quote or backslash in a monitor's name would break the body and the event would be lost. The title of the run is the alert id (a body from the older template that still carries `title` keeps it),
+ * and `$LINK` leads to the monitor. A tag is limited by Datadog to letters, digits and `_ - : . /`, so `$TAGS` can't hold a quote or backslash. */
+export const DATADOG_PAYLOAD_TEMPLATE = '{"id":"$ID","date":"$DATE","transition":"$ALERT_TRANSITION","alertId":"$ALERT_ID","priority":"$PRIORITY","tags":"$TAGS","link":"$LINK","orgId":"$ORG_ID"}';
 /** The domains of Datadog's sites (the connection's own list: datadoghq.com and its regions, datadoghq.eu, and the government sites). */
 const DATADOG_DOMAINS = ["datadoghq.com", "datadoghq.eu", "ddog-gov.com"] as const;
 
@@ -60,7 +62,8 @@ export const datadogProvider: HookProvider = {
   setup: {
     steps: [
       "In Datadog, open Integrations, Webhooks and add a webhook with the address above as its URL.",
-      `Set Custom Headers to {"${DATADOG_TOKEN_HEADER}": "<the secret>"}. Datadog does not sign webhooks, so this token is the proof of the sender.`,
+      "Under Custom Variables, add a variable named ROVARA_HOOK_TOKEN whose value is the secret, and mark it hidden, so the token is not shown in Datadog's webhook settings.",
+      `Set Custom Headers to {"${DATADOG_TOKEN_HEADER}": "$ROVARA_HOOK_TOKEN"}. Datadog does not sign webhooks, so this token is the proof of the sender.`,
       "Leave Encode as form off, and set the Payload to exactly the template below.",
       "Add the webhook as @webhook-<its name> to the monitors that should start work.",
     ],
