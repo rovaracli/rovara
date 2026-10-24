@@ -379,7 +379,7 @@ import { pagerdutyConnectionCheck } from "./pagerduty-connector-type.js";
 import { sentryConnectionCheck } from "./sentry-connector-type.js";
 import { vercelConnectionCheck } from "./vercel-connector-type.js";
 import { HookSecretStore, OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
-import { HookStore, type HookSecrets } from "../triggers/hooks.js";
+import { HookStore, type ConnectedAwsAccounts, type HookSecrets } from "../triggers/hooks.js";
 import { HookIngressMemory, receiveHook, type HookIngressDeps } from "../triggers/ingress.js";
 import { hookProviders } from "../triggers/providers/index.js";
 import type { HookProvider } from "../triggers/providers/types.js";
@@ -630,7 +630,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory; /** Plan 4 Task 25: which AWS accounts an org connected (default: its CloudWatch connections) and the fetch under SNS certificate and confirmation requests. */ awsAccounts?: ConnectedAwsAccounts; snsFetch?: typeof fetch }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -993,7 +993,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       const store = new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
       const memory = hookMemoryOf(dependencies);
       return {
-        eventHooks: { store, secrets: agents.eventHooks.secrets, providers: agents.eventHooks.providers ?? hookProviders(), origin: new URL(developer.issuer).origin, secretRotated: (hookId: string) => memory.remember(hookId, undefined) },
+        eventHooks: { store, secrets: agents.eventHooks.secrets, providers: agents.eventHooks.providers ?? hookProviders(), origin: new URL(developer.issuer).origin, secretRotated: (hookId: string) => memory.remember(hookId, undefined), ...optional("awsAccounts", connectedAwsAccountsOf(dependencies)) },
         hooks: agents.hooks ?? store,
       };
     })()),
@@ -1866,6 +1866,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
           hooks: new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
           secrets: eventHooks.secrets, providers: eventHooks.providers ?? hookProviders(), dispatch, memory: hookMemoryOf(dependencies),
+          ...optional("awsAccounts", connectedAwsAccountsOf(dependencies)), ...optional("snsFetch", eventHooks.snsFetch),
         }, { source: hookPath[1]!, hookId: hookPath[2]!, raw, headers: request.headers, sourceIp: event.requestContext?.http?.sourceIp });
         return hookReply(answer);
       }
@@ -14195,6 +14196,23 @@ function parseStoredEvent(item: Record<string, unknown>): {
     timestamp: item.timestamp,
     payload: item.payload,
   };
+}
+
+/** `{ [key]: value }`, or nothing when there is no value (exactOptionalPropertyTypes). */
+function optional<K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } {
+  return value === undefined ? {} : { [key]: value } as { [P in K]?: V };
+}
+
+/**
+ * Plan 4 Task 25: whether an AWS account is one the org connected, read from the org's own CloudWatch connections (the account of each role ARN) at the moment of asking. Undefined
+ * where there is no connection store, and then no CloudWatch hook is made or confirmed.
+ */
+function connectedAwsAccountsOf(dependencies: AwsBrokerDependencies): ConnectedAwsAccounts | undefined {
+  const given = dependencies.agents?.eventHooks?.awsAccounts;
+  if (given !== undefined) return given;
+  const store = orgConnectionStoreOf(dependencies);
+  if (store === undefined) return undefined;
+  return { isConnected: async (orgId, awsAccountId) => (await store.list(orgId)).some((connection) => connection.type === "cloudwatch" && cloudwatchRoleAccount(connection.roleArn) === awsAccountId) };
 }
 
 /** `/v1/hooks/{source}/{hookId}` (Plan 4 Task 19). */

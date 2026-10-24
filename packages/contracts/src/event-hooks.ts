@@ -23,6 +23,14 @@ export const HOOK_FAILED_VERIFY_PER_MINUTE = 30;
 export const HOOK_SECRET_REREAD_MIN_AGE_SECONDS = 30;
 /** The most events one delivery may start; the rest are dropped and logged (a vendor's group notification is far smaller). */
 export const HOOK_MAX_EVENTS_PER_DELIVERY = 50;
+/** The most bytes of a signing certificate an SNS certificate fetch may read (Amazon's are about 1.5 KB). */
+export const SNS_CERT_MAX_BYTES = 16_384;
+/** How long a container keeps an SNS signing certificate it fetched, by its URL. */
+export const SNS_CERT_CACHE_HOURS = 24;
+/** The most certificates not yet cached one container fetches a minute, so forged messages naming varied certificate paths can't become a stream of fetches. */
+export const SNS_CERT_FETCHES_PER_MINUTE = 10;
+/** The deadline of one certificate fetch or subscription confirmation. */
+export const SNS_FETCH_TIMEOUT_MS = 5_000;
 /** A secret a person supplies for a vendor-origin hook. */
 export const HOOK_SECRET_MIN_CHARS = 16;
 export const HOOK_SECRET_MAX_CHARS = 512;

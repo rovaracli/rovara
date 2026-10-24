@@ -33,7 +33,7 @@ import { StatusReply } from "../aws/status-reply.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { displayNameOf } from "../chains/gates.js";
 import type { TriggerHook, TriggerHookReader } from "./ports.js";
-import type { HookProvider } from "./providers/types.js";
+import type { HookProvider, HookSetup } from "./providers/types.js";
 import { decodeSegment, requireSettingsOn } from "./routes.js";
 
 type Deps = AgentRouteDependencies;
@@ -148,6 +148,24 @@ export class HookStore implements TriggerHookReader {
     }));
   }
 
+  /** Makes a hook that waited for its SNS confirmation active, noting the subscription. False when it is not (or no longer) waiting: a lost race, or a hook turned off in between. */
+  async confirmSubscription(orgId: OrgId, hookId: string, subscriptionArn: string): Promise<boolean> {
+    return this.send(new UpdateCommand({
+      TableName: this.input.tableName, Key: hookKey(orgId, hookId), UpdateExpression: "SET #status = :active, subscriptionArn = :arn",
+      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #auth = :sns AND #status = :pending",
+      ExpressionAttributeNames: { "#status": "status", "#auth": "auth" }, ExpressionAttributeValues: { ":active": "active", ":arn": subscriptionArn, ":org": orgId, ":sns": "sns", ":pending": "pending_confirmation" },
+    }));
+  }
+
+  /** Stops an SNS hook that was told its subscription ended: later deliveries are refused. False when it was not on (active or waiting). */
+  async markUnsubscribed(orgId: OrgId, hookId: string): Promise<boolean> {
+    return this.send(new UpdateCommand({
+      TableName: this.input.tableName, Key: hookKey(orgId, hookId), UpdateExpression: "SET #status = :off",
+      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #auth = :sns AND (#status = :active OR #status = :pending)",
+      ExpressionAttributeNames: { "#status": "status", "#auth": "auth" }, ExpressionAttributeValues: { ":off": "unsubscribed", ":org": orgId, ":sns": "sns", ":active": "active", ":pending": "pending_confirmation" },
+    }));
+  }
+
   /** Notes which request rotated the secret and when, while the hook is on. */
   async noteRotation(orgId: OrgId, hookId: string, requestId: string, at: string): Promise<void> {
     await this.send(new UpdateCommand({
@@ -155,6 +173,11 @@ export class HookStore implements TriggerHookReader {
       ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":request": requestId, ":at": at, ":active": "active" },
     }));
   }
+}
+
+/** Whether an AWS account is one the org connected, read now. */
+export interface ConnectedAwsAccounts {
+  isConnected(orgId: OrgId, awsAccountId: string): Promise<boolean>;
 }
 
 /** The secrets of hooks, as ingress and the routes use them (Plan 3's `HookSecretStore`). */
@@ -185,6 +208,8 @@ export interface EventHookDependencies {
   providers: Partial<Record<HookSource, HookProvider>>;
   /** The address vendors post to: `<origin>/v1/hooks/<source>/<hookId>`. */
   origin: string;
+  /** What the broker knows of the AWS accounts an org connected (its CloudWatch connections): a CloudWatch hook may name only one of them. Absent where that is not known, and then no such hook is made or confirmed. */
+  awsAccounts?: ConnectedAwsAccounts;
   /** Forgets what this container remembers of a hook's secret, so a rotation is believed here at once. */
   secretRotated?(hookId: string): void;
 }
@@ -224,6 +249,20 @@ function providerOf(hooks: EventHookDependencies, source: HookSource): HookProvi
   return provider;
 }
 
+/** What a person does at the vendor for this hook: the provider's own steps for it, else its general ones. */
+const setupOf = (provider: HookProvider, record: HookRecord): HookSetup | undefined => provider.setupFor?.(record) ?? provider.setup;
+
+/** A hook of a source that has no secret (SNS) takes none: a secret sent with the request is refused rather than ignored. */
+function refuseSecret(given: string | undefined): void {
+  if (given !== undefined) throw agentXError("CONFIG_INVALID", "secret: this source has no secret; leave it out");
+}
+
+/** A CloudWatch hook names an AWS account, and it must be one the org connected: otherwise anyone could point a hook at another company's topic. */
+async function requireConnectedAccount(hooks: EventHookDependencies, orgId: OrgId, awsAccountId: string): Promise<void> {
+  if (hooks.awsAccounts === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "CloudWatch events are not available in this deployment");
+  if (!await hooks.awsAccounts.isConnected(orgId, awsAccountId)) throw agentXError("CONFIG_INVALID", "tenant: connect that AWS account as a CloudWatch connection first, then make the hook");
+}
+
 /** The secret a request names: Rovara makes it for a source that says so (and refuses one that is given), and a vendor's is required. */
 function secretOf(provider: HookProvider, given: string | undefined): string {
   if (provider.secretOrigin === "rovara") {
@@ -249,27 +288,32 @@ async function createHook(deps: Deps, caller: AgentCaller, project: string, body
   const earlier = await hooks.store.record(caller.orgId, hookId);
   if (earlier !== undefined) {
     if (earlier.project !== project || earlier.source !== input.source || canonicalJson(earlier.tenant) !== canonicalJson(tenant.data)) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
-    return new StatusReply(200, { hook: await viewOf(deps, hooks, earlier), url: urlOf(hooks, earlier), ...(provider.setup === undefined ? {} : { setup: provider.setup }), replayed: true });
+    return new StatusReply(200, { hook: await viewOf(deps, hooks, earlier), url: urlOf(hooks, earlier), ...(setupOf(provider, earlier) === undefined ? {} : { setup: setupOf(provider, earlier) }), replayed: true });
   }
+  if (input.source === "cloudwatch") await requireConnectedAccount(hooks, caller.orgId, (tenant.data as { awsAccountId: string }).awsAccountId);
   if ((await hooks.store.list(caller.orgId, project)).filter((hook) => hook.status !== "disabled").length >= HOOKS_PER_PROJECT_MAX) {
     throw agentXError("CONFIG_INVALID", `${shownText(project, NAME_MAX)} already has the most hooks it can have (${String(HOOKS_PER_PROJECT_MAX)}). Delete one first.`);
   }
-  const secret = secretOf(provider, input.secret);
+  const hasSecret = provider.secretOrigin !== "none";
+  if (!hasSecret) refuseSecret(input.secret);
+  const secret = hasSecret ? secretOf(provider, input.secret) : undefined;
+  // An SNS hook waits for its subscription's confirmation, which only a signed message for its own topic can give.
   const record: HookRecord = {
-    orgId: caller.orgId, hookId, source: input.source, project, tenant: tenant.data, auth: provider.auth, hasSecret: true, status: "active",
+    orgId: caller.orgId, hookId, source: input.source, project, tenant: tenant.data, auth: provider.auth, hasSecret, status: provider.auth === "sns" ? "pending_confirmation" : "active",
     createdBy: caller.developerId, createdAt: new Date(deps.now()).toISOString(),
   };
-  // The secret first: a hook that is stored always has one, and a secret with no hook is deleted again below.
-  await hooks.secrets.put(caller.orgId, hookId, JSON.stringify({ current: secret } satisfies HookSecret));
+  // The secret first: a hook that is stored always has one (when its source has any), and a secret with no hook is deleted again below.
+  if (secret !== undefined) await hooks.secrets.put(caller.orgId, hookId, JSON.stringify({ current: secret } satisfies HookSecret));
   let stored: boolean;
   try {
     stored = await hooks.store.create(record);
   } catch (error) {
-    await hooks.secrets.scheduleDelete(caller.orgId, hookId).catch(() => undefined);
+    if (secret !== undefined) await hooks.secrets.scheduleDelete(caller.orgId, hookId).catch(() => undefined);
     throw error;
   }
   if (!stored) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
-  return new StatusReply(201, { hook: await viewOf(deps, hooks, record), url: urlOf(hooks, record), ...(provider.setup === undefined ? {} : { setup: provider.setup }), ...(provider.secretOrigin === "rovara" ? { secret } : {}) });
+  const setup = setupOf(provider, record);
+  return new StatusReply(201, { hook: await viewOf(deps, hooks, record), url: urlOf(hooks, record), ...(setup === undefined ? {} : { setup }), ...(provider.secretOrigin === "rovara" ? { secret } : {}) });
 }
 
 async function listHooks(deps: Deps, caller: AgentCaller, project: string): Promise<Record<string, unknown>> {

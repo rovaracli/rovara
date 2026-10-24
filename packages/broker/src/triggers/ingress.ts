@@ -8,6 +8,7 @@
 import { GetCommand, PutCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   EVENT_DEDUPE_TTL_HOURS,
+  SNS_FETCH_TIMEOUT_MS,
   EVENT_MAX_AGE_HOURS,
   EVENT_MAX_FUTURE_MINUTES,
   HOOK_BODY_MAX_BYTES,
@@ -29,8 +30,12 @@ import {
   type OrgId,
   type TriggerEvent,
 } from "@agentx/contracts";
-import type { HookStore } from "./hooks.js";
+import type { ConnectedAwsAccounts, HookStore } from "./hooks.js";
 import type { HookProvider, HookHeaders } from "./providers/types.js";
+import { confirmationTarget } from "./providers/cloudwatch-sns.js";
+import { SnsCertMemory, isConfirmation, parseSnsMessage, verifySnsMessage, type SnsMessage } from "./sns-verify.js";
+import { headerOf, isoOfText } from "./providers/shared.js";
+import { vendorFetch } from "../connectors/native/vendor-fetch.js";
 
 export interface HookReply {
   status: 200 | 202 | 400 | 403 | 413 | 429 | 503;
@@ -100,6 +105,8 @@ interface CachedSecret { set: HookSecret; readAt: number }
 export class HookIngressMemory {
   readonly addresses = new WindowCounter();
   readonly failures = new WindowCounter();
+  /** The signing certificates of SNS this container fetched, and how often it may fetch more. */
+  readonly sns = new SnsCertMemory();
   private readonly secrets = new Map<string, CachedSecret>();
   private readonly attempts = new Map<string, number>();
   private readonly unknown = new Map<string, number>();
@@ -148,7 +155,7 @@ export interface HookIngressDeps {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
-  hooks: Pick<HookStore, "orgOf" | "record" | "touch">;
+  hooks: Pick<HookStore, "orgOf" | "record" | "touch" | "confirmSubscription" | "markUnsubscribed">;
   /** Plan 3's `HookSecretStore.read`: the stored JSON, or a `NOT_FOUND` error when there is none. */
   secrets: { read(orgId: string, hookId: string): Promise<string> };
   /** The provider of each source (Tasks 22 to 25); a source with none answers the uniform 403. */
@@ -156,6 +163,10 @@ export interface HookIngressDeps {
   /** Task 20's `dispatchTriggerEvent`, over the broker's dependencies. */
   dispatch(orgId: OrgId, event: TriggerEvent): Promise<unknown>;
   memory: HookIngressMemory;
+  /** The AWS accounts an org connected (Task 25): a subscription is confirmed only for a hook whose account is one of them. Absent, none is confirmed. */
+  awsAccounts?: ConnectedAwsAccounts;
+  /** The fetch under SNS certificate requests and subscription confirmations; defaults to the vendor fetch that reaches public addresses only. */
+  snsFetch?: typeof fetch;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -318,8 +329,102 @@ export async function forget(deps: EventMemoryDeps, orgId: OrgId, hookId: string
   }
 }
 
+/** A hook that is on. An SNS hook also takes deliveries while it waits for its confirmation: only a signed confirmation can end the wait. */
 function usableHook(hook: HookRecord | undefined, source: HookSource, hookId: string): hook is HookRecord {
-  return hook !== undefined && hook.hookId === hookId && hook.source === source && hook.status === "active";
+  return hook !== undefined && hook.hookId === hookId && hook.source === source && (hook.status === "active" || (hook.auth === "sns" && hook.status === "pending_confirmation"));
+}
+
+/** What SNS answers a visit to a `SubscribeURL`: the new subscription's ARN, which must be a subscription of the hook's own topic. */
+const SUBSCRIPTION_ARN_TEXT = /<SubscriptionArn>([^<]{1,600})<\/SubscriptionArn>/;
+const SUBSCRIPTION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONFIRM_MAX_BYTES = 65_536;
+
+function subscriptionArnOf(answer: string | undefined, topicArn: string): string | undefined {
+  const arn = answer === undefined ? undefined : SUBSCRIPTION_ARN_TEXT.exec(answer)?.[1];
+  return arn !== undefined && arn.startsWith(`${topicArn}:`) && SUBSCRIPTION_ID.test(arn.slice(topicArn.length + 1)) ? arn : undefined;
+}
+
+const unavailable = (): HookReply => ({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "try again" } } });
+
+/**
+ * A verified SubscriptionConfirmation: for a hook that waits, one visit to the SubscribeURL (SNS's own confirm action for this hook's topic, nothing else), and only when the hook's AWS
+ * account is one the org connected. A hook that is already active ignores it. Nothing is visited unless every check passed.
+ */
+async function confirmSubscription(deps: HookIngressDeps, orgId: OrgId, hook: HookRecord, message: SnsMessage): Promise<HookReply> {
+  const log = logOf(deps);
+  if (hook.status === "active") return { status: 202, body: { delivery: "IGNORED" } };
+  const tenant = hook.tenant as { awsAccountId: string; topicArn: string };
+  const target = confirmationTarget(message, tenant.topicArn);
+  if (target === undefined) {
+    log("hook.sns_subscribe_url_refused", { hookId: hook.hookId });
+    return forbidden();
+  }
+  if (deps.awsAccounts === undefined || !await deps.awsAccounts.isConnected(orgId, tenant.awsAccountId)) {
+    log("hook.sns_account_not_connected", { hookId: hook.hookId });
+    return forbidden();
+  }
+  let arn: string | undefined;
+  try {
+    const answer = await vendorFetch({
+      url: target, allowedHosts: [target.hostname], timeoutMs: SNS_FETCH_TIMEOUT_MS, maxBytes: CONFIRM_MAX_BYTES, ...(deps.snsFetch === undefined ? {} : { fetch: deps.snsFetch }),
+    });
+    arn = answer.status === 200 ? subscriptionArnOf(answer.text, tenant.topicArn) : undefined;
+  } catch (error) {
+    log("hook.sns_confirm_failed", { hookId: hook.hookId, error: errorName(error) });
+    return unavailable();
+  }
+  if (arn === undefined) {
+    log("hook.sns_confirm_failed", { hookId: hook.hookId, error: "unexpected_answer" });
+    return unavailable();
+  }
+  // A lost race (another delivery confirmed it first) leaves the hook active all the same.
+  await deps.hooks.confirmSubscription(orgId, hook.hookId, arn);
+  return { status: 202, body: { delivery: "SUBSCRIPTION_CONFIRMED" } };
+}
+
+/**
+ * An SNS hook's delivery (Task 25). The cheap checks come first and cost nothing: the body names this hook's topic, so does the `x-amz-sns-topic-arn` header, and a Notification is
+ * taken only by a hook that is active. Then the signature (`verifySnsMessage`, the one place a certificate is fetched). Only after it passes is anything written: the rate count,
+ * then by type a confirmation (once, for the hook's own topic and a connected account), an unsubscription (no URL is visited), or the alarm's events through the common path.
+ */
+async function receiveSns(deps: HookIngressDeps, orgId: OrgId, hook: HookRecord, provider: HookProvider, delivery: HookDelivery, now: number): Promise<HookReply> {
+  const log = logOf(deps);
+  const topicArn = (hook.tenant as { topicArn: string }).topicArn;
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(delivery.raw));
+  } catch {
+    return forbidden();
+  }
+  const message = parseSnsMessage(body);
+  if (message === undefined || message.TopicArn !== topicArn || headerOf(delivery.headers, "x-amz-sns-topic-arn") !== topicArn) return forbidden();
+  if (message.Type === "Notification" && hook.status !== "active") return forbidden();
+  if (!await verifySnsMessage({ memory: deps.memory.sns, ...(deps.snsFetch === undefined ? {} : { fetch: deps.snsFetch }) }, message, now)) {
+    deps.memory.failures.hit(hook.hookId, now);
+    return forbidden();
+  }
+  // A confirmation is signed over its own time: an old one is a replay, not a message from SNS to this hook now.
+  if (isConfirmation(message.Type)) {
+    const sent = isoOfText(message.Timestamp);
+    if (sent === undefined || outsideEventWindow(sent, now) !== undefined) return forbidden();
+  }
+  if (!await withinRate(deps, orgId, hook.hookId, now)) {
+    log("hook.rate_limited", { hookId: hook.hookId });
+    return { status: 429, body: { error: { code: "RATE_LIMITED", message: "too many deliveries" } } };
+  }
+  if (message.Type === "SubscriptionConfirmation") return confirmSubscription(deps, orgId, hook, message);
+  if (message.Type === "UnsubscribeConfirmation") {
+    await deps.hooks.markUnsubscribed(orgId, hook.hookId);
+    return { status: 202, body: { delivery: "UNSUBSCRIBED" } };
+  }
+  let normalized: ReturnType<HookProvider["normalize"]>;
+  try {
+    normalized = provider.normalize(body, delivery.headers, hook);
+  } catch (error) {
+    log("hook.normalize_failed", { hookId: hook.hookId, error: errorName(error) });
+    return forbidden();
+  }
+  return deliverEvents(deps, orgId, hook, normalized, now);
 }
 
 async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<HookReply> {
@@ -346,6 +451,8 @@ async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<H
   const provider = deps.providers[source.data];
   // A hook whose provider is missing or checks another way can't be verified, so it is never believed. (An SNS hook is verified by Task 25's own check, which is not here yet.)
   if (provider === undefined || provider.auth !== hook.auth) return forbidden();
+  // An SNS hook has no secret: the message's own signature, the topic it names and the account it is for are the proof (Task 25).
+  if (hook.auth === "sns") return receiveSns(deps, orgId, hook, provider, delivery, now);
   // 4 to 6. The gate, the secret and the check. Forged traffic costs nothing past the reads above: the gate only stops secret re-reads, and every request is still checked.
   const tripped = deps.memory.failures.count(hook.hookId, now) >= HOOK_FAILED_VERIFY_PER_MINUTE;
   let entry: CachedSecret | undefined;
@@ -386,6 +493,12 @@ async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<H
     log("hook.normalize_failed", { hookId: hook.hookId, error: errorName(error) });
     return forbidden();
   }
+  return deliverEvents(deps, orgId, hook, normalized, now);
+}
+
+/** Steps 8 (the tenant check, from the provider) to 11: what the provider read becomes events, each checked against the age window, remembered once and dispatched. */
+async function deliverEvents(deps: HookIngressDeps, orgId: OrgId, hook: HookRecord, normalized: ReturnType<HookProvider["normalize"]>, now: number): Promise<HookReply> {
+  const log = logOf(deps);
   if ("tenantMismatch" in normalized) {
     log("hook.tenant_mismatch", { hookId: hook.hookId });
     return forbidden();

@@ -104,10 +104,10 @@ describe("verifySnsMessage: AWS's documented rules", () => {
     const { verify, net } = await verifier();
     expect(await verify(notification({}, { version: "1", hash: "sha1" }))).toBe(false);
     expect(await verify(notification({}, { version: "1", hash: "sha256" }))).toBe(false);
-    expect(await verify(notification({}, { version: "2", hash: "sha1" }))).toBe(false);
     expect(await verify(notification({}, { version: "3" }))).toBe(false);
     expect(await verify(notification({}, { version: "" }))).toBe(false);
     expect(net.certRequests).toEqual([]);
+    expect(await verify(notification({}, { version: "2", hash: "sha1" }))).toBe(false);
     expect(await verify(notification({}, { version: "2" }))).toBe(true);
   });
 
@@ -411,7 +411,8 @@ describe("spoofing: nothing is trusted that the signature does not cover", () =>
       notification({}, { certUrl: CERT_URL_OF("expired") }),
     ];
     for (const text of attempts) expect(await w.receive(snsDelivery(hook, text)), text.slice(0, 60)).toEqual(FORBIDDEN);
-    expect(net.certRequests).toEqual([CERT_URL_OF("expired")]);
+    // Only a URL that passed the host rules is ever fetched: the good one (cached after the first use) and the expired certificate's.
+    expect(net.certRequests).toEqual([SNS_CERT_URL, CERT_URL_OF("expired")]);
     expect(w.dispatched).toEqual([]);
     noWrites(w, mark);
   });
@@ -650,7 +651,7 @@ describe("the CloudWatch provider", () => {
     const setup = cloudwatchProvider.setupFor?.(hook);
     expect(setup?.steps).toEqual([`Subscribe this URL to ${SNS_TOPIC_ARN} with protocol HTTPS, and set the topic's SignatureVersion to 2. Leave raw message delivery off, because raw messages carry no signature. Rovara confirms the subscription itself.`]);
     expect(setup).not.toHaveProperty("payloadTemplate");
-    expect(cloudwatchProvider.setupFor?.({ ...hook, source: "datadog" } as HookRecord)).toBeUndefined();
+    expect(cloudwatchProvider.setupFor?.({ ...hook, source: "datadog" })).toBeUndefined();
   });
 });
 

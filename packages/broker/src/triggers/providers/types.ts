@@ -17,12 +17,14 @@ export interface HookSetup {
 
 export interface HookProvider {
   source: HookSource;
-  /** Who makes the secret: Rovara (shown once on creation) or the vendor (the person pastes it in). */
-  secretOrigin: "rovara" | "vendor";
-  auth: "hmac" | "token";
+  /** Who makes the secret: Rovara (shown once on creation), the vendor (the person pastes it in), or nobody (an SNS hook has none: the message's own signature is the proof). */
+  secretOrigin: "rovara" | "vendor" | "none";
+  auth: "hmac" | "token" | "sns";
   /** What to set at the vendor, when it is more than pasting an address and a secret. */
   setup?: HookSetup;
-  /** Whether `raw` (the bytes as they arrived) and the headers prove the sender holds `secret`. Never throws for a malformed delivery: it answers false. */
+  /** What to set at the vendor for this hook in particular (its own topic, say); undefined when the hook is not one this provider reads. Used in place of `setup` when present. */
+  setupFor?(hook: HookRecord): HookSetup | undefined;
+  /** Whether `raw` (the bytes as they arrived) and the headers prove the sender holds `secret`. Never throws for a malformed delivery: it answers false. An SNS provider answers false always: its deliveries are checked by `verifySnsMessage`, not by a secret. */
   verify(raw: Buffer, headers: HookHeaders, secret: string): boolean;
   /** The events of a verified, parsed body. Ingress sets `project` and `hookId` on each from the hook record afterwards, whatever this answers. */
   normalize(body: unknown, headers: HookHeaders, hook: HookRecord): Normalized;
