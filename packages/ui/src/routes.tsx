@@ -1,3 +1,4 @@
+import { HomeScreen } from "./screens/home/HomeScreen.js";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams, type RouteObject } from "react-router";
@@ -27,7 +28,7 @@ function Welcome() {
 }
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
  const children: RouteObject[] = [
- { index: true, element: <Page title="Home" /> }, { path: "live", element: <Page title="Live" /> },
+ { index: true, element: <HomeScreen /> }, { path: "live", element: <Page title="Live" /> },
  { path: "projects/:name", element: <Page title="Project" /> }, { path: "sessions/:id", element: <Page title="Session" /> },
  { path: "agents", element: <Page title="Agent directory" /> }, { path: "agents/new", element: <Page title="Create an agent" /> },
  { path: "agents/:id", element: <Page title="Agent" /> }, { path: "agents/:id/edit", element: <Page title="Edit agent" /> },

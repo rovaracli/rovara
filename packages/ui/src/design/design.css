@@ -4,7 +4,7 @@ button,input,textarea,select{font:inherit}
 button,a,input,textarea,[tabindex]{-webkit-tap-highlight-color:transparent}:focus-visible{outline:2px solid var(--rv-focus);outline-offset:3px}h1,h2,h3,p{margin:0}h1{font-size:var(--rv-font-xxl);line-height:1.2;letter-spacing:-.025em}h2{font-size:var(--rv-font-xl);line-height:1.35}h3{font-size:var(--rv-font-lg)}a{color:var(--rv-accent-text);text-underline-offset:3px}
 button{cursor:pointer}
 button:disabled{cursor:default;opacity:.65}
-.rv-button{display:inline-flex;align-items:center;justify-content:center;gap:var(--rv-space-2);min-height:44px;padding:var(--rv-space-2) var(--rv-space-4);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);font-weight:550;background:var(--rv-bg-raised);color:var(--rv-text);text-decoration:none;transition:background-color var(--rv-motion-fast),border-color var(--rv-motion-fast)}
+.rv-button{display:inline-flex;align-items:center;justify-content:center;gap:var(--rv-space-2);min-height:44px;padding:var(--rv-space-2) var(--rv-space-4);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);font-weight:550;background:var(--rv-bg-raised);color:var(--rv-text);text-decoration:none}
 .rv-button-primary{background:var(--rv-accent);border-color:var(--rv-accent);color:var(--rv-on-accent)}
 .rv-button-danger{background:var(--rv-danger);border-color:var(--rv-danger);color:var(--rv-on-danger)}
 .rv-button-quiet{border-color:transparent;background:transparent}
