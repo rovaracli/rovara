@@ -42,7 +42,7 @@ it("focuses the new heading on a route change", async () => {
 });
 it("opens the workspace menu and returns focus when it closes", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });const menu = screen.getByRole("button", { name: "Open workspace menu" });menu.focus();fireEvent.click(menu);
- expect(await screen.findByRole("dialog", { name: "Workspace" })).toBeTruthy();fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());await waitFor(() => expect(document.activeElement).toBe(menu));f.close();
+ expect(await screen.findByRole("dialog", { name: "Workspace" })).toBeTruthy();const ids = [...document.querySelectorAll("[id]")].map(element => element.id);expect(new Set(ids).size).toBe(ids.length);fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());await waitFor(() => expect(document.activeElement).toBe(menu));f.close();
 });
 it("signs out through the host and begins a deliberate sign in", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("button", { name: "Open account menu" }));fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
