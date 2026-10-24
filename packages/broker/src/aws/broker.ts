@@ -266,6 +266,9 @@ import {
   workflowPublicationContext,
   workflowPublicationContextDigest,
   PER_TASK_BUDGET_USD,
+  chainRunKey,
+  type ChainId,
+  type ChainRunId,
   ROVARA_CODE_AGENT_ID,
   ResolvedRecipeSchema,
   cloudwatchRoleAccount,
@@ -6063,6 +6066,11 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       // What these reads cannot answer is the retryable answer of the proxy, as the payer's read is; nothing is minted.
       const testCapUsd = payment?.origin === "test_run" ? await unreadable("spend_policy", () => readSpendPolicy(dependencies, taskOrg)).then((policy) => policy.perTestCapUsd) : undefined;
       const stepBudgetUsd = payment === undefined ? undefined : await unreadable("step_budget", () => stepBudgetOf(dependencies, task, current));
+      // Plan 4 Task 28: a chain step's key says which chain and which run it is for (its ledger lines carry both). The chain is the run's, read under the task's own org; a run that
+      // cannot be read is the proxy's retryable answer, and a run that is not there leaves the key as any agent key is.
+      const chainRun = payment === undefined || task.chain === undefined ? undefined
+        : await unreadable("chain_run", () => getItem<{ chainId?: string }>(dependencies, chainRunKey(taskOrg, task.chain!.chainRunId as ChainRunId, "META")));
+      const chainTag = chainRun?.chainId === undefined || task.chain === undefined ? undefined : { chainId: chainRun.chainId as ChainId, chainRunId: task.chain.chainRunId as ChainRunId };
       return {
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
         ...(route === undefined ? {} : { route }),
@@ -6072,7 +6080,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
         // pauses the task with the scope that is full.
         ...(payment === undefined ? { recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }] } : {
           agentName: task.agent?.name ?? ROVARA_CODE_NAME,
-          tags: mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId }),
+          tags: mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId, ...(chainTag === undefined ? {} : { chain: chainTag }) }),
           scopes: payment.scopes,
           operationKeyIds: current.modelKeyIds ?? [],
           planning: current.workflowMode === "PLAN",
