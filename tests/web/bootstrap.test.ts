@@ -17,3 +17,5 @@ it("sets the nonce and disables Zod JIT before rendering or parsing API data", (
  mountWebApp(window);expect(setNonce).toHaveBeenCalledWith("fixtureNonce123");expect(render).toHaveBeenCalledTimes(1);
 });
 it("refuses a missing application root with fixed text", () => { expect(() => mountWebApp(window)).toThrow("App root missing"); });
+
+it("refuses to render when the CSP nonce is missing", () => { document.body.innerHTML = '<div id="root"></div>';expect(() => mountWebApp(window)).toThrow("App nonce missing");expect(render).not.toHaveBeenCalled(); });

@@ -4,6 +4,7 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, type AppNav } from "@agentx/contracts/web";
+import { App } from "../../packages/ui/src/App.js";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -39,8 +40,8 @@ it("focuses the new heading on a route change", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("link", { name: "Live" }));await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Live" })));f.close();
 });
 it("opens the workspace menu and returns focus when it closes", async () => {
- const f = shell();await screen.findByRole("heading", { name: "Home" });const menu = screen.getByRole("button", { name: "Open workspace menu" });fireEvent.click(menu);
- expect(await screen.findByRole("dialog", { name: "Workspace" })).toBeTruthy();fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());f.close();
+ const f = shell();await screen.findByRole("heading", { name: "Home" });const menu = screen.getByRole("button", { name: "Open workspace menu" });menu.focus();fireEvent.click(menu);
+ expect(await screen.findByRole("dialog", { name: "Workspace" })).toBeTruthy();fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());await waitFor(() => expect(document.activeElement).toBe(menu));f.close();
 });
 it("signs out through the host and begins a deliberate sign in", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("button", { name: "Open account menu" }));fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
@@ -57,4 +58,14 @@ it("distinguishes a failed chunk import from another page error", () => {
 for (const theme of ["light", "dark"] as const) it("has no automated accessibility violations in " + theme, async () => { const f = shell("/app", theme);await screen.findByRole("heading", { name: "Home" });await expectNoAxeViolations(f.container);f.close(); });
 it("marks admin routes web-only and does not add them when the server disables admin", () => {
  const routes = appRoutes({ ...features, admin: true, usage: true });const children = routes.flatMap(route => route.children ?? []);expect(children.find(route => route.path === "admin/*")?.handle).toEqual({ webOnly: true });expect(appRoutes(features).flatMap(route => route.children ?? []).some(route => route.path === "admin/*")).toBe(false);
+});
+
+it("starts signup without navigation reads and welcome with only a me read", async () => {
+ for (const path of ["/app/signup", "/app/welcome"]) {
+ const f = fakeHost(async () => ({ status: 200, body: { developer: { id: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }));
+ f.host.currentPath = () => path;
+ const mounted = renderUi(h(App, { host: f.host, createRouter: routes => createMemoryRouter(routes, { initialEntries: [path] }) }));
+ await screen.findByRole("heading", { name: path === "/app/signup" ? "Start working together" : "Welcome, Priya" });
+ expect(f.request.mock.calls.map(([request]) => request.path)).toEqual(path === "/app/signup" ? [] : ["/v1/app/me"]);mounted.unmount();
+ }
 });
