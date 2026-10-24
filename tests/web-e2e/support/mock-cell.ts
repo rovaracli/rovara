@@ -5,7 +5,7 @@ import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel } from "@agentx/contracts";
+import { AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
 import { createAppHandler } from "../../../packages/web/src/server/handler.js";
 import { authenticateWebRequest, webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 import type { DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
@@ -25,7 +25,7 @@ if (!existsSync(key) || !existsSync(cert)) {
  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "7", "-keyout", key, "-out", cert, "-config", config], { stdio: "ignore" });
 }
 let current = scenario("shell"), revoked = false;
-const requests: Array<{ method: string; path: string }> = [];
+const requests: Array<{ method: string; path: string; body?: unknown }> = [];
 const unavailable = async (): Promise<never> => { throw new Error("Mock operation is not configured."); };
 const deps: DeveloperRouteDependencies = {
  tableName: "mock-state", now: Date.now,
@@ -45,8 +45,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
  if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);revoked = false;requests.length = 0;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/requests") { json(200, requests);return; }
- requests.push({ method, path: url.pathname });
+ const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
  if (url.pathname === "/v1/auth/browser/authorize") {
  const path = url.searchParams.get("return_to") ?? "/app";const target = BROWSER_RETURN_TO.test(path) ? path : "/app";
  response.writeHead(200, { ...CONFIRM_PAGE_HEADERS });response.end(`<!doctype html><html lang="en"><head><title>Mock sign in</title></head><body><main><h1>Sign in to the mock cell</h1><form method="post" action="/v1/auth/browser/callback"><input type="hidden" name="return_to" value="${target.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"><button>Sign in</button></form></main></body></html>`);return;
@@ -66,6 +67,26 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/auth/browser/sign-out") { revoked = true;response.writeHead(204, { "set-cookie": "__Host-agentx_review_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" });response.end();return; }
  if (url.pathname === "/v1/web/nav") { json(200, current.nav);return; }
  if (url.pathname === "/v1/web/me") { json(200, { ...current.me, csrf: appCsrfTokenFor(FIXTURE_SESSION) });return; }
+ if (current.session !== undefined) {
+ const session = current.session, path = "/v1/web/sessions/" + session.sessionId;
+ if (url.pathname === path && method === "GET") { json(200, { session });return; }
+ if (url.pathname === path + "/messages" && method === "GET") { json(200, { messages: current.messages ?? [] });return; }
+ if (url.pathname === path + "/events" && method === "GET") { json(200, { events: [] });return; }
+ if (url.pathname === path + "/presence" && method === "POST") { json(200, { viewingNow: session.viewingNow });return; }
+ if (url.pathname === path + "/follow" && (method === "POST" || method === "DELETE")) { const following = method === "POST";current.session = SessionViewSchema.parse({ ...session, you: { ...session.you, following } });json(200, { following });return; }
+ if (url.pathname === path + "/shares" && method === "GET") { json(200, { shares: current.shares ?? [] });return; }
+ if ((url.pathname === path + "/messages" && method === "POST") || (url.pathname === path + "/shares" && method === "PUT")) {
+ let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 12000) throw new Error("Mock body limit."); }
+ const input = JSON.parse(body) as Record<string, unknown>, requestId = SessionMakeAgentBodySchema.shape.requestId.parse(input.requestId);
+ if (method === "POST") {
+ const message = SessionMessageSchema.parse({ messageId: "msg_" + String((current.messages?.length ?? 0) + 1).padStart(20, "a"), sessionId: session.sessionId, kind: input.kind, source: "app", author: { developerId: FIXTURE_DEVELOPER, name: "Priya" }, text: input.text, rev: 1, createdAt: new Date().toISOString(), ...(input.anchor === undefined ? {} : { anchor: input.anchor, anchorState: "current" }), ...(input.threadId === undefined ? {} : { threadId: input.threadId }) });
+ current.messages = [...current.messages ?? [], message];evidence.body = { requestId, kind: message.kind };json(200, message);return;
+ }
+ const principal = AgentPrincipalSchema.parse(input.principal), share = SessionShareSchema.parse({ principal, level: input.level, sharedBy: { developerId: FIXTURE_DEVELOPER, name: "Priya" }, sharedAt: new Date().toISOString() });current.shares = [...current.shares ?? [], share];evidence.body = { requestId, principal, level: share.level };json(200, { share });return;
+ }
+ if (url.pathname === "/v1/web/org/members" && method === "GET") { json(200, AppOrgMembersResponseSchema.parse({ members: [{ developerId: FIXTURE_DEVELOPER, name: "Priya", role: "member", identities: ["cloud"], joinedAt: "2026-10-23T12:00:00.000Z" }, { developerId: "b".repeat(64), name: "Arjun", role: "member", identities: ["cloud"], joinedAt: "2026-10-23T12:00:00.000Z" }] }));return; }
+ if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, { projects: [] });return; }
+ }
  if (url.pathname === "/v1/web/home") { json(200, current.home);return; }
  if (url.pathname === "/v1/web/realtime/token" && method === "POST") { json(200, RealtimeTokenResponseSchema.parse({ token: "fixture-realtime-value", expiresAt: new Date(Date.now() + 900_000).toISOString(), endpoint: origin.replace("https:", "wss:") + "/event/realtime", channels: { user: userChannel(FIXTURE_ORG, FIXTURE_DEVELOPER), projects: { payments: projectChannel(FIXTURE_ORG, "payments") } } }));return; }
  if (url.pathname === "/v1/web/changes") { json(200, { notices: [], next: "settled" });return; }
