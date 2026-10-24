@@ -333,3 +333,30 @@ describe("an owner with no usable name is shown with a fixed label, never the cr
     expect(entries.slice(1).map((entry) => entry.author)).toEqual(["a member"]);
   });
 });
+
+describe("a taker who was merged into another member (12a review M-3)", () => {
+  const DUPLICATE = "9".repeat(64);
+  /** Sam's earlier account, merged into Sam: the task was taken over under it. */
+  const takenAsDuplicate = (fixture: ReturnType<typeof pageTask>) => {
+    const record = fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord;
+    fixture.db.set({ ...record, currentOwner: { developerId: DUPLICATE, name: "Sam", provider: "oidc", since: SINCE } });
+  };
+  const withMerge = (fixture: ReturnType<typeof pageTask>) => ({ ...fixture.deps, resolveMember: async (id: string) => (id === DUPLICATE ? SAM.developerId : id) });
+
+  it("is the task's owner on the person's own tasks and on the task page, read as the member they became", async () => {
+    const fixture = pageTask();
+    takenAsDuplicate(fixture);
+    const deps = withMerge(fixture);
+    await expect(loadOwnedTask(deps, SAM, fixture.taskId)).resolves.toMatchObject({ taskId: fixture.taskId });
+    await expect(resolveTaskAccess(deps, SAM, fixture.taskId, "read")).resolves.toMatchObject({ role: "owner" });
+    // Anyone else, the creator included, is still not the owner.
+    expect((await refusal(loadOwnedTask(deps, PRIYA, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
+    expect((await refusal(loadOwnedTask(deps, OMAR, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
+  });
+
+  it("reads exactly as before without a way to follow merges: only the stored id is the owner", async () => {
+    const fixture = pageTask();
+    takenAsDuplicate(fixture);
+    expect((await refusal(loadOwnedTask(fixture.deps, SAM, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
+  });
+});

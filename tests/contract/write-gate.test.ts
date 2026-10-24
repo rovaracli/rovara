@@ -1956,6 +1956,44 @@ describe("after a take-over (Plan 5 Task 12a)", () => {
     expect(w.vendor.state.vendorCalls[0]).toMatchObject({ requestedBy: CARA });
   });
 
+  it("fences a decision on the owner it was judged under: a take-over that commits between the check and the claim refuses the creator and leaves the approval pending (12a review M-4)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    let flipped = false;
+    const racing = { ...w.deps, documentClient: { async send(command: unknown) {
+      if (!flipped && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { flipped = true; w.task(taken(CARA, "Cara")); }
+      return w.db.send(command as never);
+    } } };
+    expect(await code(decideApproval(racing, w.caller(ALICE), id, { requestId: REQ(910), decision: "APPROVE" }))).toEqual({ code: "FORBIDDEN", message: "Only Cara or a project maintainer can decide this." });
+    expect(flipped).toBe(true);
+    expect((await w.write(id)).status).toBe("PENDING");
+    expect(w.vendor.state.vendorCalls).toEqual([]);
+  });
+
+  it("lets a maintainer's decision stand through that race: it is judged again under the new owner and then applies as the taker's request (12a review M-4)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    let flipped = false;
+    const racing = { ...w.deps, documentClient: { async send(command: unknown) {
+      if (!flipped && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { flipped = true; w.task(taken(CARA, "Cara")); }
+      return w.db.send(command as never);
+    } } };
+    expect(await decideApproval(racing, w.caller(BOB), id, { requestId: REQ(911), decision: "APPROVE" })).toEqual({ status: "APPROVED_DONE" });
+    expect(flipped).toBe(true);
+    expect(w.vendor.state.vendorCalls[0]).toMatchObject({ requestedBy: CARA });
+  });
+
+  it("answers a retryable code, not a refusal, when the task can't be read while judging who may decide, and decides nothing (12a review M-5)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { pk?: string } | undefined)?.pk === `DEVTASK#${TASK}`, error: { name: "ProvisionedThroughputExceededException" }, times: 2 });
+    expect(await code(w.approve(ALICE, id))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((await w.write(id)).status).toBe("PENDING");
+    // The read comes back: the same person decides, and it runs once.
+    expect(await w.approve(ALICE, id)).toEqual({ status: "APPROVED_DONE" });
+    expect(w.vendor.state.vendorCalls).toHaveLength(1);
+  });
+
   it("a task whose taker can't be read decides nothing: nobody may decide, the creator who handed it over is not named, and nothing runs", async () => {
     const w = world();
     const id = await w.waiting(1);
