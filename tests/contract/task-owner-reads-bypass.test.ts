@@ -139,4 +139,32 @@ export async function ownerOf(taskId: string) {
 }`);
     expect(problemsOf(hits, new Map<string, Klass>()).unclassified).toEqual([hit("contracts/__bypass__/c.ts", "ownerOf", ".developerName")]);
   });
+
+  it("finds a read on a structural type with an owner field, such as `{ developerId: string }`, when it is named for a task or carries the task's id", () => {
+    const hits = scanVirtual(BROKER_ROOT, "__bypass__/structural.ts", `
+export function viaLiteral(task: { developerId: string }) { return task.developerId; }
+export function viaPick(record: { taskId: string; developerName: string; workspaceId: string }) { return record.developerName; }
+export function viaDestructuring({ slackUserId }: { taskId: string; slackUserId?: string }) { return slackUserId; }
+export function aPerson(person: { developerId: string }) { return person.developerId; }`);
+    expect(problemsOf(hits, new Map<string, Klass>()).unclassified).toEqual([
+      hit("__bypass__/structural.ts", "viaDestructuring", ".slackUserId"),
+      hit("__bypass__/structural.ts", "viaLiteral", ".developerId"),
+      hit("__bypass__/structural.ts", "viaPick", ".developerName"),
+    ]);
+  });
+
+  it("does not let a row cover a second read of the same field in the same function: each read is a row of its own", () => {
+    const source = `${IMPORT}
+export function owns(task: DeveloperTaskRecord, other: DeveloperTaskRecord) {
+  const first = task.developerId;
+  return first === other.developerId;
+}`;
+    const hits = scanVirtual(BROKER_ROOT, "__bypass__/second.ts", source);
+    expect(hits).toHaveLength(2);
+    const one = rowsOf([["__bypass__/second.ts", "owns", "principal", ".developerId"]]);
+    expect(problemsOf(hits, one).unclassified).toEqual([hit("__bypass__/second.ts", "owns", ".developerId@2")]);
+    // A row that says how many reads it covers covers exactly that many.
+    expect(problemsOf(hits, rowsOf([["__bypass__/second.ts", "owns", "principal", ".developerId*2"]]))).toEqual({ unclassified: [], stale: [], notRouted: [] });
+    expect(problemsOf(hits.slice(0, 1), rowsOf([["__bypass__/second.ts", "owns", "principal", ".developerId*2"]])).stale).toEqual([hit("__bypass__/second.ts", "owns", ".developerId@2")]);
+  });
 });
