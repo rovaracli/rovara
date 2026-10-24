@@ -178,6 +178,47 @@ describe("making an agent from a session", () => {
     expect(await extendsOf("A4")).toBeUndefined();
   });
 
+  it("builds on a published agent it may use, but not one that has no published version yet, even when it is shared", async () => {
+    const t = world();
+    const draftOnly = await t.store.create({ orgId: ORG_A, name: "Unpublished", owner: { kind: "member", developerId: PRIYA }, createdBy: PRIYA });
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, agent: { agentId: draftOnly.agentId, name: draftOnly.name, version: 1 } });
+    await t.agents(PRIYA, "PUT", `/v1/app/agents/${draftOnly.agentId}/shares`, { requestId: randomUUID(), shares: [{ principal: { kind: "member", developerId: MAX }, level: "use" }] });
+    expect((await t.make(MAX, { name: "Not yet" }))["agent"]).toBeDefined();
+    expect(((await t.store.getDraft(ORG_A, (await t.store.list(ORG_A)).find((a) => a.name === "Not yet")!.agentId))?.extends)).toBeUndefined();
+  });
+
+  it("uses the task's request only when the task is this org's and has some: otherwise the title, and nothing at all when what is left is empty", async () => {
+    const foreign = world();
+    foreign.w.db.set({ ...foreign.w.db.get(taskKey(foreign.made.taskId))!, orgId: ORG_B });
+    expect(((await foreign.make(MAX, { name: "F" }))["draft"] as { overlay: { instructions?: string } }).overlay.instructions).toBe("Bump the Stripe SDK");
+    const blank = world({ goal: "   \n " });
+    expect(((await blank.make(MAX, { name: "B" }))["draft"] as { overlay: { instructions?: string } }).overlay.instructions).toBe("Bump the Stripe SDK");
+    const invisible = world({ goal: "\u200b\u2060" });
+    expect(((await invisible.make(MAX, { name: "I" }))["draft"] as { overlay: Record<string, unknown> }).overlay).toEqual({});
+    const ascii = world({ goal: "a".repeat(9000) });
+    expect(((await ascii.make(MAX, { name: "A" }))["draft"] as { overlay: { instructions: string } }).overlay.instructions).toHaveLength(8192);
+  });
+
+  it("refuses to guess when the right can't be checked: a failing lookup is not a refusal for the route and not a right for the view", async () => {
+    const t = world();
+    const roleOf = t.w.members.roleOf;
+    t.w.members.roleOf = () => Promise.reject(new Error("the members service is down"));
+    const failed = await code(t.make(MAX, { name: "Down" }));
+    expect(failed).toMatchObject({ code: undefined });
+    expect(failed?.message).toBe("the members service is down");
+    expect(t.agentItems()).toHaveLength(0);
+    expect(await code(t.session(MAX, "GET", `/v1/app/sessions/${t.sid}`))).toBeUndefined();
+    expect((await t.session(MAX, "GET", `/v1/app/sessions/${t.sid}`) as { session: { you: { actions: string[] } } }).session.you.actions).not.toContain("make_agent");
+    t.w.members.roleOf = roleOf;
+    expect((await t.make(MAX, { name: "Up" }))["agent"]).toBeDefined();
+  });
+
+  it("refuses an origin the store can't read, whoever passes it", async () => {
+    const t = world();
+    expect(await code(t.store.create({ orgId: ORG_A, name: "Bad origin", owner: { kind: "member", developerId: PRIYA }, createdBy: PRIYA, origin: { kind: "session", sessionId: "nope", createdBy: PRIYA, createdAt: "x" } as never }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(t.agentItems()).toHaveLength(0);
+  });
+
   it("answers a repeat of the same request with the same agent and writes nothing more; the same id for another request is a mistake", async () => {
     const t = world();
     const requestId = randomUUID();
@@ -318,6 +359,27 @@ describe("the origin is set once, here, and never changes", () => {
     t.w.db.delete(agentSessionKey(ORG_A, t.sid, "META"));
     expect(originOf(await t.draftOf(MAX, made.agentId))).toEqual({ kind: "session", visible: false });
     expect(t.logs).toEqual([]);
+  });
+
+  it("reads the session once for all the versions made from it", async () => {
+    const t = world();
+    const made = (await t.make(MAX, { name: "Many" }))["agent"] as { agentId: string };
+    await t.agents(MAX, "POST", `/v1/app/agents/${made.agentId}/publish`, { requestId: randomUUID(), expectedRevision: 1 });
+    for (const revision of [2, 3]) {
+      await t.agents(MAX, "PUT", `/v1/app/agents/${made.agentId}/draft`, { requestId: randomUUID(), expectedRevision: revision - 1, overlay: { instructions: `Take ${String(revision)}.` } });
+      await t.agents(MAX, "POST", `/v1/app/agents/${made.agentId}/publish`, { requestId: randomUUID(), expectedRevision: revision });
+    }
+    const meta = agentSessionKey(ORG_A, t.sid, "META");
+    const send = t.w.db.send.bind(t.w.db);
+    let reads = 0;
+    t.w.db.send = ((command: { constructor: { name: string }; input?: { Key?: { pk?: string; sk?: string } } }) => {
+      if (command.constructor.name === "GetCommand" && command.input?.Key?.pk === meta.pk && command.input.Key.sk === meta.sk) reads += 1;
+      return send(command as never);
+    }) as never;
+    const listed = (await t.agents(MAX, "GET", `/v1/app/agents/${made.agentId}/versions`))["versions"] as Array<Record<string, unknown>>;
+    expect(listed).toHaveLength(3);
+    expect(listed.every((entry) => originOf(entry)?.["visible"] === true)).toBe(true);
+    expect(reads).toBe(1);
   });
 
   it("is copied unchanged into each version published from the draft, and shown with the version", async () => {

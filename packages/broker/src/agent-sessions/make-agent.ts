@@ -131,7 +131,7 @@ export async function makeAgentFromSession(deps: MakeAgentDependencies, caller: 
   // Nothing is told to a person who can't view the session: it is not found, however the rest of the request looks.
   const access = await requireSessionLevel(deps, caller, sessionId, "view", "make an agent from it");
   const { session } = access;
-  if (session.kind !== "task" || session.subject.kind !== "task" || session.project === undefined) throw agentXError("CONFIG_INVALID", "This session has no project to make an agent in.");
+  if (session.subject.kind !== "task" || session.project === undefined) throw agentXError("CONFIG_INVALID", "This session has no project to make an agent in.");
   const agentCaller: AgentCaller = { orgId: caller.orgId, developerId: caller.developerId, orgRole: access.orgRole };
   const { mark, replay } = await markRequest(agents, agentCaller, "create-from-session", session.sessionId, input);
   if (replay !== undefined) {
