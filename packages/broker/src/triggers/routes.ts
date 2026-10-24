@@ -36,6 +36,7 @@ import { readGuardrails } from "../agents/guardrails.js";
 import { jsonBody, markRequest, parseBody, type AgentRouteDependencies } from "../agents/routes.js";
 import { requireChainAccess, chainAccess, type ChainAccessDeps } from "../chains/access.js";
 import { displayNameOf } from "../chains/gates.js";
+import { healGithubRepoIndex } from "./github-events.js";
 import { closeTriggerEnableApproval, targetEventItem } from "./lifecycle.js";
 import { triggerProblemError, triggerProblems, triggerWords, type TriggerProblem } from "./requirements.js";
 import { isTriggerConflict, type TriggerRecord, type TriggerSpec, type TriggerStore } from "./store.js";
@@ -243,6 +244,7 @@ async function change(deps: Deps, caller: AgentCaller, wanted: Wanted, requestId
     ...(existing?.lastFiredAt === undefined ? {} : { lastFiredAt: existing.lastFiredAt }), ...(existing?.lastRunId === undefined ? {} : { lastRunId: existing.lastRunId }), ...(existing?.lastTaskId === undefined ? {} : { lastTaskId: existing.lastTaskId }),
   };
   const result: Stored = { triggerId: wanted.triggerId, waiting: confirm, created: existing === undefined };
+  await healIndexIfOn(deps, stored);
   const written = existing === undefined
     ? await store.create({ record: stored, request: mark, result, extra: targetEventItem(deps, caller.orgId, wanted.target, "trigger_created", { triggerId: wanted.triggerId, by: caller.developerId }) })
     : await store.update({
@@ -259,6 +261,14 @@ async function change(deps: Deps, caller: AgentCaller, wanted: Wanted, requestId
   }
   if (confirm) return waitForPerson(deps, caller, requestId, settled);
   return new StatusReply(status === "created" ? 201 : 200, { trigger: await viewOf(deps, settled) });
+}
+
+/**
+ * A GitHub trigger that is on finds its project through the repository index (Task 21), which a project registered before that has no rows of: turning the trigger on (or
+ * confirming it, or saving it again while on) writes the rows of the project's latest revision first, so a fault here leaves the trigger as it was and the request can be repeated.
+ */
+async function healIndexIfOn(deps: Deps, trigger: Pick<TriggerRecord, "orgId" | "project" | "spec" | "enabled">): Promise<void> {
+  if (trigger.enabled && trigger.spec.kind === "event" && trigger.spec.source === "github") await healGithubRepoIndex(deps, trigger.orgId, trigger.project);
 }
 
 type Patch = Parameters<TriggerStore["update"]>[0]["patch"];
@@ -484,6 +494,7 @@ async function confirmEnable(deps: ApprovalDependencies, record: ApprovalRecord)
   if (trigger === undefined) throw agentXError("NOT_FOUND", "this trigger was deleted after it was asked to be turned on");
   if (specDigestOf(trigger) !== subject.specDigest) throw stale();
   if (trigger.enabled && trigger.createdBy === record.requestedBy) {
+    await healIndexIfOn(routeDeps, trigger);
     await syncSchedule(routeDeps, trigger, false);
     return;
   }
@@ -492,6 +503,7 @@ async function confirmEnable(deps: ApprovalDependencies, record: ApprovalRecord)
   const next: TriggerRecord = { ...trigger, createdBy: record.requestedBy, enabled: true };
   const [problem] = await triggerProblems(routeDeps, next);
   if (problem !== undefined) throw triggerProblemError(problem);
+  await healIndexIfOn(routeDeps, next);
   let written: TriggerRecord;
   try {
     written = await store.update({
