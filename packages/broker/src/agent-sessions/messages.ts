@@ -128,7 +128,7 @@ export const plainMentions = (text: string): string => text.replace(SLACK_MARKUP
  * The text with its control and format characters taken out (zero-width spaces and joiners, soft hyphens, direction marks), except the line breaks and tabs the text keeps. This comes BEFORE
  * redaction: a secret split by an invisible character is one secret to whoever copies the text, and the redactor must see it whole.
  */
-const withoutInvisible = (raw: string): string => raw.replace(/(?![\t\n\r])[\p{Cc}\p{Cf}]/gu, "");
+export const withoutInvisible = (raw: string): string => raw.replace(/(?![\t\n\r])[\p{Cc}\p{Cf}]/gu, "");
 
 /** A comment's text as it is stored: cleaned and redacted (the page's rules), mentions made plain, and only then cut to the limit by characters. */
 function storedText(raw: string, tooLong: string = TOO_LONG_TEXT): string {

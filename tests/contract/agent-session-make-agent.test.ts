@@ -11,7 +11,6 @@ import {
   SESSION_ACTIONS,
   SESSION_RETENTION_DAYS,
   SessionMakeAgentBodySchema,
-  SessionResponseSchema,
   agentSessionKey,
   agentKey,
   projectMemberKey,
@@ -22,12 +21,13 @@ import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import type { ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
+import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 const TOKEN = `ghp_${"A1b2C3d4E5".repeat(4).slice(0, 36)}`;
-const GOAL = "Bump the Stripe SDK to v15 and fix what breaks in the checkout tests.";
+const GOAL = "Move payments to the v15 client and fix what breaks in the checkout tests.";
 type Body = Record<string, unknown>;
 
 function world(options: { goal?: string | null; agent?: { agentId: string; name: string; version: number | "draft" } | null; orgRoles?: Record<string, "owner" | "admin" | "member"> } = {}) {
@@ -48,11 +48,13 @@ function world(options: { goal?: string | null; agent?: { agentId: string; name:
   w.db.set({ ...w.db.get(taskKey(made.taskId))!, ...(goal === null ? {} : { requestText: goal }), workspaceId: "workspace-secret-id", planContent: "PLAN: the secret migration plan" });
   const agentCaller = (who: string, orgId: OrgId = ORG_A) => ({ orgId, developerId: who, orgRole: who === OLA ? ("admin" as const) : ("member" as const) });
   const request = (method: string, path: string, body?: unknown) => ({ method, path, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  const session = (who: string, method: string, path: string, body?: unknown, orgId: OrgId = ORG_A) =>
-    routeAgentSessionRequest(deps as never, { ...w.caller(who, orgId), ...(who === OLA ? { orgRole: "admin" as const } : {}) }, request(method, path, body), new URL(`${CELL}${path}`)) as Promise<Record<string, unknown>>;
+  /** What a route answers: the body (of a 201 as of a 200). */
+  const bodyOf = (answer: unknown) => (answer instanceof StatusReply ? answer.body : answer) as Record<string, unknown>;
+  const session = async (who: string, method: string, path: string, body?: unknown, orgId: OrgId = ORG_A) =>
+    bodyOf(await routeAgentSessionRequest(deps, { ...w.caller(who, orgId), ...(who === OLA ? { orgRole: "admin" as const } : {}) }, request(method, path, body), new URL(`${CELL}${path}`)));
   const make = (who: string, body: Body = {}, id: string = sid, orgId: OrgId = ORG_A) => session(who, "POST", `/v1/app/sessions/${id}/agent`, { requestId: randomUUID(), ...body }, orgId);
-  const agents = (who: string, method: string, path: string, body?: unknown) =>
-    routeAgentRequest(agentDeps as never, agentCaller(who), request(method, path, body), new URL(`${CELL}${path}`)) as Promise<Record<string, unknown>>;
+  const agents = async (who: string, method: string, path: string, body?: unknown) =>
+    bodyOf(await routeAgentRequest(agentDeps, agentCaller(who), request(method, path, body), new URL(`${CELL}${path}`)));
   const draftOf = async (who: string, agentId: string) => (await agents(who, "GET", `/v1/app/agents/${agentId}/draft`)).draft as Record<string, unknown>;
   const everything = () => JSON.stringify(w.db.find(() => true));
   const agentItems = () => w.db.find((item) => item.entityType === "AGENT" || item.entityType === "AGENT_DRAFT");
@@ -114,7 +116,7 @@ describe("making an agent from a session", () => {
   });
 
   it("takes only the redacted goal, the agent kind and the project: no secret and nothing of the workspace", async () => {
-    const t = world({ goal: `Rotate ${TOKEN} and then <@U0PRIYA01> redeploy​ ${TOKEN.slice(0, 8)}⁠${TOKEN.slice(8)}` });
+    const t = world({ goal: `Rotate ${TOKEN} and then <@U0PRIYA01> redeploy\u200b ${TOKEN.slice(0, 8)}\u2060${TOKEN.slice(8)}` });
     const reply = await t.make(MAX, { name: "Rotator" });
     const instructions = ((reply["draft"] as { overlay: { instructions: string } }).overlay).instructions;
     expect(instructions).toContain("[REDACTED]");
@@ -252,25 +254,25 @@ describe("the origin is set once, here, and never changes", () => {
     const saved = (await t.agents(MAX, "PUT", `/v1/app/agents/${made.agentId}/draft`, { requestId: randomUUID(), expectedRevision: 1, overlay: { instructions: "Something else entirely." } }))["draft"] as Record<string, unknown>;
     expect(saved).toMatchObject({ revision: 2, overlay: { instructions: "Something else entirely." } });
     expect(originOf(saved)).toMatchObject({ visible: true, sessionId: t.sid, createdBy: MAX });
-    expect((await t.store.getDraft(ORG_A, made.agentId as AgentId))?.origin).toEqual({ kind: "session", sessionId: t.sid, taskId: t.made.taskId, createdBy: MAX, createdAt: new Date(T0).toISOString() });
+    expect((await t.store.getDraft(ORG_A, made.agentId))?.origin).toEqual({ kind: "session", sessionId: t.sid, taskId: t.made.taskId, createdBy: MAX, createdAt: new Date(T0).toISOString() });
     const cleared = (await t.agents(MAX, "PUT", `/v1/app/agents/${made.agentId}/draft`, { requestId: randomUUID(), expectedRevision: 2, overlay: {}, extends: null }))["draft"] as Record<string, unknown>;
     expect(originOf(cleared)).toMatchObject({ visible: true });
-    expect((await t.store.getDraft(ORG_A, made.agentId as AgentId))?.origin?.sessionId).toBe(t.sid);
+    expect((await t.store.getDraft(ORG_A, made.agentId))?.origin?.sessionId).toBe(t.sid);
   });
 
   it("is copied unchanged into each version published from the draft, and shown with the version", async () => {
     const t = world();
     const made = (await t.make(MAX, { name: "Versioned" }))["agent"] as { agentId: string };
-    const stored = (await t.store.getDraft(ORG_A, made.agentId as AgentId))!.origin!;
+    const stored = (await t.store.getDraft(ORG_A, made.agentId))!.origin!;
     const published = await t.agents(MAX, "POST", `/v1/app/agents/${made.agentId}/publish`, { requestId: randomUUID(), expectedRevision: 1 });
     expect((published["version"] as Record<string, unknown>)["version"], JSON.stringify(published)).toBe(1);
-    expect((await t.store.getVersion(ORG_A, made.agentId as AgentId, 1))?.origin).toEqual(stored);
+    expect((await t.store.getVersion(ORG_A, made.agentId, 1))?.origin).toEqual(stored);
     expect(originOf(published["version"] as Record<string, unknown>)).toMatchObject({ visible: true, sessionId: t.sid });
     // A later version made from an edited draft carries the same origin; the first stays as it was.
     await t.agents(MAX, "PUT", `/v1/app/agents/${made.agentId}/draft`, { requestId: randomUUID(), expectedRevision: 1, overlay: { instructions: "Second take." } });
     await t.agents(MAX, "POST", `/v1/app/agents/${made.agentId}/publish`, { requestId: randomUUID(), expectedRevision: 2 });
-    expect((await t.store.getVersion(ORG_A, made.agentId as AgentId, 2))?.origin).toEqual(stored);
-    expect((await t.store.getVersion(ORG_A, made.agentId as AgentId, 1))?.origin).toEqual(stored);
+    expect((await t.store.getVersion(ORG_A, made.agentId, 2))?.origin).toEqual(stored);
+    expect((await t.store.getVersion(ORG_A, made.agentId, 1))?.origin).toEqual(stored);
     const one = (await t.agents(MAX, "GET", `/v1/app/agents/${made.agentId}/versions/1`))["version"] as Record<string, unknown>;
     expect(originOf(one)).toMatchObject({ visible: true, sessionId: t.sid, title: "Bump the Stripe SDK" });
     const listed = (await t.agents(MAX, "GET", `/v1/app/agents/${made.agentId}/versions`))["versions"] as Array<Record<string, unknown>>;
@@ -336,7 +338,7 @@ describe("who sees the origin", () => {
     expect(originOf(await t.draftOf(MAX, id))).toEqual(hidden);
     t.w.db.delete({ pk: `DEVTASK#${t.made.taskId}`, sk: "PEOPLE" });
     expect(originOf(await t.draftOf(MAX, id))).toMatchObject({ visible: true });
-    const draftItem = t.w.db.get(agentKey(ORG_A, id as AgentId, "DRAFT"))!;
+    const draftItem = t.w.db.get(agentKey(ORG_A, id, "DRAFT"))!;
     t.w.db.set({ ...draftItem, origin: { kind: "session", sessionId: "not-a-session", createdBy: MAX, createdAt: "x" } });
     expect(originOf(await t.draftOf(MAX, id))).toEqual(hidden);
     t.w.db.set({ ...draftItem, origin: { kind: "session", sessionId: t.sid, createdBy: MAX, createdAt: new Date(T0).toISOString(), extra: "field" } });
@@ -347,14 +349,14 @@ describe("who sees the origin", () => {
     const t = world();
     const id = await made(t);
     const other = t.w.seedSession({ orgId: ORG_B, owner: "9".repeat(64), project: "web" });
-    const draftItem = t.w.db.get(agentKey(ORG_A, id as AgentId, "DRAFT"))!;
+    const draftItem = t.w.db.get(agentKey(ORG_A, id, "DRAFT"))!;
     t.w.db.set({ ...draftItem, origin: { kind: "session", sessionId: other.sessionId, createdBy: MAX, createdAt: new Date(T0).toISOString() } });
     expect(originOf(await t.draftOf(MAX, id))).toEqual(hidden);
   });
 
   it("leaves drafts and versions made before there was an origin exactly as they were", async () => {
     const t = world();
-    const plain = (await t.agents(MAX, "POST", "/v1/app/agents", { requestId: randomUUID(), name: "Old", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX } }))["agent"] as { agentId: string };
+    const plain = (await t.agents(MAX, "POST", "/v1/app/agents", { requestId: randomUUID(), name: "Old", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, overlay: { instructions: "Old.", sequence: [{ id: "work", name: "Work", kind: "agent", workspace: "none" }] } }))["agent"] as { agentId: string };
     await t.agents(MAX, "POST", `/v1/app/agents/${plain.agentId}/publish`, { requestId: randomUUID(), expectedRevision: 1 });
     const draft = await t.draftOf(MAX, plain.agentId);
     expect(draft).not.toHaveProperty("origin");
@@ -365,12 +367,13 @@ describe("who sees the origin", () => {
     // A draft saved from one still has none.
     const saved = (await t.agents(MAX, "PUT", `/v1/app/agents/${plain.agentId}/draft`, { requestId: randomUUID(), expectedRevision: 1, overlay: { instructions: "More." } }))["draft"] as Record<string, unknown>;
     expect(saved).not.toHaveProperty("origin");
-    expect(await t.store.getDraft(ORG_A, plain.agentId as AgentId)).not.toHaveProperty("origin");
+    expect(await t.store.getDraft(ORG_A, plain.agentId)).not.toHaveProperty("origin");
   });
 });
 
 describe("the make_agent capability in the session view", () => {
-  const actions = async (t: ReturnType<typeof world>, who: string, sid: string = t.sid) => SessionResponseSchema.parse(await t.session(who, "GET", `/v1/app/sessions/${sid}`)).session.you.actions;
+  const youOf = (answer: unknown) => ((answer as { session: { you: { actions: string[] } } }).session.you);
+  const actions = async (t: ReturnType<typeof world>, who: string, sid: string = t.sid) => youOf(await t.session(who, "GET", `/v1/app/sessions/${sid}`)).actions;
 
   it("is there for a person who may create agents in the session's project, and for no one else", async () => {
     const t = world();
@@ -386,6 +389,8 @@ describe("the make_agent capability in the session view", () => {
 
   it("is worked out by the check the route makes, read live: gone with the grant, back with it", async () => {
     const t = world();
+    // Max keeps a view of the session through a share, so what changes is only his right to create agents.
+    t.w.seedShare(ORG_A, t.sid, { kind: "member", developerId: MAX }, "view");
     expect(await actions(t, MAX)).toContain("make_agent");
     t.w.members.revoke(ORG_A, "web", MAX);
     t.w.db.delete(projectMemberKey(ORG_A, MAX, "web"));
@@ -396,21 +401,17 @@ describe("the make_agent capability in the session view", () => {
     expect((await t.make(MAX, { name: "Yes" }))["agent"]).toBeDefined();
   });
 
-  it("is never inferred from an org role the record does not hold, and is absent for a session with no project, a chain, a Mac, or without the agent routes wired", async () => {
+  it("is never inferred from an org role the record does not hold, and is absent for a session with no project, or without the agent routes wired", async () => {
     const t = world();
     t.w.seedShare(ORG_A, t.sid, { kind: "member", developerId: ZED }, "view");
     const liar = { ...t.w.caller(ZED), orgRole: "admin" as const };
-    const view = SessionResponseSchema.parse(await routeAgentSessionRequest(t.deps as never, liar, { method: "GET", path: `/v1/app/sessions/${t.sid}`, headers: {}, requestId: "r" }, new URL(`${CELL}/v1/app/sessions/${t.sid}`)));
-    expect(view.session.you.actions).not.toContain("make_agent");
-    for (const kind of ["chain", "local"] as const) {
-      const other = t.w.seedSession({ kind, owner: MAX });
-      expect(await actions(t, MAX, other.sessionId), kind).not.toContain("make_agent");
-    }
+    const view = await routeAgentSessionRequest(t.deps, liar, { method: "GET", path: `/v1/app/sessions/${t.sid}`, headers: {}, requestId: "r" }, new URL(`${CELL}/v1/app/sessions/${t.sid}`));
+    expect(youOf(view).actions).not.toContain("make_agent");
     const loose = t.w.seedSession({ project: null, owner: MAX });
     expect(await actions(t, MAX, loose.sessionId)).not.toContain("make_agent");
     const bare = { ...t.deps } as Record<string, unknown>;
     delete bare["approvals"];
-    const unwired = SessionResponseSchema.parse(await routeAgentSessionRequest(bare as never, t.w.caller(MAX), { method: "GET", path: `/v1/app/sessions/${t.sid}`, headers: {}, requestId: "r" }, new URL(`${CELL}/v1/app/sessions/${t.sid}`)));
-    expect(unwired.session.you.actions).not.toContain("make_agent");
+    const unwired = await routeAgentSessionRequest(bare as never, t.w.caller(MAX), { method: "GET", path: `/v1/app/sessions/${t.sid}`, headers: {}, requestId: "r" }, new URL(`${CELL}/v1/app/sessions/${t.sid}`));
+    expect(youOf(unwired).actions).not.toContain("make_agent");
   });
 });

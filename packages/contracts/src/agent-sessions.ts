@@ -167,8 +167,8 @@ export const LOCAL_TOOLS = ["rovara", "claude-code", "codex", "gemini-cli", "cur
 export const SESSION_LEVELS = ["view", "use", "edit"] as const;
 export const LEVEL_WORDS = { view: "can view", use: "can use", edit: "can edit" } as const;
 
-/** What a person may do on a session (`sessionActionsFor` in the broker decides who gets which). */
-export const SESSION_ACTIONS = ["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff"] as const;
+/** What a person may do on a session (`sessionActionsFor` in the broker decides who gets which; `make_agent` is added when the person may create agents in the session's project, checked live as the route checks it). */
+export const SESSION_ACTIONS = ["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff", "make_agent"] as const;
 export const SessionActionSchema = z.enum(SESSION_ACTIONS);
 export type SessionAction = z.infer<typeof SessionActionSchema>;
 
@@ -384,6 +384,33 @@ export const SessionBindingSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 export type SessionBinding = z.infer<typeof SessionBindingSchema>;
+
+// ---- an agent remembers the task it was made from (Plan 5 Task 10c)
+
+/**
+ * Where an agent came from, as its draft stores it and each version published from the draft copies it: the session it was made from (and that session's task), who made it and when. The create-from-session
+ * route sets it once; no other route can, and nothing edits it afterwards. Drafts and versions made before this have none.
+ */
+export const AgentOriginSchema = z
+  .object({ kind: z.literal("session"), sessionId: SessionIdSchema, taskId: z.string().uuid().optional(), createdBy: DeveloperIdSchema, createdAt: InstantSchema })
+  .strict();
+export type AgentOrigin = z.infer<typeof AgentOriginSchema>;
+
+/**
+ * An origin as a person reads it on a draft or a version, worked out live for them: with the session (its title and link) when they may read that session now; otherwise only `{ kind: "session", visible: false }`,
+ * with no id, no title, no person and no time, and the same once the session is deleted or past its retention.
+ */
+export const AgentOriginViewSchema = z.union([
+  z
+    .object({ kind: z.literal("session"), visible: z.literal(true), sessionId: SessionIdSchema, taskId: z.string().uuid().optional(), title: lineText(SESSION_TITLE_MAX), link: z.string().url().max(2048), createdBy: DeveloperIdSchema, createdAt: InstantSchema })
+    .strict(),
+  z.object({ kind: z.literal("session"), visible: z.literal(false) }).strict(),
+]);
+export type AgentOriginView = z.infer<typeof AgentOriginViewSchema>;
+
+/** `POST /v1/app/sessions/{id}/agent`: the name is the session's title when left out. The project, the agent kind and the goal come from the session; nothing else is taken from the body. */
+export const SessionMakeAgentBodySchema = z.object({ requestId: z.string().uuid(), name: z.string().optional() }).strict();
+export type SessionMakeAgentBody = z.infer<typeof SessionMakeAgentBodySchema>;
 
 // ---- what a refusal says (the codes are in errors.ts; the texts are exact)
 

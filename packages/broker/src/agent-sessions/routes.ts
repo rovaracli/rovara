@@ -1,6 +1,6 @@
 // The session routes (Plan 5 Task 5): `/v1/app/sessions*` for the app, CLI and MCP, and `/s/<sessionId>` for a person's browser. Each maps to a function
 // that checks the caller's level first; the reads are in read.ts and the shares in shares.ts. A session the caller can't view is `NOT_FOUND` everywhere.
-import { SessionIdSchema, STATUS_WORDS, agentXError, type SessionId } from "@agentx/contracts";
+import { SessionIdSchema, STATUS_WORDS, agentXError, type OrgId, type OrgRole, type SessionId } from "@agentx/contracts";
 import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
 import { listApprovalsFor, mayDecideApproval, shownText } from "../agents/approvals.js";
 import { mayDecideSpendRequest } from "../spend/requests.js";
@@ -11,6 +11,7 @@ import { StatusReply } from "../aws/status-reply.js";
 import { SESSION_COOKIE, escapeHtml, parseCookie, safeResponse, signInLocation, type WebResponse } from "../aws/web-session.js";
 import { randomBytes } from "node:crypto";
 import { readSessionEvents } from "./events.js";
+import { mayCreateAgentIn, makeAgentFromSession } from "./make-agent.js";
 import { followSession, recordPresence, unfollowSession } from "./followers.js";
 import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage, editSessionMessage, listSessionMessages, parseMessageBody, sendSessionMessage } from "./messages.js";
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadDependencies } from "./read.js";
@@ -34,7 +35,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?)?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent))?)?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
 const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
@@ -97,7 +98,7 @@ function queryOf(url: URL): SessionListQuery {
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
  * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET` and `POST …/messages` and `PATCH` and
- * `DELETE …/messages/{messageId}` (Task 10); `GET /v1/app/changes?since=` (the caller's own change notices) and
+ * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `GET /v1/app/changes?since=` (the caller's own change notices) and
  * `POST /v1/app/realtime/token`. Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
@@ -112,8 +113,13 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();
-  const [, rawId, shares, rawKey, rawSeq, events, person, messages, rawMessageId] = matched;
-  const read: SessionReadDependencies = deps.deciding !== undefined || deps.approvals === undefined ? deps : { ...deps, deciding: decidingOf(deps.approvals) };
+  const [, rawId, shares, rawKey, rawSeq, events, person, messages, rawMessageId, makeAgent] = matched;
+  const approvals = deps.approvals;
+  const read: SessionReadDependencies = {
+    ...(deps.deciding !== undefined || approvals === undefined ? deps : { ...deps, deciding: decidingOf(approvals) }),
+    // Task 10c: whether the person may create agents in the session's project, asked of Plan 3's own check, for the `make_agent` action.
+    ...(approvals === undefined ? {} : { mayMakeAgent: (who: { orgId: OrgId; developerId: string; orgRole: OrgRole }, project: string) => mayCreateAgentIn(approvals, who, project) }),
+  };
   const method = request.method;
   if (rawId === undefined) {
     if (method !== "GET") throw notFound();
@@ -126,6 +132,11 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   if (events !== undefined) {
     if (method !== "GET") throw notFound();
     return readSessionEvents(read, caller, sessionId, { after: url.searchParams.get("after") ?? undefined });
+  }
+  if (makeAgent !== undefined) {
+    // Task 10c: make an agent, with its draft, from this session.
+    if (method !== "POST") throw notFound();
+    return makeAgentFromSession({ ...read, approvals }, caller, sessionId, jsonBody(request));
   }
   if (messages !== undefined) {
     // Comments (Task 10) and messages to the agent (Task 11a: `kind: "steer"`, which needs "can use").

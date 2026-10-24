@@ -9,6 +9,7 @@ import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/li
 import {
   AGENT_DESCRIPTION_MAX,
   AGENT_NAME_MAX,
+  AgentOriginSchema,
   INDEX_EXPIRY_ATTRIBUTE,
   BUILTIN_AGENTS,
   EMPTY_RECIPE,
@@ -35,6 +36,7 @@ import {
   recipeProblems,
   type AgentGuardrails,
   type AgentId,
+  type AgentOrigin,
   type AgentOwner,
   type AgentPrincipal,
   type AgentXError,
@@ -88,6 +90,8 @@ export interface AgentRecord {
 export interface AgentDraft {
   overlay: RecipeOverlay;
   extends?: BaseRef;
+  /** Task 10c: the session the agent was made from. Set once, by the create-from-session route; every later draft keeps it and each version published from the draft copies it. Drafts from before have none. */
+  origin?: AgentOrigin;
   revision: number;
   updatedBy: string;
   updatedAt: string;
@@ -97,6 +101,8 @@ export interface AgentVersion {
   version: number;
   overlay: RecipeOverlay;
   extends?: BaseRef;
+  /** Task 10c: copied unchanged from the draft this version was published from. */
+  origin?: AgentOrigin;
   name: string;
   description: string;
   digest: string;
@@ -525,6 +531,8 @@ export class AgentStore {
     accountable?: { developerId: string };
     extends?: AgentId;
     overlay?: RecipeOverlay;
+    /** Task 10c: where the agent comes from. Only the create-from-session route passes it. */
+    origin?: AgentOrigin;
     createdBy: string;
     request?: RequestMark;
   }): Promise<AgentRecord> {
@@ -554,7 +562,9 @@ export class AgentStore {
       createdAt: now,
       updatedAt: now,
     };
-    const draft: AgentDraft = { overlay, ...(base === undefined ? {} : { extends: base }), revision: 1, updatedBy: input.createdBy, updatedAt: now };
+    const origin = input.origin === undefined ? undefined : AgentOriginSchema.safeParse(input.origin);
+    if (origin !== undefined && !origin.success) throw coded("CONFIG_INVALID", "origin: is not a session origin");
+    const draft: AgentDraft = { overlay, ...(base === undefined ? {} : { extends: base }), ...(origin === undefined ? {} : { origin: origin.data }), revision: 1, updatedBy: input.createdBy, updatedAt: now };
     await this.commit([
       this.put(agentKey(input.orgId, agentId, "META"), "AGENT", agent as unknown as Item),
       this.put(agentKey(input.orgId, agentId, "DRAFT"), "AGENT_DRAFT", draft as unknown as Item),
@@ -584,7 +594,8 @@ export class AgentStore {
     }
     const revision = draft.revision + 1;
     const updatedAt = this.iso();
-    const saved: AgentDraft = { overlay, ...(base === undefined ? {} : { extends: base }), revision, updatedBy: input.by, updatedAt };
+    // The origin is never written here: the update below leaves the stored one as it is, and the draft returned carries it.
+    const saved: AgentDraft = { overlay, ...(base === undefined ? {} : { extends: base }), ...(draft.origin === undefined ? {} : { origin: draft.origin }), revision, updatedBy: input.by, updatedAt };
     await this.commit([
       this.update(agentKey(input.orgId, input.agentId, "DRAFT"), {
         set: { overlay, revision, updatedBy: input.by, updatedAt, extends: base },
@@ -662,6 +673,7 @@ export class AgentStore {
       version,
       overlay,
       ...(draft.extends === undefined ? {} : { extends: draft.extends }),
+      ...(draft.origin === undefined ? {} : { origin: draft.origin }),
       name: agent.name,
       description: agent.description,
       digest: input.digest,
