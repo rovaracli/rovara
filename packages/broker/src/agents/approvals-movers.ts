@@ -39,7 +39,9 @@ async function moveOne(context: MoveContext, approvalId: ApprovalId): Promise<vo
       const successor = mode === "removed" ? await deps.signInStore.getDeveloper(to) : undefined;
       owner = { developerId: to, name: mode === "merged" ? currentOwner.name : (successor as { displayName?: string } | undefined)?.displayName ?? "the organization owner" };
     }
-    const changed = canonicalJson(approvers) !== canonicalJson(spec) || owner !== undefined;
+    // A pending take-over names the person who will own the session (Plan 5 Task 12b): when that person is merged into another member, the survivor is who it names.
+    const takeOverTarget = mode === "merged" && record.kind === "change" && record.subject.kind === "session_owner" && record.subject.to === from;
+    const changed = canonicalJson(approvers) !== canonicalJson(spec) || owner !== undefined || takeOverTarget;
     const moveRevision = stored.Item?.["moveRevision"];
     const names: Record<string, string> = { "#status": "status", "#rev": "moveRevision" };
     const values: Record<string, unknown> = { ":pending": "PENDING", ":zero": 0 };
@@ -54,6 +56,11 @@ async function moveOne(context: MoveContext, approvalId: ApprovalId): Promise<vo
       names["#movedAt"] = "movedAt";
       values[":movedBy"] = "system";
       values[":movedAt"] = movedAt;
+      if (takeOverTarget) {
+        names["#subject"] = "subject";
+        values[":subject"] = { ...record.subject, to };
+        sets.push("#subject = :subject");
+      }
       if (owner !== undefined) {
         names["#owner"] = "owner";
         values[":owner"] = owner;

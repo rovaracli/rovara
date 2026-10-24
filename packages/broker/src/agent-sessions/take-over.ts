@@ -32,7 +32,7 @@ import {
   type AnyApprovalRecord,
   type ApprovalDependencies,
 } from "../agents/approvals.js";
-import { sameMember } from "../agents/lifecycle.js";
+import { resolveMember, sameMember } from "../agents/lifecycle.js";
 import { failedIndexes, isTransactionConflict, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditSessionOwnerChanged } from "../audit/events.js";
@@ -263,7 +263,8 @@ export function registerSessionTakeOverApprovals(): void {
   // The asker and nobody else, while they can still take the session over: read now, never from what they could do when they asked.
   registerApproverRule(TAKE_OVER_RULE, async (deps, record, caller) => {
     if (!isChange(record) || record.subject.kind !== "session_owner" || caller.orgId !== record.orgId || deps.agentSessions === undefined) return false;
-    if (record.subject.to !== record.requestedBy || !await sameMember(deps, record.orgId, record.requestedBy, caller.developerId)) return false;
+    // The person it names is the person who asked, or the member they were merged into since.
+    if (!await sameMember(deps, record.orgId, record.subject.to, record.requestedBy) || !await sameMember(deps, record.orgId, record.requestedBy, caller.developerId)) return false;
     try {
       await requireTakeOver(deps.agentSessions, caller, record.subject.sessionId);
       return true;
@@ -280,7 +281,8 @@ export function registerSessionTakeOverApprovals(): void {
     // A record nobody decided is never applied: the take-over would be credited to the person who asked.
     if (record.decidedBy === undefined) throw agentXError("CONFIG_INVALID", "this change has not been decided by anyone, so it can't be applied");
     const subject = record.subject;
-    const takerId = subject.to;
+    // The taker is the member the named person is now: a person merged into another since asking is the survivor, and a merged-away id never becomes an owner.
+    const takerId = await resolveMember(deps, record.orgId, subject.to);
     if (!await sameMember(deps, record.orgId, takerId, record.decidedBy)) throw agentXError("CONFIG_INVALID", "this change was decided by someone other than the person it names, so it can't be applied");
     const stored = await new AgentSessionStore(sessions).get(record.orgId, subject.sessionId);
     if (stored === undefined) throw agentXError("NOT_FOUND", "session not found");
