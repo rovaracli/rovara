@@ -3,8 +3,10 @@
 import type { HookSource } from "@agentx/contracts";
 import { jiraProvider } from "./jira.js";
 import { linearProvider } from "./linear.js";
+import { pagerdutyProvider } from "./pagerduty.js";
+import { sentryProvider } from "./sentry.js";
 import type { HookProvider } from "./types.js";
 
 export function hookProviders(): Partial<Record<HookSource, HookProvider>> {
-  return { linear: linearProvider, jira: jiraProvider };
+  return { linear: linearProvider, jira: jiraProvider, pagerduty: pagerdutyProvider, sentry: sentryProvider };
 }

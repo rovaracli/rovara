@@ -1,4 +1,4 @@
-// What the issue providers (Linear, Jira) share when they read a vendor's body (Plan 4 Task 22). Everything a person typed into a ticket is treated as hostile text: it is cleaned
+// What the providers share when they read a vendor's body (Plan 4 Tasks 22 and 23). Everything a person typed into a ticket is treated as hostile text: it is cleaned
 // before it can be a title or a filter value, and a link is believed only when it is a plain https link on the vendor's own host. Nothing here logs.
 import { RUN_START_TITLE_MAX } from "@agentx/contracts";
 
@@ -41,4 +41,23 @@ export function isoOfMillis(value: unknown): string | undefined {
   if (typeof millis !== "number" || !Number.isSafeInteger(millis) || millis <= 0) return undefined;
   const at = new Date(millis);
   return Number.isFinite(at.getTime()) ? at.toISOString() : undefined;
+}
+
+/** An instant written as an ISO 8601 date and time with a zone (`Z` or an offset), any number of fraction digits up to nine, as the UTC ISO time; nothing for anything else (no zone is not read as local time). */
+export function isoOfText(value: unknown): string | undefined {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return undefined;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? new Date(at).toISOString() : undefined;
+}
+
+/** `link` when it is a plain https link (no user name, password or port) on `domain` or a subdomain of it; nothing otherwise. */
+export function httpsLinkOnDomain(link: unknown, domain: string): string | undefined {
+  if (typeof link !== "string") return undefined;
+  try {
+    const url = new URL(link);
+    const onDomain = url.hostname === domain || url.hostname.endsWith(`.${domain}`);
+    return url.protocol === "https:" && onDomain && url.port === "" && url.username === "" && url.password === "" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
