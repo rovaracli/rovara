@@ -688,6 +688,33 @@ describe("D2 task-person route dependencies", () => {
     expect(channelInfo).not.toHaveBeenCalled();
   });
 
+  it("counts a person who is an org owner or admin with no grant as eligible, as checkProjectAccess does (final review I1)", async () => {
+    db.set(task as unknown as Record<string, unknown>);
+    config.taskPersonProof = vi.fn(async () => ({
+      ok: true as const,
+      user: { id: "U0MAYA001", teamId: "T0TEAM1", name: "Maya Chen" },
+      memberOf: [],
+    }));
+    const route = developerTaskRouteDependencies({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, maya);
+    const check = Reflect.get(route, "checkTaskPerson") as ((value: DeveloperTaskRecord, id: string) => Promise<Record<string, unknown>>) | undefined;
+
+    await expect(check?.(task, nativeDeveloperId)).resolves.toMatchObject({ eligible: false });
+    for (const role of ["owner", "admin"] as const) {
+      seedMembership(db, nativeDeveloperId, { orgId: TEST_ORG, role });
+      const proven = await check?.(task, nativeDeveloperId);
+      expect(proven).toMatchObject({ eligible: true });
+      expect(proven).not.toHaveProperty("projectViewer");
+    }
+    // A stale viewer grant does not cap them: the org role is the maintainer role.
+    db.set({ ...projectMemberKey(TEST_ORG, nativeDeveloperId, "payments-api"), entityType: "MEMBERSHIP", ownerKey: nativeDeveloperId, projectName: "payments-api", role: "viewer" });
+    const withViewerRow = await check?.(task, nativeDeveloperId);
+    expect(withViewerRow).toMatchObject({ eligible: true });
+    expect(withViewerRow).not.toHaveProperty("projectViewer");
+    // A plain member with that viewer row is still capped at viewer.
+    seedMembership(db, nativeDeveloperId, { orgId: TEST_ORG, role: "member" });
+    await expect(check?.(task, nativeDeveloperId)).resolves.toMatchObject({ eligible: true, projectViewer: true });
+  });
+
   it("fails closed when the trusted fresh-proof port is absent", async () => {
     db.set(task as unknown as Record<string, unknown>);
     delete config.taskPersonProof;

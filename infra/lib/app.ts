@@ -96,6 +96,15 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     );
   }
 
+  // Lambda reserved concurrency (-c agentxReservedConcurrency=false turns it off). On by default; an account whose Lambda
+  // concurrency limit is Lambda's minimum (10, the default for a new account) cannot reserve any, because the unreserved pool
+  // may not fall below 10. Production keeps it on. Any value other than true or false is refused, never read as "on".
+  const reservedConcurrencyContext: unknown = app.node.tryGetContext("agentxReservedConcurrency");
+  if (reservedConcurrencyContext !== undefined && reservedConcurrencyContext !== true && reservedConcurrencyContext !== false && reservedConcurrencyContext !== "true" && reservedConcurrencyContext !== "false") {
+    throw new Error(`unsupported agentxReservedConcurrency ${JSON.stringify(reservedConcurrencyContext)}; expected true, false, or unset`);
+  }
+  const reservedConcurrency = reservedConcurrencyContext !== false && reservedConcurrencyContext !== "false";
+
   // The hosted Rovara cloud (-c agentxCloud=true): a self-serve Cognito sign-in in the control plane. Named
   // environments only; the legacy deployment is unchanged whatever this says (ruling R12).
   const agentxCloud = naming.env !== undefined && (app.node.tryGetContext("agentxCloud") === true || app.node.tryGetContext("agentxCloud") === "true");
@@ -122,6 +131,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   new ControlPlaneStack(app, "AgentXControlPlane", {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,
+    ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
     ...(deploymentRegion === undefined ? {} : { deploymentRegion }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),

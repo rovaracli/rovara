@@ -37,12 +37,12 @@ export interface RunVersionRequest {
 export async function gateRunVersion(deps: RosterDependencies, caller: AgentCaller, request: RunVersionRequest): Promise<WaitingForOwner | undefined> {
   const version = request.agent.version;
   if (typeof version !== "number") return undefined;
+  // The run was already started (the owner approved it, or the first answer was repeated): the start answers it, whatever the versions or the roster are now.
+  if (await readRunRequest(deps, caller.orgId, request.requestId) !== undefined) return undefined;
   const { agent } = await requireAgentAccess(deps, caller, request.agent.agentId, "use");
   const custom = "owner" in agent ? agent as AgentRecord : undefined;
   const { current, safety } = await versionSafety(deps, caller.orgId, request.agent.agentId, version, custom);
   if (safety.kind !== "less_safe" || current === undefined) return undefined;
-  // The run was already started (the owner approved it, or the first answer was repeated): the start answers it.
-  if (await readRunRequest(deps, caller.orgId, request.requestId) !== undefined) return undefined;
   const resolved = await resolveAgentForTask(deps, caller, { project: request.project, agent: { agentId: request.agent.agentId, version }, versionApproved: true });
   if (custom !== undefined) requireActiveForConfirmation(custom);
   const name = custom === undefined ? deps.store.builtinName(request.agent.agentId) : custom.name;

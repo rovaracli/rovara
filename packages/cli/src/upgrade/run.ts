@@ -26,7 +26,7 @@ import { writeUpgradeBundle } from "./export.js";
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
 import { notesText, refusePrereleaseTarget, upgradeDirection, type ReleaseNotes } from "./target.js";
 
-export interface UpgradeOptions { env: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
+export interface UpgradeOptions { env: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
 
 export interface UpgradeDependencies {
   store: ParameterStore;
@@ -40,8 +40,8 @@ export interface UpgradeDependencies {
    * image flags or the tag's published release.json. */
   sourceRelease(input: { source: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }): Promise<LoadedRelease>;
   notes(version: string): Promise<ReleaseNotes | undefined>;
-  prepare(input: { settings: EnvironmentSettings; release: LoadedRelease; source?: string }): Promise<PreparedDeployment>;
-  cdkDiff(request: DeployRequest, settings: EnvironmentSettings, source: string): Promise<string>;
+  prepare(input: { settings: EnvironmentSettings; release: LoadedRelease; source?: string; reservedConcurrency?: false }): Promise<PreparedDeployment>;
+  cdkDiff(request: DeployRequest, settings: EnvironmentSettings, source: string, reservedConcurrency?: false): Promise<string>;
   ask: Ask;
   isInteractive(): boolean;
   /** The clients that point the GitHub App's webhook at the control plane: Secrets Manager (read and write) and GitHub. */
@@ -187,6 +187,10 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
   if (options.exportDir !== undefined && first.engine === "cdk") {
     throw agentXError("CONFIG_INVALID", "upgrade --export writes the published templates; a cdk environment upgrades with --source. Run agentx upgrade --source <dir> with admin credentials instead");
   }
+  // The templates engine deploys the release's prebuilt templates, whose reservations are fixed; saying nothing would leave them on.
+  if (options.reservedConcurrency === false && first.engine !== "cdk") {
+    throw agentXError("CONFIG_INVALID", "--no-reserved-concurrency (reserved concurrency off) needs the cdk engine: this environment deploys the release's prebuilt templates, which reserve Lambda concurrency");
+  }
   if (first.engine === "cdk" && options.source === undefined) {
     throw agentXError("CONFIG_INVALID", "the cdk engine upgrades from a checkout of the target release's tag; pass --source <dir>");
   }
@@ -254,7 +258,7 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
     const review = upgradeConfirm({ write: deps.write, ask: deps.ask, yes: options.yes, allowReplace });
     // Prepared before the dropped keys are named: the cdk engine's synth of the source (issue 152)
     // says which parameters the deploy can send, and so which it drops.
-    const prepared = await deps.prepare({ settings, release, ...(options.source === undefined ? {} : { source: options.source }) });
+    const prepared = await deps.prepare({ settings, release, ...(options.source === undefined ? {} : { source: options.source }), ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}) });
     try {
       const declaredBy = prepared.declaredParameters;
       const declared = (part: DeployPart) => (declaredBy === undefined ? templateParameterNames(release, part, env) : declaredBy(part));
@@ -263,7 +267,7 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
       }
 
       const deployer = settings.engine === "templates" ? prepared.deployer : cdkReviewedDeployer(prepared.deployer, async (request) => {
-        const risks = cdkDiffRisks(await deps.cdkDiff(request, settings, options.source ?? ""));
+        const risks = cdkDiffRisks(await deps.cdkDiff(request, settings, options.source ?? "", options.reservedConcurrency));
         if (risks.iam) deps.write(`${request.stackName} changes IAM; the changes are in the diff above.`);
         const refusal = await guardData({ stackName: request.stackName, data: risks.data, allowReplace, yes: options.yes, ask: deps.ask });
         if (refusal !== undefined) throw agentXError("CONFIG_INVALID", refusal);

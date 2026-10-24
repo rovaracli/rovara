@@ -1,7 +1,8 @@
 // Plan 3 final fix wave (owner decision 3, option E): who can accept a run limit when a plan is approved.
 //   - the member pays: as it always was (up to the lead threshold; a maintainer up to the admin threshold; an admin any amount);
-//   - the project pays: the member who approves accepts up to the project's `memberAcceptRunLimitUpToUsd` (default $10, read live); above it a `run_limit`
-//     request goes to the project's maintainers, with "Waiting for a project maintainer to accept the $N run limit.";
+//   - the project pays: the member who approves accepts up to the project's `memberAcceptRunLimitUpToUsd` (default: the org's lead threshold, $10 unless the org
+//     changed it; read live), and never more than the org's admin threshold (fix wave re-check N-1: a member may not accept what a maintainer may not); above it a
+//     `run_limit` request goes to the project's maintainers, with "Waiting for a project maintainer to accept the $N run limit.", and above the admin threshold to an org admin;
 //   - an agent's owner pays: a run limit within the agent's max per run is accepted automatically; above it the request goes to the agent's owner (or, when
 //     the owner is gone, to its managers, else the org's admins), whoever approved the plan.
 // Task 32's rule holds on every path: the person who asked cannot decide their own request unless they are the org's only owner or admin.
@@ -89,8 +90,79 @@ describe("the project pays", () => {
     expect(await maintainer.accept("member", projectPays(60))).toMatchObject({ accepted: true });
     expect(await maintainer.accept("member", projectPays(150))).toMatchObject({ accepted: false, needs: "admin", message: "This plan's run limit is $150, which needs an admin's approval. I've asked for it." });
     expect(await maintainer.accept("admin", projectPays(150))).toMatchObject({ accepted: true });
+    // DELIBERATE TEST CHANGE (fix wave re-check N-1, owner ruling): this used to pin the inversion, a member accepting $150 on a stored setting of $200 while a
+    // maintainer was told "needs an admin's approval". The member allowance is now capped at the admin threshold ($100 by default), so $150 needs an admin
+    // for the member and the maintainer alike. A $200 setting can only be stored from before the cap, or after the org lowered its admin threshold.
     const member = await accepting({ setting: 200 });
-    expect(await member.accept("member", projectPays(150))).toMatchObject({ accepted: true });
+    expect(await member.accept("member", projectPays(100))).toMatchObject({ accepted: true });
+    expect(await member.accept("member", projectPays(150))).toMatchObject({ accepted: false, needs: "admin", approverRole: "org_admin", message: "This plan's run limit is $150, which needs an admin's approval. I've asked for it." });
+  });
+
+  describe("the member allowance is capped at the org's admin threshold (N-1)", () => {
+    it("at the allowance a member accepts; between the allowance and the admin threshold a project maintainer does; above the admin threshold an admin does", async () => {
+      const member = await accepting({ setting: 50 });
+      expect(await member.accept("member", projectPays(50))).toMatchObject({ accepted: true });
+      expect(await member.accept("member", projectPays(51))).toMatchObject({ accepted: false, needs: "maintainer", approverRole: "project_maintainer", message: "Waiting for a project maintainer to accept the $51 run limit." });
+      expect(await member.accept("member", projectPays(100))).toMatchObject({ accepted: false, needs: "maintainer" });
+      expect(await member.accept("member", projectPays(101))).toMatchObject({ accepted: false, needs: "admin", approverRole: "org_admin" });
+      const maintainer = await accepting({ role: "maintainer", setting: 50 });
+      expect(await maintainer.accept("member", projectPays(51))).toMatchObject({ accepted: true });
+      expect(await maintainer.accept("member", projectPays(100))).toMatchObject({ accepted: true });
+      expect(await maintainer.accept("member", projectPays(101))).toMatchObject({ accepted: false, needs: "admin", approverRole: "org_admin" });
+      for (const role of ["admin", "owner"] as const) expect(await maintainer.accept(role, projectPays(101)), role).toMatchObject({ accepted: true });
+      expect(await maintainer.accept("admin", projectPays(1000))).toMatchObject({ accepted: true });
+    });
+
+    it("never lets a member accept more than a maintainer may, whatever the setting says", async () => {
+      for (const setting of [100, 101, 500, 1000]) {
+        const member = await accepting({ setting });
+        expect(await member.accept("member", projectPays(100)), String(setting)).toMatchObject({ accepted: true });
+        expect(await member.accept("member", projectPays(101)), String(setting)).toMatchObject({ accepted: false, needs: "admin" });
+        const maintainer = await accepting({ role: "maintainer", setting });
+        expect(await maintainer.accept("member", projectPays(100)), String(setting)).toMatchObject({ accepted: true });
+        expect(await maintainer.accept("member", projectPays(101)), String(setting)).toMatchObject({ accepted: false, needs: "admin" });
+      }
+    });
+
+    it("follows a lowered admin threshold: a setting above it is held to it, for a member and a maintainer", async () => {
+      const lowered = { leadApprovalThresholdUsd: 10, adminApprovalThresholdUsd: 30 };
+      const member = await accepting({ setting: 50, policy: lowered });
+      expect(await member.accept("member", projectPays(30))).toMatchObject({ accepted: true });
+      expect(await member.accept("member", projectPays(31))).toMatchObject({ accepted: false, needs: "admin", approverRole: "org_admin", message: "This plan's run limit is $31, which needs an admin's approval. I've asked for it." });
+      const maintainer = await accepting({ role: "maintainer", setting: 50, policy: lowered });
+      expect(await maintainer.accept("member", projectPays(30))).toMatchObject({ accepted: true });
+      expect(await maintainer.accept("member", projectPays(31))).toMatchObject({ accepted: false, needs: "admin" });
+      expect(await maintainer.accept("admin", projectPays(31))).toMatchObject({ accepted: true });
+      // The threshold is read at the acceptance, so lowering it after the setting was saved takes effect at once.
+      const later = await accepting({ setting: 80 });
+      expect(await later.accept("member", projectPays(80))).toMatchObject({ accepted: true });
+      await writeSpendPolicy(deps(later.db), TEST_ORG, { ...defaultSpendPolicy(), leadApprovalThresholdUsd: 10, adminApprovalThresholdUsd: 40 }, "admin");
+      expect(await later.accept("member", projectPays(40))).toMatchObject({ accepted: true });
+      expect(await later.accept("member", projectPays(41))).toMatchObject({ accepted: false, needs: "admin" });
+    });
+  });
+
+  describe("the default allowance follows the org's lead threshold (minor 4)", () => {
+    it("is the lead threshold the org set, not a fixed $10, and is the lead threshold until the project sets its own", async () => {
+      const raised = await accepting({ policy: { leadApprovalThresholdUsd: 25, adminApprovalThresholdUsd: 100 } });
+      expect(await raised.accept("member", projectPays(25))).toMatchObject({ accepted: true });
+      expect(await raised.accept("member", projectPays(26))).toMatchObject({ accepted: false, needs: "maintainer", message: "Waiting for a project maintainer to accept the $26 run limit." });
+      const lowered = await accepting({ policy: { leadApprovalThresholdUsd: 4, adminApprovalThresholdUsd: 100 } });
+      expect(await lowered.accept("member", projectPays(4))).toMatchObject({ accepted: true });
+      expect(await lowered.accept("member", projectPays(5))).toMatchObject({ accepted: false });
+      // A lead threshold at the admin threshold is the most the default can be.
+      const equal = await accepting({ policy: { leadApprovalThresholdUsd: 60, adminApprovalThresholdUsd: 60 } });
+      expect(await equal.accept("member", projectPays(60))).toMatchObject({ accepted: true });
+      expect(await equal.accept("member", projectPays(61))).toMatchObject({ accepted: false, needs: "admin" });
+    });
+
+    it("is still replaced by the project's own setting, and clearing the setting goes back to the lead threshold", async () => {
+      const { accept, setSetting } = await accepting({ policy: { leadApprovalThresholdUsd: 25, adminApprovalThresholdUsd: 100 }, setting: 5 });
+      expect(await accept("member", projectPays(6))).toMatchObject({ accepted: false });
+      await setSetting(null);
+      expect(await accept("member", projectPays(25))).toMatchObject({ accepted: true });
+      expect(await accept("member", projectPays(26))).toMatchObject({ accepted: false });
+    });
   });
 
   it("the new words are a run limit block like the old ones", () => {

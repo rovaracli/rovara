@@ -7,7 +7,8 @@
 // `MAX_RUN_LIMIT_USD`. Plan 6 Task 7 builds on `estimateRun` and `RunEstimate`: keep both stable.
 import { QueryCommand, TransactWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, MAX_RUN_LIMIT_USD, ROVARA_CODE_AGENT_ID, agentRunsKey, runCostKey, runLimitBlockText, runLimitWaitingText, DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD,
+  DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, MAX_RUN_LIMIT_USD, ROVARA_CODE_AGENT_ID, agentRunsKey, runCostKey, runLimitBlockText, runLimitWaitingText,
+  memberAcceptRunLimitUsd,
   type AgentId, type OrgId, type OrgRole, type ProjectRole, type RunEstimate,
 } from "@agentx/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
@@ -206,7 +207,7 @@ export async function askedRunLimit(deps: EstimateDependencies, task: DeveloperT
 
 /**
  * Whether `approver` may accept the run limit the task's plan carries (`planRunLimit`). A member accepts up to the lead
- * threshold, a maintainer by grant up to the admin threshold, an org owner or admin any amount. Not accepted: what is needed, and the words to block with.
+ * threshold (a project that pays: up to its allowance, held to the admin threshold), a maintainer by grant up to the admin threshold, an org owner or admin any amount. Not accepted: what is needed, and the words to block with.
  * The caller makes the acceptance and its writes (`budgetUsd` and `budgetBaselineUsd`) in the decision's own transaction.
  */
 export async function acceptRunLimit(
@@ -226,9 +227,10 @@ export async function acceptRunLimit(
     return { accepted: false, runLimitUsd, needs: "agent_owner", approverRole: "agent_owner", message: runLimitWaitingText(runLimitUsd, "agent_owner") };
   }
   const [policy, tier] = await Promise.all([readSpendPolicy(deps, orgId), tierOf(deps, task, approver)]);
-  // The project pays: the member who approves accepts up to what the project allows (read now), not the lead threshold; a maintainer and an admin keep theirs.
+  // The project pays: the member who approves accepts up to what the project allows (read now), not the lead threshold, but never more than the admin threshold,
+  // which is what a maintainer may accept (fix wave re-check N-1); a project that set nothing follows the org's lead threshold. A maintainer and an admin keep theirs.
   const projectPays = payer?.kind === "project";
-  const memberLimitUsd = projectPays ? (await readProjectAi(deps, orgId, payer.project)).memberAcceptRunLimitUpToUsd ?? DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD : policy.leadApprovalThresholdUsd;
+  const memberLimitUsd = projectPays ? memberAcceptRunLimitUsd(await readProjectAi(deps, orgId, payer.project), policy) : policy.leadApprovalThresholdUsd;
   const may = tier === "admin" || (tier === "maintainer" ? runLimitUsd <= policy.adminApprovalThresholdUsd : runLimitUsd <= memberLimitUsd);
   if (may) return { accepted: true, runLimitUsd };
   const needs = needsOf(runLimitUsd, policy);

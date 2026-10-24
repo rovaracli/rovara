@@ -261,6 +261,20 @@ describe("named environment templates", () => {
       expect(stack.stackName === "agentx-staging-control-plane" ? withoutEventHookRoute(withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template))))))) : template).toMatchSnapshot();
     }, 120_000);
   }
+
+  // Final review I3: the reconciler's sweep of project setup checks closes a stalled check's workspace, which starts the deleter for its session.
+  it("lets the staging reconciler start the deleter, on its exact state machine and nothing wider", () => {
+    const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "agentx-staging-control-plane")!;
+    const resources = (normalizedTemplate(stack) as { Resources: Record<string, Resource> }).Resources;
+    const reconciler = Object.entries(resources).find(([id, resource]) => id.startsWith("SessionsReconciler") && resource.Type === "AWS::Lambda::Function")![1];
+    const roleId = (reconciler.Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+    const statements = Object.values(resources).filter((resource) => resource.Type === "AWS::IAM::Policy" && (resource.Properties.Roles as Array<{ Ref?: string }>).some((role) => role.Ref === roleId))
+      .flatMap((policy) => (policy.Properties.PolicyDocument as { Statement: Array<{ Action?: string | string[]; Resource?: unknown }> }).Statement);
+    const starts = statements.filter((statement) => [statement.Action].flat().includes("states:StartExecution"));
+    const deleterId = Object.keys(resources).find((id) => id.startsWith("SessionsDeleter") && resources[id]!.Type === "AWS::StepFunctions::StateMachine")!;
+    expect(starts.map((statement) => statement.Resource)).toContainEqual({ Ref: deleterId });
+    expect(starts.every((statement) => typeof statement.Resource === "object" && statement.Resource !== null && "Ref" in statement.Resource)).toBe(true);
+  }, 120_000);
 });
 
 // Plan 4 Task 9: the chain sweep. Every 5 minutes the broker looks at the chain runs that are due (timeouts, lost callbacks, a decision not yet applied). Like the spend

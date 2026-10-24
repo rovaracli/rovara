@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
-  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey,
+  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, egressDomainsKey, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey,
   orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, workerProjectDefinition, type GithubInstallationRecord, type OrgId, type OrgRole,
 } from "../../packages/contracts/src/index.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
@@ -286,6 +286,24 @@ describe("allowed domains", () => {
     expect((await h.put(OMAR, { allowedDomains: [], expectedRevision: 3 })).status).toBe(200);
     expect(h.revision(4)!.definition).not.toHaveProperty("network");
     expect((await h.detail()).settings.allowedDomains).toEqual([]);
+  });
+
+  // Ruling C29: the egress item is written BEFORE the revision, so a failure of the second leaves state the schedule repairs (final review I2).
+  it("writes the egress item before the new revision, so a revision that fails to land is repaired by the schedule, not left unseen", async () => {
+    const h = await install();
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"entityType":"PROJECT"') && !JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    const failed = await h.put(OMAR, { allowedDomains: ["artifacts.acme.dev"] });
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    expect(h.revisions()).toHaveLength(1);
+    expect(h.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project: "web" }))).toMatchObject({ domains: [{ domain: "artifacts.acme.dev", status: "pending" }] });
+  });
+
+  it("makes no revision when the egress item cannot be written", async () => {
+    const h = await install();
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+    const failed = await h.put(OMAR, { allowedDomains: ["artifacts.acme.dev"] });
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    expect(h.revisions()).toHaveLength(1);
   });
 
   it("refuses more than 50 domains", async () => {

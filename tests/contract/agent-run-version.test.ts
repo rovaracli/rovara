@@ -249,6 +249,49 @@ describe("an older version that is looser than the current one waits for the own
     expect(t.tasks()).toEqual([]);
   });
 
+  // Fix wave re-check, minor 2: a retry through /v1/dev/tasks is answered from the first start before the version is looked at.
+  it("answers a retry of an approved, started start with the task that started, not IDEMPOTENCY_CONFLICT, and with or without a title", async () => {
+    for (const title of [undefined, "Look at it now"]) {
+      const { t, agentId } = await looser();
+      const requestId = randomUUID();
+      const body = { requestId, project: "payments", instructions: "Look at it", agent: { agentId, version: 1 }, ...(title === undefined ? {} : { title }) };
+      const first = await t.call(KIT, "POST", "/v1/dev/tasks", body);
+      expect(first.status, JSON.stringify(first.body)).toBe(202);
+      const [approval] = t.approvals();
+      expect((await t.page(MAYA, approval!.approvalId, "approve")).statusCode).toBe(200);
+      const [started] = t.tasks() as unknown as Array<{ taskId: string }>;
+      expect(started).toBeDefined();
+      const retry = await t.call(KIT, "POST", "/v1/dev/tasks", body);
+      expect(retry.status, JSON.stringify(retry.body)).toBeLessThan(300);
+      expect(retry.status).not.toBe(202);
+      expect(taskOf(retry).taskId).toBe(started!.taskId);
+      expect(t.tasks()).toHaveLength(1);
+      expect(t.approvals()).toHaveLength(1);
+    }
+  });
+
+  it("answers a retry of a start made before the version was tightened with the first task, not 202 and not a new approval", async () => {
+    const t = await world();
+    // Versions 1 and 2 are equally loose, so version 1 runs at once; version 3 then tightens the agent and makes version 1 less safe than the one that runs now.
+    const agentId = await t.agentWith([WRITE, { ...WRITE, instructions: "Summarise the open tickets, twice." }], "Payments ops");
+    const requestId = randomUUID();
+    const body = { requestId, project: "payments", instructions: "Look at it", agent: { agentId, version: 1 } };
+    const first = await t.call(KIT, "POST", "/v1/dev/tasks", body);
+    expect(first.status, JSON.stringify(first.body)).toBeLessThan(300);
+    const firstTask = taskOf(first).taskId;
+    expect(t.tasks()).toHaveLength(1);
+    await t.publishNext(agentId, READ);
+    const retry = await t.call(KIT, "POST", "/v1/dev/tasks", body);
+    expect(retry.status, JSON.stringify(retry.body)).toBe(first.status);
+    expect(retry.body).not.toHaveProperty("status", "NEEDS_OWNER_APPROVAL");
+    expect(taskOf(retry).taskId).toBe(firstTask);
+    expect(t.tasks()).toHaveLength(1);
+    expect(t.approvals()).toEqual([]);
+    // A new request id for the same start is a new start, and now waits for the owner.
+    const fresh = await t.call(KIT, "POST", "/v1/dev/tasks", { ...body, requestId: randomUUID() });
+    expect(fresh.status).toBe(202);
+  });
+
   it("is refused for a start no person made, which has nobody to ask", async () => {
     const { t, agentId } = await looser();
     const starter = createAgentRunStarter(t.brokerInput as never)!;

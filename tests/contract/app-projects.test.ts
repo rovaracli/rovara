@@ -164,15 +164,17 @@ describe("GET /v1/app/projects", () => {
     const h = await createDeveloperTaskBroker();
     setRole(h.db, OMAR, "owner");
     const workspaceId = randomUUID();
+    // A check that started just now: one that has been PREPARING for over 50 minutes reads as failed (Task 22).
+    const startedAt = new Date().toISOString();
     const check = (revision: number) => ({ ...projectMetaKey(TEST_ORG, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: MAYA.developerId,
-      setupCheck: { workspaceId, revision, startedAt: "2026-10-20T01:00:00.000Z", startedBy: OMAR.developerId } });
+      setupCheck: { workspaceId, revision, startedAt, startedBy: OMAR.developerId } });
     seedProject(h.db, TEST_ORG, "web");
     const status = async () => (await listed(h, OMAR) as unknown as Array<{ name: string; setup: { status: string; checkedRevision?: number; checkedAt?: string } }>).find((project) => project.name === "web")!.setup;
     expect(await status()).toEqual({ status: "unchecked" });
     for (const [workspaceStatus, expected] of [["PREPARING", "checking"], ["READY", "ready"], ["PREPARATION_FAILED", "failed"]] as const) {
       h.db.set(check(1));
       h.db.set({ pk: `WORKSPACE#${workspaceId}`, sk: "META", entityType: "WORKSPACE", id: workspaceId, status: workspaceStatus });
-      expect(await status(), workspaceStatus).toMatchObject({ status: expected, checkedRevision: 1, checkedAt: "2026-10-20T01:00:00.000Z" });
+      expect(await status(), workspaceStatus).toMatchObject({ status: expected, checkedRevision: 1, checkedAt: startedAt });
     }
     seedProject(h.db, TEST_ORG, "web", { revision: 2 });
     expect(await status()).toMatchObject({ status: "outdated", checkedRevision: 1 });

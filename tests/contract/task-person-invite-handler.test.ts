@@ -84,6 +84,7 @@ function fixture(overrides: Partial<TaskPersonInviteHandlerPorts> = {}) {
     }
     if (condition.kind === "developer-grant") return row.pk === condition.pk && row.sk === condition.sk
       && row.projectName === condition.projectName && row.role === "developer";
+    if (condition.kind === "org-role") return row.developerId === condition.developerId && (row.role === "owner" || row.role === "admin");
     return row.pk === condition.pk && row.sk === condition.sk && row.teamId === condition.teamId
       && row.channelId === condition.channelId && row.projectName === condition.projectName && row.updatedAt === condition.updatedAt;
   };

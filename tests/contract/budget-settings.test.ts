@@ -540,10 +540,11 @@ describe("a project's AI settings", () => {
       expect((await call(VIV, "GET", "/v1/app/projects/web/ai")).body).toMatchObject({ revision: 0 });
     });
 
-    it("holds it from 0 to 1000 in a strict schema, and null puts the default back", async () => {
+    it("holds it from 0 to the admin threshold in a strict schema, and null puts the default back", async () => {
       const { call } = await routeSetup();
       expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 0 })).status).toBe(200);
-      expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 1000 })).status).toBe(200);
+      // DELIBERATE TEST CHANGE (fix wave re-check N-1): 1000 used to be accepted; the setting is now capped at the org's admin threshold ($100 by default).
+      expect((await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 100 })).status).toBe(200);
       for (const bad of [-1, 1000.01, "10"]) {
         const refused = await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: bad });
         expect(refused.status, String(bad)).toBe(400);
@@ -552,6 +553,41 @@ describe("a project's AI settings", () => {
       const cleared = await call(DANA, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: null });
       expect(cleared.body).toMatchObject({ effective: { memberAcceptRunLimitUpToUsd: 10 } });
       expect((cleared.body.settings as Record<string, unknown>).memberAcceptRunLimitUpToUsd).toBeUndefined();
+    });
+
+    it("refuses a setting above the org's admin threshold, from a maintainer and from an admin, in words that say why, and writes nothing", async () => {
+      const { call } = await routeSetup();
+      for (const who of [MAX, DANA]) {
+        const refused = await call(who, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 100.01 });
+        expect(refused.status, who.name).toBe(400);
+        expect(errorOf(refused)).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("can't be more than $100, the amount above which your company needs an org admin's approval") as string });
+      }
+      expect((await call(VIV, "GET", "/v1/app/projects/web/ai")).body).toMatchObject({ revision: 0 });
+      expect((await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 100 })).status).toBe(200);
+      // The limit is the org's admin threshold now: lowered, it is the lower amount, and raised, the higher.
+      expect((await call(DANA, "PUT", "/v1/app/org/spend-policy", { leadApprovalThresholdUsd: 20, adminApprovalThresholdUsd: 30 })).status).toBe(200);
+      const lowered = await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 31 });
+      expect(lowered.status).toBe(400);
+      expect(errorOf(lowered).message).toContain("can't be more than $30");
+      expect((await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 30 })).status).toBe(200);
+      expect((await call(DANA, "PUT", "/v1/app/org/spend-policy", { adminApprovalThresholdUsd: 500 })).status).toBe(200);
+      expect((await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 500 })).status).toBe(200);
+    });
+
+    it("shows what a member can accept now: the setting or the lead threshold, never above the admin threshold", async () => {
+      const { call } = await routeSetup();
+      const accepts = async () => ((await call(VIV, "GET", "/v1/app/projects/web/ai")).body.effective as { memberAcceptRunLimitUpToUsd: number }).memberAcceptRunLimitUpToUsd;
+      expect(await accepts()).toBe(10);
+      // Minor 4: the default follows the org's lead threshold.
+      expect((await call(DANA, "PUT", "/v1/app/org/spend-policy", { leadApprovalThresholdUsd: 25 })).status).toBe(200);
+      expect(await accepts()).toBe(25);
+      expect((await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: 80 })).status).toBe(200);
+      expect(await accepts()).toBe(80);
+      // A setting saved above a threshold that was lowered later is shown as the lower amount, as it is applied.
+      expect((await call(DANA, "PUT", "/v1/app/org/spend-policy", { leadApprovalThresholdUsd: 25, adminApprovalThresholdUsd: 40 })).status).toBe(200);
+      expect(await accepts()).toBe(40);
+      expect((await call(MAX, "PUT", "/v1/app/projects/web/ai", { memberAcceptRunLimitUpToUsd: null })).status).toBe(200);
+      expect(await accepts()).toBe(25);
     });
 
     it("uses an R18 mark: a repeat of the request id answers the first, and another body with it is refused", async () => {

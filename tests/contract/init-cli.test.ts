@@ -671,7 +671,7 @@ describe("agentx init", () => {
     const HEAD = "e".repeat(40);
     const WORKER = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx/worker@sha256:${"d".repeat(64)}`;
     const SLACK_IMAGE = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx/slack@sha256:${"e".repeat(64)}`;
-    const IMAGES = ["--worker-image", WORKER, "--slack-image", SLACK_IMAGE];
+    const IMAGES = ["--worker-image", WORKER, "--boot-stage2-sha256", "f".repeat(64), "--slack-image", SLACK_IMAGE];
     const MANIFEST_URL = "https://github.com/PrepLabsAI/Rovara/releases/download/v1.4.0/release.json";
     /** A clean checkout at tag v1.4.0. */
     const taggedSource = { async run(_command: string, args: string[]) {

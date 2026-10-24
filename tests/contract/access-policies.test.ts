@@ -39,6 +39,11 @@ describe("service role policy", () => {
       } else if (statement.Sid === "ServiceLinkedRoles") {
         expect(resources).toEqual(["arn:aws:iam::123456789012:role/aws-service-role/*"]);
         expect(statement.Condition?.StringLike?.["iam:AWSServiceName"]).toBeDefined();
+      } else if (statement.Sid === "IamFixedNameRolesNotYetCreated") {
+        // The one fixed-name role: IAM authorizes CloudFormation's lookup of it before it exists against its path-less ARN.
+        // Reads and deletes only, never create or change (tests/contract/role-paths.test.ts proves what each action may do).
+        expect(resources).toEqual(["arn:aws:iam::123456789012:role/agentx-staging-connector-secrets"]);
+        expect(statement.Action.every((a) => /^iam:(Get|List|Delete|Detach)/.test(a))).toBe(true);
       } else if (statement.Sid === "IamInstanceProfiles") {
         // The EC2 workers' instance profile, under the same path as the environment's roles.
         expect(resources).toEqual(["arn:aws:iam::123456789012:instance-profile/agentx/staging/*"]);

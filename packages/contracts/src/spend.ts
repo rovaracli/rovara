@@ -202,11 +202,12 @@ export const ProjectAiSettingsSchema = z.object({
   planningLimitUsd: z.object({ QUICK: PlanningLimit.optional(), FULL: PlanningLimit.optional() }).strict().optional(),
   /**
    * Owner decision 3 (option E): when the project pays, the most a run limit may be for the member who approves the plan to accept it themselves. Above it a
-   * `run_limit` request goes to the project's maintainers. Absent: `DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD`. A project maintainer, an org owner or an admin sets it.
+   * `run_limit` request goes to the project's maintainers. Absent: the org's lead threshold. Never more than the org's admin threshold (saving more is refused, and an older
+   * setting is held to it when applied: `memberAcceptRunLimitUsd`). A project maintainer, an org owner or an admin sets it.
    */
   memberAcceptRunLimitUpToUsd: z.number().finite().min(0).max(1000).optional(),
 }).strict();
-/** What a member may accept as a run limit when the project pays and the project set nothing: the lead threshold's default, so a project that never set it behaves as before. */
+/** The lead threshold's own default. A project that set nothing no longer uses this: it follows the org's lead threshold (`memberAcceptRunLimitUsd`). */
 export const DEFAULT_MEMBER_ACCEPT_RUN_LIMIT_USD = 10;
 export type ProjectAiSettings = z.infer<typeof ProjectAiSettingsSchema>;
 
@@ -229,6 +230,14 @@ export const SpendPolicySchema = SpendPolicyFieldsSchema.superRefine((policy, co
   }
 });
 export type SpendPolicy = z.infer<typeof SpendPolicySchema>;
+
+/**
+ * What a member may accept as a run limit when the project pays (owner decision 3, option E, with the fix wave re-check's N-1 ruling): the project's setting, or
+ * when it set none the org's lead threshold (so a project follows an org that changed it); and never more than the org's admin threshold, which is what a project
+ * maintainer may accept. Read where it is applied, so a threshold lowered after the setting was saved holds at once.
+ */
+export const memberAcceptRunLimitUsd = (settings: { memberAcceptRunLimitUpToUsd?: number | undefined }, policy: Pick<SpendPolicy, "leadApprovalThresholdUsd" | "adminApprovalThresholdUsd">): number =>
+  Math.min(settings.memberAcceptRunLimitUpToUsd ?? Math.min(policy.leadApprovalThresholdUsd, policy.adminApprovalThresholdUsd), policy.adminApprovalThresholdUsd);
 
 export const defaultSpendPolicy = (): SpendPolicy => ({
   leadApprovalThresholdUsd: LEAD_APPROVAL_THRESHOLD_USD,

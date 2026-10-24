@@ -76,6 +76,11 @@ export interface ControlPlaneStackProps extends StackProps {
    * environment; a legacy install keeps its recorded template). Only a test turns it off, to compare the permissions before and after.
    */
   mergeBrokerStatements?: boolean;
+  /**
+   * Whether the audit ledger's functions reserve Lambda concurrency (default true; the agentxReservedConcurrency context).
+   * Off only for an account whose concurrency limit is too low to reserve any.
+   */
+  reservedConcurrency?: boolean;
 }
 
 /**
@@ -233,7 +238,10 @@ export class ControlPlaneStack extends Stack {
     // The broker role may assume it and holds no Secrets Manager permission on those paths. Named environments only.
     if (naming.env !== undefined) {
       const connectorSecretsRole = new iam.CfnRole(this, "ConnectorSecretsRole", {
-        // Fixed, so the default permissions boundary can name it as the one role the broker's bounded role may assume.
+        // Fixed, so the default permissions boundary can name it as the one role the broker's bounded role may assume. It is created
+        // under the environment path (the EnvironmentRolePath aspect sets it). The access stack's deploy role and boundary also name its
+        // path-less ARN, for lookups and cleanup only: CloudFormation's lookup of a fixed-name role that does not exist yet is
+        // authorized against that ARN (see fixedNameRoleLookupStatement).
         roleName: connectorSecretsRoleName(naming.env),
         description: "AgentX org connector and hook secrets: assumed by the broker with a rovara:org session tag, reaches only that org's secrets",
         assumeRolePolicyDocument: connectorSecretsTrustPolicy(broker.role!.roleArn),
@@ -890,18 +898,21 @@ export class ControlPlaneStack extends Stack {
       },
     });
     // Plan 2, Task 14 Step 6: one reminder to a requester whose GitHub admin has not approved after 2 days. Deleting this schedule (and the
-    // handler's branch) removes the feature and nothing else; the 7 day expiry stays either way. Hourly is the finest it needs.
-    new scheduler.CfnSchedule(this, "GithubInstallRequestReminderSchedule", {
-      flexibleTimeWindow: { mode: "OFF" },
-      scheduleExpression: "rate(1 hour)",
-      state: "ENABLED",
-      target: {
-        arn: broker.functionArn,
-        roleArn: githubRecoveryRole.roleArn,
-        input: JSON.stringify({ kind: "github-install-request-reminders" }),
-        retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
-      },
-    });
+    // handler's branch) removes the feature and nothing else; the 7 day expiry stays either way. Hourly is the finest it needs. Rovara Cloud only
+    // (follow-up): the broker's handler does nothing off the cloud, so no other install, the legacy deployment included, gets the schedule.
+    if (props?.cloud === true && naming.env !== undefined) {
+      new scheduler.CfnSchedule(this, "GithubInstallRequestReminderSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(1 hour)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ kind: "github-install-request-reminders" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
+    }
     // Plan 2, Task 19: the firewall list follows the approved egress domains. A change syncs at once; this run is the retry for one that could not,
     // and the one-off backfill of requests for domains stored before approvals existed. It does nothing while the sync marker is clean.
     if (projectAllowListArn !== undefined) {
@@ -1227,6 +1238,7 @@ export class ControlPlaneStack extends Stack {
         stateTable: state,
         notifyOperator,
         appenderRole: auditAppenderRole,
+        ...(props?.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
         ...(signInFunction === undefined ? {} : { signInFunction }),
         ...(props?.deploymentRegion === undefined ? {} : { deploymentRegion: props.deploymentRegion }),
       });
@@ -1410,13 +1422,15 @@ export class ControlPlaneStack extends Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }).addAlarmAction(notifyOperator);
     // Plan 2, Task 14: a failed owners' notice after an approved GitHub request binds (the item stays for the hourly sweep, which retries it).
-    // The broker logs it as a JSON line; this filter turns it into a metric an alarm can watch.
-    broker.logGroup.addMetricFilter("GithubInstallRequestNoticeFailedMetric", {
-      filterPattern: logs.FilterPattern.stringValue("$.event", "=", "github.install_request_notice_failed"),
-      metricNamespace: naming.metricsNamespace,
-      metricName: "GithubInstallRequestNoticeFailed",
-      metricValue: "1",
-    });
+    // The broker logs it as a JSON line; this filter turns it into a metric an alarm can watch. Rovara Cloud only, like the sweep that logs it.
+    if (props?.cloud === true && naming.env !== undefined) {
+      broker.logGroup.addMetricFilter("GithubInstallRequestNoticeFailedMetric", {
+        filterPattern: logs.FilterPattern.stringValue("$.event", "=", "github.install_request_notice_failed"),
+        metricNamespace: naming.metricsNamespace,
+        metricName: "GithubInstallRequestNoticeFailed",
+        metricValue: "1",
+      });
+    }
 
     // Plan 4 Task 8 (R41), named environments only: an autonomous chain run's write must always have approvers. When the selector Plan 3's agent-tools call asks for them
     // throws, times out or answers what it must not, the write falls back to Plan 3's default approvers and the broker logs `write_approver_selector.failed`. This counts

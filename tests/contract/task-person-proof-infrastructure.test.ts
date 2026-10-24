@@ -255,6 +255,9 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 4 Task 26 review fixes: the broker's one queue statement now also parks and records (SendMessage, ChangeMessageVisibility, renamed UseChainScheduleDeadLetters) and the queue's age
     // has an alarm, so the named and foreign digests were taken again from the synthesized templates; the legacy digests did not move.
     // Task 27 review I-1: that alarm counts visible plus in-flight messages over three periods (the age metric stops at three receives); named and foreign were taken again, legacy did not move.
+    // Merge of Plan 2's final fix wave into Plan 3: the install-request reminder schedule and metric filter are now created on cloud installs only, so the
+    // legacy template lost them again and its digests are back to their values before Plan 2 (the legacy-templates snapshot lost the same 45 lines); the
+    // named and foreign digests were regenerated for the merged template (Plan 2's cloud-only schedule and the reconciler's StartExecution grant on top of Plan 3).
     const digestCases = [
       {
         label: "named",
@@ -271,8 +274,8 @@ describe("the named TEST proof-only installation gate", () => {
       {
         label: "legacy",
         template: legacy,
-        withRoute: "c8cb994acace74871d428c118ced239332c2c06f6f53e88ee4394adcbd34a994",
-        withoutRoute: "5a11a45cb6ccb2325312658e0bfba2f4ba6f36280d0848a36cbd6db37244427f",
+        withRoute: "b279f85a0f09a9fd78a25b85706b79bf1394184fd09597efa8cd466f93adb826",
+        withoutRoute: "dcd26742aba45c87a5f82cd0a6039801147e4e6cd02ee337cf28e7f01987a32b",
       },
     ] as const;
     for (const { label, template, withRoute, withoutRoute } of digestCases) {

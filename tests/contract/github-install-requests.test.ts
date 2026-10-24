@@ -1214,4 +1214,21 @@ describe("infrastructure", () => {
       MetricTransformations: [{ MetricName: "GithubInstallRequestNoticeFailed", MetricValue: "1" }],
     });
   });
+
+  // Follow-up: the whole install-request flow answers "not cloud" off Rovara Cloud (the handler's early returns), so a non-cloud install, named or
+  // legacy, gets neither the hourly schedule nor the metric filter.
+  it.each([
+    ["a named environment that is not on Rovara Cloud", { agentxEnv: "staging" }],
+    ["the legacy deployment", {}],
+  ])("%s has no reminder schedule and no notice-failed metric filter", (_label, context) => {
+    const app = buildAgentXApp(context);
+    const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && /control-?plane$/i.test(child.stackName))!;
+    const resources = (Template.fromStack(stack).toJSON() as typeof cloud).Resources;
+    const ids = Object.keys(resources);
+    expect(ids.filter((id) => id.startsWith("GithubInstallRequestReminderSchedule"))).toEqual([]);
+    expect(Object.values(resources).filter((resource) => JSON.stringify(resource.Properties).includes("github-install-request-reminders"))).toEqual([]);
+    expect(Object.values(resources).filter((resource) => resource.Type === "AWS::Logs::MetricFilter" && JSON.stringify(resource.Properties).includes("github.install_request_notice_failed"))).toEqual([]);
+    // The webhook recovery schedule it shared a role with is still there.
+    expect(ids.some((id) => id.startsWith("GithubWebhookRecoverySchedule"))).toBe(true);
+  });
 });

@@ -168,12 +168,22 @@ async function allowedStillCurrent(
       ConditionExpression: definitionPolicy, ExpressionAttributeNames: definitionNames, ExpressionAttributeValues: definitionValues } });
     if (witness.access === "granted") {
       const membership = witness.membership;
-      const expectedMembership = projectMemberKey(witnessOrg, witness.developerId, task.project);
-      if (membership === undefined || membership.pk !== expectedMembership.pk || membership.sk !== expectedMembership.sk
-        || membership.projectName !== task.project || membership.role !== "developer") return false;
-      checks.push({ ConditionCheck: { TableName: deps.tableName, Key: { pk: membership.pk, sk: membership.sk },
-        ConditionExpression: "projectName = :project AND #role = :developer", ExpressionAttributeNames: { "#role": "role" },
-        ExpressionAttributeValues: { ":project": task.project, ":developer": "developer" } } });
+      const orgMember = witness.orgMember;
+      if (membership === undefined && orgMember !== undefined) {
+        // An org owner or admin with no grant: the org member row, still an owner or admin, is the row the fence rests on (final review I1).
+        const expectedOrgMember = orgMemberKey(witnessOrg, witness.developerId);
+        if (orgMember.pk !== expectedOrgMember.pk || orgMember.sk !== expectedOrgMember.sk || (orgMember.role !== "owner" && orgMember.role !== "admin")) return false;
+        checks.push({ ConditionCheck: { TableName: deps.tableName, Key: { pk: orgMember.pk, sk: orgMember.sk },
+          ConditionExpression: "developerId = :developer AND (#role = :owner OR #role = :admin)", ExpressionAttributeNames: { "#role": "role" },
+          ExpressionAttributeValues: { ":developer": witness.developerId, ":owner": "owner", ":admin": "admin" } } });
+      } else {
+        const expectedMembership = projectMemberKey(witnessOrg, witness.developerId, task.project);
+        if (membership === undefined || membership.pk !== expectedMembership.pk || membership.sk !== expectedMembership.sk
+          || membership.projectName !== task.project || membership.role !== "developer") return false;
+        checks.push({ ConditionCheck: { TableName: deps.tableName, Key: { pk: membership.pk, sk: membership.sk },
+          ConditionExpression: "projectName = :project AND #role = :developer", ExpressionAttributeNames: { "#role": "role" },
+          ExpressionAttributeValues: { ":project": task.project, ":developer": "developer" } } });
+      }
     } else {
       const binding = witness.binding;
       if (binding === undefined || binding.pk !== slackBindingPk(witnessOrg, binding.teamId) || binding.sk !== `${SLACK_BINDING_SK_PREFIX}${binding.channelId}`
