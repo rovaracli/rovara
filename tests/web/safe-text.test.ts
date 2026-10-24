@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { confirmUrlWithTicket } from "../../packages/broker/src/developer/decide-session.js";
 import { afterEach, expect, it } from "vitest";
 import { cleanup, screen } from "@testing-library/react";
 import { SafeMarkdown } from "../../packages/ui/src/design/SafeMarkdown.js";
@@ -36,4 +37,10 @@ it("refuses unsafe external and confirmation destinations", () => {
  const origin = "https://cell.example";
  expect(isConfirmUrl(origin + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", origin)).toBe(true);
  for (const url of ["https://evil.example/v1/app/approve/a", origin + "/v1/app/approve/a?ticket=x", origin + "/v1/app/approve/../other", origin + "/v1/app/approve/%2fother", origin + "/v1/app/approve/a/%2e%2e/apr_aaaaaaaaaaaaaaaaaaaa", origin + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa#details"]) expect(isConfirmUrl(url, origin)).toBe(false);
+});
+
+it("accepts a real broker ticket URL and refuses every alternate query shape", () => {
+ const origin = "https://cell.example", path = origin + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", ticket = "a".repeat(43);
+ expect(isConfirmUrl(confirmUrlWithTicket(origin, "apr_aaaaaaaaaaaaaaaaaaaa", ticket), origin)).toBe(true);
+ for (const suffix of ["?ticket=", "?ticket=" + "a".repeat(42), "?ticket=" + "a".repeat(44), "?ticket=" + ticket + "&ticket=" + ticket, "?other=" + ticket, "?ticket=" + ticket + "&other=x", "?ticket=" + ticket + "#details", "?%74icket=" + ticket, "?ticket=%61" + "a".repeat(42), "?ticket=" + ticket + "&"]) expect(isConfirmUrl(path + suffix, origin)).toBe(false);
 });

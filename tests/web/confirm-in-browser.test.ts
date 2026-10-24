@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { confirmUrlWithTicket } from "../../packages/broker/src/developer/decide-session.js";
 import { afterEach, expect, it, vi } from "vitest";
-import { act, screen } from "@testing-library/react";
+import { act, screen, fireEvent } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -26,4 +27,9 @@ it("shows the exact ten-minute recovery copy and cleans its timers on exit", asy
 it("shows no confirmation action for an unsafe or absent link", () => {
  const query = createQueryClient(), f = fakeHost();const { unmount } = renderUi(h(QueryClientProvider, { client: query, children: h(AppHostProvider, { host: f.host, children: h(ConfirmInBrowser, { result: { ...result, confirmUrl: "https://evil.example/v1/app/approve/a" }, subjectKey: key, isApplied: () => false }) }) }));
  expect(screen.queryByRole("button", { name: "Open confirmation" })).toBeNull();expect(f.host.openExternal).not.toHaveBeenCalled();unmount();query.clear();
+});
+
+it("opens the broker-minted ticket link unchanged without treating it as applied", () => {
+ const query = createQueryClient(), f = fakeHost(), confirmUrl = confirmUrlWithTicket(f.host.origin, "apr_aaaaaaaaaaaaaaaaaaaa", "a".repeat(43));
+ const ui = renderUi(h(QueryClientProvider, { client: query, children: h(AppHostProvider, { host: f.host, children: h(ConfirmInBrowser, { result: { ...result, confirmUrl }, subjectKey: key, isApplied: () => false }) }) }));fireEvent.click(screen.getByRole("button", { name: "Open confirmation" }));expect(f.host.openExternal).toHaveBeenCalledWith(confirmUrl);expect(screen.queryByText("Done")).toBeNull();ui.unmount();query.clear();
 });
