@@ -3,9 +3,10 @@
 // transaction, conditional on the session's revision and on the task's owner; the previous owner keeps "can edit"; and it is audited.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentSessionKey, agentXError, changesKey, liveSessionKey, mySessionsKey, sessionChannel, sessionEventId, sharedSessionsKey, userChannel, type OrgId, type Payer } from "@agentx/contracts";
+import { agentSessionKey, agentXError, approvalKey, approverIndexKey, changesKey, liveSessionKey, mySessionsKey, sessionChannel, sessionEventId, sharedSessionsKey, userChannel, type OrgId, type Payer } from "@agentx/contracts";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
-import { getAnyApproval, getApprovalSubjectHandler, getApproverRule, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
+import { createWriteApprovalRecord, getAnyApproval, getApprovalSubjectHandler, getApproverRule, listApprovalsFor, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
+import { WRITE_APPROVER_RULE } from "../../packages/broker/src/agents/write-gate.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { onMembersMerged, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
 import { resolveSessionAccess } from "../../packages/broker/src/agent-sessions/access.js";
@@ -807,5 +808,63 @@ describe("a taker merged into another member between the request and the decisio
     const record = { ...(await w.approvalOf(approvalId)), status: "EXECUTING" as const, decidedBy: ARJUN };
     await getApprovalSubjectHandler("session_owner")!(w.deps, record);
     expect(w.meta(sessionId).owner).toMatchObject({ developerId: ARJUN });
+  });
+});
+
+describe("approvals already waiting when the session is taken over (12b review I-2)", () => {
+  /** A write approval the previous owner's run is waiting on, listed for them as Plan 3 lists it. */
+  const waitingWrite = async (w: World, taskId: string, approvalId = "apr_aaaaaaaaaaaaaaaaaaaa") => {
+    const made = await createWriteApprovalRecord({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, {
+      orgId: ORG_A, approvalId, kind: "write", subject: { kind: "agent_run", taskId, stepId: "work" }, operationId: randomUUID(), connector: "linear", connectorType: "linear",
+      tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64), arguments: {}, argumentsHash: "c".repeat(64),
+      summary: "Create a Linear issue", class: "consequential", approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: [PRIYA] }, status: "PENDING", project: "web",
+      owner: { developerId: PRIYA, name: "Priya" }, attempts: 0, createdAt: "2026-10-22T08:30:00.000Z", expiresAt: "2026-10-29T08:30:00.000Z",
+    } as never, [], 8);
+    expect(made).toBe("created");
+    return approvalId;
+  };
+  const listed = async (w: World, developerId: string) => (await listApprovalsFor(w.deps, { orgId: ORG_A, developerId, orgRole: "member" })).map((record) => record.approvalId);
+
+  it("lists them for the taker and no longer for the previous owner, and shows the taker what they may decide on the session", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    const approvalId = await waitingWrite(w, taskId);
+    expect(await listed(w, PRIYA)).toEqual([approvalId]);
+    expect(await listed(w, MAX)).toEqual([]);
+    await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
+    expect(await listed(w, MAX)).toEqual([approvalId]);
+    expect(await listed(w, PRIYA)).toEqual([]);
+    expect(await w.approvalOf(approvalId)).toMatchObject({ status: "PENDING", owner: { developerId: MAX, name: "Max" } });
+    const { decidingOf } = await import("../../packages/broker/src/agent-sessions/routes.js");
+    const deciding = await decidingOf(w.deps).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId, subject: { kind: "task", taskId } } as never);
+    expect(deciding).toEqual([{ approvalId, title: "Create a Linear issue" }]);
+  });
+
+  it("leaves the previous owner's row when they still hold approve_writes on the project, and leaves other tasks' approvals alone", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    w.grant(PRIYA, "web", "maintainer");
+    const mine = await waitingWrite(w, taskId);
+    const other = sessionSeed(w);
+    const elsewhere = await waitingWrite(w, other.taskId, "apr_bbbbbbbbbbbbbbbbbbbb");
+    await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
+    expect((await listed(w, PRIYA)).sort()).toEqual([mine, elsewhere].sort());
+    expect(await listed(w, MAX)).toEqual([mine]);
+    expect(await w.approvalOf(elsewhere)).toMatchObject({ owner: { developerId: PRIYA } });
+  });
+
+  it("finishes the move when the handler is told again after a lost answer", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    const approvalId = await waitingWrite(w, taskId);
+    const asked = await w.asked(MAX, sessionId);
+    await w.confirm(MAX, asked.approvalId);
+    // The follow-up was lost: the previous owner's row is back and the record still names them.
+    w.db.set({ ...approverIndexKey(ORG_A, PRIYA, approvalId as never), entityType: "APPROVER_INDEX", approvalId });
+    w.db.set({ ...(w.db.get(approvalKey(ORG_A, approvalId as never)) as Item), owner: { developerId: PRIYA, name: "Priya" } });
+    const record = { ...(await w.approvalOf(asked.approvalId)), status: "EXECUTING" as const, decidedBy: MAX };
+    await getApprovalSubjectHandler("session_owner")!(w.deps, record);
+    expect(await listed(w, MAX)).toEqual([approvalId]);
+    expect(await listed(w, PRIYA)).toEqual([]);
   });
 });
