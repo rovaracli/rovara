@@ -11,6 +11,7 @@ import { onTaskEnded } from "../../packages/broker/src/agents/task-end.js";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { createChainScheduler } from "../../packages/broker/src/triggers/schedules.js";
+import type { TriggerScheduler } from "../../packages/broker/src/triggers/ports.js";
 import { TriggerStore, type TriggerRecord } from "../../packages/broker/src/triggers/store.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
@@ -85,6 +86,15 @@ export const sentrySignature = (raw: Buffer | string, secret: string): string =>
 /** One weekly schedule, as a person saves it. */
 export const WEEKLY = { kind: "schedule", schedule: { kind: "weekly", at: "09:00", day: "MON" }, timezone: "UTC", missed: "run_once" } as const;
 
+/** The harness's own fields the suites use, named here so this module's declaration holds none of the broker's input types. */
+export interface HarnessView {
+  handler: (event: unknown) => Promise<{ statusCode: number; headers: Record<string, string>; body: string }>;
+  finish: (workspaceId: string, operationId: string, status: "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED", detail?: { result?: unknown; error?: string }) => Promise<Record<string, unknown>>;
+  dev: (who: Developer, method: string, path: string, body?: unknown) => Promise<{ status: number; body: Record<string, unknown> }>;
+  orgOf: (who: Developer) => Promise<unknown>;
+  brokerInput: unknown;
+}
+
 export async function chainsBrokerWorld() {
   const secretsFake = new FakeOrgSecrets({ env: ENV, now: Date.now });
   const secrets = new OrgSecrets({ env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: secretsFake.sts, secretsFor: secretsFake.secretsFor, now: Date.now });
@@ -94,7 +104,7 @@ export async function chainsBrokerWorld() {
   const nativeFetch = routeFetch(sentryApi.handler);
   const hookSecrets = new FakeHookSecrets();
   const schedulerClient = new FakeSchedulerClient();
-  const scheduler = createChainScheduler({ client: schedulerClient, settings: SCHEDULE_SETTINGS });
+  const scheduler: TriggerScheduler = createChainScheduler({ client: schedulerClient, settings: SCHEDULE_SETTINGS });
   const sns = new FakeSnsNetwork();
   const connectedAwsAccounts = new Set<string>();
   const access = fakeModelAccess();
@@ -220,12 +230,15 @@ export async function chainsBrokerWorld() {
   const approvals = () => db.find((item) => item.entityType === "APPROVAL") as Item[];
 
   return {
-    h, db, api, created, enroll, grant, chainOf, agentOf, sentryHook, addConnector, deliver, deliverRaw, stepTask, endStep, runItem, attempts, approvals, triggers, agents, scheduler, schedulerClient, secretsFake, secrets, fakeLinear, sentryApi, nativeFetch,
+    // The harness's own fields the tests use, by name: the whole harness would carry the broker's input types into this module's declaration.
+    h: { handler: h.handler, finish: h.finish, dev: h.dev, orgOf: h.orgOf, brokerInput: h.brokerInput } as unknown as HarnessView,
+    db, api, created, enroll, grant, chainOf, agentOf, sentryHook, addConnector, deliver, deliverRaw, stepTask, endStep, runItem, attempts, approvals, triggers, agents, scheduler, schedulerClient, secretsFake, secrets, fakeLinear, sentryApi, nativeFetch,
     hookSecrets, sns, connectedAwsAccounts, access, checkEndpoint, call: api,
     seedProject: (orgId: OrgId, name: string, creator: string, connectors: unknown[] = []) => seedProject(db, orgId, name, creator, connectors),
     approvalKey, CHARTERARC_TEAM_ID, SNS_ACCOUNT, INVESTIGATE_THEN_FIX,
   };
 }
+
 export type ChainsWorld = Awaited<ReturnType<typeof chainsBrokerWorld>>;
 export type { TriggerRecord };
 
