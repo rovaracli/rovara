@@ -464,7 +464,7 @@ describe("Vercel: x-vercel-signature is the hex HMAC-SHA1 of the raw body", () =
     for (const [index, over] of wrong.entries()) expect((await w.receive(vcDelivery(hook, vcBody(w, { ...over, id: `w${String(index)}` })))).status, JSON.stringify(over)).toBe(403);
     expect(w.dispatched).toEqual([]);
     const onlyProject = await w.hook({ source: "vercel", hookId: HOOK_2, project: "api", tenant: { projectId: "prj_123" } });
-    expect((await w.receive(vcDelivery(onlyProject, vcBody(w, { id: "p1", team: null })))).status).toBe(202);
+    expect((await w.receive(vcDelivery(onlyProject, vcBody(w, { id: "p1", team: { id: "team_other" } })))).status).toBe(202);
     expect((await w.receive(vcDelivery(onlyProject, vcBody(w, { id: "p2", project: { id: "prj_other" } })))).status).toBe(403);
     const neither = await w.hook({ source: "vercel", hookId: `hk_${"3".repeat(26)}`, project: "ops", tenant: {} });
     expect((await w.receive(vcDelivery(neither, vcBody(w, { id: "n1", team: null, project: undefined })))).status).toBe(202);
@@ -672,5 +672,90 @@ describe("nothing a sender wrote reaches a log", () => {
     expect(w.dispatched).toHaveLength(3);
     expect(w.logs.map((entry) => entry.event)).toEqual(expect.arrayContaining(["hook.tenant_mismatch", "hook.stale"]));
     expect(JSON.stringify(w.logs)).not.toContain(MARK);
+  });
+});
+
+// ---- pins found by the mutation pass: each of these fails when the guard it names is changed
+describe("pins: the edges of what each provider reads", () => {
+  it("Datadog takes a monitor id sent as a number, and not a negative or fractional one", async () => {
+    const { w, hook } = await ddWorld();
+    expect((await w.receive(ddDelivery(hook, ddBody(w, { id: "n1", alertId: 1234 })))).status).toBe(202);
+    expect(w.dispatched[0]!.event.subject.id).toBe("1234");
+    for (const [index, alertId] of [-1, 1.5].entries()) expect(await w.receive(ddDelivery(hook, ddBody(w, { id: `neg${String(index)}`, alertId })))).toEqual(IGNORED);
+    expect(w.dispatched).toHaveLength(1);
+  });
+
+  it("each provider answers a tenant mismatch for a hook of another source even when the body names that hook's own tenant fields", async () => {
+    const { w, hook } = await ddWorld();
+    const asGrafana = { ...hook, source: "grafana" } as HookRecord;
+    expect(datadogProvider.normalize(ddBody(w), {}, asGrafana)).toEqual({ tenantMismatch: true });
+    const asVercel = { ...hook, source: "vercel", tenant: {} } as HookRecord;
+    expect(grafanaProvider.normalize(gfBody(w), {}, { ...hook, source: "datadog", tenant: GF_TENANT })).toEqual({ tenantMismatch: true });
+    expect(vercelProvider.normalize(vcBody(w), {}, { ...asVercel, source: "datadog" })).toEqual({ tenantMismatch: true });
+  });
+
+  it("the setup text says what to set: four steps for Datadog including that the form encoding is off, and Grafana's bearer and HMAC choices", () => {
+    expect(datadogProvider.setup?.steps).toHaveLength(4);
+    expect(datadogProvider.setup?.steps.join("\n")).toContain("Encode as form off");
+    expect(grafanaProvider.setup?.steps).toHaveLength(4);
+    expect(grafanaProvider.setup?.steps.join("\n")).toContain("Timestamp Header empty");
+  });
+
+  it("Grafana reads Authorization only as a whole `Bearer <token>`: text before the scheme is refused, white space around the header is not part of the token", async () => {
+    const { w, hook } = await gfWorld();
+    const body = gfBody(w, [gfAlert(w, { fingerprint: "b1" })]);
+    for (const authorization of [`Foo Bearer ${SECRET_1}`, `x Bearer ${SECRET_1}`]) expect((await w.receive(gfDelivery(hook, body, { authorization }))).status, authorization).toBe(403);
+    expect((await w.receive(gfDelivery(hook, body, { authorization: `Bearer ${SECRET_1} ` }))).status).toBe(202);
+    expect((await w.receive(gfDelivery(hook, gfBody(w, [gfAlert(w, { fingerprint: "b2" })]), { authorization: ` Bearer ${SECRET_1}` }))).status).toBe(202);
+  });
+
+  it("Grafana takes a fingerprint in capitals and refuses an externalURL longer than 2048 characters", async () => {
+    const { w, hook } = await gfWorld();
+    expect((await w.receive(gfDelivery(hook, gfBody(w, [gfAlert(w, { fingerprint: "ABCDEF0123" })])))).status).toBe(202);
+    expect(w.dispatched[0]!.event.subject.id).toBe("ABCDEF0123");
+    expect((await w.receive(gfDelivery(hook, gfBody(w, [gfAlert(w, { fingerprint: "long1" })], { externalURL: `https://grafana.acme.com/${"a".repeat(2100)}` })))).status).toBe(403);
+    expect(w.dispatched).toHaveLength(1);
+  });
+
+  it("Grafana starts an alert only when its status is firing: another word is not an event, and an alert with an unreadable start is dropped before it can be an invalid event", async () => {
+    const { w, hook } = await gfWorld();
+    const alerts = [gfAlert(w, { status: "pending", fingerprint: "p1" }), gfAlert(w, { status: "normal", fingerprint: "p2" }), gfAlert(w, { fingerprint: "p3", startsAt: "soon" }), gfAlert(w, { fingerprint: "ok1" })];
+    expect((await w.receive(gfDelivery(hook, gfBody(w, alerts)))).status).toBe(202);
+    expect(w.dispatched.map((entry) => entry.event.subject.id)).toEqual(["ok1"]);
+    expect(w.logs.filter((entry) => entry.event === "hook.event_invalid")).toEqual([]);
+  });
+
+  it("Grafana lists the labels sorted by name, and only the labels of a map (a list is no labels)", async () => {
+    const { w, hook } = await gfWorld();
+    await w.receive(gfDelivery(hook, gfBody(w, [gfAlert(w, { fingerprint: "o1", labels: { z: "1", a: "2", m: "3" } }), gfAlert(w, { fingerprint: "o2", labels: ["x", "y"] })])));
+    expect(w.dispatched.map((entry) => entry.event.fields["label"])).toEqual([["a=2", "m=3", "z=1"], []]);
+  });
+
+  it("Vercel answers a body with no payload for the hook's team as a tenant refusal, not as a fault of its own", async () => {
+    const { w, hook } = await vcWorld();
+    const raw = Buffer.from(JSON.stringify({ type: "deployment.error", id: "x" }), "utf8");
+    expect((await w.receive(vcDelivery(hook, null, { raw }))).status).toBe(403);
+    expect(w.logs.map((entry) => entry.event)).toEqual(["hook.tenant_mismatch"]);
+  });
+
+  it("Vercel ignores a deployment with an empty id, and titles a deployment whose project name is only white space by its id", async () => {
+    const { w, hook } = await vcWorld();
+    expect(await w.receive(vcDelivery(hook, vcBody(w, { id: "e1", deployment: { id: "" } })))).toEqual(IGNORED);
+    await w.receive(vcDelivery(hook, vcBody(w, { id: "e2", deployment: { id: "dpl_x", name: "   " } })));
+    expect(w.dispatched.map((entry) => entry.event.subject.title)).toEqual(["dpl_x: deployment failed"]);
+  });
+
+  it("a repeat of the request that made a Datadog hook gives the setup again, with no secret", async () => {
+    const v = setupTriggerWorld();
+    const hw = setupHookWorld(hookProviders(), { db: v.db, clock: v.clock });
+    v.routeDeps.eventHooks = { store: hw.store, secrets: hw.secrets, providers: hw.providers, origin: "https://api.example.com" };
+    const requestId = crypto.randomUUID();
+    const first = await v.agentCall(DANA, "POST", "/v1/app/projects/web/event-hooks", { requestId, source: "datadog", tenant: DD_TENANT });
+    const again = await v.agentCall(DANA, "POST", "/v1/app/projects/web/event-hooks", { requestId, source: "datadog", tenant: DD_TENANT });
+    expect(first.status).toBe(201);
+    expect(again.status).toBe(200);
+    expect(again.body["replayed"]).toBe(true);
+    expect((again.body["setup"] as { payloadTemplate: string }).payloadTemplate).toBe(DATADOG_PAYLOAD_TEMPLATE);
+    expect(again.body).not.toHaveProperty("secret");
   });
 });
