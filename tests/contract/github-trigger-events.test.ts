@@ -391,7 +391,8 @@ describe("through the broker's webhook endpoint", () => {
 
   it("ignores, without a fault, a pull request event that names no installation", async () => {
     const w = await brokerWorld();
-    const { installation: _installation, ...without } = pullRequest();
+    const without: Record<string, unknown> = { ...pullRequest() };
+    delete without["installation"];
     const reply = await w.post(without, "pull_request");
     expect(reply.statusCode).toBe(202);
     expect(JSON.parse(reply.body)).toMatchObject({ delivery: "IGNORED" });
