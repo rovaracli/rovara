@@ -558,14 +558,14 @@ describe("what the first round of mutation showed was not yet pinned", () => {
     expect(w.calls.start).toHaveLength(1);
   });
 
-  it("tells another person whose retry meets the first one's run, even when the first one's link was lost", async () => {
+  it("tells another person whose retry meets the first one's run that it was already retried, and makes the link the first one's lost for them", async () => {
     const w = world();
     const old = w.agentRun("FAILED");
     w.seedShare(ORG_A, old.sessionId, { kind: "member", developerId: ARJUN }, "edit");
     w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
     await expect(w.retry(MAX, old.sessionId)).rejects.toMatchObject({ name: "InternalServerError" });
     expect(await code(w.retry(ARJUN, old.sessionId))).toEqual({ code: "CONFIG_INVALID", message: "This session was already retried." });
-    expect(w.eventTexts(old.sessionId)).toEqual([]);
+    expect(w.eventTexts(old.sessionId)).toEqual(["Max retried this in a new session."]);
   });
 
   it("never overwrites the link of a new session that already says which session it retries", async () => {

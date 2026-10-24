@@ -15,12 +15,14 @@ import {
   agentXError,
   INDEX_EXPIRY_ATTRIBUTE,
   projectAllows,
+  runRequestKey,
   sessionEventId,
   type AgentSessionRecord,
   type OrgId,
   type SessionView,
   type WorkOrigin,
 } from "@agentx/contracts";
+import { RUN_RECORD_MEMORY_DAYS } from "../agents/runs.js";
 import { paymentOfTask } from "../spend/payer.js";
 import { failedIndexes, strip, type TransactItem } from "../agents/table-writes.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -30,7 +32,7 @@ import { auditActorOf } from "../audit/plan3-hooks.js";
 import { taskAgentRunKey, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { requireSessionLevel, type SessionAccess } from "./access.js";
 import type { SessionReadDependencies } from "./read.js";
-import { sessionEventItem } from "./store.js";
+import { AgentSessionStore, sessionEventItem } from "./store.js";
 import {
   afterControl, answerOf, controlRequestItem, getItem, isEnded, isoOf, nameOrSomeone, parseControlBody, readControlRequest, repeatOf, taskOfSession,
   type ControlCaller,
@@ -46,7 +48,8 @@ const NOT_LINKED = "The new session isn't ready yet. Try again in a moment.";
 /** Where a retry's new run says it came from when its first came from nowhere a person sits (an event, a schedule, a chain). */
 const FALLBACK_ORIGIN: WorkOrigin = "app";
 const KEEPS_ORIGIN: readonly WorkOrigin[] = ["app", "cli", "mcp", "slack", "test_run"];
-const MONTH_SECONDS = 30 * 86_400;
+/** How long a retry's marks last: as long as Plan 3 remembers the run's own request (`RUN_REQUEST`), so a repeat can never meet a start that still answers the first run while the marks of its link are gone. */
+const KEEP_SECONDS = RUN_RECORD_MEMORY_DAYS * 86_400;
 
 /**
  * The request id the new run is started with: derived from the org and the old session, so every retry of one session names the same run. Plan 3's start answers a repeat of a
@@ -165,7 +168,7 @@ async function retryWorkflow(deps: SessionReadDependencies, caller: ControlCalle
     orgId: session.orgId, actor: auditActorOf(caller.developerId), occurredAt: at, occurrence: requestId, related: [task.taskId], sessionId: session.sessionId, sessionKind: session.kind, branch: "workflow",
   })]);
   const items: TransactItem[] = [
-    controlRequestItem(deps, session, requestId, { action: "retry", by: caller.developerId, at, sessionId: session.sessionId }, Math.floor(nowMs / 1000) + MONTH_SECONDS),
+    controlRequestItem(deps, session, requestId, { action: "retry", by: caller.developerId, at, sessionId: session.sessionId }, Math.floor(nowMs / 1000) + KEEP_SECONDS),
     sessionEventItem(deps, { orgId: session.orgId, sessionId: session.sessionId }, {
       eventId: sessionEventId("retried", requestId), at, type: "retried", actor: { kind: "member", developerId: caller.developerId, name }, text: `${name} retried this.`,
     }),
@@ -214,10 +217,16 @@ async function retryRun(deps: SessionReadDependencies, caller: ControlCaller, ac
     throw agentXError("CONFIG_INVALID", ALREADY_RETRIED);
   }
 
+  // Plan 3 already started the run for this session's retry, and the link to it was lost (the process ended between the two): the link is made now, for the person who started
+  // the run, and whoever asked is told what they would have been told had it landed.
+  const derived = retryRunRequestId(session.orgId, session.sessionId);
+  const begun = await getItem(deps, runRequestKey(session.orgId, derived));
+  if (begun !== undefined) return repairLink(deps, caller, access, begun, requestId);
+
   let started: { taskId: string };
   try {
     started = await deps.control.startAgentRun({
-      requestId: retryRunRequestId(session.orgId, session.sessionId), orgId: session.orgId, project: task.project, agent: { agentId: task.agent.agentId, version: task.agent.version }, input: run.input,
+      requestId: derived, orgId: session.orgId, project: task.project, agent: { agentId: task.agent.agentId, version: task.agent.version }, input: run.input,
       origin: task.origin !== undefined && KEEPS_ORIGIN.includes(task.origin) ? task.origin : FALLBACK_ORIGIN, owner: { developerId: caller.developerId }, startedBy: { developerId: caller.developerId },
     });
   } catch (error) {
@@ -229,6 +238,40 @@ async function retryRun(deps: SessionReadDependencies, caller: ControlCaller, ac
   const newSessionId = created !== undefined && created["orgId"] === session.orgId && typeof created["sessionId"] === "string" ? created["sessionId"] : undefined;
   if (newSessionId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", NOT_LINKED);
   return link(deps, caller, access, { requestId, newSessionId, related: [task.taskId, newSessionId], branch: "new_run" });
+}
+
+/**
+ * The run was started and the link was not made. The starter (the person on the run request, who owns the new session) is the retrier: the link is written as theirs, under the request
+ * id of the repeat when they are the one repeating it, else under the derived id. Anyone else asking is told the session was already retried; a link that cannot be made
+ * (the new session has a retry link of its own already) is never overwritten.
+ */
+async function repairLink(deps: SessionReadDependencies, caller: ControlCaller, access: SessionAccess, begun: Record<string, unknown>, requestId: string): Promise<{ session: SessionView }> {
+  const { session } = access;
+  const starterId = begun["developerId"];
+  if (begun["orgId"] !== session.orgId || typeof starterId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_LINKED);
+  let newSessionId = typeof begun["sessionId"] === "string" ? begun["sessionId"] : undefined;
+  if (newSessionId === undefined && typeof begun["taskId"] === "string") {
+    const created = await getItem(deps, taskKey(begun["taskId"]));
+    newSessionId = created !== undefined && created["orgId"] === session.orgId && typeof created["sessionId"] === "string" ? created["sessionId"] : undefined;
+  }
+  if (newSessionId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", NOT_LINKED);
+  const created = await new AgentSessionStore(deps).get(session.orgId, newSessionId);
+  if (created === undefined) throw agentXError("RUNTIME_UNAVAILABLE", NOT_LINKED);
+  const own = starterId === caller.developerId;
+  const starter: ControlCaller = own ? caller : { ...caller, developerId: starterId, name: created.owner.developerId === starterId ? created.owner.name : "Someone" };
+  const input = { requestId: own ? requestId : retryRunRequestId(session.orgId, session.sessionId), newSessionId, related: [typeof begun["taskId"] === "string" ? begun["taskId"] : session.sessionId, newSessionId], branch: "new_run" as const };
+  if (created.retryOf === undefined) {
+    try {
+      const answered = await link(deps, starter, access, input);
+      if (own) return answered;
+    } catch (error) {
+      // The starter can no longer be shown the new session (they left): the link is still made, and the person who asked is told as anyone else is.
+      if (own || !isAgentXError(error) || error.code !== "NOT_FOUND") throw error;
+    }
+  } else if (own) {
+    return answerOf(deps, caller, newSessionId);
+  }
+  throw agentXError("CONFIG_INVALID", ALREADY_RETRIED);
 }
 
 // ---- a chain run
@@ -267,7 +310,7 @@ async function link(
   const events = await tryAuditEvents(deps, () => [auditSessionRetried({
     orgId, actor: auditActorOf(caller.developerId), occurredAt: at, occurrence: input.requestId, related: input.related, sessionId: session.sessionId, sessionKind: session.kind, branch: input.branch,
   })]);
-  const expires = Math.floor(nowMs / 1000) + MONTH_SECONDS;
+  const expires = Math.floor(nowMs / 1000) + KEEP_SECONDS;
   const items: TransactItem[] = [
     controlRequestItem(deps, session, input.requestId, { action: "retry", by: caller.developerId, at, sessionId: input.newSessionId }, expires),
     {

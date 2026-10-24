@@ -241,7 +241,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
     followers: session.followerCount,
     viewingNow: await viewingNow(deps, session, deps.now()),
-    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access), ...(canMakeAgent ? ["make_agent" as const] : [])] },
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status }), ...(canMakeAgent ? ["make_agent" as const] : [])] },
     link: sessionLink(deps.origin, session.sessionId),
     bindings: await bindingsOf(deps, session),
     legs: session.legs,

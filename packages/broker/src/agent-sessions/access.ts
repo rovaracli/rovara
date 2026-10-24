@@ -31,6 +31,7 @@ import {
   type ProjectRole,
   type SessionAction,
   type SessionLevel,
+  type SessionStatus,
 } from "@agentx/contracts";
 import type { ProjectMembers } from "../agents/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
@@ -357,15 +358,24 @@ export async function requireSessionLevel(deps: SessionAccessDependencies, calle
   return access;
 }
 
-/** What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, retries, takes over and shares. Handing off is the owner's. */
-export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }): SessionAction[] {
+/** The statuses a session can be retried from: the run failed or was cancelled. (A workflow blocked on a failed step shows as needing a person, and is retried through its own page.) */
+const RETRYABLE: readonly SessionStatus[] = ["failed", "cancelled"];
+
+/**
+ * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over and shares, and retries a session that failed or was
+ * cancelled (`state` is the session's status now). Handing off is the owner's.
+ */
+export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus }): SessionAction[] {
   if (access.level === "none") return [];
   if (!access.owner && access.projectRole === "viewer") return ["watch"];
   const actions: SessionAction[] = ["watch", "comment"];
   if (atLeast(access.level, "use")) actions.push("steer");
-  if (atLeast(access.level, "edit")) actions.push("stop", "retry", "take_over", "share");
+  if (atLeast(access.level, "edit")) {
+    actions.push("stop");
+    if (RETRYABLE.includes(state.status)) actions.push("retry");
+    actions.push("take_over", "share");
+  }
   if (access.orgAdmin && !actions.includes("stop")) actions.push("stop");
   if (access.owner) actions.push("handoff");
   return actions;
 }
-

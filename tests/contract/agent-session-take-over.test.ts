@@ -867,7 +867,7 @@ describe("approvals already waiting when the session is taken over (12b review I
     return approvalId;
   };
   const mayDecide = async (w: World, developerId: string, approvalId: string) =>
-    mayDecideApproval(w.deps, { orgId: ORG_A, developerId, orgRole: "member" }, (await w.approvalOf(approvalId)) as AnyApprovalRecord);
+    mayDecideApproval(w.deps, { orgId: ORG_A, developerId, orgRole: "member" }, await w.approvalOf(approvalId));
 
   it("takes the previous owner out of an approval routed to ids, so they can no longer decide it, and the taker can", async () => {
     const w = world();
@@ -875,7 +875,7 @@ describe("approvals already waiting when the session is taken over (12b review I
     const approvalId = await waitingByIds(w, taskId, [PRIYA]);
     expect(await mayDecide(w, PRIYA, approvalId)).toBe(true);
     await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
-    expect(((await w.approvalOf(approvalId)).approvers as { ids: string[] }).ids).toEqual([MAX]);
+    expect(((await w.approvalOf(approvalId)).approvers as unknown as { ids: string[] }).ids).toEqual([MAX]);
     expect(await mayDecide(w, PRIYA, approvalId)).toBe(false);
     expect(await mayDecide(w, MAX, approvalId)).toBe(true);
   });
@@ -886,7 +886,7 @@ describe("approvals already waiting when the session is taken over (12b review I
     w.grant(PRIYA, "web", "maintainer");
     const approvalId = await waitingByIds(w, taskId, [PRIYA, ARJUN]);
     await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
-    expect(((await w.approvalOf(approvalId)).approvers as { ids: string[] }).ids.sort()).toEqual([ARJUN, MAX, PRIYA].sort());
+    expect(((await w.approvalOf(approvalId)).approvers as unknown as { ids: string[] }).ids.sort()).toEqual([ARJUN, MAX, PRIYA].sort());
     expect(await mayDecide(w, PRIYA, approvalId)).toBe(true);
   });
 
@@ -900,7 +900,7 @@ describe("approvals already waiting when the session is taken over (12b review I
     w.members.roleOf = (orgId, project, who) => (who.developerId === PRIYA ? Promise.reject(new Error("the roster is down")) : roleOf(orgId, project, who));
     await w.confirm(MAX, asked.approvalId);
     w.members.roleOf = roleOf;
-    expect(((await w.approvalOf(approvalId)).approvers as { ids: string[] }).ids).toEqual([MAX]);
+    expect(((await w.approvalOf(approvalId)).approvers as unknown as { ids: string[] }).ids).toEqual([MAX]);
     expect(await listed(w, PRIYA)).toEqual([]);
   });
 
