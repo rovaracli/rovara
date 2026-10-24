@@ -7,6 +7,7 @@ import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { PROJECTOR_CONCURRENCY, PROJECTOR_SESSIONS_PER_BATCH_MAX, type OrgId, type SessionId } from "@agentx/contracts";
 import type { StreamRecord } from "../developer/notifications.js";
+import { settleSteerDeliveriesFor } from "./steer.js";
 import { refreshSessionSummary, type SummaryDependencies } from "./summary.js";
 
 type Item = Record<string, unknown>;
@@ -92,6 +93,8 @@ export async function projectSessions(records: readonly StreamRecord[], deps: Pr
   const tasks = new Map<string, Item | undefined>();
   const pointers = new Map<string, string | undefined>();
   const add = (orgId: string, sessionId: string) => { sessions.set(`${orgId}#${sessionId}`, { orgId, sessionId }); };
+  // PLAN4: the tasks of a chain's steps that changed in this batch, by the chain's session: a message to the chain's step is told as taken from the step's own task, which a refresh of the chain doesn't read.
+  const stepTasks = new Map<string, Set<string>>();
 
   const resolveTask = async (taskId: string, keyOrg: string | undefined) => {
     if (!tasks.has(taskId)) tasks.set(taskId, await get(deps, { pk: `DEVTASK#${taskId}`, sk: "META" }));
@@ -114,7 +117,12 @@ export async function projectSessions(records: readonly StreamRecord[], deps: Pr
     if (mismatch === true) { warn({ event: "agent_session.projector_org_mismatch", key: text(record["pk"])?.slice(0, 80) }); continue; }
     if (target === undefined) continue;
     try {
-      if (target.kind === "session") add(target.orgId, target.sessionId);
+      if (target.kind === "session") {
+        add(target.orgId, target.sessionId);
+        // A chain step's own task record (it names the chain run, and has no session of its own).
+        const stepTask = TASK_PK.exec(text(record["pk"]) ?? "")?.[1];
+        if (stepTask !== undefined && text(record["sessionId"]) === undefined) stepTasks.set(`${target.orgId}#${target.sessionId}`, (stepTasks.get(`${target.orgId}#${target.sessionId}`) ?? new Set()).add(stepTask));
+      }
       else if (target.kind === "task") await resolveTask(target.taskId, target.keyOrg);
       else {
         if (!pointers.has(target.workspaceId)) pointers.set(target.workspaceId, text((await get(deps, { pk: `WORKSPACE#${target.workspaceId}`, sk: "DEVELOPER_TASK" }))?.["taskId"]));
@@ -140,13 +148,15 @@ export async function projectSessions(records: readonly StreamRecord[], deps: Pr
       next += 1;
       const { orgId, sessionId } = batch[index]!;
       try {
-        const outcome = await refresh(deps, orgId, sessionId);
+        const outcome = await refresh({ ...deps, deadline: options.deadline }, orgId, sessionId);
         if (outcome === "updated") result.refreshed += 1;
         else result.unchanged += 1;
       } catch (error) {
         result.failed += 1;
         warn({ event: "agent_session.projector_refresh_failed", sessionId, error: error instanceof Error ? error.name : "unknown" });
       }
+      // Never throws; a mark it can't make is made by the next change to the task.
+      for (const taskId of stepTasks.get(`${orgId}#${sessionId}`) ?? []) await settleSteerDeliveriesFor(deps, orgId, sessionId, taskId);
     }
   };
   await Promise.all(Array.from({ length: Math.min(PROJECTOR_CONCURRENCY, batch.length) }, worker));

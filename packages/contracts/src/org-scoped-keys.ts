@@ -511,6 +511,22 @@ export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: 
   return { pk: orgScoped(orgId, `SESSION_REQUEST#${keyPart(developerId, "a developer id")}`), sk: keyPart(requestId, "a request id") };
 }
 
+/**
+ * The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window, or their messages to the agent
+ * ("steer") in the current hour: `<kind>#<developerId>` in the session's rate partition. `steer_all` counts every person's messages to the agent on the session (its `developerId` is the word `session`).
+ */
+export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all"): OrgKey {
+  return { pk: orgScoped(orgId, `SESSION_RATE#${keyPart(sessionId, "a session id")}`), sk: `${kind}#${keyPart(developerId, "a developer id")}` };
+}
+
+/**
+ * The count of a session's messages to the agent that are still queued (not yet taken by a step or answered), in the session's own partition. It goes up in the transaction that writes
+ * a queued message and down in the one that answers it, so "nothing is queued" is one read, and it sits among the messages so retention reaches it (its sort key is not a message's).
+ */
+export function sessionQueuedSteersKey(orgId: OrgId, sessionId: SessionId): OrgKey {
+  return agentSessionKey(orgId, sessionId, "MESSAGE#QUEUED");
+}
+
 /** What one task has cost so far, added to when a model key settles, so a session shows cost without summing keys. */
 export function taskSpendKey(orgId: OrgId, taskId: string): OrgKey {
   return { pk: orgScoped(orgId, `TASK_SPENT#${keyPart(taskId, "a task id")}`), sk: "META" };

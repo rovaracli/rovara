@@ -46,9 +46,9 @@ import { getAnyApproval } from "../agents/approvals-store.js";
 import { agentRunView } from "../agents/run-engine.js";
 import { failedIndexes, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { monthSlots, taskPageStep } from "../aws/developer-tasks.js";
-import { deriveTaskStatus, recentTaskEvents, taskKey, taskPointerKey, type DeveloperTaskRecord, type OperationFacts, type StoredEvent } from "../developer/task-records.js";
-import { effectiveOwnerId } from "./access.js";
+import { deriveTaskStatus, recentTaskEvents, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type OperationFacts, type StoredEvent } from "../developer/task-records.js";
 import { notifySessionChange } from "./notice-sink.js";
+import { settleSteerDeliveriesFor } from "./steer.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
 type Item = Record<string, unknown>;
@@ -131,6 +131,8 @@ export interface SummaryDependencies extends TableInput {
   log?: Log | undefined;
   chains?: ChainSessionSource | undefined;
   local?: LocalSessionSource | undefined;
+  /** The time (epoch ms) the caller must be done by: the notice sink's checks stop there. Set by the projector. */
+  deadline?: number | undefined;
 }
 
 // ---- digest and small helpers
@@ -243,7 +245,8 @@ function requestSlotsOf(task: DeveloperTaskRecord, now: number): Array<{ subject
     else if (pause.scope.kind !== "test") {
       // A month's budget: the pause's month and this month's, asked by the system, the run's starter or its owner.
       const months = [...new Set([pause.at.slice(0, 7), iso(now).slice(0, 7)])];
-      const askers = [...new Set(["system", task.startedBy?.developerId ?? task.developerId, task.developerId])];
+      // A request made before a take-over was asked of the creator, one made after of the taker (Plan 5 Task 12a): both slots are looked in.
+      const askers = [...new Set(["system", task.startedBy?.developerId ?? tryEffectiveTaskOwner(task)?.developerId ?? task.developerId, tryEffectiveTaskOwner(task)?.developerId ?? task.developerId, task.developerId])];
       slots.push(...monthSlots(months, scopeKey(pause.scope), askers));
     }
   }
@@ -364,8 +367,12 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     }
   }
   const needsPeople = [...waitingOn.people];
-  if (status === "needs_person" && needsPeople.length === 0) needsPeople.push(effectiveOwnerId(session, task as unknown as Item));
-  if (workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && !needsPeople.includes(effectiveOwnerId(session, task as unknown as Item))) needsPeople.push(effectiveOwnerId(session, task as unknown as Item));
+  // The person the task waits on is its owner now (Plan 5 Task 12a); a task whose owner can't be read waits on no one by name.
+  const waitingOwner = tryEffectiveTaskOwner(task)?.developerId;
+  if (waitingOwner !== undefined) {
+    if (status === "needs_person" && needsPeople.length === 0) needsPeople.push(waitingOwner);
+    if (workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && !needsPeople.includes(waitingOwner)) needsPeople.push(waitingOwner);
+  }
   // An event log that can't be read keeps the peek the summary had: a failed read is not a reason to blank it.
   const peek = derived.current === undefined ? undefined : await peekOf(deps, derived.current.id).catch((error: unknown) => {
     log(deps, { event: "agent_session.peek_unreadable", sessionId: session.sessionId, error: error instanceof Error ? error.name : "unknown" });
@@ -476,6 +483,13 @@ async function ensureDrainCursor(deps: SummaryDependencies, day: string): Promis
  * never reopens, and keeps the status it ended with while its cost catches up.
  */
 export async function refreshSessionSummary(deps: SummaryDependencies, orgId: OrgId, sessionId: SessionId): Promise<"unchanged" | "updated"> {
+  const result = await refreshSummaryOnly(deps, orgId, sessionId);
+  // A step may have taken a message a person sent to the agent since the last look (Task 11a): the session is told, once. Never a reason for a refresh to fail.
+  await settleSteerDeliveriesFor(deps, orgId, sessionId);
+  return result;
+}
+
+async function refreshSummaryOnly(deps: SummaryDependencies, orgId: OrgId, sessionId: SessionId): Promise<"unchanged" | "updated"> {
   const store = new AgentSessionStore(deps);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const session = await store.get(orgId, sessionId);

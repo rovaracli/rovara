@@ -359,7 +359,7 @@ import { registerAgentSessionTaskHandlers } from "../agent-sessions/index.js";
 import { agentRunWakeItems } from "./agent-run-wakeup.js";
 import { requireRecipeAllowed } from "../agents/roster.js";
 import { effectiveProjectRole, grantRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "../developer/project-roles.js";
-import { aiToolTurn, completedTurn, developerFooter, developerTaskIdentity, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, githubWorkflowPullRequestKey, inertName, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskAgentRunKey, taskPointerKey, taskRecipeKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
+import { aiToolTurn, completedTurn, developerFooter, developerTaskIdentity, E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON, effectiveTaskOwner, githubWorkflowPullRequestKey, inertName, ownerActorIdOf, ownerDecisionCounts, OUTCOME, partyOfTask, taskKey, taskOwnerKey, taskOwnerSubject, taskAgentRunKey, taskPointerKey, taskRecipeKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../developer/task-records.js";
 import { readWorkspaceLimits } from "../developer/limits.js";
 import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, operationEndDispatchItem, workflowDispatchItem, type WorkflowDispatchRecord, type WorkflowE2EReadinessMarker, AWS_TEMPORARY_MESSAGE, GATED_TASK_PULL_REQUEST_ACTION_REFUSAL, GATED_TASK_PULL_REQUEST_REFUSAL, GATED_TASK_TURN_REFUSAL, UNEXPECTED_REQUEST_MESSAGE, hashJson, isConditional, isTemporaryAwsError, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "./broker-shared.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../e2e/feature-plan-planning-context.js";
@@ -397,6 +397,7 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { slackReplyAuthor } from "../agent-sessions/events.js";
 import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.js";
+import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
@@ -410,10 +411,10 @@ import type { DecideKinds } from "../developer/decide-kinds.js";
 import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../developer/decide-inspect.js";
 import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, continueAsTask, resumeTaskAfterSpendApproval, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
@@ -1496,7 +1497,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   // Plan 5, Task 7b: a session follows its task's end and budget pause as Plan 3 tells them, instead of waiting for the stream or the sweep. Only where agents are set up
   // (sessions begin there); a broker without them registers nothing, so Plan 3's "nobody listens" behaviour is unchanged. Plan 4's chain and Task 18's device reads are given
   // here when those land (the sweep's event passes them the same way).
-  if (agents !== undefined) registerAgentSessionTaskHandlers();
+  if (agents !== undefined) {
+    registerAgentSessionTaskHandlers();
+    // Plan 5, Task 8: what a session's change turns into: each person's feed, and a notice on the events API where there is one. Plan 4's chain readers judge a chain session's followers.
+    installRealtimeSink({ realtime: realtimeConfigFromEnvironment(), chainReadAccess: agents.agentSessions?.chainReadAccess });
+  }
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
@@ -3513,7 +3518,7 @@ function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: Develope
     resumeTask: async (input) => {
       const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(input.taskId));
       if (task === undefined || task.orgId !== input.orgId) return;
-      const { deps, caller } = await asOwner(input.orgId, task.developerId);
+      const { deps, caller } = await asOwner(input.orgId, effectiveTaskOwner(task).developerId);
       return resumeTaskAfterSpendApproval(deps, caller, input);
     },
     continueAsTask: async (caller, taskId, body) => {
@@ -5748,6 +5753,8 @@ function agentRunHostOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTas
       return { operationId: accepted.operation.id, duplicate: accepted.duplicate };
     },
     requireCreator: (task) => requireCreatorStillMember(creatorCheckOf(dependencies), task),
+    // Plan 5 Task 11b: the messages people sent to this run from its session, for the step about to be made.
+    stepNotes: (task, requestId, redoFrom) => agentStepNotes(dependencies, task.taskId, requestId, redoFrom),
     requireRecipeAllowed: (task, recipe) => requireRecipeAllowed(routeDependencies, task.orgId as OrgId, task.project, task.agent?.name ?? "This agent", recipe),
     releaseWorkspace: (taskId) => releaseIfFinished(dependencies, taskId),
     blockKeys: async (task) => {
@@ -5808,7 +5815,7 @@ function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: DeveloperT
       });
     },
     requireRunAuthority: async ({ orgId, ownerKey, project, taskId }) => {
-      await requireProjectAuthority(dependencies, orgId, ownerKey, project, { taskCreator: async () => (await taskOf(orgId, taskId)).developerId });
+      await requireProjectAuthority(dependencies, orgId, ownerKey, project, { taskCreator: async () => effectiveTaskOwner(await taskOf(orgId, taskId)).developerId });
     },
     // Who can see an approval besides its approvers (Task 22): whoever the task page lets read the task, by the page's own access check, now.
     canViewTask: async (caller, { taskId, project }) => {
@@ -6131,9 +6138,10 @@ async function linkedRequester(dependencies: AwsBrokerDependencies, orgId: OrgId
 /** How long a task's model key lasts; the worker asks for a new one a minute before it ends. */
 const MODEL_KEY_TTL_SECONDS = 3_600;
 
-/** #341: the developer who owns the task a workspace runs, or undefined for a workspace that runs no developer task. */
+/** #341: the developer who owns the task a workspace runs now (the effective owner, Plan 5 Task 12a), or undefined for a workspace that runs no developer task. */
 async function workspaceTaskOwner(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<string | undefined> {
-  return (await workspaceTask(dependencies, workspaceId))?.developerId;
+  const task = await workspaceTask(dependencies, workspaceId);
+  return task === undefined ? undefined : effectiveTaskOwner(task).developerId;
 }
 
 async function gatedTaskWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<boolean> {
@@ -7257,13 +7265,15 @@ async function ownedSlackWorkflowTask(dependencies: AwsBrokerDependencies, event
     const stored = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
     const sidecar = await getItem<Record<string, unknown>>(dependencies, { pk: `DEVTASK#${taskId}`, sk: "PEOPLE" });
     let exactNativeOwner = false;
-    if (!legacySlackOwner && sidecar === undefined && stored?.client !== "slack" && stored !== undefined) {
+    // The owner here is the task's owner now: whoever took it over, else its creator (Plan 5 Task 12a).
+    const storedOwner = stored === undefined ? undefined : tryEffectiveTaskOwner(stored);
+    if (!legacySlackOwner && sidecar === undefined && stored?.client !== "slack" && storedOwner !== undefined) {
       const record = (await dependencies.documentClient.send(new GetCommand({
         TableName: dependencies.developer.signInTableName,
-        Key: { pk: `DEVELOPER#${stored.developerId}`, sk: "META" },
+        Key: { pk: `DEVELOPER#${storedOwner.developerId}`, sk: "META" },
         ConsistentRead: true,
       }))).Item as DeveloperRecord | undefined;
-      exactNativeOwner = record?.developerId === stored.developerId && record.provider === "slack"
+      exactNativeOwner = record?.developerId === storedOwner.developerId && record.provider === "slack"
         && record.slackUserId === userId && record.revoked === false;
     }
     if (exactNativeOwner) {
@@ -7295,8 +7305,10 @@ async function slackTaskAccess(
   if (task === undefined) throw agentXError("FORBIDDEN", "task access could not be verified");
   const sidecar = await getItem<Record<string, unknown>>(dependencies, { pk: `DEVTASK#${taskId}`, sk: "PEOPLE" });
   const canonical = await slackCallerFor(dependencies, userId, dependencies.developer.slackTeamId ?? "");
-  const caller = sidecar === undefined && legacySlackOwner && task.provider === "slack" && task.slackUserId === userId
-    ? { ...canonical, developerId: task.developerId, name: task.developerName }
+  // The legacy Slack owner of a task with no People list is the effective owner (Plan 5 Task 12a): the person who took it over, else its creator.
+  const legacyOwner = sidecar === undefined && legacySlackOwner ? tryEffectiveTaskOwner(task) : undefined;
+  const caller = legacyOwner !== undefined && legacyOwner.provider === "slack" && legacyOwner.slackUserId === userId
+    ? { ...canonical, developerId: legacyOwner.developerId, name: legacyOwner.name }
     : canonical;
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     developer: dependencies.developer, now: Date.now, tasks }, caller);
@@ -7308,7 +7320,7 @@ async function slackTaskAccess(
     if (sidecar !== undefined || action !== "comment" || task.share === undefined) throw error;
     // A project viewer only views (Plan 2, Task 21): their explicit grant beats the thread fallback. Anyone with no grant keeps it.
     if (grantRoleOf(await getMembership(dependencies, caller.orgId, caller.developerId, task.project)) === "viewer") throw error;
-    return { caller, routeDeps, access: { task, role: "commenter", ownerActorIds: [taskOwnerKey(task.developerId, task.taskId)] } };
+    return { caller, routeDeps, access: { task, role: "commenter", ownerActorIds: tryEffectiveTaskOwner(task) === undefined ? [] : [ownerActorIdOf(task)] } };
   }
 }
 
@@ -8888,18 +8900,20 @@ async function workflowE2ECurrentAuthorityIsValid(
       return reject("current-project-policy-or-runtime-changed");
     }
     stage = "creator-project-access";
-    const creator = await getWorkflowE2ECreatorIdentity(dependencies, task.developerId);
+    // The proofs are the task's owner now: the person who took it over, else its creator (Plan 5 Task 12a).
+    const owner = effectiveTaskOwner(task);
+    const creator = await getWorkflowE2ECreatorIdentity(dependencies, owner.developerId);
     if (creator === undefined || creator.revoked || dependencies.developer === undefined) return reject("current-creator-identity-unavailable");
     // The creator's live org role, read afresh on every round: an owner or admin with no grant is a maintainer (finding 5).
-    const creatorOrgMember = await readOrgMember(dependencies, orgId, task.developerId);
+    const creatorOrgMember = await readOrgMember(dependencies, orgId, owner.developerId);
     let creatorAccess: Awaited<ReturnType<typeof checkProjectAccess>>;
     try {
       creatorAccess = await checkProjectAccess({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
         developer: dependencies.developer, now: Date.now },
-      { orgId, developerId: task.developerId, orgRole: creatorOrgMember?.role ?? "member", ...(creator.slackUserId === undefined ? {} : { slackUserId: creator.slackUserId }) }, task.project);
+      { orgId, developerId: owner.developerId, orgRole: creatorOrgMember?.role ?? "member", ...(creator.slackUserId === undefined ? {} : { slackUserId: creator.slackUserId }) }, task.project);
     } catch { return reject("current-creator-project-access-unavailable"); }
     if (!projectAllows(creatorAccess.role, "start_tasks")) return reject("current-creator-can-only-view-project");
-    const creatorMembershipKey = projectMemberKey(orgId, task.developerId, task.project);
+    const creatorMembershipKey = projectMemberKey(orgId, owner.developerId, task.project);
     const creatorMembership = await getItem<Record<string, unknown>>(dependencies, creatorMembershipKey);
     const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess, creatorOrgMember);
     if (creatorAuthority === undefined || canonicalJson(admission.creatorAuthority) !== canonicalJson(creatorAuthority)) {
@@ -8973,7 +8987,7 @@ async function workflowE2ECurrentAuthorityIsValid(
         ExpressionAttributeNames: { "#definition": "definition", "#e2e": "e2e" },
         ExpressionAttributeValues: { ":entity": "PROJECT", ":registeredBy": latestProject.registeredBy, ":policy": policy,
           ":binding": latestProject.runtimeBinding, ":setupApproval": latestProject.setupApproval } } },
-      { ConditionCheck: { TableName: dependencies.developer.signInTableName, Key: { pk: `DEVELOPER#${task.developerId}`, sk: "META" },
+      { ConditionCheck: { TableName: dependencies.developer.signInTableName, Key: { pk: `DEVELOPER#${owner.developerId}`, sk: "META" },
         ConditionExpression: "entityType = :entity AND revoked = :notRevoked",
         ExpressionAttributeValues: { ":entity": "DEVELOPER", ":notRevoked": false } } },
       { ConditionCheck: { TableName: dependencies.tableName, Key: key,
@@ -8989,7 +9003,7 @@ async function workflowE2ECurrentAuthorityIsValid(
       authorityChecks.push({ ConditionCheck: { TableName: dependencies.tableName, Key: creatorMembershipKey,
       ConditionExpression: "entityType = :entity AND ownerKey = :ownerKey AND projectName = :project AND #role = :role AND grantId = :grantId",
       ExpressionAttributeNames: { "#role": "role" },
-      ExpressionAttributeValues: { ":entity": "MEMBERSHIP", ":ownerKey": task.developerId, ":project": task.project,
+      ExpressionAttributeValues: { ":entity": "MEMBERSHIP", ":ownerKey": owner.developerId, ":project": task.project,
         ":role": creatorAuthority.role, ":grantId": creatorAuthority.grantId } } });
     }
     if (creatorAuthority.kind === "org-role") authorityChecks.push(orgRoleAuthorityCheck(dependencies.tableName, creatorAuthority));
@@ -9023,14 +9037,15 @@ export async function workflowE2ECreatorAuthorityProof(
 ): Promise<({ kind: "direct-membership"; developerId: string; project: string; role: "developer" | "administrator"; grantId: string }
   | { kind: "org-role"; developerId: string; project: string; orgId: OrgId; role: "owner" | "admin"; memberUpdatedAt: string }
   | { kind: "channel-access"; developerId: string; project: string; teamId: string; channelIds: string[]; bindings: Array<{ channelId: string; updatedAt: string }> }) | undefined> {
-  if (membership?.entityType === "MEMBERSHIP" && membership.ownerKey === task.developerId && membership.projectName === task.project
+  const owner = effectiveTaskOwner(task);
+  if (membership?.entityType === "MEMBERSHIP" && membership.ownerKey === owner.developerId && membership.projectName === task.project
     && (membership.role === "developer" || membership.role === "administrator") && typeof membership.grantId === "string"
     && /^[0-9a-f-]{36}$/iu.test(membership.grantId)) {
-    return { kind: "direct-membership", developerId: task.developerId, project: task.project, role: membership.role, grantId: membership.grantId };
+    return { kind: "direct-membership", developerId: owner.developerId, project: task.project, role: membership.role, grantId: membership.grantId };
   }
   // No grant, but a live org owner or admin, who maintains every project in the org. The record is the one read for this round.
   if (orgMember !== undefined && (orgMember.role === "owner" || orgMember.role === "admin")) {
-    return { kind: "org-role", developerId: task.developerId, project: task.project, orgId: await orgOfRecord(dependencies, task),
+    return { kind: "org-role", developerId: owner.developerId, project: task.project, orgId: await orgOfRecord(dependencies, task),
       role: orgMember.role, memberUpdatedAt: orgMember.memberUpdatedAt };
   }
   if (access.access !== "channel" || dependencies.developer?.slackTeamId === undefined || access.channelIds.length === 0) return undefined;
@@ -9043,7 +9058,7 @@ export async function workflowE2ECreatorAuthorityProof(
       || typeof row.updatedAt !== "string" || row.updatedAt.length === 0) return undefined;
     bindings.push({ channelId, updatedAt: row.updatedAt });
   }
-  return { kind: "channel-access", developerId: task.developerId, project: task.project, teamId, channelIds, bindings };
+  return { kind: "channel-access", developerId: owner.developerId, project: task.project, teamId, channelIds, bindings };
 }
 
 function sameE2ESourceSnapshot(left: E2ESourceSnapshot, right: E2ESourceSnapshot): boolean {
@@ -9226,6 +9241,18 @@ async function logCallbackRefusal<T>(action: string, operation: OperationRecord,
   }
 }
 
+/**
+ * The task's owner as a caller for the broker's own steps (a webhook, a dispatch, a worker start): the effective owner (Plan 5 Task 12a), the person who took the task over
+ * else its creator, so `taskOwnerKey(caller.developerId, taskId)` is `ownerActorIdOf(task)`. A task whose owner can't be read gives no caller (it throws, and nothing runs).
+ */
+export async function ownerCallerOf(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, sessionId: string): Promise<DeveloperCaller> {
+  const owner = effectiveTaskOwner(task);
+  return {
+    developerId: owner.developerId, sessionId, amr: owner.provider, name: owner.name, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const,
+    ...(owner.slackUserId === undefined ? {} : { slackUserId: owner.slackUserId }),
+  };
+}
+
 /** Worker-start linearization point: stale or invalidated feedback approvals cannot start code. */
 async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependencies, operation: OperationRecord, value: unknown): Promise<void> {
   const input = WorkflowFeedbackApprovalBindingSchema.parse(value);
@@ -9249,16 +9276,15 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
   const accessDependencies = dependencies.developer === undefined ? undefined : developerTaskRouteDependencies({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
     now: Date.now, tasks: developerTaskActions(dependencies),
-  }, {
-    developerId: task.developerId, sessionId: "workflow-feedback-approval", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const,
-    ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }),
-  }, undefined, null);
+  }, await ownerCallerOf(dependencies, task, "workflow-feedback-approval"), undefined, null);
   const access = await resolveTaskDispatchPeople({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     ...(accessDependencies?.checkTaskPerson === undefined ? {} : { checkTaskPerson: accessDependencies.checkTaskPerson }),
   }, task);
-  const authorizedActor = access === undefined ? decision.actorId === task.ownerKey
-    : access.status === "ALLOWED" && access.ownerActorIds.includes(decision.actorId);
+  // The owner's decision counts while they are the owner: the creator's, if it was decided before someone took the task over (by the decision's own stored time, never the
+  // time it runs), and the taker's after (Plan 5 Task 12a, R3-6).
+  const authorizedActor = access === undefined ? ownerDecisionCounts(task, decision.actorId, decision.at)
+    : access.status === "ALLOWED" && ownerDecisionCounts(task, decision.actorId, decision.at, access.ownerActorIds);
   if (!authorizedActor) throw agentXError("STALE_FENCE", "the owner-approved PR feedback is no longer current");
 
   const finalPointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
@@ -10805,7 +10831,7 @@ export async function processGithubWorkflowEvent(
   if (linked !== undefined && options?.release !== "queue") {
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(linked.taskId));
     if (task !== undefined && dependencies.developer !== undefined) {
-      const caller = { developerId: task.developerId, sessionId: "github-webhook", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const };
+      const caller = await ownerCallerOf(dependencies, task, "github-webhook");
       const routeDependencies = developerTaskRouteDependencies({
         documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
         now: Date.now, tasks: developerTaskActions(dependencies),
@@ -11206,7 +11232,9 @@ export function orgRoleAuthorityCheck(tableName: string, proof: { developerId: s
  */
 /** Rechecks the original task creator's live project grant before warm-up and round admission. */
 export async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord) {
-  const creatorRecord = await getWorkflowE2ECreatorIdentity(dependencies, task.developerId);
+  // The proofs are the task's owner now: the person who took it over, else its creator (Plan 5 Task 12a).
+  const owner = effectiveTaskOwner(task);
+  const creatorRecord = await getWorkflowE2ECreatorIdentity(dependencies, owner.developerId);
   if (creatorRecord?.revoked === true) {
     throw agentXError("TASK_ACCESS_DENIED", "the original task creator's account has been revoked");
   }
@@ -11215,12 +11243,12 @@ export async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBroker
   }
   const orgId = await orgOfRecord(dependencies, task);
   // The creator's live org role, read afresh on every round (finding 5): a demoted or removed creator loses an org-role proof here.
-  const creatorOrgMember = await readOrgMember(dependencies, orgId, task.developerId);
+  const creatorOrgMember = await readOrgMember(dependencies, orgId, owner.developerId);
   let creatorAccess: Awaited<ReturnType<typeof checkProjectAccess>>;
   try {
     creatorAccess = await checkProjectAccess({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
       developer: dependencies.developer, now: Date.now },
-    { orgId, developerId: task.developerId, orgRole: creatorOrgMember?.role ?? "member", ...(creatorRecord.slackUserId === undefined ? {} : { slackUserId: creatorRecord.slackUserId }) }, task.project);
+    { orgId, developerId: owner.developerId, orgRole: creatorOrgMember?.role ?? "member", ...(creatorRecord.slackUserId === undefined ? {} : { slackUserId: creatorRecord.slackUserId }) }, task.project);
   } catch (error) {
     if (error instanceof AgentXError && error.code === "PROJECT_ACCESS_DENIED") {
       throw agentXError("TASK_ACCESS_DENIED", "the original creator no longer has current access to this task's project");
@@ -11231,7 +11259,7 @@ export async function requireWorkflowE2ECreatorAuthority(dependencies: AwsBroker
   if (!projectAllows(creatorAccess.role, "start_tasks")) {
     throw agentXError("TASK_ACCESS_DENIED", "the original creator can now only view this task's project and can no longer run its checks");
   }
-  const creatorMembership = await getItem<Record<string, unknown>>(dependencies, projectMemberKey(orgId, task.developerId, task.project));
+  const creatorMembership = await getItem<Record<string, unknown>>(dependencies, projectMemberKey(orgId, owner.developerId, task.project));
   const creatorAuthority = await workflowE2ECreatorAuthorityProof(dependencies, task, creatorMembership, creatorAccess, creatorOrgMember);
   if (creatorAuthority === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the creator has no versioned direct or locally bound channel access proof for this E2E round");
   return creatorAuthority;
@@ -11410,7 +11438,10 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
       // M-6 (m-2): the `closed` end of a plain task whose close could not finish telling it; Plan 5 Task 7b (the Task 22 hand-off): the end of a workflow task that merged
       // or closed, and of a task whose creator was removed. The task, not an operation, is what is looked at, and the end it is owed is worked out from it now.
       const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
-      const outcome = task === undefined || task.orgId === undefined || task.orgId !== row.orgId ? undefined : taskEndOwed(task, row.endOf);
+      let outcome = task === undefined || task.orgId === undefined || task.orgId !== row.orgId ? undefined : taskEndOwed(task, row.endOf);
+      // A removed creator's agent-step run is ended, and its end told, by its engine (the check that refuses it ends the run): a row left because the run could not be read
+      // is not told here. A read that fails here throws, and the row is tried again.
+      if (outcome === "creator_removed" && task?.agent !== undefined && await getItem(dependencies, taskAgentRunKey(item.taskId)) !== undefined) outcome = undefined;
       if (task === undefined || task.orgId === undefined || outcome === undefined) {
         await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
         return "STALE";
@@ -11476,7 +11507,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       await remove();
       return "STALE";
     }
-    const caller = { developerId: task.developerId, sessionId: "workflow-dispatch", amr: task.provider, name: task.developerName, orgId: await orgOfRecord(dependencies, task), orgRole: "member" as const };
+    const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
     const routeDependencies = developerTaskRouteDependencies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
@@ -14196,6 +14227,9 @@ function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["in
     unlinkIdentity: unlinkIdentityThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     startIdentityLink: startIdentityLinkThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     channelByName: channelByNameThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
+    // Plan 5 Task 8: the realtime token is signed by DeveloperIdentity, which holds the key; the endpoint is where clients connect (set only where there is an events API).
+    realtimeToken: realtimeTokenThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
+    ...(process.env.REALTIME_HTTP_ENDPOINT ? { realtimeEndpoint: process.env.REALTIME_HTTP_ENDPOINT } : {}),
     // D17: kept for the Lambda's lifetime; an unknown kid refetches at most once a minute.
     verifyAccessToken: developerTokenVerifier({
       issuer,

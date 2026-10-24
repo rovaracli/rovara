@@ -324,7 +324,40 @@ export const WorkflowFeedbackNoteSchema = z.object({
     context.addIssue({ code: "custom", path: ["slack"], message: "Slack thread notes require verified message provenance" });
   }
 });
-
+export type WorkflowFeedbackNote = z.infer<typeof WorkflowFeedbackNoteSchema>;
+/** A reply longer than this is kept truncated, and marked so. */
+export const WORKFLOW_THREAD_NOTE_MAX_CHARS = 2_000;
+/** The most thread replies one task keeps; later ones are refused. */
+export const WORKFLOW_THREAD_NOTES_MAX = 200;
+/**
+ * A reply anyone posted in a Slack-started task's thread: input for the task's next step, never a
+ * decision. Stored beside the task (`NOTE#<messageTs>`); it never changes the task's workflow.
+ */
+export const SlackNoteSchema = z.object({
+  schemaVersion: z.literal(1), source: z.literal("slack").optional(),
+  taskId: z.string().uuid(), slackUserId: z.string().regex(/^[UW][A-Z0-9]{2,31}$/), isOwner: z.boolean(),
+  teamId: z.string(), channelId: z.string(), threadTs: z.string().regex(/^\d{10}\.\d{6}$/), messageTs: z.string().regex(/^\d{10}\.\d{6}$/), eventId: z.string().min(1).max(128),
+  text: z.string().trim().min(1).max(WORKFLOW_THREAD_NOTE_MAX_CHARS), truncated: z.boolean(), receivedAt: z.string().datetime(), workflowRevision: z.number().int().positive(),
+  /** Set when the chat agent answered this reply as a question: the next step then skips it (it still counts toward the cap). */
+  answeredAt: z.string().datetime().optional(),
+}).strict();
+/**
+ * A message a person sent to the agent from a session (Plan 5 Task 11a), stored beside the task at `NOTE#<messageId>` and read by the same steps as a Slack reply. It is
+ * input for the next step, never a decision. `text` is already cleaned and redacted; `settledAt` is set once the session has been told that a step took it.
+ */
+export const AppNoteSchema = z.object({
+  schemaVersion: z.literal(1), source: z.enum(["app", "linear"]),
+  taskId: z.string().uuid(), developerId: ActorIdSchema, name: z.string().min(1).max(320), isOwner: z.boolean(),
+  sessionId: z.string().min(1).max(64), messageId: z.string().regex(/^msg_[0-9a-z]{20}$/),
+  text: z.string().trim().min(1).max(WORKFLOW_THREAD_NOTE_MAX_CHARS), truncated: z.boolean(), receivedAt: z.string().datetime(), workflowRevision: z.number().int().positive(),
+  answeredAt: z.string().datetime().optional(),
+  settledAt: z.string().datetime().optional(),
+}).strict();
+export type SlackNote = z.infer<typeof SlackNoteSchema>;
+export type AppNote = z.infer<typeof AppNoteSchema>;
+/** What a task keeps as input for its next step: a Slack thread reply (`source` absent or `"slack"`) or a message from a session; both count toward `WORKFLOW_THREAD_NOTES_MAX`. */
+export const WorkflowThreadNoteSchema = z.union([SlackNoteSchema, AppNoteSchema]);
+export type WorkflowThreadNote = z.infer<typeof WorkflowThreadNoteSchema>;
 export const WorkflowFeedbackDecisionSchema = z.object({
   schemaVersion: z.literal(1), requestId: z.string().uuid(), workflowRevision: z.number().int().positive(),
   decision: z.enum(["APPROVE", "REQUEST_CHANGES", "DISMISS"]), actorId: ActorIdSchema, actorRole: z.literal("TASK_OWNER"),

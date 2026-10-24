@@ -361,6 +361,15 @@ export class FakeDynamoDb {
         : inRange.filter((item) => compareKeys(item.sk as string, String(start.sk)) * (input.ScanIndexForward === false ? -1 : 1) > 0);
       return after.map((item) => this.readClone(item));
     }
+    // The changes feed's "after this cursor" range (Plan 5 Task 8): `pk = :pk AND sk > :from`, oldest first.
+    const afterCursor = /^pk = :pk AND sk > (:[a-zA-Z]+)$/.exec(String(input.KeyConditionExpression));
+    if (afterCursor) {
+      const bound = values[afterCursor[1]!] as string;
+      const found = this.find((item) => item.pk === values[":pk"] && compareKeys(item.sk as string, bound) > 0)
+        .sort((left, right) => compareKeys(left.sk as string, right.sk as string));
+      const start = input.ExclusiveStartKey as { sk?: unknown } | undefined;
+      return (start === undefined ? found : found.filter((item) => compareKeys(item.sk as string, String(start.sk)) > 0)).map((item) => this.readClone(item));
+    }
     // The stuck-setup sweep's "older than" range (spec 025 C17).
     const before = /^pk = :pk AND sk < (:[a-zA-Z]+)$/.exec(String(input.KeyConditionExpression));
     if (before) {

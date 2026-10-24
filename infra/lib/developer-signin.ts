@@ -1,6 +1,6 @@
 // Spec 025 phase 25a: the control plane as the developers' sign-in server. Named environments only
 // (R3): the legacy deployment must not change.
-import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
+import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, Lazy, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
 import { BrokerNames } from "./broker-names.js";
@@ -78,6 +78,14 @@ export class DeveloperSignIn extends Construct {
   readonly cloud: CloudIdentity | undefined;
   /** The sign-in function (DeveloperIdentity). The audit ledger gives it the outbox (Audit Ledger, Task 18), because it links and unlinks sign-in methods and accepts invites. */
   readonly signInFunction: lambdaNodejs.NodejsFunction;
+  /** The developer token key. Only the sign-in function may sign with it; `allowPublicKeyRead` lets one more role read its public half (Plan 5 Task 8's realtime authorizer). */
+  readonly tokenKey: kms.Key;
+  private readonly publicKeyReaders: string[] = [];
+
+  /** Lets `role` read the token key's public half (`kms:GetPublicKey`) past the key's own deny. It still cannot sign: only the sign-in function's role is exempt from the Sign deny. */
+  allowPublicKeyRead(role: iam.IRole): void {
+    this.publicKeyReaders.push(role.roleArn);
+  }
 
   constructor(scope: Construct, id: string, props: DeveloperSignInProps) {
     super(scope, id);
@@ -101,7 +109,7 @@ export class DeveloperSignIn extends Construct {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-    const tokenKey = new kms.Key(this, "TokenKey", {
+    const tokenKey = this.tokenKey = new kms.Key(this, "TokenKey", {
       alias: props.naming.developerTokenKeyAlias,
       description: `Signs AgentX ${props.naming.environmentTagValue} developer access tokens`,
       keySpec: kms.KeySpec.RSA_2048,
@@ -230,12 +238,21 @@ export class DeveloperSignIn extends Construct {
     }));
     tokenKey.grant(fn, "kms:Sign", "kms:GetPublicKey");
     tokenKey.addToResourcePolicy(new iam.PolicyStatement({
-      sid: "SignAndGetPublicKeyOnlyAsDeveloperIdentity",
+      sid: "SignOnlyAsDeveloperIdentity",
       effect: iam.Effect.DENY,
       principals: [new iam.AnyPrincipal()],
-      actions: ["kms:Sign", "kms:GetPublicKey"],
+      actions: ["kms:Sign"],
       resources: ["*"],
       conditions: { ArnNotEquals: { "aws:PrincipalArn": fn.role!.roleArn } },
+    }));
+    // The public half is public; besides the sign-in function, the roles `allowPublicKeyRead` names may read it (the realtime authorizer, Plan 5 Task 8).
+    tokenKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: "GetPublicKeyOnlyAsDeveloperIdentityAndTokenVerifiers",
+      effect: iam.Effect.DENY,
+      principals: [new iam.AnyPrincipal()],
+      actions: ["kms:GetPublicKey"],
+      resources: ["*"],
+      conditions: { ArnNotEquals: { "aws:PrincipalArn": Lazy.list({ produce: () => [fn.role!.roleArn, ...this.publicKeyReaders] }) } },
     }));
     props.slackSecret.grantRead(fn);
     fn.addToRolePolicy(new iam.PolicyStatement({

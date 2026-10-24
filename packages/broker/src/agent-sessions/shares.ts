@@ -3,7 +3,7 @@
 // (R66: a browser signed in within ten minutes, else an email code; a token never confirms) and answers `202 NEEDS_CONFIRMATION` with the ticketed link.
 // Removing a share narrows at once. The route layer (Task 5) maps these to `PUT`, `DELETE` and `GET /v1/app/sessions/{id}/shares`.
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   AgentPrincipalSchema,
@@ -49,6 +49,7 @@ import {
 } from "../agents/approvals.js";
 import { failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
 import { effectiveOwnerOf, readSessionShares, requireSessionLevel, resolveSessionAccess, sessionLevelOf, type SessionAccessDependencies, type SessionCaller, type SessionShareRow } from "./access.js";
+import { removeFollower } from "./followers.js";
 import { sessionEventItem } from "./store.js";
 
 export interface SessionShareDependencies extends SessionAccessDependencies {
@@ -310,7 +311,7 @@ export async function deleteSessionShare(deps: SessionShareDependencies, caller:
   const existing = (await readSessionShares(deps, caller.orgId, session.sessionId)).find((share) => principalKey(share.principal) === key);
   if (existing === undefined) return { removed: false };
   if (!access.owner && access.level !== "edit" && existing.sharedBy.developerId !== caller.developerId) {
-    throw agentXError("SESSION_LEVEL_REQUIRED", sessionLevelRequiredMessage("edit", "remove this share", session.owner.name));
+    throw agentXError("SESSION_LEVEL_REQUIRED", sessionLevelRequiredMessage("edit", "remove this share", access.effectiveOwner.name));
   }
   const name = cleanSessionName(caller.name ?? await nameOf(deps, caller.developerId) ?? "") ?? "Someone";
   const nowMs = deps.now();
@@ -354,7 +355,7 @@ async function dropFollowersWithoutAccess(deps: SessionShareDependencies, sessio
   const judge = async (sk: string): Promise<void> => {
     const developerId = sk.slice(prefix.length);
     if (await sessionLevelOf(deps, { orgId: session.orgId, developerId }, session, {}) !== "none") return;
-    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, sk as `FOLLOWER#${string}`) }));
+    await removeFollower(deps, session, developerId);
   };
   if (removed.kind === "member") {
     const sk = `${prefix}${removed.developerId}`;

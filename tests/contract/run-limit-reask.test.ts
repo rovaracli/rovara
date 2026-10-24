@@ -75,6 +75,20 @@ describe("asking again for a run limit that was denied", () => {
     expect(w.meta(taskId).budgetUsd).not.toBe(20);
   });
 
+  it("after a take-over is the taker's to ask, and is asked for them: the creator who handed the task over is told it is not hers (Plan 5 Task 12a)", async () => {
+    const { w, taskId, requestsOfTask, ask } = await blockedPlan();
+    await w.decide(BEN, requestsOfTask()[0]!.spendRequestId, "DENY");
+    await w.set(taskId, "SET currentOwner = :owner", { ":owner": { developerId: CARL.developerId, name: CARL.name, provider: CARL.provider, since: "2026-10-22T11:00:00.000Z" } });
+    const refused = await ask(MAYA);
+    expect(refused.status).toBe(404);
+    expect(requestsOfTask().filter((record) => record.status === "PENDING")).toEqual([]);
+    const answer = await ask(CARL);
+    expect(answer.status, JSON.stringify(answer.body)).toBe(201);
+    const open = requestsOfTask().filter((record) => record.status === "PENDING");
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ requestedBy: { kind: "member", developerId: CARL.developerId }, requestedFor: { developerId: CARL.developerId } });
+  });
+
   it("starts coding once, when the new request is approved", async () => {
     const { w, taskId, implementations, requestsOfTask, ask } = await blockedPlan();
     await w.decide(BEN, requestsOfTask()[0]!.spendRequestId, "DENY");

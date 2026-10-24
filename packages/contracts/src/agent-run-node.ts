@@ -191,6 +191,8 @@ export const AgentRunStateSchema = z.object({
     pendingBranch: z.string().max(200).optional(),
     /** How many times the step was handed the outcomes of its approved actions (a continuation); a rerun after a budget pause is not one. Absent on older runs. */
     continuations: z.number().int().min(0).optional(),
+    /** The mark of session/Slack notes already handed to the step before this run (Plan 5 Task 11b). */
+    notesFrom: z.string().max(40).optional(),
   }).strict()),
   reports: z.array(z.object({ stepId: StepIdSchema, name: z.string(), text: z.string() }).strict()),
   finalReport: z.string().optional(),

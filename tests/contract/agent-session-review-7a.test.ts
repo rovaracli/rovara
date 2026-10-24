@@ -230,7 +230,6 @@ describe("I-4: an end found late is filed where the drain looks", () => {
     // Refreshed yesterday (the work item is filed under yesterday), the saved day lost, drained today.
     p.w.clock.now = Date.parse("2026-10-21T09:00:00.000Z");
     await p.refresh(s.sessionId);
-    p.w.db.delete(ENDED_DRAIN_CURSOR_KEY);
     p.w.clock.now = Date.parse("2026-10-22T09:00:00.000Z");
     await drainEndedSessions(p.deps, p.w.clock.now);
     expect(p.w.db.get(keys.share)?.indexExpiresAt).toBeDefined();
@@ -291,6 +290,67 @@ describe("I-5: one bad work item never stops the drain", () => {
     const work = p.w.db.get(endedSessionWorkKey("2026-10-21", ORG_A, s.sessionId))!;
     expect(work.failures).toBe(5);
     expect(typeof work.indexExpiresAt).toBe("number");
+  });
+
+  it("keeps retrying a work item of an older day until it is parked: the saved day does not pass it", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "SUCCEEDED");
+    p.patchTask(s.taskId, { closedAt: "2026-10-18T08:30:00.000Z" });
+    p.w.clock.now = Date.parse("2026-10-18T09:00:00.000Z");
+    await p.refresh(s.sessionId);
+    p.w.db.set({ ...p.w.db.get(agentSessionKey(ORG_A, s.sessionId, "META"))!, summary: { nonsense: true } });
+    p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
+    for (let run = 1; run <= 7; run += 1) {
+      await drainEndedSessions(p.deps, p.w.clock.now);
+      // The saved day stays at the failed item's day for the four runs that leave it to try again, and moves on in the run that parks it.
+      expect(p.w.db.get(ENDED_DRAIN_CURSOR_KEY)?.day, `run ${String(run)}`).toBe(run < 5 ? "2026-10-18" : "2026-10-21");
+    }
+    expect(p.logs.filter((entry) => entry.event === "agent_session.drain_failed")).toHaveLength(5);
+    const work = p.w.db.get(endedSessionWorkKey("2026-10-18", ORG_A, s.sessionId))!;
+    expect(work.failures).toBe(5);
+    expect(typeof work.indexExpiresAt).toBe("number");
+    // Once parked it no longer holds the saved day back.
+    expect(p.w.db.get(ENDED_DRAIN_CURSOR_KEY)?.day).toBe("2026-10-21");
+  });
+
+  it("an item another run finished meanwhile (its tally can't be written) does not hold the saved day back", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "SUCCEEDED");
+    p.patchTask(s.taskId, { closedAt: "2026-10-18T08:30:00.000Z" });
+    p.w.clock.now = Date.parse("2026-10-18T09:00:00.000Z");
+    await p.refresh(s.sessionId);
+    p.w.db.set({ ...p.w.db.get(agentSessionKey(ORG_A, s.sessionId, "META"))!, summary: { nonsense: true } });
+    p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
+    const gone = { send: async (command: { constructor: { name: string }; input: { Key?: { pk: string } } }) => {
+      if (command.constructor.name === "UpdateCommand" && command.input.Key?.pk.startsWith("ENDED_AGENT_SESSIONS#")) throw Object.assign(new Error("gone"), { name: "ConditionalCheckFailedException" });
+      return p.w.db.send(command);
+    } };
+    await drainEndedSessions({ ...p.deps, documentClient: gone }, p.w.clock.now);
+    expect(p.w.db.get(ENDED_DRAIN_CURSOR_KEY)?.day).toBe("2026-10-21");
+  });
+
+  it("a failed item of an older day does not stop the days after it from being drained", async () => {
+    const p = projectorWorld();
+    const bad = p.open();
+    const good = p.open();
+    p.operation(bad.workspaceId, "task", "SUCCEEDED");
+    p.operation(good.workspaceId, "task", "SUCCEEDED");
+    p.patchTask(bad.taskId, { closedAt: "2026-10-18T08:30:00.000Z" });
+    p.patchTask(good.taskId, { closedAt: "2026-10-20T08:30:00.000Z" });
+    p.w.clock.now = Date.parse("2026-10-18T09:00:00.000Z");
+    await p.refresh(bad.sessionId);
+    p.w.clock.now = Date.parse("2026-10-20T09:00:00.000Z");
+    await p.refresh(good.sessionId);
+    p.w.db.set({ ...p.w.db.get(agentSessionKey(ORG_A, bad.sessionId, "META"))!, summary: { nonsense: true } });
+    p.w.db.set({ ...agentSessionKey(ORG_A, good.sessionId, "SHARE#MEMBER#x"), orgId: ORG_A, sessionId: good.sessionId, principal: { kind: "member", developerId: "x".repeat(64) }, level: "view" });
+    p.w.db.set({ ...ENDED_DRAIN_CURSOR_KEY, entityType: "ENDED_DRAIN_CURSOR", day: "2026-10-18" });
+    p.w.clock.now = Date.parse("2026-10-22T12:00:00.000Z");
+    await drainEndedSessions(p.deps, p.w.clock.now);
+    expect(p.w.db.get(agentSessionKey(ORG_A, good.sessionId, "SHARE#MEMBER#x"))?.indexExpiresAt).toBeDefined();
+    // The saved day stays at the failed item's day.
+    expect(p.w.db.get(ENDED_DRAIN_CURSOR_KEY)?.day).toBe("2026-10-18");
   });
 
   it("every work item carries an expiry of its own, so a lost drain cannot keep it for ever", async () => {

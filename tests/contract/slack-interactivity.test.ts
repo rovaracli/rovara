@@ -1879,3 +1879,55 @@ describe("Quick or Full buttons (gap 3)", () => {
     expect(unknown.ephemeral[0]).toContain(choiceId);
   });
 });
+
+describe("Slack workflow buttons after a take-over (Plan 5 Task 12a)", () => {
+  const taskId = "55555555-5555-4555-8555-555555555555";
+  const digest = "a".repeat(64);
+  const stamp = new Date(nowSeconds * 1_000).toISOString();
+  const workflow = submitWorkflowArtifact(createWorkflowSnapshot({
+    taskId, ownerId: "b".repeat(64), now: stamp,
+    checkPolicy: { required: [{ id: "required-1", label: "npm test", command: { cwd: "workspace", executable: "npm", args: ["test"], timeoutSeconds: 120 } }], optional: [], selectedOptionalIds: [] },
+  }), { expectedRevision: 1, now: stamp, artifact: { id: "plan-1", type: "plan", version: 1, sha256: digest, producer: "agentx-plan", objectKey: "private/owner/workspace/op/plan.md", createdAt: stamp } });
+  /** Priya (the creator, `requester`) handed the task to Max (`other`). */
+  const taken = { taskId, slackUserId: requester, share: thread, workflow, currentOwner: { developerId: "d".repeat(64), name: "Max", provider: "slack", slackUserId: other, since: stamp } };
+  const untaken = { taskId, slackUserId: requester, share: thread, workflow };
+  const press = (userId: string): SlackBlockAction => ({
+    actionId: "agentx_workflow_approve", value: JSON.stringify({ taskId, revision: workflow.revision, digest, decision: "APPROVE" }), userId, userTeamId: thread.teamId, workspaceTeamId: thread.teamId,
+    enterpriseId: "", userEnterpriseId: "", requestStartedAt: nowSeconds * 1_000, thread, messageTs: "1695500001.000002", messageText: "plan", responseUrl: "https://hooks.slack.com/actions/T0BSHLLUGBD/1/abc", triggerId: "1.2.3",
+  });
+  const handlersFor = (loaded: Record<string, unknown>) => {
+    const opened: Array<Record<string, unknown>> = [];
+    // A plan with no optional checks needs no form: an accepted press submits the decision itself.
+    return { opened, handlers: workflowSlackHandlers({ loadTask: async () => loaded, openView: async (_trigger, view) => { opened.push(view); }, submit: async (input) => { opened.push(input); } }) };
+  };
+
+  it("accepts the button from the person who took the task over and refuses the creator who handed it over, naming the taker", async () => {
+    const { handlers, opened } = handlersFor(taken);
+    await handlers.handleAction(press(other));
+    expect(opened).toHaveLength(1);
+    await expect(handlers.handleAction(press(requester))).rejects.toThrow(`<@${other}>`);
+    expect(opened).toHaveLength(1);
+  });
+
+  it("is unchanged for a task nobody took over: the creator presses, a teammate is refused naming the creator", async () => {
+    const { handlers, opened } = handlersFor(untaken);
+    await handlers.handleAction(press(requester));
+    expect(opened).toHaveLength(1);
+    await expect(handlers.handleAction(press(other))).rejects.toThrow(`<@${requester}>`);
+  });
+
+  it("refuses everyone when the task's taker can't be read, and never falls back to the creator", async () => {
+    const { handlers, opened } = handlersFor({ ...taken, currentOwner: { developerId: "" } });
+    await expect(handlers.handleAction(press(requester))).rejects.toThrow();
+    await expect(handlers.handleAction(press(other))).rejects.toThrow();
+    expect(opened).toEqual([]);
+  });
+
+  it("asks the broker as before when it has an authorizer, whoever the task's owner is", async () => {
+    const authorize = vi.fn(async () => undefined);
+    const opened: Array<Record<string, unknown>> = [];
+    const handlers = workflowSlackHandlers({ loadTask: async () => taken, authorize, openView: async (_trigger, view) => { opened.push(view); }, submit: async (input) => { opened.push(input); } });
+    await handlers.handleAction(press(requester));
+    expect(authorize).toHaveBeenCalledWith(taskId, requester, thread, "decide");
+  });
+});

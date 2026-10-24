@@ -24,9 +24,9 @@ import { linearConnectorType } from "../../packages/broker/src/aws/linear-connec
 import { callConnector, connectorCatalogKey, discoverConnector, type ScopeDiscovery } from "../../packages/broker/src/aws/connector-routes.js";
 import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import type { OrgId, WorkspaceInstance } from "../../packages/contracts/src/index.js";
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, orgRemovedKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, orgRemovedKey, projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import type { ConnectorCatalog, PresentedTool } from "../../packages/contracts/src/connectors-node.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "../support/fake-linear-mcp.js";
 import { treeReader, workflow } from "../support/fake-repository.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -1491,6 +1491,50 @@ describe("write approvals through the agent routes", () => {
     expect(await getAnyApproval(deps, TEST_ORG, approvalId as never)).toMatchObject({ status: "APPROVED_DONE" });
   });
 
+  describe("after a take-over (Plan 5 Task 12a)", () => {
+    const setRole = (w: Awaited<ReturnType<typeof world>>, who: { developerId: string }, role: "member" | "admin") =>
+      w.db.set({ ...orgMemberKey(TEST_ORG, who.developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: who.developerId, role, joinedAt: "2026-10-01T00:00:00.000Z" });
+    const takeOver = (w: Awaited<ReturnType<typeof world>>, taskId: string) =>
+      w.db.set({ ...w.db.get(`DEVTASK#${taskId}`, "META")!, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: "oidc", since: "2026-10-22T11:00:00.000Z" } });
+
+    it("makes the approval the taker's: it names them as its owner and in the event the task shows", async () => {
+      const { w, run, deps } = await approvalWorld();
+      takeOver(w, run.taskId);
+      const waiting = await w.linearCall(run.capability, "save_issue", CHANGE);
+      expect(waiting.status, JSON.stringify(waiting.body)).toBe(200);
+      const stored = await getAnyApproval(deps, TEST_ORG, String(waiting.body.approvalId));
+      expect(stored).toMatchObject({ kind: "write", owner: { developerId: OMAR.developerId, name: OMAR.name } });
+      expect(w.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && String(item.sk).startsWith("EVENT#")).map((item) => String(item.text)).join("\n")).toContain(`needs approval from ${OMAR.name} or a project maintainer`);
+    });
+
+    it("runs an approved write on the taker's org role when the task's principal holds no grant, and refuses it when only the creator holds the role", async () => {
+      const allowed = await approvalWorld();
+      setRole(allowed.w, MAYA, "member");
+      setRole(allowed.w, OMAR, "admin");
+      allowed.w.db.delete(projectMemberKey(TEST_ORG, String(allowed.run.task.ownerKey), "payments"));
+      const first = await allowed.w.linearCall(allowed.run.capability, "save_issue", CHANGE);
+      // Still Maya's task, with no role of her own: the call is refused before it can ask.
+      expect(first.status).not.toBe(200);
+      takeOver(allowed.w, allowed.run.taskId);
+      const waiting = await allowed.w.linearCall(allowed.run.capability, "save_issue", CHANGE);
+      expect(waiting.status, JSON.stringify(waiting.body)).toBe(200);
+      const byOmar = await decideApproval(allowed.deps, { orgId: TEST_ORG, developerId: OMAR.developerId, orgRole: "admin" }, String(waiting.body.approvalId), { requestId: randomUUID(), decision: "APPROVE" });
+      expect(byOmar.status).toBe("APPROVED_DONE");
+      expect(allowed.saves()).toHaveLength(1);
+
+      const refused = await approvalWorld();
+      const asked = await refused.w.linearCall(refused.run.capability, "save_issue", CHANGE);
+      expect(asked.status).toBe(200);
+      setRole(refused.w, MAYA, "admin");
+      setRole(refused.w, OMAR, "member");
+      refused.w.db.delete(projectMemberKey(TEST_ORG, String(refused.run.task.ownerKey), "payments"));
+      takeOver(refused.w, refused.run.taskId);
+      const decided = await refused.approve(String(asked.body.approvalId));
+      expect(decided.status).toBe("APPROVED_FAILED");
+      expect(refused.saves()).toEqual([]);
+    });
+  });
+
   it("records what an approved create made, so the run may change it afterwards with no approval", async () => {
     const { w, run, deps, approve, saves } = await approvalWorld();
     // A create that adds a trigger label (one that makes automations act) is consequential.
@@ -1781,3 +1825,91 @@ describe("write approvals through the agent routes", () => {
   });
 });
 
+
+describe("an agent run on a task someone took over (Plan 5 Task 12a)", () => {
+  /** Omar takes the run's task over from Maya. */
+  const takeOver = (w: Awaited<ReturnType<typeof world>>, taskId: string) =>
+    w.db.set({ ...w.db.get(`DEVTASK#${taskId}`, "META")!, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: "oidc", since: "2026-10-22T11:00:00.000Z" } });
+
+  it("asks the gate for the taker as the run's owner, so a new write approval names them", async () => {
+    const w = await world();
+    const { gate, seen } = recordingGate(() => ({ decision: "run" }));
+    w.configure((base) => ({ ...base, gate }));
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")], approvals: { alwaysAsk: ["save_comment"] }, autonomy: "run" });
+    takeOver(w, run.taskId);
+    const reply = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(seen[0]).toMatchObject({ taskId: run.taskId, owner: { developerId: OMAR.developerId, name: OMAR.name } });
+    expect(JSON.stringify(seen[0]!.owner)).not.toContain(MAYA.name);
+  });
+
+  it("names the taker in the footer a write carries", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    takeOver(w, run.taskId);
+    await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "Looks like a duplicate" });
+    const sent = w.linear.calls.find((entry) => entry.name === "save_comment")!;
+    expect(bodyOf(sent)).toContain("Requested by `Omar Diaz` via Rovara agent `triage-bot`");
+    expect(bodyOf(sent)).not.toContain("Maya Chen");
+  });
+
+  it("goes on after the creator who handed it over was removed", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    takeOver(w, run.taskId);
+    w.removeCreator();
+    const reply = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(w.db.get(`DEVTASK#${run.taskId}`, "META")?.outcome).toBeUndefined();
+  });
+
+  it("ends the task creator_removed naming the taker when the taker was removed, and calls neither the gate nor the vendor", async () => {
+    const w = await world();
+    const { gate, seen } = recordingGate(() => ({ decision: "run" }));
+    w.configure((base) => ({ ...base, gate }));
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    takeOver(w, run.taskId);
+    w.db.delete(orgMemberKey(TEST_ORG, OMAR.developerId));
+    w.db.set({ ...orgRemovedKey(TEST_ORG, OMAR.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: OMAR.developerId, removedAt: new Date().toISOString() });
+    const refused = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+    expect(refused.status).toBe(403);
+    expect(errorOf(refused).code).toBe("TASK_ACCESS_DENIED");
+    expect(errorOf(refused).message).toContain("Omar Diaz is no longer a member of");
+    expect(w.db.get(`DEVTASK#${run.taskId}`, "META")).toMatchObject({ outcome: "creator_removed" });
+    expect(seen).toEqual([]);
+    expect(w.linear.calls).toEqual([]);
+  });
+});
+
+describe("project authority of a run on a task someone took over (Plan 5 Task 12a)", () => {
+  const setRole = (w: Awaited<ReturnType<typeof world>>, who: { developerId: string }, role: "member" | "admin") =>
+    w.db.set({ ...orgMemberKey(TEST_ORG, who.developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: who.developerId, role, joinedAt: "2026-10-01T00:00:00.000Z" });
+  /** The task's principal holds no grant of its own, so authority comes from the owner's org role, read for whoever owns the task now. */
+  const ownerByRoleAlone = (w: Awaited<ReturnType<typeof world>>, run: { task: Record<string, unknown> }) =>
+    w.db.delete(projectMemberKey(TEST_ORG, String(run.task["ownerKey"]), "payments"));
+  const takeOver = (w: Awaited<ReturnType<typeof world>>, taskId: string) =>
+    w.db.set({ ...w.db.get(`DEVTASK#${taskId}`, "META")!, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: "oidc", since: "2026-10-22T11:00:00.000Z" } });
+
+  it("lets a tool call through on the taker's org role, though the creator holds none", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    setRole(w, MAYA, "member");
+    setRole(w, OMAR, "admin");
+    ownerByRoleAlone(w, run);
+    takeOver(w, run.taskId);
+    const reply = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  });
+
+  it("refuses a tool call when only the creator who handed the task over holds the role", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    setRole(w, MAYA, "admin");
+    setRole(w, OMAR, "member");
+    ownerByRoleAlone(w, run);
+    takeOver(w, run.taskId);
+    const reply = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+    expect(reply.status).toBe(404);
+    expect(w.linear.calls).toEqual([]);
+  });
+});

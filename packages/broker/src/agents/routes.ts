@@ -61,6 +61,7 @@ import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
+import { newOriginMemo, originView, withOriginView } from "../agent-sessions/origin.js";
 import type { PullRequestHeadReader } from "./runs.js";
 import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnProject, rosterAgentView, type RosterEntry } from "./roster.js";
 import type { SkillRecord } from "./skills.js";
@@ -237,7 +238,7 @@ function customView(agent: AgentRecord, access: AgentAccessLevel): Shown {
   };
 }
 
-async function builtinView(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId, access: AgentAccessLevel, disabled: boolean, stored?: BuiltinSettings): Promise<Shown> {
+async function builtinView(deps: ApprovalDependencies, orgId: OrgId, agentId: AgentId, access: AgentAccessLevel, disabled: boolean, stored?: BuiltinSettings): Promise<Shown> {
   const template = BUILTIN_AGENTS[agentId as keyof typeof BUILTIN_AGENTS];
   const settings = stored ?? await deps.store.getBuiltinSettings(orgId, agentId);
   return {
@@ -257,7 +258,7 @@ async function builtinView(deps: AgentRouteDependencies, orgId: OrgId, agentId: 
   };
 }
 
-async function view(deps: AgentRouteDependencies, caller: AgentCaller, agent: AccessibleAgent, access?: AgentAccessLevel, disabled?: boolean, settings?: BuiltinSettings): Promise<Shown> {
+export async function view(deps: ApprovalDependencies, caller: AgentCaller, agent: AccessibleAgent, access?: AgentAccessLevel, disabled?: boolean, settings?: BuiltinSettings): Promise<Shown> {
   const level = access ?? await agentAccess(deps, caller, agent);
   if ("owner" in agent) return customView(agent, level);
   return builtinView(deps, caller.orgId, agent.agentId, level, disabled ?? (await readGuardrails(deps, caller.orgId)).disabledBuiltins.some((id) => id === agent.agentId), settings);
@@ -360,11 +361,16 @@ async function listVersions(deps: AgentRouteDependencies, caller: AgentCaller, a
   }
   const versions = await deps.store.listVersions(caller.orgId, agentId);
   const marks = await safetyMarks(deps, caller.orgId, agentId, agent, versions.map((version) => version.version));
+  // Where each version came from, as this person may read it now (Task 10c): one read of the session for all the versions made from it.
+  const memo = newOriginMemo();
+  const origins = new Map<number, unknown>();
+  for (const version of versions) origins.set(version.version, await originView(deps, caller, version.origin, memo));
   return {
     versions: versions.map((version) => ({
       version: version.version, name: version.name, description: version.description, digest: version.digest,
       publishedBy: version.publishedBy, publishedAt: version.publishedAt, ...(version.note === undefined ? {} : { note: version.note }),
-      ...(version.extends === undefined ? {} : { extends: version.extends }), current: version.version === agent.currentVersion, ...marks.get(version.version),
+      ...(version.extends === undefined ? {} : { extends: version.extends }), ...(origins.get(version.version) === undefined ? {} : { origin: origins.get(version.version) }),
+      current: version.version === agent.currentVersion, ...marks.get(version.version),
     })),
   };
 }
@@ -378,7 +384,7 @@ async function getVersion(deps: AgentRouteDependencies, caller: AgentCaller, age
   }
   const stored = await deps.store.getVersion(caller.orgId, agentId, version);
   if (stored === undefined) throw agentXError("NOT_FOUND", `${agent.name} has no version ${String(version)}`);
-  return { version: { ...stored, current: stored.version === agent.currentVersion }, recipe: await resolveRecipe(deps, caller.orgId, agentId, version) };
+  return { version: { ...await withOriginView(deps, caller, stored), current: stored.version === agent.currentVersion }, recipe: await resolveRecipe(deps, caller.orgId, agentId, version) };
 }
 
 function diffSpec(raw: string | null, name: "from", base: true): number | "base" | "draft";
@@ -424,7 +430,7 @@ function fingerprintOf(route: string, agentId: string, body: { requestId: string
  * writes the mark in the same transaction as the change, so a request that changed something is answered from it, and a refused or
  * waiting one (an approval has its own replay) leaves none. Called after the access checks: a repeat tells nobody who lost access anything.
  */
-async function markRequest(deps: AgentRouteDependencies, caller: AgentCaller, route: string, agentId: string, body: { requestId: string }): Promise<{ mark: RequestMark; replay?: { result: unknown } }> {
+export async function markRequest(deps: Pick<ApprovalDependencies, "store">, caller: AgentCaller, route: string, agentId: string, body: { requestId: string }): Promise<{ mark: RequestMark; replay?: { result: unknown } }> {
   const mark: RequestMark = { orgId: caller.orgId, developerId: caller.developerId, requestId: body.requestId, fingerprint: fingerprintOf(route, agentId, body) };
   const earlier = await deps.store.getRequest(caller.orgId, caller.developerId, body.requestId);
   if (earlier === undefined) return { mark };
@@ -479,14 +485,14 @@ async function getDraft(deps: AgentRouteDependencies, caller: AgentCaller, agent
   await requireAgentAccess(deps, caller, agentId, "edit");
   const draft = await deps.store.getDraft(caller.orgId, agentId);
   if (draft === undefined) throw notFound();
-  return { draft };
+  return { draft: await withOriginView(deps, caller, draft) };
 }
 
 async function putDraft(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
   const input = parseBody(PutDraftBodySchema, body);
   await requireAgentAccess(deps, caller, agentId, "edit");
   const { mark, replay } = await markRequest(deps, caller, "draft", agentId, input);
-  if (replay !== undefined) return { draft: replay.result as AgentDraft };
+  if (replay !== undefined) return { draft: await withOriginView(deps, caller, replay.result as AgentDraft) };
   // Building on another agent needs `use` on it; keeping the base it already has does not.
   if (typeof input.extends === "string" && input.extends !== (await deps.store.getDraft(caller.orgId, agentId))?.extends?.agentId) {
     await requireAgentAccess(deps, caller, input.extends, "use");
@@ -496,7 +502,7 @@ async function putDraft(deps: AgentRouteDependencies, caller: AgentCaller, agent
     orgId: caller.orgId, agentId, overlay: input.overlay, expectedRevision: input.expectedRevision, by: caller.developerId, request: mark,
     ...(input.extends === undefined ? {} : { extends: input.extends }),
   });
-  return { draft };
+  return { draft: await withOriginView(deps, caller, draft) };
 }
 
 async function publishAgent(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<unknown> {
@@ -504,10 +510,10 @@ async function publishAgent(deps: AgentRouteDependencies, caller: AgentCaller, a
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "edit");
   if (!("owner" in agent)) throw notFound();
   const { mark, replay } = await markRequest(deps, caller, "publish", agentId, input);
-  if (replay !== undefined) return { version: replay.result as AgentVersion, agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) };
+  if (replay !== undefined) return { version: await withOriginView(deps, caller, replay.result as AgentVersion), agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) };
   const result = await publishDraft(deps, caller, agent, { ...input, request: mark });
   if (!result.applied) return waiting(result);
-  return { version: result.value, agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) };
+  return { version: await withOriginView(deps, caller, result.value), agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) };
 }
 
 async function rollback(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<unknown> {
@@ -598,7 +604,7 @@ async function updateBase(deps: AgentRouteDependencies, caller: AgentCaller, age
   const { mark, replay } = await markRequest(deps, caller, "update-base", agentId, input);
   const answer = async (draft: AgentDraft, previous: BaseRef | undefined): Promise<Shown> => {
     const moved = previous !== undefined && draft.extends !== undefined && draft.extends.version !== previous.version;
-    return { draft, changes: moved ? diffRecipes(await resolveBase(deps, caller.orgId, previous), await resolveBase(deps, caller.orgId, draft.extends)) : [] };
+    return { draft: await withOriginView(deps, caller, draft), changes: moved ? diffRecipes(await resolveBase(deps, caller.orgId, previous), await resolveBase(deps, caller.orgId, draft.extends)) : [] };
   };
   if (replay !== undefined) return answer((replay.result as { draft: AgentDraft }).draft, (replay.result as { previous?: BaseRef }).previous);
   const before = (await deps.store.getDraft(caller.orgId, agentId))?.extends;

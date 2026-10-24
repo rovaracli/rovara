@@ -550,6 +550,22 @@ describe("an approval step", () => {
     expect((await t.view(MAYA, run.taskId)).run.pendingApprovals).toEqual([expect.objectContaining({ kind: "step", text: "Send the report to customers?" })]);
   });
 
+  it("asks the person who took the task over, not the creator, as the run's owner (Plan 5 Task 12a)", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(WITH_GATE);
+    const run = await t.start(agentId);
+    await run.finishPrepare();
+    // Omar takes the task over before the draft step ends.
+    t.db.set({ ...t.db.get(`DEVTASK#${run.taskId}`, "META")!, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: OMAR.provider, since: "2026-10-22T11:00:00.000Z" } });
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
+    const deps = t.routeDeps();
+    const [approvalId] = t.runItem(run.taskId)!.steps[1]!.approvalIds;
+    const record = (await getAnyApproval(deps, TEST_ORG, approvalId as never)) as StepApprovalRecord;
+    expect(record.owner).toEqual({ developerId: OMAR.developerId, name: OMAR.name });
+    expect(record.approvers.kind === "rule" && record.approvers.candidates).toContain(OMAR.developerId);
+    expect(record.approvers.kind === "rule" && record.approvers.candidates).not.toContain(MAYA.developerId);
+  });
+
   it("goes on to the next step when it is approved, handing it the earlier reports", async () => {
     const { t, run, deps, record } = await atGate();
     await approve(deps, record.approvalId);

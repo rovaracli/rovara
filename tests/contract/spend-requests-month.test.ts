@@ -557,6 +557,17 @@ describe("fix round 1 (the Task 33 review)", () => {
     expect((await t.view(MAYA, task.taskId)).paused?.spendRequestId).toBe((asked.body.spendRequest as { spendRequestId: string }).spendRequestId);
   });
 
+  it("after a take-over the task view finds the request the taker asked for themselves, on the scope the task is paused on (Plan 5 Task 12a)", async () => {
+    const t = await setup();
+    const task = await t.plainTask();
+    const BEN_SCOPE: BudgetScope = { kind: "member", developerId: BEN.developerId };
+    await t.set(task.taskId, "SET currentOwner = :owner", { ":owner": { developerId: BEN.developerId, name: BEN.name, provider: BEN.provider, since: new Date().toISOString() } });
+    await t.set(task.taskId, "SET budgetPause = :pause", { ":pause": { scope: BEN_SCOPE, at: new Date().toISOString() } });
+    const asked = await t.api(BEN, "POST", "/v1/app/spend-requests", { kind: "month", scope: BEN_SCOPE, amountUsd: 10, reason: "Mine." });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(201);
+    expect((await t.view(BEN, task.taskId)).paused?.spendRequestId).toBe((asked.body.spendRequest as { spendRequestId: string }).spendRequestId);
+  });
+
   it("M-6: a task closed between the approval's read and its write is neither unpaused nor resumed", async () => {
     const t = await setup();
     const task = await t.plainTask();
@@ -789,6 +800,23 @@ describe("fix round 2 (the Task 32/33 re-check)", () => {
     expect(resumeItems(t)).toEqual([]);
     expect(capture.recordedBy("spend_request.resume_dropped")).toHaveLength(1);
   });
+
+  for (const [name, leaver, dropped] of [["its creator, who handed it over,", CARL, false], ["the person who took it over", BEN, true]] as const) {
+    it(`a month resume refused after a take-over is ${dropped ? "dropped" : "kept"} when ${name} left the org (Plan 5 Task 12a)`, async () => {
+      const t = await setup();
+      const CARL_SCOPE: BudgetScope = { kind: "member", developerId: CARL.developerId };
+      const task = await t.plainTask(CARL);
+      await t.pauseAndEnd(task, CARL_SCOPE);
+      await approveWithFailingResumes(t, CARL_SCOPE);
+      await t.set(task.taskId, "SET currentOwner = :owner", { ":owner": { developerId: BEN.developerId, name: BEN.name, provider: BEN.provider, since: "2026-10-22T11:00:00.000Z" } });
+      await t.db.send(new DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, leaver.developerId) }));
+      t.db.set({ ...orgRemovedKey(TEST_ORG, leaver.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-21T00:00:00.000Z" });
+      const capture = capturingAuditDeps({ db: t.db });
+      expect(await escalateOwnerRequests({ ...refusing(t, "TASK_ACCESS_DENIED"), audit: capture.audit }, { budgetMs: 5_000 })).toMatchObject({ heldStarts: 0 });
+      expect(resumeItems(t).map((item) => item.taskId)).toEqual(dropped ? [] : [task.taskId]);
+      expect(capture.recordedBy("spend_request.resume_dropped")).toHaveLength(dropped ? 1 : 0);
+    });
+  }
 
   it("Minor 1: the retries have their own small budget, so a slow list of them can't starve expiry", async () => {
     const t = await setup();

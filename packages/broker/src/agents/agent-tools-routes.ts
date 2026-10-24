@@ -34,7 +34,7 @@ import {
 import { agentGitHubGuard, githubConnector, requestFingerprint, type CatalogCache, type Invocation, type Ledger } from "@agentx/gateway";
 import { callConnector, discoverConnector, type ConnectorContextBase, type ScopeDiscovery } from "../aws/connector-routes.js";
 import type { ResolvedConnector } from "../aws/connector-types.js";
-import { inertName } from "../developer/task-records.js";
+import { effectiveTaskOwner, inertName } from "../developer/task-records.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type AgentGitHubScope, type AgentRepositoryLabel, type AgentTokenOptions } from "../github-app.js";
 import { githubAgentToolPermissions, type GitHubAgentTokenPermissions } from "./github-agent-tools.js";
@@ -338,7 +338,7 @@ interface Frame {
 async function frameOf(deps: AgentToolsDependencies, run: AgentToolsRun): Promise<Frame | undefined> {
   const { task, orgId } = run;
   await deps.requireCreatorStillMember(task);
-  await deps.requireProjectAuthority(orgId, task.ownerKey, task.project, { taskCreator: async () => task.developerId });
+  await deps.requireProjectAuthority(orgId, task.ownerKey, task.project, { taskCreator: async () => effectiveTaskOwner(task).developerId });
   const recipe = await deps.readSnapshot(task, orgId);
   if (recipe === undefined) return undefined;
   const step = recipe.steps.find((entry) => entry.id === run.operation.programStepId && entry.kind === "agent");
@@ -402,7 +402,7 @@ export async function listAgentTools(deps: AgentToolsDependencies, run: AgentToo
 
 /** The footer a connector adds to the long text of a write: the person and the agent it is for. */
 export function attributionOf(task: DeveloperTaskRecord, agentName: string): string {
-  return `Requested by ${inertName(task.developerName)} via Rovara agent ${inertName(agentName)}`;
+  return `Requested by ${inertName(effectiveTaskOwner(task).name)} via Rovara agent ${inertName(agentName)}`;
 }
 
 /** The label listers for this run: GitHub's, the connectors' own through the call path, and whatever the dependencies add or replace. */
@@ -544,7 +544,7 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   const holdItem = deps.holdItem?.bind(deps);
   const decision = GateDecisionSchema.safeParse(await deps.gate({
     orgId, taskId: task.taskId, operationId: run.operation.id, project: task.project, agent: { id: frame.agentId, name: frame.agentName },
-    stepId: frame.stepId, owner: { developerId: task.developerId, name: task.developerName },
+    stepId: frame.stepId, owner: { developerId: effectiveTaskOwner(task).developerId, name: effectiveTaskOwner(task).name },
     requestId: request.requestId, connector: connectorName, scope: request.scope, schemaHash: request.schemaHash,
     tool: classifyTool, args: prepared.args, strippedMentions: prepared.strippedMentions,
     recipe: { autonomy: frame.recipe.autonomy, approvals: frame.recipe.approvals, allowMentions: frame.recipe.allowMentions },

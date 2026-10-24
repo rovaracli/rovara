@@ -20,6 +20,7 @@ import {
   type SessionBinding,
   type SessionId,
 } from "@agentx/contracts";
+import { closeQueuedSteers } from "./steer.js";
 import { AgentSessionStore } from "./store.js";
 import { ENDED_DRAIN_CURSOR_KEY, refreshSessionSummary, type SummaryDependencies } from "./summary.js";
 
@@ -187,6 +188,8 @@ async function drainSession(deps: SummaryDependencies, work: Item, deadline: num
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
     return true;
   }
+  // A message to the agent no step took can never be delivered now: it is closed (the end's own refresh does this; this is the backstop, and a failure here is tried again like any drain failure).
+  await closeQueuedSteers(deps, session);
   const expires = Math.floor(Date.parse(session.endedAt) / 1000) + SESSION_RETENTION_DAYS * SECONDS_PER_DAY;
   const pk = agentSessionKey(session.orgId, session.sessionId, "META").pk;
   let cursor = (work["cursor"] as Cursor | undefined) ?? { prefix: 0 };
@@ -218,8 +221,8 @@ const dayAfter = (day: string) => new Date(Date.parse(`${day}T00:00:00.000Z`) + 
 export const DRAIN_ITEM_TRIES = 5;
 const PARKED_KEEP_DAYS = 30;
 
-/** Counts a failure on the work item; the one that uses up its tries parks it. Never throws: the item is only a tally. */
-async function recordDrainFailure(deps: SummaryDependencies, work: Item): Promise<void> {
+/** Counts a failure on the work item; the one that uses up its tries parks it (true). Never throws: the item is only a tally. A tally that could not be written is not a parking. */
+async function recordDrainFailure(deps: SummaryDependencies, work: Item): Promise<boolean> {
   try {
     const failures = (typeof work["failures"] === "number" ? work["failures"] : 0) + 1;
     await deps.documentClient.send(new UpdateCommand({
@@ -228,8 +231,12 @@ async function recordDrainFailure(deps: SummaryDependencies, work: Item): Promis
       ...(failures >= DRAIN_ITEM_TRIES ? { ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE } } : {}),
       ExpressionAttributeValues: { ":failures": failures, ...(failures >= DRAIN_ITEM_TRIES ? { ":expires": Math.floor(deps.now() / 1000) + PARKED_KEEP_DAYS * SECONDS_PER_DAY } : {}) },
     }));
+    return failures >= DRAIN_ITEM_TRIES;
   } catch (error) {
-    if (!conditionFailed(error)) warn(deps, { event: "agent_session.drain_failure_not_recorded", error: error instanceof Error ? error.name : "unknown" });
+    // The item is gone (another run finished it): nothing is left to retry. Any other fault leaves the item as it was, to be tried again.
+    if (conditionFailed(error)) return true;
+    warn(deps, { event: "agent_session.drain_failure_not_recorded", error: error instanceof Error ? error.name : "unknown" });
+    return false;
   }
 }
 
@@ -237,7 +244,9 @@ async function recordDrainFailure(deps: SummaryDependencies, work: Item): Promis
  * Gives the items of the sessions that ended on each UTC day, from the saved day on, an expiry a year after their end. It stops at its own deadline
  * (`DRAIN_BUDGET_MS`, or the caller's smaller `budgetMs`) and resumes from the saved day and the session's own place; a finished session's work item is deleted.
  * The work item is filed under the day of the refresh that found the end and the saved day never passes yesterday, so a late end is always seen. With no saved day
- * it starts two days back. One item that fails is logged, counted and skipped (parked after `DRAIN_ITEM_TRIES`); the items behind it are still drained.
+ * it starts two days back. One item that fails is logged, counted and skipped (parked after `DRAIN_ITEM_TRIES`); the items behind it are still drained. The saved
+ * day never passes a day that still has an item being retried, so an item that fails on an older day is read again on every run until it is parked (and so gets its
+ * expiry); the days after it are drained in the same run.
  */
 export async function drainEndedSessions(deps: SummaryDependencies, now: number, options: { budgetMs?: number } = {}): Promise<{ drained: number; pending: boolean }> {
   const deadline = now + Math.min(DRAIN_BUDGET_MS, options.budgetMs ?? DRAIN_BUDGET_MS);
@@ -247,6 +256,8 @@ export async function drainEndedSessions(deps: SummaryDependencies, now: number,
   let day = text(cursor?.["day"]) ?? new Date(now - 2 * 86_400_000).toISOString().slice(0, 10);
   let drained = 0;
   let failed = false;
+  // Whether an item that failed is not parked yet: while one is, the saved day stays at the earliest day with such an item.
+  let retrying = false;
   while (day <= today) {
     const pk = `ENDED_AGENT_SESSIONS#${day}`;
     let after: string | undefined;
@@ -268,14 +279,14 @@ export async function drainEndedSessions(deps: SummaryDependencies, now: number,
           drained += 1;
         } catch (error) {
           warn(deps, { event: "agent_session.drain_failed", error: error instanceof Error ? error.name : "unknown" });
-          await recordDrainFailure(deps, work);
+          if (!await recordDrainFailure(deps, work)) retrying = true;
           failed = true;
         }
       }
     }
     // Today's day is read too (an end filed today is drained at once), but the saved day never passes yesterday: a late end is filed under the day of its refresh.
     day = dayAfter(day);
-    if (day <= settled) await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...ENDED_DRAIN_CURSOR_KEY, entityType: "ENDED_DRAIN_CURSOR", day } }));
+    if (day <= settled && !retrying) await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...ENDED_DRAIN_CURSOR_KEY, entityType: "ENDED_DRAIN_CURSOR", day } }));
   }
   return { drained, pending: failed };
 }

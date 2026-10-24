@@ -1049,6 +1049,46 @@ describe("broker-backed feedback review data", () => {
     await expect(fixture.harness.callback(task.workspaceId, String(operation.id), "feedback-approval", approval)).resolves.toMatchObject({ authorized: true });
   });
 
+  describe("after a take-over (Plan 5 Task 12a)", () => {
+    const callerOf = (who: typeof MAYA) => ({ orgId: TEST_ORG, orgRole: "member" as const, developerId: who.developerId, sessionId: who.sessionId, amr: who.provider, name: who.name, ...(who.slackUserId === undefined ? {} : { slackUserId: who.slackUserId }) });
+    const decision = (fixture: Awaited<ReturnType<typeof preparedReview>>) => ({
+      requestId: randomUUID(), expectedRevision: fixture.workflow.revision, reviewDigest: fixture.reviewDigest, proposalDigest: "b".repeat(64),
+      bundleDigests: [fixture.bundleDigest], decision: "APPROVE" as const, selectedFindingIds: ["finding-1"],
+    });
+    const takeOver = (fixture: Awaited<ReturnType<typeof preparedReview>>, since: string) => {
+      const task = fixture.harness.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord;
+      fixture.harness.db.set({ ...task, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: OMAR.provider, since } });
+    };
+    const approval = (fixture: Awaited<ReturnType<typeof preparedReview>>) => {
+      const task = fixture.harness.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord;
+      const operation = fixture.harness.db.find(item => item.pk === `WORKSPACE#${task.workspaceId}` && item.entityType === "OPERATION" && item.workflowMode === "IMPLEMENT")[0]!;
+      const outbox = fixture.harness.db.find(item => item.entityType === "OUTBOX" && item.operationId === operation.id)[0]!;
+      return { workspaceId: task.workspaceId, operationId: String(operation.id), approval: (outbox.invocation as { payload?: { workflowFeedbackApproval?: unknown } }).payload?.workflowFeedbackApproval };
+    };
+
+    it("lets the taker decide the PR feedback, refuses the creator who handed the task over, and starts the approved feedback at the worker", async () => {
+      const fixture = await preparedReview();
+      takeOver(fixture, "2026-10-01T00:00:00.000Z");
+      await expect(submitWorkflowFeedbackDecision(fixture.deps, callerOf(MAYA), fixture.taskId, decision(fixture))).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+      await submitWorkflowFeedbackDecision(fixture.deps, callerOf(OMAR), fixture.taskId, decision(fixture));
+      const started = approval(fixture);
+      await expect(fixture.harness.callback(started.workspaceId, started.operationId, "feedback-approval", started.approval)).resolves.toMatchObject({ authorized: true });
+    });
+
+    it("still starts feedback the creator approved before the take-over, judged by the decision's own time, and refuses one she is recorded as deciding after it", async () => {
+      const fixture = await preparedReview();
+      await submitWorkflowFeedbackDecision(fixture.deps, callerOf(MAYA), fixture.taskId, decision(fixture));
+      const started = approval(fixture);
+      const decidedAt = ((fixture.harness.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord).workflow?.feedbackDecisions ?? []).at(-1)!.at;
+      // Taken over after the decision: it still executes.
+      takeOver(fixture, new Date(Date.parse(decidedAt) + 3_600_000).toISOString());
+      await expect(fixture.harness.callback(started.workspaceId, started.operationId, "feedback-approval", started.approval)).resolves.toMatchObject({ authorized: true });
+      // Taken over before it: her decision is not the owner's, and nothing starts.
+      takeOver(fixture, new Date(Date.parse(decidedAt) - 3_600_000).toISOString());
+      await expect(fixture.harness.callback(started.workspaceId, started.operationId, "feedback-approval", started.approval)).rejects.toThrow(/feedback-approval callback failed/);
+    });
+  });
+
   it("fences People creation that commits after a legacy authorization read", async () => {
     const fixture = await preparedReview();
     const owner = { orgId: TEST_ORG, orgRole: "member" as const, developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: "slack" as const, name: MAYA.name, slackUserId: MAYA.slackUserId ?? "UOWNER" };

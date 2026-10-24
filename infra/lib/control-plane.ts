@@ -41,6 +41,7 @@ import type { Construct } from "constructs";
 import { HEALTH_ALARM_SUFFIXES, brokerManagedPolicyPath, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
+import { RealtimeEvents } from "./realtime.js";
 import { TaskPersonProof } from "./task-person-proof.js";
 import { DeveloperTaskNotifier } from "./developer-task-notifier.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
@@ -1003,13 +1004,25 @@ export class ControlPlaneStack extends Stack {
     if (naming.env !== undefined && signInParameters !== undefined) {
       const configuredHosting: unknown = this.node.tryGetContext("agentxWebAssetHosting");
       if (configuredHosting !== undefined && configuredHosting !== "cloudfront" && configuredHosting !== "cell") throw new Error("agentxWebAssetHosting must be cloudfront or cell");
-      // PLAN5 / RULING Q11: wire its real host outputs when the owning realtime construct lands. Until then, connect-src stays self only.
       const web = new WebApp(this, "WebApp", { naming, api, assetHosting: configuredHosting === "cell" ? "cell" : "cloudfront" });
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
         naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: [...githubInstallRoutes.map(route => ({ route, burst: 50, rate: 20 })), ...web.routes],
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       signInFunction = developerSignIn.signInFunction;
+      // Plan 5, Task 8: change notices over an AppSync Events API. The broker and the outbox publisher publish to its one namespace; clients subscribe with a short-lived token
+      // the authorizer checks (it may read the token key's public half and nothing more). The broker gets the API's id in its names and builds the endpoint from it
+      // (its variables are held to 4 KB); the outbox publisher gets the endpoint whole.
+      const realtime = new RealtimeEvents(this, "Realtime", {
+        env: naming.env, state, tokenKey: developerSignIn.tokenKey, allowPublicKeyRead: (role) => developerSignIn.allowPublicKeyRead(role),
+      });
+      // RULING Q11: the realtime construct now exists; allow only its actual DNS hosts in the web CSP.
+      web.handlerFunction.addEnvironment("REALTIME_HTTP_HOST", realtime.api.httpDns);
+      web.handlerFunction.addEnvironment("REALTIME_WS_HOST", realtime.api.realtimeDns);
+      realtime.grantPublish(broker);
+      realtime.grantPublish(outboxPublisher);
+      outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
+      BrokerNames.of(broker).add("realtimeApi", realtime.api.apiId);
       if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,

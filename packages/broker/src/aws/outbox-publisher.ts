@@ -5,6 +5,7 @@ import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import type { StreamRecord } from "../developer/notifications.js";
 import { projectSessions } from "../agent-sessions/projector.js";
+import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { INDEX_DEFAULT_BUDGET_MS, byDeadline, indexActivity, putCountedUsage } from "./activity-index.js";
 import { requiredEnvironment, type DurableOutboxRecord } from "./lambda.js";
 
@@ -75,6 +76,10 @@ const tableName = process.env.STATE_TABLE_NAME;
 const awsClientConfiguration = process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION };
 const sqs = new SQSClient(awsClientConfiguration);
 const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration));
+
+// Plan 5 Task 8: a session's change the projector commits becomes each person's feed and a notice on the events API (REALTIME_HTTP_ENDPOINT, where there is one).
+// A chain session's followers can't be judged here (Plan 4's readers are the broker's), so none is told from this function until Plan 4 supplies them.
+installRealtimeSink({ realtime: realtimeConfigFromEnvironment() });
 
 export const handler = createOutboxPublisherHandler({
   async send(record) {

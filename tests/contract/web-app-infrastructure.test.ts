@@ -82,3 +82,12 @@ describe("named web hosting and isolated throttle budgets", () => {
  });
  it("includes the hosting service actions in the existing deployment boundary", () => { for (const service of ["s3", "cloudfront", "lambda", "logs"]) { expect(SERVICE_ROLE_SERVICES).toContain(service);expect(BOUNDARY_SERVICES).toContain(service); } });
 });
+
+it("threads the real realtime DNS hosts into both web hosting modes", () => {
+ for (const template of [hosted, cell]) {
+ const apis = ofType(template, "AWS::AppSync::Api");expect(apis).toHaveLength(1);
+ const environment = record(record(webFunction(template)[1].Properties.Environment).Variables);
+ expect(environment.REALTIME_HTTP_HOST).toEqual({ "Fn::GetAtt": [apis[0]![0], "Dns.Http"] });
+ expect(environment.REALTIME_WS_HOST).toEqual({ "Fn::GetAtt": [apis[0]![0], "Dns.Realtime"] });
+ }
+});

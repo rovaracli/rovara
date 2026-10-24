@@ -60,6 +60,8 @@ import {
   type DeveloperWorkspacesResponse,
   type EndDeveloperSessionsRequest,
   type EndDeveloperSessionsResponse,
+  type RealtimeTokenAnswer,
+  type RealtimeTokenRequest,
   type UnlinkIdentityRequest,
   type UnlinkIdentityResponse,
   type StartIdentityLinkRequest,
@@ -124,6 +126,7 @@ import {
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
+import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionShareDependencies } from "../agent-sessions/shares.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
@@ -163,6 +166,10 @@ export interface DeveloperApiConfiguration {
   slackAuthCheck?: () => Promise<SlackAuthCheckResponse>;
   /** Spec 025 E9: an admin ends a developer's sign-in sessions, through DeveloperIdentity (the broker only reads the sign-in table). */
   endDeveloperSessions?: (request: EndDeveloperSessionsRequest) => Promise<EndDeveloperSessionsResponse>;
+  /** Plan 5 Task 8: the realtime events API's HTTP endpoint, when the install has one (`REALTIME_HTTP_ENDPOINT`). */
+  realtimeEndpoint?: string | undefined;
+  /** Plan 5 Task 8: a realtime token for a signed-in person, signed by DeveloperIdentity (the broker holds no signing right). Without it `POST /v1/app/realtime/token` is unavailable. */
+  realtimeToken?: (request: RealtimeTokenRequest) => Promise<RealtimeTokenAnswer>;
   /** Plan 2, Task 8: a person unlinks one of their own sign-in methods, through DeveloperIdentity (the broker only reads the sign-in table). */
   unlinkIdentity?: (request: UnlinkIdentityRequest) => Promise<UnlinkIdentityResponse>;
   /** Plan 2, Task 8b: a person starts adding a sign-in method they removed earlier back, through DeveloperIdentity (it owns the sign-in table's writes). */
@@ -288,7 +295,7 @@ type IdentityRefusal = typeof SLACK_UNAVAILABLE | { ok: false; error: "invalid_r
  */
 async function identityInvoke<T>(
   invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>,
-  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest,
+  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
   readReply: (reply: Record<string, unknown>) => T | undefined,
   event: string,
 ): Promise<T | IdentityRefusal> {
@@ -439,6 +446,15 @@ export function endDeveloperSessionsThroughLambda(invoke: (payload: Uint8Array) 
     }, "developer.end_sessions");
     if (answer.ok || answer.error === "not_found" || answer.error === "invalid_request") return answer;
     return { ok: false, error: "unavailable" };
+  };
+}
+
+/** Plan 5 Task 8: asks DeveloperIdentity to sign a realtime token. Any failure is `unavailable` (the route answers that), after one `developer.realtime_token_failed` log line. */
+export function realtimeTokenThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: RealtimeTokenRequest) => Promise<RealtimeTokenAnswer> {
+  return async (request) => {
+    const answer = await identityInvoke(invoke, request, (reply): RealtimeTokenAnswer | undefined =>
+      (reply.ok === true && typeof reply.token === "string" && typeof reply.expiresAt === "string" ? { ok: true, token: reply.token, expiresAt: reply.expiresAt } : undefined), "developer.realtime_token");
+    return answer.ok ? answer : { ok: false, error: answer.error === "invalid_request" ? "invalid_request" : "unavailable" };
   };
 }
 
@@ -1455,10 +1471,23 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
   const sessions = sessionDependenciesOf(deps);
   if (sessions === undefined || deps.tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
   const taskDeps = developerTaskRouteDependencies(deps, caller);
+  const mint = deps.developer.realtimeToken;
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
     taskView: (task, options) => taskView(taskDeps, task, options),
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
+    // Plan 5 Task 9: a person arriving on a session is told to its channel through the same API the sink publishes to.
+    realtimePublish: realtimeConfigFromEnvironment(),
+    // Plan 5 Task 8: the realtime token. Without the sign-in function's signing, or without an events API, the route says live updates are unavailable.
+    realtime: {
+      endpoint: deps.developer.realtimeEndpoint,
+      projectsOf: async (caller) => (await projectMembersOf(deps).projectsOf(caller.orgId, { developerId: caller.developerId, orgRole: caller.orgRole })).map((entry) => entry.project),
+      mint: async (request) => {
+        const answer = mint === undefined ? undefined : await mint(request);
+        if (answer === undefined || !answer.ok) throw agentXError("RUNTIME_UNAVAILABLE", "Live updates aren't available right now.");
+        return { token: answer.token, expiresAt: answer.expiresAt };
+      },
+    },
   };
 }
 

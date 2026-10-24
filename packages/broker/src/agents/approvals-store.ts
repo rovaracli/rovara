@@ -6,6 +6,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dyn
 import { z } from "zod";
 import { AgentGuardrailsSchema, AgentIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
 import type { SessionShareDependencies } from "../agent-sessions/shares.js";
+import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
 import { auditApprovalRequested } from "../audit/events.js";
@@ -528,26 +529,46 @@ export const hasHandlerPhase = (record: AnyApprovalRecord): boolean => record.ki
 
 export interface ApprovalRunView { project: string; owner: { developerId: string; name: string } }
 
-/**
- * The project and the person a write or step approval is about. A step the creator didn't annotate takes them from its task. Undefined when they
- * can't be told (a change record, a chain gate without them): a rule that needs them then refuses.
- */
-export async function runOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: AnyApprovalRecord): Promise<ApprovalRunView | undefined> {
-  if (record.kind === "write") return { project: record.project, owner: record.owner };
-  if (record.kind !== "step") return undefined;
-  if (record.project !== undefined && record.owner !== undefined) return { project: record.project, owner: record.owner };
-  if (record.subject.kind !== "agent_run") return undefined;
+/** The task a write or step approval is about, read live; undefined when the record names none, it is gone, or it belongs to another org. */
+async function taskOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: StepApprovalRecord | WriteApprovalRecord): Promise<DeveloperTaskRecord | undefined> {
   const taskId = (record.subject as { taskId?: unknown }).taskId;
   if (typeof taskId !== "string") return undefined;
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true })) as { Item?: { orgId?: unknown; project?: unknown; developerId?: unknown; developerName?: unknown } };
-  const task = response.Item;
-  if (task?.orgId !== record.orgId || typeof task.project !== "string" || typeof task.developerId !== "string") return undefined;
-  return { project: record.project ?? task.project, owner: record.owner ?? { developerId: task.developerId, name: typeof task.developerName === "string" ? task.developerName : "the task owner" } };
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
+  return response.Item?.orgId === record.orgId ? response.Item : undefined;
 }
 
-/** What the person who can't decide is told. */
-export function forbiddenText(record: AnyApprovalRecord): string {
-  return record.kind === "write" ? `Only ${record.owner.name} or a project maintainer can decide this.` : "You can't decide this.";
+/**
+ * The person a write or step approval is about, read live: the task's effective owner (Plan 5 Task 12a) when someone took the task over, since the person who took it
+ * over decides what it does, and otherwise the owner the record stored (a task nobody took over, a task that is gone); the stored one stays as history. A step the
+ * creator didn't annotate takes its owner from the task. Undefined when the task was taken over and its owner can't be read: nobody is the owner then.
+ */
+function ownerOfRun(task: DeveloperTaskRecord | undefined, stored: ApprovalRunView["owner"] | undefined): ApprovalRunView["owner"] | undefined {
+  if (task === undefined) return stored;
+  if (stored !== undefined && !isTaskTakenOver(task)) return stored;
+  const owner = tryEffectiveTaskOwner(task);
+  return owner === undefined ? undefined : { developerId: owner.developerId, name: owner.name };
+}
+
+/**
+ * The project and the person a write or step approval is about. A step the creator didn't annotate takes them from its task; a task someone took over names its
+ * taker (`ownerOfRun`). Undefined when they can't be told (a change record, a chain gate without them): a rule that needs them then refuses.
+ */
+export async function runOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: AnyApprovalRecord): Promise<ApprovalRunView | undefined> {
+  if (record.kind === "write") {
+    const owner = ownerOfRun(await taskOfApproval(deps, record), record.owner);
+    return owner === undefined ? undefined : { project: record.project, owner };
+  }
+  if (record.kind !== "step") return undefined;
+  if (record.subject.kind !== "agent_run") return record.project !== undefined && record.owner !== undefined ? { project: record.project, owner: record.owner } : undefined;
+  const task = await taskOfApproval(deps, record);
+  const owner = ownerOfRun(task, record.owner);
+  const project = record.project ?? (typeof task?.project === "string" ? task.project : undefined);
+  return project === undefined || owner === undefined ? undefined : { project, owner };
+}
+
+/** What the person who can't decide is told; `ownerName` is the run's owner as `runOfApproval` names them now. */
+export function forbiddenText(record: AnyApprovalRecord, ownerName?: string): string {
+  return record.kind === "write" ? `Only ${ownerName ?? record.owner.name} or a project maintainer can decide this.` : "You can't decide this.";
 }
 
 /** Whether `caller` may decide `record` now: the registered rule says yes, or they are listed and still hold `start_tasks` on the project. Everything is read live. */

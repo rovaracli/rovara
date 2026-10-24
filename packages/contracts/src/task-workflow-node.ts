@@ -171,27 +171,21 @@ export const WorkflowFeedbackReviewReportSchema = WorkflowFeedbackReviewMetadata
 
 export type WorkflowFeedbackReviewReport = z.infer<typeof WorkflowFeedbackReviewReportSchema>;
 
-export type WorkflowFeedbackNote = z.infer<typeof WorkflowFeedbackNoteSchema>;
+
 
 /** A reply longer than this is kept truncated, and marked so. */
-export const WORKFLOW_THREAD_NOTE_MAX_CHARS = 2_000;
+
 
 /** The most thread replies one task keeps; later ones are refused. */
-export const WORKFLOW_THREAD_NOTES_MAX = 200;
+
 
 /**
  * A reply anyone posted in a Slack-started task's thread: input for the task's next step, never a
  * decision. Stored beside the task (`NOTE#<messageTs>`); it never changes the task's workflow.
  */
-export const WorkflowThreadNoteSchema = z.object({
-  schemaVersion: z.literal(1), taskId: z.string().uuid(), slackUserId: z.string().regex(/^[UW][A-Z0-9]{2,31}$/), isOwner: z.boolean(),
-  teamId: z.string(), channelId: z.string(), threadTs: z.string().regex(/^\d{10}\.\d{6}$/), messageTs: z.string().regex(/^\d{10}\.\d{6}$/), eventId: z.string().min(1).max(128),
-  text: z.string().trim().min(1).max(WORKFLOW_THREAD_NOTE_MAX_CHARS), truncated: z.boolean(), receivedAt: z.string().datetime(), workflowRevision: z.number().int().positive(),
-  /** Set when the chat agent answered this reply as a question: the next step then skips it (it still counts toward the cap). */
-  answeredAt: z.string().datetime().optional(),
-}).strict();
 
-export type WorkflowThreadNote = z.infer<typeof WorkflowThreadNoteSchema>;
+
+
 
 export type WorkflowFeedbackApprovalBinding = z.infer<typeof WorkflowFeedbackApprovalBindingSchema>;
 
@@ -1827,3 +1821,5 @@ export function decideWorkflow(
 
 export { workflowCheckCommandText } from "./workflow-check-input.js";
 export { WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_REGRESSED_CHECK_MAX, CandidateManifestSchema, WorkflowReviewFindingSchema, type WorkflowReviewFinding, WORKFLOW_REVIEW_FAILURE_REASONS, WorkflowReviewReportSchema, type WorkflowReviewReport, workflowFindingFingerprint, WorkflowAcceptedFindingSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, blockingFindings, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackPrioritySchema, WorkflowFeedbackAssessmentSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackThreadObservationSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramStepSchema, WorkflowProgramSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckSchema, type WorkflowCheck, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowCheckPolicySchema, type WorkflowCheckPolicy, workflowSelectedChecks, workflowIsReviewOnly, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowReviewBaseSchema, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WorkflowSnapshotViewSchema } from "./task-workflow.js";
+
+export { type WorkflowFeedbackNote, WORKFLOW_THREAD_NOTE_MAX_CHARS, WORKFLOW_THREAD_NOTES_MAX, WorkflowThreadNoteSchema, type WorkflowThreadNote, SlackNoteSchema, AppNoteSchema, type SlackNote, type AppNote } from "./task-workflow.js";

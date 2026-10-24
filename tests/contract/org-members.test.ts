@@ -623,6 +623,33 @@ describe("a removed creator's work stops (ruling R60)", () => {
     expect(harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH")[0]).toMatchObject({ taskAccessPausedAt: expect.any(String) as string });
   });
 
+  it("after a take-over the removal that stops the task is the taker's: the creator's removal changes nothing (Plan 5 Task 12a)", async () => {
+    const harness = await org();
+    const bea = person(harness, "Bea", "member");
+    const { taskId, workspaceId, finishImplementation } = await implementing(harness, MAYA);
+    const taken = taskRecord(harness, taskId);
+    harness.db.set({ ...taken, currentOwner: { developerId: bea.developerId, name: "Bea", provider: "oidc", since: new Date().toISOString() } });
+    expect((await harness.remove(OMAR, MAYA)).status).toBe(200);
+    await finishImplementation();
+    // The next dispatch runs: the task's owner is Bea, who is still a member.
+    expect(operations(harness, workspaceId).filter((operation) => operation.workflowMode === "REVIEW")).toHaveLength(1);
+    expect(taskRecord(harness, taskId).outcome).toBeUndefined();
+  });
+
+  it("after a take-over the taker's removal ends the task as creator_removed, naming the taker, and the next dispatch is refused", async () => {
+    const harness = await org();
+    const bea = person(harness, "Bea", "member");
+    const { taskId, workspaceId, candidate, finishImplementation } = await implementing(harness, MAYA);
+    harness.db.set({ ...taskRecord(harness, taskId), currentOwner: { developerId: bea.developerId, name: "Bea", provider: "oidc", since: new Date().toISOString() } });
+    expect((await harness.remove(OMAR, bea)).status).toBe(200);
+    await finishImplementation();
+    expect(operations(harness, workspaceId).filter((operation) => operation.workflowMode === "REVIEW")).toEqual([]);
+    const task = taskRecord(harness, taskId);
+    expect(task).toMatchObject({ outcome: "creator_removed", outcomeReason: REMOVED_REASON("Bea") });
+    await expect(startTaskWorkflowReviewFromSystem(routeDeps(harness) as never, taskId, { workflowRevision: task.workflow.revision, candidateDigest: candidate.digest }))
+      .rejects.toMatchObject({ code: "TASK_ACCESS_DENIED", message: expect.stringContaining(REMOVED_REASON("Bea")) as string });
+  });
+
   it("leaves a task whose creator is still a member dispatching as before", async () => {
     const harness = await org();
     const { workspaceId, finishImplementation } = await implementing(harness, MAYA);

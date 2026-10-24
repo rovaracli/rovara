@@ -14,13 +14,17 @@ import {
   HOME_CARD_BUTTONS_MAX,
   LIVE_PAGE_MAX,
   SESSION_EVENTS_PAGE_MAX,
+  SESSION_ANCHORS_MAX,
+  SESSION_MESSAGES_PAGE_MAX,
   SESSION_KINDS,
+  SessionAnchorRefSchema,
   SESSION_LEVELS,
   SESSION_MODES,
   SessionAgentSchema,
   SessionEventSchema,
   SessionIdSchema,
   SessionLegSchema,
+  SessionMessageSchema,
   SessionOwnerSchema,
   SessionStartedBySchema,
   SessionSummarySchema,
@@ -33,7 +37,8 @@ import { AGENTX_NAME_PATTERN } from "./names.js";
 
 const UNKNOWN = "unknown" as const;
 const InstantSchema = z.string().datetime();
-const PRESENCE_VIEWERS_MAX = 20;
+/** The most people `viewingNow` names. */
+export const PRESENCE_VIEWERS_MAX = 20;
 const NEEDS_CONFIRMATION_CHANGES_MAX = 10;
 const CHANGE_TEXT_MAX = 300;
 const URL_MAX = 2048;
@@ -152,6 +157,8 @@ export const SessionViewSchema = z
     bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue"]), url: LinkSchema }).strict()).max(2),
     legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
     retryOf: SessionIdSchema.optional(),
+    /** Task 10b: the parts of the work a comment can be pinned to (a paragraph of the plan, a step, a changed file) with the revision of each now. Absent when there are none. */
+    anchors: z.array(SessionAnchorRefSchema).max(SESSION_ANCHORS_MAX).optional(),
     /** The session's revision: what a change to it (a take-over, a share) is asked against. */
     revision: CountSchema,
     createdAt: InstantSchema,
@@ -196,6 +203,13 @@ export const SessionSharePutResponseReaderSchema = forwardReader(SessionSharePut
 export const SessionShareDeleteResponseSchema = z.object({ removed: z.boolean() }).strict();
 export const SessionShareDeleteResponseReaderSchema = forwardReader(SessionShareDeleteResponseSchema);
 
+/** `POST` and `DELETE /v1/app/sessions/{id}/follow`: whether the caller follows now (the session's owner always does, with no item). */
+export const SessionFollowResponseSchema = z.object({ following: z.boolean() }).strict();
+export const SessionFollowResponseReaderSchema = forwardReader(SessionFollowResponseSchema);
+/** `POST /v1/app/sessions/{id}/presence`: who is looking at the session now, counting this heartbeat. */
+export const SessionPresenceResponseSchema = z.object({ viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX) }).strict();
+export const SessionPresenceResponseReaderSchema = forwardReader(SessionPresenceResponseSchema);
+
 /** One session on the Live wall, a project page or a Home card: the header's short form. */
 export const SessionTileSchema = z
   .object({
@@ -231,6 +245,17 @@ export const SessionEventPageSchema = z
   .strict();
 export type SessionEventPage = z.infer<typeof SessionEventPageSchema>;
 export const SessionEventPageReaderSchema = forwardReader(SessionEventPageSchema);
+
+/**
+ * A page of a session's conversation, oldest first: its own comments and, for a task session, the task page's (`source: "page"`). `next` is the cursor for the following read: the last
+ * new message's `<createdAt>#<messageId>`. A read with a cursor starts with the few seconds of messages before it (at most `SESSION_MESSAGES_PAGE_MAX`), so one committed late is still
+ * found: readers de-duplicate by `messageId`. An edit or a deletion shows on a read that reaches the message again (a reload); a cursor read gives it only while it is that recent.
+ */
+export const SessionMessagePageSchema = z
+  .object({ messages: z.array(SessionMessageSchema).max(2 * SESSION_MESSAGES_PAGE_MAX), next: z.string().min(1).optional() })
+  .strict();
+export type SessionMessagePage = z.infer<typeof SessionMessagePageSchema>;
+export const SessionMessagePageReaderSchema = forwardReader(SessionMessagePageSchema);
 
 // ---- Home and the project page (declared here; Tasks 15 and 16 fill them in)
 

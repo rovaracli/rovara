@@ -29,7 +29,9 @@ import {
   type SessionView,
 } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { anchorTargetsOf } from "./anchors.js";
 import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
+import { viewingNow } from "./followers.js";
 import type { SessionShareDependencies } from "./shares.js";
 
 /** Who reads: `DeveloperCaller` fits. */
@@ -50,6 +52,8 @@ export interface SessionReadDependencies extends SessionShareDependencies {
   taskView(task: DeveloperTaskRecord, options: { events: number; details: boolean; actor: "owner" | "viewer" }): Promise<DeveloperTaskView>;
   /** Without it no approval or budget link is shown to anyone. */
   deciding?: SessionDeciding;
+  /** Task 10c: whether the person may create an agent in a project now (Plan 3's own check, read live). Without it no one is offered `make_agent`. */
+  mayMakeAgent?: (caller: SessionReadCaller, project: string) => Promise<boolean>;
 }
 
 type Item = Record<string, unknown>;
@@ -200,6 +204,10 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   }
 
   const followerItem = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `FOLLOWER#${caller.developerId}`));
+  // Make this an agent (Task 10c): offered to a person who may create agents in the session's project, asked of the same check the route makes, with the org role read from their record. A task session only.
+  const canMakeAgent = deps.mayMakeAgent !== undefined && session.kind === "task" && session.project !== undefined && await deps.mayMakeAgent({ orgId: caller.orgId, developerId: caller.developerId, orgRole: access.orgRole }, session.project);
+  // The parts a comment can be pinned to, from the very view shown (Task 10b).
+  const anchors = taskShown === undefined ? [] : anchorTargetsOf(taskShown);
   return {
     contractVersion: AGENT_SESSION_CONTRACT_VERSION,
     sessionId: session.sessionId,
@@ -224,12 +232,13 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     },
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
     followers: session.followerCount,
-    viewingNow: [],
-    you: { level: levelOf(access), owner: access.owner, following: followerItem !== undefined, actions: sessionActionsFor(access) },
+    viewingNow: await viewingNow(deps, session, deps.now()),
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access), ...(canMakeAgent ? ["make_agent" as const] : [])] },
     link: sessionLink(deps.origin, session.sessionId),
     bindings: await bindingsOf(deps, session),
     legs: session.legs,
     ...(session.retryOf === undefined ? {} : { retryOf: session.retryOf }),
+    ...(anchors.length === 0 ? {} : { anchors }),
     revision: session.revision,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
