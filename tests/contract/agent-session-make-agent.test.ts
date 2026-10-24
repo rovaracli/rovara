@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AgentOriginSchema,
+  DEFAULT_AGENT_GUARDRAILS,
+  agentGuardrailsKey,
   AgentOriginViewSchema,
   SESSION_ACTIONS,
   SESSION_RETENTION_DAYS,
@@ -86,6 +88,70 @@ describe("the contract", () => {
     for (const bad of [{ kind: "session", visible: false, sessionId: origin.sessionId }, { kind: "session", visible: false, title: "x" }, { ...visible, visible: false }, { kind: "session" }]) {
       expect(AgentOriginViewSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
+  });
+});
+
+describe("saying whether the session's agent was copied (Step 0 ruling)", () => {
+  const copiedOf = (reply: Record<string, unknown>) => ({ copied: reply["copied"], reason: reply["reason"] });
+  const keys = (reply: Record<string, unknown>) => Object.keys(reply).sort();
+
+  it("answers copied true, and no reason, when the session's agent became the base", async () => {
+    const t = world();
+    const reply = await t.make(MAX, { name: "Copied" });
+    expect(copiedOf(reply)).toEqual({ copied: true, reason: undefined });
+    expect(keys(reply)).toEqual(["agent", "copied", "draft"]);
+    expect((reply["draft"] as { extends?: { agentId: string } }).extends?.agentId).toBe("rovara-code");
+  });
+
+  it("answers copied false with the fixed reason AGENT_NOT_USABLE when the caller can't use the session's agent, and builds the empty draft as before", async () => {
+    const t = world({ agent: { agentId: "agt_00000000000000000009", name: "Somebody's secret agent", version: 1 } });
+    const reply = await t.make(MAX, { name: "From nothing" });
+    expect(copiedOf(reply)).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+    expect((reply["draft"] as Record<string, unknown>)["extends"]).toBeUndefined();
+    // The reason is a code: nothing of the agent the person can't use (its id or its name) is in the answer.
+    expect(JSON.stringify(reply)).not.toMatch(/agt_00000000000000000009|Somebody's secret agent/u);
+  });
+
+  it("says the same for a custom agent that is not published, not shared with the caller, or archived, and says copied true once it is usable", async () => {
+    const t = world();
+    const custom = await t.store.create({ orgId: ORG_A, name: "Priya's agent", owner: { kind: "member", developerId: PRIYA }, createdBy: PRIYA, overlay: { instructions: "x", sequence: [{ id: "work", name: "Work", kind: "agent", workspace: "none" }] } });
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, agent: { agentId: custom.agentId, name: custom.name, version: 1 } });
+    const state = async (name: string) => copiedOf(await t.make(MAX, { name }));
+    expect(await state("A1")).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+    await t.store.publish({ orgId: ORG_A, agentId: custom.agentId, expectedDraftRevision: 1, digest: "a".repeat(64), by: PRIYA });
+    expect(await state("A2")).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+    await t.agents(PRIYA, "PUT", `/v1/app/agents/${custom.agentId}/shares`, { requestId: randomUUID(), shares: [{ principal: { kind: "member", developerId: MAX }, level: "use" }] });
+    expect(await state("A3")).toEqual({ copied: true, reason: undefined });
+    await t.agents(PRIYA, "POST", `/v1/app/agents/${custom.agentId}/archive`, { requestId: randomUUID() });
+    expect(await state("A4")).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+  });
+
+  it("says copied false for a built-in agent the company's admins turned off", async () => {
+    const t = world();
+    t.w.db.set({ ...agentGuardrailsKey(ORG_A), entityType: "AGENT_GUARDRAILS", orgId: ORG_A, revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["rovara-code"] } });
+    const reply = await t.make(MAX, { name: "Disabled base" });
+    expect(copiedOf(reply)).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+    expect((reply["draft"] as Record<string, unknown>)["extends"]).toBeUndefined();
+  });
+
+  it("answers a session that ran no agent as copied true (there was nothing it could not give)", async () => {
+    const t = world({ agent: null });
+    expect(copiedOf(await t.make(MAX, { name: "No agent" }))).toEqual({ copied: true, reason: undefined });
+  });
+
+  it("answers a repeat of the same request with the same copied and reason, and writes nothing", async () => {
+    const hidden = world({ agent: { agentId: "agt_00000000000000000009", name: "Somebody's agent", version: 1 } });
+    const body = { requestId: randomUUID(), name: "Twice" };
+    const first = await hidden.make(MAX, body);
+    const before = hidden.w.db.transactions().length;
+    const again = await hidden.make(MAX, body);
+    expect(copiedOf(first)).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+    expect(copiedOf(again)).toEqual(copiedOf(first));
+    expect(hidden.w.db.transactions().length).toBe(before);
+    const usable = world();
+    const usableBody = { requestId: randomUUID(), name: "Twice" };
+    await usable.make(MAX, usableBody);
+    expect(copiedOf(await usable.make(MAX, usableBody))).toEqual({ copied: true, reason: undefined });
   });
 });
 
