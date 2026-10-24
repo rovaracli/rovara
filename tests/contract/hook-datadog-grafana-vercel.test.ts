@@ -572,7 +572,7 @@ describe("the providers are the ones the broker uses", () => {
     expect([datadogProvider.secretOrigin, datadogProvider.auth, datadogProvider.source]).toEqual(["rovara", "token", "datadog"]);
     expect([grafanaProvider.secretOrigin, grafanaProvider.auth, grafanaProvider.source]).toEqual(["rovara", "token", "grafana"]);
     expect([vercelProvider.secretOrigin, vercelProvider.auth, vercelProvider.source]).toEqual(["vendor", "hmac", "vercel"]);
-    expect(Object.keys(providers).sort()).toEqual(["datadog", "grafana", "jira", "linear", "pagerduty", "sentry", "vercel"]);
+    expect(Object.keys(providers).sort()).toEqual(["cloudwatch", "datadog", "grafana", "jira", "linear", "pagerduty", "sentry", "vercel"]);
   });
 
   it("answers a tenant mismatch for a hook of another source, and never throws on a delivery it can't verify", async () => {

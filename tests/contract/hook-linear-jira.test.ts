@@ -450,7 +450,7 @@ describe("the providers are the ones the broker uses", () => {
     expect(providers.jira).toBe(jiraProvider);
     expect([linearProvider.secretOrigin, linearProvider.auth, linearProvider.source]).toEqual(["vendor", "hmac", "linear"]);
     expect([jiraProvider.secretOrigin, jiraProvider.auth, jiraProvider.source]).toEqual(["rovara", "hmac", "jira"]);
-    expect(Object.keys(providers).sort()).toEqual(["datadog", "grafana", "jira", "linear", "pagerduty", "sentry", "vercel"]);
+    expect(Object.keys(providers).sort()).toEqual(["cloudwatch", "datadog", "grafana", "jira", "linear", "pagerduty", "sentry", "vercel"]);
   });
 
   it("refuses to read a hook of another source: a Linear provider answers a tenant mismatch for a Jira hook, and the other way", async () => {

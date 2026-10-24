@@ -477,7 +477,7 @@ describe("the providers are the ones the broker uses", () => {
     expect(providers.sentry).toBe(sentryProvider);
     expect([pagerdutyProvider.secretOrigin, pagerdutyProvider.auth, pagerdutyProvider.source]).toEqual(["vendor", "hmac", "pagerduty"]);
     expect([sentryProvider.secretOrigin, sentryProvider.auth, sentryProvider.source]).toEqual(["vendor", "hmac", "sentry"]);
-    expect(Object.keys(providers).sort()).toEqual(["datadog", "grafana", "jira", "linear", "pagerduty", "sentry", "vercel"]);
+    expect(Object.keys(providers).sort()).toEqual(["cloudwatch", "datadog", "grafana", "jira", "linear", "pagerduty", "sentry", "vercel"]);
   });
 
   it("refuses to read a hook of another source: each provider answers a tenant mismatch for the other's hook", async () => {
