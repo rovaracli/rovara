@@ -126,6 +126,14 @@ describe("saying whether the session's agent was copied (Step 0 ruling)", () => 
     expect(await state("A4")).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
   });
 
+  it("says copied false for an agent that is shared with the caller but has no published version yet", async () => {
+    const t = world();
+    const draftOnly = await t.store.create({ orgId: ORG_A, name: "Unpublished", owner: { kind: "member", developerId: PRIYA }, createdBy: PRIYA });
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, agent: { agentId: draftOnly.agentId, name: draftOnly.name, version: 1 } });
+    await t.agents(PRIYA, "PUT", `/v1/app/agents/${draftOnly.agentId}/shares`, { requestId: randomUUID(), shares: [{ principal: { kind: "member", developerId: MAX }, level: "use" }] });
+    expect(copiedOf(await t.make(MAX, { name: "Not yet" }))).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+  });
+
   it("says copied false for a built-in agent the company's admins turned off", async () => {
     const t = world();
     t.w.db.set({ ...agentGuardrailsKey(ORG_A), entityType: "AGENT_GUARDRAILS", orgId: ORG_A, revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, disabledBuiltins: ["rovara-code"] } });
