@@ -10,7 +10,7 @@ const me = (csrf = CSRF) => ({ developer: { id: "a".repeat(64), name: "Maya", or
 const empty = { cards: [] };
 function browser(implementation: (input: string, init: RequestInit | undefined) => Promise<Response>) {
  const local = new Map<string, string>(), session = new Map<string, string>();
- const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => implementation(String(input), init)), assign = vi.fn();
+ const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => implementation(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, init)), assign = vi.fn();
  const win = { location: { origin: ORIGIN, pathname: "/app/live", search: "", assign }, fetch,
   localStorage: { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); } },
   sessionStorage: { getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => { session.set(key, value); } },
@@ -78,4 +78,14 @@ describe("browser host and shared API client", () => {
  it("returns fixed network errors rather than upstream details", async () => {
   const f = fakeHost(async () => { throw new Error("private upstream detail"); });const error = await createApiClient(f.host).send("POST", "/v1/app/agents", {}, HomeResponseReaderSchema).catch((value: unknown) => value);expect(error).toBeInstanceOf(ApiError);expect(String(error)).not.toContain("private upstream detail");
  });
+});
+
+it("shares the sign-in guard across clients and preserves terminal host authentication errors", async () => {
+ const f = fakeHost(async () => { throw new ApiError(401, "AUTH_REQUIRED", "Sign in to continue."); });
+ await Promise.allSettled([createApiClient(f.host).get("/v1/app/home", HomeResponseReaderSchema), createApiClient(f.host).get("/v1/app/home", HomeResponseReaderSchema)]);
+ expect(f.request).toHaveBeenCalledTimes(2);expect(f.host.signIn).toHaveBeenCalledTimes(1);
+});
+it("refuses an unrecognized pending status even when it resembles admin approval", async () => {
+ const f = fakeHost(async () => ({ status: 202, body: { status: "FUTURE_APPROVAL", spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", message: "Still pending" } }));
+ await expect(createApiClient(f.host).send("POST", "/v1/app/agents", {}, HomeResponseReaderSchema)).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
 });

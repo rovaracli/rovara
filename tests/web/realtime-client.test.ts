@@ -32,7 +32,7 @@ it("reconnects with the capped one, two, five, ten and thirty second delays", as
 });
 it("catches up in pages in feed order, drops repeated sk values, and reports reset", async () => {
  clock();const first = { type: "session.updated", sessionId: SID, revision: 2, at: NOW.toISOString(), sk: "entry-1" }, second = { type: "session.event", sessionId: SID, eventId: "evt_" + "a".repeat(24), at: NOW.toISOString(), sk: "entry-2" };
- let page = 0;const f = fakeHost(async () => ({ status: 200, body: ++page === 1 ? { notices: [first], next: "page-2", reset: true } : page === 2 ? { notices: [first, second], next: "settled" } : { notices: [], next: "settled" } }));
+ let page = 0;const f = fakeHost(async () => ({ status: 200, body: ++page === 1 ? { notices: [first], next: "page-2", reset: true } : page === 2 ? { notices: [first, second, second], next: "settled" } : { notices: [], next: "settled" } }));
  const notices: unknown[] = [], reset = vi.fn();const client = createRealtimeClient(f.host, { onNotice: notice => notices.push(notice), onStatus: vi.fn(), onReset: reset });client.start();await settle();f.sockets[0]!.socket.open();f.sockets[0]!.socket.message({ type: "connection_ack", connectionTimeoutMs: 900_000 });await settle();
  expect(notices.map(value => (value as { type: string }).type)).toEqual(["session.updated", "session.event"]);expect(reset).toHaveBeenCalledTimes(1);expect(f.request.mock.calls.map(([input]) => input.path)).toEqual(["/v1/app/changes", "/v1/app/changes?since=page-2", "/v1/app/changes?since=settled"]);client.stop();
 });
@@ -53,4 +53,8 @@ it("throttles nav across fifty updates, never on session events, and invalidates
  await settle();expect(invalidate.mock.calls.filter(([options]) => JSON.stringify(options?.queryKey) === '["nav"]')).toHaveLength(1);await vi.advanceTimersByTimeAsync(3000);expect(invalidate.mock.calls.filter(([options]) => JSON.stringify(options?.queryKey) === '["nav"]')).toHaveLength(1);
  invalidate.mockClear();for (let index = 0; index < 50; index++) apply.notice({ type: "session.event", sessionId: SID, eventId: "evt_" + "a".repeat(24) });await vi.advanceTimersByTimeAsync(5000);expect(invalidate.mock.calls.some(([options]) => JSON.stringify(options?.queryKey) === '["nav"]')).toBe(false);
  apply.reset();expect(invalidate.mock.lastCall?.[0]).toBeUndefined();apply.stop();query.clear();
+});
+it("ignores an invalid session unsubscribe without disrupting a live connection", async () => {
+ clock();const f = fakeHost(), client = createRealtimeClient(f.host, { onNotice: vi.fn(), onStatus: vi.fn() });client.start();await settle();
+ expect(() => client.unsubscribeSession("invalid")).not.toThrow();client.stop();
 });
