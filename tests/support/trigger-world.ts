@@ -76,8 +76,8 @@ export interface TriggerWorld extends GateWorld {
   builtinBudget(agentId: string, usd?: number): Promise<void>;
   /** A hook of org A on web for `source`. */
   hook(source: string, hookId?: string, over?: Partial<TriggerHook>): TriggerHook;
-  /** A Linear or Jira connection of org A whose check recorded `actorId`. */
-  connection(type: "linear" | "jira", actorId?: string): void;
+  /** A Linear or Jira connection of org A whose check recorded `actorId`; `identity` says whose key it is (a service account unless a test says otherwise). */
+  connection(type: "linear" | "jira", actorId?: string, identity?: "service" | "personal" | undefined): void;
   /** A trigger stored directly: how the tests of rechecks, movers and the matching start from a trigger that is already on. */
   seed(over?: Partial<TriggerRecord> & { target: TriggerRecord["target"] }): Promise<TriggerRecord>;
   notices(developerId: string): Promise<string[]>;
@@ -129,10 +129,10 @@ export function setupTriggerWorld(options: WorldOptions = {}): TriggerWorld {
     await w.agents.setBudget(ORG_A, agentId, { monthlyUsd: usd }, DANA);
   };
   const hook: TriggerWorld["hook"] = (source, hookId = HOOK_A, over = {}) => hookReader.add({ orgId: ORG_A, hookId, project: "web", source, disabled: false, ...over });
-  const connection: TriggerWorld["connection"] = (type, actorId = "vendor-user-1") => {
+  const connection: TriggerWorld["connection"] = (type, actorId = "vendor-user-1", identity = "service") => {
     const connectionId = `con_${(type === "linear" ? "l" : "j").repeat(20)}`;
     w.db.set({ ...connectionsKey(ORG_A, connectionId), entityType: "CONNECTION_DIRECTORY", connectionId });
-    w.db.set({ ...connectionKey(ORG_A, connectionId), entityType: "ORG_CONNECTION", orgId: ORG_A, connectionId, type, actorId });
+    w.db.set({ ...connectionKey(ORG_A, connectionId), entityType: "ORG_CONNECTION", orgId: ORG_A, connectionId, type, actorId, ...(identity === undefined ? {} : { identity }) });
   };
   let counter = 0;
   const seed: TriggerWorld["seed"] = async (over) => {

@@ -8,6 +8,7 @@ import type * as RosterModule from "../../packages/broker/src/agents/roster.js";
 import { addToRoster, resolveAgentForAutonomousRun } from "../../packages/broker/src/agents/roster.js";
 import { monthOf } from "../../packages/broker/src/org/trial.js";
 import { dispatchTriggerEvent, rovaraActorIds, runOwnerFor, type TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
+import { connectionKey, connectionsKey } from "../../packages/contracts/src/connections.js";
 import { orgAutonomousKey, triggerRateKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
@@ -441,6 +442,46 @@ describe("the loop guard", () => {
     expect(await rovaraActorIds(deps, ORG_A, "linear")).toEqual(new Set(["lin-1"]));
     expect(await rovaraActorIds(deps, ORG_A, "jira")).toEqual(new Set(["jira-1"]));
     expect(await rovaraActorIds(deps, ORG_B, "linear")).toEqual(new Set());
+  });
+});
+
+describe("the actor guard applies only to a service identity (controller ruling, Task 22 review)", () => {
+  it("counts only the accounts of connections marked as service identities as Rovara's own", async () => {
+    const { v, deps } = setup();
+    v.connection("linear", "lin-person", "personal");
+    v.connection("jira", "jira-unmarked", undefined);
+    expect(await rovaraActorIds(deps, ORG_A, "linear")).toEqual(new Set());
+    expect(await rovaraActorIds(deps, ORG_A, "jira")).toEqual(new Set());
+    // Two Linear connections: only the service one counts.
+    v.db.set({ ...connectionsKey(ORG_A, `con_${"s".repeat(20)}`), entityType: "CONNECTION_DIRECTORY", connectionId: `con_${"s".repeat(20)}` });
+    v.db.set({ ...connectionKey(ORG_A, `con_${"s".repeat(20)}`), entityType: "ORG_CONNECTION", orgId: ORG_A, connectionId: `con_${"s".repeat(20)}`, type: "linear", actorId: "lin-bot", identity: "service" });
+    expect(await rovaraActorIds(deps, ORG_A, "linear")).toEqual(new Set(["lin-bot"]));
+  });
+
+  it("starts work for a ticket made by the person whose own key the org connected, and leaves the loop to the subject guard and the caps", async () => {
+    const { v, dispatch } = setup();
+    v.hook("linear", HOOK_A);
+    v.connection("linear", "dana-linear", "personal");
+    const chain = await v.budgetedChain(ONE_STEP);
+    const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { kind: "event", source: "linear", type: "issue.created" }, hookId: HOOK_A });
+    expect((await dispatch(linearEvent(HOOK_A, { actor: { kind: "external", id: "dana-linear" } })))[0]).toMatchObject({ triggerId: trigger.triggerId, outcome: "started" });
+    // The same ticket again (another event for the same subject) is the subject guard's, not the actor guard's.
+    expect((await dispatch(linearEvent(HOOK_A, { eventKey: "linear:issue:again", actor: { kind: "external", id: "dana-linear" } })))[0]).toMatchObject({ outcome: "skipped", reason: "recent_subject" });
+  });
+
+  it("still skips an event made by a service identity", async () => {
+    const { v, dispatch } = setup();
+    v.hook("linear", HOOK_A);
+    v.connection("linear", "lin-bot", "service");
+    const chain = await v.budgetedChain(ONE_STEP);
+    await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { kind: "event", source: "linear", type: "issue.created" }, hookId: HOOK_A });
+    expect((await dispatch(linearEvent(HOOK_A, { actor: { kind: "external", id: "lin-bot" } })))[0]).toMatchObject({ outcome: "skipped", reason: "caused_by_rovara" });
+  });
+
+  it("has no actor guard for PagerDuty or Sentry, which Rovara only reads: no account is Rovara's", async () => {
+    const { deps } = setup();
+    expect(await rovaraActorIds(deps, ORG_A, "pagerduty")).toEqual(new Set());
+    expect(await rovaraActorIds(deps, ORG_A, "sentry")).toEqual(new Set());
   });
 });
 

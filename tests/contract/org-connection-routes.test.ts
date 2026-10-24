@@ -33,7 +33,7 @@ afterEach(() => { vi.restoreAllMocks(); });
 
 interface Shown { connectionId: string; type: string; label: string; hasCredential: boolean; lastCheck?: { ok: boolean } }
 /** The answers the routes give, typed for the tests as the union of what any of them returns. */
-interface Body { connection: Shown; connections: Shown[]; ok: boolean; message?: string; removed: { connectionId: string }; error: { code: string; message: string } }
+interface Body { connection: Shown; connections: Shown[]; ok: boolean; message?: string; removed: { connectionId: string }; warnings?: Array<{ code: string; message: string }>; error: { code: string; message: string } }
 type Reply = { status: number; body: Body };
 const errorOf = (reply: Reply) => reply.body.error;
 
@@ -432,5 +432,50 @@ describe("a deployment without org connections", () => {
     await h.orgOf(DANA);
     seedMembership(h.db, DANA.developerId, { orgId: TEST_ORG, role: "admin" });
     expect((await h.dev(DANA, "GET", "/v1/app/connections")).status).toBe(404);
+  });
+});
+
+describe("who a Linear or Jira key belongs to (controller ruling, Task 22 review)", () => {
+  const JIRA = { type: "jira", label: "Team Jira", access: "read", siteUrl: "https://acme.atlassian.net" };
+  const JIRA_SECRET = { email: "bot@acme.com", apiToken: "jira-token-ROUTE1234567890" };
+  const warned = (reply: Reply) => reply.body.warnings?.map((warning) => warning.code);
+
+  it("warns, with a fixed code, when a Linear or Jira connection is made with a personal key or with none marked, and not for a service identity", async () => {
+    const { create } = await setup();
+    const personal = await create(DANA, { ...LINEAR, identity: "personal" }, { apiKey: "k1" });
+    expect(personal.status).toBe(201);
+    expect(warned(personal)).toEqual(["PERSONAL_KEY_LOOP_GUARD_LIMITED"]);
+    expect(personal.body.warnings![0]!.message).toMatch(/service account/i);
+    expect(personal.body.connection).toMatchObject({ identity: "personal" });
+    expect(warned(await create(DANA, LINEAR, { apiKey: "k1" }))).toEqual(["PERSONAL_KEY_LOOP_GUARD_LIMITED"]);
+    expect(warned(await create(DANA, JIRA, JIRA_SECRET))).toEqual(["PERSONAL_KEY_LOOP_GUARD_LIMITED"]);
+    const service = await create(DANA, { ...LINEAR, identity: "service" }, { apiKey: "k1" });
+    expect(service.status).toBe(201);
+    expect(service.body).not.toHaveProperty("warnings");
+    expect(service.body.connection).toMatchObject({ identity: "service" });
+    const serviceJira = await create(DANA, { ...JIRA, identity: "service" }, JIRA_SECRET);
+    expect(serviceJira.body).not.toHaveProperty("warnings");
+  });
+
+  it("warns on a change and on a repeat of the request the same way, and drops the warning when the connection is marked a service identity", async () => {
+    const { create, call } = await setup();
+    const requestId = randomUUID();
+    const first = await create(DANA, LINEAR, { apiKey: "k1" }, requestId);
+    const again = await create(DANA, LINEAR, { apiKey: "k1" }, requestId);
+    expect(warned(again)).toEqual(["PERSONAL_KEY_LOOP_GUARD_LIMITED"]);
+    const id = first.body.connection.connectionId;
+    expect(warned(await call(DANA, "PUT", `/v1/app/connections/${id}`, { connection: { ...LINEAR, label: "Renamed" } }))).toEqual(["PERSONAL_KEY_LOOP_GUARD_LIMITED"]);
+    const marked = await call(DANA, "PUT", `/v1/app/connections/${id}`, { connection: { ...LINEAR, identity: "service" } });
+    expect(marked.status).toBe(200);
+    expect(marked.body).not.toHaveProperty("warnings");
+  });
+
+  it("has no warning for the types that carry no actor guard, and refuses an identity that is not service or personal, or on a type that has none", async () => {
+    const { create } = await setup();
+    const mcp = await create(DANA, MCP, { token: "t1" });
+    expect(mcp.status).toBe(201);
+    expect(mcp.body).not.toHaveProperty("warnings");
+    expect((await create(DANA, { ...LINEAR, identity: "bot" }, { apiKey: "k1" })).status).toBe(400);
+    expect((await create(DANA, { ...MCP, identity: "service" }, { token: "t1" })).status).toBe(400);
   });
 });
