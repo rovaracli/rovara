@@ -17,6 +17,10 @@ export interface OriginDependencies extends Pick<SessionAccessDependencies, "doc
   log?: ((event: string, fields: Record<string, unknown>) => void) | undefined;
 }
 
+/** Whether a session is past its retention: it ended more than `SESSION_RETENTION_DAYS` days ago, though its record may outlive that by the table's TTL lag. One rule for showing an origin and for making an agent from a session. */
+export const pastRetention = (nowMs: number, session: { endedAt?: string | undefined }): boolean =>
+  session.endedAt !== undefined && nowMs > Date.parse(session.endedAt) + SESSION_RETENTION_DAYS * DAY_MS;
+
 export const HIDDEN_ORIGIN: AgentOriginView = { kind: "session", visible: false };
 
 /** What of a session a reader may be shown (its title and link), or undefined when they may not read it. */
@@ -29,7 +33,7 @@ export const newOriginMemo = (): OriginMemo => new Map();
 async function shownOf(deps: OriginDependencies, caller: { orgId: OrgId; developerId: string }, sessionId: string): Promise<Shown> {
   try {
     const { session } = await resolveSessionAccess(deps, caller, sessionId);
-    if (session.endedAt !== undefined && deps.now() > Date.parse(session.endedAt) + SESSION_RETENTION_DAYS * DAY_MS) return undefined;
+    if (pastRetention(deps.now(), session)) return undefined;
     return { title: session.title, link: sessionLink(deps.confirmOrigin, session.sessionId) };
   } catch (error) {
     // A session the person can't read, or that is gone, is NOT_FOUND: hidden, and nothing to report. Anything else is reported by name and hidden too.
