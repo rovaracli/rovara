@@ -172,6 +172,19 @@ describe("a pull request event starts the right org's work", () => {
     expect(w.dispatched.map((entry) => entry.event.project)).toEqual(["web"]);
   });
 
+  it("ignores an index row whose attribute and key disagree about the org, whichever of the two names another org", async () => {
+    const w = world();
+    await w.chainTrigger();
+    registerProject(w.v.db, ORG_A, "attr", { installationId: 55, repositoryId: 101 }, { index: false });
+    registerProject(w.v.db, ORG_A, "key", { installationId: 55, repositoryId: 101 }, { index: false });
+    // The attribute says org B, the key org A; and the other way round.
+    w.v.db.set({ ...githubRepoProjectKey(101, ORG_A, "attr"), entityType: "GITHUB_REPO_PROJECT", orgId: ORG_B, project: "attr", installationId: 55, githubRepositoryId: 101 });
+    w.v.db.set({ ...githubRepoProjectKey(101, ORG_B, "key"), entityType: "GITHUB_REPO_PROJECT", orgId: ORG_A, project: "key", installationId: 55, githubRepositoryId: 101 });
+    const found = await githubTriggerEvents(w.github, { eventName: "pull_request", payload: pullRequest(), installationId: 55 });
+    expect(found.map((entry) => entry.event.project)).toEqual(["web"]);
+    expect(w.logs.filter((entry) => entry.event === "github.trigger_stale_index")).toHaveLength(2);
+  });
+
   it("starts nothing for an installation that is suspended, unknown, or bound to nothing, and says it was unbound", async () => {
     const w = world();
     await w.chainTrigger();
@@ -295,12 +308,21 @@ describe("the events GitHub sends and how they map", () => {
 
   it("takes only https github.com links as a subject url, and cuts and cleans the title", async () => {
     const w = world();
-    const payload = pullRequest({ title: `${"T".repeat(400)}\u0007` });
+    const payload = pullRequest({ title: `\u0007${"T".repeat(400)}` });
     (payload.pull_request as { html_url: string }).html_url = "https://evil.example/pull/42";
     const [found] = await githubTriggerEvents(w.github, { eventName: "pull_request", payload, installationId: 55 });
     expect(found!.event.subject.url).toBeUndefined();
     expect([...found!.event.subject.title]).toHaveLength(300);
     expect(found!.event.subject.title).not.toContain("\u0007");
+  });
+
+  it("leaves out a subject link that is not https, and still maps the event", async () => {
+    const w = world();
+    const payload = pullRequest();
+    (payload.pull_request as { html_url: string }).html_url = "http://github.com/acme/web/pull/42";
+    const [found] = await githubTriggerEvents(w.github, { eventName: "pull_request", payload, installationId: 55 });
+    expect(found!.event.subject).toMatchObject({ id: "42" });
+    expect(found!.event.subject.url).toBeUndefined();
   });
 
   it("refuses a body that does not carry what the mapping reads, with no throw", async () => {
@@ -367,6 +389,15 @@ describe("through the broker's webhook endpoint", () => {
     expect(w.dispatched).toHaveLength(4);
   });
 
+  it("ignores, without a fault, a pull request event that names no installation", async () => {
+    const w = await brokerWorld();
+    const { installation: _installation, ...without } = pullRequest();
+    const reply = await w.post(without, "pull_request");
+    expect(reply.statusCode).toBe(202);
+    expect(JSON.parse(reply.body)).toMatchObject({ delivery: "IGNORED" });
+    expect(w.dispatched).toEqual([]);
+  });
+
   it("answers 202 for a suspended installation and dispatches nothing", async () => {
     const w = await brokerWorld();
     bindInstallation(w.h.db, 55, TEST_ORG, "suspended");
@@ -408,6 +439,10 @@ describe("the GitHub App asks for what the events need", () => {
     expect(partial).toMatchObject({ status: "warn" });
     expect(partial.detail).toContain("deployments: read");
     expect(partial.detail).not.toContain("actions: read");
+    // A reply that says nothing of permissions claims nothing missing.
+    const silent = fakeGitHubApi({ installationId: 456, hookUrl: url });
+    silent.getApp = async () => ({ slug: "agentx-acme-staging", owner: { login: "acme", type: "Organization" }, events: [...GITHUB_WEBHOOK_EVENTS] });
+    expect((await githubWebhookChecks(doctorContext({ services: doctorServices({ github: silent }) })))[1]).toMatchObject({ status: "ok" });
     // A stronger permission than the one asked for is enough.
     expect((await githubWebhookChecks(context({ permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", actions: "write", deployments: "write" } })))[1]).toMatchObject({ status: "ok" });
   });
