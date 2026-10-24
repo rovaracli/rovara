@@ -182,7 +182,7 @@ describe("a replay answers the original copied and reason (coordinator ruling on
     const body = { requestId: randomUUID(), name: "Kept false" };
     expect(copiedOf(await t.make(MAX, body))).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
     const { agent: _gone, ...withoutAgent } = t.w.db.get(sessionMeta(t))! as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars
-    t.w.db.set(withoutAgent as never);
+    t.w.db.set(withoutAgent);
     expect(copiedOf(await t.make(MAX, body))).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
   });
 
@@ -202,7 +202,7 @@ describe("a replay answers the original copied and reason (coordinator ruling on
     const first = await t.make(MAX, { requestId, name: "Older" });
     const agentId = (first["agent"] as { agentId: string }).agentId;
     const requestKey = agentRequestKey(ORG_A, MAX, requestId);
-    t.w.db.set({ ...t.w.db.get(requestKey)!, result: t.w.db.get(agentKey(ORG_A, agentId, "META")) } as never);
+    t.w.db.set({ ...t.w.db.get(requestKey)!, result: t.w.db.get(agentKey(ORG_A, agentId, "META")) });
     expect(copiedOf(await t.make(MAX, { requestId, name: "Older" }))).toEqual({ copied: true, reason: undefined });
     t.w.db.set({ ...t.w.db.get(sessionMeta(t))!, agent: OTHER_AGENT });
     expect(copiedOf(await t.make(MAX, { requestId, name: "Older" }))).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
