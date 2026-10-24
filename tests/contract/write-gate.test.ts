@@ -1946,6 +1946,16 @@ describe("after a take-over (Plan 5 Task 12a)", () => {
     expect(takerGone.vendor.state.vendorCalls).toEqual([]);
   });
 
+  it("a taker with no recorded name still decides by id: the page names them with the fixed label, and the creator is refused naming no one by name (ruling on 12a question 1)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.task({ currentOwner: { developerId: CARA, provider: "oidc", since: SINCE } });
+    expect(await code(w.approve(ALICE, id))).toEqual({ code: "FORBIDDEN", message: "Only a member or a project maintainer can decide this." });
+    expect((await w.write(id)).status).toBe("PENDING");
+    expect(await w.approve(CARA, id)).toEqual({ status: "APPROVED_DONE" });
+    expect(w.vendor.state.vendorCalls[0]).toMatchObject({ requestedBy: CARA });
+  });
+
   it("a task whose taker can't be read decides nothing: nobody may decide, the creator who handed it over is not named, and nothing runs", async () => {
     const w = world();
     const id = await w.waiting(1);

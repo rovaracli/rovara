@@ -607,3 +607,28 @@ describe("dispatch fences and pauses under a changing owner", () => {
     expect(d.db.get(`OUTBOX#${d.outbox.id}`, "TASK_ACCESS_PAUSE")).toMatchObject({ reason: "OWNERLESS" });
   });
 });
+
+describe("a taker with no recorded name (ruling on 12a question 1)", () => {
+  /** Max took the task over and his name was never recorded: the id, sign-in method and time are all there is. */
+  const nameless = (h: ReturnType<typeof people>) => {
+    const record = h.task();
+    const { name: _name, ...taker } = record.currentOwner as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- removed on purpose
+    h.db.set({ ...record, currentOwner: taker } as unknown as Record<string, unknown>);
+  };
+
+  it("is an owner actor at dispatch: ALLOWED, never OWNERLESS, with the creator no authority", async () => {
+    const h = people({ taken: true });
+    h.seedSidecar();
+    nameless(h);
+    expect(await resolveTaskDispatchPeople(h.deps, h.task())).toEqual({ peopleRevision: 4, ownerActorIds: [taskOwnerKey(MAX, TASK_ID)], status: "ALLOWED" });
+  });
+
+  it("is never orphaned, and manages the People list as the owner", async () => {
+    const h = people({ taken: true });
+    h.seedSidecar();
+    h.db.set({ ...h.sidecar(), pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, orphaned: true, people: [{ developerId: PRIYA, slackUserId: S_PRIYA, name: "Priya", role: "viewer" }] });
+    nameless(h);
+    await resolveTaskPeopleAccess(h.deps, h.task(), MAX);
+    expect(h.sidecar().orphaned).toBe(false);
+  });
+});
