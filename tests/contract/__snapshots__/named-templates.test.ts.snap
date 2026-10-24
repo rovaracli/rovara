@@ -3815,32 +3815,72 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "Ref": "OperatorAlertsA2431256",
           },
         ],
-        "AlarmDescription": "A schedule trigger's fire failed and its record has been in the chain schedule dead-letter queue for an hour or more: the sweep could not handle it, or it was parked after repeated tries. Check the queue and the broker logs (schedule.dead_letter_failed, schedule.dead_letter_parked) for the trigger's id.",
+        "AlarmDescription": "A schedule trigger's fire failed and its record has stayed in the chain schedule dead-letter queue for 15 minutes or more: the sweep could not handle it, or it was parked after repeated tries. Check the queue and the broker logs (schedule.dead_letter_failed, schedule.dead_letter_parked) for the trigger's id.",
         "AlarmName": "agentx-staging-ChainScheduleDeadLetters",
-        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
-        "Dimensions": [
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 3,
+        "EvaluationPeriods": 3,
+        "Metrics": [
           {
-            "Name": "QueueName",
-            "Value": {
-              "Fn::GetAtt": [
-                "ChainScheduleDeadLettersA90411ED",
-                "QueueName",
-              ],
+            "Expression": "FILL(visible, 0) + FILL(notVisible, 0)",
+            "Id": "expr_1",
+            "Label": "Messages in the chain schedule dead-letter queue",
+            "ReturnData": true,
+          },
+          {
+            "Id": "visible",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "QueueName",
+                    "Value": {
+                      "Fn::GetAtt": [
+                        "ChainScheduleDeadLettersA90411ED",
+                        "QueueName",
+                      ],
+                    },
+                  },
+                ],
+                "MetricName": "ApproximateNumberOfMessagesVisible",
+                "Namespace": "AWS/SQS",
+              },
+              "Period": 300,
+              "Stat": "Maximum",
             },
+            "ReturnData": false,
+          },
+          {
+            "Id": "notVisible",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "QueueName",
+                    "Value": {
+                      "Fn::GetAtt": [
+                        "ChainScheduleDeadLettersA90411ED",
+                        "QueueName",
+                      ],
+                    },
+                  },
+                ],
+                "MetricName": "ApproximateNumberOfMessagesNotVisible",
+                "Namespace": "AWS/SQS",
+              },
+              "Period": 300,
+              "Stat": "Maximum",
+            },
+            "ReturnData": false,
           },
         ],
-        "EvaluationPeriods": 1,
-        "MetricName": "ApproximateAgeOfOldestMessage",
-        "Namespace": "AWS/SQS",
-        "Period": 300,
-        "Statistic": "Maximum",
         "Tags": [
           {
             "Key": "agentx:env",
             "Value": "staging",
           },
         ],
-        "Threshold": 3600,
+        "Threshold": 0,
         "TreatMissingData": "notBreaching",
       },
       "Type": "AWS::CloudWatch::Alarm",

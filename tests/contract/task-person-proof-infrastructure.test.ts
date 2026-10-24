@@ -254,18 +254,19 @@ describe("the named TEST proof-only installation gate", () => {
     // legacy digests did not move (nothing is added without an environment name), and the broker's variables did not grow (the names are derived from AGENTX_ENV).
     // Plan 4 Task 26 review fixes: the broker's one queue statement now also parks and records (SendMessage, ChangeMessageVisibility, renamed UseChainScheduleDeadLetters) and the queue's age
     // has an alarm, so the named and foreign digests were taken again from the synthesized templates; the legacy digests did not move.
+    // Task 27 review I-1: that alarm counts visible plus in-flight messages over three periods (the age metric stops at three receives); named and foreign were taken again, legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "3d8e3c4e7ae1078aae702c9f01efa6c067743b67252772f0704f6936d5b480cb",
-        withoutRoute: "f1da0d69e6820d5baf0491737246b2ba6f6559111611d553ef95e896c9cdc4e6",
+        withRoute: "03c175e3e8ff9d57a6112b9f1760680009fbf453cd5f605457db52c8e7f0bb75",
+        withoutRoute: "546e32f5e3395e2070749b095d0653c73be7fa26b5bf1211722bc17b345dc446",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "0a6f8a1c2e672440e0af1000ce9e06c44709114b3351c709f0585a00af191a78",
-        withoutRoute: "4363ccf2ed0fcf274fb6b13a23b44ac9136ef7ce3bb9763b048e74e06cfa963f",
+        withRoute: "5e2b22cbbef98cc4b41c0caabcc5bac46a3ea6aeb9526cd8ab7f03ced9faaa1e",
+        withoutRoute: "638aca94822e202c6ad63479bd8226a38332915df88a397d0fa2211bb6df7ae4",
       },
       {
         label: "legacy",

@@ -992,14 +992,25 @@ export class ControlPlaneStack extends Stack {
       broker.addToRolePolicy(new iam.PolicyStatement({
         sid: "UseChainScheduleDeadLetters", actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:SendMessage"], resources: [chainScheduleDeadLetters.queueArn],
       }));
-      // A letter that is parked, or that the sweep cannot clear, gets old: an hour is far past the 5-minute sweep.
+      // A letter that is parked, or that the sweep cannot clear, stays in the queue. The age metric is no use: SQS stops counting a message in it once it has been received three
+      // times, and a poison letter is received up to six. A parked letter is not visible (its visibility is 12 hours), so the alarm counts visible plus in-flight messages and
+      // fires when the queue has held any for three 5-minute periods (the sweep clears an ordinary letter within one).
       new cloudwatch.Alarm(this, "ChainScheduleDeadLettersAlarm", {
         alarmName: naming.alarmName("ChainScheduleDeadLetters"),
-        alarmDescription: "A schedule trigger's fire failed and its record has been in the chain schedule dead-letter queue for an hour or more: the sweep could not handle it, or it was parked after repeated tries. Check the queue and the broker logs (schedule.dead_letter_failed, schedule.dead_letter_parked) for the trigger's id.",
-        metric: chainScheduleDeadLetters.metricApproximateAgeOfOldestMessage({ statistic: "Maximum", period: Duration.minutes(5) }),
-        threshold: 3600,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        alarmDescription: "A schedule trigger's fire failed and its record has stayed in the chain schedule dead-letter queue for 15 minutes or more: the sweep could not handle it, or it was parked after repeated tries. Check the queue and the broker logs (schedule.dead_letter_failed, schedule.dead_letter_parked) for the trigger's id.",
+        metric: new cloudwatch.MathExpression({
+          expression: "FILL(visible, 0) + FILL(notVisible, 0)",
+          usingMetrics: {
+            visible: chainScheduleDeadLetters.metricApproximateNumberOfMessagesVisible({ statistic: "Maximum", period: Duration.minutes(5) }),
+            notVisible: chainScheduleDeadLetters.metricApproximateNumberOfMessagesNotVisible({ statistic: "Maximum", period: Duration.minutes(5) }),
+          },
+          period: Duration.minutes(5),
+          label: "Messages in the chain schedule dead-letter queue",
+        }),
+        threshold: 0,
+        evaluationPeriods: 3,
+        datapointsToAlarm: 3,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       }).addAlarmAction(notifyOperator);
     }
