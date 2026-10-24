@@ -9,7 +9,7 @@
 // Raw values (the ticket, the cookie, the state, the PKCE verifier) are never stored or logged: only their hashes.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, agentXError, type AuditProof, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, TICKET_PATTERN, type AuditProof, type OrgId } from "@agentx/contracts";
 import { mayDecide, type DecideKinds } from "./decide-kinds.js";
 import { sha256Hex } from "./tokens.js";
 
@@ -20,7 +20,7 @@ export const DECIDE_SECONDS = 600;
 export const APPROVAL_ID_PATTERN = /^(?:apr|spr)_[0-9a-z]{20}$/;
 /** The only places a decide flow returns to (R67): checked on the identify route's parameter, again on the ticket's, and on the stored state. */
 export const APPROVE_RETURN_PATTERN = /^\/v1\/app\/approve\/((?:apr|spr)_[0-9a-z]{20})$/;
-export const TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+export { TICKET_PATTERN };
 export const TICKET_EXPIRED_MESSAGE = "This confirmation link has expired. Open the approval again from Rovara.";
 export const RATE_LIMIT_MESSAGE = "Too many confirmation attempts. Try again later.";
 export const FORBIDDEN_ORIGIN_MESSAGE = "This request didn't come from Rovara's page.";

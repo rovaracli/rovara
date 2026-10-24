@@ -42,5 +42,5 @@ it("refuses unsafe external and confirmation destinations", () => {
 it("accepts a real broker ticket URL and refuses every alternate query shape", () => {
  const origin = "https://cell.example", path = origin + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", ticket = "a".repeat(43);
  expect(isConfirmUrl(confirmUrlWithTicket(origin, "apr_aaaaaaaaaaaaaaaaaaaa", ticket), origin)).toBe(true);
- for (const suffix of ["?ticket=", "?ticket=" + "a".repeat(42), "?ticket=" + "a".repeat(44), "?ticket=" + ticket + "&ticket=" + ticket, "?other=" + ticket, "?ticket=" + ticket + "&other=x", "?ticket=" + ticket + "#details", "?%74icket=" + ticket, "?ticket=%61" + "a".repeat(42), "?ticket=" + ticket + "&"]) expect(isConfirmUrl(path + suffix, origin)).toBe(false);
+ for (const suffix of ["#", "?", "?ticket=", "?ticket=" + "a".repeat(42), "?ticket=" + "a".repeat(44), "?ticket=" + ticket + "&ticket=" + ticket, "?other=" + ticket, "?ticket=" + ticket + "&other=x", "?ticket=" + ticket + "#details", "?ticket=" + ticket + "#", "?%74icket=" + ticket, "?ticket=%61" + "a".repeat(42), "?ticket=" + ticket + "&"]) expect(isConfirmUrl(path + suffix, origin)).toBe(false);
 });

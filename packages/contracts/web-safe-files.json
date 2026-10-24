@@ -6,6 +6,7 @@
   "packages/contracts/src/agent.ts",
   "packages/contracts/src/app-nav.ts",
   "packages/contracts/src/app-projects.ts",
+  "packages/contracts/src/confirmation.ts",
   "packages/contracts/src/connectors.ts",
   "packages/contracts/src/developer-tasks.ts",
   "packages/contracts/src/developer-web.ts",

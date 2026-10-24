@@ -101,3 +101,5 @@ export * from "./realtime.js";
 export * from "./realtime-node.js";
 
 export * from "./app-nav.js";
+
+export { TICKET_PATTERN } from "./confirmation.js";
