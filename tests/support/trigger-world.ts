@@ -51,6 +51,7 @@ export class FakeScheduler implements TriggerScheduler {
   async put(trigger: ScheduledTrigger): Promise<void> { await this.maybeFail(); this.calls.push({ call: "put", triggerId: trigger.triggerId }); this.states.set(trigger.triggerId, "ENABLED"); }
   async disable(trigger: Pick<ScheduledTrigger, "triggerId">): Promise<void> { await this.maybeFail(); this.calls.push({ call: "disable", triggerId: trigger.triggerId }); this.states.set(trigger.triggerId, "DISABLED"); }
   async remove(trigger: Pick<ScheduledTrigger, "triggerId">): Promise<void> { await this.maybeFail(); this.calls.push({ call: "remove", triggerId: trigger.triggerId }); this.states.delete(trigger.triggerId); }
+  async describe(triggerId: string): Promise<{ state: "ENABLED" | "DISABLED" } | undefined> { const state = this.states.get(triggerId); return state === undefined ? undefined : { state }; }
 }
 
 /** The org's first owner, who takes over what a member who leaves owned. Route calls are made as Dana (an admin): the callers of the worlds read their org role from a fixed table. */
