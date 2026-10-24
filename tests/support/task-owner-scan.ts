@@ -10,7 +10,7 @@ export const OWNER_FIELDS: ReadonlySet<string> = new Set(["developerId", "develo
 const UNTYPED_FIELDS: ReadonlySet<string> = new Set([...OWNER_FIELDS, "currentOwner"]);
 /** Reaching any of these, as a call, in the function is how a read of an owner goes through the one function. */
 export const OWNER_FUNCTIONS: ReadonlySet<string> = new Set([
-  "effectiveTaskOwner", "tryEffectiveTaskOwner", "ownerActorIdOf", "ownerNameOfActor", "ownerFenceOf", "ownerCallerOf", "ownerIndexRowOf", "ownerSlackUserOf", "ownerDisplayName",
+  "effectiveTaskOwner", "tryEffectiveTaskOwner", "ownerActorIdOf", "ownerNameOfActor", "ownerFenceOf", "ownerCallerOf", "ownerIndexRowOf", "ownerSlackUserOf", "ownerDisplayName", "isTaskOwner",
 ]);
 
 export interface Hit {

@@ -1554,6 +1554,8 @@ export function developerTaskRouteDependencies(
     tableName: deps.tableName,
     orgId: caller.orgId,
     ...(agentSessions === undefined ? {} : { agentSessions }),
+    // A taker who was merged into another member since is the owner as the member they became (Plan 5 Task 12a review, M-3).
+    resolveMember: (developerId) => survivorOf(projectMembersDepsOf(deps), developerId),
     ...(deps.developer.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
     issuer: deps.developer.issuer,
     actions: deps.tasks!,

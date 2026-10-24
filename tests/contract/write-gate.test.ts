@@ -1986,7 +1986,7 @@ describe("after a take-over (Plan 5 Task 12a)", () => {
   it("answers a retryable code, not a refusal, when the task can't be read while judging who may decide, and decides nothing (12a review M-5)", async () => {
     const w = world();
     const id = await w.waiting(1);
-    w.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { pk?: string } | undefined)?.pk === `DEVTASK#${TASK}`, error: { name: "ProvisionedThroughputExceededException" }, times: 2 });
+    w.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { pk?: string } | undefined)?.pk === `DEVTASK#${TASK}`, error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
     expect(await code(w.approve(ALICE, id))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect((await w.write(id)).status).toBe("PENDING");
     // The read comes back: the same person decides, and it runs once.

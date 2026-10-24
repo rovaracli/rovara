@@ -209,6 +209,7 @@ import {
   taskOwnerLabel,
   taskPointerKey,
   taskShare,
+  isTaskOwner,
   ownerDisplayName,
   tryEffectiveTaskOwner,
   type DeveloperTaskIndexRecord,
@@ -326,6 +327,8 @@ export interface DeveloperTaskRouteDependencies {
    * up: a start then names no agent, and the task is the plain task it always was, with no recipe stored.
    */
   agentRuns?: AgentRunDependencies;
+  /** Plan 5 Task 12a review (M-3): a developer id read as the member it was merged into (the end of its `mergedInto` chain). A taker merged away since is the owner as the member they became. */
+  resolveMember?: (developerId: string) => Promise<string>;
   /** Plan 5 Task 5: what a session's level needs. With it a person who can view a task's session reads the task page (read only), and a task from before sessions is given one when it is first read in full. */
   agentSessions?: SessionAccessDependencies;
   /** Plan 3, Task 22: the agent-step engine's dependencies (the same object as `agentRuns` where agents are set up); a cancel of a run that waits ends the run through it. */
@@ -620,7 +623,7 @@ async function refuse(deps: DeveloperTaskRouteDependencies, turns: string, party
 /** The developer's own task (the owner now: whoever took it over, else its creator), or TASK_NOT_FOUND for anyone else and for a malformed ID (FR-036). */
 export async function loadOwnedTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<DeveloperTaskRecord> {
   const task = TASK_ID.test(taskId) ? await get<DeveloperTaskRecord>(deps, taskKey(taskId)) : undefined;
-  if (task === undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId || task.orgId !== caller.orgId) {
+  if (task === undefined || !await isTaskOwner(task, caller.developerId, deps.resolveMember) || task.orgId !== caller.orgId) {
     // A malformed ID is never echoed back: it could be long or carry markup.
     throw agentXError("TASK_NOT_FOUND", TASK_ID.test(taskId) ? `no task ${taskId} of yours` : "that is not a task ID of yours");
   }

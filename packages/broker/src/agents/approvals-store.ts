@@ -530,10 +530,16 @@ export const hasHandlerPhase = (record: AnyApprovalRecord): boolean => record.ki
 export interface ApprovalRunView { project: string; owner: { developerId: string; name: string } }
 
 /** The task a write or step approval is about, read live; undefined when the record names none, it is gone, or it belongs to another org. */
-async function taskOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: StepApprovalRecord | WriteApprovalRecord): Promise<DeveloperTaskRecord | undefined> {
+export async function taskOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: StepApprovalRecord | WriteApprovalRecord): Promise<DeveloperTaskRecord | undefined> {
   const taskId = (record.subject as { taskId?: unknown }).taskId;
   if (typeof taskId !== "string") return undefined;
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
+  let response: { Item?: DeveloperTaskRecord };
+  try {
+    response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
+  } catch {
+    // Who owns the task decides who may decide, so a read that failed answers nobody's yes: it is a transient fault to retry, never a refusal of the person (12a review M-5).
+    throw agentXError("RUNTIME_UNAVAILABLE", "Rovara couldn't read the task just now. Try again in a moment.");
+  }
   return response.Item?.orgId === record.orgId ? response.Item : undefined;
 }
 

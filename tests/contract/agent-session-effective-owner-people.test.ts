@@ -613,7 +613,7 @@ describe("a taker with no recorded name (ruling on 12a question 1)", () => {
   const nameless = (h: ReturnType<typeof people>) => {
     const record = h.task();
     const { name: _name, ...taker } = record.currentOwner as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- removed on purpose
-    h.db.set({ ...record, currentOwner: taker } as unknown as Record<string, unknown>);
+    h.db.set({ ...record, currentOwner: taker });
   };
 
   it("is an owner actor at dispatch: ALLOWED, never OWNERLESS, with the creator no authority", async () => {

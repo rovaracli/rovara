@@ -375,6 +375,19 @@ export function ownerDisplayName(task: TaskOwnerSource): string {
   return present(name) ? name : UNNAMED_MEMBER;
 }
 
+/**
+ * Whether `developerId` is the task's owner now. Without a way to follow merges, only the stored id is the owner. With one (`resolveMember`: a developer merged into
+ * another reads as that other), a taker who was merged away since is the owner as the member they became; only the taker is followed, never the creator (the merge
+ * moves the creator's own tasks). An owner that can't be read is nobody.
+ */
+export async function isTaskOwner(task: TaskOwnerSource, developerId: string, resolveMember?: (developerId: string) => Promise<string>): Promise<boolean> {
+  const owner = tryEffectiveTaskOwner(task);
+  if (owner === undefined) return false;
+  if (owner.developerId === developerId) return true;
+  if (resolveMember === undefined || !isTaskTakenOver(task)) return false;
+  return (await resolveMember(owner.developerId)) === (await resolveMember(developerId));
+}
+
 /** `effectiveTaskOwner`, for a read that shows or lists rather than decides: `undefined` when the owner can't be read (nobody is the owner then). */
 export function tryEffectiveTaskOwner(task: TaskOwnerSource): TaskOwner | undefined {
   try {
