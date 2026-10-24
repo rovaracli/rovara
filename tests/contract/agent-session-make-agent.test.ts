@@ -32,9 +32,10 @@ type Body = Record<string, unknown>;
 
 function world(options: { goal?: string | null; agent?: { agentId: string; name: string; version: number | "draft" } | null; orgRoles?: Record<string, "owner" | "admin" | "member"> } = {}) {
   const w = sessionWorld();
+  const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now });
   const agentDeps = {
-    store, projectMembers: w.members, documentClient: w.db, tableName: "state", now: () => w.clock.now, confirmOrigin: CELL, signInStore: w.signInStore, log: () => undefined,
+    store, projectMembers: w.members, documentClient: w.db, tableName: "state", now: () => w.clock.now, confirmOrigin: CELL, signInStore: w.signInStore, log: (event: string, fields: Record<string, unknown>) => { logs.push({ event, fields }); },
   } as unknown as ApprovalDependencies;
   const deps = {
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, approvals: agentDeps,
@@ -58,7 +59,7 @@ function world(options: { goal?: string | null; agent?: { agentId: string; name:
   const draftOf = async (who: string, agentId: string) => (await agents(who, "GET", `/v1/app/agents/${agentId}/draft`)).draft as Record<string, unknown>;
   const everything = () => JSON.stringify(w.db.find(() => true));
   const agentItems = () => w.db.find((item) => item.entityType === "AGENT" || item.entityType === "AGENT_DRAFT");
-  return { w, store, agentDeps, deps, made, sid, make, session, agents, draftOf, everything, agentItems, agentCaller };
+  return { w, logs, store, agentDeps, deps, made, sid, make, session, agents, draftOf, everything, agentItems, agentCaller };
 }
 
 const originOf = (draft: Record<string, unknown>) => draft["origin"] as Record<string, unknown> | undefined;
@@ -115,6 +116,17 @@ describe("making an agent from a session", () => {
     expect(await code(t.make(MAX, { name: "x".repeat(61) }))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
+  it("cuts a long title to a name that fits, at exactly the limit", async () => {
+    const t = world();
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, title: `${"n".repeat(59)}😀${"z".repeat(40)}` });
+    const name = ((await t.make(MAX))["agent"] as { name: string }).name;
+    // 59 letters and a two-unit emoji would be 61: the emoji is left out whole.
+    expect(name).toBe("n".repeat(59));
+    const exact = world();
+    exact.w.db.set({ ...exact.w.db.get(agentSessionKey(ORG_A, exact.sid, "META"))!, title: "m".repeat(100) });
+    expect(((await exact.make(MAX))["agent"] as { name: string }).name).toBe("m".repeat(60));
+  });
+
   it("takes only the redacted goal, the agent kind and the project: no secret and nothing of the workspace", async () => {
     const t = world({ goal: `Rotate ${TOKEN} and then <@U0PRIYA01> redeploy\u200b ${TOKEN.slice(0, 8)}\u2060${TOKEN.slice(8)}` });
     const reply = await t.make(MAX, { name: "Rotator" });
@@ -131,7 +143,8 @@ describe("making an agent from a session", () => {
   it("cuts a long goal to what instructions may hold, after redaction", async () => {
     const t = world({ goal: `${"é".repeat(5000)} ${TOKEN}` });
     const instructions = ((await t.make(MAX, { name: "Long" }))["draft"] as { overlay: { instructions: string } }).overlay.instructions;
-    expect(new TextEncoder().encode(instructions).length).toBeLessThanOrEqual(8192);
+    // Exactly what instructions may hold: 4,096 two-byte characters.
+    expect(new TextEncoder().encode(instructions).length).toBe(8192);
     expect(instructions).not.toContain(TOKEN);
   });
 
@@ -147,6 +160,22 @@ describe("making an agent from a session", () => {
     const draft = (await none.make(MAX, { name: "No agent" }))["draft"] as Record<string, unknown>;
     expect(draft["extends"]).toBeUndefined();
     expect(originOf(draft)).toMatchObject({ visible: true });
+  });
+
+  it("builds on a custom session agent the person may use and that is published and active, and on no other", async () => {
+    const t = world();
+    const custom = await t.store.create({ orgId: ORG_A, name: "Priya's agent", owner: { kind: "member", developerId: PRIYA }, createdBy: PRIYA, overlay: { instructions: "x", sequence: [{ id: "work", name: "Work", kind: "agent", workspace: "none" }] } });
+    const session = () => t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, agent: { agentId: custom.agentId, name: custom.name, version: 1 } });
+    session();
+    const extendsOf = async (name: string) => ((await t.make(MAX, { name }))["draft"] as { extends?: { agentId: string } }).extends?.agentId;
+    // Not published yet, then published but not shared with him, then shared, then archived.
+    expect(await extendsOf("A1")).toBeUndefined();
+    await t.store.publish({ orgId: ORG_A, agentId: custom.agentId, expectedDraftRevision: 1, digest: "a".repeat(64), by: PRIYA });
+    expect(await extendsOf("A2")).toBeUndefined();
+    await t.agents(PRIYA, "PUT", `/v1/app/agents/${custom.agentId}/shares`, { requestId: randomUUID(), shares: [{ principal: { kind: "member", developerId: MAX }, level: "use" }] });
+    expect(await extendsOf("A3")).toBe(custom.agentId);
+    await t.agents(PRIYA, "POST", `/v1/app/agents/${custom.agentId}/archive`, { requestId: randomUUID() });
+    expect(await extendsOf("A4")).toBeUndefined();
   });
 
   it("answers a repeat of the same request with the same agent and writes nothing more; the same id for another request is a mistake", async () => {
@@ -258,6 +287,37 @@ describe("the origin is set once, here, and never changes", () => {
     const cleared = (await t.agents(MAX, "PUT", `/v1/app/agents/${made.agentId}/draft`, { requestId: randomUUID(), expectedRevision: 2, overlay: {}, extends: null }))["draft"] as Record<string, unknown>;
     expect(originOf(cleared)).toMatchObject({ visible: true });
     expect((await t.store.getDraft(ORG_A, made.agentId))?.origin?.sessionId).toBe(t.sid);
+  });
+
+  it("shows the origin, as the caller may read it, on the answer to a moved base and on a replay of a save and of a publish", async () => {
+    const t = world();
+    const made = (await t.make(MAX, { name: "Replayed" }))["agent"] as { agentId: string };
+    const moved = await t.agents(MAX, "POST", `/v1/app/agents/${made.agentId}/update-base`, { requestId: randomUUID(), expectedRevision: 1 });
+    expect(originOf(moved["draft"] as Record<string, unknown>)).toMatchObject({ visible: true, sessionId: t.sid });
+    const save = { requestId: randomUUID(), expectedRevision: 1, overlay: { instructions: "Again." } };
+    const first = await t.agents(MAX, "PUT", `/v1/app/agents/${made.agentId}/draft`, save);
+    const again = await t.agents(MAX, "PUT", `/v1/app/agents/${made.agentId}/draft`, save);
+    expect(again).toEqual(first);
+    expect(originOf(again["draft"] as Record<string, unknown>)).toMatchObject({ visible: true });
+    const publish = { requestId: randomUUID(), expectedRevision: 2 };
+    const published = await t.agents(MAX, "POST", `/v1/app/agents/${made.agentId}/publish`, publish);
+    const repeated = await t.agents(MAX, "POST", `/v1/app/agents/${made.agentId}/publish`, publish);
+    expect(originOf(repeated["version"] as Record<string, unknown>)).toMatchObject({ visible: true, sessionId: t.sid });
+    expect(repeated["version"]).toEqual(published["version"]);
+  });
+
+  it("hides the origin, and reports only ids and the error's name, when the session can't be read for a reason other than access", async () => {
+    const t = world();
+    const made = (await t.make(MAX, { name: "Unreadable" }))["agent"] as { agentId: string };
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, kind: "not-a-kind" });
+    expect(originOf(await t.draftOf(MAX, made.agentId))).toEqual({ kind: "session", visible: false });
+    expect(t.logs).toContainEqual({ event: "agent.origin_unreadable", fields: { orgId: ORG_A, sessionId: t.sid, error: "AgentXError" } });
+    expect(JSON.stringify(t.logs)).not.toContain("Bump the Stripe SDK");
+    // A session that is simply not there is not worth a line.
+    t.logs.length = 0;
+    t.w.db.delete(agentSessionKey(ORG_A, t.sid, "META"));
+    expect(originOf(await t.draftOf(MAX, made.agentId))).toEqual({ kind: "session", visible: false });
+    expect(t.logs).toEqual([]);
   });
 
   it("is copied unchanged into each version published from the draft, and shown with the version", async () => {
