@@ -129,7 +129,7 @@ describe("M-2: removing the connection turns the account's hooks off", () => {
     const elsewhere = await make(`hk_${"e".repeat(26)}`, other);
     const theirs = await make(`hk_${"f".repeat(26)}`, TENANT, ORG_B);
     const off = await w.hook({ source: "cloudwatch", hookId: `hk_${"g".repeat(26)}`, project: "web", tenant: TENANT as never, auth: "sns", hasSecret: false, status: "disabled", secret: null });
-    const linear = await w.hook({ source: "linear", hookId: `hk_${"h".repeat(26)}`, project: "web", tenant: { ...LINEAR_TENANT, awsAccountId: SNS_ACCOUNT } as never, auth: "hmac", secret: "s".repeat(32) });
+    const linear = await w.hook({ source: "linear", hookId: `hk_${"h".repeat(26)}`, project: "web", tenant: LINEAR_TENANT as never, auth: "hmac", secret: "s".repeat(32) });
     const stillConnected = { isConnected: async () => true };
     expect(await disableHooksOfAccount({ store, awsAccounts: stillConnected }, ORG_A, SNS_ACCOUNT)).toBe(0);
     expect((await store.record(ORG_A, mine.hookId))!.status).toBe("active");
