@@ -653,3 +653,31 @@ describe("Plan 3's own entry points keep the checks they had", () => {
     await expect(cancelTaskFor(taskDeps(w), w.taskOf(taskId) as never, { requestId: randomUUID(), actor: { kind: "owner", caller: MAX_CALLER(w) } })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
   });
 });
+
+describe("a workflow retry that fails after Plan 3 committed it (13 review I-1)", () => {
+  it("records the retry when the workflow moved on from the revision it read: the event, the request item and the audit item", async () => {
+    const w = world({ audit: true });
+    const { sessionId, taskId } = w.blocked();
+    const requestId = randomUUID();
+    w.control.retryWorkflow = async (task, id) => {
+      w.calls.workflow.push({ taskId: task.taskId, requestId: id });
+      // Plan 3 committed the run, then failed on something after it.
+      w.patchTask(taskId, { workflow: { revision: 4, stage: "PLAN", state: "RUNNING" } });
+      throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+    };
+    await w.retry(MAX, sessionId, requestId);
+    expect(w.eventTexts(sessionId)).toEqual(["Max retried this."]);
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, `REQUEST#${requestId}`))).toMatchObject({ action: "retry", by: MAX, sessionId });
+    expect(w.audit!.recordedBy("session.retried")).toHaveLength(1);
+  });
+
+  it("writes nothing when the workflow did not move: a refusal stays a refusal", async () => {
+    const w = world({ audit: true });
+    const { sessionId } = w.blocked();
+    const requestId = randomUUID();
+    w.control.retryWorkflow = async () => { throw agentXError("TASK_NOT_FOUND", "no task here that you can see"); };
+    expect(await code(w.retry(MAX, sessionId, requestId))).toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect(w.eventTexts(sessionId)).toEqual([]);
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, `REQUEST#${requestId}`))).toBeUndefined();
+  });
+});

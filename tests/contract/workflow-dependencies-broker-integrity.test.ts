@@ -5,7 +5,7 @@ import { taskGraphDigest, type WorkItemProgressV1 } from "../../packages/contrac
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
-import { agentSessionKey, sessionRequestKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey } from "../../packages/contracts/src/index.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const passingChecks = () => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64),
@@ -688,6 +688,6 @@ describe("broker work-breakdown callback integrity", () => {
     expect((setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META") as { workflow: { stage: string; state: string; revision: number } }).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING", revision: blocked.revision + 1 });
     const retriedEvents = setup.harness.db.find((item) => item.pk === agentSessionKey(TEST_ORG, task.sessionId, "META").pk && item.type === "retried").map((item) => item.text);
     expect(retriedEvents).toEqual(["Omar Diaz retried this."]);
-    expect(setup.harness.db.get(sessionRequestKey(TEST_ORG, OMAR.developerId, requestId))).toMatchObject({ action: "retry", by: OMAR.developerId });
+    expect(setup.harness.db.get(agentSessionKey(TEST_ORG, task.sessionId, `REQUEST#${requestId}`))).toMatchObject({ action: "retry", by: OMAR.developerId });
   });
 });

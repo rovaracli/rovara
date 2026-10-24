@@ -641,21 +641,24 @@ interface AuthorizedTask extends TaskAccess {
   authority: { actorId: string; ownerIds: readonly string[] };
 }
 
-/** Whether this is the session actor of `cancelTaskFor` or `retryTaskWorkflowFor` asking for the one action it was given: stop (`control`) or retry. */
-function isSessionActor(deps: Pick<DeveloperTaskRouteDependencies, "sessionActor">, caller: DeveloperCaller, action: TaskAction): action is "retry" | "control" {
-  return deps.sessionActor !== undefined && deps.sessionActor.developerId === caller.developerId && (action === "retry" || action === "control");
+/**
+ * Whether this is the session actor of `cancelTaskFor` or `retryTaskWorkflowFor` asking for an action it was given: stop (`control`), retry, and `work`, which a retry asks for
+ * when it restarts coding (`queueWorkflowCoding`). Only those two functions set `sessionActor`, so `work` is reached only through a retry.
+ */
+function isSessionActor(deps: Pick<DeveloperTaskRouteDependencies, "sessionActor">, caller: DeveloperCaller, action: TaskAction): action is "retry" | "control" | "work" {
+  return deps.sessionActor !== undefined && deps.sessionActor.developerId === caller.developerId && (action === "retry" || action === "control" || action === "work");
 }
 
 /**
  * The access of the session actor on a task: owner-like for stop and retry, because the session route already checked their level on the session. A retry needs their project
  * role to start work (the same gate the owner's retry passes). The writes are fenced on the People revision read here, so a change of the task's people in between refuses them.
  */
-async function sessionActorAccess(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "control"): Promise<AuthorizedTask> {
+async function sessionActorAccess(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "control" | "work"): Promise<AuthorizedTask> {
   const notFound = () => agentXError("TASK_NOT_FOUND", "no task here that you can see");
   if (!TASK_ID.test(taskId)) throw notFound();
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   if (task === undefined || task.orgId !== caller.orgId) throw notFound();
-  if (action === "retry") {
+  if (action === "retry" || action === "work") {
     if (!taskOpen(task)) throw notFound();
     await requireProjectWorkRole(deps, task, caller);
   }
@@ -3327,6 +3330,8 @@ async function queueWorkflowCoding(
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const { workflow } = task;
+  // The same authority this restart asks for once it has committed (below), asked before anything commits: a person who is refused it must not have started a run first.
+  await authorizeTaskAction(deps, caller, task.taskId, "work");
   // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew, unless that skips an approval they may not decide.
   await requireMayGoOn(deps, caller, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);

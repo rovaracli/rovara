@@ -150,7 +150,13 @@ async function retryWorkflow(deps: SessionReadDependencies, caller: ControlCalle
   if (deps.control === undefined) throw agentXError("RUNTIME_UNAVAILABLE", NOT_AVAILABLE);
   // The payer keeps paying (it is the same run), so their room is what is checked, and nothing is asked of Plan 3 when there is none.
   await admitCurrentPayer(deps, session, task);
-  await deps.control.retryWorkflow(task, requestId);
+  try {
+    await deps.control.retryWorkflow(task, requestId);
+  } catch (error) {
+    // Plan 3 may fail after its transaction committed (the run is queued and spend can start). A retry that started a run is recorded whatever came after: the workflow moved on from the
+    // revision this retry read, and the event, the request item and the audit item are written. A workflow that did not move is a refusal, and nothing is written.
+    if (!await workflowMovedOn(deps, session, task)) throw error;
+  }
 
   const nowMs = deps.now();
   const at = isoOf(nowMs);
@@ -170,6 +176,18 @@ async function retryWorkflow(deps: SessionReadDependencies, caller: ControlCalle
   await flushAuditEvents(deps, events);
   await afterControl(deps, session, caller.developerId, access.effectiveOwner.developerId);
   return answerOf(deps, caller, session.sessionId);
+}
+
+/** Whether the task's workflow left the blocked state this retry read it in (a run was queued by the retry), read fresh. */
+async function workflowMovedOn(deps: SessionReadDependencies, session: AgentSessionRecord, read: DeveloperTaskRecord): Promise<boolean> {
+  try {
+    const fresh = await taskOfSession(deps, session);
+    const before = read.workflow;
+    const after = fresh?.workflow;
+    return before !== undefined && after !== undefined && after.revision > before.revision && after.state !== "BLOCKED";
+  } catch {
+    return false;
+  }
 }
 
 // ---- a new run

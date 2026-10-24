@@ -3,7 +3,7 @@
 // item and no audit item on the session. The retry now authorizes the same way before and after it commits, and records itself whenever a run started.
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, sessionRequestKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey } from "../../packages/contracts/src/index.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -59,7 +59,7 @@ describe("a session editor retries coding that stopped (13 review I-1)", () => {
     expect(t.operations(workspaceId).filter((operation) => operation.requestId === requestId && operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
     // ...and the session says who started it, with the request recorded so a repeat answers the same.
     expect(t.events(sessionId).filter((event) => event.type === "retried")).toEqual([{ type: "retried", text: "Omar Diaz retried this." }]);
-    expect(t.db.get(sessionRequestKey(TEST_ORG, OMAR.developerId, requestId))).toMatchObject({ action: "retry", by: OMAR.developerId, sessionId });
+    expect(t.db.get(agentSessionKey(TEST_ORG, sessionId, `REQUEST#${requestId}`))).toMatchObject({ action: "retry", by: OMAR.developerId, sessionId });
     const again = await t.dev(OMAR, "POST", `/v1/app/sessions/${sessionId}/retry`, { requestId });
     expect(again.status, JSON.stringify(again.body)).toBe(200);
     expect(t.operations(workspaceId).filter((operation) => operation.requestId === requestId)).toHaveLength(1);
