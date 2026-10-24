@@ -209,6 +209,36 @@ describe("M-1: two fires at once cannot both start", () => {
   });
 });
 
+// ---- Task 27 review (minor): two fires of one slot spend one cap count
+
+describe("two fires of the same slot at once spend one count of each cap", () => {
+  const counts = (s: ReturnType<typeof setup>, triggerId: string) => ({
+    hour: (s.v.db.get(triggerRateKey(ORG_A, triggerId, new Date(s.v.clock.now).toISOString().slice(0, 13))) as { count?: number } | undefined)?.count ?? 0,
+    day: (s.v.db.get(orgAutonomousKey(ORG_A, new Date(s.v.clock.now).toISOString().slice(0, 10))) as { count?: number } | undefined)?.count ?? 0,
+  });
+
+  it("one run, one count against the trigger's hour and one against the org's day, and every answer names the run", async () => {
+    const s = setup();
+    const { trigger } = await chainTrigger(s.v);
+    const slot = s.iso(-5_000);
+    const answers = await Promise.all([s.fire(trigger.triggerId, slot), s.fire(trigger.triggerId, slot), s.fire(trigger.triggerId, slot)]);
+    expect(s.runs()).toHaveLength(1);
+    expect(counts(s, trigger.triggerId)).toEqual({ hour: 1, day: 1 });
+    expect(answers.filter((answer) => answer.outcome === "started")).toHaveLength(1);
+    expect(new Set(answers.map((answer) => answer.runId)).size).toBe(1);
+    expect(answers.filter((answer) => answer.outcome !== "started").every((answer) => answer.outcome === "duplicate")).toBe(true);
+  });
+
+  it("the same for an agent trigger", async () => {
+    const s = setup();
+    const { trigger } = await agentTrigger(s.v);
+    const slot = s.iso(-5_000);
+    await Promise.all([s.fire(trigger.triggerId, slot), s.fire(trigger.triggerId, slot)]);
+    expect(s.v.starts).toHaveLength(1);
+    expect(counts(s, trigger.triggerId)).toEqual({ hour: 1, day: 1 });
+  });
+});
+
 // ---- M-2: an open task without an end stops counting after the longest run
 
 describe("M-2: a task with no end record does not block the trigger for ever", () => {
