@@ -2971,7 +2971,8 @@ export async function registerProjectFor(
     // and deleted by the one that no longer holds it, in the same transaction, so no revision leaves the index behind it.
     const pinned = (repositories: ProjectDefinition["repositories"]) => new Map(repositories.flatMap((repository) => repository.installationId === undefined || repository.githubRepositoryId === undefined ? [] : [[repository.githubRepositoryId, repository.installationId] as const]));
     const holds = pinned(definition.repositories);
-    const repositoryIndex = [
+    // Only the project's latest revision may change its rows: an older one registered late (after a newer one) leaves them as the newer one made them.
+    const repositoryIndex = definition.revision < snapshot.newestRevision ? [] : [
       ...[...holds].map(([githubRepositoryId, installationId]) => ({ Put: { TableName: dependencies.tableName, Item: {
         ...githubRepoProjectKey(githubRepositoryId, orgId, definition.name), entityType: "GITHUB_REPO_PROJECT", orgId, project: definition.name, installationId, githubRepositoryId,
       } } })),
