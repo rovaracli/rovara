@@ -163,6 +163,43 @@ describe("saying whether the session's agent was copied (Step 0 ruling)", () => 
   });
 });
 
+describe("review minors on making an agent", () => {
+  const day = 24 * 60 * 60 * 1000;
+
+  it("refuses with NOT_FOUND a session past its retention, as the origin view hides it, though its record is still there; just inside the retention it is still made", async () => {
+    const t = world();
+    const meta = agentSessionKey(ORG_A, t.sid, "META");
+    const record = t.w.db.get(meta)!;
+    t.w.db.set({ ...record, endedAt: new Date(T0 - (SESSION_RETENTION_DAYS + 1) * day).toISOString() });
+    const before = t.agentItems().length;
+    expect(await code(t.make(MAX, { name: "Too late" }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(t.agentItems().length).toBe(before);
+    // A repeat of an earlier request is refused too: a session past retention is not a source.
+    t.w.db.set({ ...record, endedAt: new Date(T0 - (SESSION_RETENTION_DAYS - 1) * day).toISOString() });
+    const body = { requestId: randomUUID(), name: "Just in time" };
+    expect((await t.make(MAX, body))["agent"]).toMatchObject({ name: "Just in time" });
+    t.w.db.set({ ...record, endedAt: new Date(T0 - (SESSION_RETENTION_DAYS + 1) * day).toISOString() });
+    expect(await code(t.make(MAX, body))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("makes the default name from the title through the same clean-and-redact path as the goal: no secret and no mention", async () => {
+    const t = world();
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, title: `Rotate ${TOKEN} <@U0PRIYA01> now` });
+    const name = ((await t.make(MAX))["agent"] as { name: string }).name;
+    expect(name).toContain("[REDACTED]");
+    expect(name).not.toContain(TOKEN.slice(0, 8));
+    expect(name).not.toMatch(/<[@!#]/u);
+    expect(name).toMatch(/^Rotate \[REDACTED\]/u);
+    expect(JSON.stringify(t.agentItems())).not.toContain(TOKEN.slice(0, 8));
+  });
+
+  it("falls back to a fixed name when nothing of the title is left after cleaning", async () => {
+    const t = world();
+    t.w.db.set({ ...t.w.db.get(agentSessionKey(ORG_A, t.sid, "META"))!, title: "   " });
+    expect(((await t.make(MAX))["agent"] as { name: string }).name).toBe("Agent from a session");
+  });
+});
+
 describe("making an agent from a session", () => {
   it("creates the agent and its draft in the session's project, with the session's agent as its base, the redacted goal as its instructions, and the origin", async () => {
     const t = world();
