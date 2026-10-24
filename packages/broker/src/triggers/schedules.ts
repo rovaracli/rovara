@@ -342,8 +342,16 @@ interface SlotClaim {
 async function takeSlot(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, scheduledAt: string, now: number, late: boolean): Promise<{ taken: SlotClaim } | { answer: ScheduleAnswer } | { gone: true }> {
   const store = deps.triggers!;
   let current: TriggerRecord | undefined = trigger;
+  // The claim this fire saw when it last read the trigger: a claim of THIS slot that is new since (a lost race) is another fire's start under way, not a leftover of a start that was cut short.
+  let seenClaimAt = trigger.startClaim?.at;
   for (let attempt = 0; attempt < CLAIM_TRIES; attempt += 1) {
     if (current === undefined || !current.enabled || current.spec.kind !== "schedule") return { gone: true };
+    const rival = current.startClaim;
+    if (attempt > 0 && rival !== undefined && rival.slot === scheduledAt && rival.at !== seenClaimAt && Date.parse(rival.at) + START_CLAIM_HOLD_MS > now) {
+      // Another fire of this very slot won the claim and is starting the run: this one spends no cap count and starts nothing (the run's identity is the slot's, so it is that run).
+      return { answer: { outcome: "duplicate", reason: "start_in_progress", ...(current.target.kind === "chain" ? { runId: runIdFor(eventIdentity(trigger.triggerId, scheduledAt)) } : {}) } };
+    }
+    seenClaimAt = rival?.at;
     if (await stillRunning(deps, orgId, current, scheduledAt, now)) return { answer: { outcome: "skipped", reason: "previous_run_still_running" } };
     if (late) {
       if (current.spec.missed === "skip") return { answer: { outcome: "missed" } };
