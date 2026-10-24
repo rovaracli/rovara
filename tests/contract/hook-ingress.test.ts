@@ -7,6 +7,7 @@ import { WindowCounter } from "../../packages/broker/src/triggers/ingress.js";
 import { HOOK_2, HOOK_OTHER_ORG, LINEAR_TENANT, ORG_A, ORG_B, OTHER_TENANT, SECRET_1, SECRET_2, iso, setupHookWorld, type HookWorld, type TestBody } from "../support/hook-fixtures.js";
 
 const FORBIDDEN = { error: { code: "FORBIDDEN", message: "signature check failed" } };
+const BAD_BODY = { error: { code: "BAD_REQUEST", message: "the delivery body can't be read" } };
 const HOUR = 3_600_000;
 const SECOND = 1000;
 const T0 = Date.parse("2026-10-22T09:00:00.000Z");
@@ -353,11 +354,25 @@ describe("what the sender may not choose", () => {
 });
 
 describe("unreadable input fails closed", () => {
-  it("refuses a validly signed body that is not UTF-8, is empty, is not JSON or is not an object the provider can read", async () => {
+  it("answers 400 (a bad request, not an auth failure) to a validly signed body that is not UTF-8, is empty or is not JSON, and logs only the hook id and the error name", async () => {
     const { w, hook } = await linear();
-    for (const raw of [Buffer.from([0xff, 0xfe, 0x7b, 0x7d]), Buffer.alloc(0), Buffer.from("not json"), Buffer.from("null"), Buffer.from("42")]) {
+    for (const raw of [Buffer.from([0xff, 0xfe, 0x7b, 0x7d]), Buffer.alloc(0), Buffer.from("not json PAYLOAD-MARK")]) {
+      expect(await w.receive(w.delivery(hook, "", { raw })), raw.toString("hex")).toEqual({ status: 400, body: BAD_BODY });
+    }
+    expect(w.logs).toEqual([
+      { event: "hook.body_unreadable", hookId: hook.hookId, error: "TypeError" },
+      { event: "hook.body_unreadable", hookId: hook.hookId, error: "SyntaxError" },
+      { event: "hook.body_unreadable", hookId: hook.hookId, error: "SyntaxError" },
+    ]);
+    expect(w.dispatched).toEqual([]);
+  });
+
+  it("still answers 403 to a validly signed body that parses but is not an object the provider can read, and 403 to an unsigned body that is not JSON", async () => {
+    const { w, hook } = await linear();
+    for (const raw of [Buffer.from("null"), Buffer.from("42")]) {
       expect(await w.receive(w.delivery(hook, "", { raw })), raw.toString("hex")).toEqual({ status: 403, body: FORBIDDEN });
     }
+    expect(await w.receive(w.delivery(hook, "", { raw: Buffer.from("not json"), secret: SECRET_2 }))).toEqual({ status: 403, body: FORBIDDEN });
     expect(w.dispatched).toEqual([]);
   });
 

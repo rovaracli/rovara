@@ -240,20 +240,39 @@ describe("Datadog: an unsigned webhook is proven by the hook's token in X-Rovara
     expect(w.dispatched).toEqual([]);
   });
 
-  it("refuses a body that is not JSON text (a payload the template broke with a quote) and one over the size limit, and writes nothing for a wrong token", async () => {
+  it("answers 400 to a signed body that is not JSON text (a payload the template broke with a quote) and one over the size limit, and writes nothing for a wrong token", async () => {
     const { w, hook } = await ddWorld();
-    expect((await w.receive(ddDelivery(hook, "", { raw: Buffer.from('{"id":"1","title":"a "quoted" word"}') }))).status).toBe(403);
+    expect((await w.receive(ddDelivery(hook, "", { raw: Buffer.from('{"id":"1","title":"a "quoted" word"}') }))).status).toBe(400);
     expect((await w.receive(ddDelivery(hook, "", { raw: Buffer.alloc(HOOK_BODY_MAX_BYTES + 1, 97) }))).status).toBe(413);
     const mark = w.db.commandNames().length;
     await w.receive(ddDelivery(hook, ddBody(w), { token: SECRET_2 }));
     expect(w.writesSince(mark)).toEqual([]);
   });
 
-  it("gives the payload template to paste, exactly as the plan says", () => {
-    expect(DATADOG_PAYLOAD_TEMPLATE).toBe('{"id":"$ID","date":"$DATE","transition":"$ALERT_TRANSITION","alertId":"$ALERT_ID","title":"$EVENT_TITLE","priority":"$PRIORITY","tags":"$TAGS","link":"$LINK","orgId":"$ORG_ID"}');
+  it("gives a payload template to paste with no free-text variable in it: Datadog does not escape variables, so a quote or backslash in one would break the JSON and lose the event", () => {
+    expect(DATADOG_PAYLOAD_TEMPLATE).toBe('{"id":"$ID","date":"$DATE","transition":"$ALERT_TRANSITION","alertId":"$ALERT_ID","priority":"$PRIORITY","tags":"$TAGS","link":"$LINK","orgId":"$ORG_ID"}');
+    const variables = DATADOG_PAYLOAD_TEMPLATE.match(/\$[A-Z_]+/g) ?? [];
+    expect([...variables].sort()).toEqual(["$ALERT_ID", "$ALERT_TRANSITION", "$DATE", "$ID", "$LINK", "$ORG_ID", "$PRIORITY", "$TAGS"]);
+    for (const freeText of ["$EVENT_TITLE", "$EVENT_MSG", "$TEXT_ONLY_MSG", "$ALERT_TITLE", "$ALERT_QUERY", "$ALERT_METRIC", "$USER", "$HOSTNAME", "$LAST_UPDATED"]) expect(DATADOG_PAYLOAD_TEMPLATE).not.toContain(freeText);
     expect(datadogProvider.setup?.payloadTemplate).toBe(DATADOG_PAYLOAD_TEMPLATE);
     expect(datadogProvider.setup?.steps.join("\n")).toContain("X-Rovara-Hook-Token");
     expect(JSON.parse(DATADOG_PAYLOAD_TEMPLATE.replaceAll("$", ""))).toBeTypeOf("object");
+  });
+
+  it("tells the person to keep the hook token in a hidden Datadog custom variable, not as a plain header value", () => {
+    const steps = datadogProvider.setup?.steps.join("\n") ?? "";
+    expect(steps).toMatch(/custom variable/i);
+    expect(steps).toMatch(/hidden/i);
+    expect(steps).toContain('"X-Rovara-Hook-Token": "$');
+    expect(steps).not.toContain("<the secret>");
+  });
+
+  it("titles a monitor by its alert id when the body (from the new template) has no title, and still reads the title of a body made from the older template", async () => {
+    const { w, hook } = await ddWorld();
+    const { title: _title, ...noTitle } = ddBody(w, { id: "n1", alertId: "4321" }) as Record<string, unknown>;
+    await w.receive(ddDelivery(hook, noTitle));
+    await w.receive(ddDelivery(hook, ddBody(w, { id: "n2", alertId: "4322", title: "Old template title" })));
+    expect(w.dispatched.map((entry) => entry.event.subject.title)).toEqual(["4321", "Old template title"]);
   });
 });
 
