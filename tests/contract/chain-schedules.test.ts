@@ -701,7 +701,7 @@ describe("pins: settings, scheduler calls and edges", () => {
     const s = setup();
     const { trigger } = await chainTrigger(s.v);
     const update = s.v.triggers.update.bind(s.v.triggers);
-    s.v.triggers.update = (async () => { throw Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" }); }) as never;
+    s.v.triggers.update = (async () => { throw Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" }); });
     await expect(s.fire(trigger.triggerId, s.iso(-2 * HOUR))).rejects.toThrow("throttled");
     s.v.triggers.update = update;
   });
@@ -738,7 +738,7 @@ describe("pins: settings, scheduler calls and edges", () => {
 
   it("asks the queue for 10 at most and takes 10 at most, whatever the caller allows", async () => {
     const s = setup();
-    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) as never });
+    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) });
     for (let index = 0; index < 12; index += 1) s.queue.add({ source: "agentx.chain-schedule", orgId: ORG_A, triggerId: trigger.triggerId, scheduledAt: s.iso(-(index + 1) * HOUR) });
     const report = await sweepSchedules(s.deps, { deadLetters: createDeadLetters({ sqs: s.queue, queueUrl: "https://sqs/q" }), now: s.v.clock.now, maxDeadLetters: 50 });
     expect(report.deadLetters).toBe(10);
