@@ -26,7 +26,7 @@ it("retains an edited draft on conflict and reloads server text before retrying 
  const revisions: number[] = [];
  function Example() {
  const [message, setMessage] = useState(messageFixture());
- return h(Conversation, { agent: "Payments expert", messages: [message], events: [], meId: "a".repeat(64), onEdit: async (_id: string, rev: number, _text: string) => { revisions.push(rev);if (rev === 1) throw new ApiError(409, "SESSION_REVISION_CONFLICT", "This session changed since you loaded it. Reload it and try again."); }, onReload: async () => { setMessage(messageFixture({ rev: 2, text: "New server evidence" })); } });
+ return h(Conversation, { agent: "Payments expert", messages: [message], events: [], meId: "a".repeat(64), onEdit: async (_id: string, rev: number, _text: string) => { revisions.push(rev);if (rev === 1) throw new ApiError(409, "SESSION_REVISION_CONFLICT", "This session changed since you loaded it. Reload it and try again."); }, onReload: async () => { const fresh = messageFixture({ rev: 2, text: "New server evidence" });setMessage(fresh);return fresh; } });
  }
  const f = renderUi(h(Example, {}));fireEvent.click(screen.getByRole("button", { name: "Edit comment" }));fireEvent.change(screen.getByRole("textbox", { name: "Edit comment" }), { target: { value: "Keep my unsaved explanation" } });fireEvent.click(screen.getByRole("button", { name: "Save changes" }));await screen.findByText("This session changed since you loaded it. Reload it and try again.");expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Keep my unsaved explanation");fireEvent.click(screen.getByRole("button", { name: "Reload" }));await screen.findByText("New server evidence");expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Keep my unsaved explanation");fireEvent.click(screen.getByRole("button", { name: "Save changes" }));await waitFor(() => expect(screen.queryByRole("textbox", { name: "Edit comment" })).toBeNull());expect(revisions).toEqual([1, 2]);f.unmount();
 });
@@ -54,4 +54,10 @@ it("asks before deleting one's own comment and sends its current revision once",
  fireEvent.click(screen.getByRole("button", { name: "Keep comment" }));expect(remove).not.toHaveBeenCalled();
  fireEvent.click(screen.getByRole("button", { name: "Delete comment" }));fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
  await waitFor(() => expect(remove).toHaveBeenCalledExactlyOnceWith("msg_aaaaaaaaaaaaaaaaaaaa", 1));f.unmount();
+});
+
+it("moves keyboard focus into an edit and returns it when cancelled", () => {
+ const f = renderUi(h(Conversation, { agent: "Payments expert", messages: [messageFixture()], events: [], meId: "a".repeat(64), onEdit: async () => undefined }));
+ fireEvent.click(screen.getByRole("button", { name: "Edit comment" }));expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Edit comment" }));
+ fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));expect(document.activeElement).toBe(screen.getByRole("button", { name: "Edit comment" }));f.unmount();
 });
