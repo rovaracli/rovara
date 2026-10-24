@@ -62,12 +62,12 @@ it("marks admin routes web-only and does not add them when the server disables a
 });
 
 it("starts signup without navigation reads and welcome with only a me read", async () => {
- for (const path of ["/app/signup", "/app/welcome"]) {
+ for (const path of ["/app/signup", "/app/signup/", "/app/welcome", "/app/welcome/"]) {
  const f = fakeHost(async () => ({ status: 200, body: { developer: { id: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }));
  f.host.currentPath = () => path;
  const mounted = renderUi(h(App, { host: f.host, createRouter: routes => createMemoryRouter(routes, { initialEntries: [path] }) }));
- await screen.findByRole("heading", { name: path === "/app/signup" ? "Start working together" : "Welcome, Priya" });
- expect(f.request.mock.calls.map(([request]) => request.path)).toEqual(path === "/app/signup" ? [] : ["/v1/app/me"]);mounted.unmount();
+ await screen.findByRole("heading", { name: path.startsWith("/app/signup") ? "Start working together" : "Welcome, Priya" });
+ expect(f.request.mock.calls.map(([request]) => request.path)).toEqual(path.startsWith("/app/signup") ? [] : ["/v1/app/me"]);mounted.unmount();
  }
 });
 

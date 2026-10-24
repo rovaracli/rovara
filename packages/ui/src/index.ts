@@ -38,3 +38,8 @@ export * from "./api/query.js";
 export * from "./realtime/client.js";
 export * from "./realtime/invalidate.js";
 export * from "./confirm/ConfirmInBrowser.js";
+
+export * from "./App.js";
+export * from "./routes.js";
+export * from "./paths.js";
+export * from "./shell/ErrorBoundary.js";

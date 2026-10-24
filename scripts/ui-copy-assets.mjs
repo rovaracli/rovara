@@ -1,6 +1,8 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-const source = new URL("../packages/ui/src/design/design.css", import.meta.url);
-const directory = new URL("../packages/ui/dist/design/", import.meta.url);
-await mkdir(fileURLToPath(directory), { recursive: true });
-await copyFile(source, new URL("design.css", directory));
+for (const path of ["design/design.css", "shell/shell.css"]) {
+ const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
+ const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
+ await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });
+ await copyFile(source, destination);
+}

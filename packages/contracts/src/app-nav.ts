@@ -19,3 +19,7 @@ export const AppNavSchema = z.object({
 export type AppNav = z.infer<typeof AppNavSchema>;
 export const AppNavReaderSchema = forwardReader(AppNavSchema);
 export type ReadAppNav = z.output<typeof AppNavReaderSchema>;
+
+// RULING Q18: existing POST /v1/app/org/leave response; this reader adds no server behavior.
+export const LeaveOrganizationResponseSchema = z.object({ left: z.literal(true), orgClosed: z.boolean(), message: z.string() }).strict();
+export const LeaveOrganizationResponseReaderSchema = forwardReader(LeaveOrganizationResponseSchema);
