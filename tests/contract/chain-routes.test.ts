@@ -12,6 +12,7 @@ import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { agentXError } from "../../packages/contracts/src/errors.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
@@ -57,7 +58,9 @@ function builtinsWithRelease(release: { rootCause: number; widen: boolean; break
     currentVersion: (id) => (id === "root-cause-analyst" ? release.rootCause : currentBuiltinVersion(id as "rovara-code")),
     recipe: (id, version) => {
       if (id === "root-cause-analyst" && version === 1 && release.breakV1 !== undefined) throw release.breakV1;
-      if (id !== "root-cause-analyst" || version <= currentBuiltinVersion("root-cause-analyst") || version > release.rootCause) return builtinRecipe(id as "rovara-code", version);
+      // Root-cause analyst here ships version 1 only, so that a test can add release 2 by hand (the real version 2 is not offered).
+      if (id !== "root-cause-analyst" || version === 1) return builtinRecipe(id as "rovara-code", version);
+      if (version > release.rootCause) throw agentXError("NOT_FOUND", `root-cause-analyst has no version ${String(version)}`);
       const v1 = builtinRecipe("root-cause-analyst", 1);
       return release.widen
         ? { ...v1, chain: [{ ...v1.chain[0]!, version }], tools: v1.tools.map((grant) => ({ ...grant, access: "read_write" as const })) }
@@ -68,7 +71,7 @@ function builtinsWithRelease(release: { rootCause: number; widen: boolean; break
 }
 
 async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
-  const release: { rootCause: number; widen: boolean; breakV1?: Error } = { rootCause: currentBuiltinVersion("root-cause-analyst"), widen: options.widen === true };
+  const release: { rootCause: number; widen: boolean; breakV1?: Error } = { rootCause: 1, widen: options.widen === true };
   const audit = options.audit === true ? capturingAuditDeps() : undefined;
   const builtins = builtinsWithRelease(release);
   const triggers = {
@@ -472,7 +475,7 @@ describe("a publish or rollback that makes something less safe", () => {
     ["adds a branch choice from investigate straight to fix", INVESTIGATE_THEN_FIX, variant({
       investigate: { next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "approve_fix" }, { id: "no_fix", description: "Not a code problem, or not enough evidence", to: "$end" }, { id: "quick", description: "An obvious fix", to: "fix" }] } } as Partial<Step>,
     }), 'fix can now be reached without passing "approve_fix"'],
-    ["appends a deploy step after review", INVESTIGATE_THEN_FIX, variant({ review: { next: { kind: "go", to: "deploy" } } as Partial<Step> }, [{ kind: "agent", id: "deploy", name: "Deploy", agent: { agentId: "code-reviewer", version: "current" }, next: { kind: "end" } }]), "adds step deploy (Code reviewer version 1)"],
+    ["appends a deploy step after review", INVESTIGATE_THEN_FIX, variant({ review: { next: { kind: "go", to: "deploy" } } as Partial<Step> }, [{ kind: "agent", id: "deploy", name: "Deploy", agent: { agentId: "code-reviewer", version: "current" }, next: { kind: "end" } }]), `adds step deploy (Code reviewer version ${String(currentBuiltinVersion("code-reviewer"))})`],
     ["raises retries from 0 to 2", INVESTIGATE_THEN_FIX, variant({ fix: { retries: 2 } as Partial<Step> }), "fix may now retry 2 times"],
     ["raises timeoutMinutes from 120 to 600", INVESTIGATE_THEN_FIX, variant({ fix: { timeoutMinutes: 600 } as Partial<Step> }), "fix may now run 600 minutes"],
     ["widens fix's handoff to all", INVESTIGATE_THEN_FIX, variant({ fix: { handoff: "all" } as Partial<Step> }), "fix now receives every earlier report"],
@@ -498,7 +501,7 @@ describe("a publish or rollback that makes something less safe", () => {
     await s.putDraft(MAYA, s.chainId, variant({ review: { agent: { agentId: helper, version: "current" } } as Partial<Step> }));
     const asked = await s.publish(MAYA, s.chainId);
     expect(asked.status, JSON.stringify(asked.body)).toBe(202);
-    expect(asked.body.changes).toContain("review now uses Helper version 1 instead of Code reviewer version 1");
+    expect(asked.body.changes).toContain(`review now uses Helper version 1 instead of Code reviewer version ${String(currentBuiltinVersion("code-reviewer"))}`);
     expect((await s.state(s.chainId)).currentVersion).toBe(1);
   });
 

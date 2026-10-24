@@ -9,11 +9,26 @@ export type BuiltinTriggerSpec = EventTriggerSpec | ScheduleTriggerSpec;
 /** People who belong to a repository: what a suggestion on a public repository is limited to. */
 const MEMBERS_ONLY = ["OWNER", "MEMBER", "COLLABORATOR"];
 
+// A suggestion's place in its list is part of its identity (a project's trigger for it is keyed by the index), so a list only ever grows at the end.
 export const BUILTIN_TRIGGER_SUGGESTIONS: Record<BuiltinAgentId, ReadonlyArray<BuiltinTriggerSpec>> = {
   "rovara-code": [],
-  "ticket-triage": [],
-  "root-cause-analyst": [],
-  "code-reviewer": [{ kind: "event", source: "github", type: "pull_request.opened", filter: { authorAssociation: MEMBERS_ONLY } }],
-  "deploy-reviewer": [],
-  "service-reviewer": [],
+  "ticket-triage": [
+    { kind: "event", source: "linear", type: "issue.created" },
+    { kind: "event", source: "jira", type: "issue.created" },
+    { kind: "event", source: "github", type: "issues.opened", filter: { authorAssociation: MEMBERS_ONLY } },
+  ],
+  "root-cause-analyst": [
+    { kind: "event", source: "sentry", type: "issue.created" },
+    { kind: "event", source: "pagerduty", type: "incident.triggered" },
+    { kind: "event", source: "cloudwatch", type: "alarm.fired" },
+  ],
+  "code-reviewer": [
+    { kind: "event", source: "github", type: "pull_request.opened", filter: { authorAssociation: MEMBERS_ONLY } },
+    { kind: "event", source: "github", type: "pull_request.ready_for_review", filter: { authorAssociation: MEMBERS_ONLY } },
+  ],
+  "deploy-reviewer": [
+    { kind: "event", source: "github", type: "deployment_status.success", filter: { environment: ["production"] } },
+    { kind: "event", source: "vercel", type: "deployment.succeeded", filter: { target: ["production"] } },
+  ],
+  "service-reviewer": [{ kind: "schedule", schedule: { kind: "weekly", at: "09:00", day: "MON" }, timezone: "UTC", missed: "run_once" }],
 };

@@ -1866,7 +1866,7 @@ describe("what a run is made of that is not in the worked example", () => {
     await endTask(w, "task-1", { finalReport: "again", branch: "retry" });
     expect(w.attempts(run.runId)[1]).toMatchObject({ attempt: 2 });
     expect(w.events(run.runId).filter((event) => event.type === "step_started").map((event) => event.text)).toEqual([
-      `Step "Check" started with ${name("root-cause-analyst")} version 1.`, `Step "Check" started with ${name("root-cause-analyst")} version 1 (attempt 2).`,
+      `Step "Check" started with ${name("root-cause-analyst")} version ${String(currentBuiltinVersion("root-cause-analyst"))}.`, `Step "Check" started with ${name("root-cause-analyst")} version ${String(currentBuiltinVersion("root-cause-analyst"))} (attempt 2).`,
     ]);
     await endTask(w, "task-2", { finalReport: "done", branch: "done" });
     expect(w.run(run.runId)).toMatchObject({ status: "succeeded", traversals: { "check>check": 1, "check>$end": 1 } });
@@ -2127,7 +2127,7 @@ describe("what an ended step's refusal looks like", () => {
     expect(w.attempts(run.runId)[0]!.failure!.message).toBe("no [U+0007]way with [redacted]");
     expect(w.run(run.runId)!.failure!.message).toBe('Step "Look into it" could not start: no [U+0007]way with [redacted].');
     expect(w.events(run.runId).map((event) => [event.type, event.text])).toEqual([
-      ["started", "Chain 1 started."], ["step_started", `Step "Look into it" started with ${name("root-cause-analyst")} version 1.`],
+      ["started", "Chain 1 started."], ["step_started", `Step "Look into it" started with ${name("root-cause-analyst")} version ${String(currentBuiltinVersion("root-cause-analyst"))}.`],
       ["step_ended", 'Step "Look into it" could not start.'], ["ended", 'Step "Look into it" could not start: no [U+0007]way with [redacted].'],
     ]);
   });

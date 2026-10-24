@@ -19,7 +19,7 @@ import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { AgentGuardrailsSchema, DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest, EMPTY_RECIPE, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe.js";
 import type { ModelIdentifier } from "../../packages/contracts/src/models.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
@@ -840,7 +840,7 @@ describe("a built-in agent turned off", () => {
     expect(child.status, JSON.stringify(child.body)).toBe(201);
     const childId = (child.body.agent as { agentId: AgentId }).agentId;
     const pinned = (await store.getDraft(TEST_ORG, childId))!.extends;
-    expect(pinned).toMatchObject({ agentId: "service-reviewer", version: 1 });
+    expect(pinned).toMatchObject({ agentId: "service-reviewer", version: currentBuiltinVersion("service-reviewer") });
     await writeGuardrails(deps, TEST_ORG, OFF, DANA.developerId, { expectedRevision: 0 });
     expect((await resolveAgent(store, TEST_ORG, childId, "draft")).chain.map((layer) => layer.agentId)).toEqual(["service-reviewer", childId]);
     const shown = await call(EVE, "GET", `/v1/app/agents/${childId}`);

@@ -226,10 +226,17 @@ describe("what the templates can actually call", () => {
     expect(granted.filter((tool) => tool.type === "datadog").map((tool) => tool.upstreamName).sort()).toEqual(["query_metrics", "search_logs"]);
   });
 
-  it("no template names or is granted a rollback, merge, close, delete or push tool", () => {
+  it("no template names or is granted a rollback, merge, close, push, revert, redeploy or restart tool", () => {
+    const forbidden = /rollback|merge|close|push|revert|redeploy|restart/iu;
     for (const id of FIVE) {
-      for (const grant of v2(id).tools) for (const pattern of grant.tools ?? []) expect(pattern, `${id} pattern`).not.toMatch(/rollback|merge|close|delete|push|revert|redeploy|restart/iu);
-      for (const tool of resolved(id)) expect(`${tool.type}.${tool.upstreamName}`, id).not.toMatch(/rollback|merge|close|delete|push|revert|redeploy|restart/iu);
+      for (const grant of v2(id).tools) for (const pattern of grant.tools ?? []) expect(pattern, `${id} pattern`).not.toMatch(forbidden);
+      for (const tool of resolved(id)) expect(`${tool.type}.${tool.upstreamName}`, id).not.toMatch(forbidden);
+    }
+  });
+
+  it("the three templates that changed are granted no delete tool either (Ticket triage keeps version 1's whole-tracker grant, whose delete tools the write gate holds for a person)", () => {
+    for (const id of ["deploy-reviewer", "service-reviewer", "root-cause-analyst"] as const) {
+      for (const tool of resolved(id)) expect(`${tool.type}.${tool.upstreamName}`, id).not.toMatch(/delete/iu);
     }
   });
 });

@@ -9,6 +9,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
+import { currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import {
   advanceAgentRun, cancelAgentRun, driveAgentRun, giveUpAgentRun, onAgentStepFinished, onApprovalGaveUp, onTaskEnded, onWriteDecided, prepareSlackReport, registerTaskEndHandler,
   registerTaskPauseHandler, type TaskEndEvent, type TaskPauseEvent,
@@ -254,7 +255,7 @@ describe("running the steps in order", () => {
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
     expect(first).toMatchObject({ kind: "task", programStepId: "investigate", status: "ACCEPTED" });
     const firstPayload = t.invocationOf(first!.id).payload;
-    expect(AgentStepPayloadSchema.parse(firstPayload.agentStep)).toMatchObject({ kind: "agent", agentId: "root-cause-analyst", version: 1, stepId: "investigate", workspace: "read" });
+    expect(AgentStepPayloadSchema.parse(firstPayload.agentStep)).toMatchObject({ kind: "agent", agentId: "root-cause-analyst", version: currentBuiltinVersion("root-cause-analyst"), stepId: "investigate", workspace: "read" });
     expect(firstPayload.agentStep!.inputs).toBe(renderRunInput(INPUT));
     expect(firstPayload.agentStep).not.toHaveProperty("resultContract");
     expect(typeof firstPayload.prompt).toBe("string");

@@ -11,7 +11,7 @@ import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -285,7 +285,7 @@ describe("access", () => {
     const builtin = await call(EVE, "GET", "/v1/app/agents?scope=builtin");
     const agents = builtin.body.agents as Array<{ agentId: string; builtin: boolean; pinnedVersion: number; access: string; name: string }>;
     expect(agents).toHaveLength(6);
-    expect(agents.every((agent) => agent.builtin && agent.pinnedVersion === 1 && agent.access === "use")).toBe(true);
+    expect(agents.every((agent) => agent.builtin && agent.pinnedVersion === currentBuiltinVersion(agent.agentId as "rovara-code") && agent.access === "use")).toBe(true);
     expect(agents.find((agent) => agent.agentId === "ticket-triage")?.name).toBe(BUILTIN_AGENTS["ticket-triage"].name);
     expect((await call(DANA, "GET", "/v1/app/agents?scope=builtin")).body.agents).toEqual(expect.arrayContaining([expect.objectContaining({ access: "manage" })]));
 
