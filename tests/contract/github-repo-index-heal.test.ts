@@ -61,4 +61,15 @@ describe("registering a project keeps the GitHub index of its latest revision", 
     await register(h, definition("web", 1, [WEB]));
     expect(rows(h.db)).toEqual(before);
   });
+
+  it("leaves the rows alone when an older revision is registered after a newer one: only the latest revision may change them", async () => {
+    const h = await createDeveloperTaskBroker({ register: false });
+    // Revision 1 of the project is stored late, after revision 3 (which holds the API repository) is already the latest.
+    await register(h, definition("web", 3, [API]));
+    expect(rows(h.db)).toEqual([row(202)]);
+    await register(h, definition("web", 1, [WEB]));
+    expect(rows(h.db)).toEqual([row(202)]);
+    expect(h.db.get(orgProjectCatalogKey(TEST_ORG, "web"))).toMatchObject({ latestRevision: 3 });
+    expect(h.db.get(projectRevisionKey(TEST_ORG, "web", 1))).toBeDefined();
+  });
 });
