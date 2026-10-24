@@ -20,7 +20,7 @@ import {
 } from "@agentx/contracts";
 import type { DeveloperTaskActions, TransactItems } from "../aws/developer-task-actions.js";
 import { WORKFLOW_DISPATCH_PK, agentRunDispatchItem, agentRunDispatchKey } from "../aws/broker-shared.js";
-import { taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { effectiveTaskOwner, taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import {
   createStepApproval, getAnyApproval, pendingWriteApprovals, registerApprovalSubjectHandler,
   type AnyApprovalRecord, type ApprovalDependencies, type WriteApprovalRecord,
@@ -551,7 +551,8 @@ async function askForApproval(deps: AgentRunEngineDependencies, loaded: Loaded, 
   const gated = await gate(deps, loaded, recipe);
   if ("moved" in gated) return gated.moved;
   const orgId = task.orgId as OrgId;
-  const owner = { developerId: task.developerId, name: task.developerName };
+  // The approval is for the task's owner now: the person who took it over, else its creator (Plan 5 Task 12a, R3-4).
+  const owner = { developerId: effectiveTaskOwner(task).developerId, name: effectiveTaskOwner(task).name };
   const record = await createStepApproval(deps, {
     orgId, subject: { kind: "agent_run", taskId: task.taskId, stepId: step.id }, prompt: step.prompt,
     approvers: { kind: "rule", rule: WRITE_APPROVER_RULE, candidates: await writeApproversFor(deps, { orgId, project: task.project, owner }) },

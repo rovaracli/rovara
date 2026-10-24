@@ -311,7 +311,7 @@ export async function deleteSessionShare(deps: SessionShareDependencies, caller:
   const existing = (await readSessionShares(deps, caller.orgId, session.sessionId)).find((share) => principalKey(share.principal) === key);
   if (existing === undefined) return { removed: false };
   if (!access.owner && access.level !== "edit" && existing.sharedBy.developerId !== caller.developerId) {
-    throw agentXError("SESSION_LEVEL_REQUIRED", sessionLevelRequiredMessage("edit", "remove this share", session.owner.name));
+    throw agentXError("SESSION_LEVEL_REQUIRED", sessionLevelRequiredMessage("edit", "remove this share", access.effectiveOwner.name));
   }
   const name = cleanSessionName(caller.name ?? await nameOf(deps, caller.developerId) ?? "") ?? "Someone";
   const nowMs = deps.now();

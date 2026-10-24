@@ -8,7 +8,7 @@ import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
 import { resolveSessionAccess } from "../agent-sessions/access.js";
 import { AgentSessionStore } from "../agent-sessions/store.js";
-import { taskKey, taskOwnerKey, type DeveloperTaskRecord } from "./task-records.js";
+import { effectiveTaskOwner, ownerActorIdOf, taskKey, type DeveloperTaskRecord } from "./task-records.js";
 
 export type { TaskRole } from "./task-people.js";
 export type TaskAction = "read" | "peopleRead" | "comment" | "suggest" | "decide" | "ask" | "peopleManage" | "takeOwnership" | "retry" | "publish" | "feedback" | "close" | "control" | "work";
@@ -179,9 +179,11 @@ async function resolveTaskRoleByTask(deps: AccessDependencies, caller: Developer
   } catch {
     throw notFound();
   }
-  const legacyOwners = [taskOwnerKey(task.developerId, task.taskId)];
+  // A task with no People sidecar is its owner's alone: the effective owner (Plan 5 Task 12a), the person who took it over or else its creator.
+  const owner = effectiveTaskOwner(task);
+  const legacyOwners = [ownerActorIdOf(task)];
   const legacyPeopleAction = action === "peopleManage" || action === "takeOwnership";
-  if (task.developerId === caller.developerId) {
+  if (owner.developerId === caller.developerId) {
     if (legacyPeopleAction || (action !== undefined && action !== "read" && action !== "peopleRead" && !taskOpen(task))) throw notFound();
     return { task, role: "owner", ownerActorIds: legacyOwners };
   }
@@ -207,7 +209,7 @@ async function resolveTaskRoleByTask(deps: AccessDependencies, caller: Developer
   if (!member) {
     // Only someone on the task's own Slack workspace who may use the project is told whom to ask.
     if (deps.slackTeamId === undefined || share.teamId !== deps.slackTeamId) throw notFound();
-    throw Object.assign(agentXError("TASK_ACCESS_DENIED", "you can't open this task yet"), { owners: [ownerNameForReaders(task.developerName)] });
+    throw Object.assign(agentXError("TASK_ACCESS_DENIED", "you can't open this task yet"), { owners: [ownerNameForReaders(owner.name)] });
   }
   // A project viewer may look at a task in the channel but not take part: only a role that can start tasks comments, suggests or asks.
   const role: TaskRole = projectRole !== undefined && !projectAllows(projectRole, "start_tasks") ? "viewer" : "commenter";

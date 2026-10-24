@@ -31,7 +31,7 @@ import {
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { requireCreatorStillMember } from "../developer/creator-member.js";
-import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { effectiveTaskOwner, taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { latestRevision } from "../org/project-settings.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import {
@@ -446,7 +446,7 @@ export async function executeWrite(deps: ApprovalDependencies, record: WriteAppr
   if (classification.denied !== undefined) return failed(RULE_DENIES_TEXT);
 
   const result = await gate.runConnector({
-    orgId: record.orgId, project: record.project, taskId: task.taskId, workspaceId: task.workspaceId, ownerKey: task.ownerKey, requestedBy: record.owner.developerId, agentName: record.agent?.name ?? "this agent",
+    orgId: record.orgId, project: record.project, taskId: task.taskId, workspaceId: task.workspaceId, ownerKey: task.ownerKey, requestedBy: effectiveTaskOwner(task).developerId, agentName: record.agent?.name ?? "this agent",
     connector: record.connector, definition: latest.definition, runtimeBinding: latest.runtimeBinding,
     request: { requestId, scope: record.scope, tool: record.tool, schemaHash: record.schemaHash, arguments: record.arguments },
   });

@@ -5,7 +5,7 @@ import { SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, re
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { ProjectAccessSubject, TaskPersonIdentity } from "./task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "./task-people-display-budget.js";
-import { taskKey, taskOwnerKey, type DeveloperTaskRecord } from "./task-records.js";
+import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, ownerFenceOf, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "./task-records.js";
 
 export type TaskRole = "owner" | "commenter" | "viewer";
 export type StoredTaskRole = TaskRole | "denied";
@@ -216,6 +216,21 @@ async function checked(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, 
   try { return await checkedFresh(deps, task, developerId); } catch { return denied(); }
 }
 
+/** `checked` for someone whose ownership does not rest on Slack (the person who took the task over): `undefined` when no proof can be had, never a refusal. */
+async function tryChecked(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission): Promise<TaskPersonCheck | undefined> {
+  try { return await checked(deps, task, developerId, admission); } catch { return undefined; }
+}
+
+/** The condition a write puts on the task row: its creator, its workflow position, still open, and (Plan 5 Task 12a) still owned by the owner the write was decided for. */
+function taskRowCondition(task: DeveloperTaskRecord, extra: string): { expression: string; names: Record<string, string>; values: Record<string, unknown> } {
+  const fence = ownerFenceOf(task);
+  return {
+    expression: `#developerId = :developerId AND ${extra} AND attribute_not_exists(closedAt) AND ${fence.expression}`,
+    names: { "#developerId": "developerId", ...fence.names },
+    values: { ":developerId": task.developerId, ...fence.values },
+  };
+}
+
 function preflight(items: readonly TransactItem[]): void {
   if (items.length > TRANSACTION_LIMIT || items.some((item) => {
     const operation = Object.values(item)[0] as { Item?: unknown } | undefined;
@@ -230,34 +245,48 @@ async function transact(deps: TaskPeopleDependencies, items: readonly TransactIt
 
 async function initialize(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, admission?: TaskPeopleDisplayAdmission): Promise<TaskPeople> {
   if (!enabled(deps) || !open(task) || task.share === undefined || !Number.isSafeInteger(task.workflow?.revision)) return denied();
-  const proof = await checked(deps, task, task.developerId, admission);
-  if (!proof.eligible || !proof.channelMember || proof.identity.developerId !== task.developerId) return denied();
-  const existing = await personByDeveloper(deps, task.taskId, task.developerId);
-  if (existing !== undefined && !samePrincipal(existing.identity, proof.identity)) return denied();
+  // The first list seeds the task's owner now: the creator, or the person who took it over (Plan 5 Task 12a), who is its owner whatever Slack says about them. After a
+  // take-over the creator is seeded as a commenter; whoever Slack cannot vouch for gets no entry (a taker's ownership comes from the task's current owner alone).
+  const owner = effectiveTaskOwner(task);
+  const takenOver = isTaskTakenOver(task);
+  const seeds: Array<{ proof: TaskPersonCheck; role: StoredTaskRole }> = [];
+  const ownerProof = takenOver ? await tryChecked(deps, task, owner.developerId, admission) : await checked(deps, task, owner.developerId, admission);
+  if (ownerProof !== undefined && ownerProof.eligible && ownerProof.channelMember && ownerProof.identity.developerId === owner.developerId) seeds.push({ proof: ownerProof, role: "owner" });
+  else if (!takenOver) return denied();
+  if (takenOver && task.developerId !== owner.developerId) {
+    const previous = await tryChecked(deps, task, task.developerId, admission);
+    if (previous !== undefined && previous.eligible && previous.identity.developerId === task.developerId) seeds.push({ proof: previous, role: "commenter" });
+  }
   const createdAt = new Date(deps.now()).toISOString();
-  const personId = existing?.personId ?? randomUUID();
-  const people: TaskPeople = {
-    schemaVersion: 1, revision: 1, orphaned: false,
-    people: [{ developerId: proof.identity.developerId, slackUserId: proof.identity.slackUserId, name: safeName(proof.identity.name, proof.identity.slackUserId), role: "owner" }],
-  };
+  const entries: PersonEntry[] = [];
+  const records: TransactItem[] = [];
+  for (const { proof, role } of seeds) {
+    const existing = await personByDeveloper(deps, task.taskId, proof.identity.developerId);
+    if (existing !== undefined && !samePrincipal(existing.identity, proof.identity)) return denied();
+    const identity = { ...proof.identity, name: safeName(proof.identity.name, proof.identity.slackUserId) };
+    entries.push({ developerId: identity.developerId, slackUserId: identity.slackUserId, name: identity.name, role });
+    if (existing === undefined) {
+      const personId = randomUUID();
+      const person: PersonRecord = { ...personKey(task.taskId, personId), schemaVersion: 1, personId, ...identity, createdAt };
+      const reverse: SubjectRecord = { ...subjectKey(task.taskId, identity.developerId), schemaVersion: 1, personId, developerId: identity.developerId, createdAt };
+      records.push(
+        { Put: { TableName: deps.tableName, Item: person, ConditionExpression: "attribute_not_exists(pk)" } },
+        { Put: { TableName: deps.tableName, Item: reverse, ConditionExpression: "attribute_not_exists(pk)" } },
+      );
+    }
+  }
+  const people: TaskPeople = { schemaVersion: 1, revision: 1, orphaned: false, people: entries };
+  const condition = taskRowCondition(task, "workflow.#revision = :taskRevision");
   const items: TransactItem[] = [
     { Put: { TableName: deps.tableName, Item: { ...peopleKey(task.taskId), ...people }, ConditionExpression: "attribute_not_exists(pk)" } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
-      ConditionExpression: "#developerId = :developerId AND workflow.#revision = :taskRevision AND attribute_not_exists(closedAt)",
-      ExpressionAttributeNames: { "#developerId": "developerId", "#revision": "revision" },
-      ExpressionAttributeValues: { ":developerId": task.developerId, ":taskRevision": task.workflow!.revision },
+      ConditionExpression: condition.expression,
+      ExpressionAttributeNames: { ...condition.names, "#revision": "revision" },
+      ExpressionAttributeValues: { ...condition.values, ":taskRevision": task.workflow!.revision },
     } },
+    ...records,
   ];
-  if (existing === undefined) {
-    const identity = { ...proof.identity, name: safeName(proof.identity.name, proof.identity.slackUserId) };
-    const person: PersonRecord = { ...personKey(task.taskId, personId), schemaVersion: 1, personId, ...identity, createdAt };
-    const reverse: SubjectRecord = { ...subjectKey(task.taskId, identity.developerId), schemaVersion: 1, personId, developerId: identity.developerId, createdAt };
-    items.push(
-      { Put: { TableName: deps.tableName, Item: person, ConditionExpression: "attribute_not_exists(pk)" } },
-      { Put: { TableName: deps.tableName, Item: reverse, ConditionExpression: "attribute_not_exists(pk)" } },
-    );
-  }
   try {
     admission?.assertOpen();
     await transact(deps, items);
@@ -272,15 +301,37 @@ async function initialize(deps: TaskPeopleDependencies, task: DeveloperTaskRecor
 async function reconcile(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, original: TaskPeople,
   admission?: TaskPeopleDisplayAdmission): Promise<TaskPeople> {
   let current = original;
+  // Plan 5 Task 12a: whoever took the task over is its owner whatever Slack says (so the task is never orphaned while it has one), the creator they took it from is a commenter,
+  // and the taker also holds an `owner` entry when Slack knows them and they are in the channel.
+  const taker = isTaskTakenOver(task) ? effectiveTaskOwner(task) : undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const nextEntries: PersonEntry[] = [];
     for (const person of current.people) {
       if (person.role !== "owner") { nextEntries.push(person); continue; }
+      if (taker !== undefined && person.developerId === taker.developerId) {
+        const proof = await tryChecked(deps, task, person.developerId, admission);
+        nextEntries.push(proof === undefined || (proof.eligible && proof.channelMember) ? person : { ...person, role: proof.eligible ? "commenter" : "denied" });
+        continue;
+      }
       const proof = await checked(deps, task, person.developerId, admission);
-      nextEntries.push(proof.eligible && proof.channelMember ? person : { ...person, role: proof.eligible ? "commenter" : "denied" });
+      const stillOwner = proof.eligible && proof.channelMember && !(taker !== undefined && person.developerId === task.developerId);
+      nextEntries.push(stillOwner ? person : { ...person, role: proof.eligible ? "commenter" : "denied" });
     }
-    const orphaned = !nextEntries.some((person) => person.role === "owner");
-    if (orphaned === current.orphaned && nextEntries.every((entry, index) => entry.role === current.people[index]!.role)) return current;
+    if (taker !== undefined) {
+      const at = nextEntries.findIndex((person) => person.developerId === taker.developerId);
+      const held = at < 0 ? undefined : nextEntries[at];
+      if (held?.role !== "owner" && held?.role !== "denied") {
+        const mapping = await personByDeveloper(deps, task.taskId, taker.developerId);
+        const proof = mapping === undefined ? undefined : await tryChecked(deps, task, taker.developerId, admission);
+        if (mapping !== undefined && proof !== undefined && proof.eligible && proof.channelMember && proof.projectViewer !== true && samePrincipal(mapping.identity, proof.identity)) {
+          const entry: PersonEntry = { developerId: mapping.identity.developerId, slackUserId: mapping.identity.slackUserId, name: safeName(proof.identity.name, proof.identity.slackUserId), role: "owner" };
+          if (at < 0) nextEntries.push(entry);
+          else nextEntries[at] = entry;
+        }
+      }
+    }
+    const orphaned = taker === undefined && !nextEntries.some((person) => person.role === "owner");
+    if (orphaned === current.orphaned && isDeepStrictEqual(nextEntries, current.people)) return current;
     const next: TaskPeople = { schemaVersion: 1, revision: current.revision + 1, orphaned, people: nextEntries };
     const item = { ...peopleKey(task.taskId), ...next };
     preflight([{ Put: { TableName: deps.tableName, Item: item } }]);
@@ -317,7 +368,10 @@ async function authorizeColdInitialization(
   ownerOnly: boolean,
   admission?: TaskPeopleDisplayAdmission,
 ): Promise<void> {
-  if (ownerOnly && caller.developerId !== task.developerId) return denied();
+  const owner = effectiveTaskOwner(task);
+  if (ownerOnly && caller.developerId !== owner.developerId) return denied();
+  // Whoever took the task over is admitted without Slack's word; everyone else needs to be an eligible member of the channel.
+  if (isTaskTakenOver(task) && caller.developerId === owner.developerId) return;
   const proof = await checked(deps, task, caller.developerId, admission);
   if (!proof.eligible || !proof.channelMember) return denied();
 }
@@ -348,6 +402,8 @@ function effectiveRoleFromProof(explicit: PersonEntry | undefined, proof: TaskPe
 
 async function effectiveRole(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, people: TaskPeople, developerId: string,
   admission?: TaskPeopleDisplayAdmission): Promise<TaskRole | null> {
+  // The person who took the task over is its owner whatever their Slack link or channel membership (Plan 5 Task 12a).
+  if (isTaskTakenOver(task) && developerId === effectiveTaskOwner(task).developerId) return "owner";
   const explicit = people.people.find((person) => person.developerId === developerId);
   const proof = await checked(deps, task, developerId, admission);
   return effectiveRoleFromProof(explicit, proof);
@@ -493,6 +549,7 @@ async function commitMutation(
   const request = { ...requestKey(task.taskId, requestId), entityType: "TASK_PEOPLE_REQUEST", schemaVersion: 1, requestId, actorDeveloperId: caller.developerId, kind, payload, outcome, createdAt };
   const event = { ...eventKey(task.taskId, requestId), entityType: "TASK_PEOPLE_EVENT", schemaVersion: 1, requestId, actorDeveloperId: caller.developerId, targetDeveloperId, beforeRole, afterRole, createdAt };
   if (!Number.isSafeInteger(task.workflow?.revision) || typeof task.workflow?.stage !== "string") return denied();
+  const guard = taskRowCondition(task, "workflow.#revision = :taskRevision AND workflow.#stage = :taskStage");
   const items: TransactItem[] = [
     { Update: {
       TableName: deps.tableName, Key: peopleKey(task.taskId),
@@ -503,9 +560,9 @@ async function commitMutation(
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
-      ConditionExpression: "#developerId = :developerId AND workflow.#revision = :taskRevision AND workflow.#stage = :taskStage AND attribute_not_exists(closedAt)",
-      ExpressionAttributeNames: { "#developerId": "developerId", "#revision": "revision", "#stage": "stage" },
-      ExpressionAttributeValues: { ":developerId": task.developerId, ":taskRevision": task.workflow.revision, ":taskStage": task.workflow.stage },
+      ConditionExpression: guard.expression,
+      ExpressionAttributeNames: { ...guard.names, "#revision": "revision", "#stage": "stage" },
+      ExpressionAttributeValues: { ...guard.values, ":taskRevision": task.workflow.revision, ":taskStage": task.workflow.stage },
     } },
     { Put: { TableName: deps.tableName, Item: event, ConditionExpression: "attribute_not_exists(pk)" } },
     { Put: { TableName: deps.tableName, Item: request, ConditionExpression: "attribute_not_exists(pk)" } },
@@ -542,7 +599,9 @@ export async function resolveTaskPeopleAccess(
   const people = await reconcile(deps, task, stored);
   const role = await effectiveRole(deps, task, people, developerId);
   if (role === null) return denied();
-  const owners = people.people.filter((person) => person.role === "owner").map((person) => taskOwnerKey(person.developerId, task.taskId));
+  const entryOwners = people.people.filter((person) => person.role === "owner").map((person) => taskOwnerKey(person.developerId, task.taskId));
+  // A task taken over names its taker first, whatever Slack says about them (Plan 5 Task 12a); an untaken task's owners are its entries.
+  const owners = isTaskTakenOver(task) ? [...new Set([ownerActorIdOf(task), ...entryOwners])] : entryOwners;
   const proof = people.orphaned ? await checked(deps, task, developerId) : undefined;
   return {
     role, peopleRevision: people.revision, ownerActorIds: owners, orphaned: people.orphaned,
@@ -561,12 +620,20 @@ export async function resolveTaskDispatchPeople(
 ): Promise<{ peopleRevision: number; ownerActorIds: readonly string[]; status: "ALLOWED" | "OWNERLESS" | "UNKNOWN" } | undefined> {
   const people = await loadPeople(deps, task.taskId);
   if (people === undefined) return undefined;
-  if (people.orphaned) return { peopleRevision: people.revision, ownerActorIds: [], status: "OWNERLESS" };
-  if (deps.checkTaskPerson === undefined) return { peopleRevision: people.revision, ownerActorIds: [], status: "UNKNOWN" };
-  const owners: string[] = [];
+  // A task taken over (Plan 5 Task 12a) always has its taker as the first owner actor: they are an owner whatever their Slack link or channel membership, so it is never
+  // ownerless; the creator they took it from is no authority. With no usable Slack proof for them the dispatch fence rests on their project authority instead.
+  const taker = isTaskTakenOver(task) ? effectiveTaskOwner(task) : undefined;
+  if (people.orphaned && taker === undefined) return { peopleRevision: people.revision, ownerActorIds: [], status: "OWNERLESS" };
+  if (deps.checkTaskPerson === undefined && taker === undefined) return { peopleRevision: people.revision, ownerActorIds: [], status: "UNKNOWN" };
+  const owners: string[] = taker === undefined ? [] : [ownerActorIdOf(task)];
   let unknown = false;
+  if (taker !== undefined && deps.checkTaskPerson !== undefined) {
+    // Their Slack proof, if they have one, is the witness the fence uses; without it the project authority witness stands.
+    try { await checkedFresh(deps, task, taker.developerId); } catch { /* no usable proof */ }
+  }
   for (const person of people.people) {
     if (person.role !== "owner") continue;
+    if (taker !== undefined && (person.developerId === taker.developerId || person.developerId === task.developerId)) continue;
     try {
       const proof = await checkedFresh(deps, task, person.developerId);
       // An owner lowered to a project viewer keeps the task (to view and cancel) but is no authority for new work on it.

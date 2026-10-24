@@ -16,7 +16,7 @@ import type { ProjectAuthorityReader, ProjectAuthorityWitness } from "../develop
 import { orgOf } from "../org/resolve.js";
 import { readProjectAuthority } from "../developer/task-project-access.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
-import { taskOwnerKey } from "../developer/task-records.js";
+import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, taskOwnerKey } from "../developer/task-records.js";
 import { META, type DeveloperRecord } from "../developer/store.js";
 import type { TaskAuthorityAdmission } from "./task-authority-admission.js";
 
@@ -181,6 +181,25 @@ export interface TaskPersonRuntime {
   stateAuthorityWitnessForEligiblePerson(task: DeveloperTaskRecord, developerId: string): Promise<TaskPersonStateAuthorityWitness | undefined>;
 }
 
+/** The runtime the dispatch guard is given: the Slack-based checks, and the project authority witness a task's taker rests on when Slack has no proof for them. */
+export interface TaskPersonDispatchRuntime extends TaskPersonRuntime {
+  /**
+   * The witness for a task's effective owner with no Slack proof (Plan 5 Task 12a, R3-1): the project's latest revision and the owner's own grant row or org role, read as
+   * `creatorIsProjectViewer` reads them, with no Slack identity or channel check. A viewer-only or missing role gives none, so dispatch still fails closed.
+   */
+  projectAuthorityWitnessForOwner(task: DeveloperTaskRecord): Promise<TaskPersonStateAuthorityWitness | undefined>;
+}
+
+/**
+ * The witness the dispatch fence rests on for a task's owner actor: the Slack identity witness as ever, and for a task taken over whose taker has no eligible, in-channel Slack
+ * proof, the taker's project authority (Plan 5 Task 12a, R3-1). Only the dispatch guard uses this; the Slack invite path keeps the Slack-only witness.
+ */
+export async function stateAuthorityWitnessForDispatch(runtime: TaskPersonDispatchRuntime, task: DeveloperTaskRecord, ownerActorId: string): Promise<TaskPersonStateAuthorityWitness | undefined> {
+  const slack = await runtime.stateAuthorityWitnessForOwnerActor(task, ownerActorId);
+  if (slack !== undefined) return slack;
+  return isTaskTakenOver(task) && ownerActorId === ownerActorIdOf(task) ? runtime.projectAuthorityWitnessForOwner(task) : undefined;
+}
+
 /** Creates a guard-local checker. Its injected ports expose only the bounded People read set. */
 export function createTaskPersonRuntime(input: {
   /** The install's single org: the org of a task that names none of its own. */
@@ -193,7 +212,7 @@ export function createTaskPersonRuntime(input: {
   uuid(): string;
   trustedCaller?: TaskPersonIdentityDependencies["trustedCaller"];
   checkIdentity?: typeof checkTaskPersonIdentity;
-}): TaskPersonRuntime {
+}): TaskPersonDispatchRuntime {
   const checkIdentity = input.checkIdentity ?? checkTaskPersonIdentity;
   const witnesses = new Map<string, TaskPersonStateAuthorityWitness & { eligible: true; channelMember: boolean }>();
   const witnessKey = (taskId: string, developerId: string) => `${taskId}\0${developerId}`;
@@ -211,6 +230,17 @@ export function createTaskPersonRuntime(input: {
       && Object.hasOwn(revision.definition, "developerTasks") === witness.projectRevision.developerTasksPresent
       && (!witness.projectRevision.developerTasksPresent || isDeepStrictEqual(revision.definition.developerTasks, witness.projectRevision.developerTasks));
     return samePolicy ? witness : undefined;
+  };
+  const projectAuthorityWitnessForOwner = async (task: DeveloperTaskRecord): Promise<TaskPersonStateAuthorityWitness | undefined> => {
+    const { developerId } = effectiveTaskOwner(task);
+    if (!SlackTeamIdSchema.safeParse(input.slackTeamId).success) throw refused();
+    const result = await readProjectAuthority(input.ports.projectAuthorityReader, {
+      orgId: taskOrg(input.orgId, task), project: task.project, developerId, teamId: input.slackTeamId, admission: input.admission,
+    });
+    input.admission.assertOpen();
+    if (result.kind === "unavailable") throw unavailable();
+    if (result.kind !== "allowed" || result.access !== "granted" || result.witness === undefined) return undefined;
+    return currentWitness(task, developerId, { ...result.witness, taskId: task.taskId, developerId, project: task.project });
   };
   return {
     async checkTaskPerson(task, developerId) {
@@ -240,6 +270,7 @@ export function createTaskPersonRuntime(input: {
         && taskOwnerKey(candidate.developerId, task.taskId) === ownerActorId);
       return currentWitness(task, witness?.developerId ?? "", witness);
     },
+    projectAuthorityWitnessForOwner,
     async stateAuthorityWitnessForEligiblePerson(task, developerId) {
       const witness = witnesses.get(witnessKey(task.taskId, developerId));
       if (witness?.eligible !== true) return undefined;

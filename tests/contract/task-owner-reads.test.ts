@@ -26,40 +26,21 @@ const OWNER_FUNCTIONS = /\b(effectiveTaskOwner|tryEffectiveTaskOwner|ownerActorI
 type Row = readonly [file: string, fn: string, klass: Klass, ...fields: string[]];
 const ROWS: readonly Row[] = [
   // the people path
-  ["developer/creator-member.ts", "requireCreatorStillMember", "authority", ".developerId", ".developerName"],
-  ["developer/task-access.ts", "resolveTaskRoleByTask", "owner-actor", ".developerId", ".developerName"],
   ["developer/task-people.ts", "initialize", "owner-actor", ".developerId"],
-  ["developer/task-people.ts", "authorizeColdInitialization", "owner-actor", ".developerId"],
-  ["developer/task-people.ts", "commitMutation", "owner-actor", ".developerId"],
+  ["developer/task-people.ts", "reconcile", "owner-actor", ".developerId"],
+  ["developer/task-people.ts", "taskRowCondition", "principal", ".developerId"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId", ".provider", ".slackUserId"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId", ".provider", ".slackUserId"],
   ["developer/task-person-identity.ts", "checkTaskPersonIdentity", "history", ".developerId", ".developerName", ".provider", ".slackUserId"],
   ["developer/task-records.ts", "developerTaskIdentity", "principal", ".developerId", ".developerName", ".provider"],
+  ["developer/task-records.ts", "ownerDecisionCounts", "owner-actor", ".developerId", "taskOwnerKey()"],
   ["developer/task-records.ts", "partyOfTask", "history", ".developerId", ".developerName", ".provider", ".slackUserId"],
   ["developer/page-comments.ts", "loadDocumentVersion", "principal", ".ownerKey"],
-  ["developer/page-comments.ts", "queueCommentAnswer", "owner-actor", ".slackUserId"],
-  ["aws/task-dispatch-access.ts", "creatorIsProjectViewer", "authority", ".developerId"],
   // approvals, writes and agent tools
-  ["agents/agent-tools-routes.ts", "taskCreator", "authority", ".developerId"],
   ["agents/agent-tools-routes.ts", "frameOf", "principal", ".ownerKey"],
-  ["agents/agent-tools-routes.ts", "attributionOf", "attribution", ".developerName"],
-  ["agents/agent-tools-routes.ts", "callAgentTool", "authority", ".developerId", ".developerName"],
   ["agents/agent-tools-routes.ts", "regrantAgentTool", "principal", ".ownerKey"],
-  ["agents/run-engine.ts", "askForApproval", "authority", ".developerId", ".developerName"],
   ["agents/write-gate.ts", "executeWrite", "principal", ".ownerKey"],
   // the broker
-  ["aws/broker.ts", "workspaceTaskOwner", "authority", ".developerId"],
-  ["aws/broker.ts", "taskCreator", "authority", ".developerId"],
-  ["aws/broker.ts", "resumeTask", "authority", ".developerId"],
-  ["aws/broker.ts", "slackTaskAccess", "owner-actor", ".developerId", ".developerName", ".provider", ".slackUserId"],
-  ["aws/broker.ts", "ownedSlackWorkflowTask", "owner-actor", ".developerId"],
-  ["aws/broker.ts", "authorizeWorkflowFeedbackApproval", "authority", ".developerId", ".developerName", ".provider", ".slackUserId"],
-  ["aws/broker.ts", "authorizeWorkflowFeedbackApproval", "principal", ".ownerKey"],
-  ["aws/broker.ts", "processGithubWorkflowEvent", "authority", ".developerId", ".developerName", ".provider"],
-  ["aws/broker.ts", "runWorkflowDispatch", "authority", ".developerId", ".developerName", ".provider"],
-  ["aws/broker.ts", "requireWorkflowE2ECreatorAuthority", "authority", ".developerId"],
-  ["aws/broker.ts", "workflowE2ECreatorAuthorityProof", "authority", ".developerId"],
-  ["aws/broker.ts", "workflowE2ECurrentAuthorityIsValid", "authority", ".developerId"],
   ["aws/broker.ts", "taskOperationParts", "money", ".developerId"],
   ["aws/broker.ts", "loadScope", "money", ".developerId"],
   ["aws/broker.ts", "sharedStopFences", "principal", ".developerId", ".ownerKey"],
@@ -74,17 +55,11 @@ const ROWS: readonly Row[] = [
   ["aws/broker.ts", "workflowE2EPresentation", "principal", ".ownerKey"],
   ["aws/plan-evidence-handler.ts", "runPlanEvidenceJob", "principal", ".ownerKey"],
   // the task's routes
-  ["aws/developer-tasks.ts", "loadOwnedTask", "authority", ".developerId"],
-  ["aws/developer-tasks.ts", "continueAsTask", "authority", ".developerId"],
-  ["aws/developer-tasks.ts", "listTasks", "authority", ".developerId"],
   ["aws/developer-tasks.ts", "pauseViewOf", "authority", ".developerId"],
-  ["aws/developer-tasks.ts", "refused", "attribution", ".developerName", ".slackUserId"],
   ["aws/developer-tasks.ts", "planWhyEntries", "attribution", ".developerName"],
-  ["aws/developer-tasks.ts", "recordWorkflowThreadNote", "owner-actor", ".slackUserId"],
-  ["aws/developer-tasks.ts", "getTaskDocumentView", "attribution", ".developerName"],
   ["aws/developer-tasks.ts", "getTaskDocumentView", "principal", ".ownerKey"],
-  ["aws/developer-tasks.ts", "personName", "owner-actor", ".ownerKey"],
   ["aws/developer-tasks.ts", "syncIndex", "index", ".developerId"],
+  ["aws/developer-tasks.ts", "ownerIndexRowOf", "index", ".developerId"],
   ["aws/developer-tasks.ts", "closing", "index", ".developerId"],
   ["aws/developer-tasks.ts", "rest", "index", ".developerId"],
   ["aws/developer-tasks.ts", "shareItems", "index", ".developerId"],
@@ -104,23 +79,12 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks.ts", "workflowReviewFeedbackOption", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   // who is told
-  ["aws/developer-task-notifier.ts", "updateWorkflowApprovalCard", "attribution", ".slackUserId"],
-  ["aws/developer-task-notifier.ts", "workflowReply", "attribution", ".slackUserId"],
-  ["aws/developer-task-notifier.ts", "replyText", "attribution", ".slackUserId"],
   ["aws/developer-task-notifier.ts", "deliver", "history", ".developerName", ".slackUserId"],
   ["aws/developer-task-notifier.ts", "deliverChatGptFallback", "money", ".developerId", ".slackUserId"],
   ["aws/developer-task-notifier.ts", "recordThread", "history", ".developerId", ".developerName"],
   ["aws/developer-task-notifier.ts", "recordThread", "principal", ".ownerKey"],
   ["aws/developer-task-notifier.ts", "workflowE2EBlocks", "principal", ".ownerKey"],
   // the budget pause and money
-  ["spend/requests.ts", "askPausedTask", "authority", ".developerId"],
-  ["spend/requests.ts", "askRunLimitAgain", "authority", ".developerId"],
-  ["spend/requests.ts", "createRunLimitRequest", "authority", ".developerId"],
-  ["spend/requests.ts", "requestForMonth", "authority", ".developerId"],
-  ["spend/requests.ts", "followUpRunLimit", "authority", ".developerId"],
-  ["spend/requests.ts", "pausedTaskGate", "authority", ".developerId"],
-  ["spend/requests.ts", "creatorGone", "authority", ".developerId"],
-  ["spend/requests.ts", "maySee", "authority", ".developerId"],
   ["spend/requests.ts", "payerOf", "money", ".developerId"],
   ["spend/requests.ts", "taskPayerId", "money", ".developerId"],
   ["spend/requests.ts", "confirmViewOf", "money", ".developerId"],
@@ -129,8 +93,7 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/summary.ts", "requestSlotsOf", "authority", ".developerId"],
   // `taskOwnerKey(` calls
   ["developer/task-people.ts", "resolveTaskPeopleAccess", "owner-actor", "taskOwnerKey()"],
-  ["developer/task-people.ts", "resolveTaskDispatchPeople", "owner-actor", "taskOwnerKey()"],
-  ["developer/task-access.ts", "resolveTaskRoleByTask", "owner-actor", "taskOwnerKey()"],
+  ["developer/task-people.ts", "resolveTaskDispatchPeople", "owner-actor", ".developerId", "taskOwnerKey()"],
   ["developer/task-records.ts", "developerTaskIdentity", "principal", "taskOwnerKey()"],
   ["aws/task-dispatch-access.ts", "guardTaskDispatchCore", "owner-actor", "taskOwnerKey()"],
   ["aws/task-person-invite-handler.ts", "createTaskPersonInviteHandler", "caller-actor", "taskOwnerKey()"],
@@ -138,7 +101,6 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks.ts", "authorizeTaskAction", "caller-actor", "taskOwnerKey()"],
   ["aws/developer-tasks.ts", "getTaskDocumentView", "caller-actor", "taskOwnerKey()"],
   ["aws/developer-tasks.ts", "feedbackReviewWorkspaceReady", "principal", "taskOwnerKey()"],
-  ["aws/broker.ts", "slackTaskAccess", "owner-actor", "taskOwnerKey()"],
   ["aws/broker.ts", "verifiedSharedStopBinding", "principal", "taskOwnerKey()"],
   ["aws/broker.ts", "sharedThread", "principal", "taskOwnerKey()"],
 ];
@@ -239,4 +201,13 @@ describe("every read of a task's owner is classified, and the ones that carry au
     }
     expect(wrong).toEqual([]);
   });
+
+  it("hands `currentOwner` to the Slack buttons in the one task projection they load, so their owner check sees a take-over", () => {
+    const source = readFileSync(path.join(SRC, "aws/slack-interactivity.ts"), "utf8");
+    const projections = [...source.matchAll(/ProjectionExpression: "([^"]*)"[^\n]*\n?/gu)].map((match) => match[1] ?? "").filter((projection) => projection.includes("workflow"));
+    expect(projections).toHaveLength(1);
+    expect(projections[0]).toContain("currentOwner");
+    expect(projections[0]).toContain("slackUserId");
+  });
 });
+

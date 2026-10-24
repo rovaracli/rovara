@@ -8,7 +8,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import { sameMember } from "./lifecycle.js";
-import { type AnyApprovalRecord, type ApprovalCaller, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, shownText, stripCode, updateRecord, withFields } from "./approvals-store.js";
+import { type AnyApprovalRecord, type ApprovalCaller, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runOfApproval, shownText, stripCode, updateRecord, withFields } from "./approvals-store.js";
 
 // ---- deciding
 
@@ -190,7 +190,7 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
   if (record.status !== "PENDING" && record.decisionRequestId === body.requestId && record.decidedBy !== undefined && await sameMember(deps, record.orgId, record.decidedBy, caller.developerId)) {
     return { status: record.status };
   }
-  if (!await mayDecideApproval(deps, caller, record)) throw agentXError("FORBIDDEN", forbiddenText(record));
+  if (!await mayDecideApproval(deps, caller, record)) throw agentXError("FORBIDDEN", forbiddenText(record, (await runOfApproval(deps, record))?.owner.name ?? "the task owner"));
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   // The sweep ends an approval whose time ran out only when it reaches it; until then the record is still PENDING, but it can no longer be decided (re-check N1).
   if (Date.parse(record.expiresAt) <= deps.now()) throw agentXError("APPROVAL_CLOSED", "this request has expired");

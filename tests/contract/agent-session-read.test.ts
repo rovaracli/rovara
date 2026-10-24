@@ -256,13 +256,21 @@ describe("a taken-over session names its effective owner (review m-4)", () => {
     expect((await code(requireSessionLevel(r.deps, r.w.caller(ARJUN), plain.sessionId, "edit", "stop it")))?.message).toContain("Ask Priya to share it with you");
   });
 
-  it("never names the previous owner when the taker's name isn't recorded", async () => {
+  it("refuses a session whose taker can't be read (no name recorded): nobody owns it, and it never falls back to the previous owner (Task 12a)", async () => {
     const r = readWorld();
     const { sessionId, taskId } = r.w.seedSession({ currentOwner: ARJUN });
     const { name: _name, ...taker } = (r.w.db.get(taskKey(taskId)) as { currentOwner: Record<string, unknown> }).currentOwner; // eslint-disable-line @typescript-eslint/no-unused-vars -- removed on purpose
     r.w.db.set({ ...r.w.db.get(taskKey(taskId))!, currentOwner: taker });
-    expect((await view(r, PRIYA, sessionId)).owner).toEqual({ developerId: ARJUN, name: "the owner" });
-    expect((await code(requireSessionLevel(r.deps, r.w.caller(PRIYA), sessionId, "edit", "stop it")))?.message).toContain("Ask the owner to share it with you");
+    expect(await code(view(r, PRIYA, sessionId))).toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect(await code(view(r, ARJUN, sessionId))).toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    expect((await code(requireSessionLevel(r.deps, r.w.caller(PRIYA), sessionId, "edit", "stop it")))?.code).toBe("TASK_ACCESS_DENIED");
+    // The list leaves the session out rather than fail, and still lists the others.
+    const plain = r.w.seedSession();
+    r.index(sessionId);
+    r.index(plain.sessionId);
+    const tiles = (await listSessions(r.deps, r.w.caller(PRIYA), { owner: "me" })).sessions.map((tile) => tile.sessionId);
+    expect(tiles).toContain(plain.sessionId);
+    expect(tiles).not.toContain(sessionId);
   });
 });
 

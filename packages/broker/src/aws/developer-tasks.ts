@@ -191,7 +191,9 @@ import {
   deriveTaskStatus,
   developerTaskIdentity,
   E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON,
+  effectiveTaskOwner,
   inertName,
+  ownerNameOfActor,
   partyOfTask,
   recentTaskEvents,
   sharedSubject,
@@ -207,9 +209,11 @@ import {
   taskOwnerLabel,
   taskPointerKey,
   taskShare,
+  tryEffectiveTaskOwner,
   type DeveloperTaskIndexRecord,
   type DeveloperTaskPointerRecord,
   type DeveloperTaskRecord,
+  type TaskOwnerSource,
   type TaskShare,
   type TurnParty,
   type WorkspaceCharge,
@@ -578,16 +582,18 @@ export function storedRequestText(instructions: string): string {
  */
 export async function planWhyEntries(
   deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">,
-  task: Pick<DeveloperTaskRecord, "taskId" | "developerName" | "requestText" | "threadNotesFedFrom" | "threadNotesFedThrough">,
+  task: Pick<DeveloperTaskRecord, "taskId" | "developerName" | "requestText" | "threadNotesFedFrom" | "threadNotesFedThrough"> & TaskOwnerSource,
   plannerEntries: PlanDocument["why"],
 ): Promise<PlanDocument["why"]> {
   if (task.requestText === undefined) return plannerEntries.map((entry) => ({ text: entry.text, author: PLANNER_WHY_AUTHOR }));
-  const owner = ownerLabel(task.developerName);
+  // The request is its creator's words; a reply from the owner is the owner's now (Plan 5 Task 12a): the person who took the task over, else the creator.
+  const requester = ownerLabel(task.developerName);
+  const owner = ownerLabel(tryEffectiveTaskOwner(task)?.name ?? task.developerName);
   const through = task.threadNotesFedThrough;
   const notes = through === undefined ? []
     : (await readWorkflowThreadNotes(deps, task.taskId, task.threadNotesFedFrom)).filter((note) => note.receivedAt <= through);
   return [
-    { text: task.requestText, author: owner },
+    { text: task.requestText, author: requester },
     ...notes.slice(-WHY_NOTES_MAX).map((note) => ({ text: cutText(note.text, WHY_NOTE_MAX_CHARS), author: note.isOwner ? owner : "a teammate" })),
   ];
 }
@@ -610,10 +616,10 @@ async function refuse(deps: DeveloperTaskRouteDependencies, turns: string, party
   throw error;
 }
 
-/** The developer's own task, or TASK_NOT_FOUND for anyone else and for a malformed ID (FR-036). */
+/** The developer's own task (the owner now: whoever took it over, else its creator), or TASK_NOT_FOUND for anyone else and for a malformed ID (FR-036). */
 export async function loadOwnedTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<DeveloperTaskRecord> {
   const task = TASK_ID.test(taskId) ? await get<DeveloperTaskRecord>(deps, taskKey(taskId)) : undefined;
-  if (task === undefined || task.developerId !== caller.developerId || task.orgId !== caller.orgId) {
+  if (task === undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId || task.orgId !== caller.orgId) {
     // A malformed ID is never echoed back: it could be long or carry markup.
     throw agentXError("TASK_NOT_FOUND", TASK_ID.test(taskId) ? `no task ${taskId} of yours` : "that is not a task ID of yours");
   }
@@ -1890,18 +1896,31 @@ function runResultOf(task: DeveloperTaskRecord): AgentRunResult {
  * row never changes again: a read that derived its status before a close must not undo it.
  * `updatedAt` is the task view's, so the list and the view agree.
  */
+/**
+ * The task-list row of the person who took the task over, when someone did: the key the creator's row would have with the taker's id (Plan 5 Task 12a; Task 12b writes the row
+ * when the take-over is made). Undefined for a task nobody took over, or whose owner can't be read.
+ */
+export function ownerIndexRowOf(task: DeveloperTaskRecord): { pk: string; sk: string } | undefined {
+  const owner = tryEffectiveTaskOwner(task);
+  return owner === undefined || owner.developerId === task.developerId ? undefined : taskIndexKey(owner.developerId, task.createdAt, task.taskId);
+}
+
 export async function syncIndex(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, status: DeveloperTaskStatus, updatedAt: string = iso(deps)): Promise<void> {
-  try {
-    await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName,
-      Key: taskIndexKey(task.developerId, task.createdAt, task.taskId),
-      UpdateExpression: "SET #status = :status, updatedAt = :now",
-      ConditionExpression: "attribute_exists(pk) AND #status <> :status AND #status <> :closed",
-      ExpressionAttributeNames: { "#status": "status" },
-      ExpressionAttributeValues: { ":status": status, ":closed": "CLOSED", ":now": updatedAt },
-    }));
-  } catch (error) {
-    if (!isConditional(error)) log(deps, { event: "developer.task_index_sync_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
+  // The creator's row and, once someone took the task over, the taker's row too (Plan 5 Task 12a).
+  const taker = ownerIndexRowOf(task);
+  for (const key of [taskIndexKey(task.developerId, task.createdAt, task.taskId), ...(taker === undefined ? [] : [taker])]) {
+    try {
+      await deps.documentClient.send(new UpdateCommand({
+        TableName: deps.tableName,
+        Key: key,
+        UpdateExpression: "SET #status = :status, updatedAt = :now",
+        ConditionExpression: "attribute_exists(pk) AND #status <> :status AND #status <> :closed",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":status": status, ":closed": "CLOSED", ":now": updatedAt },
+      }));
+    } catch (error) {
+      if (!isConditional(error)) log(deps, { event: "developer.task_index_sync_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
+    }
   }
 }
 
@@ -1987,7 +2006,7 @@ async function listTasks(deps: DeveloperTaskRouteDependencies, caller: Developer
       // A closed task never changes again, so only open rows are derived afresh.
       if (row.status !== "CLOSED") {
         const task = await get<DeveloperTaskRecord>(deps, taskKey(row.taskId));
-        if (task !== undefined && task.developerId === caller.developerId) {
+        if (task !== undefined && tryEffectiveTaskOwner(task)?.developerId === caller.developerId) {
           const view = await taskView(deps, task, { events: 0, details: false });
           current = view.status;
           if (current !== row.status) {
@@ -2311,7 +2330,7 @@ const ContinueAsTaskSchema = z.object({ requestId: z.string().uuid() }).strict()
 export async function continueAsTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueAsTaskSchema, value, deps, "continue-as-task");
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
-  if (task === undefined || task.orgId !== deps.orgId || task.developerId !== caller.developerId) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
+  if (task === undefined || task.orgId !== deps.orgId || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
   await creatorGuard(deps, task);
   if (task.origin === "app" && task.budgetPause === undefined && task.startedBy !== undefined) return { task: await taskView(deps, task, { events: 0, details: false }) };
   if (task.origin !== "test_run" || task.budgetPause?.scope.kind !== "test" || task.agent === undefined) {
@@ -2350,7 +2369,9 @@ async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: Developer
   // A run's own limit has its task's request. A month's budget has the month's request: the one the pause asked for, else one the task's starter or owner
   // asked for themselves (Task 33 fix round 1, M-4), looked for by the pause's month first and then this month's (M-3).
   const months = [...new Set([pause.at.slice(0, 7), iso(deps).slice(0, 7)])];
-  const askers = [...new Set(["system", task.startedBy?.developerId ?? task.developerId, task.developerId])];
+  // A request made before a take-over was asked of the creator, one made after of the taker (Plan 5 Task 12a): both slots are looked in.
+  const taker = tryEffectiveTaskOwner(task)?.developerId;
+  const askers = [...new Set(["system", task.startedBy?.developerId ?? taker ?? task.developerId, taker ?? task.developerId, task.developerId])];
   const slots: Array<{ subject: string; kind: string }> = pause.scope.kind === "task" ? [{ subject: `TASK#${task.taskId}`, kind: "run_limit" }]
     : pause.scope.kind === "max_per_run" || pause.scope.kind === "planning" ? [{ subject: `TASK#${task.taskId}`, kind: pause.scope.kind }]
       : pause.scope.kind === "test" ? []
@@ -2464,15 +2485,16 @@ export async function decideTaskWorkflow(
   const refused = (current: WorkflowSnapshot) => {
     // Only the owner decides, so whoever is refused here is the owner: a task started in Slack keeps no name for them, but
     // their sign-in does, so they read their own name rather than "the task owner".
-    const ownerName = redactText(ownerLabel(ownerLabel(task.developerName) === OWNER_LABEL ? caller.name : task.developerName));
+    const owner = effectiveTaskOwner(task);
+    const ownerName = redactText(ownerLabel(ownerLabel(owner.name) === OWNER_LABEL ? caller.name : owner.name));
     const message = refusalMessage({
       workflow: current, ownerName, artifactSha256: request.artifactDigest ?? "", now: deps.now(),
       labelOf: (type) => TASK_PAGE_DOCUMENTS.find((item) => item.type === type)?.label ?? "The document",
     });
     const error = agentXError("IDEMPOTENCY_CONFLICT", message);
     // When the owner won the race, Slack can name them with a mention; the page and MCP keep the plain name.
-    if (task.slackUserId !== undefined && (message.startsWith(`Already approved by ${ownerName} `) || message.startsWith(`Changes were already requested by ${ownerName} `))) {
-      Object.assign(error, { decidedBy: { name: ownerName, slackUserId: task.slackUserId } });
+    if (owner.slackUserId !== undefined && (message.startsWith(`Already approved by ${ownerName} `) || message.startsWith(`Changes were already requested by ${ownerName} `))) {
+      Object.assign(error, { decidedBy: { name: ownerName, slackUserId: owner.slackUserId } });
     }
     return error;
   };
@@ -4360,9 +4382,13 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   try { presentation = await getTaskPeoplePresentation(deps, taskId); }
   catch { /* Historical labels are presentation only; a malformed immutable pair falls back to generic actors. */ }
   const actorNames = new Map(presentation.map((person) => [taskOwnerKey(person.developerId, taskId), redactText(person.name)]));
-  const ownerName = redactText(ownerLabel(task.developerName));
+  // A decision reads under the name of the owner it was made by: the creator's for the creator's actor id, the taker's for theirs (Plan 5 Task 12a).
   const personName = (actorId: string | undefined): string => {
-    if (actorId === task.ownerKey) return ownerName === OWNER_LABEL ? "The task owner" : ownerName;
+    const named = actorId === undefined ? undefined : ownerNameOfActor(task, actorId);
+    if (named !== undefined) {
+      const label = redactText(ownerLabel(named));
+      return label === OWNER_LABEL ? "The task owner" : label;
+    }
     return actorId === undefined ? "A task owner" : actorNames.get(actorId) ?? "A task owner";
   };
   const acceptedFindings = [...new Map((workflow?.acceptedFindings ?? []).filter((accepted) => accepted.candidateDigest === current)
@@ -5372,7 +5398,7 @@ export async function recordWorkflowThreadNote(
   let withEvent = sessionRef !== undefined;
   for (let attempt = 1; ; attempt += 1) {
     const note: SlackNote = SlackNoteSchema.parse({
-      schemaVersion: 1, taskId: task.taskId, slackUserId, isOwner: input.peopleAccess?.isOwner ?? task.slackUserId === input.userId,
+      schemaVersion: 1, taskId: task.taskId, slackUserId, isOwner: input.peopleAccess?.isOwner ?? tryEffectiveTaskOwner(task)?.slackUserId === input.userId,
       teamId: thread.teamId, channelId: thread.channelId, threadTs: thread.threadTs, messageTs,
       eventId: input.eventId, text, truncated: text.length < trimmed.length, receivedAt, workflowRevision,
     });
@@ -6058,6 +6084,12 @@ export async function finishTaskClose(
       UpdateExpression: "SET #status = :closed, updatedAt = :now", ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: { ":closed": "CLOSED", ":now": now },
     } },
+    // The row of the person who took the task over, too (Plan 5 Task 12a).
+    ...(ownerIndexRowOf(task) === undefined ? [] : [{ Update: {
+      TableName: deps.tableName, Key: ownerIndexRowOf(task)!,
+      UpdateExpression: "SET #status = :closed, updatedAt = :now", ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":closed": "CLOSED", ":now": now },
+    } }]),
     // C24: the shared thread's record says the task closed, so its mentions get the closed notice.
     ...(current.share?.threadTs === undefined ? [] : [{ Update: {
       TableName: deps.tableName,
@@ -6347,6 +6379,12 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
         UpdateExpression: "SET #status = :closed, updatedAt = :now", ExpressionAttributeNames: { "#status": "status" },
         ExpressionAttributeValues: { ":closed": "CLOSED", ":now": now },
       } },
+      // The row of the person who took the task over, too (Plan 5 Task 12a).
+      ...(ownerIndexRowOf(task) === undefined ? [] : [{ Update: {
+        TableName: deps.tableName, Key: ownerIndexRowOf(task)!,
+        UpdateExpression: "SET #status = :closed, updatedAt = :now", ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":closed": "CLOSED", ":now": now },
+      } }]),
       // The audit record a close writes, saying why: one per task.
       ...(deps.actions.turnRecordsTableName === undefined ? [] : [{ Put: {
         TableName: deps.actions.turnRecordsTableName,
@@ -6711,6 +6749,11 @@ function shareItems(
       TableName: deps.tableName, Key: taskIndexKey(task.developerId, task.createdAt, task.taskId),
       UpdateExpression: "SET #shared = :true", ExpressionAttributeNames: { "#shared": "shared" }, ExpressionAttributeValues: { ":true": true },
     } },
+    // The row of the person who took the task over, too (Plan 5 Task 12a).
+    ...(ownerIndexRowOf(task) === undefined ? [] : [{ Update: {
+      TableName: deps.tableName, Key: ownerIndexRowOf(task)!,
+      UpdateExpression: "SET #shared = :true", ExpressionAttributeNames: { "#shared": "shared" }, ExpressionAttributeValues: { ":true": true },
+    } }]),
     ...(share.threadTs === undefined ? [] : [{ Update: {
       TableName: deps.tableName, Key: sharedTaskKey({ teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs }),
       UpdateExpression: "SET #mode = :mode", ConditionExpression: "attribute_exists(pk)",

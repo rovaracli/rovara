@@ -34,7 +34,7 @@ import {
 } from "@agentx/contracts";
 import type { ProjectMembers } from "../agents/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
-import { taskKey } from "../developer/task-records.js";
+import { effectiveTaskOwner, isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { AgentSessionStore } from "./store.js";
 
 /** Who asks Plan 4 for a chain's view: the internal session actor Plan 5 passes after its own level check (Plan 4, M2). No route, header or body can set it. */
@@ -188,29 +188,25 @@ async function peopleRoleOf(deps: SessionAccessDependencies, taskId: string, dev
 
 // ---- the effective owner
 
-const takenBy = (taskItem: Item | undefined): string | undefined => {
-  const taken = (taskItem?.["currentOwner"] as { developerId?: unknown } | undefined)?.developerId;
-  return typeof taken === "string" ? taken : undefined;
-};
-
-/**
- * The person who owns the session now: the task's `currentOwner` once someone took it over, else the session's own owner. The one place that says so
- * (Task 12a's `effectiveTaskOwner` replaces this line): access and the share notice both read it.
- */
-export function effectiveOwnerId(session: AgentSessionRecord, taskItem: Item | undefined): string {
-  return takenBy(taskItem) ?? session.owner.developerId;
-}
-
 /** What names someone whose name isn't recorded. */
 const UNNAMED_OWNER = "the owner";
 
-/** The effective owner with a name: the task's `currentOwner` name once taken over (cleaned, never the previous owner's), else the session's owner. */
+/**
+ * The person who owns the session now, as `effectiveTaskOwner` says (Plan 5 Task 12a): the task's current owner once someone took it over, else the task's creator. A
+ * session of no task (a local one, a chain's) has its own owner. Throws `TASK_ACCESS_DENIED` when the task's owner can't be read: nobody owns it then, so no one gets an
+ * owner's access (never the session's first owner, who may have handed the session over).
+ */
 function effectiveOwnerNamed(session: AgentSessionRecord, taskItem: Item | undefined): { developerId: string; name: string } {
-  const developerId = effectiveOwnerId(session, taskItem);
-  if (developerId === session.owner.developerId) return { developerId, name: session.owner.name };
-  const recorded = (taskItem?.["currentOwner"] as { name?: unknown } | undefined)?.name;
-  const name = typeof recorded === "string" ? cleanSessionName(recorded) : undefined;
-  return { developerId, name: name ?? UNNAMED_OWNER };
+  // A session's own owner is the task's creator until the task is taken over, and a take-over moves the session and the task together.
+  if (taskItem === undefined || !isTaskTakenOver(taskItem as unknown as DeveloperTaskRecord)) return session.owner;
+  const owner = effectiveTaskOwner(taskItem as unknown as DeveloperTaskRecord);
+  if (owner.developerId === session.owner.developerId) return session.owner;
+  return { developerId: owner.developerId, name: cleanSessionName(owner.name) ?? UNNAMED_OWNER };
+}
+
+/** The id of `effectiveOwnerNamed`: access and the share notice read it. */
+export function effectiveOwnerId(session: AgentSessionRecord, taskItem: Item | undefined): string {
+  return effectiveOwnerNamed(session, taskItem).developerId;
 }
 
 /** `effectiveOwnerId`, reading the task of a task session (a task of another org is no task). */
@@ -275,8 +271,8 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
     if (found?.["orgId"] === session.orgId) taskItem = found;
   }
   let slackNotAsked = false;
-  const taken = takenBy(taskItem);
-  const owner = caller.developerId === effectiveOwnerId(session, taskItem);
+  const effectiveOwner = effectiveOwnerNamed(session, taskItem);
+  const owner = caller.developerId === effectiveOwner.developerId;
 
   const projectRole = session.project === undefined ? undefined : (await roleOn(session.project)).effective;
   const grantRole = session.project === undefined ? undefined : (await roleOn(session.project)).grant;
@@ -304,14 +300,14 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
   if (taskItem !== undefined && session.subject.kind === "task") {
     const entry = await peopleRoleOf(deps, session.subject.taskId, caller.developerId);
     if (entry === "denied" || entry === "unreadable") { level = orgAdmin ? "view" : "none"; denied = true; }
-    else if (entry === "owner") level = best(level, taken === undefined ? "edit" : "none");
+    else if (entry === "owner") level = best(level, taskItem !== undefined && isTaskTakenOver(taskItem as unknown as DeveloperTaskRecord) ? "none" : "edit");
     else if (entry === "commenter") level = best(level, "use");
     else if (entry === "viewer") level = best(level, "view");
   }
 
   // A project viewer who isn't the owner only watches, whatever a share or a people entry says.
   if (!owner && projectRole === "viewer" && RANK[level] > RANK.view) level = "view";
-  return { level, undecided: level === "none" && slackNotAsked && !denied, owner, effectiveOwner: effectiveOwnerNamed(session, taskItem), projectRole, orgAdmin, orgRole };
+  return { level, undecided: level === "none" && slackNotAsked && !denied, owner, effectiveOwner, projectRole, orgAdmin, orgRole };
 }
 
 /**

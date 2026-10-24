@@ -850,7 +850,7 @@ describe("removing an org member (Task 4)", () => {
 
 describe("the grant item and the E2E direct-membership proof", () => {
   const proof = async (h: Harness, who: Developer) =>
-    (await brokerModule()).workflowE2ECreatorAuthorityProof(h.brokerInput, { developerId: who.developerId, project: "payments" }, grantOf(h.db, who), { access: "granted", channelIds: [] }, undefined);
+    (await brokerModule()).workflowE2ECreatorAuthorityProof(h.brokerInput, { taskId: randomUUID(), developerId: who.developerId, developerName: who.name, provider: who.provider, project: "payments" }, grantOf(h.db, who), { access: "granted", channelIds: [] }, undefined);
 
   it("a contributor or maintainer grant written by the route is a direct-membership proof", async () => {
     const h = await team();
@@ -875,7 +875,7 @@ describe("the grant item and the E2E direct-membership proof", () => {
 
   it("a creator lowered to viewer is told TASK_ACCESS_DENIED with the reason on the next E2E round, not that the runtime is unavailable", async () => {
     const h = await team();
-    const task = { developerId: KIT.developerId, project: "payments", orgId: TEST_ORG, taskId: randomUUID() };
+    const task = { developerId: KIT.developerId, developerName: KIT.name, provider: KIT.provider, project: "payments", orgId: TEST_ORG, taskId: randomUUID() };
     const { requireWorkflowE2ECreatorAuthority } = await brokerModule();
     h.db.set({ ...(h.db.get(`DEVELOPER#${KIT.developerId}`, "META") as Record<string, unknown>), entityType: "DEVELOPER" });
     expect(await requireWorkflowE2ECreatorAuthority(h.brokerInput, task)).toMatchObject({ kind: "direct-membership", role: "developer" });

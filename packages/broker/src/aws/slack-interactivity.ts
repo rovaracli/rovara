@@ -71,6 +71,7 @@ import {
 import { chatPostEphemeral } from "./slack-web.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { FEEDBACK_REVIEW_RETRY_ACTION, WORKFLOW_ACTION_IDS, answeredWorkflowCard, cleanLine, slackText, workflowModalCopy } from "../developer/workflow-messages.js";
+import { isTaskTakenOver, tryEffectiveTaskOwner, type TaskOwnerSource } from "../developer/task-records.js";
 
 const EVENT_RETENTION_SECONDS = 14 * 24 * 60 * 60;
 /** Every Slack call made while Slack waits (3 seconds) for this request's answer gives up after this. */
@@ -798,7 +799,7 @@ export function createAwsSlackInteractivityHandler() {
   const choices = createDynamoWorkflowChoiceStore({ documentClient, tableName: threadsTableName });
   const workflow = stateTableName && brokerFunctionName ? workflowSlackHandlers({
     async loadTask(taskId) {
-      const response = await documentClient.send(new GetCommand({ TableName: stateTableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true, ProjectionExpression: "pk, sk, slackUserId, #share, workflow", ExpressionAttributeNames: { "#share": "share" } })) as { Item?: Record<string, unknown> };
+      const response = await documentClient.send(new GetCommand({ TableName: stateTableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true, ProjectionExpression: "pk, sk, slackUserId, #share, workflow, currentOwner", ExpressionAttributeNames: { "#share": "share" } })) as { Item?: Record<string, unknown> };
       return response.Item;
     },
     async authorize(taskId, userId, thread, taskAction) {
@@ -1170,8 +1171,10 @@ export function workflowSlackHandlers(deps: {
       try { await deps.authorize(taskId, userId, thread, action); } catch { throw new WorkflowInteractionRefusal(legacyMessage); }
       return;
     }
-    if (task.slackUserId !== userId) {
-      const owner = SlackUserIdSchema.safeParse(task.slackUserId);
+    // The owner's Slack id is the effective owner's (Plan 5 Task 12a): the person who took the task over when someone did, else the creator's, as stored.
+    const ownerSlackUserId = isTaskTakenOver(task as unknown as TaskOwnerSource) ? tryEffectiveTaskOwner(task as unknown as TaskOwnerSource)?.slackUserId : task.slackUserId;
+    if (ownerSlackUserId !== userId) {
+      const owner = SlackUserIdSchema.safeParse(ownerSlackUserId);
       throw new WorkflowInteractionRefusal(mention && owner.success ? legacyMessage.replace("the task owner", `<@${owner.data}>`) : legacyMessage);
     }
   };

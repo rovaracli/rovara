@@ -340,6 +340,32 @@ export function effectiveTaskOwner(task: TaskOwnerSource): TaskOwner {
   return { developerId: task.developerId, name: task.developerName, provider: task.provider, ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }) };
 }
 
+/**
+ * Whether someone other than the creator took the task over: its `currentOwner` is there, whether or not it can be read (a taken-over task whose taker can't be
+ * read is never read as the creator's, and `effectiveTaskOwner` is what refuses it).
+ */
+export function isTaskTakenOver(task: TaskOwnerSource): boolean {
+  return Object.hasOwn(task, "currentOwner") && task.currentOwner !== undefined;
+}
+
+/** When the task was taken over (the taker's `since`), or undefined for a task nobody took over or whose taker can't be read. */
+export function takenOverSince(task: TaskOwnerSource): string | undefined {
+  return isTaskTakenOver(task) ? readCurrentOwner(task.currentOwner)?.since : undefined;
+}
+
+/**
+ * Whether an owner's decision (made by `actorId` at `decidedAt`, the time stored with it) still counts as the task owner's now: the owner's actor id counts; so does the
+ * creator's, when the decision was made before someone took the task over (never judged by the time it is acted on); `ownerActorIds` (the task's People owners, when it
+ * has any) count as well. A taker's decision from before they took the task over does not.
+ */
+export function ownerDecisionCounts(task: TaskOwnerSource, actorId: string, decidedAt: string, ownerActorIds?: readonly string[]): boolean {
+  const takenAt = takenOverSince(task);
+  const before = takenAt !== undefined && Date.parse(decidedAt) < Date.parse(takenAt);
+  const creator = taskOwnerKey(task.developerId, task.taskId);
+  if (ownerActorIds !== undefined) return ownerActorIds.includes(actorId) || (before && actorId === creator);
+  return actorId === (before ? creator : ownerActorIdOf(task));
+}
+
 /** `effectiveTaskOwner`, for a read that shows or lists rather than decides: `undefined` when the owner can't be read (nobody is the owner then). */
 export function tryEffectiveTaskOwner(task: TaskOwnerSource): TaskOwner | undefined {
   try {
