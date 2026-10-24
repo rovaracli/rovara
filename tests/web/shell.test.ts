@@ -4,6 +4,7 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, type AppNav } from "@agentx/contracts/web";
+import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { App } from "../../packages/ui/src/App.js";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -69,3 +70,5 @@ it("starts signup without navigation reads and welcome with only a me read", asy
  expect(f.request.mock.calls.map(([request]) => request.path)).toEqual(path === "/app/signup" ? [] : ["/v1/app/me"]);mounted.unmount();
  }
 });
+
+it("preserves the server refusal message on a failed page", () => { const f = renderUi(h(PageError, { error: new ApiError(403, "FORBIDDEN", "Ask the project owner to restore your access.") }));expect(screen.getByText("Ask the project owner to restore your access.")).toBeTruthy();f.unmount(); });
