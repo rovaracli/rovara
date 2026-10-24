@@ -119,7 +119,15 @@ describe("browser sign-in returns and sign-out", () => {
   }
   const stored = h.db.get(`SESSION#${session}`, "META")!;
   for (const changed of [{ endsAt: 1 }, { reviewExpiresAt: 1 }, { revokedAt: new Date(h.now()).toISOString() }]) {
-   h.db.set({ ...stored, ...changed });expect((await signOut({ origin, [APP_CSRF_HEADER]: csrf })).statusCode).toBe(403);
+   h.db.set({ ...stored, ...changed });
+   for (const headers of [{ origin }, { origin, [APP_CSRF_HEADER]: csrf }]) {
+    const before = h.db.commandNames().length;
+    const response = await signOut(headers);
+    expect(response.statusCode).toBe(204);
+    expect(response.cookies).toContain("__Host-agentx_review_session=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+    expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);
+   }
+   expect((await signOut({ origin: "https://evil.example" })).statusCode).toBe(403);
   }
   h.db.set(stored);
   const ended = await signOut({ origin, [APP_CSRF_HEADER]: csrf });

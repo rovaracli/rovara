@@ -108,3 +108,28 @@ it("adds up to thirty percent jitter to a retry delay", async () => {
  await vi.advanceTimersByTimeAsync(1299);expect(f.request).toHaveBeenCalledTimes(1);
  await vi.advanceTimersByTimeAsync(1);expect(f.request).toHaveBeenCalledTimes(2);expect(await pending).toEqual(empty);
 });
+
+it("finishes sign-out when refreshing an ended session returns 401", async () => {
+ const b = browser(async () => json({ error: { code: "AUTH_REQUIRED" } }, 401));
+ await expect(createBrowserHost(b.win).signOut()).resolves.toBeUndefined();
+ expect(b.assign).toHaveBeenCalledExactlyOnceWith("/app/signed-out?reason=ended");
+ expect(b.fetch).toHaveBeenCalledTimes(1);
+ expect(b.fetch.mock.calls[0]![0]).toBe("/v1/web/me");
+});
+it("still requires the live session CSRF token and a successful sign-out response", async () => {
+ for (const status of [204, 403]) {
+  const b = browser(async path => path.endsWith("/me") ? json(me()) : status === 204 ? new Response(null, { status }) : json({}, status));
+  const result = createBrowserHost(b.win).signOut();
+  if (status === 204) { await result;expect(b.assign).toHaveBeenCalledExactlyOnceWith("/app/signed-out?reason=ended"); }
+  else { await expect(result).rejects.toMatchObject({ code: "SIGN_OUT_FAILED" });expect(b.assign).not.toHaveBeenCalled(); }
+  expect(b.fetch.mock.calls.at(-1)![0]).toBe("/v1/auth/browser/sign-out");
+  expect(new Headers(b.fetch.mock.calls.at(-1)![1]!.headers).get("x-rovara-csrf")).toBe(CSRF);
+ }
+});
+it("does not claim signed out when refresh fails for another reason", async () => {
+ for (const failure of ["server", "network"]) {
+  const b = browser(async () => { if (failure === "network") throw new TypeError("network unavailable");return json({}, 503); });
+  await expect(createBrowserHost(b.win).signOut()).rejects.toThrow();
+  expect(b.assign).not.toHaveBeenCalled();
+ }
+});
