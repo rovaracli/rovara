@@ -10,9 +10,10 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
+import { navFixture } from "./support/fixtures.js";
 import { sessionFixture, messageFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
-function setup() {
- let session = sessionFixture(), messages: ReturnType<typeof messageFixture>[] = [];
+function setup(initialMessages: ReturnType<typeof messageFixture>[] = []) {
+ let session = sessionFixture(), messages = initialMessages;
  const f = fakeHost(async request => {
  if (request.path.endsWith("/messages")) { if (request.method === "POST") { messages = [messageFixture()];return { status: 200, body: messages[0] }; }return { status: 200, body: { messages } }; }
  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
@@ -37,4 +38,13 @@ it("preserves an unsent comment when the conversation tray closes", async () => 
  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
  fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
  expect((await screen.findByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value).toBe("Keep this question while I inspect the work");f.close();
+});
+
+it("retains an unsaved comment edit when inspecting the task outside the tray", async () => {
+ const f = setup([messageFixture()]);f.query.setQueryData(["nav"], navFixture());
+ await screen.findByRole("heading", { name: "Fix duplicate refunds" });fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Edit comment" }));fireEvent.change(screen.getByRole("textbox", { name: "Edit comment" }), { target: { value: "Keep my revised explanation" } });
+ fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Edit comment" }));
+ expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Keep my revised explanation");f.close();
 });
