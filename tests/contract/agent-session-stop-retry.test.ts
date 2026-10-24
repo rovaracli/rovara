@@ -10,6 +10,7 @@ import { stopSession, type ChainControl, type SessionControlHost } from "../../p
 import { retryRunRequestId, retrySession } from "../../packages/broker/src/agent-sessions/retry.js";
 import type { SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
 import { taskAgentRunKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { cancelTaskFor, retryTaskWorkflowFor } from "../../packages/broker/src/aws/developer-tasks.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
 
@@ -482,5 +483,173 @@ describe("retrying a session", () => {
     expect(await code(w.retry(MAX, sessionId))).toEqual({ code: "CONFIG_INVALID", message: NOTHING });
     expect(await code(retrySession(w.deps, w.caller(MAX), sessionId, { requestId: randomUUID(), extra: true }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(await code(retrySession(w.deps, w.caller(MAX), sessionId, { requestId: "x" }))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
+
+describe("what the first round of mutation showed was not yet pinned", () => {
+  it("refuses a stop whose request id a retry used, and a request id another person used", async () => {
+    const w = world();
+    const { sessionId } = w.blocked();
+    const requestId = randomUUID();
+    await w.retry(MAX, sessionId, requestId);
+    expect(await code(w.stop(MAX, sessionId, requestId))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    const other = randomUUID();
+    await w.stop(MAX, sessionId, other);
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    expect(await code(w.stop(ARJUN, sessionId, other))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    const retried = randomUUID();
+    await w.retry(MAX, sessionId, retried);
+    expect(await code(w.retry(ARJUN, sessionId, retried))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(w.calls.cancel).toHaveLength(1);
+  });
+
+  it("does not stop a task session that runs on a Mac, and refuses a stop or a retry where Plan 3's host is not wired, before anything is written", async () => {
+    const w = world();
+    const mac = w.blocked();
+    w.patchSession(mac.sessionId, { where: { kind: "mac", deviceId: "dvc_0123456789abcdefghij", label: "Priya's MacBook" } });
+    expect(await code(w.stop(MAX, mac.sessionId))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "Stopping a session on a Mac isn't available yet." });
+    expect(await code(w.retry(MAX, mac.sessionId))).toEqual({ code: "CONFIG_INVALID", message: "Retry it on your Mac." });
+    const bare = world();
+    const open = bare.blocked();
+    const failed = bare.agentRun("FAILED");
+    const deps = { ...bare.deps };
+    delete (deps as { control?: unknown }).control;
+    expect(await code(stopSession(deps, bare.caller(MAX), open.sessionId, { requestId: randomUUID() }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(await code(retrySession(deps, bare.caller(MAX), open.sessionId, { requestId: randomUUID() }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(await code(retrySession(deps, bare.caller(MAX), failed.sessionId, { requestId: randomUUID() }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(bare.eventTexts(open.sessionId)).toEqual([]);
+  });
+
+  it("reads a session as ended by its end time alone, or by its ending status alone", async () => {
+    const w = world();
+    const byTime = w.blocked();
+    w.patchSession(byTime.sessionId, { endedAt: "2026-10-22T08:30:00.000Z" });
+    expect(await code(w.stop(MAX, byTime.sessionId))).toMatchObject({ code: "SESSION_ENDED" });
+    expect(await code(w.retry(MAX, byTime.sessionId))).toEqual({ code: "CONFIG_INVALID", message: NOTHING });
+    const byStatus = w.blocked();
+    w.patchSession(byStatus.sessionId, { summary: { ...(w.meta(byStatus.sessionId).summary as Item), status: "cancelled" } });
+    expect(await code(w.stop(MAX, byStatus.sessionId))).toMatchObject({ code: "SESSION_ENDED" });
+    expect(await code(w.retry(MAX, byStatus.sessionId))).toEqual({ code: "CONFIG_INVALID", message: NOTHING });
+    expect(w.calls.cancel).toEqual([]);
+    expect(w.calls.workflow).toEqual([]);
+  });
+
+  it("recomputes the session's summary after a stop, so its status shows at once", async () => {
+    const w = world();
+    const { sessionId } = w.blocked();
+    expect(w.meta(sessionId).summaryRevision).toBe(1);
+    await w.stop(MAX, sessionId);
+    expect(w.meta(sessionId)).toMatchObject({ summaryRevision: 2, summary: { status: "needs_person" } });
+  });
+
+  it("starts no second run even when Plan 3 no longer remembers the first one's request, and answers the same person the same session", async () => {
+    const w = world();
+    const old = w.agentRun("FAILED");
+    const first = await w.retry(MAX, old.sessionId);
+    w.started.clear();
+    const again = await w.retry(MAX, old.sessionId);
+    expect(again.session.sessionId).toBe(first.session.sessionId);
+    expect(w.calls.start).toHaveLength(1);
+    w.seedShare(ORG_A, old.sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    expect(await code(w.retry(ARJUN, old.sessionId))).toEqual({ code: "CONFIG_INVALID", message: "This session was already retried." });
+    expect(w.calls.start).toHaveLength(1);
+  });
+
+  it("tells another person whose retry meets the first one's run, even when the first one's link was lost", async () => {
+    const w = world();
+    const old = w.agentRun("FAILED");
+    w.seedShare(ORG_A, old.sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
+    await expect(w.retry(MAX, old.sessionId)).rejects.toMatchObject({ name: "InternalServerError" });
+    expect(await code(w.retry(ARJUN, old.sessionId))).toEqual({ code: "CONFIG_INVALID", message: "This session was already retried." });
+    expect(w.eventTexts(old.sessionId)).toEqual([]);
+  });
+
+  it("never overwrites the link of a new session that already says which session it retries", async () => {
+    const w = world();
+    const old = w.agentRun("FAILED");
+    // Plan 3's start answers a session that is already linked to another.
+    const linked = w.seedSession({ owner: MAX });
+    w.patchSession(linked.sessionId, { retryOf: "ses_00000000000000000099" });
+    w.started.set(retryRunRequestId(ORG_A, old.sessionId), { taskId: linked.taskId, sessionId: linked.sessionId, owner: MAX });
+    await expect(w.retry(MAX, old.sessionId)).rejects.toBeDefined();
+    expect(w.meta(linked.sessionId).retryOf).toBe("ses_00000000000000000099");
+    expect(w.eventTexts(old.sessionId)).toEqual([]);
+  });
+
+  it("answers the first retry's session when another request wrote the one-time mark first, and refuses it to another person", async () => {
+    for (const markedBy of [MAX, ARJUN]) {
+      const w = world();
+      const old = w.agentRun("FAILED");
+      const other = w.seedSession({ owner: markedBy });
+      const original = w.db.send;
+      let marked = false;
+      w.db.send = async (command) => {
+        if (!marked && command.constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("AGENT_SESSION_RETRIED")) {
+          marked = true;
+          w.db.set({ ...agentSessionKey(ORG_A, old.sessionId, "RETRIED"), entityType: "AGENT_SESSION_RETRIED", orgId: ORG_A, sessionId: other.sessionId, by: markedBy, requestId: randomUUID(), at: "2026-10-22T09:00:00.000Z" });
+        }
+        return original(command);
+      };
+      const result = await code(w.retry(MAX, old.sessionId));
+      expect(marked).toBe(true);
+      if (markedBy === MAX) expect(result).toBeUndefined();
+      else expect(result).toEqual({ code: "CONFIG_INVALID", message: "This session was already retried." });
+      expect(w.eventTexts(old.sessionId)).toEqual([]);
+    }
+  });
+
+  it("tells a plain task that failed by its ended status alone, without the flag, to continue it where it started", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.seedSession();
+    w.patchTask(taskId, { client: "Codex" });
+    w.patchSession(sessionId, { summary: { ...(w.meta(sessionId).summary as Item), status: "failed" } });
+    expect(await code(w.retry(MAX, sessionId))).toEqual({ code: "CONFIG_INVALID", message: "Continue this task from Codex." });
+    const nameless = w.seedSession();
+    w.patchSession(nameless.sessionId, { summary: { ...(w.meta(nameless.sessionId).summary as Item), lastRunFailed: true } });
+    w.patchTask(nameless.taskId, { client: "  " });
+    expect(await code(w.retry(MAX, nameless.sessionId))).toEqual({ code: "CONFIG_INVALID", message: "Continue this task from where you started it." });
+  });
+
+  it("starts two concurrent retries of one session into one link: one retried event, one new session", async () => {
+    const w = world();
+    const old = w.agentRun("FAILED");
+    const [first, second] = await Promise.all([w.retry(MAX, old.sessionId), w.retry(MAX, old.sessionId)]);
+    expect(second.session.sessionId).toBe(first.session.sessionId);
+    expect(w.eventTexts(old.sessionId)).toEqual(["Max retried this in a new session."]);
+    expect(w.started.size).toBe(1);
+  });
+});
+
+describe("Plan 3's own entry points keep the checks they had", () => {
+  /** Dependencies as far as the session actor's access reads them. */
+  const taskDeps = (w: ReturnType<typeof world>, role: "viewer" | "contributor" | undefined = "contributor", orgId: OrgId = ORG_A) => ({
+    documentClient: w.db, tableName: "state", orgId, now: () => w.clock.now, log: () => undefined,
+    checkAccess: async () => ({ role, access: "granted" }),
+  }) as never;
+  const MAX_CALLER = (w: ReturnType<typeof world>, orgId: OrgId = ORG_A) => w.caller(MAX, orgId);
+
+  it("asks a retry by the session actor for a role that starts work on the project", async () => {
+    const w = world();
+    const { taskId } = w.blocked();
+    const task = w.taskOf(taskId) as never;
+    await expect(retryTaskWorkflowFor(taskDeps(w, "viewer"), task, { requestId: randomUUID(), actor: { kind: "session", caller: MAX_CALLER(w) } })).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+  });
+
+  it("refuses a retry by the session actor on a closed task, and on a task of another org, as not found", async () => {
+    const w = world();
+    const closed = w.blocked();
+    w.patchTask(closed.taskId, { closedAt: "2026-10-22T08:40:00.000Z" });
+    await expect(retryTaskWorkflowFor(taskDeps(w), w.taskOf(closed.taskId) as never, { requestId: randomUUID(), actor: { kind: "session", caller: MAX_CALLER(w) } })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+    const open = w.blocked();
+    await expect(retryTaskWorkflowFor(taskDeps(w, "contributor", ORG_B), w.taskOf(open.taskId) as never, { requestId: randomUUID(), actor: { kind: "session", caller: w.caller(BO, ORG_B) } })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+    await expect(cancelTaskFor(taskDeps(w, "contributor", ORG_B), w.taskOf(open.taskId) as never, { requestId: randomUUID(), actor: { kind: "session", caller: w.caller(BO, ORG_B) } })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+  });
+
+  it("gives the session actor nothing for the other task actions: only the owner's rules reach them", async () => {
+    const w = world();
+    const { taskId } = w.blocked();
+    // Without the flag, Max is no owner of Priya's task, so the owner's own rules refuse the cancel.
+    await expect(cancelTaskFor(taskDeps(w), w.taskOf(taskId) as never, { requestId: randomUUID(), actor: { kind: "owner", caller: MAX_CALLER(w) } })).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
   });
 });

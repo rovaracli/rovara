@@ -161,6 +161,20 @@ describe("a Rovara Code task, through the real broker", () => {
     expect(t.operations(task.workspaceId).filter((operation) => operation.kind === "cancel")).toHaveLength(1);
   });
 
+  it("fences the stop on the task's People revision: a task with a People list is stopped at the revision the list has", async () => {
+    const t = await setup();
+    const task = await startWorkflow(t);
+    grantProject(t.db, OMAR);
+    expect((await t.share(task.sessionId)).status).toBe(200);
+    t.db.set({
+      pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 2, orphaned: false,
+      people: [{ developerId: MAYA.developerId, slackUserId: MAYA.slackUserId, name: "Maya", role: "owner" }],
+    });
+    const stopped = await t.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId: randomUUID() });
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
+    expect(t.operations(task.workspaceId).filter((operation) => operation.kind === "cancel")).toHaveLength(1);
+  });
+
   it("retries a blocked planning step in the same session, as the workflow retry route does, once for a repeated request id", async () => {
     const t = await setup();
     const task = await startWorkflow(t);
