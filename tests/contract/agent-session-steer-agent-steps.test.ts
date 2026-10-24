@@ -4,16 +4,18 @@
 // The notes ride in the operation's own transaction (the task's `threadNotesFedThrough` moves in it, conditional on the note count it read), so a message is given once and a message saved
 // meanwhile is read again. A run waiting for a write approval keeps the message queued until the continuation. The step's preamble, its tools, its approvals and its budget are untouched.
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { AGENT_STEP_PREAMBLE, agentSessionKey, sessionQueuedSteersKey, WORKFLOW_THREAD_NOTES_MAX, orgMemberKey } from "../../packages/contracts/src/index.js";
 import { renderRunInput } from "../../packages/contracts/src/agent-run.js";
+import { AGENT_STEP_INPUTS_MAX_BYTES } from "../../packages/contracts/src/protocol.js";
 import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
 import { sendSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
-import { advanceAgentRun } from "../../packages/broker/src/agents/run-engine.js";
+import { advanceAgentRun, renderStepInputs } from "../../packages/broker/src/agents/run-engine.js";
 import { approvalTaskEventKey, createWriteApprovalRecord, decideApproval, registerWriteApprovalDriver, type ApprovalDependencies, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
-import { sessionNoteItems } from "../../packages/broker/src/aws/developer-tasks.js";
+import { agentStepNotes, sessionNoteItems } from "../../packages/broker/src/aws/developer-tasks.js";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
@@ -228,6 +230,61 @@ describe("a message to an agent-step run", () => {
     expect(t.delivery(late!.messageId)).toBe("delivered");
   });
 
+  it("hands a step's earlier messages to every continuation of it, not only the first", async () => {
+    const t = await world();
+    await t.send("use the v2 endpoint");
+    await t.finishPrepare();
+    const first = t.stepOps(t.workspaceId)[0]!;
+    const one = await t.askWrite("investigate", first.id, "comment on LIN-12");
+    await t.finishStep(first.id, "Provisional report.");
+    await t.approve(one.approvalId);
+    const second = t.stepOps(t.workspaceId)[1]!;
+    const two = await t.askWrite("investigate", second.id, "label LIN-12");
+    await t.finishStep(second.id, "Second provisional report.");
+    await t.approve(two.approvalId);
+    const third = t.stepOps(t.workspaceId)[2]!;
+    expect(third).toMatchObject({ programStepId: "investigate" });
+    expect(t.inputsOf(third.id)).toContain("] use the v2 endpoint</thread_reply>");
+  });
+
+  it("does not hand the next step a message an earlier step was handed (its report carries what came of it)", async () => {
+    const t = await world();
+    await t.send("use the v2 endpoint");
+    await t.finishPrepare();
+    await t.finishStep(t.stepOps(t.workspaceId)[0]!.id, "Used v2.");
+    const report = t.stepOps(t.workspaceId)[1]!;
+    expect(report).toMatchObject({ programStepId: "report" });
+    expect(t.inputsOf(report.id)).not.toContain(HEADER);
+    expect(t.inputsOf(report.id)).not.toContain("use the v2 endpoint");
+  });
+
+  it("loses no message when several are saved while the step is made: whichever look makes the step gives all of them", async () => {
+    const t = await world();
+    await t.send("first thing");
+    const original = t.db.send.bind(t.db);
+    let injected = 0;
+    t.db.send = (async (command: { constructor: { name: string }; input?: Record<string, unknown> }) => {
+      if (injected < 3 && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes("threadNotesFedThrough")) {
+        injected += 1;
+        await t.send(`more ${String(injected)}`);
+      }
+      return original(command as never);
+    });
+    const spies = (["log", "warn", "error"] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => undefined));
+    try {
+      await t.finishPrepare();
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    t.db.send = original;
+    expect(injected).toBe(3);
+    expect(t.stepOps(t.workspaceId)).toHaveLength(1);
+    const inputs = t.inputsOf(t.stepOps(t.workspaceId)[0]!.id);
+    for (const text of ["first thing", "more 1", "more 2", "more 3"]) expect(inputs).toContain(`] ${text}</thread_reply>`);
+    await t.refresh();
+    expect(t.sessionEvents("steer_delivered")).toHaveLength(4);
+  });
+
   it("takes a message on a ticket-triage run too (its one step), and refuses one once the run has ended, with the session's own words", async () => {
     const t = await world("ticket-triage");
     await t.finishPrepare();
@@ -273,6 +330,56 @@ describe("what a message to an agent-step run needs before it is written", () =>
     const message = await f.send("one too many");
     expect(message.delivery).toMatchObject({ state: "not_delivered", reason: "this task already holds all the messages it keeps" });
     expect(f.notes()).toHaveLength(0);
+  });
+
+  it("refuses at the note itself a run that has ended, and the task's count refuses a note for a run that ended after the task was read", async () => {
+    const f = stepWorld();
+    const task = f.task();
+    const input = { taskId: f.made.taskId, source: "app" as const, developerId: ARJUN, name: "Arjun", isOwner: false, sessionId: f.made.sessionId, messageId: "msg_00000000000000000002", text: "hi" };
+    const deps = { tableName: "state", now: () => f.w.clock.now };
+    expect(sessionNoteItems(deps, { ...task, agentRunEnd: { state: "COMPLETE", at: "2026-10-22T09:00:00.000Z" } } as never, input)).toEqual({ outcome: "refused", reason: "no_workflow" });
+    const built = sessionNoteItems(deps, task as never, input);
+    if (built.outcome !== "write") throw new Error("the note was refused");
+    // The run ended between the read and the write: the same items, sent now, are cancelled and write nothing.
+    f.w.db.set({ ...task, agentRunEnd: { state: "FAILED", at: "2026-10-22T09:01:00.000Z" } });
+    await expect(f.w.db.send(new TransactWriteCommand({ TransactItems: built.items }))).rejects.toMatchObject({ name: "TransactionCanceledException" });
+    expect(f.notes()).toHaveLength(0);
+  });
+
+  it("gives a step the notes no step was given and moves the mark only forward: nothing to move when it is shown only notes it was given before", async () => {
+    const f = stepWorld();
+    const deps = { documentClient: f.w.db, tableName: "state" } as never;
+    const sent = await f.send("use the v2 endpoint");
+    const at = (f.w.db.get(`DEVTASK#${f.made.taskId}`, `NOTE#${sent.messageId}`) as { receivedAt: string }).receivedAt;
+    const first = await agentStepNotes(deps, f.made.taskId, "request-1");
+    expect(first.section.startsWith(`${HEADER} Only tags carrying id="`)).toBe(true);
+    expect(first.section).toContain(`] use the v2 endpoint</thread_reply>`);
+    expect(first).toMatchObject({ before: "", noteCount: 1 });
+    expect(first.markItem).toBeDefined();
+    // The mark moves with the step's own transaction, only while the count is the one read.
+    expect(JSON.stringify(first.markItem)).toContain("threadNoteCount = :noteCount");
+    f.w.db.set({ ...f.task(), threadNotesFedThrough: at });
+    const nothingNew = await agentStepNotes(deps, f.made.taskId, "request-2");
+    expect(nothingNew).toMatchObject({ section: "", before: at, noteCount: 1 });
+    expect(nothingNew.markItem).toBeUndefined();
+    // The same step run again from the start of the notes sees them, and still has nothing to move.
+    const again = await agentStepNotes(deps, f.made.taskId, "request-3", "");
+    expect(again.section).toContain("] use the v2 endpoint</thread_reply>");
+    expect(again.markItem).toBeUndefined();
+    expect(again.before).toBe(at);
+    // After the time of the note, there is nothing to show.
+    expect((await agentStepNotes(deps, f.made.taskId, "request-4", at)).section).toBe("");
+  });
+
+  it("keeps the whole turn within what a step may be given, with the messages (up to 8,000 bytes) counted in", () => {
+    const run = {
+      input: { text: "Why did checkout fail?" },
+      reports: ["a", "b", "c"].map((id) => ({ stepId: id, name: `Step ${id}`, text: "x".repeat(100_000) })),
+    };
+    const notes = `${HEADER}\n${"y".repeat(7_900)}`;
+    const inputs = renderStepInputs(run as never, "z", undefined, notes);
+    expect(Buffer.byteLength(inputs, "utf8")).toBeLessThanOrEqual(AGENT_STEP_INPUTS_MAX_BYTES);
+    expect(inputs.endsWith(notes)).toBe(true);
   });
 
   it("keeps refusing a task with neither a workflow nor an agent, and a closed one, at the note itself", () => {
