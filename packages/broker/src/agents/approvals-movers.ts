@@ -8,7 +8,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { checkTime, registerMemberMover, type LifecycleDeps } from "./lifecycle.js";
-import { type ApproverSpec, type TransactItem, commitOrLost, getAnyApproval, indexExpiryOf, iso, listedFor } from "./approvals-store.js";
+import { type ApprovalStoreDependencies, type ApproverSpec, type TransactItem, commitOrLost, getAnyApproval, indexExpiryOf, iso, listedFor } from "./approvals-store.js";
 
 // ---- the movers (Task 11's hand-off)
 
@@ -116,6 +116,75 @@ async function moveApprovals(deps: LifecycleDeps, orgId: OrgId, from: string, to
     checkTime(deps);
     await moveOne({ deps, orgId, from, to, mode }, approvalId);
   }
+}
+
+// ---- a take-over (Plan 5 Task 12b)
+
+/** The ids of the approvals `developerId` is listed for, every page. */
+async function listedApprovalIds(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, orgId: OrgId, developerId: string): Promise<ApprovalId[]> {
+  const ids: ApprovalId[] = [];
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": approverIndexKey(orgId, developerId, "apr_00000000000000000000").pk }, ConsistentRead: true,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<{ approvalId?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      const parsed = ApprovalIdSchema.safeParse(item.approvalId);
+      if (parsed.success) ids.push(parsed.data);
+    }
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
+  return ids;
+}
+
+/**
+ * A take-over moved a task to its taker: the PENDING write and step approvals of that task that name the previous owner as the run's owner now name the taker, and the lists
+ * follow (the taker's `APPROVER#` items are put, the previous owner's deleted unless they stay named as a candidate because they may still decide as a maintainer). Who may DECIDE
+ * is read live from the task, so this is only what the lists show. Conditional on each record still being PENDING and unmoved since it was read; repeatable, so a take-over
+ * whose answer was lost finishes it. Answers how many records it moved.
+ */
+export async function moveTaskApprovalsToOwner(
+  deps: ApprovalStoreDependencies,
+  input: { orgId: OrgId; taskId: string; from: string; to: { developerId: string; name: string }; fromStaysListed: boolean },
+): Promise<number> {
+  const { orgId, taskId, from, to } = input;
+  let moved = 0;
+  for (const approvalId of await listedApprovalIds(deps, orgId, from)) {
+    for (let tried = 0; tried < 3; tried += 1) {
+      const stored = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: approvalKey(orgId, approvalId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+      const record = await getAnyApproval(deps, orgId, approvalId);
+      if (record === undefined || record.status !== "PENDING" || record.kind === "change" || record.subject.kind !== "agent_run" || record.subject.taskId !== taskId || record.owner?.developerId !== from) break;
+      const swap = (ids: readonly string[]) => (input.fromStaysListed ? [...new Set([...ids, to.developerId])] : swapped(ids, from, to.developerId));
+      const approvers: ApproverSpec = record.approvers.kind === "ids" ? { kind: "ids", ids: swap(record.approvers.ids) } : { kind: "rule", rule: record.approvers.rule, candidates: swap(record.approvers.candidates) };
+      const owner = { developerId: to.developerId, name: to.name };
+      const before = listedFor(record);
+      const after = listedFor({ kind: record.kind, approvers, owner });
+      const moveRevision = stored.Item?.["moveRevision"];
+      const movedAt = iso(deps.now());
+      const items: TransactItem[] = [
+        {
+          Update: {
+            TableName: deps.tableName, Key: approvalKey(orgId, approvalId),
+            UpdateExpression: "SET #owner = :owner, #approvers = :approvers, #rev = if_not_exists(#rev, :zero) + :one, #movedBy = :movedBy, #movedAt = :movedAt",
+            ConditionExpression: typeof moveRevision === "number" ? "#status = :pending AND #rev = :seen" : "#status = :pending AND attribute_not_exists(#rev)",
+            ExpressionAttributeNames: { "#status": "status", "#owner": "owner", "#approvers": "approvers", "#rev": "moveRevision", "#movedBy": "movedBy", "#movedAt": "movedAt" },
+            ExpressionAttributeValues: { ":pending": "PENDING", ":owner": owner, ":approvers": approvers, ":zero": 0, ":one": 1, ":movedBy": "system", ":movedAt": movedAt, ...(typeof moveRevision === "number" ? { ":seen": moveRevision } : {}) },
+          },
+        },
+        ...after.filter((id) => !before.includes(id)).map((developerId): TransactItem => ({
+          Put: { TableName: deps.tableName, Item: { ...approverIndexKey(orgId, developerId, approvalId), entityType: "APPROVER_INDEX", approvalId, expiresAt: record.expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(record.expiresAt) } },
+        })),
+        ...before.filter((id) => !after.includes(id)).map((developerId): TransactItem => ({ Delete: { TableName: deps.tableName, Key: approverIndexKey(orgId, developerId, approvalId) } })),
+      ];
+      if (await commitOrLost(deps, items)) {
+        moved += 1;
+        break;
+      }
+      if (tried === 2) throw new Error("approval_move_conflict");
+    }
+  }
+  return moved;
 }
 
 registerMemberMover({

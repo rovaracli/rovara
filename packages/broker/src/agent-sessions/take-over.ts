@@ -3,16 +3,20 @@
 // with Plan 3's ticketed link, and confirming runs `onSessionOwnerConfirmed`. That moves, in ONE transaction conditional on the session's revision and on the task's owner,
 // the session's owner, the task's current owner and payer, the taker's task-list row and the task's People owners; the previous owner keeps "can edit"; and the take-over is
 // audited. Everything the approval rests on is read live each time it is looked at: the asker's access, their role on the project and their room to pay.
-import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
+  INDEX_EXPIRY_ATTRIBUTE,
+  OrgRoleSchema,
   SESSION_ENDED_MESSAGE,
+  SESSION_RETENTION_DAYS,
   SlackUserIdSchema,
   agentSessionKey,
   agentXError,
   cleanSessionName,
   liveSessionKey,
   mySessionsKey,
+  orgMemberKey,
   projectAllows,
   principalKey,
   sessionChannel,
@@ -33,6 +37,7 @@ import {
   type ApprovalDependencies,
 } from "../agents/approvals.js";
 import { resolveMember, sameMember } from "../agents/lifecycle.js";
+import { moveTaskApprovalsToOwner } from "../agents/approvals-movers.js";
 import { failedIndexes, isTransactionConflict, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditSessionOwnerChanged } from "../audit/events.js";
@@ -287,7 +292,10 @@ export function registerSessionTakeOverApprovals(): void {
     const stored = await new AgentSessionStore(sessions).get(record.orgId, subject.sessionId);
     if (stored === undefined) throw agentXError("NOT_FOUND", "session not found");
     // A handler called again for the take-over that already applied (a lost answer) finds it done.
-    if (stored.lastTakeOverApprovalId === record.approvalId) return;
+    if (stored.lastTakeOverApprovalId === record.approvalId) {
+      await finishFollowUp(sessions, record.orgId, stored.sessionId, record.approvalId);
+      return;
+    }
     const access = await requireTakeOver(sessions, { orgId: record.orgId, developerId: takerId }, subject.sessionId);
     const { session } = access;
     if (session.revision !== subject.sessionRevision) throw agentXError("SESSION_REVISION_CONFLICT", CHANGED);
@@ -320,7 +328,19 @@ export function registerSessionTakeOverApprovals(): void {
         ExpressionAttributeValues: { ":owner": { developerId: takerId, name: takerName }, ":approval": record.approvalId, ":at": at, ":one": 1, ":revision": session.revision, ...(payerMoved ? { ":payer": newPayer } : {}) },
       },
     }];
-    if (task !== undefined) items.push(...await taskItems(sessions, task, taker, newPayer, at));
+    if (task !== undefined) {
+      items.push(...await taskItems(sessions, task, taker, newPayer, at));
+      // The approvals already waiting on this task are moved to the taker's list after the commit (a bounded follow-up that a told-again handler finishes): this marks it owed.
+      items.push({
+        Put: {
+          TableName: sessions.tableName,
+          Item: {
+            ...followUpKey(orgId, sessionId, record.approvalId), entityType: "AGENT_SESSION_TAKE_OVER_FOLLOW_UP", orgId, sessionId, taskId: task.taskId, from: previous.developerId,
+            to: takerId, toName: takerName, ...(session.project === undefined ? {} : { project: session.project }), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + SESSION_RETENTION_DAYS * 86_400,
+          },
+        },
+      });
+    }
     if (session.subject.kind === "chain") {
       items.push(...sessions.chainOwner!.ownerItems({ orgId, chainRunId: session.subject.chainRunId, to: { developerId: takerId, name: takerName }, payer }));
       if (chainStepTaskId !== undefined) {
@@ -369,8 +389,45 @@ export function registerSessionTakeOverApprovals(): void {
       throw error;
     }
     await flushAuditEvents(deps, events);
+    // The lists follow the owner before anyone is told. A failure is thrown after the notices, so Plan 3 tells the handler again and the replay finishes it.
+    let owed: unknown;
+    try {
+      await finishFollowUp(sessions, orgId, sessionId, record.approvalId);
+    } catch (error) {
+      owed = error;
+    }
     await tell(sessions, session, previous.developerId, takerId, at);
+    if (owed !== undefined) throw owed;
   });
+}
+
+// ---- the follow-up: approvals already waiting
+
+const followUpKey = (orgId: OrgId, sessionId: string, approvalId: string) => agentSessionKey(orgId, sessionId, `TAKE_OVER_FOLLOW_UP#${approvalId}`);
+
+/** Whether the previous owner may still decide a write on the project as a maintainer, so their list keeps what is waiting. A read that fails keeps it (a list that shows too much is harmless: deciding is read live). */
+async function stillMayApprove(deps: SessionTakeOverDependencies, orgId: OrgId, project: string | undefined, developerId: string): Promise<boolean> {
+  if (project === undefined) return false;
+  try {
+    const orgRole = OrgRoleSchema.safeParse((await getItem(deps, orgMemberKey(orgId, developerId)))?.["role"]);
+    if (!orgRole.success) return false;
+    const role = await deps.projectMembers.roleOf(orgId, project, { developerId, orgRole: orgRole.data });
+    return role !== undefined && projectAllows(role, "approve_writes");
+  } catch {
+    return true;
+  }
+}
+
+/** Moves the approvals waiting on the task to the taker's list and clears the mark. Does nothing when the mark is gone. Repeatable; throws when it could not finish. */
+async function finishFollowUp(deps: SessionTakeOverDependencies, orgId: OrgId, sessionId: string, approvalId: string): Promise<void> {
+  const key = followUpKey(orgId, sessionId, approvalId);
+  const mark = await getItem(deps, key);
+  if (mark === undefined || typeof mark["taskId"] !== "string" || typeof mark["from"] !== "string" || typeof mark["to"] !== "string" || typeof mark["toName"] !== "string") return;
+  const project = typeof mark["project"] === "string" ? mark["project"] : undefined;
+  await moveTaskApprovalsToOwner(deps, {
+    orgId, taskId: mark["taskId"], from: mark["from"], to: { developerId: mark["to"], name: mark["toName"] }, fromStaysListed: await stillMayApprove(deps, orgId, project, mark["from"]),
+  });
+  await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
 }
 
 /** After the commit: the previous owner (feed and channel), the followers and the session's own channel hear that it changed, ids and a revision only. Never throws. */

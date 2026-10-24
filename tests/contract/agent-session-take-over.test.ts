@@ -859,7 +859,9 @@ describe("approvals already waiting when the session is taken over (12b review I
     const approvalId = await waitingWrite(w, taskId);
     const asked = await w.asked(MAX, sessionId);
     await w.confirm(MAX, asked.approvalId);
-    // The follow-up was lost: the previous owner's row is back and the record still names them.
+    // The follow-up was lost: the mark is still owed, the previous owner's row is back and the record still names them.
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, `TAKE_OVER_FOLLOW_UP#${asked.approvalId}`))).toBeUndefined();
+    w.db.set({ ...agentSessionKey(ORG_A, sessionId, `TAKE_OVER_FOLLOW_UP#${asked.approvalId}`), entityType: "AGENT_SESSION_TAKE_OVER_FOLLOW_UP", orgId: ORG_A, sessionId, taskId, from: PRIYA, to: MAX, toName: "Max", project: "web" });
     w.db.set({ ...approverIndexKey(ORG_A, PRIYA, approvalId as never), entityType: "APPROVER_INDEX", approvalId });
     w.db.set({ ...(w.db.get(approvalKey(ORG_A, approvalId as never)) as Item), owner: { developerId: PRIYA, name: "Priya" } });
     const record = { ...(await w.approvalOf(asked.approvalId)), status: "EXECUTING" as const, decidedBy: MAX };

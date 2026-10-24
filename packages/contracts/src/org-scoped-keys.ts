@@ -467,9 +467,10 @@ export type AgentSessionItemSk =
   | `TURN#${string}`
   | `EVENT#${string}`
   | `BINDING#${string}`
-  | `LEG#${string}`;
+  | `LEG#${string}`
+  | `TAKE_OVER_FOLLOW_UP#${string}`;
 
-/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, bindings and legs. */
+/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, bindings, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`). */
 export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
 }
