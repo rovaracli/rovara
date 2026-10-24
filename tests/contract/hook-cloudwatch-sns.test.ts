@@ -784,3 +784,192 @@ describe("what the code leaves in logs", () => {
     expect(w.dispatched).toHaveLength(1);
   });
 });
+
+// ---- pins: the edges the first mutation pass found alive
+
+function snsVerifier(fetchUnder?: typeof fetch) {
+  const net = new FakeSnsNetwork();
+  const memory = new SnsCertMemory();
+  return { net, memory, verify: (text: string, now = START) => verifySnsMessage({ memory, fetch: fetchUnder ?? net.fetch }, asMessage(text), now) };
+}
+
+describe("pins: signature and certificate edges", () => {
+  it("refuses a signature with anything but base64 around or inside it, though the decoder would skip it", async () => {
+    const { verify } = snsVerifier();
+    const signed = JSON.parse(notification()) as { Signature: string };
+    const good = signed.Signature;
+    const tamper = (value: string) => JSON.stringify({ ...signed, Signature: value });
+    expect(await verify(tamper(good))).toBe(true);
+    for (const value of [`!!${good}`, `${good.slice(0, 10)}!!${good.slice(10)}`, `${good}!!`, `${good}\n`, ` ${good}`, `${good.slice(0, 10)} ${good.slice(10)}`]) expect(await verify(tamper(value)), value.slice(0, 20)).toBe(false);
+  });
+
+  it("reads the US government partition's topics and hosts", async () => {
+    const { verify, net } = snsVerifier();
+    const topicArn = "arn:aws-us-gov:sns:us-gov-west-1:123456789012:t";
+    const certUrl = "https://sns.us-gov-west-1.amazonaws.com/SimpleNotificationService-0123.pem";
+    net.certs.set(certUrl, TEST_CERT_PEM);
+    expect(await verify(notification({ topicArn }, { certUrl }))).toBe(true);
+    expect(await verify(notification({ topicArn: "arn:aws-iso:sns:us-iso-east-1:123456789012:t" }, { certUrl }))).toBe(false);
+  });
+
+  it("refuses a topic ARN that has anything before or after it, or a name with characters a topic can't have", async () => {
+    const { verify, net } = snsVerifier();
+    for (const topicArn of [`x${SNS_TOPIC_ARN}`, `${SNS_TOPIC_ARN}/evil`, `${SNS_TOPIC_ARN} `, `${SNS_TOPIC_ARN}\n`, `${SNS_TOPIC_ARN}:sub`, "arn:aws:sns:us-east-1:12345678901:t", "arn:aws:sns:us-east-1:123456789012:"]) {
+      expect(await verify(notification({ topicArn })), topicArn).toBe(false);
+    }
+    expect(net.requests).toEqual([]);
+  });
+
+  it("refuses a certificate name that is empty, hidden, starts with a dash, or does not end in .pem", async () => {
+    const { verify, net } = snsVerifier();
+    for (const name of [".pem", ".hidden.pem", "-x.pem", "xpem", "x.pem.txt", "x/y.pem", "x%2fy.pem", "x y.pem"]) {
+      const certUrl = `https://sns.${SNS_REGION}.amazonaws.com/${name}`;
+      net.certs.set(certUrl, TEST_CERT_PEM);
+      expect(await verify(notification({}, { certUrl })), name).toBe(false);
+    }
+    expect(net.requests).toEqual([]);
+    const certUrl = `https://sns.${SNS_REGION}.amazonaws.com/a.b-c_d9.pem`;
+    net.certs.set(certUrl, TEST_CERT_PEM);
+    expect(await verify(notification({}, { certUrl }))).toBe(true);
+  });
+
+  it("keeps a certificate for just under the cache time and fetches it again at exactly that time", async () => {
+    const { verify, net } = snsVerifier();
+    const text = notification();
+    await verify(text);
+    await verify(text, START + SNS_CERT_CACHE_HOURS * HOUR - 1);
+    expect(net.certRequests).toHaveLength(1);
+    await verify(text, START + SNS_CERT_CACHE_HOURS * HOUR);
+    expect(net.certRequests).toHaveLength(2);
+  });
+
+  it("keeps at most a bounded number of certificates, the oldest going first", async () => {
+    const { verify, net } = snsVerifier();
+    const total = 205;
+    let now = START;
+    for (let index = 0; index < total; index += 1) {
+      const certUrl = CERT_URL_OF(`bound${String(index)}`);
+      net.certs.set(certUrl, TEST_CERT_PEM);
+      if (index % SNS_CERT_FETCHES_PER_MINUTE === 0) now += 2 * MINUTE;
+      expect(await verify(notification({ messageId: `b${String(index)}` }, { certUrl }), now), String(index)).toBe(true);
+    }
+    expect(net.certRequests).toHaveLength(total);
+    // The last one is still kept; the first was dropped to make room, so it is fetched again.
+    await verify(notification({}, { certUrl: CERT_URL_OF(`bound${String(total - 1)}`) }), now);
+    expect(net.certRequests).toHaveLength(total);
+    now += 2 * MINUTE;
+    await verify(notification({}, { certUrl: CERT_URL_OF("bound0") }), now);
+    expect(net.certRequests).toHaveLength(total + 1);
+  });
+
+  it("allows the next fetch at exactly one minute after the allowance was used up, and not a millisecond before", async () => {
+    const { verify, net } = snsVerifier();
+    const urls = Array.from({ length: SNS_CERT_FETCHES_PER_MINUTE + 2 }, (_value, index) => CERT_URL_OF(`edge${String(index)}`));
+    for (const url of urls) net.certs.set(url, TEST_CERT_PEM);
+    for (const url of urls.slice(0, SNS_CERT_FETCHES_PER_MINUTE)) expect(await verify(notification({}, { certUrl: url }), START)).toBe(true);
+    expect(await verify(notification({}, { certUrl: urls[SNS_CERT_FETCHES_PER_MINUTE]! }), START + MINUTE - 1)).toBe(false);
+    expect(await verify(notification({}, { certUrl: urls[SNS_CERT_FETCHES_PER_MINUTE]! }), START + MINUTE)).toBe(true);
+  });
+
+  it("refuses a certificate answered with any status but 200, though its body is the certificate", async () => {
+    const odd: typeof fetch = async () => new Response(TEST_CERT_PEM, { status: 203 });
+    expect(await snsVerifier(odd).verify(notification())).toBe(false);
+    const ok: typeof fetch = async () => new Response(TEST_CERT_PEM, { status: 200 });
+    expect(await snsVerifier(ok).verify(notification())).toBe(true);
+  });
+
+  it("accepts a certificate on its first and its last second of validity and refuses the second outside", async () => {
+    const { verify } = snsVerifier();
+    const text = notification();
+    expect(await verify(text, Date.parse("2020-01-01T00:00:00Z"))).toBe(true);
+    expect(await verify(text, Date.parse("2120-01-01T00:00:00Z"))).toBe(true);
+    expect(await verify(text, Date.parse("2019-12-31T23:59:59Z"))).toBe(false);
+    expect(await verify(text, Date.parse("2120-01-01T00:00:01Z"))).toBe(false);
+  });
+
+  it("answers false, never an error, for a message that makes the check itself fail", async () => {
+    const { memory, net } = snsVerifier();
+    const hostile = { ...asMessage(notification()), get Message(): string { throw new Error("boom"); } };
+    expect(await verifySnsMessage({ memory, fetch: net.fetch }, hostile, START)).toBe(false);
+  });
+
+  it("gives up on a certificate and on a confirmation that hang, after the deadline of five seconds, not fifteen", async () => {
+    const hang: typeof fetch = (_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "TimeoutError")));
+    });
+    const started = Date.now();
+    const cert = snsVerifier(hang).verify(notification());
+    const { w, hook, net } = await cwWorld({ status: "pending_confirmation" });
+    Object.assign(w.deps, { snsFetch: ((input, init) => ((input instanceof Request ? input.url : String(input)).includes("ConfirmSubscription") ? hang(input, init) : net.fetch(input, init))) satisfies typeof fetch });
+    const confirm = w.receive(snsDelivery(hook, subscription(), { type: "SubscriptionConfirmation" }));
+    const [verified, answered] = await Promise.all([cert, confirm]);
+    expect(verified).toBe(false);
+    expect(answered.status).toBe(503);
+    expect(Date.now() - started).toBeLessThan(9_000);
+  }, 20_000);
+});
+
+describe("pins: the provider and the route", () => {
+  it("logs a tenant refusal for an alarm with no account or a numeric one, so the refusal is the check's and not a fault", async () => {
+    const { w, hook } = await cwWorld();
+    await w.receive(snsDelivery(hook, notification({ messageId: "x2", message: JSON.stringify({ ...JSON.parse(alarmJson()), AWSAccountId: undefined }) })));
+    await w.receive(snsDelivery(hook, notification({ messageId: "x3", message: JSON.stringify({ ...JSON.parse(alarmJson()), AWSAccountId: Number(SNS_ACCOUNT) }) })));
+    expect(w.logs.map((entry) => entry.event)).toEqual(["hook.tenant_mismatch", "hook.tenant_mismatch"]);
+  });
+
+  it("keeps an alarm whose name makes the console link longer than an event may carry (each character is twelve characters of link), and gives it no link", async () => {
+    const { w, hook } = await cwWorld();
+    const name = "😀".repeat(255);
+    expect((await w.receive(snsDelivery(hook, notification({ alarm: { name } })))).status).toBe(202);
+    expect(w.dispatched).toHaveLength(1);
+    expect(w.dispatched[0]!.event.subject).not.toHaveProperty("url");
+    expect([...w.dispatched[0]!.event.subject.id]).toHaveLength(200);
+  });
+
+  it("confirmationTarget reads only a SubscriptionConfirmation and a token that is not empty", async () => {
+    const { hook } = await cwWorld();
+    expect(hook.hookId).toBe(HOOK_1);
+    const unsubscribe = asMessage(unsubscription());
+    expect(unsubscribe.SubscribeURL).toBeDefined();
+    expect(confirmationTarget(unsubscribe, SNS_TOPIC_ARN)).toBeUndefined();
+    const empty = asMessage(subscription({ token: "", subscribeUrl: subscribeUrl({ token: "" }) }));
+    expect(empty.Token).toBe("");
+    expect(confirmationTarget(empty, SNS_TOPIC_ARN)).toBeUndefined();
+  });
+
+  it("counts a failed verification against the hook", async () => {
+    const { w, hook } = await cwWorld();
+    expect(w.memory.failures.count(hook.hookId, START)).toBe(0);
+    await w.receive(snsDelivery(hook, notification({}, { key: OTHER_SIGNING_KEY_PEM })));
+    await w.receive(snsDelivery(hook, notification({}, { version: "1", hash: "sha1" })));
+    expect(w.memory.failures.count(hook.hookId, START)).toBe(2);
+    await w.receive(snsDelivery(hook, notification()));
+    expect(w.memory.failures.count(hook.hookId, START)).toBe(2);
+  });
+
+  it("does not confirm on SNS's answer unless it is a 200 with a subscription of this topic whose last part is an id, nothing before or after it", async () => {
+    const { w, net, hook, stored } = await cwWorld({ status: "pending_confirmation" });
+    const id = "2bcfbf39-05c3-41de-beaa-fcfcc21c8f55";
+    const refused: Array<{ status: number; body: string }> = [
+      { status: 500, body: confirmXml() },
+      { status: 202, body: confirmXml() },
+      { status: 200, body: confirmXml(`${SNS_TOPIC_ARN}:not-an-id`) },
+      { status: 200, body: confirmXml(`${SNS_TOPIC_ARN}:${id}-extra`) },
+      { status: 200, body: confirmXml(`${SNS_TOPIC_ARN}:junk${id}`) },
+      { status: 200, body: confirmXml(`${SNS_TOPIC_ARN}:${id}:more`) },
+      { status: 200, body: `${"x".repeat(70_000)}${confirmXml()}` },
+    ];
+    for (const [index, answer] of refused.entries()) {
+      net.confirm = answer;
+      expect((await w.receive(snsDelivery(hook, subscription({ messageId: `p${String(index)}` }), { type: "SubscriptionConfirmation" }))).status, String(index)).toBe(503);
+    }
+    expect((await stored()).status).toBe("pending_confirmation");
+  });
+
+  it("answers 403 to a delivery for a hook of another source that is waiting for confirmation, which only an SNS hook may do", async () => {
+    const w = setupHookWorld();
+    const hook = await w.hook({ source: "linear", hookId: HOOK_1, status: "pending_confirmation" });
+    expect(await w.receive(w.delivery(hook, { id: "a" }))).toEqual(FORBIDDEN);
+    expect(w.dispatched).toEqual([]);
+  });
+});

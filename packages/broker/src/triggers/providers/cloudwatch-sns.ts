@@ -42,9 +42,10 @@ export function confirmationTarget(message: SnsMessage, topicArn: string): URL |
   const host = snsHostOfTopic(topicArn);
   const raw = message.SubscribeURL;
   if (host === undefined || !raw.startsWith(`https://${host}/?`) || raw.includes("#")) return undefined;
+  // The prefix above fixes the scheme, the host (no port or login can follow it) and the path (`/`), so only the parameters are left to check.
   const url = new URL(raw);
   const names = [...url.searchParams.keys()].sort();
-  if (url.hostname !== host || url.pathname !== "/" || names.join(",") !== "Action,Token,TopicArn") return undefined;
+  if (names.join(",") !== "Action,Token,TopicArn") return undefined;
   const params = url.searchParams;
   return params.get("Action") === "ConfirmSubscription" && params.get("TopicArn") === topicArn && params.get("Token") === message.Token ? url : undefined;
 }
