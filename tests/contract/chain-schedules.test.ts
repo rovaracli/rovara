@@ -660,7 +660,7 @@ describe("pins: settings, scheduler calls and edges", () => {
     expect(scheduleSettingsFromEnvironment(ENV)).toBeDefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::999999999999:role/agentx/staging/r" })).toBeUndefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:user/x" })).toBeUndefined();
-    expect(scheduleSettingsFromEnvironment({ ...ENV, AGENTX_ACCOUNT_ID: "12345" })).toBeUndefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, AGENTX_ACCOUNT_ID: "12345", CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::12345:role/agentx/staging/r", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/12345/q" })).toBeUndefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, AWS_LAMBDA_FUNCTION_NAME: "a:b" })).toBeUndefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/q%2Fx" })).toBeUndefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/${"q".repeat(81)}` })).toBeUndefined();
