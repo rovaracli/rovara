@@ -3470,6 +3470,8 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Action": [
                 "sqs:ReceiveMessage",
                 "sqs:DeleteMessage",
+                "sqs:ChangeMessageVisibility",
+                "sqs:SendMessage",
               ],
               "Effect": "Allow",
               "Resource": {
@@ -3478,7 +3480,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "Arn",
                 ],
               },
-              "Sid": "DrainChainScheduleDeadLetters",
+              "Sid": "UseChainScheduleDeadLetters",
             },
             {
               "Action": "cloudwatch:DescribeAlarms",
@@ -3805,6 +3807,43 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::SQS::Queue",
       "UpdateReplacePolicy": "Delete",
+    },
+    "ChainScheduleDeadLettersAlarm4540B3CE": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "OperatorAlertsA2431256",
+          },
+        ],
+        "AlarmDescription": "A schedule trigger's fire failed and its record has been in the chain schedule dead-letter queue for an hour or more: the sweep could not handle it, or it was parked after repeated tries. Check the queue and the broker logs (schedule.dead_letter_failed, schedule.dead_letter_parked) for the trigger's id.",
+        "AlarmName": "agentx-staging-ChainScheduleDeadLetters",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": {
+              "Fn::GetAtt": [
+                "ChainScheduleDeadLettersA90411ED",
+                "QueueName",
+              ],
+            },
+          },
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateAgeOfOldestMessage",
+        "Namespace": "AWS/SQS",
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Threshold": 3600,
+        "TreatMissingData": "notBreaching",
+      },
+      "Type": "AWS::CloudWatch::Alarm",
     },
     "ChainScheduleGroup": {
       "Properties": {

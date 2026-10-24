@@ -355,7 +355,12 @@ async function deleteTrigger(deps: Deps, caller: AgentCaller, target: TriggerTar
   const { mark, replay } = await markRequest(deps, caller, "trigger-delete", trigger.triggerId, input);
   if (replay !== undefined) return { deleted: true };
   await storeOf(deps).delete({ trigger, request: mark, result: { deleted: true }, extra: targetEventItem(deps, caller.orgId, trigger.target, "trigger_deleted", { triggerId: trigger.triggerId, by: caller.developerId }) });
-  if (trigger.spec.kind === "schedule") await deps.triggerSchedules?.remove({ orgId: trigger.orgId, triggerId: trigger.triggerId }).catch(() => undefined);
+  if (trigger.spec.kind === "schedule") {
+    // The trigger is gone either way, and a schedule that is left is deleted as stale at its next fire; the failure is logged by ids and the error's name (Task 26 review M-5).
+    await deps.triggerSchedules?.remove({ orgId: trigger.orgId, triggerId: trigger.triggerId }).catch((error: unknown) => {
+      (deps.log ?? ((event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))))("trigger_schedule.delete_failed", { orgId: trigger.orgId, triggerId: trigger.triggerId, error: error instanceof Error ? error.name : "unknown" });
+    });
+  }
   return { deleted: true };
 }
 

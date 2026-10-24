@@ -9,10 +9,11 @@
 // is skipped and one that happens twice (fall back) runs once (AWS: "Daylight savings time on EventBridge Scheduler"), so there is no slot here to be missed on such a day.
 // Nothing in a log line is text a person or a vendor wrote: only ids, an outcome and a code.
 import { CreateScheduleCommand, DeleteScheduleCommand, FlexibleTimeWindowMode, GetScheduleCommand, ScheduleState, UpdateScheduleCommand } from "@aws-sdk/client-scheduler";
-import { DeleteMessageCommand, ReceiveMessageCommand } from "@aws-sdk/client-sqs";
+import { ChangeMessageVisibilityCommand, DeleteMessageCommand, ReceiveMessageCommand, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
+  CHAIN_RUN_MAX_HOURS,
   ChainRunIdSchema,
   ORG_MAX_AUTONOMOUS_RUNS_PER_DAY,
   OrgIdSchema,
@@ -45,6 +46,13 @@ export const CHAIN_SCHEDULE_SOURCE = "agentx.chain-schedule";
 const MINUTE = 60_000;
 const HOUR_SECONDS = 3600;
 const DAY_SECONDS = 86_400;
+/** The plan's longest run (a chain run's `CHAIN_RUN_MAX_HOURS`): an agent task that has been open this long with no end record is taken as over (Task 26 review M-2). */
+const OPEN_TASK_MAX_MS = CHAIN_RUN_MAX_HOURS * 3_600_000;
+/** How long one slot's start claim keeps another slot from starting (Task 26 review M-1): a start takes seconds, so one this old was cut short. */
+const START_CLAIM_HOLD_MS = 10 * MINUTE;
+/** A dead letter is handled this many times, then parked (Task 26 review M-4) for this long, still on the queue, where its age is alarmed. */
+export const SCHEDULE_DEAD_LETTER_MAX_RECEIVES = 5;
+const DEAD_LETTER_PARK_SECONDS = 12 * HOUR_SECONDS;
 /** How far ahead of the clock a slot may be dated: the clocks of two machines differ by seconds, and a slot an hour ahead is not the scheduler's. */
 const FUTURE_SLACK_MS = 5 * MINUTE;
 const CLAIM_TRIES = 5;
@@ -226,7 +234,7 @@ export function createChainScheduler(deps: ScheduleDependencies): TriggerSchedul
 const FireSchema = z.object({ orgId: OrgIdSchema, triggerId: TriggerIdSchema, scheduledAt: z.string().datetime({ offset: true }) });
 
 export interface ScheduleAnswer {
-  outcome: TriggerOutcome | "stale";
+  outcome: TriggerOutcome | "stale" | "dead_lettered";
   runId?: string;
   taskId?: string;
   reason?: string;
@@ -268,26 +276,35 @@ async function forgetSchedule(deps: TriggerDispatchDependencies, orgId: OrgId, t
   }
 }
 
-/** Whether the work the trigger last started is still open: its chain run is not over, or its agent task has no recorded end (a task that is not there is over). */
-async function stillRunning(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord): Promise<boolean> {
+/**
+ * Whether the work of the trigger is still open: another slot's start is under way (a fresh claim), its last chain run is not over, or its last agent task has no recorded end (a task
+ * that is not there is over; one open for longer than the plan's longest run is taken as over and logged, so a lost end record cannot hold the trigger for ever).
+ */
+async function stillRunning(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, slot: string, now: number): Promise<boolean> {
+  const claim = trigger.startClaim;
+  if (claim !== undefined && claim.slot !== slot && Date.parse(claim.at) + START_CLAIM_HOLD_MS > now) return true;
   const run = trigger.lastRunId === undefined ? undefined : ChainRunIdSchema.safeParse(trigger.lastRunId);
   if (run?.success === true) {
     const open = await readChainRun(deps, orgId, run.data);
     if (open !== undefined && !isTerminalStatus(open.status)) return true;
   }
   if (trigger.lastTaskId !== undefined) {
-    const read = async (key: { pk: string; sk: string }) => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: { orgId?: unknown; outcome?: unknown } }).Item;
+    const read = async (key: { pk: string; sk: string }) => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: { orgId?: unknown; outcome?: unknown; createdAt?: unknown } }).Item;
     const task = await read(taskKey(trigger.lastTaskId));
     if (task !== undefined && task.orgId === orgId) {
       const end = await read(taskEndKey(trigger.lastTaskId));
-      if (end === undefined || end.orgId !== orgId || end.outcome === undefined) return true;
+      if (end === undefined || end.orgId !== orgId || end.outcome === undefined) {
+        const started = typeof task.createdAt === "string" ? Date.parse(task.createdAt) : Number.NaN;
+        if (!(started + OPEN_TASK_MAX_MS <= now)) return true;
+        logOf(deps)("schedule.open_task_expired", { orgId, triggerId: trigger.triggerId, taskId: trigger.lastTaskId });
+      }
     }
   }
   return false;
 }
 
 /** Notes that the trigger started work, for the no-overlap check. Best effort: the work is started and its activity written, so a lost race here only leaves the note a moment late. */
-async function noteStarted(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, started: { runId?: string; taskId?: string }, now: number): Promise<void> {
+async function noteStarted(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, started: { runId?: string; taskId?: string }, now: number, slot: string): Promise<void> {
   const store = deps.triggers!;
   let current: TriggerRecord | undefined = trigger;
   for (let attempt = 0; attempt < NOTE_TRIES && current !== undefined; attempt += 1) {
@@ -295,6 +312,8 @@ async function noteStarted(deps: TriggerDispatchDependencies, orgId: OrgId, trig
       await store.update({
         trigger: current,
         patch: { lastFiredAt: new Date(now).toISOString(), ...(started.runId === undefined ? {} : { lastRunId: started.runId }), ...(started.taskId === undefined ? {} : { lastTaskId: started.taskId }) },
+        // The work is noted, so this slot's hold ends with it (a hold another slot made is not ours to end).
+        ...(current.startClaim?.slot === slot ? { clear: ["startClaim" as const] } : {}),
       });
       return;
     } catch (error) {
@@ -304,18 +323,36 @@ async function noteStarted(deps: TriggerDispatchDependencies, orgId: OrgId, trig
   }
 }
 
+/** What a fire holds once it has the slot: the trigger as it stands after the claim, and what to put back if the start does not happen. */
+interface SlotClaim {
+  held: TriggerRecord;
+  slot: string;
+  /** The instant of the start claim (its identity, so a release touches only its own). */
+  at: string;
+  /** A late slot also moved `lastFiredAt`: what it was before, and what it was moved to. */
+  late?: { previous: string | undefined; at: string };
+}
+
 /**
- * A late slot's claim (`missed: "run_once"`): the trigger's `lastFiredAt` is set to now, and only while it is older than the slot (the update is conditional on the revision that was
- * read, so a slot that is claimed meanwhile fails it and is read again). So of any number of late slots, however they arrive, one claims and the rest find a run that covers them.
+ * Takes the slot: the overlap check and the claim in one revision-conditional update (Task 26 review M-1). A fire that finds work open is answered `skipped`; a late slot is `missed`
+ * under `skip`, or when a later run already covers it (`lastFiredAt` at or after the slot); otherwise the update writes the start claim (and, for a late slot, moves `lastFiredAt` to now).
+ * The update is conditional on the revision that was read, so of any number of fires that saw the same trigger exactly one wins, and the rest read it again and find the claim (or the
+ * run it noted), which is what stops two slots from both starting however they interleave.
  */
-async function claim(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, scheduledAt: string, now: number): Promise<{ claimed: TriggerRecord } | { covered: true } | { gone: true }> {
+async function takeSlot(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, scheduledAt: string, now: number, late: boolean): Promise<{ taken: SlotClaim } | { answer: ScheduleAnswer } | { gone: true }> {
   const store = deps.triggers!;
   let current: TriggerRecord | undefined = trigger;
   for (let attempt = 0; attempt < CLAIM_TRIES; attempt += 1) {
     if (current === undefined || !current.enabled || current.spec.kind !== "schedule") return { gone: true };
-    if (current.lastFiredAt !== undefined && current.lastFiredAt >= scheduledAt) return { covered: true };
+    if (await stillRunning(deps, orgId, current, scheduledAt, now)) return { answer: { outcome: "skipped", reason: "previous_run_still_running" } };
+    if (late) {
+      if (current.spec.missed === "skip") return { answer: { outcome: "missed" } };
+      if (current.lastFiredAt !== undefined && current.lastFiredAt >= scheduledAt) return { answer: { outcome: "missed", reason: "covered_by_a_later_run" } };
+    }
+    const at = new Date(now).toISOString();
     try {
-      return { claimed: await store.update({ trigger: current, patch: { lastFiredAt: new Date(now).toISOString() } }) };
+      const held = await store.update({ trigger: current, patch: { startClaim: { slot: scheduledAt, at }, ...(late ? { lastFiredAt: at } : {}) } });
+      return { taken: { held, slot: scheduledAt, at, ...(late ? { late: { previous: current.lastFiredAt, at } } : {}) } };
     } catch (error) {
       if (!isTriggerConflict(error)) throw error;
       current = await store.get(orgId, trigger.triggerId);
@@ -324,13 +361,23 @@ async function claim(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: T
   throw agentXError("RUNTIME_UNAVAILABLE", "try again");
 }
 
-/** Gives a claim back when the start failed in a way that may pass, so the retry of the same slot is not told that a run covers it. Best effort. */
-async function releaseClaim(deps: TriggerDispatchDependencies, orgId: OrgId, triggerId: string, claimedAt: string, previous: string | undefined): Promise<void> {
+/**
+ * Gives a claim back when the slot did not start: the start failed in a way that may pass, or a cap held it back (so the retry, or the slot once the cap allows, is not told that a run
+ * covers it), and with `keepLate` (a refusal is a recorded answer for the slot) only the start claim goes. Each part is put back only while it is still this fire's own. Best effort.
+ */
+async function releaseClaim(deps: TriggerDispatchDependencies, orgId: OrgId, triggerId: string, claim: SlotClaim, options: { keepLate?: boolean } = {}): Promise<void> {
   const store = deps.triggers!;
   try {
     const current = await store.get(orgId, triggerId);
-    if (current === undefined || current.lastFiredAt !== claimedAt) return;
-    await store.update({ trigger: current, ...(previous === undefined ? { patch: {}, clear: ["lastFiredAt" as const] } : { patch: { lastFiredAt: previous } }) });
+    if (current === undefined) return;
+    const ours = current.startClaim?.slot === claim.slot && current.startClaim.at === claim.at;
+    const restore = claim.late !== undefined && options.keepLate !== true && current.lastFiredAt === claim.late.at;
+    if (!ours && !restore) return;
+    await store.update({
+      trigger: current,
+      patch: restore && claim.late?.previous !== undefined ? { lastFiredAt: claim.late.previous } : {},
+      clear: [...(ours ? ["startClaim" as const] : []), ...(restore && claim.late?.previous === undefined ? ["lastFiredAt" as const] : [])],
+    });
   } catch (error) {
     logOf(deps)("schedule.claim_release_failed", { orgId, triggerId, error: errorName(error) });
   }
@@ -361,7 +408,6 @@ export async function handleChainSchedule(deps: TriggerDispatchDependencies, inp
     await forgetSchedule(deps, orgId, triggerId);
     return { outcome: "stale" };
   }
-  const spec = trigger.spec;
   // 2. What the trigger needs, read now. A service of ours that is away is thrown (the scheduler retries); any other problem turns the trigger and its schedule off and starts nothing.
   const problems = await triggerProblems(deps, trigger);
   if (problems.some((problem) => problem.code === "RUNTIME_UNAVAILABLE")) {
@@ -381,32 +427,34 @@ export async function handleChainSchedule(deps: TriggerDispatchDependencies, inp
     const existing = await readRunRequest(deps, orgId, requestIdFor(identity));
     if (existing !== undefined) return settle(deps, orgId, triggerId, scheduledAt, { outcome: "duplicate", taskId: existing.taskId });
   }
-  // 4. No overlap: while the work the trigger last started is open, a slot is not started.
-  if (await stillRunning(deps, orgId, trigger)) return settle(deps, orgId, triggerId, scheduledAt, { outcome: "skipped", reason: "previous_run_still_running" });
-  // 5. On time, or late: a late slot is skipped, or starts only if no later run covers it.
-  let held = trigger;
-  let claimed: { at: string; previous: string | undefined } | undefined;
-  if (options.forceLate === true || now - Date.parse(scheduledAt) > SCHEDULE_MISSED_GRACE_MINUTES * MINUTE) {
-    if (spec.missed === "skip") return settle(deps, orgId, triggerId, scheduledAt, { outcome: "missed" });
-    const taken = await claim(deps, orgId, trigger, scheduledAt, now);
-    if ("gone" in taken) {
-      await forgetSchedule(deps, orgId, triggerId);
-      return { outcome: "stale" };
-    }
-    if ("covered" in taken) return settle(deps, orgId, triggerId, scheduledAt, { outcome: "missed", reason: "covered_by_a_later_run" });
-    held = taken.claimed;
-    claimed = { at: new Date(now).toISOString(), previous: trigger.lastFiredAt };
+  // 4. No overlap, then the slot: on time, or late (a late slot is skipped under `skip`, or starts only when no later run covers it). One conditional update takes the slot and holds it
+  // against every other fire until the work is noted, so open work, a late claim and a concurrent fire are decided in the same place (review M-1).
+  const late = options.forceLate === true || now - Date.parse(scheduledAt) > SCHEDULE_MISSED_GRACE_MINUTES * MINUTE;
+  const took = await takeSlot(deps, orgId, trigger, scheduledAt, now, late);
+  if ("gone" in took) {
+    await forgetSchedule(deps, orgId, triggerId);
+    return { outcome: "stale" };
   }
-  // 6. The trigger's allowance for the hour (never above the platform's), then the org's for the day.
+  if ("answer" in took) return settle(deps, orgId, triggerId, scheduledAt, took.answer);
+  const { taken } = took;
+  // 5. The trigger's allowance for the hour (never above the platform's), then the org's for the day. A slot a cap holds back gives its claim back (review M-3).
   const clock = new Date(now).toISOString();
   const allowed = Number.isInteger(trigger.maxRunsPerHour) ? Math.min(trigger.maxRunsPerHour, TRIGGER_MAX_RUNS_PER_HOUR) : 0;
-  if (!await countOne(deps, triggerRateKey(orgId, triggerId, clock.slice(0, 13)), allowed, 2 * HOUR_SECONDS)) {
-    return settle(deps, orgId, triggerId, scheduledAt, { outcome: "skipped", reason: "rate_limited" });
+  try {
+    if (!await countOne(deps, triggerRateKey(orgId, triggerId, clock.slice(0, 13)), allowed, 2 * HOUR_SECONDS)) {
+      await releaseClaim(deps, orgId, triggerId, taken);
+      return await settle(deps, orgId, triggerId, scheduledAt, { outcome: "skipped", reason: "rate_limited" });
+    }
+    if (!await countOne(deps, orgAutonomousKey(orgId, clock.slice(0, 10)), ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, 2 * DAY_SECONDS)) {
+      await releaseClaim(deps, orgId, triggerId, taken);
+      return await settle(deps, orgId, triggerId, scheduledAt, { outcome: "skipped", reason: "org_daily_limit" });
+    }
+  } catch (error) {
+    // A counter that could not be read or written: the start does not happen, and the slot is not left claimed for the retry.
+    await releaseClaim(deps, orgId, triggerId, taken);
+    throw error;
   }
-  if (!await countOne(deps, orgAutonomousKey(orgId, clock.slice(0, 10)), ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, 2 * DAY_SECONDS)) {
-    return settle(deps, orgId, triggerId, scheduledAt, { outcome: "skipped", reason: "org_daily_limit" });
-  }
-  // 7. The start, as an event's is. A refusal is a recorded outcome; a fault that may pass is thrown.
+  // 6. The start, as an event's is. A refusal is a recorded outcome; a fault that may pass is thrown.
   let started: { runId?: string; taskId?: string };
   try {
     const source = sourceOf(trigger, scheduledAt);
@@ -415,24 +463,67 @@ export async function handleChainSchedule(deps: TriggerDispatchDependencies, inp
     const refusal = await refusalOf(deps, orgId, trigger, error);
     if ("transient" in refusal) {
       log("schedule.start_failed", { orgId, triggerId, error: errorName(refusal.transient) });
-      if (claimed !== undefined) await releaseClaim(deps, orgId, triggerId, claimed.at, claimed.previous);
+      await releaseClaim(deps, orgId, triggerId, taken);
       throw refusal.transient;
     }
+    await releaseClaim(deps, orgId, triggerId, taken, { keepLate: true });
     return settle(deps, orgId, triggerId, scheduledAt, { outcome: "failed", reason: refusal.reason });
   }
   try {
     return await settle(deps, orgId, triggerId, scheduledAt, { outcome: "started", ...started });
   } finally {
-    await noteStarted(deps, orgId, held, started, now);
+    await noteStarted(deps, orgId, taken.held, started, now, scheduledAt);
   }
+}
+
+/**
+ * The scheduler's invocation as the broker answers it. EventBridge Scheduler calls the broker ASYNCHRONOUSLY, so an error thrown here never reaches the scheduler's retry policy or its
+ * dead-letter queue: Lambda retries on its own and the last failure lands in the Slack hand-off queue, raising an alarm about the wrong thing (review I-1). So a fire that fails records
+ * itself in the chain queue (ids, the slot and a code, nothing a person or a vendor wrote), and the chain sweep's drain handles it as a late slot; the invocation then succeeds. Where
+ * the record cannot be written, or there is no queue, or the event does not name a slot, the original error is thrown: Lambda's own retries are then the last resort.
+ */
+export async function fireChainSchedule(deps: TriggerDispatchDependencies, input: unknown, now: number, deadLetters: Pick<ScheduleDeadLetters, "put"> | undefined): Promise<ScheduleAnswer> {
+  try {
+    return await handleChainSchedule(deps, input, now);
+  } catch (error) {
+    const fields = input === null || typeof input !== "object" ? undefined : { orgId: (input as Record<string, unknown>)["orgId"], triggerId: (input as Record<string, unknown>)["triggerId"], scheduledAt: (input as Record<string, unknown>)["scheduledAt"] };
+    const fire = FireSchema.safeParse(fields);
+    const failure = failureCodeOf(error);
+    const log = logOf(deps);
+    if (!fire.success || deadLetters === undefined) {
+      log("schedule.fire_failed_unrecorded", { error: failure });
+      throw error;
+    }
+    const { orgId, triggerId } = fire.data;
+    log("schedule.fire_failed", { orgId, triggerId, error: failure });
+    try {
+      await deadLetters.put(JSON.stringify({ source: CHAIN_SCHEDULE_SOURCE, orgId, triggerId, scheduledAt: new Date(Date.parse(fire.data.scheduledAt)).toISOString(), failure }));
+    } catch (putError) {
+      log("schedule.fire_failed_unrecorded", { orgId, triggerId, error: errorName(putError) });
+      throw error;
+    }
+    return { outcome: "dead_lettered", reason: failure };
+  }
+}
+
+/** A code for a failure that is safe to write down: a refusal's code, else the error's name, else `unknown`. Never its message. */
+function failureCodeOf(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) return code;
+  const name = errorName(error);
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : "unknown";
 }
 
 // ---- dead letters and repair
 
 /** What the scheduler leaves in the dead-letter queue, as the sweep reads it. */
 export interface ScheduleDeadLetters {
-  receive(max: number): Promise<Array<{ body: string; handle: string }>>;
+  receive(max: number): Promise<Array<{ body: string; handle: string; receives: number }>>;
   remove(handle: string): Promise<void>;
+  /** Puts a record in the queue (a fire that failed records itself). */
+  put(body: string): Promise<void>;
+  /** Hides a message for a long time but keeps it on the queue (its age is alarmed). */
+  park(handle: string): Promise<void>;
 }
 
 export function createDeadLetters(input: { sqs: SchedulerPort; queueUrl: string }): ScheduleDeadLetters {
@@ -440,8 +531,20 @@ export function createDeadLetters(input: { sqs: SchedulerPort; queueUrl: string 
     async receive(max) {
       const answer = await input.sqs.send(new ReceiveMessageCommand({
         QueueUrl: input.queueUrl, MaxNumberOfMessages: Math.min(Math.max(1, max), SCHEDULE_DEAD_LETTERS_PER_SWEEP), WaitTimeSeconds: 0, VisibilityTimeout: DEAD_LETTER_HIDE_SECONDS,
-      })) as { Messages?: Array<{ Body?: string; ReceiptHandle?: string }> };
-      return (answer.Messages ?? []).flatMap((message) => (message.Body === undefined || message.ReceiptHandle === undefined ? [] : [{ body: message.Body, handle: message.ReceiptHandle }]));
+        MessageSystemAttributeNames: ["ApproximateReceiveCount"],
+      })) as { Messages?: Array<{ Body?: string; ReceiptHandle?: string; Attributes?: Record<string, string> }> };
+      return (answer.Messages ?? []).flatMap((message) => {
+        if (message.Body === undefined || message.ReceiptHandle === undefined) return [];
+        const receives = Number(message.Attributes?.["ApproximateReceiveCount"]);
+        // A count that is missing or not a number is taken as the first receive, so a reading fault can only delay the parking, never lose a letter.
+        return [{ body: message.Body, handle: message.ReceiptHandle, receives: Number.isInteger(receives) && receives >= 1 ? receives : 1 }];
+      });
+    },
+    async put(body) {
+      await input.sqs.send(new SendMessageCommand({ QueueUrl: input.queueUrl, MessageBody: body }));
+    },
+    async park(handle) {
+      await input.sqs.send(new ChangeMessageVisibilityCommand({ QueueUrl: input.queueUrl, ReceiptHandle: handle, VisibilityTimeout: DEAD_LETTER_PARK_SECONDS }));
     },
     async remove(handle) {
       await input.sqs.send(new DeleteMessageCommand({ QueueUrl: input.queueUrl, ReceiptHandle: handle }));
@@ -469,6 +572,18 @@ async function drainDeadLetters(deps: TriggerDispatchDependencies, letters: Sche
       if (body.source === CHAIN_SCHEDULE_SOURCE && fire.success) letter = fire.data;
     } catch {
       letter = undefined;
+    }
+    // A letter that has been handled the most times and still comes back is parked (review M-4): it stays on the queue, hidden for twelve hours, so its age raises the alarm and it
+    // no longer takes one of the sweep's ten places or starts anything.
+    if (message.receives > SCHEDULE_DEAD_LETTER_MAX_RECEIVES) {
+      try {
+        await letters.park(message.handle);
+        log("schedule.dead_letter_parked", { ...(letter === undefined ? {} : { orgId: letter.orgId, triggerId: letter.triggerId }), receives: message.receives });
+      } catch (error) {
+        report.failed += 1;
+        log("schedule.dead_letter_park_failed", { error: errorName(error) });
+      }
+      continue;
     }
     try {
       if (letter === undefined) {

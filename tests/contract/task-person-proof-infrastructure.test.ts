@@ -252,18 +252,20 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 4 Task 26: a named environment's control plane gains the schedule group, the scheduler's invoke role (fixed name), the dead-letter queue and the broker's three
     // statements (manage the group's schedules, pass that one role, drain the queue), so the named and foreign digests were taken again from the synthesized templates; the
     // legacy digests did not move (nothing is added without an environment name), and the broker's variables did not grow (the names are derived from AGENTX_ENV).
+    // Plan 4 Task 26 review fixes: the broker's one queue statement now also parks and records (SendMessage, ChangeMessageVisibility, renamed UseChainScheduleDeadLetters) and the queue's age
+    // has an alarm, so the named and foreign digests were taken again from the synthesized templates; the legacy digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "6383537a395b03e7586b4ba34ab9995106e3609ab64dd8b256212a1f8d41b8e1",
-        withoutRoute: "0a78e054cea2add59506950d5e85cb92e728866e5a86f255b5a4b8b8851dc4be",
+        withRoute: "3d8e3c4e7ae1078aae702c9f01efa6c067743b67252772f0704f6936d5b480cb",
+        withoutRoute: "f1da0d69e6820d5baf0491737246b2ba6f6559111611d553ef95e896c9cdc4e6",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "df253e1e3256d4823ac20d05184beb4d446fb5bd19f3511e302919086876cdcf",
-        withoutRoute: "8a3afe70587f461585e75444940a58097a42936b692540b4889399dfcc6cc500",
+        withRoute: "0a6f8a1c2e672440e0af1000ce9e06c44709114b3351c709f0585a00af191a78",
+        withoutRoute: "4363ccf2ed0fcf274fb6b13a23b44ac9136ef7ce3bb9763b048e74e06cfa963f",
       },
       {
         label: "legacy",

@@ -404,7 +404,7 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import { ChainStore } from "../chains/store.js";
 import { TriggerStore } from "../triggers/store.js";
 import type { TriggerHookReader, TriggerScheduler } from "../triggers/ports.js";
-import { CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, handleChainSchedule, scheduleSettingsFromEnvironment, sweepSchedules, type ScheduleDeadLetters } from "../triggers/schedules.js";
+import { CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, fireChainSchedule, scheduleSettingsFromEnvironment, sweepSchedules, type ScheduleDeadLetters } from "../triggers/schedules.js";
 import { SchedulerClient } from "@aws-sdk/client-scheduler";
 import { dispatchTriggerEvent } from "../triggers/dispatch.js";
 import { deliverGithubTriggerEvents, healGithubRepoIndex } from "../triggers/github-events.js";
@@ -1677,12 +1677,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
       return json({ jobs: await runSettlementJobs(jobs, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))) }, "spend-settlement");
     }
-    // Plan 4 Task 26: EventBridge Scheduler's own invocation for a schedule trigger. A fault that may pass is thrown, not answered: only a thrown error makes the scheduler try again and
-    // then leave the slot in the dead-letter queue (an answer, even a 500, counts as delivered).
+    // Plan 4 Task 26: EventBridge Scheduler's own invocation for a schedule trigger. It is an asynchronous invoke: the scheduler is told only that Lambda accepted it, so a fault that may
+    // pass is recorded in the chain dead-letter queue by `fireChainSchedule` and answered; it throws only where it cannot record.
     if (isChainScheduleEvent(event)) {
       const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
       if (chainDependencies?.triggerSchedules === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "schedules are not set up in this deployment");
-      return json(await handleChainSchedule(chainDependencies, event, Date.now()), "chain-schedule");
+      // The scheduler calls the broker asynchronously, so a throw would never reach its retry policy or the chain queue (review I-1): a fire that fails records itself in the chain queue.
+      return json(await fireChainSchedule(chainDependencies, event, Date.now(), dependencies.agents?.scheduleDeadLetters), "chain-schedule");
     }
     // Plan 4 Task 9: every 5 minutes, the chain runs that are due (a step or run that ran out of time, a callback or a decision the run did not hear, an ending left half done).
     if (isChainSweepEvent(event)) {

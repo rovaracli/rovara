@@ -52,6 +52,11 @@ export interface TriggerRecord {
   /** Set when the trigger starts work, so the no-overlap check (Task 26) can read the open run or task. */
   lastRunId?: string;
   lastTaskId?: string;
+  /**
+   * A schedule slot's start under way (Task 26 review M-1): written with a conditional update on the revision before the work is started, so two fires that both saw no open work
+   * cannot both start; the update that notes the started work takes it away. Another slot treats a fresh one as open work; a stale one (a start cut short) is ignored.
+   */
+  startClaim?: { slot: string; at: string };
   /** The one request to turn this trigger on that may still be confirmed (a newer request, a turn-off or a change of spec closes it). */
   pendingApprovalId?: string;
   createdBy: string;
@@ -108,7 +113,7 @@ const conflict = () => coded("CONFIG_INVALID", CONFLICT_TEXT);
 export const isTriggerConflict = (error: unknown): boolean => (error as { code?: unknown; message?: unknown } | null)?.code === "CONFIG_INVALID" && String((error as { message?: unknown }).message).includes(CONFLICT_TEXT);
 
 /** The fields of a record a change may take away. */
-export type ClearableField = "hookId" | "disabledReason" | "scheduleStatus" | "lastFiredAt" | "lastRunId" | "lastTaskId" | "pendingApprovalId";
+export type ClearableField = "hookId" | "disabledReason" | "scheduleStatus" | "lastFiredAt" | "lastRunId" | "lastTaskId" | "startClaim" | "pendingApprovalId";
 const full = (what: string) => coded("CONFIG_INVALID", `${what} already has the most triggers it can have (${String(MAX_TRIGGERS_PER_TARGET)}). Remove one first.`);
 const NOT_EXISTS = "attribute_not_exists(pk)";
 const DAY_SECONDS = 86_400;

@@ -987,7 +987,21 @@ export class ControlPlaneStack extends Stack {
       broker.addToRolePolicy(new iam.PolicyStatement({
         sid: "PassChainScheduleRole", actions: ["iam:PassRole"], resources: [chainScheduleInvokeRole.roleArn], conditions: { StringEquals: { "iam:PassedToService": "scheduler.amazonaws.com" } },
       }));
-      broker.addToRolePolicy(new iam.PolicyStatement({ sid: "DrainChainScheduleDeadLetters", actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage"], resources: [chainScheduleDeadLetters.queueArn] }));
+      // The sweep reads, deletes and parks the dead letters (ChangeMessageVisibility hides one that keeps failing), and a fire that failed records itself here (SendMessage), because the
+      // scheduler invokes the broker asynchronously and never sees its errors. All on this one queue.
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "UseChainScheduleDeadLetters", actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:SendMessage"], resources: [chainScheduleDeadLetters.queueArn],
+      }));
+      // A letter that is parked, or that the sweep cannot clear, gets old: an hour is far past the 5-minute sweep.
+      new cloudwatch.Alarm(this, "ChainScheduleDeadLettersAlarm", {
+        alarmName: naming.alarmName("ChainScheduleDeadLetters"),
+        alarmDescription: "A schedule trigger's fire failed and its record has been in the chain schedule dead-letter queue for an hour or more: the sweep could not handle it, or it was parked after repeated tries. Check the queue and the broker logs (schedule.dead_letter_failed, schedule.dead_letter_parked) for the trigger's id.",
+        metric: chainScheduleDeadLetters.metricApproximateAgeOfOldestMessage({ statistic: "Maximum", period: Duration.minutes(5) }),
+        threshold: 3600,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction(notifyOperator);
     }
     // Gap 6: re-run any workflow dispatch (an automatic review start) left behind after its result committed.
     const workflowDispatchRecoveryRole = new iam.Role(this, "WorkflowDispatchRecoveryRole", {

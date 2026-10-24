@@ -129,7 +129,7 @@ describe("the broker's grants", () => {
     expect(alarms).toHaveLength(1);
     const alarm = alarms[0]![1] as { Properties: Record<string, unknown> };
     expect(alarm.Properties).toMatchObject({
-      AlarmName: expect.stringMatching(/ChainScheduleDeadLetters$/u), Namespace: "AWS/SQS", MetricName: "ApproximateAgeOfOldestMessage", Statistic: "Maximum", Period: 300,
+      AlarmName: "agentx-staging-ChainScheduleDeadLetters", Namespace: "AWS/SQS", MetricName: "ApproximateAgeOfOldestMessage", Statistic: "Maximum", Period: 300,
       Threshold: 3600, EvaluationPeriods: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
       Dimensions: [{ Name: "QueueName", Value: { "Fn::GetAtt": [queueId, "QueueName"] } }],
     });

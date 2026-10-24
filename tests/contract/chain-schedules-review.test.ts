@@ -6,7 +6,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agentXError, orgAutonomousKey, triggerRateKey } from "@agentx/contracts";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { createChainScheduler, createDeadLetters, handleChainSchedule, sweepSchedules, type ScheduleSettings } from "../../packages/broker/src/triggers/schedules.js";
+import { createChainScheduler, createDeadLetters, fireChainSchedule, handleChainSchedule, sweepSchedules, type ScheduleSettings } from "../../packages/broker/src/triggers/schedules.js";
 import type { TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
 import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
 import { ScheduleTriggerSpecSchema } from "../../packages/contracts/src/trigger-specs.js";
@@ -68,11 +68,17 @@ describe("I-1: a fire that fails is recorded in the chain dead-letter queue and 
     expect(queue.sent[0]).not.toContain("/Users");
   });
 
-  it("uses the code of a refusal of ours as the failure", async () => {
-    const { h, queue } = await broker();
-    h.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("TRIGGER#"), error: agentXError("RUNTIME_UNAVAILABLE", "try again") as unknown as { name: string } });
-    await h.handler(event());
-    expect(JSON.parse(queue.sent[0]!)).toMatchObject({ failure: expect.stringMatching(/^[A-Za-z_]{1,64}$/u) });
+  it("uses the code of a refusal of ours as the failure, the error's name otherwise, and `unknown` for a name that is not a plain word", async () => {
+    const record = async (error: Error) => {
+      const put: string[] = [];
+      const deps = { triggers: { get: async () => { throw error; } } } as unknown as TriggerDispatchDependencies;
+      const answer = await fireChainSchedule(deps, { orgId: TEST_ORG, triggerId: "ctr_00000000000000000001", scheduledAt: new Date().toISOString() }, Date.now(), { put: async (body) => { put.push(body); } });
+      expect(answer).toMatchObject({ outcome: "dead_lettered" });
+      return (JSON.parse(put[0]!) as { failure: string }).failure;
+    };
+    expect(await record(agentXError("RUNTIME_UNAVAILABLE", "try again"))).toBe("RUNTIME_UNAVAILABLE");
+    expect(await record(Object.assign(new Error("x"), { name: "ThrottlingException" }))).toBe("ThrottlingException");
+    expect(await record(Object.assign(new Error("x"), { name: "token sk-live-SECRET /Users/x" }))).toBe("unknown");
   });
 
   it("records nothing for a fire that is answered (stale, or an input that is not a slot)", async () => {
