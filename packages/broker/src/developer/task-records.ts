@@ -369,6 +369,12 @@ export function ownerDecisionCounts(task: TaskOwnerSource, actorId: string, deci
   return actorId === (before ? creator : ownerActorIdOf(task));
 }
 
+/** The owner's name for a display: the one recorded, or the fixed `UNNAMED_MEMBER` when none is (or the owner can't be read). Never the creator's name for someone else, never blank. */
+export function ownerDisplayName(task: TaskOwnerSource): string {
+  const name = tryEffectiveTaskOwner(task)?.name;
+  return present(name) ? name : UNNAMED_MEMBER;
+}
+
 /** `effectiveTaskOwner`, for a read that shows or lists rather than decides: `undefined` when the owner can't be read (nobody is the owner then). */
 export function tryEffectiveTaskOwner(task: TaskOwnerSource): TaskOwner | undefined {
   try {

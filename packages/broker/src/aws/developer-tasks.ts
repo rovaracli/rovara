@@ -209,6 +209,7 @@ import {
   taskOwnerLabel,
   taskPointerKey,
   taskShare,
+  ownerDisplayName,
   tryEffectiveTaskOwner,
   type DeveloperTaskIndexRecord,
   type DeveloperTaskPointerRecord,
@@ -588,7 +589,7 @@ export async function planWhyEntries(
   if (task.requestText === undefined) return plannerEntries.map((entry) => ({ text: entry.text, author: PLANNER_WHY_AUTHOR }));
   // The request is its creator's words; a reply from the owner is the owner's now (Plan 5 Task 12a): the person who took the task over, else the creator.
   const requester = ownerLabel(task.developerName);
-  const owner = ownerLabel(tryEffectiveTaskOwner(task)?.name ?? task.developerName);
+  const owner = ownerLabel(ownerDisplayName(task));
   const through = task.threadNotesFedThrough;
   const notes = through === undefined ? []
     : (await readWorkflowThreadNotes(deps, task.taskId, task.threadNotesFedFrom)).filter((note) => note.receivedAt <= through);

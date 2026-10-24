@@ -21,7 +21,7 @@ import { describe, expect, it } from "vitest";
 type Klass = "authority" | "owner-actor" | "attribution" | "index" | "principal" | "history" | "money" | "caller-actor";
 const NEEDS_THE_FUNCTION: ReadonlySet<Klass> = new Set(["authority", "owner-actor", "attribution", "index"]);
 /** Reaching any of these in the function is how a read of an owner goes through the one function. */
-const OWNER_FUNCTIONS = /\b(effectiveTaskOwner|tryEffectiveTaskOwner|ownerActorIdOf|ownerNameOfActor|ownerFenceOf|ownerCallerOf|ownerIndexRowOf|ownerSlackUserOf)\b/u;
+const OWNER_FUNCTIONS = /\b(effectiveTaskOwner|tryEffectiveTaskOwner|ownerActorIdOf|ownerNameOfActor|ownerFenceOf|ownerCallerOf|ownerIndexRowOf|ownerSlackUserOf|ownerDisplayName)\b/u;
 
 type Row = readonly [file: string, fn: string, klass: Klass, ...fields: string[]];
 const ROWS: readonly Row[] = [
