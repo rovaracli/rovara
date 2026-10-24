@@ -48,7 +48,7 @@ it("drops old revisions, ignores frames for unknown subscriptions, and detects m
 });
 it("throttles nav across fifty updates, never on session events, and invalidates everything on reset", async () => {
  clock();const query = createQueryClient(), invalidate = vi.spyOn(query, "invalidateQueries").mockResolvedValue(undefined), apply = createNoticeInvalidator(query);
- expect(queryKeysFor({ type: "session.event", sessionId: SID, eventId: "evt_" + "a".repeat(24) })).toEqual([["session", SID, "events"]]);
+ expect(queryKeysFor({ type: "session.event", sessionId: SID, eventId: "evt_" + "a".repeat(24) })).toEqual([["session", SID, "events"], ["session", SID, "messages"]]);
  for (let revision = 1; revision <= 50; revision += 1) apply.notice({ type: "session.updated", sessionId: SID, revision });
  await settle();expect(invalidate.mock.calls.filter(([options]) => JSON.stringify(options?.queryKey) === '["nav"]')).toHaveLength(1);await vi.advanceTimersByTimeAsync(3000);expect(invalidate.mock.calls.filter(([options]) => JSON.stringify(options?.queryKey) === '["nav"]')).toHaveLength(1);
  invalidate.mockClear();for (let index = 0; index < 50; index++) apply.notice({ type: "session.event", sessionId: SID, eventId: "evt_" + "a".repeat(24) });await vi.advanceTimersByTimeAsync(5000);expect(invalidate.mock.calls.some(([options]) => JSON.stringify(options?.queryKey) === '["nav"]')).toBe(false);

@@ -1,0 +1,3 @@
+import { expect, it } from "vitest";
+import { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema } from "@agentx/contracts/web";
+it("reads the existing org-member response without inventing identity metadata", () => { const body = { members: [{ developerId: "a".repeat(64), name: "Priya", role: "member", joinedAt: "2026-10-23T12:00:00.000Z", identities: ["cloud"] }] };expect(AppOrgMembersResponseSchema.parse(body)).toEqual(body);expect(AppOrgMembersResponseSchema.safeParse({ members: [{ ...body.members[0], cookie: "must-not-be-accepted" }] }).success).toBe(false);expect(AppOrgMembersResponseReaderSchema.parse({ members: [{ ...body.members[0], newerField: true }] }).members[0]?.name).toBe("Priya"); });
