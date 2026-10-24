@@ -15,6 +15,7 @@ import {
   SessionMakeAgentBodySchema,
   agentSessionKey,
   agentKey,
+  agentRequestKey,
   projectMemberKey,
   type AgentId,
   type OrgId,
@@ -160,6 +161,51 @@ describe("saying whether the session's agent was copied (Step 0 ruling)", () => 
     const usableBody = { requestId: randomUUID(), name: "Twice" };
     await usable.make(MAX, usableBody);
     expect(copiedOf(await usable.make(MAX, usableBody))).toEqual({ copied: true, reason: undefined });
+  });
+});
+
+describe("a replay answers the original copied and reason (coordinator ruling on 11b question 2)", () => {
+  const copiedOf = (reply: Record<string, unknown>) => ({ copied: reply["copied"], reason: reply["reason"] });
+  const sessionMeta = (t: ReturnType<typeof world>) => agentSessionKey(ORG_A, t.sid, "META");
+  const OTHER_AGENT = { agentId: "agt_00000000000000000009", name: "Somebody's agent", version: 1 };
+
+  it("keeps copied true after the session's agent changes to one the person can't use", async () => {
+    const t = world();
+    const body = { requestId: randomUUID(), name: "Kept true" };
+    expect(copiedOf(await t.make(MAX, body))).toEqual({ copied: true, reason: undefined });
+    t.w.db.set({ ...t.w.db.get(sessionMeta(t))!, agent: OTHER_AGENT });
+    expect(copiedOf(await t.make(MAX, body))).toEqual({ copied: true, reason: undefined });
+  });
+
+  it("keeps copied false, with its reason, after the session's agent goes", async () => {
+    const t = world({ agent: OTHER_AGENT });
+    const body = { requestId: randomUUID(), name: "Kept false" };
+    expect(copiedOf(await t.make(MAX, body))).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+    const { agent: _gone, ...withoutAgent } = t.w.db.get(sessionMeta(t))! as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars
+    t.w.db.set(withoutAgent as never);
+    expect(copiedOf(await t.make(MAX, body))).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
+  });
+
+  it("stores the report with the request item, never the agent's id or name", async () => {
+    const t = world({ agent: OTHER_AGENT });
+    const requestId = randomUUID();
+    await t.make(MAX, { requestId, name: "Stored" });
+    const stored = JSON.stringify(t.w.db.get(agentRequestKey(ORG_A, MAX, requestId)));
+    expect(stored).toContain("AGENT_NOT_USABLE");
+    expect(stored).not.toContain("Somebody's agent");
+    expect(stored).not.toContain(OTHER_AGENT.agentId);
+  });
+
+  it("answers a request stored before this change (its result is the agent alone) as the draft shows it", async () => {
+    const t = world();
+    const requestId = randomUUID();
+    const first = await t.make(MAX, { requestId, name: "Older" });
+    const agentId = (first["agent"] as { agentId: string }).agentId;
+    const requestKey = agentRequestKey(ORG_A, MAX, requestId);
+    t.w.db.set({ ...t.w.db.get(requestKey)!, result: t.w.db.get(agentKey(ORG_A, agentId, "META")) } as never);
+    expect(copiedOf(await t.make(MAX, { requestId, name: "Older" }))).toEqual({ copied: true, reason: undefined });
+    t.w.db.set({ ...t.w.db.get(sessionMeta(t))!, agent: OTHER_AGENT });
+    expect(copiedOf(await t.make(MAX, { requestId, name: "Older" }))).toEqual({ copied: false, reason: "AGENT_NOT_USABLE" });
   });
 });
 
