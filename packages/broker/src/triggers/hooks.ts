@@ -249,7 +249,7 @@ async function createHook(deps: Deps, caller: AgentCaller, project: string, body
   const earlier = await hooks.store.record(caller.orgId, hookId);
   if (earlier !== undefined) {
     if (earlier.project !== project || earlier.source !== input.source || canonicalJson(earlier.tenant) !== canonicalJson(tenant.data)) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
-    return new StatusReply(200, { hook: await viewOf(deps, hooks, earlier), url: urlOf(hooks, earlier), replayed: true });
+    return new StatusReply(200, { hook: await viewOf(deps, hooks, earlier), url: urlOf(hooks, earlier), ...(provider.setup === undefined ? {} : { setup: provider.setup }), replayed: true });
   }
   if ((await hooks.store.list(caller.orgId, project)).filter((hook) => hook.status !== "disabled").length >= HOOKS_PER_PROJECT_MAX) {
     throw agentXError("CONFIG_INVALID", `${shownText(project, NAME_MAX)} already has the most hooks it can have (${String(HOOKS_PER_PROJECT_MAX)}). Delete one first.`);
@@ -269,7 +269,7 @@ async function createHook(deps: Deps, caller: AgentCaller, project: string, body
     throw error;
   }
   if (!stored) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
-  return new StatusReply(201, { hook: await viewOf(deps, hooks, record), url: urlOf(hooks, record), ...(provider.secretOrigin === "rovara" ? { secret } : {}) });
+  return new StatusReply(201, { hook: await viewOf(deps, hooks, record), url: urlOf(hooks, record), ...(provider.setup === undefined ? {} : { setup: provider.setup }), ...(provider.secretOrigin === "rovara" ? { secret } : {}) });
 }
 
 async function listHooks(deps: Deps, caller: AgentCaller, project: string): Promise<Record<string, unknown>> {

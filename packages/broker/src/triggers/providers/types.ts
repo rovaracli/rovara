@@ -8,11 +8,20 @@ export type HookHeaders = Record<string, string | undefined>;
 
 export type Normalized = { events: TriggerEvent[] } | { ignored: string } | { tenantMismatch: true };
 
+/** What a person is told to do at the vendor once a hook exists: fixed text per provider (never made from a body), shown with the answer that created the hook. */
+export interface HookSetup {
+  steps: string[];
+  /** A payload the vendor has to be given exactly as it is written (Datadog's webhook has no fixed body). */
+  payloadTemplate?: string;
+}
+
 export interface HookProvider {
   source: HookSource;
   /** Who makes the secret: Rovara (shown once on creation) or the vendor (the person pastes it in). */
   secretOrigin: "rovara" | "vendor";
   auth: "hmac" | "token";
+  /** What to set at the vendor, when it is more than pasting an address and a secret. */
+  setup?: HookSetup;
   /** Whether `raw` (the bytes as they arrived) and the headers prove the sender holds `secret`. Never throws for a malformed delivery: it answers false. */
   verify(raw: Buffer, headers: HookHeaders, secret: string): boolean;
   /** The events of a verified, parsed body. Ingress sets `project` and `hookId` on each from the hook record afterwards, whatever this answers. */

@@ -36,10 +36,12 @@ export async function hooksList(deps: DeveloperSessionDeps, env: string | undefi
 function madeText(answer: { body: Body }, verb: string): string {
   const hook = (answer.body.hook ?? {}) as Body;
   const secret = typeof answer.body.secret === "string" ? answer.body.secret : undefined;
+  const setup = (answer.body.setup ?? undefined) as { steps?: unknown; payloadTemplate?: unknown } | undefined;
   return [
     `${verb} hook ${str(hook.hookId)} for ${str(hook.source)}.`,
     `Post the vendor's events to: ${str(hook.url)}`,
     ...(secret === undefined ? ["The secret is the one you gave: it is not shown again."] : [`Its secret, shown once and not kept anywhere you can read it again: ${clean(secret)}`, "Put it in the vendor's webhook settings as that source says (a signing secret or a token header)."]),
+    ...(setup === undefined ? [] : [...(Array.isArray(setup.steps) ? setup.steps : []).map((step, index) => `  ${String(index + 1)}. ${str(step)}`), ...(typeof setup.payloadTemplate === "string" ? ["Payload to paste exactly:", `  ${clean(setup.payloadTemplate)}`] : [])]),
     "",
   ].join("\n");
 }

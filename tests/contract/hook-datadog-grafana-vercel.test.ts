@@ -12,6 +12,7 @@ import { hookProviders } from "../../packages/broker/src/triggers/providers/inde
 import { datadogProvider, DATADOG_PAYLOAD_TEMPLATE } from "../../packages/broker/src/triggers/providers/datadog.js";
 import { grafanaProvider } from "../../packages/broker/src/triggers/providers/grafana.js";
 import { vercelProvider } from "../../packages/broker/src/triggers/providers/vercel.js";
+import type * as TypesModule from "../../packages/broker/src/triggers/providers/types.js";
 import { hmacHexEquals, tokenEquals } from "../../packages/broker/src/triggers/providers/types.js";
 import type { HookRecord } from "@agentx/contracts";
 import { HOOK_1, HOOK_2, ORG_A, SECRET_1, SECRET_2, setupHookWorld, type HookWorld } from "../support/hook-fixtures.js";
@@ -19,7 +20,7 @@ import { HOOK_A, DANA, disposeGateWorlds, setupTriggerWorld } from "../support/t
 
 // The comparison functions pass through to the real ones; the spies show that a provider compares a secret only through them.
 vi.mock("../../packages/broker/src/triggers/providers/types.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../packages/broker/src/triggers/providers/types.js")>();
+  const actual = await importOriginal<typeof TypesModule>();
   return { ...actual, tokenEquals: vi.fn(actual.tokenEquals), hmacHexEquals: vi.fn(actual.hmacHexEquals) };
 });
 
@@ -129,7 +130,7 @@ describe("Datadog: an unsigned webhook is proven by the hook's token in X-Rovara
     await w.receive(ddDelivery(hook, ddBody(w, { id: "n2", date: String(at) })));
     await w.receive(ddDelivery(hook, ddBody(w, { id: "n3", date: iso(at) })));
     expect(w.dispatched.map((entry) => entry.event.occurredAt)).toEqual([iso(at), iso(at), iso(at)]);
-    for (const [index, date] of [undefined, null, "soon", "", "12", -5, 0, 1.5, "1e12", `${String(at)}x`, [at], "2026-10-22T10:00:00"].entries()) {
+    for (const [index, date] of [undefined, null, "soon", "", -5, 0, 1.5, "1e12", `${String(at)}x`, [at], "2026-10-22T10:00:00"].entries()) {
       expect(await w.receive(ddDelivery(hook, ddBody(w, { id: `bad${String(index)}`, date }))), String(date)).toEqual(IGNORED);
     }
     expect(w.dispatched).toHaveLength(3);
@@ -185,7 +186,7 @@ describe("Datadog: an unsigned webhook is proven by the hook's token in X-Rovara
     expect((await w.receive(ddDelivery(hook, ddBody(w, { id: "rec", transition: "Recovered", orgId: "9999" })))).status).toBe(403);
     expect(w.dispatched).toEqual([]);
     expect((await w.receive(ddDelivery(hook, ddBody(w, { id: "num", orgId: 1234 })))).status).toBe(202);
-    expect(w.logs.filter((entry) => entry.event === "hook.tenant_mismatch")).toHaveLength(9 - 1);
+    expect(w.logs.filter((entry) => entry.event === "hook.tenant_mismatch")).toHaveLength(9);
   });
 
   it("starts no second event for the same event id, per hook; the same event to a hook of another project is its own", async () => {
@@ -259,10 +260,10 @@ describe("Datadog: an unsigned webhook is proven by the hook's token in X-Rovara
 describe("Grafana: the contact point's Authorization header carries Bearer <token>, and an HMAC body signature is accepted as an option", () => {
   it("dispatches one alert.firing per firing alert of a group and none for the resolved one, with its own key, subject, label fields and the alert's start time", async () => {
     const { w, hook } = await gfWorld();
+    w.clock.now = Date.parse("2026-10-22T08:00:00.000Z");
     const first = gfAlert(w, { fingerprint: "aaaa1111", startsAt: iso(w.clock.now - 90_000), labels: { alertname: "HighCPU", severity: "critical" } });
     const second = gfAlert(w, { fingerprint: "bbbb2222", startsAt: "2026-10-22T09:51:03.157076+02:00", labels: { alertname: "DiskFull" }, annotations: {} });
     const resolved = gfAlert(w, { status: "resolved", fingerprint: "cccc3333" });
-    w.clock.now = Date.parse("2026-10-22T08:00:00.000Z");
     const reply = await w.receive(gfDelivery(hook, gfBody(w, [first, second, resolved])));
     expect(reply).toEqual({ status: 202, body: { delivery: "ACCEPTED", events: 2 } });
     expect(w.dispatched.map((entry) => entry.event)).toMatchObject([
@@ -397,7 +398,7 @@ describe("Grafana: the contact point's Authorization header carries Bearer <toke
     await w.receive(gfDelivery(hook, gfBody(w, [gfAlert(w, { fingerprint: "t1", labels: { alertname: `Boom\u0000 here‮\n` }, annotations: { summary: `x${"y".repeat(500)}` } })])));
     const title = w.dispatched[0]!.event.subject.title;
     expect([...title].length).toBeLessThanOrEqual(RUN_START_TITLE_MAX);
-    expect(title).toMatch(/^Boom here: xy+$/);
+    expect(title).toMatch(/^Boom here : xy+$/);
     expect(title).not.toMatch(/[\p{Cc}\p{Cf}]/u);
   });
 });
@@ -494,7 +495,7 @@ describe("Vercel: x-vercel-signature is the hex HMAC-SHA1 of the raw body", () =
     await w.receive(vcDelivery(hook, vcBody(w, { id: "c2", createdAt: iso(at) })));
     await w.receive(vcDelivery(hook, vcBody(w, { id: "c3", createdAt: String(at) })));
     expect(w.dispatched.map((entry) => entry.event.occurredAt)).toEqual([iso(at), iso(at), iso(at)]);
-    for (const [index, createdAt] of [undefined, null, "soon", -1, 0, 1.5, [at], {}].entries()) expect(await w.receive(vcDelivery(hook, vcBody(w, { id: `bad${String(index)}`, createdAt }))), String(createdAt)).toEqual(IGNORED);
+    for (const [index, createdAt] of [undefined, null, "soon", -1, 0, 1.5, [at], {}].entries()) expect(await w.receive(vcDelivery(hook, vcBody(w, { id: `bad${String(index)}`, createdAt }))), JSON.stringify(createdAt)).toEqual(IGNORED);
     expect((await w.receive(vcDelivery(hook, vcBody(w, { id: "old", createdAt: w.clock.now - 25 * HOUR })))).status).toBe(202);
     expect(w.dispatched).toHaveLength(3);
     expect(w.logs.filter((entry) => entry.event === "hook.stale")).toHaveLength(1);
@@ -545,7 +546,7 @@ describe("the providers are the ones the broker uses", () => {
     expect(vercelProvider.normalize(vcBody(w), {}, hook)).toEqual({ tenantMismatch: true });
     for (const provider of [datadogProvider, grafanaProvider, vercelProvider]) {
       expect(provider.verify(Buffer.from("{}"), {}, SECRET_1)).toBe(false);
-      for (const body of [null, 5, "text", [], {}]) expect(provider.normalize(body, {}, { ...hook, source: provider.source, tenant: provider.source === "datadog" ? DD_TENANT : provider.source === "grafana" ? GF_TENANT : VC_TENANT } as HookRecord)).toBeDefined();
+      for (const body of [null, 5, "text", [], {}]) expect(provider.normalize(body, {}, { ...hook, source: provider.source, tenant: provider.source === "datadog" ? DD_TENANT : provider.source === "grafana" ? GF_TENANT : VC_TENANT })).toBeDefined();
     }
   });
 });

@@ -61,3 +61,17 @@ export function httpsLinkOnDomain(link: unknown, domain: string): string | undef
     return undefined;
   }
 }
+
+/** An instant given either as milliseconds since 1970 (a number or a numeral) or as an ISO 8601 time with a zone; nothing for anything else. */
+export function isoOfInstant(value: unknown): string | undefined {
+  return typeof value === "string" && /\D/.test(value) ? isoOfText(value) : isoOfMillis(value);
+}
+
+/** `link` when it is a plain https link (no user name, password or port) on one of `domains` or a subdomain of one; nothing otherwise. */
+export function httpsLinkOnAnyDomain(link: unknown, domains: readonly string[]): string | undefined {
+  for (const domain of domains) {
+    const found = httpsLinkOnDomain(link, domain);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}

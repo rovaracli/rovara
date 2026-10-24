@@ -45,6 +45,17 @@ describe("agentx project hooks", () => {
     expect(h.stdout()).not.toContain("\u001b");
   });
 
+  it("prints the setup steps and the exact payload template the control plane sent, neutralised for a terminal", async () => {
+    const template = '{"id":"$ID","orgId":"$ORG_ID"}';
+    const h = await agentsCli({ [`POST ${BASE}`]: Response.json({ hook: hook("datadog"), url: URL_OF("datadog"), secret: "made-by-rovara_0123456789", setup: { steps: ["Set the header X-Rovara-Hook-Token.\u001b[31m", "Paste the payload."], payloadTemplate: template } }, { status: 201 }) });
+    const tenant = await h.file("tenant.json", { datadogOrgId: "1234" });
+    expect(await h.run(["project", "hooks", "create", "web", "--source", "datadog", "--tenant", tenant])).toBe(0);
+    expect(h.stdout()).toContain("1. Set the header X-Rovara-Hook-Token.[U+001B][31m");
+    expect(h.stdout()).toContain("2. Paste the payload.");
+    expect(h.stdout()).toContain(`Payload to paste exactly:\n  ${template}`);
+    expect(h.stdout()).not.toContain("\u001b");
+  });
+
   it("refuses without a source, a readable tenant or a readable secret file, and sends nothing", async () => {
     const h = await agentsCli({});
     const tenant = await h.file("tenant.json", TENANT);

@@ -135,7 +135,7 @@ describe("the hook routes and closing an org, through the broker", () => {
     expect((listed.body["hooks"] as unknown[]).length).toBe(2);
     expect(JSON.stringify(listed.body)).not.toContain(SECRET_1);
     // A source with no provider here can't have a hook.
-    expect((await w.h.dev(MAYA, "POST", "/v1/app/projects/web/event-hooks", { requestId: randomUUID(), source: "datadog", tenant: { datadogOrgId: "1" } })).status).toBe(503);
+    expect((await w.h.dev(MAYA, "POST", "/v1/app/projects/web/event-hooks", { requestId: randomUUID(), source: "cloudwatch", tenant: { awsAccountId: "123456789012", topicArn: "arn:aws:sns:us-east-1:123456789012:alarms" } })).status).toBe(503);
   });
 
   it("turns an org's hooks off and schedules their secrets' deletion when its last owner leaves, and leaves another org's hooks alone", async () => {
