@@ -375,7 +375,7 @@ describe("the origin is set once, here, and never changes", () => {
     t.w.db.send = ((command: { constructor: { name: string }; input?: { Key?: { pk?: string; sk?: string } } }) => {
       if (command.constructor.name === "GetCommand" && command.input?.Key?.pk === meta.pk && command.input.Key.sk === meta.sk) reads += 1;
       return send(command as never);
-    }) as never;
+    });
     const listed = (await t.agents(MAX, "GET", `/v1/app/agents/${made.agentId}/versions`))["versions"] as Array<Record<string, unknown>>;
     expect(listed).toHaveLength(3);
     expect(listed.every((entry) => originOf(entry)?.["visible"] === true)).toBe(true);
