@@ -1,4 +1,4 @@
-import { SessionViewSchema, SessionMessageSchema, type SessionView } from "@agentx/contracts/web";
+import { SessionViewSchema, SessionMessageSchema, DeveloperTaskViewSchema, type SessionView } from "@agentx/contracts/web";
 export const SESSION_FIXTURE_ID = "ses_aaaaaaaaaaaaaaaaaaaa";
 export const sessionPerson = { developerId: "a".repeat(64), name: "Priya" };
 export function sessionFixture(overrides: Partial<SessionView> = {}): SessionView {
@@ -6,4 +6,8 @@ export function sessionFixture(overrides: Partial<SessionView> = {}): SessionVie
 }
 export function messageFixture(overrides: Record<string, unknown> = {}) {
  return SessionMessageSchema.parse({ messageId: "msg_aaaaaaaaaaaaaaaaaaaa", sessionId: SESSION_FIXTURE_ID, kind: "comment", source: "app", author: sessionPerson, text: "Check refunds before retrying.", createdAt: "2026-10-23T12:00:00.000Z", rev: 1, ...overrides });
+}
+
+export function taskFixture(overrides: Record<string, unknown> = {}) {
+ return DeveloperTaskViewSchema.parse({ taskId: "11111111-1111-4111-8111-111111111111", title: "Fix duplicate refunds", project: "payments", status: "RUNNING", startingRevision: 1, client: "app", shared: false, createdAt: "2026-10-23T12:00:00.000Z", updatedAt: "2026-10-23T12:00:00.000Z", events: [], ...overrides });
 }
