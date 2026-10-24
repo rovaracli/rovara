@@ -1,10 +1,8 @@
-// RULING Q13: canonical Plan 5 contract from committed source 5c65bd5e; Node channel hashing is in realtime-node.ts.
 // Realtime notices (Plan 5 Task 8): what is published over AppSync Events, the channel names, and the short-lived token that lets a client connect. A notice carries
 // ids and numbers only; every detail is read again, through the session's own access check, when a client acts on it. Names in a channel hold only characters
 // AppSync Events accepts (a segment is at most 50 of `[A-Za-z0-9-]`, starting and ending with a letter or digit), and never a person's id, a project's name or a
 // title: those are hashed or cut to their id body.
 import { z } from "zod";
-import { forwardReader } from "./session-views.js";
 import { DeviceIdSchema, SessionEventIdSchema, SessionIdSchema, type SessionId } from "./agent-sessions.js";
 import type { OrgId } from "./org.js";
 
@@ -29,18 +27,12 @@ export type RealtimeNotice = z.infer<typeof RealtimeNoticeSchema>;
 
 // ---- channels
 
-
-
 /** The org's id without `org_`: the org segment of every channel. */
 const orgBody = (orgId: OrgId): string => {
   const body = /^org_([0-9a-z]{20})$/u.exec(orgId)?.[1];
   if (body === undefined) throw new Error("an org id is org_ and 20 letters or digits");
   return body;
 };
-
-/** A person's segment: the first 40 hex of the SHA-256 of their id, so no developer id is in a channel name. */
-
-/** A project's segment: the first 40 hex of the SHA-256 of the org and the name (a name may be 63 characters and end in `-`, so it is never in a channel). */
 
 /** A session's segment: `s-` and the id's body, or `c-` and the body of a chain run's id. */
 export function sessionSegment(sessionId: SessionId): string {
@@ -49,10 +41,8 @@ export function sessionSegment(sessionId: SessionId): string {
   return `${matched[1] === "crn" ? "c" : "s"}-${matched[2]!}`;
 }
 
-export const realtimeChannel = (orgId: OrgId, kind: "u" | "s" | "p", segment: string) => `/${REALTIME_NAMESPACE}/o-${orgBody(orgId)}/${kind}/${segment}`;
-
-export const sessionChannel = (orgId: OrgId, sessionId: SessionId): string => realtimeChannel(orgId, "s", sessionSegment(sessionId));
-
+export const channel = (orgId: OrgId, kind: "u" | "s" | "p", segment: string) => `/${REALTIME_NAMESPACE}/o-${orgBody(orgId)}/${kind}/${segment}`;
+export const sessionChannel = (orgId: OrgId, sessionId: SessionId): string => channel(orgId, "s", sessionSegment(sessionId));
 
 export type RealtimeChannel =
   | { kind: "user"; orgBody: string; segment: string }
@@ -128,11 +118,3 @@ export interface ChangesFeedPage {
   /** The cursor was older than the feed keeps: reload what you show, then carry on from `next`. */
   reset?: true;
 }
-
-export const RealtimeNoticeReaderSchema = forwardReader(RealtimeNoticeSchema);
-export const RealtimeTokenResponseReaderSchema = forwardReader(RealtimeTokenResponseSchema);
-const FeedNoticeSchema = z.discriminatedUnion("type", [...RealtimeNoticeSchema.options, SessionSharedNoticeSchema]);
-export const ChangesFeedEntryReaderSchema = z.intersection(forwardReader(FeedNoticeSchema), z.looseObject({ at: z.string().datetime(), sk: z.string().min(1) }));
-export const ChangesFeedPageReaderSchema = z.looseObject({ notices: z.array(ChangesFeedEntryReaderSchema), next: z.string(), reset: z.literal(true).optional() });
-export type ReadRealtimeNotice = z.output<typeof RealtimeNoticeReaderSchema>;
-export type ReadFeedNotice = z.output<typeof ChangesFeedEntryReaderSchema>;

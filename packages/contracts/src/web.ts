@@ -12,7 +12,8 @@ export { scopeKey, pauseKey, spendOriginKind, suggestedTopUpUsd, suggestedMonthT
 
 export { DeveloperSignInMethodSchema, AppMeResponseSchema, AppMeResponseReaderSchema, type AppMeResponse, LinkedIdentitySchema } from "./developer-web.js";
 export { OrgRoleSchema, type OrgRole } from "./org.js";
-export { RealtimeNoticeSchema, RealtimeNoticeReaderSchema, RealtimeTokenResponseReaderSchema, RealtimeTokenResponseSchema, ChangesFeedPageReaderSchema, parseRealtimeChannel, sessionChannel, type RealtimeNotice, type ReadRealtimeNotice, type ReadFeedNotice, type RealtimeTokenResponse } from "./realtime.js";
+export { RealtimeNoticeSchema, RealtimeTokenResponseSchema, parseRealtimeChannel, sessionChannel, type RealtimeNotice, type RealtimeTokenResponse } from "./realtime.js";
+export { RealtimeNoticeReaderSchema, RealtimeTokenResponseReaderSchema, ChangesFeedPageReaderSchema, type ReadRealtimeNotice, type ReadFeedNotice } from "./realtime-readers.js";
 export { PendingConfirmationReaderSchema, PendingAdminApprovalReaderSchema, ApiErrorResponseReaderSchema } from "./pending-api.js";
 
 export type { OrgId } from "./org.js";

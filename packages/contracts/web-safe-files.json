@@ -21,6 +21,7 @@
   "packages/contracts/src/project.ts",
   "packages/contracts/src/public-suffix-rules.ts",
   "packages/contracts/src/public-suffix.ts",
+  "packages/contracts/src/realtime-readers.ts",
   "packages/contracts/src/realtime.ts",
   "packages/contracts/src/session-views.ts",
   "packages/contracts/src/spend.ts",

@@ -99,6 +99,7 @@ export * from "./session-views.js";
 
 export * from "./realtime.js";
 export * from "./realtime-node.js";
+export * from "./realtime-readers.js";
 
 export * from "./app-nav.js";
 
