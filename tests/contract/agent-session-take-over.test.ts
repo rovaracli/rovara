@@ -8,6 +8,7 @@ import { approvalDecideKind } from "../../packages/broker/src/agents/approval-de
 import { createWriteApprovalRecord, getAnyApproval, getApprovalSubjectHandler, getApproverRule, listApprovalsFor, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { WRITE_APPROVER_RULE } from "../../packages/broker/src/agents/write-gate.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { onMembersMerged, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
 import { resolveSessionAccess } from "../../packages/broker/src/agent-sessions/access.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
@@ -662,7 +663,8 @@ describe("faults and races", () => {
     expect((await w.confirm(MAX, approvalId)).statusCode).toBe(200);
     expect(await w.approvalOf(approvalId)).toMatchObject({ status: "APPROVED_DONE" });
     expect(effectiveTaskOwner(w.taskOf(taskId))).toMatchObject({ developerId: MAX, name: "a member" });
-    expect(w.meta(sessionId).owner).toMatchObject({ developerId: MAX, name: "Someone" });
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: MAX, name: "a member" });
+    expect(w.events(sessionId).map((event) => event.text)).toEqual(["a member took over from Priya."]);
   });
 });
 
@@ -868,5 +870,65 @@ describe("approvals already waiting when the session is taken over (12b review I
     await getApprovalSubjectHandler("session_owner")!(w.deps, record);
     expect(await listed(w, MAX)).toEqual([approvalId]);
     expect(await listed(w, PRIYA)).toEqual([]);
+  });
+});
+
+describe("what a take-over leaves behind in the lists and on the tile (12b review minors)", () => {
+  /** The live tile as the summary refresh writes it, owner and revision included. */
+  const seedTile = (w: World, sessionId: string, owner = PRIYA) => w.db.set({ ...liveSessionKey(ORG_A, sessionId), entityType: "LIVE_SESSION", orgId: ORG_A, sessionId, kind: "task", project: "web", ownerId: owner, owner: { developerId: owner, name: "Priya" }, revision: 1, status: "running", createdAt: CREATED_AT, updatedAt: CREATED_AT });
+
+  it("updates the live tile's owner, owner name and revision together", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    seedTile(w, sessionId);
+    await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
+    expect(w.db.get(liveSessionKey(ORG_A, sessionId))).toMatchObject({ ownerId: MAX, owner: { developerId: MAX, name: "Max" }, revision: 2 });
+  });
+
+  it("is not undone by a summary refresh that read the session before the take-over: the refresh looks again and writes the new owner", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    seedTile(w, sessionId);
+    const { approvalId } = await w.asked(MAX, sessionId);
+    const original = w.db.send;
+    let raced = false;
+    w.db.send = async (command) => {
+      if (!raced && command.constructor.name === "TransactWriteCommand" && JSON.stringify((command as { input: unknown }).input).includes("summaryRevision")) {
+        raced = true;
+        w.db.send = original;
+        await w.confirm(MAX, approvalId);
+      }
+      return original(command);
+    };
+    await refreshSessionSummary({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, ORG_A, sessionId as never);
+    expect(raced).toBe(true);
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: MAX });
+    expect(w.db.get(liveSessionKey(ORG_A, sessionId))).toMatchObject({ ownerId: MAX, owner: { developerId: MAX }, revision: 2 });
+  });
+
+  it("takes the session out of the previous owner's own list and leaves it in their shared list", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
+    expect(w.db.get(mySessionsKey(ORG_A, PRIYA, CREATED_AT, sessionId))).toBeUndefined();
+    expect(w.db.get(mySessionsKey(ORG_A, MAX, CREATED_AT, sessionId))).toBeDefined();
+    expect(w.db.get(sharedSessionsKey(ORG_A, { kind: "member", developerId: PRIYA }, sessionId))).toMatchObject({ level: "edit" });
+  });
+
+  it("A to B to C: the middle owner's task-list row and own-session row go too, and the creator's task-list row stays as history", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
+    expect(w.db.get(taskIndexKey(MAX, CREATED_AT, taskId))).toBeDefined();
+    const second = await w.asked(ARJUN, sessionId);
+    const decided = await w.decide(second.approvalId, await w.browser(ARJUN, second.approvalId));
+    expect(decided.statusCode, decided.body).toBe(200);
+    expect(w.meta(sessionId).owner).toMatchObject({ developerId: ARJUN });
+    expect(w.db.get(taskIndexKey(ARJUN, CREATED_AT, taskId))).toBeDefined();
+    expect(w.db.get(taskIndexKey(MAX, CREATED_AT, taskId))).toBeUndefined();
+    expect(w.db.get(mySessionsKey(ORG_A, MAX, CREATED_AT, sessionId))).toBeUndefined();
+    expect(w.db.get(taskIndexKey(PRIYA, CREATED_AT, taskId))).toBeDefined();
+    expect(w.db.get(sharedSessionsKey(ORG_A, { kind: "member", developerId: MAX }, sessionId))).toMatchObject({ level: "edit" });
   });
 });
