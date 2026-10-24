@@ -674,6 +674,21 @@ describe("a workflow retry that fails after Plan 3 committed it (13 review I-1)"
     expect(w.audit!.recordedBy("session.retried")).toHaveLength(1);
   });
 
+  it("does not read a workflow that changed in only one way as a retry that started: the revision alone, or the state alone, is not enough", async () => {
+    for (const after of [{ revision: 3, stage: "PLAN", state: "RUNNING" }, { revision: 4, stage: "PLAN", state: "BLOCKED" }]) {
+      const w = world({ audit: true });
+      const { sessionId, taskId } = w.blocked();
+      const requestId = randomUUID();
+      w.control.retryWorkflow = async () => {
+        w.patchTask(taskId, { workflow: after });
+        throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+      };
+      expect(await code(w.retry(MAX, sessionId, requestId)), JSON.stringify(after)).toMatchObject({ code: "TASK_NOT_FOUND" });
+      expect(w.eventTexts(sessionId)).toEqual([]);
+      expect(w.db.get(agentSessionKey(ORG_A, sessionId, `REQUEST#${requestId}`))).toBeUndefined();
+    }
+  });
+
   it("writes nothing when the workflow did not move: a refusal stays a refusal", async () => {
     const w = world({ audit: true });
     const { sessionId } = w.blocked();
