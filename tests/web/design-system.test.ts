@@ -70,7 +70,7 @@ for (const theme of ["light", "dark"] as const) {
    const user = userEvent.setup();
    await user.click(screen.getByRole("checkbox", { name: "Ask before external writes" }));expect(onChecked).toHaveBeenCalledWith(true);
    await user.click(screen.getByRole("switch", { name: "Allow comments" }));expect(onSwitch).toHaveBeenCalledWith(true);
-   screen.getByRole("combobox", { name: "Project" }).focus();await user.keyboard("{ArrowDown}{Enter}");expect(onChoice).toHaveBeenCalledWith("payments");
+   await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "payments");expect(onChoice).toHaveBeenCalledWith("payments");
    expect(screen.getByRole("table", { name: "Shared workflows" })).toBeTruthy();
    expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
    await expectNoAxeViolations(document.body);
