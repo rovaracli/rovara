@@ -155,9 +155,12 @@ describe("a spend approval resumes a taken-over task as its owner now", () => {
     await t.set(run.taskId, "SET currentOwner = :owner", { ":owner": { developerId: CARL.developerId, name: CARL.name, provider: CARL.provider, since: SINCE } });
     t.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
     t.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: MAYA.developerId, removedAt: "2026-10-22T10:00:00.000Z" });
+    const before = t.taskOps(run.workspaceId).length;
     await t.decide(BEN, request.spendRequestId);
     expect(t.requests().find((record) => record.spendRequestId === request.spendRequestId)).toMatchObject({ status: "APPROVED" });
     expect(t.meta(run.taskId).budgetPause).toBeUndefined();
     expect(t.meta(run.taskId).outcome).toBeUndefined();
+    // The task went on: a new operation, resumed as the taker (the creator is gone and would have been refused). The workspace's identity is the task's principal, which never changes.
+    expect(t.taskOps(run.workspaceId)).toHaveLength(before + 1);
   });
 });

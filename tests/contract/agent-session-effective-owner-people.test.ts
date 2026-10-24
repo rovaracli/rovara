@@ -577,6 +577,23 @@ describe("dispatch fences and pauses under a changing owner", () => {
     expect(outcome).not.toBe("PARKED");
   });
 
+  it("lets a People task go on through another owner when its creator, nobody having taken it over, became a project viewer", async () => {
+    const d = dispatch({ maxRole: "developer", withSidecar: false });
+    const { currentOwner: _taker, ...plain } = d.task() as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out of the copy
+    d.db.set(plain as never);
+    d.seedPerson(PRIYA);
+    d.seedPerson(CASEY);
+    d.db.set({ pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, revision: 4, orphaned: false, people: [
+      { developerId: PRIYA, slackUserId: S_PRIYA, name: "Priya", role: "owner" }, { developerId: CASEY, slackUserId: S_CASEY, name: "Casey", role: "owner" },
+    ] });
+    d.checks.set(PRIYA, { ...d.checks.get(PRIYA)!, projectViewer: true });
+    d.db.set(d.membershipFor(PRIYA, "viewer"));
+    d.db.set(d.membershipFor(CASEY, "developer"));
+    const admission = createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 });
+    // Priya is a viewer and Casey holds the task as an owner: only Casey's judgement counts, so it is allowed, never parked on Priya's role.
+    await expect(guardTaskDispatch({ documentClient: d.db, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: d.checkTaskPerson as never }, d.outbox)).resolves.toBe("ALLOWED");
+  });
+
   it("parks a People task whose creator became a project viewer as ownerless, as before: the viewer check is the taker's alone", async () => {
     const d = dispatch({ maxRole: "developer", withSidecar: false });
     // No take-over here: Priya's own People list, Priya lowered to viewer.
