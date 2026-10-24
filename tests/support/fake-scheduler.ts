@@ -97,7 +97,16 @@ export class FakeDeadLetterQueue {
   readonly messages: Array<{ handle: string; body: string }> = [];
   readonly deleted: string[] = [];
   readonly received: number[] = [];
+  /** Bodies sent to the queue by the code under test (a failed fire records itself here), in order. */
+  readonly sent: string[] = [];
+  /** How many times each message has been received (SQS's ApproximateReceiveCount). */
+  readonly receiveCounts = new Map<string, number>();
+  /** Messages made invisible for a long time by ChangeMessageVisibility: not received again. */
+  readonly parked: Array<{ handle: string; seconds: number }> = [];
+  /** The attribute names the last receive asked for. */
+  lastAttributeRequest: unknown;
   failReceive: Error | undefined;
+  failSend: Error | undefined;
   private counter = 0;
 
   add(body: unknown): string {
@@ -113,13 +122,33 @@ export class FakeDeadLetterQueue {
       if (this.failReceive !== undefined) throw this.failReceive;
       const max = Number(command.input["MaxNumberOfMessages"] ?? 1);
       this.received.push(max);
-      return { Messages: this.messages.slice(0, max).map((message) => ({ MessageId: message.handle, ReceiptHandle: message.handle, Body: message.body })) };
+      this.lastAttributeRequest = command.input["MessageSystemAttributeNames"];
+      const visible = this.messages.filter((message) => !this.parked.some((entry) => entry.handle === message.handle)).slice(0, max);
+      return {
+        Messages: visible.map((message) => {
+          const count = (this.receiveCounts.get(message.handle) ?? 0) + 1;
+          this.receiveCounts.set(message.handle, count);
+          return { MessageId: message.handle, ReceiptHandle: message.handle, Body: message.body, Attributes: { ApproximateReceiveCount: String(count) } };
+        }),
+      };
     }
     if (name === "DeleteMessageCommand") {
       const handle = String(command.input["ReceiptHandle"]);
       this.deleted.push(handle);
       const index = this.messages.findIndex((message) => message.handle === handle);
       if (index >= 0) this.messages.splice(index, 1);
+      return {};
+    }
+    if (name === "SendMessageCommand") {
+      if (this.failSend !== undefined) throw this.failSend;
+      const body = command.input["MessageBody"];
+      if (typeof body !== "string" || body.length > 1024) throw failure("InvalidParameterValue", "the message body is missing or not bounded");
+      this.sent.push(body);
+      this.add(body);
+      return { MessageId: `m${String(this.counter)}` };
+    }
+    if (name === "ChangeMessageVisibilityCommand") {
+      this.parked.push({ handle: String(command.input["ReceiptHandle"]), seconds: Number(command.input["VisibilityTimeout"]) });
       return {};
     }
     throw failure("ValidationException", `${name} is not a command of this fake`);

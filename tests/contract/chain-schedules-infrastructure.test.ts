@@ -7,7 +7,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
-import { chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName } from "@agentx/contracts";
 import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -113,10 +113,29 @@ describe("the broker's grants", () => {
     });
   });
 
-  it("reads and deletes the dead letters of the queue", () => {
-    const found = sid("DrainChainScheduleDeadLetters");
+  it("reads, deletes and parks the dead letters of the queue, and records a failed fire in it (Review I-1, M-4): one statement, that one queue", () => {
+    const found = sid("UseChainScheduleDeadLetters");
     expect(found).toHaveLength(1);
-    expect(found[0]!.statement).toEqual({ Sid: "DrainChainScheduleDeadLetters", Effect: "Allow", Action: ["sqs:ReceiveMessage", "sqs:DeleteMessage"], Resource: { "Fn::GetAtt": [queueId, "Arn"] } });
+    expect(found[0]!.statement).toEqual({
+      Sid: "UseChainScheduleDeadLetters", Effect: "Allow", Action: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:SendMessage"], Resource: { "Fn::GetAtt": [queueId, "Arn"] },
+    });
+    expect(sid("DrainChainScheduleDeadLetters")).toEqual([]);
+    const sends = statements.filter((entry) => [entry.statement.Action].flat().includes("sqs:SendMessage") && JSON.stringify(entry.statement.Resource).includes(queueId));
+    expect(sends).toHaveLength(1);
+  });
+
+  it("alarms the operator when the oldest message in the queue is an hour old (Review M-4): a parked or stuck letter is seen", () => {
+    const alarms = Object.entries(named.findResources("AWS::CloudWatch::Alarm")).filter(([id]) => id.startsWith("ChainScheduleDeadLettersAlarm"));
+    expect(alarms).toHaveLength(1);
+    const alarm = alarms[0]![1] as { Properties: Record<string, unknown> };
+    expect(alarm.Properties).toMatchObject({
+      AlarmName: expect.stringMatching(/ChainScheduleDeadLetters$/u), Namespace: "AWS/SQS", MetricName: "ApproximateAgeOfOldestMessage", Statistic: "Maximum", Period: 300,
+      Threshold: 3600, EvaluationPeriods: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
+      Dimensions: [{ Name: "QueueName", Value: { "Fn::GetAtt": [queueId, "QueueName"] } }],
+    });
+    expect(alarm.Properties["AlarmActions"]).toHaveLength(1);
+    expect(HEALTH_ALARM_SUFFIXES).toContain("ChainScheduleDeadLetters");
+    expect(byType(build("SchedLegacy2", { env: null }), "AWS::CloudWatch::Alarm").filter(([id]) => id.startsWith("ChainScheduleDeadLettersAlarm"))).toEqual([]);
   });
 
   it("grants no other scheduler action, and no PassRole of any other role through these statements", () => {
@@ -130,7 +149,7 @@ describe("the broker's grants", () => {
   it("falls in the integrations managed policy (the orchestration one has no room), the drain of the queue beside the other sqs grants, and every broker policy stays under the 5,500 characters the M2 guard allows", () => {
     expect(sid("ManageChainSchedules")[0]!.policy).toBe("agentx-staging-broker-integrations");
     expect(sid("PassChainScheduleRole")[0]!.policy).toBe("agentx-staging-broker-integrations");
-    expect(sid("DrainChainScheduleDeadLetters")[0]!.policy).toBe("agentx-staging-broker-orchestration");
+    expect(sid("UseChainScheduleDeadLetters")[0]!.policy).toBe("agentx-staging-broker-orchestration");
     for (const policy of Object.values(named.findResources("AWS::IAM::ManagedPolicy")) as Policy[]) {
       if (!(policy.Properties.ManagedPolicyName ?? "").startsWith("agentx-staging-broker-")) continue;
       expect(JSON.stringify(policy.Properties.PolicyDocument).length, policy.Properties.ManagedPolicyName).toBeLessThan(5500);

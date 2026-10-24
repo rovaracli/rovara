@@ -90,7 +90,7 @@ describe("the scheduler's invocation, through the deployed broker's handler", ()
     await expect(h.handler(event())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
-  it("throws a fault that may pass, rather than answering it", async () => {
+  it("throws a fault that may pass where there is no chain queue to record it in (with one, the fire records itself there: chain-schedules-review.test.ts)", async () => {
     const { h } = await broker();
     h.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify(input).includes("TRIGGER#"), error: { name: "ProvisionedThroughputExceededException" } });
     await expect(h.handler(event())).rejects.toThrow();
