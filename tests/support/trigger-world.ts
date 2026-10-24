@@ -77,7 +77,7 @@ export interface TriggerWorld extends GateWorld {
   /** A hook of org A on web for `source`. */
   hook(source: string, hookId?: string, over?: Partial<TriggerHook>): TriggerHook;
   /** A Linear or Jira connection of org A whose check recorded `actorId`; `identity` says whose key it is (a service account unless a test says otherwise). */
-  connection(type: "linear" | "jira", actorId?: string, identity?: "service" | "personal" | undefined): void;
+  connection(type: "linear" | "jira", actorId?: string, identity?: "service" | "personal" | "unmarked"): void;
   /** A trigger stored directly: how the tests of rechecks, movers and the matching start from a trigger that is already on. */
   seed(over?: Partial<TriggerRecord> & { target: TriggerRecord["target"] }): Promise<TriggerRecord>;
   notices(developerId: string): Promise<string[]>;
@@ -132,7 +132,7 @@ export function setupTriggerWorld(options: WorldOptions = {}): TriggerWorld {
   const connection: TriggerWorld["connection"] = (type, actorId = "vendor-user-1", identity = "service") => {
     const connectionId = `con_${(type === "linear" ? "l" : "j").repeat(20)}`;
     w.db.set({ ...connectionsKey(ORG_A, connectionId), entityType: "CONNECTION_DIRECTORY", connectionId });
-    w.db.set({ ...connectionKey(ORG_A, connectionId), entityType: "ORG_CONNECTION", orgId: ORG_A, connectionId, type, actorId, ...(identity === undefined ? {} : { identity }) });
+    w.db.set({ ...connectionKey(ORG_A, connectionId), entityType: "ORG_CONNECTION", orgId: ORG_A, connectionId, type, actorId, ...(identity === "unmarked" ? {} : { identity }) });
   };
   let counter = 0;
   const seed: TriggerWorld["seed"] = async (over) => {

@@ -23,11 +23,19 @@ export const JiraSiteUrlSchema = z.string().regex(/^https:\/\/[a-z0-9](?:[a-z0-9
 
 const McpVendorSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 .&+-]{0,31}$/);
 
+/**
+ * Whose key a Linear or Jira connection holds, said by the person who makes it (the vendor does not tell a bot from a person). A `service` identity is an account only Rovara
+ * uses, so every ticket it makes is Rovara's and the trigger loop guard skips it. A `personal` key is a person's own: the guard cannot tell their tickets from Rovara's, so it
+ * does not skip them (the subject guard and the run caps bound a loop instead). Left out, it is read as personal.
+ */
+export const ConnectionIdentitySchema = z.enum(["service", "personal"]);
+export type ConnectionIdentity = z.infer<typeof ConnectionIdentitySchema>;
+
 const Common = { connectionId: ConnectionIdSchema, label: LabelSchema, access: ConnectionAccessSchema } as const;
 
 export const OrgConnectionSchema = z.discriminatedUnion("type", [
-  z.object({ ...Common, type: z.literal("linear") }).strict(),
-  z.object({ ...Common, type: z.literal("jira"), siteUrl: JiraSiteUrlSchema }).strict(),
+  z.object({ ...Common, type: z.literal("linear"), identity: ConnectionIdentitySchema.optional() }).strict(),
+  z.object({ ...Common, type: z.literal("jira"), siteUrl: JiraSiteUrlSchema, identity: ConnectionIdentitySchema.optional() }).strict(),
   z.object({ ...Common, type: z.literal("mcp"), endpoint: McpEndpointSchema, vendor: McpVendorSchema, auth: McpAuthSchema.optional() }).strict(),
   // Plan 4 Task 11: Sentry, Datadog, CloudWatch, Grafana, Vercel and PagerDuty, read-only.
   ...ObservabilityConnectionSchemas,

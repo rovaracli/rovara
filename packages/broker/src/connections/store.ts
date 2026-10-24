@@ -230,6 +230,19 @@ export async function connectionActorIds(deps: Pick<OrgConnectionDeps, "document
   return ids;
 }
 
+/**
+ * The vendor account ids of this org's connections of one type that are marked as service identities: the accounts only Rovara uses, so what they make is Rovara's. A connection
+ * made with a person's own key, or not marked, is left out, because that person's tickets are not Rovara's.
+ */
+export async function connectionServiceActorIds(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: string, type: ConnectionType): Promise<Set<string>> {
+  const org = parseOrg(orgId);
+  const ids = new Set<string>();
+  for (const item of await listItems(deps, org)) {
+    if (item.type === type && item.identity === "service" && typeof item.actorId === "string" && item.actorId !== "") ids.add(item.actorId);
+  }
+  return ids;
+}
+
 export class OrgConnectionStore {
   constructor(private readonly input: OrgConnectionStoreInput) {}
 

@@ -31,7 +31,7 @@ import { resolveAgentForAutonomousRun } from "../agents/roster.js";
 import { resolveSurvivor } from "../agents/access.js";
 import { buildHandoff, type HandoffTrigger } from "../chains/handoff.js";
 import { readChainRun, startChainRun, type ChainRunnerDependencies } from "../chains/runner.js";
-import { connectionActorIds } from "../connections/store.js";
+import { connectionServiceActorIds } from "../connections/store.js";
 import { resolvePayer } from "../spend/payer.js";
 import { disableTrigger } from "./lifecycle.js";
 import { runOwnerFor, triggerProblems } from "./requirements.js";
@@ -79,7 +79,8 @@ export function requestIdFor(identity: string): string {
 }
 
 /**
- * The accounts of Rovara's own that an event's actor is told from, per source: GitHub's `<appSlug>[bot]`, and for Linear and Jira the account each connection's check recorded.
+ * The accounts of Rovara's own that an event's actor is told from, per source: GitHub's `<appSlug>[bot]`, and for Linear and Jira the account of each connection marked as a
+ * service identity. A connection made with a person's own key is not Rovara's account, so that person's tickets are not skipped (the subject guard and the caps bound a loop).
  * Other sources have no account of Rovara's, so none.
  */
 export async function rovaraActorIds(deps: Pick<TriggerDispatchDependencies, "documentClient" | "tableName" | "githubAppSlug">, orgId: OrgId, source: EventSource): Promise<Set<string>> {
@@ -87,7 +88,7 @@ export async function rovaraActorIds(deps: Pick<TriggerDispatchDependencies, "do
     const slug = await deps.githubAppSlug?.();
     return slug === undefined || slug === "" ? new Set() : new Set([`${slug}[bot]`]);
   }
-  if (source === "linear" || source === "jira") return connectionActorIds(deps, orgId, source);
+  if (source === "linear" || source === "jira") return connectionServiceActorIds(deps, orgId, source);
   return new Set();
 }
 

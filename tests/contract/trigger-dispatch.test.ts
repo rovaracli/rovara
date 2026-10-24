@@ -449,7 +449,7 @@ describe("the actor guard applies only to a service identity (controller ruling,
   it("counts only the accounts of connections marked as service identities as Rovara's own", async () => {
     const { v, deps } = setup();
     v.connection("linear", "lin-person", "personal");
-    v.connection("jira", "jira-unmarked", undefined);
+    v.connection("jira", "jira-unmarked", "unmarked");
     expect(await rovaraActorIds(deps, ORG_A, "linear")).toEqual(new Set());
     expect(await rovaraActorIds(deps, ORG_A, "jira")).toEqual(new Set());
     // Two Linear connections: only the service one counts.

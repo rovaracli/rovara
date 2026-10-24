@@ -80,6 +80,18 @@ function setupOf(deps: ConnectionRouteDependencies, caller: AgentCaller, record:
   return { setup: { externalId, trustPolicy: cloudwatchTrustPolicy({ brokerRoleArn: deps.brokerRoleArn, externalId }) } };
 }
 
+/** The warning code of a Linear or Jira connection that is not marked as a service identity: a fixed code and fixed words, with nothing of the connection in them. */
+export const PERSONAL_KEY_WARNING = {
+  code: "PERSONAL_KEY_LOOP_GUARD_LIMITED",
+  message: "This connection uses a personal key, so Rovara cannot tell its own tickets from that person's: their tickets can start work, and only the repeat guard and the run limits stop a loop. A service account is recommended; mark the connection with identity \"service\" once it is one.",
+} as const;
+
+/** What a save adds to its answer: the personal-key warning for a Linear or Jira connection not marked `service`; nothing for any other. */
+function warningsOf(record: OrgConnectionRecord): { warnings?: Array<typeof PERSONAL_KEY_WARNING> } {
+  if (record.type !== "linear" && record.type !== "jira") return {};
+  return record.identity === "service" ? {} : { warnings: [PERSONAL_KEY_WARNING] };
+}
+
 const notFound = () => agentXError("NOT_FOUND", "no connection has that ID");
 
 /** An id in a path: one that is not shaped like a connection id is as unknown as one nobody has. */
@@ -141,7 +153,7 @@ async function createConnection(deps: ConnectionRouteDependencies, caller: Agent
   const input = parseBody(SaveBodySchema, body);
   const connectionId = mintConnectionId(caller, input.requestId);
   const { mark, replay } = await markRequest(deps, caller, "create", "", input);
-  if (replay !== undefined) return new StatusReply(201, { connection: view(replay.result as OrgConnectionRecord) });
+  if (replay !== undefined) return new StatusReply(201, { connection: view(replay.result as OrgConnectionRecord), ...warningsOf(replay.result as OrgConnectionRecord) });
   const connection = withId(input.connection, connectionId, false);
   // The id comes from the request id, so a connection already there means a request id used again after its memory expired: `requireNew` refuses it,
   // and the write itself is conditional on there being none.
@@ -149,19 +161,19 @@ async function createConnection(deps: ConnectionRouteDependencies, caller: Agent
     orgId: caller.orgId, connection, ...(input.secret === undefined ? {} : { secret: input.secret }),
     by: caller.developerId, requestId: input.requestId, request: mark, requireNew: true,
   });
-  return new StatusReply(201, { connection: view(saved) });
+  return new StatusReply(201, { connection: view(saved), ...warningsOf(saved) });
 }
 
 async function saveConnection(deps: ConnectionRouteDependencies, caller: AgentCaller, connectionId: string, body: unknown): Promise<unknown> {
   requireAdmin(caller);
   const input = parseBody(SaveBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "save", connectionId, input);
-  if (replay !== undefined) return { connection: view(replay.result as OrgConnectionRecord) };
+  if (replay !== undefined) return { connection: view(replay.result as OrgConnectionRecord), ...warningsOf(replay.result as OrgConnectionRecord) };
   const saved = await deps.store.put({
     orgId: caller.orgId, connection: withId(input.connection, connectionId, true), ...(input.secret === undefined ? {} : { secret: input.secret }),
     by: caller.developerId, requestId: input.requestId, request: mark, requireExisting: true,
   });
-  return { connection: view(saved) };
+  return { connection: view(saved), ...warningsOf(saved) };
 }
 
 async function removeConnection(deps: ConnectionRouteDependencies, caller: AgentCaller, connectionId: string, body: unknown): Promise<unknown> {
