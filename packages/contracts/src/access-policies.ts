@@ -201,6 +201,19 @@ export function connectorSecretsRoleName(env: string): string {
 }
 
 /**
+ * The role EventBridge Scheduler assumes to invoke the broker for a schedule trigger (Plan 4 Task 26), and the queue that keeps the invocations that failed. Fixed names, so the broker
+ * builds the role's ARN and the queue's URL from the environment (like the connector secrets role) and its environment, held to 4 KB, carries neither. The role is created under the
+ * environment's path like every other, so a fixed-name role needs its path-less ARN in the deploy role's lookup grant where that list exists.
+ */
+export function chainScheduleRoleName(env: string): string {
+  return `agentx-${env}-chain-schedule`;
+}
+
+export function chainScheduleQueueName(env: string): string {
+  return `agentx-${env}-chain-schedule-dead-letters`;
+}
+
+/**
  * The three roles that hold an `sts:AssumeRole` grant into another AWS account's role, with fixed names so the default boundary's AssumeOrgRoles statement can name
  * them exactly (CloudFormation's generated names are cut short and carry a hash, which no ArnLike can name). Longest, for a 20-character environment: 46 characters.
  */

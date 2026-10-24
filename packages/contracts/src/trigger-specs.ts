@@ -18,6 +18,11 @@ export const TRIGGER_SUBJECT_GUARD_MINUTES = 30;
 export const TRIGGER_FILTER_VALUES_MAX = 10;
 export const TRIGGER_FILTER_VALUE_MAX_CHARS = 100;
 
+/** The EventBridge Scheduler group that holds the schedules of an environment's schedule triggers (Task 26). */
+export function chainScheduleGroupName(env: string): string {
+  return `agentx-${env}-chain-triggers`;
+}
+
 // ---- event sources, types and filters
 
 export const EVENT_SOURCES = ["github", "linear", "jira", "pagerduty", "sentry", "datadog", "grafana", "vercel", "cloudwatch"] as const;

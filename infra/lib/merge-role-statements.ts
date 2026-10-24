@@ -73,7 +73,9 @@ export const BROKER_POLICY_GROUPS = ["state", "orchestration", "integrations"] a
 export type BrokerPolicyGroup = (typeof BROKER_POLICY_GROUPS)[number];
 
 const STATE_SERVICES = new Set(["dynamodb", "s3", "kms"]);
-const ORCHESTRATION_SERVICES = new Set(["lambda", "sqs", "states", "events", "scheduler", "ecs", "ec2", "ssm", "sts", "iam", "logs", "cloudwatch"]);
+// `scheduler` and `iam` are not here (Plan 4 Task 26): the broker's schedule statements (manage the group's schedules, pass the one invoke role) fall in the integrations group,
+// which has room, because the orchestration group was past the 5,500-character guard with them. No grant of either service existed before, so no other statement moved.
+const ORCHESTRATION_SERVICES = new Set(["lambda", "sqs", "states", "events", "ecs", "ec2", "ssm", "sts", "logs", "cloudwatch"]);
 
 /** The group a statement belongs to, by the service of its first action (a stable choice, so a new grant never reshuffles the others). */
 export function brokerPolicyGroup(statement: iam.PolicyStatement): BrokerPolicyGroup {

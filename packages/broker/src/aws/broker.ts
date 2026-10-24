@@ -404,6 +404,8 @@ import type { AgentRouteDependencies } from "../agents/routes.js";
 import { ChainStore } from "../chains/store.js";
 import { TriggerStore } from "../triggers/store.js";
 import type { TriggerHookReader, TriggerScheduler } from "../triggers/ports.js";
+import { CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, handleChainSchedule, scheduleSettingsFromEnvironment, sweepSchedules, type ScheduleDeadLetters } from "../triggers/schedules.js";
+import { SchedulerClient } from "@aws-sdk/client-scheduler";
 import { dispatchTriggerEvent } from "../triggers/dispatch.js";
 import { deliverGithubTriggerEvents, healGithubRepoIndex } from "../triggers/github-events.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../triggers/lifecycle.js";
@@ -630,7 +632,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory; /** Plan 4 Task 25: which AWS accounts an org connected (default: its CloudWatch connections) and the fetch under SNS certificate and confirmation requests. */ awsAccounts?: ConnectedAwsAccounts; snsFetch?: typeof fetch }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory; /** Plan 4 Task 25: which AWS accounts an org connected (default: its CloudWatch connections) and the fetch under SNS certificate and confirmation requests. */ awsAccounts?: ConnectedAwsAccounts; snsFetch?: typeof fetch }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; /** Plan 4 Task 26: the queue that keeps the schedule invocations that failed, drained by the chain sweep. */ scheduleDeadLetters?: ScheduleDeadLetters; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -1675,12 +1677,27 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
       return json({ jobs: await runSettlementJobs(jobs, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))) }, "spend-settlement");
     }
+    // Plan 4 Task 26: EventBridge Scheduler's own invocation for a schedule trigger. A fault that may pass is thrown, not answered: only a thrown error makes the scheduler try again and
+    // then leave the slot in the dead-letter queue (an answer, even a 500, counts as delivered).
+    if (isChainScheduleEvent(event)) {
+      const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
+      if (chainDependencies?.triggerSchedules === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "schedules are not set up in this deployment");
+      return json(await handleChainSchedule(chainDependencies, event, Date.now()), "chain-schedule");
+    }
     // Plan 4 Task 9: every 5 minutes, the chain runs that are due (a step or run that ran out of time, a callback or a decision the run did not hear, an ending left half done).
     if (isChainSweepEvent(event)) {
       try {
         const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
         if (chainDependencies === undefined) return json({ skipped: true }, "chain-sweep");
-        return json(await sweepChainRuns(chainDependencies, Date.now()), "chain-sweep");
+        const runs = await sweepChainRuns(chainDependencies, Date.now());
+        // Plan 4 Task 26: the same sweep drains up to 10 schedule dead letters and repairs schedules still pending; its part never changes what the sweep of runs answers where schedules are not set up.
+        const deadLetters = dependencies.agents?.scheduleDeadLetters;
+        if (chainDependencies.triggerSchedules === undefined && deadLetters === undefined) return json(runs, "chain-sweep");
+        const schedules = await sweepSchedules(chainDependencies, { ...(deadLetters === undefined ? {} : { deadLetters }), now: Date.now() }).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "broker", event: "chain_sweep.schedules_failed", error: error instanceof Error ? error.name : "unknown" }));
+          return { error: "schedule_sweep_failed" };
+        });
+        return json({ ...runs, schedules }, "chain-sweep");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "chain_sweep.failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "sweep_failed" }, "chain-sweep", 500);
@@ -11144,6 +11161,11 @@ function isGithubWebhookRecoveryEvent(event: unknown): event is { source: "agent
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.github-webhook-recovery";
 }
 
+/** The scheduler's invocation: an event of its own, which has no request context (a request through the API always has one, so its body can never pass for this). */
+function isChainScheduleEvent(event: unknown): event is { source: typeof CHAIN_SCHEDULE_SOURCE } {
+  return event !== null && typeof event === "object" && !("requestContext" in event) && (event as { source?: unknown }).source === CHAIN_SCHEDULE_SOURCE;
+}
+
 function isChainSweepEvent(event: unknown): event is { source: "agentx.chain-sweep" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.chain-sweep";
 }
@@ -14381,6 +14403,7 @@ const modelAccess = modelAccessFunctionName === undefined || modelAccessFunction
 // Spec 025 A13: the health route's probes (health-probes.ts); clients are called only per request.
 const cloudWatch = new CloudWatchClient(awsClientConfiguration);
 const sqs = new SQSClient(awsClientConfiguration);
+const scheduleSettings = scheduleSettingsFromEnvironment(process.env);
 
 // The Audit Ledger's outbox (Task 6): set only where the control plane has the intake queue (named environments). Its
 // clients give up quickly (AUDIT_SDK_REQUEST_TIMEOUT_MS, two attempts) so that auditing can never hold an action for
@@ -14490,6 +14513,11 @@ export const handler = createAwsBrokerHandler({
     registerChainRunner: true,
     ...(bedrockTrustPrincipals.length === 0 ? {} : { modelSources: { bedrockTrustPrincipals } }),
     ...(orgConnections === undefined ? {} : { eventHooks: { secrets: new HookSecretStore({ env: orgConnections.env, secrets: orgConnections.secrets }) } }),
+    // Plan 4 Task 26: schedule triggers, where the control plane named the schedule role and the dead-letter queue (a named environment).
+    ...(scheduleSettings === undefined ? {} : {
+      triggerSchedules: createChainScheduler({ client: new SchedulerClient(awsClientConfiguration), settings: scheduleSettings }),
+      scheduleDeadLetters: createDeadLetters({ sqs, queueUrl: scheduleSettings.queueUrl }),
+    }),
   } } : {}),
   // Plan 3, Task 21a-wiring: the confirmation page and the decide routes exist on a cloud install with the developer sign-in (the grants on the sign-in
   // table's DECIDE_ keys are cloud only). Hard gate before any deploy: Task 37 confirms Cognito's `amr` first.

@@ -19,6 +19,7 @@ function failure(name: string, message: string): Error {
 }
 
 const NAME = /^[0-9a-zA-Z-_.]{1,64}$/;
+const text = (value: unknown, otherwise: string): string => (typeof value === "string" ? value : otherwise);
 
 export class FakeSchedulerClient {
   /** The schedules, by `<group>/<name>`. */
@@ -30,7 +31,7 @@ export class FakeSchedulerClient {
   /** Calls that fail with this error while it is set, whatever the command (an outage). */
   down: Error | undefined;
 
-  private key = (group: unknown, name: unknown): string => `${String(group ?? "default")}/${String(name)}`;
+  private key = (group: unknown, name: unknown): string => `${text(group, "default")}/${text(name, "")}`;
 
   /** The schedule of the trigger in the group, as the scheduler holds it. */
   get(group: string, name: string): FakeSchedule | undefined {
@@ -68,13 +69,13 @@ export class FakeSchedulerClient {
       case "CreateScheduleCommand": {
         this.check(input);
         if (this.schedules.has(key)) throw failure("ConflictException", "the schedule exists");
-        this.schedules.set(key, { name: String(input["Name"]), group: String(input["GroupName"] ?? "default"), input: structuredClone(input), state: (input["State"] as "ENABLED" | "DISABLED" | undefined) ?? "ENABLED" });
+        this.schedules.set(key, { name: text(input["Name"], ""), group: text(input["GroupName"], "default"), input: structuredClone(input), state: (input["State"] as "ENABLED" | "DISABLED" | undefined) ?? "ENABLED" });
         return { ScheduleArn: `arn:aws:scheduler:us-east-1:123456789012:schedule/${key}` };
       }
       case "UpdateScheduleCommand": {
         this.check(input);
         if (!this.schedules.has(key)) throw failure("ResourceNotFoundException", "no such schedule");
-        this.schedules.set(key, { name: String(input["Name"]), group: String(input["GroupName"] ?? "default"), input: structuredClone(input), state: (input["State"] as "ENABLED" | "DISABLED" | undefined) ?? "ENABLED" });
+        this.schedules.set(key, { name: text(input["Name"], ""), group: text(input["GroupName"], "default"), input: structuredClone(input), state: (input["State"] as "ENABLED" | "DISABLED" | undefined) ?? "ENABLED" });
         return { ScheduleArn: `arn:aws:scheduler:us-east-1:123456789012:schedule/${key}` };
       }
       case "GetScheduleCommand": {

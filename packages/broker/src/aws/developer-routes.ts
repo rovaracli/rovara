@@ -1852,7 +1852,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
     const connections = deps.orgConnections ?? deps.agents?.connections;
     const clearConnections = deps.closeOrgHooks?.clearConnections ?? (connections === undefined ? undefined : (orgId: OrgId) => clearOrgConnections({ store: connections }, orgId));
     const triggers = deps.agents?.triggers;
-    const clearTriggers = deps.closeOrgHooks?.clearTriggers ?? (triggers === undefined ? undefined : (orgId: OrgId) => deleteOrgTriggers({ triggers }, orgId));
+    const clearTriggers = deps.closeOrgHooks?.clearTriggers ?? (triggers === undefined ? undefined : (orgId: OrgId) => deleteOrgTriggers({ triggers, ...(deps.agents?.triggerSchedules === undefined ? {} : { triggerSchedules: deps.agents.triggerSchedules }) }, orgId));
     const eventHooks = deps.agents?.eventHooks;
     const clearHooks = deps.closeOrgHooks?.clearHooks ?? (eventHooks === undefined ? undefined : (orgId: OrgId) => clearOrgHooks({ store: eventHooks.store, secrets: eventHooks.secrets }, orgId));
     const modelSources = deps.agents?.modelSources;
@@ -1861,7 +1861,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)),
       // Plan 3 Task 12, PF11: the org's connection secrets are scheduled for deletion with the org.
       ...(clearConnections === undefined ? {} : { clearConnections }),
-      // Plan 4 Task 18: the org's triggers, their activity and their notices go with it.
+      // Plan 4 Task 18: the org's triggers, their activity and their notices go with it (and, Task 26, the schedules of its schedule triggers).
       ...(clearTriggers === undefined ? {} : { clearTriggers }),
       // Plan 4 Task 19: its event hooks stop receiving, and their secrets are scheduled for deletion.
       ...(clearHooks === undefined ? {} : { clearHooks }),

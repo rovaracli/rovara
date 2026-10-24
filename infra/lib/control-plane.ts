@@ -37,7 +37,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { HEALTH_ALARM_SUFFIXES, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { TaskPersonProof } from "./task-person-proof.js";
@@ -958,6 +958,36 @@ export class ControlPlaneStack extends Stack {
           retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
         },
       });
+    }
+    // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets
+    // aws:SourceArn to the schedule GROUP's ARN, not the schedule's, so that is what the role's trust names (a `schedule/...` pattern would never match, and a schedule of any
+    // other group is refused). The role can invoke the broker function and write the dead-letter queue, nothing else. The queue is encrypted with SQS-managed keys, so no KMS
+    // permission is needed on either side. The broker manages the group's schedules, passes that one role to the scheduler, and reads and deletes the dead letters. Named
+    // environments only, like the chains' own routes. The role and the queue have fixed names and the group's name is derived from the environment, so the broker builds all three from AGENTX_ENV and passes nothing (Lambda's 4 KB).
+    if (naming.env !== undefined) {
+      const scheduleGroupName = chainScheduleGroupName(naming.env);
+      new scheduler.CfnScheduleGroup(this, "ChainScheduleGroup", { name: scheduleGroupName });
+      const chainScheduleDeadLetters = new sqs.Queue(this, "ChainScheduleDeadLetters", { queueName: chainScheduleQueueName(naming.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(14) });
+      const chainScheduleInvokeRole = new iam.Role(this, "ChainScheduleInvokeRole", {
+        roleName: chainScheduleRoleName(naming.env),
+        assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com", { conditions: {
+          StringEquals: {
+            "aws:SourceAccount": this.account,
+            "aws:SourceArn": `arn:${this.partition}:scheduler:${this.region}:${this.account}:schedule-group/${scheduleGroupName}`,
+          },
+        } }),
+      });
+      chainScheduleInvokeRole.addToPolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [broker.functionArn] }));
+      chainScheduleInvokeRole.addToPolicy(new iam.PolicyStatement({ actions: ["sqs:SendMessage"], resources: [chainScheduleDeadLetters.queueArn] }));
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "ManageChainSchedules",
+        actions: ["scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule", "scheduler:GetSchedule"],
+        resources: [`arn:${this.partition}:scheduler:${this.region}:${this.account}:schedule/${scheduleGroupName}/*`],
+      }));
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "PassChainScheduleRole", actions: ["iam:PassRole"], resources: [chainScheduleInvokeRole.roleArn], conditions: { StringEquals: { "iam:PassedToService": "scheduler.amazonaws.com" } },
+      }));
+      broker.addToRolePolicy(new iam.PolicyStatement({ sid: "DrainChainScheduleDeadLetters", actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage"], resources: [chainScheduleDeadLetters.queueArn] }));
     }
     // Gap 6: re-run any workflow dispatch (an automatic review start) left behind after its result committed.
     const workflowDispatchRecoveryRole = new iam.Role(this, "WorkflowDispatchRecoveryRole", {

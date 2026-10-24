@@ -17,6 +17,8 @@
 import {
   BROKER_NAMES,
   BROKER_NAMES_VARIABLE,
+  chainScheduleQueueName,
+  chainScheduleRoleName,
   connectorSecretsRoleName,
   environmentAlarmPrefix,
   environmentConnectorSecretPrefix,
@@ -124,6 +126,12 @@ function derived(env: MutableEnvironment, name: string): Array<[string, () => st
     ["AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID", () => environmentProjectSetupRuntimeCatalogId(name)],
     ["AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID", () => environmentE2eFeatureRuntimeCatalogId(name)],
     // The one role the broker assumes for an org's connection secrets: the control plane names it for the environment and puts it under the environment's role path.
+    // Plan 4 Task 26: the role the scheduler assumes and the queue its failed invocations go to, by their fixed names (so nothing is passed: Lambda's 4 KB).
+    ["CHAIN_SCHEDULE_ROLE_ARN", () => {
+      const scope = requiredScope(env, "CHAIN_SCHEDULE_ROLE_ARN");
+      return `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(name)}${chainScheduleRoleName(name)}`;
+    }],
+    ["CHAIN_SCHEDULE_QUEUE_URL", () => queueUrl(requiredScope(env, "CHAIN_SCHEDULE_QUEUE_URL"), chainScheduleQueueName(name))],
     ["CONNECTOR_SECRETS_ROLE_ARN", () => {
       const scope = requiredScope(env, "CONNECTOR_SECRETS_ROLE_ARN");
       return `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(name)}${connectorSecretsRoleName(name)}`;

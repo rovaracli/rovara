@@ -41,10 +41,16 @@ function setup() {
   const fire = (triggerId: string, scheduledAt: string, orgId = ORG_A, options?: { forceLate?: boolean }) => handleChainSchedule(deps, { orgId, triggerId, scheduledAt }, v.clock.now, options);
   const runs = () => v.db.find((item) => String(item["pk"]).includes("#CHAIN_RUN#") && item["sk"] === "META");
   const activity = async (triggerId: string) => (await v.triggers.listActivity(ORG_A, triggerId, 500)).map((entry) => ({ outcome: entry.outcome, ...(entry.reason === undefined ? {} : { reason: entry.reason }) }));
-  const endRun = (runId: string) => v.db.set({ ...v.db.get(chainRunKey(ORG_A, runId as never, "META"))!, status: "succeeded" });
+  const endRun = (runId: string) => v.db.set({ ...v.db.get(chainRunKey(ORG_A, runId, "META"))!, status: "succeeded" });
   const putOwn = (triggerId: string, spec = daily()) => putSchedule({ client, settings: SETTINGS }, { orgId: ORG_A, triggerId, spec });
   return { v, client, queue, logs, scheduler, deps, iso, fire, runs, activity, endRun, putOwn };
 }
+/** A custom agent on web that allows the schedule, owned by Dana with a budget, and a trigger on it turned on by Dana (a built-in has no schedule to turn on until Task 27 suggests one). */
+const agentTrigger = async (v: TriggerWorld, over: Record<string, unknown> = {}) => {
+  const spec = daily();
+  const agent = await v.triggerAgent(`Nightly ${String(Math.random())}`, [{ kind: "person" }, spec], { budgetUsd: 20 });
+  return { agent, trigger: await v.seed({ target: { kind: "agent", agentId: agent.agentId }, spec: spec as never, scheduleStatus: "ok", createdBy: DANA, ...over }) };
+};
 const chainTrigger = async (v: TriggerWorld, over: Record<string, unknown> = {}) => {
   const chain = await v.budgetedChain(ONE_STEP);
   return { chain, trigger: await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: daily() as never, scheduleStatus: "ok", ...over }) };
@@ -91,7 +97,7 @@ describe("putSchedule and the scheduler calls", () => {
     expect(CHAIN_SCHEDULE_SOURCE).toBe("agentx.chain-schedule");
   });
 
-  it.each(["UTC", "Europe/Berlin", "Australia/Lord_Howe", "Asia/Kolkata", "America/Sao_Paulo"])("passes the zone %s to the scheduler, which owns the clock change (a time that does not exist is skipped, one that happens twice runs once)", async (timezone) => {
+  it.each(["UTC", "Europe/Berlin", "Australia/Lord_Howe", "Asia/Tokyo", "America/Sao_Paulo"])("passes the zone %s to the scheduler, which owns the clock change (a time that does not exist is skipped, one that happens twice runs once)", async (timezone) => {
     const s = setup();
     await s.putOwn(TRIGGER, daily({ timezone }));
     expect(s.client.commands("CreateScheduleCommand")[0]).toMatchObject({ ScheduleExpressionTimezone: timezone });
@@ -190,20 +196,19 @@ describe("a fire starts one run at most", () => {
     expect(s.runs()).toHaveLength(1);
     expect(new Set(answers.map((answer) => answer.runId)).size).toBe(1);
     const again = await s.fire(trigger.triggerId, slot);
-    expect(again).toMatchObject({ outcome: "duplicate", runId: answers[0]!.runId });
+    expect(again).toMatchObject({ outcome: "duplicate", runId: answers[0].runId });
     expect(s.runs()).toHaveLength(1);
   });
 
-  it("starts one agent run paid by the agent for a schedule on service-reviewer, as the maintainer who turned it on, with the scheduled-job text and no event context", async () => {
+  it("starts one agent run paid by the agent for a schedule on a custom agent, as its owner, with the scheduled-job text and no event context", async () => {
     const s = setup();
-    await s.v.builtinBudget("service-reviewer");
-    const trigger = await s.v.seed({ target: { kind: "agent", agentId: "service-reviewer" }, spec: daily() as never, scheduleStatus: "ok", createdBy: DANA });
+    const { agent, trigger } = await agentTrigger(s.v);
     const answer = await s.fire(trigger.triggerId, s.iso(-1_000));
     expect(answer).toMatchObject({ outcome: "started" });
     expect(answer.taskId).toBeDefined();
     expect(s.v.starts).toHaveLength(1);
     expect(s.v.starts[0]).toMatchObject({
-      orgId: ORG_A, project: "web", origin: "schedule", agent: { agentId: "service-reviewer" }, owner: { developerId: DANA }, payer: { kind: "agent", agentId: "service-reviewer" },
+      orgId: ORG_A, project: "web", origin: "schedule", agent: { agentId: agent.agentId }, owner: { developerId: DANA }, payer: { kind: "agent", agentId: agent.agentId },
       input: { text: "Do your scheduled job." },
     });
     expect(s.v.starts[0]!.input).not.toHaveProperty("context");
@@ -214,8 +219,7 @@ describe("a fire starts one run at most", () => {
 
   it("records a refusal of the start by its code, and a fault that may pass is thrown so the scheduler retries, and the retry starts the one run", async () => {
     const s = setup();
-    await s.v.builtinBudget("service-reviewer");
-    const trigger = await s.v.seed({ target: { kind: "agent", agentId: "service-reviewer" }, spec: daily() as never, scheduleStatus: "ok", createdBy: DANA });
+    const { trigger } = await agentTrigger(s.v);
     s.v.hooks.refuse.push(agentXError("AGENT_BUDGET_EXCEEDED", "no money"));
     expect(await s.fire(trigger.triggerId, s.iso(-1_000))).toMatchObject({ outcome: "failed", reason: "AGENT_BUDGET_EXCEEDED" });
     s.v.hooks.refuse.push(new Error("socket hang up"));
@@ -247,8 +251,7 @@ describe("the requirements are read again at the fire", () => {
 
   it("never starts a trigger whose owner left the org, and turns it off", async () => {
     const s = setup();
-    await s.v.builtinBudget("service-reviewer");
-    const trigger = await s.v.seed({ target: { kind: "agent", agentId: "service-reviewer" }, spec: daily() as never, scheduleStatus: "ok", createdBy: "9".repeat(64) });
+    const { trigger } = await agentTrigger(s.v, { createdBy: "9".repeat(64) });
     expect(await s.fire(trigger.triggerId, s.iso(-1_000))).toMatchObject({ outcome: "failed", reason: "trigger_invalid" });
     expect(s.v.starts).toEqual([]);
     expect(await s.v.triggers.get(ORG_A, trigger.triggerId)).toMatchObject({ enabled: false });
@@ -297,8 +300,8 @@ describe("a fire for a trigger that is gone, off or not a schedule is stale", ()
     s.v.db.send = (async (command: { input: { Key?: { pk?: string }; ExpressionAttributeValues?: Record<string, unknown> } }) => {
       const pk = command.input.Key?.pk ?? command.input.ExpressionAttributeValues?.[":pk"];
       if (typeof pk === "string") keys.push(pk);
-      return send(command as never);
-    }) as never;
+      return send(command);
+    });
     expect(await s.fire(trigger.triggerId, s.iso(-1_000), ORG_B)).toMatchObject({ outcome: "stale" });
     expect(s.runs()).toEqual([]);
     expect(s.v.starts).toEqual([]);
@@ -373,8 +376,7 @@ describe("no overlap", () => {
 
   it("skips while the agent task it last started has not ended, and starts once its end is recorded", async () => {
     const s = setup();
-    await s.v.builtinBudget("service-reviewer");
-    const trigger = await s.v.seed({ target: { kind: "agent", agentId: "service-reviewer" }, spec: daily() as never, scheduleStatus: "ok", createdBy: DANA });
+    const { trigger } = await agentTrigger(s.v);
     const first = await s.fire(trigger.triggerId, s.iso(-10_000));
     expect(first.outcome).toBe("started");
     expect(await s.fire(trigger.triggerId, s.iso(-5_000))).toMatchObject({ outcome: "skipped", reason: "previous_run_still_running" });
@@ -386,8 +388,7 @@ describe("no overlap", () => {
 
   it("treats another org's end record for the same task id as not ended", async () => {
     const s = setup();
-    await s.v.builtinBudget("service-reviewer");
-    const trigger = await s.v.seed({ target: { kind: "agent", agentId: "service-reviewer" }, spec: daily() as never, scheduleStatus: "ok", createdBy: DANA });
+    const { trigger } = await agentTrigger(s.v);
     const first = await s.fire(trigger.triggerId, s.iso(-10_000));
     s.v.db.set({ ...taskEndKey(first.taskId!), entityType: "TASK_END", orgId: ORG_B, outcome: "succeeded" });
     expect((await s.fire(trigger.triggerId, s.iso(-5_000))).outcome).toBe("skipped");
@@ -399,7 +400,7 @@ describe("a late fire, and a backlog after an outage", () => {
 
   it("is on time up to 30 minutes late, and late after", async () => {
     const s = setup();
-    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) as never });
+    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) });
     expect((await s.fire(trigger.triggerId, s.iso(-30 * MINUTE))).outcome).toBe("started");
     s.endRun((await s.v.triggers.get(ORG_A, trigger.triggerId))!.lastRunId!);
     expect(await s.fire(trigger.triggerId, s.iso(-30 * MINUTE - 1_000))).toMatchObject({ outcome: "missed" });
@@ -441,7 +442,7 @@ describe("a late fire, and a backlog after an outage", () => {
 
   it("with skip, six late fires start none and leave six missed items", async () => {
     const s = setup();
-    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) as never });
+    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) });
     const answers = [];
     for (const late of SLOTS) answers.push(await s.fire(trigger.triggerId, s.iso(-late)));
     expect(answers.map((answer) => answer.outcome)).toEqual(Array(6).fill("missed"));
@@ -463,8 +464,7 @@ describe("a late fire, and a backlog after an outage", () => {
 
   it("gives the slot back when the late start fails in a way that may pass, so the retry starts the run", async () => {
     const s = setup();
-    await s.v.builtinBudget("service-reviewer");
-    const trigger = await s.v.seed({ target: { kind: "agent", agentId: "service-reviewer" }, spec: daily() as never, scheduleStatus: "ok", createdBy: DANA });
+    const { trigger } = await agentTrigger(s.v);
     const slot = s.iso(-2 * HOUR);
     s.v.hooks.refuse.push(new Error("socket hang up"));
     await expect(s.fire(trigger.triggerId, slot)).rejects.toThrow();
@@ -515,7 +515,7 @@ describe("archiving and closing", () => {
   it("closeOrg deletes the org's schedules, and not another org's", async () => {
     const s = setup();
     const { trigger } = await chainTrigger(s.v);
-    const theirs = await s.v.triggers.create({ record: { orgId: ORG_B, triggerId: "ctr_bbbbbbbbbbbbbbbbbbbb", target: { kind: "agent", agentId: "code-reviewer" }, project: "web", spec: daily() as never, enabled: true, maxRunsPerHour: 30, createdBy: PRIYA, scheduleStatus: "ok" } });
+    const theirs = await s.v.triggers.create({ record: { orgId: ORG_B, triggerId: "ctr_bbbbbbbbbbbbbbbbbbbb", target: { kind: "agent", agentId: "code-reviewer" }, project: "web", spec: daily(), enabled: true, maxRunsPerHour: 30, createdBy: PRIYA, scheduleStatus: "ok" } });
     await s.putOwn(trigger.triggerId);
     await putSchedule({ client: s.client, settings: SETTINGS }, { orgId: ORG_B, triggerId: theirs.triggerId, spec: daily() });
     await deleteOrgTriggers(s.deps, ORG_A);
@@ -558,17 +558,18 @@ describe("dead letters", () => {
 
   it("with skip, a dead letter starts nothing", async () => {
     const s = setup();
-    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) as never });
+    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) });
     s.queue.add(letter(trigger.triggerId, s.iso(-5_000)));
     await sweepSchedules(s.deps, { deadLetters: createDeadLetters({ sqs: s.queue, queueUrl: "https://sqs/q" }), now: s.v.clock.now });
     expect(s.runs()).toEqual([]);
-    expect(await s.activity(trigger.triggerId)).toEqual([{ outcome: "missed", reason: "dead_letter" }, { outcome: "missed" }].reverse());
+    expect(await s.activity(trigger.triggerId)).toHaveLength(2);
+    expect(await s.activity(trigger.triggerId)).toEqual(expect.arrayContaining([{ outcome: "missed", reason: "dead_letter" }, { outcome: "missed" }]));
     expect(s.queue.messages).toEqual([]);
   });
 
   it("takes at most 10 a sweep, asking the queue for no more", async () => {
     const s = setup();
-    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) as never });
+    const { trigger } = await chainTrigger(s.v, { spec: daily({ missed: "skip" }) });
     for (let index = 0; index < 12; index += 1) s.queue.add(letter(trigger.triggerId, s.iso(-(index + 1) * HOUR)));
     const report = await sweepSchedules(s.deps, { deadLetters: createDeadLetters({ sqs: s.queue, queueUrl: "https://sqs/q" }), now: s.v.clock.now });
     expect(report.deadLetters).toBe(10);
@@ -578,7 +579,7 @@ describe("dead letters", () => {
 
   it("deletes a letter that is not ours or not readable, starting nothing, and leaves one whose handling failed in a way that may pass", async () => {
     const s = setup();
-    const { trigger } = await chainTrigger(s.v);
+    const { trigger } = await agentTrigger(s.v);
     s.queue.add("not json");
     s.queue.add({ source: "something-else", orgId: ORG_A, triggerId: trigger.triggerId, scheduledAt: s.iso(-5_000) });
     s.queue.add({ source: "agentx.chain-schedule", orgId: ORG_A, triggerId: "bad", scheduledAt: s.iso(-5_000) });

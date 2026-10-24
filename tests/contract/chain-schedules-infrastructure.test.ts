@@ -7,7 +7,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
-import { chainScheduleGroupName } from "@agentx/contracts";
+import { chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName } from "@agentx/contracts";
 import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -127,8 +127,10 @@ describe("the broker's grants", () => {
     for (const entry of sid("PassChainScheduleRole")) expect(JSON.stringify(entry.statement.Resource)).not.toContain("*");
   });
 
-  it("falls in the orchestration managed policy, and every broker policy stays under the 5,500 characters the M2 guard allows", () => {
-    expect(sid("ManageChainSchedules")[0]!.policy).toBe("agentx-staging-broker-orchestration");
+  it("falls in the integrations managed policy (the orchestration one has no room), the drain of the queue beside the other sqs grants, and every broker policy stays under the 5,500 characters the M2 guard allows", () => {
+    expect(sid("ManageChainSchedules")[0]!.policy).toBe("agentx-staging-broker-integrations");
+    expect(sid("PassChainScheduleRole")[0]!.policy).toBe("agentx-staging-broker-integrations");
+    expect(sid("DrainChainScheduleDeadLetters")[0]!.policy).toBe("agentx-staging-broker-orchestration");
     for (const policy of Object.values(named.findResources("AWS::IAM::ManagedPolicy")) as Policy[]) {
       if (!(policy.Properties.ManagedPolicyName ?? "").startsWith("agentx-staging-broker-")) continue;
       expect(JSON.stringify(policy.Properties.PolicyDocument).length, policy.Properties.ManagedPolicyName).toBeLessThan(5500);
@@ -138,14 +140,24 @@ describe("the broker's grants", () => {
 
 describe("what the broker is told", () => {
   const broker = (named.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)[brokerId]!;
-  const names = brokerNamesIn(broker.Properties.Environment?.Variables);
 
-  it("gets the invoke role's name and the dead-letter queue's name in AGENTX_NAMES (not as variables of their own: Lambda's 4 KB)", () => {
-    const roleId = byType(named, "AWS::IAM::Role").find(([id]) => id.startsWith("ChainScheduleInvokeRole"))![0];
-    const queueId = byType(named, "AWS::SQS::Queue").find(([id]) => id.startsWith("ChainScheduleDeadLetters"))![0];
-    expect(names.chainScheduleRole).toEqual({ Ref: roleId });
-    expect(names.chainScheduleQueue).toEqual({ "Fn::GetAtt": [queueId, "QueueName"] });
+  it("gets nothing: the role and the queue have fixed names the broker builds from the environment, so its environment (Lambda's 4 KB) does not grow", () => {
+    expect(chainScheduleRoleName("staging")).toBe("agentx-staging-chain-schedule");
+    expect(chainScheduleQueueName("staging")).toBe("agentx-staging-chain-schedule-dead-letters");
+    const [, role] = byType(named, "AWS::IAM::Role").find(([id]) => id.startsWith("ChainScheduleInvokeRole"))!;
+    expect(role.Properties["RoleName"]).toBe("agentx-staging-chain-schedule");
+    const [, queue] = byType(named, "AWS::SQS::Queue").find(([id]) => id.startsWith("ChainScheduleDeadLetters"))!;
+    expect(queue.Properties["QueueName"]).toBe("agentx-staging-chain-schedule-dead-letters");
+    const names = brokerNamesIn(broker.Properties.Environment?.Variables);
+    expect(Object.keys(names).filter((key) => key.toLowerCase().includes("chainschedule"))).toEqual([]);
     const variables = broker.Properties.Environment?.Variables ?? {};
     for (const variable of ["CHAIN_SCHEDULE_ROLE_ARN", "CHAIN_SCHEDULE_QUEUE_URL", "CHAIN_SCHEDULE_GROUP"]) expect(variables[variable]).toBeUndefined();
+  });
+
+  it("names are the longest an environment of 20 characters can make, and stay within the limits of a role (64) and a queue (80)", () => {
+    const longest = "a1234567890123456789";
+    expect(chainScheduleRoleName(longest).length).toBeLessThanOrEqual(64);
+    expect(chainScheduleQueueName(longest).length).toBeLessThanOrEqual(80);
+    expect(chainScheduleGroupName(longest).length).toBeLessThanOrEqual(64);
   });
 });

@@ -249,18 +249,21 @@ describe("the named TEST proof-only installation gate", () => {
     // fixed role names), which no task had re-pinned: all four are taken from the synthesized templates now. The legacy digests did not move: its template has no such route.
     // Task 19 review fix: the route also has its own stage throttle (`RouteSettings`, 100 burst and 50 a second) and the stage waits for it, so the named and foreign digests were taken again from
     // the synthesized templates; the legacy digests are unchanged.
+    // Plan 4 Task 26: a named environment's control plane gains the schedule group, the scheduler's invoke role (fixed name), the dead-letter queue and the broker's three
+    // statements (manage the group's schedules, pass that one role, drain the queue), so the named and foreign digests were taken again from the synthesized templates; the
+    // legacy digests did not move (nothing is added without an environment name), and the broker's variables did not grow (the names are derived from AGENTX_ENV).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "bc2bad2150af2bb9d6f01a3fa0d1b95ecff9d5a202cb4e9106094dce3bcfaf42",
-        withoutRoute: "5251d2e260b8a81c7d40674cdf7726fbf991cf7d88b4370c58ce2628b047ab63",
+        withRoute: "6383537a395b03e7586b4ba34ab9995106e3609ab64dd8b256212a1f8d41b8e1",
+        withoutRoute: "0a78e054cea2add59506950d5e85cb92e728866e5a86f255b5a4b8b8851dc4be",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "949430b6af43ef9ee376fa68a2ad6959efe9575bb5cc8a6e71d1df3a380016d7",
-        withoutRoute: "6cb72fdb4fbd0cbaf59e1bc1e679ba48788e8dd4305fd8cfc05b326044536474",
+        withRoute: "df253e1e3256d4823ac20d05184beb4d446fb5bd19f3511e302919086876cdcf",
+        withoutRoute: "8a3afe70587f461585e75444940a58097a42936b692540b4889399dfcc6cc500",
       },
       {
         label: "legacy",

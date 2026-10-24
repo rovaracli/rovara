@@ -29,6 +29,13 @@ export interface ScheduledTrigger {
   spec: unknown;
 }
 
+/** What the scheduler holds for a trigger's schedule: its state, and the org and trigger its own input names (absent when the input is not ours to read). */
+export interface ScheduleDescription {
+  state: "ENABLED" | "DISABLED";
+  orgId?: string;
+  triggerId?: string;
+}
+
 /** The scheduler (Task 26's `putSchedule` and its state changes). A schedule exists only while its trigger is on; each call is repeatable. */
 export interface TriggerScheduler {
   /** Creates or replaces the schedule of the trigger, running. */
@@ -37,6 +44,8 @@ export interface TriggerScheduler {
   disable(trigger: Pick<ScheduledTrigger, "orgId" | "triggerId">): Promise<void>;
   /** Deletes the trigger's schedule (the trigger was deleted). */
   remove(trigger: Pick<ScheduledTrigger, "orgId" | "triggerId">): Promise<void>;
+  /** What the scheduler holds under the trigger's id, or undefined when it holds nothing. */
+  describe(triggerId: string): Promise<ScheduleDescription | undefined>;
 }
 
 /** The triggers the target's change turned off, as every route that changes a target answers them. */

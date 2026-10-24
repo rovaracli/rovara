@@ -7,12 +7,14 @@ import { z } from "zod";
 import {
   EventTriggerSpecSchema,
   INDEX_EXPIRY_ATTRIBUTE,
+  OrgIdSchema,
   MAX_TRIGGERS_PER_TARGET,
   ScheduleTriggerSpecSchema,
   TriggerTargetSchema,
   TRIGGER_ACTIVITY_TTL_DAYS,
   newPrefixedId,
   orgScoped,
+  pendingTriggerScheduleKey,
   targetTriggerCountKey,
   targetTriggersKey,
   triggerActivityKey,
@@ -111,6 +113,8 @@ const full = (what: string) => coded("CONFIG_INVALID", `${what} already has the 
 const NOT_EXISTS = "attribute_not_exists(pk)";
 const DAY_SECONDS = 86_400;
 
+const isPending = (record: Pick<TriggerRecord, "spec" | "scheduleStatus">): boolean => record.spec.kind === "schedule" && record.scheduleStatus === "pending";
+
 /** The hook segment of a trigger's match key: the hook's id, or `github` for the events GitHub's app delivers (they have none). */
 export const hookSegmentOf = (record: Pick<TriggerRecord, "hookId">): string => record.hookId ?? "github";
 
@@ -201,6 +205,22 @@ export class TriggerStore {
     return this.recordsOf(orgId, await this.queryAll(directoryKey(orgId, "x").pk));
   }
 
+  /** The triggers (org and id) whose schedule is still pending, from the global list, at most `limit`. Nothing is read from a trigger here: the list names it and the reader reads it under its org. */
+  async listPendingSchedules(limit: number): Promise<Array<{ orgId: OrgId; triggerId: string }>> {
+    const found: Array<{ orgId: OrgId; triggerId: string }> = [];
+    for (const item of await this.queryAll(pendingTriggerScheduleKey(OrgIdSchema.parse("org_00000000000000000000"), "x").pk, { limit })) {
+      const org = OrgIdSchema.safeParse(item["orgId"]);
+      const triggerId = String(item["triggerId"]);
+      if (org.success && String(item["sk"]) === `${org.data}#${triggerId}`) found.push({ orgId: org.data, triggerId });
+    }
+    return found;
+  }
+
+  /** Takes a trigger off the pending list without touching its record (the list names a trigger that is gone). */
+  async dropPending(orgId: OrgId, triggerId: string): Promise<void> {
+    await this.sweep(pendingTriggerScheduleKey(orgId, triggerId));
+  }
+
   /** The newest `limit` items of a trigger's activity, newest first. */
   async listActivity(orgId: OrgId, triggerId: string, limit = 100): Promise<TriggerActivityEntry[]> {
     const items = await this.queryAll(triggerActivityKey(orgId, triggerId, "2000-01-01T00:00:00.000Z", "x").pk, { limit, descending: true });
@@ -245,6 +265,7 @@ export class TriggerStore {
       this.put(directoryKey(orgId, triggerId), "TRIGGER_DIRECTORY", { orgId, triggerId }),
     ];
     if (record.spec.kind === "event") items.push(this.put(triggerMatchKey(orgId, record.spec.source, record.project, hookSegmentOf(record), triggerId), "TRIGGER_MATCH", { orgId, triggerId, enabled: record.enabled }));
+    if (isPending(record)) items.push(this.put(pendingTriggerScheduleKey(orgId, triggerId), "TRIGGER_SCHEDULE_PENDING", { orgId, triggerId }));
     return items;
   }
 
@@ -256,6 +277,7 @@ export class TriggerStore {
       this.remove(directoryKey(orgId, triggerId)),
     ];
     if (record.spec.kind === "event") items.push(this.remove(triggerMatchKey(orgId, record.spec.source, record.project, hookSegmentOf(record), triggerId)));
+    if (record.spec.kind === "schedule") items.push(this.remove(pendingTriggerScheduleKey(orgId, triggerId)));
     return items;
   }
 
@@ -317,6 +339,9 @@ export class TriggerStore {
     }
     if (matchBefore !== undefined && (matchAfter === undefined || matchBefore.pk !== matchAfter.pk)) items.push(this.remove(matchBefore));
     if (matchAfter !== undefined) items.push(this.put(matchAfter, "TRIGGER_MATCH", { orgId: after.orgId, triggerId: after.triggerId, enabled: after.enabled }));
+    // The sweep that repairs schedules finds the ones still pending through this list: it holds exactly the triggers whose record says so.
+    if (isPending(after) && !isPending(before)) items.push(this.put(pendingTriggerScheduleKey(after.orgId, after.triggerId), "TRIGGER_SCHEDULE_PENDING", { orgId: after.orgId, triggerId: after.triggerId }));
+    else if (!isPending(after) && isPending(before)) items.push(this.remove(pendingTriggerScheduleKey(before.orgId, before.triggerId)));
     items.push(...(input.extra ?? []));
     await commit(this.input, items, (failed) => {
       if (failed.has(0)) return conflict();

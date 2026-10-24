@@ -148,9 +148,25 @@ export async function disableTargetTriggers(deps: Deps, orgId: OrgId, target: Tr
   }
 }
 
-/** Removes everything of an org's triggers (it closed). */
-export async function deleteOrgTriggers(deps: Pick<Deps, "triggers">, orgId: OrgId): Promise<void> {
-  await deps.triggers?.deleteOrg(orgId);
+/**
+ * Removes everything of an org's triggers (it closed): first the schedules of its schedule triggers at the scheduler, then the triggers themselves. A schedule that can't be deleted
+ * stops the close before any trigger is, so closing again finds them and finishes (a schedule left behind would fire at nothing).
+ */
+export async function deleteOrgTriggers(deps: Pick<Deps, "triggers" | "triggerSchedules">, orgId: OrgId): Promise<void> {
+  if (deps.triggers === undefined) return;
+  if (deps.triggerSchedules !== undefined) {
+    let failed: unknown;
+    for (const trigger of await deps.triggers.listAll(orgId)) {
+      if (trigger.spec.kind !== "schedule") continue;
+      try {
+        await deps.triggerSchedules.remove({ orgId, triggerId: trigger.triggerId });
+      } catch (error) {
+        failed ??= error;
+      }
+    }
+    if (failed !== undefined) throw failed instanceof Error ? failed : new Error("a schedule could not be deleted");
+  }
+  await deps.triggers.deleteOrg(orgId);
 }
 
 /** The hooks the agent routes, the chain routes and the confirmations call (one line each), over the route dependencies. */

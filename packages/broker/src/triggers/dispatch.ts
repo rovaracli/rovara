@@ -21,6 +21,7 @@ import {
   triggerSubjectKey,
   triggerSummary as eventSummary,
   type AgentId,
+  type ChainRunStartedBy,
   type EventSource,
   type OrgId,
   type TriggerEvent,
@@ -113,7 +114,7 @@ function isFor(trigger: TriggerRecord, orgId: OrgId, event: TriggerEvent): boole
 }
 
 /** Counts one start against a limit in one conditional update; false when the limit is used up. */
-async function countOne(deps: TriggerDispatchDependencies, key: { pk: string; sk: string }, max: number, lifetimeSeconds: number): Promise<boolean> {
+export async function countOne(deps: TriggerDispatchDependencies, key: { pk: string; sk: string }, max: number, lifetimeSeconds: number): Promise<boolean> {
   if (!(max >= 1)) return false;
   try {
     await deps.documentClient.send(new UpdateCommand({
@@ -188,55 +189,69 @@ async function noteFired(work: Work, trigger: TriggerRecord, started: { runId?: 
 }
 
 /** What went wrong at the start, as the outcome: a code, `busy`, or (for a fault that may pass) the error itself to throw. */
-async function refusalOf(work: Work, trigger: TriggerRecord, error: unknown): Promise<{ reason: string } | { transient: unknown }> {
+export async function refusalOf(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, error: unknown): Promise<{ reason: string } | { transient: unknown }> {
   if (!(error instanceof AgentXError)) return { transient: error };
   // A service that is away (`RUNTIME_UNAVAILABLE` and its kind answer 503) may be back when the vendor sends the event again.
   if (error.statusCode >= 500) return { transient: error };
   if (BUSY_CODES.has(error.code)) return { reason: "busy" };
   if (error.code === "FORBIDDEN" && trigger.target.kind === "chain") {
     // The chain's concurrency refusal has no code of its own: it is the one that leaves the chain with its most runs open.
-    const chain = await work.deps.chains.get(work.orgId, trigger.target.chainId);
+    const chain = await deps.chains.get(orgId, trigger.target.chainId);
     if (chain !== undefined && chain.openRuns >= CHAIN_MAX_CONCURRENT_RUNS) return { reason: "busy" };
   }
   return { reason: error.code };
 }
 
-async function startChain(work: Work, trigger: TriggerRecord, identity: string): Promise<{ runId: string }> {
-  const { deps, orgId, event } = work;
+/** What starts the work, apart from the trigger: an event's, or a schedule's slot. The same steps start either (the owner, the payer, the version, the run's identity). */
+export interface AutonomousSource {
+  origin: "event" | "schedule";
+  project: string;
+  startedBy: ChainRunStartedBy;
+  /** The event that started it, for the hand-off and the run's input; a schedule has none. */
+  event?: TriggerEvent;
+  /** The chain run's input, and the agent's text. */
+  chainInput?: string;
+  agentText: string;
+}
+
+/** Starts a chain trigger's run: a member's chain runs as its member; a project's, as the maintainer who turned the trigger on (who answers for what it does). Either is read as whoever a merged developer became. */
+export async function startChainFor(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, identity: string, source: AutonomousSource): Promise<{ runId: string }> {
   if (trigger.target.kind !== "chain") throw new Error("not a chain trigger");
   const chain = await deps.chains.get(orgId, trigger.target.chainId);
   if (chain === undefined) throw agentXError("NOT_FOUND", "no chain has that ID");
-  // A member's chain runs as its member; a project's, as the maintainer who turned the trigger on (who answers for what it does).
-  // Either is read as whoever a merged developer became.
   const developerId = await resolveSurvivor(deps, orgId, chain.owner.kind === "member" ? chain.owner.developerId : trigger.createdBy);
-  const run = await startChainRun(deps, { system: "event", owner: { developerId } }, {
-    orgId, chainId: chain.chainId, project: event.project, origin: "event",
-    startedBy: { kind: "event", triggerId: trigger.triggerId, eventKey: event.eventKey, source: event.source, type: event.type, title: event.subject.title, ...(event.subject.url === undefined ? {} : { url: event.subject.url }) },
-    trigger: handoffOf(event), input: eventSummary(event), runId: runIdFor(identity), requestId: requestIdFor(identity),
+  const run = await startChainRun(deps, { system: source.origin, owner: { developerId } }, {
+    orgId, chainId: chain.chainId, project: source.project, origin: source.origin, startedBy: source.startedBy,
+    ...(source.event === undefined ? {} : { trigger: handoffOf(source.event) }), ...(source.chainInput === undefined ? {} : { input: source.chainInput }), runId: runIdFor(identity), requestId: requestIdFor(identity),
   });
   return { runId: run.runId };
 }
 
-async function startAgent(work: Work, trigger: TriggerRecord, identity: string): Promise<{ taskId: string }> {
-  const { deps, orgId, event } = work;
+/** Starts an agent trigger's task, as the agent's owner (for a built-in, the maintainer who turned the trigger on), paid by the agent. */
+export async function startAgentFor(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, identity: string, source: AutonomousSource): Promise<{ taskId: string }> {
   if (trigger.target.kind !== "agent") throw new Error("not an agent trigger");
   if (deps.chainRuns === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "runs are not set up in this deployment");
   const agentId: AgentId = trigger.target.agentId;
   const record = isBuiltinAgentId(agentId) ? await deps.store.ensureBuiltinSettings(orgId, agentId) : await deps.store.get(orgId, agentId);
   if (record === undefined) throw agentXError("NOT_FOUND", "no agent has that ID");
-  const { ref } = await resolveAgentForAutonomousRun(deps, { orgId, project: event.project, agentId });
+  const { ref } = await resolveAgentForAutonomousRun(deps, { orgId, project: source.project, agentId });
   if (ref.version === "draft") throw agentXError("AGENT_UNAVAILABLE", "an autonomous run uses a published version");
   // A built-in has no owner of its own: the maintainer who turned the trigger on is who its runs act for.
   const owner = isBuiltinAgentId(agentId) ? { developerId: await resolveSurvivor(deps, orgId, trigger.createdBy) } : await runOwnerFor(deps, record as Parameters<typeof runOwnerFor>[1]);
-  const context = buildHandoff({ runId: identity.slice(0, 20), trigger: handoffOf(event), earlier: [], mode: "previous" });
-  // `resolvePayer` names the agent for an event whatever the project's setting says, so `projectPays` is not read here.
-  const payer = resolvePayer({ origin: "event", project: event.project, projectPays: false, agentId });
+  const context = source.event === undefined ? [] : buildHandoff({ runId: identity.slice(0, 20), trigger: handoffOf(source.event), earlier: [], mode: "previous" });
+  // `resolvePayer` names the agent for an event or a schedule whatever the project's setting says, so `projectPays` is not read here.
+  const payer = resolvePayer({ origin: source.origin, project: source.project, projectPays: false, agentId });
   const started = await deps.chainRuns.startAgentRun({
-    requestId: requestIdFor(identity), orgId, project: event.project, agent: { agentId, version: ref.version },
-    input: { text: EVENT_TEXT, ...(context.length === 0 ? {} : { context }) }, origin: "event", owner, payer,
+    requestId: requestIdFor(identity), orgId, project: source.project, agent: { agentId, version: ref.version },
+    input: { text: source.agentText, ...(context.length === 0 ? {} : { context }) }, origin: source.origin, owner, payer,
   });
   return { taskId: started.taskId };
 }
+
+const eventSourceOf = (event: TriggerEvent, triggerId: string): AutonomousSource => ({
+  origin: "event", project: event.project, event, agentText: EVENT_TEXT, chainInput: eventSummary(event),
+  startedBy: { kind: "event", triggerId, eventKey: event.eventKey, source: event.source, type: event.type, title: event.subject.title, ...(event.subject.url === undefined ? {} : { url: event.subject.url }) },
+});
 
 const subjectKeyOf = (work: Work, trigger: TriggerRecord) => triggerSubjectKey(work.orgId, trigger.triggerId, work.event.subject);
 
@@ -298,9 +313,10 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
   // 6. The start. A refusal is a recorded outcome; a fault that may pass is the event's to be sent again.
   let started: { runId?: string; taskId?: string };
   try {
-    started = trigger.target.kind === "chain" ? await startChain(work, trigger, identity) : await startAgent(work, trigger, identity);
+    const source = eventSourceOf(event, trigger.triggerId);
+    started = trigger.target.kind === "chain" ? await startChainFor(deps, orgId, trigger, identity, source) : await startAgentFor(deps, orgId, trigger, identity, source);
   } catch (error) {
-    const refusal = await refusalOf(work, trigger, error);
+    const refusal = await refusalOf(deps, orgId, trigger, error);
     if ("transient" in refusal) {
       work.log("trigger_dispatch.start_failed", { orgId, triggerId: trigger.triggerId, error: errorName(refusal.transient) });
       return { transient: refusal.transient };

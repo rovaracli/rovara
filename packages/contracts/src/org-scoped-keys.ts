@@ -563,6 +563,14 @@ export function triggerMatchKey(orgId: OrgId, source: EventSource, project: stri
   return { pk: orgScoped(orgId, `TRIGGERS#${source}#${project}#${hookId}`), sk: triggerId };
 }
 
+/**
+ * The global list of schedule triggers whose schedule the scheduler does not hold as the trigger says (`scheduleStatus: "pending"`), for the sweep that repairs them. Like the
+ * open-run list it names the org and the trigger and nothing else: a reader reads the record under that org's own key.
+ */
+export function pendingTriggerScheduleKey(orgId: OrgId, triggerId: string): OrgKey {
+  return { pk: "PENDING_TRIGGER_SCHEDULES", sk: `${orgId}#${triggerId}` };
+}
+
 /** One thing a trigger did or was told, newest last; it expires with `TRIGGER_ACTIVITY_TTL_DAYS`. */
 export function triggerActivityKey(orgId: OrgId, triggerId: string, at: string, eventKey: string): OrgKey {
   return { pk: orgScoped(orgId, `TRIGGER_ACTIVITY#${triggerId}`), sk: `${canonicalInstant(at)}#${eventKey}` };
