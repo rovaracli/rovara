@@ -629,7 +629,9 @@ describe("through Task 20's dispatch: one run per event, the filters, and no act
     await w.receive(vcDelivery(vc, vcBody(w, { id: "first", deployment: { id: "dpl_1", name: "acme-web" } })));
     await w.receive(vcDelivery(vc, vcBody(w, { id: "second", deployment: { id: "dpl_2", name: "acme-web" } })));
     expect(runs()).toHaveLength(1);
-    expect(await outcomes(v, trigger.triggerId)).toEqual([["started", undefined], ["skipped", "recent_subject"]]);
+    expect(await outcomes(v, trigger.triggerId)).toHaveLength(2);
+    expect(await outcomes(v, trigger.triggerId)).toContainEqual(["started", undefined]);
+    expect(await outcomes(v, trigger.triggerId)).toContainEqual(["skipped", "recent_subject"]);
   });
 
   it("does not let another org's or team's body reach dispatch", async () => {

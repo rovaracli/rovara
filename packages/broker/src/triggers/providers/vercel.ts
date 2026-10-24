@@ -4,7 +4,7 @@
 // matches). The documentation's envelope is `{ type, id, createdAt, region, payload }`, `id` being the delivery's id; `createdAt` is a date and time, which Vercel's legacy payload
 // types as a number (milliseconds), so a number, a numeral or an ISO time is read. `payload.team.id` may be null (a personal account) and `payload.project.id` is in every deployment
 // event. Only `deployment.succeeded` and `deployment.error` become events; others (created, canceled, project events) are ignored. A body is believed only for the hook's own team and
-// project when the hook names them. Rovara's Vercel connection is read-only, so there is no actor to guard against.
+// project when the hook names them. The event's subject is the project (see `normalize`). Rovara's Vercel connection is read-only, so there is no actor to guard against.
 import { z } from "zod";
 import type { HookRecord, TriggerEvent } from "@agentx/contracts";
 import { hmacHexEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
@@ -43,11 +43,15 @@ function normalize(body: unknown, _headers: HookHeaders, hook: HookRecord): Norm
   if (!delivery.success || occurredAt === undefined) return { ignored: "a deployment that can't be read" };
   const { payload } = delivery.data;
   const deploymentId = payload.deployment.id;
+  // The subject is the PROJECT, not the deployment: every deploy-fail, agent-push, deploy-fail round is a new deployment of the same project, so only a project-wide subject lets
+  // Task 20's 30-minute subject guard see the loop. A body with no readable project id falls back to its deployment.
+  const projectId = scope.data.payload.project?.id;
+  const subjectId = typeof projectId === "string" && projectId !== "" && projectId.length <= 200 ? projectId : deploymentId;
   const name = typeof payload.deployment.name === "string" && payload.deployment.name.trim() !== "" ? payload.deployment.name : deploymentId;
   const url = httpsLinkOn(payload.links?.deployment, "vercel.com");
   const event: TriggerEvent = {
     source: "vercel", type, eventKey: `vercel:${delivery.data.id}`, occurredAt, project: hook.project,
-    subject: { kind: "deployment", id: deploymentId, title: titleOf(`${name}: deployment ${WORDS[type]}`, deploymentId), ...(url === undefined ? {} : { url }) },
+    subject: { kind: "deployment", id: subjectId, title: titleOf(`${name}: deployment ${WORDS[type]}`, deploymentId), ...(url === undefined ? {} : { url }) },
     fields: { target: valuesOf([payload.target]) },
     actor: { kind: "unknown" },
   };
