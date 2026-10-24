@@ -26,7 +26,7 @@ import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-
 import type { OrgId, WorkspaceInstance } from "../../packages/contracts/src/index.js";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, orgRemovedKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import type { ConnectorCatalog, PresentedTool } from "../../packages/contracts/src/connectors.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "../support/fake-linear-mcp.js";
 import { treeReader, workflow } from "../support/fake-repository.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -1781,3 +1781,58 @@ describe("write approvals through the agent routes", () => {
   });
 });
 
+
+describe("an agent run on a task someone took over (Plan 5 Task 12a)", () => {
+  /** Omar takes the run's task over from Maya. */
+  const takeOver = (w: Awaited<ReturnType<typeof world>>, taskId: string) =>
+    w.db.set({ ...w.db.get(`DEVTASK#${taskId}`, "META")!, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: "oidc", since: "2026-10-22T11:00:00.000Z" } });
+
+  it("asks the gate for the taker as the run's owner, so a new write approval names them", async () => {
+    const w = await world();
+    const { gate, seen } = recordingGate(() => ({ decision: "run" }));
+    w.configure((base) => ({ ...base, gate }));
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")], approvals: { alwaysAsk: ["save_comment"] }, autonomy: "run" });
+    takeOver(w, run.taskId);
+    const reply = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(seen[0]).toMatchObject({ taskId: run.taskId, owner: { developerId: OMAR.developerId, name: OMAR.name } });
+    expect(JSON.stringify(seen[0]!.owner)).not.toContain(MAYA.name);
+  });
+
+  it("names the taker in the footer a write carries", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    takeOver(w, run.taskId);
+    await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "Looks like a duplicate" });
+    const sent = w.linear.calls.find((entry) => entry.name === "save_comment")!;
+    expect(bodyOf(sent)).toContain("Requested by `Omar Diaz` via Rovara agent `triage-bot`");
+    expect(bodyOf(sent)).not.toContain("Maya Chen");
+  });
+
+  it("goes on after the creator who handed it over was removed", async () => {
+    const w = await world();
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    takeOver(w, run.taskId);
+    w.removeCreator();
+    const reply = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(w.db.get(`DEVTASK#${run.taskId}`, "META")?.outcome).toBeUndefined();
+  });
+
+  it("ends the task creator_removed naming the taker when the taker was removed, and calls neither the gate nor the vendor", async () => {
+    const w = await world();
+    const { gate, seen } = recordingGate(() => ({ decision: "run" }));
+    w.configure((base) => ({ ...base, gate }));
+    const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")] });
+    takeOver(w, run.taskId);
+    w.db.delete(orgMemberKey(TEST_ORG, OMAR.developerId));
+    w.db.set({ ...orgRemovedKey(TEST_ORG, OMAR.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: OMAR.developerId, removedAt: new Date().toISOString() });
+    const refused = await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "hello" });
+    expect(refused.status).toBe(403);
+    expect(errorOf(refused).code).toBe("TASK_ACCESS_DENIED");
+    expect(errorOf(refused).message).toContain("Omar Diaz is no longer a member of");
+    expect(w.db.get(`DEVTASK#${run.taskId}`, "META")).toMatchObject({ outcome: "creator_removed" });
+    expect(seen).toEqual([]);
+    expect(w.linear.calls).toEqual([]);
+  });
+});

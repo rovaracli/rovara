@@ -766,6 +766,29 @@ describe("a required-E2E round of an org owner's task (finding 5, I4)", () => {
     expect(await requireWorkflowE2ECreatorAuthority(h.brokerInput, task())).toMatchObject({ kind: "direct-membership", role: "developer" });
   });
 
+  it("takes the creator-authority proof from the person who took the task over, never the creator's (Plan 5 Task 12a)", async () => {
+    const h = await createDeveloperTaskBroker();
+    const { requireWorkflowE2ECreatorAuthority } = await import("../../packages/broker/src/aws/broker.js") as unknown as {
+      requireWorkflowE2ECreatorAuthority: (dependencies: unknown, task: unknown) => Promise<Record<string, unknown>>;
+    };
+    setRole(h.db, OMAR, "owner");
+    const { taskId, ownerKey } = await waitingForRound(h, OMAR);
+    h.db.delete(projectMemberKey(TEST_ORG, OMAR.developerId, "payments"));
+    h.db.delete(projectMemberKey(TEST_ORG, ownerKey, "payments"));
+    const task = () => h.db.get(`DEVTASK#${taskId}`, "META")!;
+    // Before the take-over the creator, an org owner, is the proof.
+    expect(await requireWorkflowE2ECreatorAuthority(h.brokerInput, task())).toMatchObject({ kind: "org-role", developerId: OMAR.developerId, role: "owner" });
+    // Maya takes the task over (she has signed in, so her record exists): the proof is hers (a plain member with a grant), and the owner's own role no longer carries it.
+    h.db.set({ pk: `DEVELOPER#${MAYA.developerId}`, sk: "META", entityType: "DEVELOPER", developerId: MAYA.developerId, provider: "slack", slackUserId: MAYA.slackUserId, displayName: MAYA.name, revoked: false, firstSignInAt: "x", lastSignInAt: "x" });
+    h.db.set({ ...task(), currentOwner: { developerId: MAYA.developerId, name: MAYA.name, provider: "slack", slackUserId: MAYA.slackUserId, since: "2026-10-22T11:00:00.000Z" } });
+    grantProject(h.db, MAYA, "payments");
+    h.db.set({ ...(h.db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "payments")) as Record<string, unknown>), grantId: randomUUID() });
+    expect(await requireWorkflowE2ECreatorAuthority(h.brokerInput, task())).toMatchObject({ kind: "direct-membership", developerId: MAYA.developerId, role: "developer" });
+    // Demoted to a project viewer, she can no longer run the checks, though the creator is still an org owner.
+    h.db.set({ ...(h.db.get(projectMemberKey(TEST_ORG, MAYA.developerId, "payments")) as Record<string, unknown>), role: "viewer", projectRole: "viewer" });
+    await expect(requireWorkflowE2ECreatorAuthority(h.brokerInput, task())).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+  });
+
   it("keeps the round going when the project is archived while it is pending (I4)", async () => {
     const h = await createDeveloperTaskBroker();
     setRole(h.db, OMAR, "owner");
