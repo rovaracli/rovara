@@ -31,6 +31,15 @@ describe("the cell app shell and its immutable files", () => {
    for (const name of ["main-fixture.js", "main-fixture.css", "icon-fixture.svg"]) expect(response.body).toContain(`${CDN}/app/assets/${name}`);
   }
  });
+ it("pins HSTS for the cell shell and every asset encoding", async () => {
+  for (const path of ["/app", "/app/live", "/s/ses_aaaaaaaaaaaaaaaaaaaa", "/app/assets/main-fixture.js", "/app/assets/main-fixture.css", "/app/assets/icon-fixture.svg"]) {
+   for (const encoding of ["", "gzip", "br"]) {
+    const response = await app("")(event(path, "GET", { "accept-encoding": encoding }));
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["strict-transport-security"]).toBe("max-age=31536000; includeSubDomains");
+   }
+  }
+ });
  it("creates a fresh nonce per shell response", async () => {
   const handler = app();const first = await handler(event("/app")), second = await handler(event("/app"));
   expect(first.body).not.toBe(second.body);expect(first.headers["content-security-policy"]).not.toBe(second.headers["content-security-policy"]);
