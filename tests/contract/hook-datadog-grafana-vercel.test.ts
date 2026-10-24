@@ -410,8 +410,25 @@ describe("Vercel: x-vercel-signature is the hex HMAC-SHA1 of the raw body", () =
     expect(reply).toEqual({ status: 202, body: { delivery: "ACCEPTED", events: 1 } });
     expect(w.dispatched[0]).toMatchObject({ orgId: ORG_A, event: {
       source: "vercel", type: "deployment.error", eventKey: "vercel:hook_abc123", project: "web", hookId: hook.hookId, occurredAt: iso(w.clock.now - 90_000),
-      subject: { kind: "deployment", id: "dpl_9x", title: "acme-web: deployment failed", url: "https://vercel.com/acme/acme-web/9x" }, fields: { target: ["production"] }, actor: { kind: "unknown" },
+      subject: { kind: "deployment", id: "prj_123", title: "acme-web: deployment failed", url: "https://vercel.com/acme/acme-web/9x" }, fields: { target: ["production"] }, actor: { kind: "unknown" },
     } });
+  });
+
+  it("names the PROJECT as the subject, so two deployments of one project share it (the 30-minute subject guard sees a deploy-fail loop), and another project does not", async () => {
+    const { w, hook } = await vcWorld({ teamId: "team_abc" });
+    await w.receive(vcDelivery(hook, vcBody(w, { id: "d1", deployment: { id: "dpl_1", name: "acme-web" } })));
+    await w.receive(vcDelivery(hook, vcBody(w, { id: "d2", deployment: { id: "dpl_2", name: "acme-web" } })));
+    await w.receive(vcDelivery(hook, vcBody(w, { id: "d3", deployment: { id: "dpl_3", name: "acme-api" }, project: { id: "prj_456" } })));
+    expect(w.dispatched.map((entry) => entry.event.subject.id)).toEqual(["prj_123", "prj_123", "prj_456"]);
+    expect(w.dispatched.map((entry) => entry.event.subject.title)).toEqual(["acme-web: deployment failed", "acme-web: deployment failed", "acme-api: deployment failed"]);
+  });
+
+  it("falls back to the deployment id when the body names no readable project id", async () => {
+    const { w, hook } = await vcWorld({ teamId: "team_abc" });
+    for (const [index, project] of [undefined, null, {}, { id: 5 }, { id: "" }, { id: "p".repeat(201) }].entries()) {
+      await w.receive(vcDelivery(hook, vcBody(w, { id: `f${String(index)}`, project, deployment: { id: `dpl_${String(index)}`, name: "acme-web" } })));
+    }
+    expect(w.dispatched.map((entry) => entry.event.subject.id)).toEqual(["dpl_0", "dpl_1", "dpl_2", "dpl_3", "dpl_4", "dpl_5"]);
   });
 
   it("dispatches deployment.succeeded with a staging target, and gives no target value for a null one", async () => {
@@ -604,6 +621,15 @@ describe("through Task 20's dispatch: one run per event, the filters, and no act
     expect(runs()).toHaveLength(1);
     expect(runs()[0]).toMatchObject({ startedBy: { kind: "event", triggerId: trigger.triggerId, source: "vercel", type: "deployment.error", title: "acme-web: deployment failed", url: "https://vercel.com/acme/acme-web/9x" } });
     expect(await outcomes(v, trigger.triggerId)).toEqual([["started", undefined]]);
+  });
+
+  it("does not start a second run for the same Vercel project within the subject guard window, though it is another deployment", async () => {
+    const { v, w, chain, runs, vc } = await dispatching();
+    const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { kind: "event", source: "vercel", type: "deployment.error" }, hookId: vc.hookId });
+    await w.receive(vcDelivery(vc, vcBody(w, { id: "first", deployment: { id: "dpl_1", name: "acme-web" } })));
+    await w.receive(vcDelivery(vc, vcBody(w, { id: "second", deployment: { id: "dpl_2", name: "acme-web" } })));
+    expect(runs()).toHaveLength(1);
+    expect(await outcomes(v, trigger.triggerId)).toEqual([["started", undefined], ["skipped", "recent_subject"]]);
   });
 
   it("does not let another org's or team's body reach dispatch", async () => {
