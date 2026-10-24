@@ -256,11 +256,33 @@ describe("a taken-over session names its effective owner (review m-4)", () => {
     expect((await code(requireSessionLevel(r.deps, r.w.caller(ARJUN), plain.sessionId, "edit", "stop it")))?.message).toContain("Ask Priya to share it with you");
   });
 
-  it("refuses a session whose taker can't be read (no name recorded): nobody owns it, and it never falls back to the previous owner (Task 12a)", async () => {
+  it("keeps a session whose taker has no recorded name readable: a fixed fallback names them and authority stays by id (ruling on 12a question 1)", async () => {
     const r = readWorld();
     const { sessionId, taskId } = r.w.seedSession({ currentOwner: ARJUN });
     const { name: _name, ...taker } = (r.w.db.get(taskKey(taskId)) as { currentOwner: Record<string, unknown> }).currentOwner; // eslint-disable-line @typescript-eslint/no-unused-vars -- removed on purpose
     r.w.db.set({ ...r.w.db.get(taskKey(taskId))!, currentOwner: taker });
+    r.index(sessionId);
+    const priyaSees = await view(r, PRIYA, sessionId);
+    expect(priyaSees.owner).toEqual({ developerId: ARJUN, name: "a member" });
+    expect(priyaSees.you).toMatchObject({ owner: false });
+    const arjunSees = await view(r, ARJUN, sessionId);
+    expect(arjunSees.owner).toEqual({ developerId: ARJUN, name: "a member" });
+    expect(arjunSees.you.owner).toBe(true);
+    // Whoever needs more is told to ask the fallback, never the person who handed the session over.
+    const refused = await code(requireSessionLevel(r.deps, r.w.caller(PRIYA), sessionId, "edit", "stop it"));
+    expect(refused).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(refused?.message).toContain("Ask a member to share it with you");
+    expect(refused?.message).not.toContain("Priya");
+    // The list shows the session, still the taker's.
+    const tiles = (await listSessions(r.deps, r.w.caller(PRIYA), { owner: "me" })).sessions;
+    expect(tiles.find((tile) => tile.sessionId === sessionId)?.owner).toEqual({ developerId: ARJUN, name: "a member" });
+  });
+
+  it("still refuses a session whose taker's id can't be read: that is an owner nobody can name (Task 12a)", async () => {
+    const r = readWorld();
+    const { sessionId, taskId } = r.w.seedSession({ currentOwner: ARJUN });
+    const stored = r.w.db.get(taskKey(taskId)) as { currentOwner: Record<string, unknown> };
+    r.w.db.set({ ...r.w.db.get(taskKey(taskId))!, currentOwner: { ...stored.currentOwner, developerId: "" } });
     expect(await code(view(r, PRIYA, sessionId))).toMatchObject({ code: "TASK_ACCESS_DENIED" });
     expect(await code(view(r, ARJUN, sessionId))).toMatchObject({ code: "TASK_ACCESS_DENIED" });
     expect((await code(requireSessionLevel(r.deps, r.w.caller(PRIYA), sessionId, "edit", "stop it")))?.code).toBe("TASK_ACCESS_DENIED");
