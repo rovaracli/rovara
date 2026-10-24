@@ -247,18 +247,19 @@ describe("the named TEST proof-only installation gate", () => {
     // Merge of Plan 3 into Plan 5: the named and foreign digests were regenerated again for the merged template (Plan 5's `ANY /s/{proxy+}` route on top of the above).
     // Plan 5, Task 8: the realtime events API (its API, namespace, authorizer, the authorizer's and publishers' grants, the token key's split deny and the broker's one more
     // name) moved the named and foreign digests; the legacy template has no sign-in stack and none of it, and its digests did not move.
+    // M1-1: named/foreign parent pins include Plan 7 web hosting, cookie API routes and deploy boundary; legacy pins remain unchanged.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "767b84fef3a9c824802a41dbc1e6d85e640e2a68d660b5227890b244763bc973",
-        withoutRoute: "05015394eb5dce9072fc7c0e2acb0f4ca2c5f9fbcf5dd811536e4ffc7fc328d9",
+        withRoute: "f668fc259f8ac61c5f20ae66abd1651a5228ef64e30cc1612b8b193828c145d1",
+        withoutRoute: "e8ab0ab9b9122b69b52a10e01e48306fa0c2d561a26d7e4c3b6aa4f3b726ba7c",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "d9447e56556c9770e7a44b11682652de92d35a5c9d1397174264d2f48208088f",
-        withoutRoute: "846a0aedefa4df6cff7fa14b71fde11eb0b2ed8bb06ac1659b7426a8ae7611be",
+        withRoute: "71dd59000f24e1ecd09db683abfd180fd9ea3b77350132ea331f4bfa6566331a",
+        withoutRoute: "399af7c86b2ccdeafd7794581191303265205328d355480ab6b57d230d9113df",
       },
       {
         label: "legacy",
