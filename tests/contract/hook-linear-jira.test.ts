@@ -444,13 +444,13 @@ describe("what the first mutation pass found unpinned", () => {
 });
 
 describe("the providers are the ones the broker uses", () => {
-  it("registers Linear (vendor secret, hmac) and Jira (Rovara's secret, hmac) and no one else yet", () => {
+  it("registers Linear (vendor secret, hmac) and Jira (Rovara's secret, hmac) and the sources of Tasks 23 to 25 only as they land (PagerDuty and Sentry now)", () => {
     const providers = hookProviders();
     expect(providers.linear).toBe(linearProvider);
     expect(providers.jira).toBe(jiraProvider);
     expect([linearProvider.secretOrigin, linearProvider.auth, linearProvider.source]).toEqual(["vendor", "hmac", "linear"]);
     expect([jiraProvider.secretOrigin, jiraProvider.auth, jiraProvider.source]).toEqual(["rovara", "hmac", "jira"]);
-    expect(Object.keys(providers).sort()).toEqual(["jira", "linear"]);
+    expect(Object.keys(providers).sort()).toEqual(["jira", "linear", "pagerduty", "sentry"]);
   });
 
   it("refuses to read a hook of another source: a Linear provider answers a tenant mismatch for a Jira hook, and the other way", async () => {
