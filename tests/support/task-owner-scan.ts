@@ -91,6 +91,27 @@ function looksLikeATask(receiver: ts.Node, scope: ts.Node): boolean {
   return /task|devtask|\bmeta\b/iu.test(receiver.getText()) || /\btaskKey\(|DEVTASK#|\btaskPointerKey\(/u.test(scope.getText());
 }
 
+/** Fields whose presence on a structural type says it describes a task (or its workspace): a `{ taskId; developerId }` is a task by shape. */
+const TASK_SHAPE_FIELDS: readonly string[] = ["taskId", "workspaceId"];
+
+/**
+ * Whether a read of an owner field on something that is not a `DeveloperTaskRecord` is a read of a task by shape: the field is declared (a literal type such as
+ * `{ developerId: string }`, an inline parameter type), and the receiver is named for a task or its type carries the task's id or workspace.
+ */
+function isStructuralTask(checker: ts.TypeChecker, receiver: ts.Node, field: ts.Symbol | undefined): boolean {
+  // Declared in an anonymous object type (`{ developerId: string }`, an inline parameter or cast type): a named interface other than the task record has its own meaning and its own rows.
+  if (!(field?.declarations ?? []).some((declaration) => ts.isTypeLiteralNode(declaration.parent))) return false;
+  // `task.startedBy?.developerId` is the continuation of the read of `.startedBy`, which is counted already.
+  let inner = receiver;
+  while (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner)) inner = inner.expression;
+  if (ts.isPropertyAccessExpression(inner) && UNTYPED_FIELDS.has(inner.name.text)) return false;
+  const named = ts.isIdentifier(inner) ? inner.text : ts.isPropertyAccessExpression(inner) ? inner.name.text : undefined;
+  if (named !== undefined && /task/iu.test(named)) return true;
+  const type = checker.getTypeAtLocation(receiver);
+  const shapes = type.isUnion() ? type.types : [type];
+  return shapes.some((shape) => TASK_SHAPE_FIELDS.some((name) => shape.getProperty(name) !== undefined));
+}
+
 /** Whether the receiver is a cast (`(x as unknown as { developerId: string }).developerId`), which hides what `x` is from the type checker. */
 function isCast(receiver: ts.Node): boolean {
   let node = receiver;
@@ -122,16 +143,19 @@ export function scanProgram(program: ts.Program, roots: readonly Root[]): Hit[] 
       if (ts.isPropertyAccessExpression(node) && (OWNER_FIELDS.has(node.name.text) || UNTYPED_FIELDS.has(node.name.text))) {
         if (OWNER_FIELDS.has(node.name.text) && isTaskRecordField(checker.getSymbolAtLocation(node.name))) add(node, `.${node.name.text}`, "typed");
         else if ((isUntyped(checker, checker.getTypeAtLocation(node.expression)) || isCast(node.expression)) && looksLikeATask(node.expression, scopeOf(node) ?? source)) add(node, `.${node.name.text}`, "untyped");
+        else if (OWNER_FIELDS.has(node.name.text) && isStructuralTask(checker, node.expression, checker.getSymbolAtLocation(node.name))) add(node, `.${node.name.text}`, "typed");
       } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && UNTYPED_FIELDS.has(node.argumentExpression.text)) {
         const key = node.argumentExpression.text;
         if (OWNER_FIELDS.has(key) && isTaskRecordField(checker.getSymbolAtLocation(node.argumentExpression))) add(node, `.${key}`, "typed");
         else if ((isUntyped(checker, checker.getTypeAtLocation(node.expression)) || isCast(node.expression)) && looksLikeATask(node.expression, scopeOf(node) ?? source)) add(node, `.${key}`, "untyped");
+        else if (OWNER_FIELDS.has(key) && isStructuralTask(checker, node.expression, checker.getSymbolAtLocation(node.argumentExpression))) add(node, `.${key}`, "typed");
       } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
         const name = node.propertyName ?? node.name;
         if (ts.isIdentifier(name) && UNTYPED_FIELDS.has(name.text)) {
           const type = checker.getTypeAtLocation(node.parent);
           if (OWNER_FIELDS.has(name.text) && isTaskRecordField(type.getProperty(name.text))) add(node, `.${name.text}`, "typed");
           else if (isUntyped(checker, type) && looksLikeATask(node.parent.parent, scopeOf(node) ?? source)) add(node, `.${name.text}`, "untyped");
+          else if (OWNER_FIELDS.has(name.text) && isStructuralTask(checker, node.parent, type.getProperty(name.text))) add(node, `.${name.text}`, "typed");
         }
       } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "taskOwnerKey") add(node, "taskOwnerKey()", "call");
       ts.forEachChild(node, visit);
@@ -159,23 +183,45 @@ export function callsOwnerFunction(scope: ts.Node): boolean {
 
 export const hitKey = (hit: Pick<Hit, "file" | "fn" | "field">): string => `${hit.file}::${hit.fn}::${hit.field}`;
 
+/**
+ * The key of each hit, in the order given: the second read of one field in one function is `<key>@2`, the third `@3`. A row covers exactly the reads it counts, so a new read of a
+ * field the function already reads is a read no row covers.
+ */
+export function keysOf(hits: readonly Pick<Hit, "file" | "fn" | "field">[]): string[] {
+  const seen = new Map<string, number>();
+  return hits.map((hit) => {
+    const base = hitKey(hit);
+    const nth = (seen.get(base) ?? 0) + 1;
+    seen.set(base, nth);
+    return nth === 1 ? base : `${base}@${String(nth)}`;
+  });
+}
+
 export type Klass = "authority" | "owner-actor" | "attribution" | "index" | "principal" | "history" | "money" | "caller-actor" | "shape" | "other-record";
 /** The classes whose reads decide something about the owner: their function must call an owner function. */
 export const NEEDS_THE_FUNCTION: ReadonlySet<Klass> = new Set(["authority", "owner-actor", "attribution", "index"]);
 export type Row = readonly [file: string, fn: string, klass: Klass, ...fields: string[]];
 
+/** A row names its fields; `.developerId*2` covers two reads of that field in the function. */
 export function rowsOf(table: readonly Row[]): Map<string, Klass> {
   const rows = new Map<string, Klass>();
-  for (const [file, fn, klass, ...fields] of table) for (const field of fields) rows.set(`${file}::${fn}::${field}`, klass);
+  for (const [file, fn, klass, ...fields] of table) {
+    for (const entry of fields) {
+      const counted = /^(.*)\*([0-9]+)$/u.exec(entry);
+      const field = counted?.[1] ?? entry;
+      for (let nth = 1; nth <= Number(counted?.[2] ?? 1); nth += 1) rows.set(`${file}::${fn}::${field}${nth === 1 ? "" : `@${String(nth)}`}`, klass);
+    }
+  }
   return rows;
 }
 
 /** The reads no row classifies, the rows no read matches, and the reads that carry authority in a function that never calls an owner function. */
 export function problemsOf(hits: readonly Hit[], rows: ReadonlyMap<string, Klass>): { unclassified: string[]; stale: string[]; notRouted: string[] } {
-  const found = new Set(hits.map(hitKey));
+  const keys = keysOf(hits);
+  const found = new Set(keys);
   const notRouted = new Set<string>();
-  for (const hit of hits) {
-    const klass = rows.get(hitKey(hit));
+  for (const [index, hit] of hits.entries()) {
+    const klass = rows.get(keys[index]!);
     if (klass === undefined || !NEEDS_THE_FUNCTION.has(klass) || callsOwnerFunction(hit.scope)) continue;
     notRouted.add(`${hit.file}::${hit.fn} (${klass}, line ${String(hit.line)})`);
   }

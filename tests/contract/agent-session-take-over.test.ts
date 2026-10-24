@@ -9,7 +9,7 @@ import { createWriteApprovalRecord, getAnyApproval, getApprovalSubjectHandler, g
 import { WRITE_APPROVER_RULE } from "../../packages/broker/src/agents/write-gate.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
-import { onMembersMerged, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
+import { onMembersMerged } from "../../packages/broker/src/agents/lifecycle.js";
 import { resolveSessionAccess } from "../../packages/broker/src/agent-sessions/access.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
@@ -779,7 +779,7 @@ describe("a taker merged into another member between the request and the decisio
   /** Max's account is merged into Arjun's: the sign-in record says so, and the member movers run as the merge sweep runs them. */
   const mergeMaxIntoArjun = async (w: World) => {
     w.db.set({ ...(w.db.get(`DEVELOPER#${MAX}`, "META") as Item), mergedInto: ARJUN });
-    await onMembersMerged(w.deps as unknown as LifecycleDeps, { orgId: ORG_A, survivorId: ARJUN, duplicateId: MAX });
+    await onMembersMerged(w.deps, { orgId: ORG_A, survivorId: ARJUN, duplicateId: MAX });
   };
 
   it("moves the pending take-over to the survivor, who decides it, and the merged-away id never becomes the owner", async () => {
@@ -864,8 +864,8 @@ describe("approvals already waiting when the session is taken over (12b review I
     // The follow-up was lost: the mark is still owed, the previous owner's row is back and the record still names them.
     expect(w.db.get(agentSessionKey(ORG_A, sessionId, `TAKE_OVER_FOLLOW_UP#${asked.approvalId}`))).toBeUndefined();
     w.db.set({ ...agentSessionKey(ORG_A, sessionId, `TAKE_OVER_FOLLOW_UP#${asked.approvalId}`), entityType: "AGENT_SESSION_TAKE_OVER_FOLLOW_UP", orgId: ORG_A, sessionId, taskId, from: PRIYA, to: MAX, toName: "Max", project: "web" });
-    w.db.set({ ...approverIndexKey(ORG_A, PRIYA, approvalId as never), entityType: "APPROVER_INDEX", approvalId });
-    w.db.set({ ...(w.db.get(approvalKey(ORG_A, approvalId as never)) as Item), owner: { developerId: PRIYA, name: "Priya" } });
+    w.db.set({ ...approverIndexKey(ORG_A, PRIYA, approvalId), entityType: "APPROVER_INDEX", approvalId });
+    w.db.set({ ...(w.db.get(approvalKey(ORG_A, approvalId)) as Item), owner: { developerId: PRIYA, name: "Priya" } });
     const record = { ...(await w.approvalOf(asked.approvalId)), status: "EXECUTING" as const, decidedBy: MAX };
     await getApprovalSubjectHandler("session_owner")!(w.deps, record);
     expect(await listed(w, MAX)).toEqual([approvalId]);
@@ -900,7 +900,7 @@ describe("what a take-over leaves behind in the lists and on the tile (12b revie
       }
       return original(command);
     };
-    await refreshSessionSummary({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, ORG_A, sessionId as never);
+    await refreshSessionSummary({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, ORG_A, sessionId);
     expect(raced).toBe(true);
     expect(w.meta(sessionId).owner).toMatchObject({ developerId: MAX });
     expect(w.db.get(liveSessionKey(ORG_A, sessionId))).toMatchObject({ ownerId: MAX, owner: { developerId: MAX }, revision: 2 });

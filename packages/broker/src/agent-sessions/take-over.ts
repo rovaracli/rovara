@@ -398,11 +398,11 @@ export function registerSessionTakeOverApprovals(): void {
     }
     await flushAuditEvents(deps, events);
     // The lists follow the owner before anyone is told. A failure is thrown after the notices, so Plan 3 tells the handler again and the replay finishes it.
-    let owed: unknown;
+    let owed: Error | undefined;
     try {
       await finishFollowUp(sessions, orgId, sessionId, record.approvalId);
     } catch (error) {
-      owed = error;
+      owed = error instanceof Error ? error : new Error("take_over_follow_up_failed");
     }
     await tell(sessions, session, previous.developerId, takerId, at);
     if (owed !== undefined) throw owed;
