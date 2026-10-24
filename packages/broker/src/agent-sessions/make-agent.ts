@@ -65,6 +65,17 @@ export type CopiedReport = { copied: true } | { copied: false; reason: typeof MA
 const COPIED: CopiedReport = { copied: true };
 const NOT_COPIED: CopiedReport = { copied: false, reason: MAKE_AGENT_NOT_COPIED_REASON };
 
+/** Where the report is kept in the request's stored answer (beside the agent record). */
+const REPORT_FIELD = "copiedReport";
+
+/** The report stored with a request, or `undefined` when the request was stored without one or the field is not a report this code wrote. */
+function storedReport(result: unknown): CopiedReport | undefined {
+  const report = (result as { [REPORT_FIELD]?: { copied?: unknown; reason?: unknown } } | null)?.[REPORT_FIELD];
+  if (report?.copied === true && report.reason === undefined) return COPIED;
+  if (report?.copied === false && report.reason === MAKE_AGENT_NOT_COPIED_REASON) return NOT_COPIED;
+  return undefined;
+}
+
 /**
  * The session's agent as the new agent's base, when the person may use it now; otherwise the agent is built from nothing (no refusal, and nothing said about the agent they can't see: only the fixed reason
  * code `AGENT_NOT_USABLE`, never its id or name).
@@ -154,8 +165,9 @@ export async function makeAgentFromSession(deps: MakeAgentDependencies, caller: 
     const earlier = replay.result as AgentRecord;
     const { agent } = await requireAgentAccess(agents, agentCaller, earlier.agentId, "view");
     const draft = await agents.store.getDraft(agentCaller.orgId, earlier.agentId);
-    // The same report as the first answer: the session's agent was copied when the draft builds on it (or the session ran none).
-    const report = session.agent === undefined || draft?.extends?.agentId === session.agent.agentId ? COPIED : NOT_COPIED;
+    // The report the first answer gave, stored with the request: a change of the session's agent or of the draft's base since never changes it. A request stored before the report was kept
+    // has none; it is worked out from the draft as it was then.
+    const report = storedReport(replay.result) ?? (session.agent === undefined || draft?.extends?.agentId === session.agent.agentId ? COPIED : NOT_COPIED);
     return new StatusReply(201, { agent: await view(agents, agentCaller, agent), ...(draft === undefined ? {} : { draft: await withOriginView(agents, agentCaller, draft) }), ...report });
   }
   const right = await createRightIn(agents, agentCaller, session.project);
@@ -166,6 +178,7 @@ export async function makeAgentFromSession(deps: MakeAgentDependencies, caller: 
   const origin: AgentOrigin = { kind: "session", sessionId: session.sessionId, taskId: session.subject.taskId, createdBy: caller.developerId, createdAt: new Date(deps.now()).toISOString() };
   const agent = await agents.store.create({
     orgId: agentCaller.orgId, name: input.name ?? defaultName(session.title), owner: right.owner, accountable: right.accountable, overlay, origin, createdBy: caller.developerId, request: mark,
+    answer: { [REPORT_FIELD]: report },
     ...(base === undefined ? {} : { extends: base }),
   });
   const draft = await agents.store.getDraft(agentCaller.orgId, agent.agentId);

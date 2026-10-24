@@ -533,6 +533,8 @@ export class AgentStore {
     overlay?: RecipeOverlay;
     /** Task 10c: where the agent comes from. Only the create-from-session route passes it. */
     origin?: AgentOrigin;
+    /** What the request's stored answer carries besides the agent (the create-from-session route's `copied` report); a repeat of the request reads it back. */
+    answer?: Readonly<Record<string, unknown>>;
     createdBy: string;
     request?: RequestMark;
   }): Promise<AgentRecord> {
@@ -571,7 +573,7 @@ export class AgentStore {
       this.put(agentDirectoryKey(input.orgId, agentId), "AGENT_DIRECTORY", { agentId, createdAt: now }),
       this.put(agentNameKey(input.orgId, name), "AGENT_NAME", { agentId, createdAt: now }),
       this.event(input.orgId, agentId, "created", input.createdBy, { name, ...(base === undefined ? {} : { extends: base }) }),
-    ], (failed) => (failed.has(3) ? nameTaken(name) : undefined), input.request, agent);
+    ], (failed) => (failed.has(3) ? nameTaken(name) : undefined), input.request, input.answer === undefined ? agent : { ...agent, ...input.answer });
     return agent;
   }
 
