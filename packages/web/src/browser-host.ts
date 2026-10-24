@@ -55,7 +55,17 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
    try { const stored = win.sessionStorage.getItem(key);if (options?.automatic === true && stored !== null && Number.isFinite(Number(stored)) && Date.now() - Number(stored) < SIGN_IN_REPEAT_GUARD_MS) { win.location.assign("/app/signed-out?reason=failed");return; }win.sessionStorage.setItem(key, String(Date.now())); } catch { /* Blocked preference storage does not prevent a deliberate sign-in. */ }
    win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination));
   },
-  async signOut() { if (csrf === undefined) await refresh();const response = await fetchJson("/v1/auth/browser/sign-out", { method: "POST", headers: { "x-rovara-csrf": csrf! } });if (response.status !== 204) throw new ApiError(response.status, "SIGN_OUT_FAILED", "Couldn't sign out. Try again.");csrf = undefined;win.location.assign("/app/signed-out?reason=ended"); },
+  async signOut() {
+   if (csrf === undefined) {
+    try { await refresh(); } catch (error) {
+     if (!(error instanceof ApiError) || error.status !== 401) throw error;
+     csrf = undefined;win.location.assign("/app/signed-out?reason=ended");return;
+    }
+   }
+   const response = await fetchJson("/v1/auth/browser/sign-out", { method: "POST", headers: { "x-rovara-csrf": csrf! } });
+   if (response.status !== 204) throw new ApiError(response.status, "SIGN_OUT_FAILED", "Couldn't sign out. Try again.");
+   csrf = undefined;win.location.assign("/app/signed-out?reason=ended");
+  },
   storage: { get(key) { try { return win.localStorage.getItem(key) ?? undefined; } catch { return undefined; } }, set(key, value) { try { win.localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } }, features: { admin: true },
  };
  const api = createApiClient(host);return host;

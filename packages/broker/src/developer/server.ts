@@ -899,15 +899,17 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   async function browserSignOut(headers: Record<string, string | undefined>): Promise<HttpResult> {
     const sessionId = cookieValue(headers.cookie, REVIEW_SESSION_COOKIE);
     const refused = () => jsonResult(403, { error: "request_refused" });
-    if (sessionId === undefined || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)
-      || headers.origin !== new URL(config.issuer).origin || !appCsrfMatches(sessionId, headers[APP_CSRF_HEADER])) return refused();
+    const ended = (): HttpResult => ({ statusCode: 204, headers: { "cache-control": "no-store" }, body: "", cookies: [`${REVIEW_SESSION_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`] });
+    if (headers.origin !== new URL(config.issuer).origin) return refused();
+    if (sessionId === undefined || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) return refused();
     const session = await store.getSession(sessionId);
     const now = Math.floor(deps.now() / 1000);
-    if (session === undefined || session.revokedAt !== undefined || session.endsAt <= now || session.reviewExpiresAt === undefined || session.reviewExpiresAt <= now) return refused();
+    if (session === undefined || session.revokedAt !== undefined || session.endsAt <= now || session.reviewExpiresAt === undefined || session.reviewExpiresAt <= now) return ended();
+    if (!appCsrfMatches(sessionId, headers[APP_CSRF_HEADER])) return refused();
     // Revoke in DeveloperIdentity, which already owns this grant. Never log the cookie or its session id.
     await store.revokeSession(sessionId, "browser_sign_out");
     deps.log({ event: "signin.browser_signed_out" });
-    return { statusCode: 204, headers: { "cache-control": "no-store" }, body: "", cookies: [`${REVIEW_SESSION_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`] };
+    return ended();
   }
 
   async function route(method: string, pathname: string, url: URL, body: string | undefined, headers: Record<string, string | undefined>): Promise<HttpResult> {
