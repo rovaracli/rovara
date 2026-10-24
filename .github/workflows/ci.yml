@@ -165,9 +165,29 @@ jobs:
           ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
         run: npx vitest run tests/linux
 
+  web-e2e:
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      # The mock cell reuses broker guards and their package dependencies.
+      - run: npx tsc -b
+      - run: npm run build:web
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npx playwright test -c tests/web-e2e/playwright.config.ts
+        env:
+          ROVARA_E2E_ALL_BROWSERS: "1"
+
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
-    needs: [scope, checks, test, release, linux-runtime]
+    needs: [scope, checks, test, release, linux-runtime, web-e2e]
     if: always() && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 5

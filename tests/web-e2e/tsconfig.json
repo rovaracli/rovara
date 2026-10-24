@@ -32,6 +32,15 @@
     },
     {
       "path": "../../packages/web"
+    },
+    {
+      "path": "../web"
+    },
+    {
+      "path": "../../packages/broker"
+    },
+    {
+      "path": "../../packages/web/tsconfig.server.json"
     }
   ]
 }

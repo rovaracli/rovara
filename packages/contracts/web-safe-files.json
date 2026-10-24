@@ -25,6 +25,7 @@
   "packages/contracts/src/spend.ts",
   "packages/contracts/src/task-workflow.ts",
   "packages/contracts/src/web-hash.ts",
+  "packages/contracts/src/web-init.ts",
   "packages/contracts/src/web.ts",
   "packages/contracts/src/workflow-dependencies.ts"
 ]

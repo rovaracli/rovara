@@ -54,6 +54,9 @@
     },
     {
       "path": "packages/web/tsconfig.server.json"
+    },
+    {
+      "path": "tests/web-e2e"
     }
   ]
 }
