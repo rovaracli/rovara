@@ -4,12 +4,13 @@
 // weaker option, and the setup text asks the person to set the topic to 2); `SigningCertURL` is exactly `https://sns.<the topic's region>.amazonaws.com/<name>.pem` (the host
 // and region are built here and compared whole, so a port, a login, a query, a fragment, another region or a lookalike host can't pass); the certificate is fetched from that
 // host only (`vendorFetch`: https, no redirect, a size cap, a deadline), parsed, and checked against its dates now; and the signature is checked over the string AWS documents.
-// Differences from AWS's page, recorded in the commit message: AWS accepts SignatureVersion 1 as well; the plan, and this code, accept only 2. AWS also lists a chain check; the
-// trust here is the HTTPS fetch from AWS's own host (a certificate named by a message is never taken from the message), as AWS's own SDKs do.
+// Differences from AWS's page, recorded in the commit message: AWS accepts SignatureVersion 1 as well; the plan, and this code, accept only 2. AWS also lists a chain check, which
+// is not done: trust comes from the HTTPS fetch from AWS's own host (a certificate named by a message is never taken from the message, and the host is built here from the topic's
+// own region, which must be a real commercial region), the same trust AWS's own SNS message validators place in it, with no check of the certificate's chain.
 // Nothing here logs and nothing throws: a message that can't be verified answers false.
 import { X509Certificate, verify } from "node:crypto";
 import { z } from "zod";
-import { SNS_CERT_CACHE_HOURS, SNS_CERT_FETCHES_PER_MINUTE, SNS_CERT_MAX_BYTES, SNS_FETCH_TIMEOUT_MS } from "@agentx/contracts";
+import { SNS_CERT_CACHE_HOURS, SNS_CERT_FETCHES_PER_MINUTE, SNS_CERT_MAX_BYTES, SNS_FETCH_TIMEOUT_MS, SNS_REGION_PATTERN } from "@agentx/contracts";
 import { vendorFetch } from "../connectors/native/vendor-fetch.js";
 
 const HOUR = 3_600_000;
@@ -46,14 +47,14 @@ export function snsStringToSign(message: SnsMessage): string {
   return pairs.filter((pair): pair is [string, string] => pair[1] !== undefined).map(([key, value]) => `${key}\n${value}\n`).join("");
 }
 
-const TOPIC_ARN = /^arn:(aws|aws-cn|aws-us-gov):sns:([a-z0-9-]+):\d{12}:[A-Za-z0-9_.-]{1,256}$/;
+const TOPIC_ARN = new RegExp(`^arn:aws:sns:(${SNS_REGION_PATTERN}):\\d{12}:[A-Za-z0-9_.-]{1,256}$`);
 const CERT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*\.pem$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
-/** The host SNS serves a topic's certificates and confirmations from: `sns.<region>.amazonaws.com` (`.cn` more in the China partition). Undefined for an ARN that is not a topic of a supported partition. */
+/** The host SNS serves a topic's certificates and confirmations from: `sns.<region>.amazonaws.com`. Undefined for an ARN that is not a topic of the `aws` partition in a real commercial region (`SNS_REGION_PATTERN`). */
 export function snsHostOfTopic(topicArn: string): string | undefined {
   const match = TOPIC_ARN.exec(topicArn);
-  return match === null ? undefined : `sns.${match[2]!}.amazonaws.com${match[1] === "aws-cn" ? ".cn" : ""}`;
+  return match === null ? undefined : `sns.${match[1]!}.amazonaws.com`;
 }
 
 /** The URL of a certificate, when it is exactly `https://<the topic's SNS host>/<name>.pem`. */

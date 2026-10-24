@@ -118,6 +118,11 @@ export interface OrgConnectionStoreInput extends OrgConnectionDeps {
    * (after the secret, which is never part of an event). Absent on a legacy install: nothing is added.
    */
   audit?: AuditRuntime;
+  /**
+   * Told after a connection has been removed (and its removal committed), for what depends on it that lives elsewhere (the CloudWatch hooks of its AWS account). A failure is
+   * logged by name and never undoes or fails the removal.
+   */
+  afterRemove?: (removed: { orgId: OrgId; connectionId: string; type: string; roleArn?: string }) => Promise<void>;
 }
 
 const CHECK_TIMEOUT_MS = 10_000;
@@ -399,6 +404,9 @@ export class OrgConnectionStore {
       ...events.flatMap((pending) => auditPending(this.input, pending)),
     ], (failed) => (failed.has(0) ? coded("NOT_FOUND", "no connection has that ID") : undefined), input.request, { removed: true });
     await flushAuditEvents(this.input, events);
+    await this.input.afterRemove?.({ orgId, connectionId: input.connectionId, type: String(existing.type), ...(typeof existing.roleArn === "string" ? { roleArn: existing.roleArn } : {}) }).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "connection.after_remove_failed", orgId, connectionId: input.connectionId, error: error instanceof Error ? error.name : "unknown" }));
+    });
   }
 
   /**

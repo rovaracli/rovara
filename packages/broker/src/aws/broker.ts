@@ -379,7 +379,7 @@ import { pagerdutyConnectionCheck } from "./pagerduty-connector-type.js";
 import { sentryConnectionCheck } from "./sentry-connector-type.js";
 import { vercelConnectionCheck } from "./vercel-connector-type.js";
 import { HookSecretStore, OrgConnectionStore, type OrgConnectionDeps, type OrgConnectionStoreInput } from "../connections/store.js";
-import { HookStore, type ConnectedAwsAccounts, type HookSecrets } from "../triggers/hooks.js";
+import { HookStore, disableHooksOfAccount, type ConnectedAwsAccounts, type HookSecrets } from "../triggers/hooks.js";
 import { HookIngressMemory, receiveHook, type HookIngressDeps } from "../triggers/ingress.js";
 import { hookProviders } from "../triggers/providers/index.js";
 import type { HookProvider } from "../triggers/providers/types.js";
@@ -950,6 +950,17 @@ function orgConnectionStoreOf(dependencies: AwsBrokerDependencies): OrgConnectio
     tableName: dependencies.tableName,
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     checkEndpoint: async (url) => { await checkEndpointUrl(url, dnsResolveHost); },
+    // Plan 4 Task 25 review M-2: a removed AWS connection turns off the org's CloudWatch hooks for its account (unless another connection still holds the account). Built when it runs,
+    // because the account check reads this same store.
+    ...(dependencies.agents?.eventHooks === undefined ? {} : {
+      afterRemove: async (removed: { orgId: OrgId; type: string; roleArn?: string }) => {
+        const awsAccounts = connectedAwsAccountsOf(dependencies);
+        if (removed.type !== "cloudwatch" || removed.roleArn === undefined || awsAccounts === undefined) return;
+        const account = cloudwatchRoleAccount(removed.roleArn);
+        if (account === undefined) return;
+        await disableHooksOfAccount({ store: new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }), awsAccounts }, removed.orgId, account);
+      },
+    }),
     // The checks of an MCP endpoint and a Grafana address go over a connection pinned to the addresses checked (the store's default guard is `mcpEndpointGuard()`).
     // Each native type's check is registered as its task lands (Plan 4 Tasks 13 to 17); a test may replace any of them through `connectionChecks.checks`.
     checks: {

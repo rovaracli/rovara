@@ -165,12 +165,13 @@ describe("verifySnsMessage: AWS's documented rules", () => {
     expect(await verify(notification({ topicArn: "arn:aws:sqs:us-east-1:123456789012:q" }))).toBe(false);
   });
 
-  it("reads the China partition's host (amazonaws.com.cn) for a topic of that partition", async () => {
+  it("does not read the China partition's host: only the aws partition's topics are trusted (review I-1)", async () => {
     const { verify, net } = await verifier();
     const topicArn = "arn:aws-cn:sns:cn-north-1:123456789012:t";
     const certUrl = "https://sns.cn-north-1.amazonaws.com.cn/SimpleNotificationService-0123.pem";
     net.certs.set(certUrl, TEST_CERT_PEM);
-    expect(await verify(notification({ topicArn }, { certUrl }))).toBe(true);
+    expect(await verify(notification({ topicArn }, { certUrl }))).toBe(false);
+    expect(net.requests).toEqual([]);
   });
 
   it("refuses a certificate outside its validity dates (expired, not yet valid) and one that is not a certificate", async () => {
@@ -340,17 +341,16 @@ describe("a confirmed subscription and a notification, through the hook route", 
     expect(w.dispatched[0]!.event.subject).toMatchObject({ id: "api/5xx rate #1", url: `https://${SNS_REGION}.console.aws.amazon.com/cloudwatch/home?region=${SNS_REGION}#alarmsV2:alarm/api%2F5xx%20rate%20%231` });
   });
 
-  it("gives no console link for a topic outside the standard partition, and takes the region from the topic", async () => {
+  it("takes the region from the topic: a topic in another region (here eu-west-1) is read from that region's host, and its alarm's console link is that region's", async () => {
     const w = setupHookWorld({ cloudwatch: cloudwatchProvider });
     const net = new FakeSnsNetwork();
-    const topicArn = "arn:aws-cn:sns:cn-north-1:123456789012:t";
-    const certUrl = "https://sns.cn-north-1.amazonaws.com.cn/SimpleNotificationService-0123.pem";
+    const topicArn = "arn:aws:sns:eu-west-1:123456789012:t";
+    const certUrl = "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-0123.pem";
     net.certs.set(certUrl, TEST_CERT_PEM);
-    Object.assign(w.deps, { snsFetch: net.fetch });
+    Object.assign(w.deps, { snsFetch: net.fetch, awsAccounts: { isConnected: async () => true } });
     const hook = await w.hook({ source: "cloudwatch", hookId: HOOK_1, project: "web", tenant: { awsAccountId: SNS_ACCOUNT, topicArn } as never, auth: "sns", hasSecret: false, status: "active", secret: null });
     expect((await w.receive(snsDelivery(hook, notification({ topicArn }, { certUrl }), { topicHeader: topicArn }))).status).toBe(202);
-    expect(w.dispatched[0]!.event.subject).not.toHaveProperty("url");
-    expect(w.dispatched[0]!.event.fields["region"]).toEqual(["cn-north-1"]);
+    expect(w.dispatched[0]!.event.fields["region"]).toEqual(["eu-west-1"]);
   });
 
   it("ignores an OK or INSUFFICIENT_DATA state (202), and an alarm whose time or name can't be read", async () => {
@@ -730,7 +730,7 @@ describe("through Task 20's dispatch", () => {
     (v.routeDeps as { log?: unknown }).log = () => undefined;
     const w = setupHookWorld({ cloudwatch: cloudwatchProvider }, { db: v.db, clock: v.clock });
     const net = new FakeSnsNetwork();
-    Object.assign(w.deps, { snsFetch: net.fetch });
+    Object.assign(w.deps, { snsFetch: net.fetch, awsAccounts: { isConnected: async (org: string, account: string) => org === ORG_A && account === SNS_ACCOUNT } });
     w.deps.dispatch = async (orgId, event) => dispatchTriggerEvent(v.routeDeps as never, orgId, event);
     const chain = await v.budgetedChain(ONE_STEP);
     const hook = await w.hook({ source: "cloudwatch", hookId: HOOK_A, project: "web", tenant: CW_TENANT as never, auth: "sns", hasSecret: false, status: "active", secret: null });
@@ -803,13 +803,13 @@ describe("pins: signature and certificate edges", () => {
     for (const value of [`!!${good}`, `${good.slice(0, 10)}!!${good.slice(10)}`, `${good}!!`, `${good}\n`, ` ${good}`, `${good.slice(0, 10)} ${good.slice(10)}`]) expect(await verify(tamper(value)), value.slice(0, 20)).toBe(false);
   });
 
-  it("reads the US government partition's topics and hosts", async () => {
+  it("refuses the US government partition's topics and hosts, and any other partition (review I-1)", async () => {
     const { verify, net } = snsVerifier();
-    const topicArn = "arn:aws-us-gov:sns:us-gov-west-1:123456789012:t";
     const certUrl = "https://sns.us-gov-west-1.amazonaws.com/SimpleNotificationService-0123.pem";
     net.certs.set(certUrl, TEST_CERT_PEM);
-    expect(await verify(notification({ topicArn }, { certUrl }))).toBe(true);
+    expect(await verify(notification({ topicArn: "arn:aws-us-gov:sns:us-gov-west-1:123456789012:t" }, { certUrl }))).toBe(false);
     expect(await verify(notification({ topicArn: "arn:aws-iso:sns:us-iso-east-1:123456789012:t" }, { certUrl }))).toBe(false);
+    expect(net.requests).toEqual([]);
   });
 
   it("refuses a topic ARN that has anything before or after it, or a name with characters a topic can't have", async () => {

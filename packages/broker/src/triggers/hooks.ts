@@ -180,6 +180,21 @@ export interface ConnectedAwsAccounts {
   isConnected(orgId: OrgId, awsAccountId: string): Promise<boolean>;
 }
 
+/**
+ * An AWS connection of the org was removed: each CloudWatch hook of the org for that account is turned off and loses its lookup (as `clearOrgHooks` does for a closed org), unless
+ * the org still has another connection to the account (read now). Repeatable. Answers how many hooks it turned off.
+ */
+export async function disableHooksOfAccount(input: { store: HookStore; awsAccounts: ConnectedAwsAccounts }, orgId: OrgId, awsAccountId: string): Promise<number> {
+  if (await input.awsAccounts.isConnected(orgId, awsAccountId)) return 0;
+  let turnedOff = 0;
+  for (const hook of await input.store.list(orgId)) {
+    if (hook.source !== "cloudwatch" || hook.status === "disabled" || (hook.tenant as { awsAccountId?: unknown }).awsAccountId !== awsAccountId) continue;
+    await input.store.disable(orgId, hook.hookId);
+    turnedOff += 1;
+  }
+  return turnedOff;
+}
+
 /** The secrets of hooks, as ingress and the routes use them (Plan 3's `HookSecretStore`). */
 export interface HookSecrets {
   put(orgId: string, hookId: string, value: string): Promise<void>;

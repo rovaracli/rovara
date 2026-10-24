@@ -3,13 +3,13 @@
 // the account off.
 import { afterEach, describe, expect, it } from "vitest";
 import { HOOK_TENANT_SCHEMAS } from "../../packages/contracts/src/event-hooks.js";
-import { HookStore, disableHooksOfAccount } from "../../packages/broker/src/triggers/hooks.js";
+import { disableHooksOfAccount, type HookStore } from "../../packages/broker/src/triggers/hooks.js";
 import { cloudwatchProvider } from "../../packages/broker/src/triggers/providers/cloudwatch-sns.js";
 import { SnsCertMemory, parseSnsMessage, snsHostOfTopic, verifySnsMessage } from "../../packages/broker/src/triggers/sns-verify.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import type { HookRecord } from "@agentx/contracts";
-import { HOOK_1, ORG_A, ORG_B, setupHookWorld } from "../support/hook-fixtures.js";
+import { HOOK_1, LINEAR_TENANT, ORG_A, ORG_B, setupHookWorld } from "../support/hook-fixtures.js";
 import { START } from "../support/chain-run-world.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
@@ -128,6 +128,8 @@ describe("M-2: removing the connection turns the account's hooks off", () => {
     const second = await make(`hk_${"d".repeat(26)}`, TENANT);
     const elsewhere = await make(`hk_${"e".repeat(26)}`, other);
     const theirs = await make(`hk_${"f".repeat(26)}`, TENANT, ORG_B);
+    const off = await w.hook({ source: "cloudwatch", hookId: `hk_${"g".repeat(26)}`, project: "web", tenant: TENANT as never, auth: "sns", hasSecret: false, status: "disabled", secret: null });
+    const linear = await w.hook({ source: "linear", hookId: `hk_${"h".repeat(26)}`, project: "web", tenant: { ...LINEAR_TENANT, awsAccountId: SNS_ACCOUNT } as never, auth: "hmac", secret: "s".repeat(32) });
     const stillConnected = { isConnected: async () => true };
     expect(await disableHooksOfAccount({ store, awsAccounts: stillConnected }, ORG_A, SNS_ACCOUNT)).toBe(0);
     expect((await store.record(ORG_A, mine.hookId))!.status).toBe("active");
@@ -135,6 +137,8 @@ describe("M-2: removing the connection turns the account's hooks off", () => {
     expect(await disableHooksOfAccount({ store, awsAccounts: gone }, ORG_A, SNS_ACCOUNT)).toBe(2);
     for (const hook of [mine, second]) expect((await store.record(ORG_A, hook.hookId))!.status).toBe("disabled");
     expect((await store.record(ORG_A, elsewhere.hookId))!.status).toBe("active");
+    expect((await store.record(ORG_A, linear.hookId))!.status).toBe("active");
+    expect((await store.record(ORG_A, off.hookId))!.status).toBe("disabled");
     expect((await store.record(ORG_B, theirs.hookId))!.status).toBe("active");
     expect(await store.orgOf(mine.hookId)).toBeUndefined();
   });

@@ -408,6 +408,12 @@ async function receiveSns(deps: HookIngressDeps, orgId: OrgId, hook: HookRecord,
     const sent = isoOfText(message.Timestamp);
     if (sent === undefined || outsideEventWindow(sent, now) !== undefined) return forbidden();
   }
+  // The hook is for an AWS account the org connected, and the connection is read now: one removed since the hook was made ends what the hook may start. (A confirmation checks the same
+  // before its visit, and an unsubscription starts nothing.) Read only after the signature, so forged traffic costs no read.
+  if (message.Type === "Notification" && (deps.awsAccounts === undefined || !await deps.awsAccounts.isConnected(orgId, (hook.tenant as { awsAccountId: string }).awsAccountId))) {
+    log("hook.sns_account_not_connected", { hookId: hook.hookId });
+    return forbidden();
+  }
   if (!await withinRate(deps, orgId, hook.hookId, now)) {
     log("hook.rate_limited", { hookId: hook.hookId });
     return { status: 429, body: { error: { code: "RATE_LIMITED", message: "too many deliveries" } } };

@@ -46,6 +46,12 @@ export const HookIdSchema = z.string().regex(/^hk_[0-9a-z]{26}$/);
 const Uuid = z.string().uuid();
 const Printable = (max: number) => z.string().min(1).max(max).refine((text) => !/[\p{Cc}\p{Cf}]/u.test(text), "must not contain control characters");
 
+/**
+ * The commercial AWS regions a hook's SNS topic may be in: a geography, a direction and a number (`us-west-2`, `ap-southeast-4`). A looser pattern accepts `s3`, which would make the
+ * trusted SNS host `sns.s3.amazonaws.com`, an S3 address. The China (`cn-`) and US government (`us-gov-`) partitions have other SNS hosts and are not accepted.
+ */
+export const SNS_REGION_PATTERN = "(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z]+-\\d";
+
 /** What a hook is bound to at the vendor, by source: the body of every delivery must name it, or the delivery is refused (the tenant check of each provider). */
 export const HOOK_TENANT_SCHEMAS = {
   linear: z.object({ organizationId: Uuid, teamId: Uuid }).strict(),
@@ -57,7 +63,7 @@ export const HOOK_TENANT_SCHEMAS = {
   vercel: z.object({ teamId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(), projectId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional() }).strict(),
   cloudwatch: z.object({
     awsAccountId: z.string().regex(/^\d{12}$/),
-    topicArn: z.string().regex(/^arn:aws[a-z-]*:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,256}$/),
+    topicArn: z.string().regex(new RegExp(`^arn:aws:sns:${SNS_REGION_PATTERN}:\\d{12}:[A-Za-z0-9_-]{1,256}$`)),
   }).strict().refine((tenant) => tenant.topicArn.split(":")[4] === tenant.awsAccountId, "the topic's account must be the AWS account id"),
 } as const satisfies Record<HookSource, z.ZodType>;
 
