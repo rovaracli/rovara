@@ -34,7 +34,7 @@ import {
 } from "@agentx/contracts";
 import type { ProjectMembers } from "../agents/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
-import { effectiveTaskOwner, isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { UNNAMED_MEMBER, effectiveTaskOwner, isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { AgentSessionStore } from "./store.js";
 
 /** Who asks Plan 4 for a chain's view: the internal session actor Plan 5 passes after its own level check (Plan 4, M2). No route, header or body can set it. */
@@ -188,9 +188,6 @@ async function peopleRoleOf(deps: SessionAccessDependencies, taskId: string, dev
 
 // ---- the effective owner
 
-/** What names someone whose name isn't recorded. */
-const UNNAMED_OWNER = "the owner";
-
 /**
  * The person who owns the session now, as `effectiveTaskOwner` says (Plan 5 Task 12a): the task's current owner once someone took it over, else the task's creator. A
  * session of no task (a local one, a chain's) has its own owner. Throws `TASK_ACCESS_DENIED` when the task's owner can't be read: nobody owns it then, so no one gets an
@@ -201,7 +198,7 @@ function effectiveOwnerNamed(session: AgentSessionRecord, taskItem: Item | undef
   if (taskItem === undefined || !isTaskTakenOver(taskItem as unknown as DeveloperTaskRecord)) return session.owner;
   const owner = effectiveTaskOwner(taskItem as unknown as DeveloperTaskRecord);
   if (owner.developerId === session.owner.developerId) return session.owner;
-  return { developerId: owner.developerId, name: cleanSessionName(owner.name) ?? UNNAMED_OWNER };
+  return { developerId: owner.developerId, name: cleanSessionName(owner.name) ?? UNNAMED_MEMBER };
 }
 
 /** The id of `effectiveOwnerNamed`: access and the share notice read it. */
