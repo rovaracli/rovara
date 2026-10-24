@@ -579,7 +579,7 @@ describe("a message to a chain", () => {
     await check(foreign.taskId);
   });
 
-  it("is not delivered to a step that has just ended, and is refused before anything is written for a step that is an agent run", async () => {
+  it("is not delivered to a step that has just ended, and reaches the step that is an agent run (Task 11b) as its note", async () => {
     const holder = { taskId: "" };
     const f = steerWorld({ kind: "chain", chainSteer: { current: async () => ({ kind: "step", taskId: holder.taskId }) } });
     const step = f.w.seedSession({ kind: "task" });
@@ -587,7 +587,9 @@ describe("a message to a chain", () => {
     holder.taskId = step.taskId;
     expect((await f.send(MAX, "too late")).delivery).toMatchObject({ state: "not_delivered" });
     f.w.db.set({ ...f.w.db.get(taskKey(step.taskId))!, closedAt: undefined, workflow: undefined, agent: { agentId: "ticket-triage", name: "Ticket triage", version: 1 } });
-    expect(await code(f.send(MAX, "go"))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "Messages to this kind of session aren't available yet." });
+    const taken = await f.send(MAX, "go");
+    expect(taken.delivery).toMatchObject({ state: "queued" });
+    expect(f.w.db.get(`DEVTASK#${step.taskId}`, `NOTE#${taken.messageId}`)).toMatchObject({ source: "app", taskId: step.taskId, text: "go" });
   });
 
   it("is refused before anything is written until Plan 4's chain reads are wired", async () => {

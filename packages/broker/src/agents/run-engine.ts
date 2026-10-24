@@ -79,7 +79,19 @@ export interface AgentRunHost extends TaskEndHost {
    * own spend and writes it (`requestForPausedTask`). Never throws for a stop that has nothing to ask for. Called by the sweep for a run that waits for its pause.
    */
   askForPause?(task: DeveloperTaskRecord, operationId: string): Promise<void>;
+  /**
+   * Plan 5 Task 11b: the messages people sent to the run from its session, for the step about to be dispatched. `redoFrom` is the step's `notesFrom` when it runs again (a continuation
+   * after approvals, a rerun after a pause), so it is handed the notes it was handed before as well as the new ones; absent for a step's first run. Without it a run gives no messages.
+   */
+  stepNotes?(task: DeveloperTaskRecord, requestId: string, redoFrom?: string): Promise<StepNotes>;
 }
+
+/**
+ * The people's messages a step is given (Plan 5 Task 11b): `section` is the prompt section under Task 11a's header ("" when there are none), `before` is the task's mark of notes already
+ * given when it was read ("" when none), `noteCount` the task's note count as read, and `markItem` the update that moves the mark past what was given, to go in the step's own transaction
+ * (conditional on the count read, so a message saved meanwhile fails it and is read again). No `markItem` when the step is shown only notes an earlier step was given.
+ */
+export interface StepNotes { section: string; before: string; noteCount?: number; markItem?: TransactItems[number] }
 
 export type AgentRunEngineDependencies = ApprovalDependencies;
 
@@ -95,6 +107,8 @@ const MINUTE = 60_000;
 const WATCHDOG_GRACE_MS = 15 * MINUTE;
 const DEFAULT_STEP_MINUTES = 60;
 const WAITING_WATCHDOG_MS = 6 * 60 * MINUTE;
+/** How many times a step is made again because a message was saved while it was being made. */
+const NOTES_TRIES = 3;
 const OUTCOMES_HEADER = "Outcomes of the actions that needed approval:";
 const CANCELLED_REASON = "Cancelled.";
 const CLOSED_REASON = "The task was closed.";
@@ -214,18 +228,21 @@ function outcomeLine(record: WriteApprovalRecord): string {
 /**
  * The one user turn of a step: the run's request, then each earlier report under `Report from <step name>:`, shortened to leave room (the payload carries at most
  * 256 KiB). A continuation also gets the step's own report from before the outcomes were known, and then the outcomes themselves.
+ * The messages people sent to the run (`notesSection`, Task 11b) are always last.
  */
-export function renderStepInputs(run: AgentRunState, stepId: string, continuation?: { ownReport?: string; lines: readonly string[] }): string {
+export function renderStepInputs(run: AgentRunState, stepId: string, continuation?: { ownReport?: string; lines: readonly string[] }, notesSection = ""): string {
   const base = renderRunInput(run.input);
+  const notes = notesSection === "" ? "" : `\n\n${notesSection}`;
   const tail = continuation === undefined ? "" : `\n\n${OUTCOMES_HEADER}\n${continuation.lines.join("\n")}`;
   const earlier = run.reports.filter((report) => report.stepId !== stepId);
   const own = continuation?.ownReport === undefined ? undefined : `\n\nYour report for this step before the outcomes were known:\n${continuation.ownReport}`;
   const headers = earlier.reduce((total, report) => total + utf8Length(`\n\nReport from ${report.name}:\n`), 0);
-  const room = AGENT_STEP_INPUTS_MAX_BYTES - utf8Length(base) - utf8Length(tail) - headers - (own === undefined ? 0 : utf8Length(own)) - 1024;
+  const room = AGENT_STEP_INPUTS_MAX_BYTES - utf8Length(base) - utf8Length(tail) - utf8Length(notes) - headers - (own === undefined ? 0 : utf8Length(own)) - 1024;
   const share = Math.max(utf8Length(SHORTENED_MARKER) + 64, Math.floor(room / Math.max(1, earlier.length + (own === undefined ? 0 : 1))));
   const reports = earlier.map((report) => `\n\nReport from ${report.name}:\n${shortenToBytes(report.text, share)}`).join("");
   const ownBlock = own === undefined ? "" : `\n\nYour report for this step before the outcomes were known:\n${shortenToBytes(continuation!.ownReport!, share)}`;
-  return `${base}${reports}${ownBlock}${tail}`;
+  // The people's messages are the end of the turn, after the earlier reports and the outcomes.
+  return `${base}${reports}${ownBlock}${tail}${notes}`;
 }
 
 /** A report as the run keeps it: redacted, at most 32,768 bytes (cut inside no character), and non-empty. */
@@ -488,35 +505,44 @@ async function dispatchStep(
   const attempt = existing.operationIds.length;
   const operationId = uuidFrom(`op|${task.taskId}|${step.id}|${String(attempt)}`);
   const requestId = uuidFrom(`request|${task.taskId}|${step.id}|${String(attempt)}`);
-  const inputs = renderStepInputs(run, step.id, options.continuation);
-  const next: Omit<AgentRunState, "revision"> = {
-    ...withoutFields(run), state: "RUNNING",
-    steps: withStep(run, step.id, {
-      status: "running", operationIds: [...existing.operationIds, operationId], pendingBranch: undefined,
-      ...(options.counted === true ? { continuations: continuationsOf(existing) + 1 } : {}),
-      ...(options.continuation === undefined ? {} : { told: [...new Set([...(existing.told ?? []), ...options.continuation.told])] }),
-    }),
-  };
+  // Plan 5 Task 11b: a step's first run is handed the notes no step has been handed yet; a run of it again (a continuation, a rerun) is handed the ones it was handed before as well.
+  const redoFrom = attempt === 0 ? undefined : existing.notesFrom;
   const text = options.continuation === undefined ? `Started ${step.name}.` : `Carrying on with ${step.name} now that the outcomes of the actions that needed approval are known.`;
-  try {
-    await host.startStep({
-      task, requestId, operationId, prompt: `Agent step: ${step.name}`, step, inputs,
-      ...(step.id === lastAgentStepId(recipe) && run.resultContract !== undefined ? { resultContract: run.resultContract } : {}),
-      ...(run.checkout === undefined ? {} : { checkout: run.checkout }),
-      extra: (id) => [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id)],
-    });
-  } catch (error) {
-    // The run moved on while the operation was being made (another process dispatched it, or ended the run): look again.
-    if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || error.code === "STALE_FENCE")) {
-      const fresh = await load(deps, task.taskId);
-      if (fresh !== undefined && (fresh.run.revision !== run.revision || ENDED.has(fresh.run.state))) return "retry";
+  for (let tries = 1; ; tries += 1) {
+    const notes = host.stepNotes === undefined ? undefined : await host.stepNotes(task, requestId, redoFrom);
+    const inputs = renderStepInputs(run, step.id, options.continuation, notes?.section);
+    const next: Omit<AgentRunState, "revision"> = {
+      ...withoutFields(run), state: "RUNNING",
+      steps: withStep(run, step.id, {
+        status: "running", operationIds: [...existing.operationIds, operationId], pendingBranch: undefined,
+        ...(options.counted === true ? { continuations: continuationsOf(existing) + 1 } : {}),
+        ...(options.continuation === undefined ? {} : { told: [...new Set([...(existing.told ?? []), ...options.continuation.told])] }),
+        ...(notes === undefined || existing.notesFrom !== undefined ? {} : { notesFrom: notes.before }),
+      }),
+    };
+    try {
+      await host.startStep({
+        task, requestId, operationId, prompt: `Agent step: ${step.name}`, step, inputs,
+        ...(step.id === lastAgentStepId(recipe) && run.resultContract !== undefined ? { resultContract: run.resultContract } : {}),
+        ...(run.checkout === undefined ? {} : { checkout: run.checkout }),
+        // The messages' mark moves in the step's own transaction, last: it holds only while the task's note count is the one read.
+        extra: (id) => [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id), ...(notes?.markItem === undefined ? [] : [notes.markItem])],
+      });
+      return "moved";
+    } catch (error) {
+      // The run moved on while the operation was being made (another process dispatched it, or ended the run): look again.
+      if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || error.code === "STALE_FENCE")) {
+        const fresh = await load(deps, task.taskId);
+        if (fresh !== undefined && (fresh.run.revision !== run.revision || ENDED.has(fresh.run.state))) return "retry";
+        // A message was saved after the notes were read and before the step was made: the step is made again with them (a bounded number of times).
+        if (notes?.markItem !== undefined && fresh !== undefined && tries < NOTES_TRIES && fresh.task.threadNoteCount !== notes.noteCount) continue;
+      }
+      // The operation can't be made for a reason that will not go away (a model the company now forbids, the creator's lost access): the run ends with it.
+      const ended = await endFor(deps, loaded, error);
+      if (ended !== undefined) return ended ? "ended" : "retry";
+      throw error;
     }
-    // The operation can't be made for a reason that will not go away (a model the company now forbids, the creator's lost access): the run ends with it.
-    const ended = await endFor(deps, loaded, error);
-    if (ended !== undefined) return ended ? "ended" : "retry";
-    throw error;
   }
-  return "moved";
 }
 
 /** Asks the owner and the maintainers to let the run go on, and waits: the approval, then the run's waiting state, its event and its slow watchdog. */

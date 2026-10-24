@@ -5329,11 +5329,14 @@ function truncateText(text: string, max: number): string {
  * The task's note count going up by one, as the second item of a note's transaction (a Slack reply's or a session message's, which share the count and its cap). A step that already took
  * notes up to a later time must not leave this one behind: it is saved only with a stamp after that mark, so the next step reads it.
  */
-const noteCountUpdate = (tableName: string, taskId: string, receivedAt: string) => ({ Update: {
+const noteCountUpdate = (tableName: string, taskId: string, receivedAt: string, takes: "workflow" | "workflow_or_agent_run" = "workflow") => ({ Update: {
   TableName: tableName, Key: taskKey(taskId),
   UpdateExpression: "ADD threadNoteCount :one",
-  ConditionExpression: "attribute_exists(workflow) AND attribute_not_exists(closedAt) AND (attribute_not_exists(threadNoteCount) OR threadNoteCount < :max)"
+  // A Slack reply needs a workflow; a message from a session also goes to an agent-step run that has not ended (Plan 5 Task 11b), whose next agent step reads it.
+  ConditionExpression: `${takes === "workflow" ? "attribute_exists(workflow)" : "(attribute_exists(workflow) OR (attribute_exists(#agent) AND attribute_not_exists(agentRunEnd)))"} AND attribute_not_exists(closedAt) AND (attribute_not_exists(threadNoteCount) OR threadNoteCount < :max)`
     + " AND (attribute_not_exists(threadNotesFedThrough) OR threadNotesFedThrough < :receivedAt)",
+  // `agent` is a reserved word.
+  ...(takes === "workflow" ? {} : { ExpressionAttributeNames: { "#agent": "agent" } }),
   ExpressionAttributeValues: { ":one": 1, ":max": WORKFLOW_THREAD_NOTES_MAX, ":receivedAt": receivedAt },
 } });
 
@@ -5468,7 +5471,8 @@ export function sessionNoteItems(
   input: SessionNoteInput,
 ): { outcome: "write"; items: [TransactItem, TransactItem]; receivedAt: string } | { outcome: "refused"; reason: SessionNoteRefusal } {
   if (task === undefined || task.closedAt !== undefined) return { outcome: "refused", reason: "closed" };
-  if (task.workflow === undefined) return { outcome: "refused", reason: "no_workflow" };
+  // A Rovara Code (workflow) task, or an agent-step run (`agent`, no workflow) that has not ended: its next planning, coding or agent step reads the note.
+  if (task.workflow === undefined && (task.agent === undefined || task.agentRunEnd !== undefined)) return { outcome: "refused", reason: "no_workflow" };
   if ((task.threadNoteCount ?? 0) >= WORKFLOW_THREAD_NOTES_MAX) return { outcome: "refused", reason: "full" };
   const trimmed = redactText(input.text).trim();
   const text = truncateText(trimmed, WORKFLOW_THREAD_NOTE_MAX_CHARS).trim();
@@ -5478,11 +5482,11 @@ export function sessionNoteItems(
   if (mark !== undefined && mark >= receivedAt) receivedAt = new Date(Math.max(deps.now(), Date.parse(mark) + 1)).toISOString();
   const note: AppNote = AppNoteSchema.parse({
     schemaVersion: 1, source: input.source, taskId: task.taskId, developerId: input.developerId, name: input.name, isOwner: input.isOwner, sessionId: input.sessionId, messageId: input.messageId,
-    text, truncated: text.length < trimmed.length, receivedAt, workflowRevision: task.workflow.revision,
+    text, truncated: text.length < trimmed.length, receivedAt, workflowRevision: task.workflow?.revision ?? 1,
   });
   return {
     outcome: "write", receivedAt,
-    items: [putNew(deps.tableName, { pk: `DEVTASK#${task.taskId}`, sk: `NOTE#${note.messageId}`, entityType: "WORKFLOW_THREAD_NOTE", ...note }), noteCountUpdate(deps.tableName, task.taskId, note.receivedAt)],
+    items: [putNew(deps.tableName, { pk: `DEVTASK#${task.taskId}`, sk: `NOTE#${note.messageId}`, entityType: "WORKFLOW_THREAD_NOTE", ...note }), noteCountUpdate(deps.tableName, task.taskId, note.receivedAt, "workflow_or_agent_run")],
   };
 }
 
@@ -5757,10 +5761,14 @@ interface ThreadNotesForStep { suffix: string; fedThrough?: string; noteCount?: 
  * is read with them (from `task`, read before the replies), and the step's transaction holds only while it is
  * unchanged (see fedThroughUpdate and withCurrentThreadNotes).
  */
-async function threadNotesSuffix(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, requestId: string): Promise<ThreadNotesForStep> {
+async function threadNotesSuffix(
+  deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">, task: DeveloperTaskRecord, requestId: string,
+  /** The notes after this time; by default the ones no step has been given (after the task's mark). `undefined` here means all of them (an agent step run again from the start). */
+  from: { since: string | undefined } = { since: task.threadNotesFedThrough },
+): Promise<ThreadNotesForStep> {
   // An answered reply is not an instruction, so the prompt skips it; it still counts as given to this step (its time
   // moves the mark), as it counts toward the task's reply limit.
-  const all = await readWorkflowThreadNotes(deps, task.taskId, task.threadNotesFedThrough, { includeAnswered: true });
+  const all = await readWorkflowThreadNotes(deps, task.taskId, from.since, { includeAnswered: true });
   const notes = all.filter((note) => note.answeredAt === undefined);
   const section = threadNotesPromptSection(notes, promptTagId(task, requestId));
   const fedThrough = all.at(-1)?.receivedAt;
@@ -5781,6 +5789,29 @@ function fedThroughUpdate(fed: ThreadNotesForStep): { clause: string; condition:
     clause: fed.fedThrough === undefined ? "" : ", threadNotesFedThrough = :fedThrough",
     condition: fed.noteCount === undefined ? " AND attribute_not_exists(threadNoteCount)" : " AND threadNoteCount = :noteCount",
     values: { ...(fed.fedThrough === undefined ? {} : { ":fedThrough": fed.fedThrough }), ...(fed.noteCount === undefined ? {} : { ":noteCount": fed.noteCount }) },
+  };
+}
+
+/**
+ * Plan 5 Task 11b: the people's messages for the agent step about to be made (`AgentRunHost.stepNotes`), read from the task as it is now: the notes no step has been given, or, for a step run
+ * again, the ones after `redoFrom` (the task's mark when the step first ran; "" for all), under Task 11a's header with a nonce of this step's own request. The update that moves the task's mark
+ * past them goes with the step's own transaction and holds only while the note count is the one read here, so a message saved meanwhile makes the step be made again with it. Nothing but the
+ * mark is written, and it only moves forward.
+ */
+export async function agentStepNotes(
+  deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">, taskId: string, requestId: string, redoFrom?: string,
+): Promise<{ section: string; before: string; noteCount?: number; markItem?: TransactItem }> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined) return { section: "", before: "" };
+  const mark = task.threadNotesFedThrough;
+  const read = await threadNotesSuffix(deps, task, requestId, { since: redoFrom === undefined ? mark : redoFrom === "" ? undefined : redoFrom });
+  const fed = fedThroughUpdate(read);
+  const advances = read.fedThrough !== undefined && (mark === undefined || read.fedThrough > mark);
+  return {
+    section: read.suffix.trim(), before: mark ?? "", ...(read.noteCount === undefined ? {} : { noteCount: read.noteCount }),
+    ...(!advances ? {} : { markItem: {
+      Update: { TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET threadNotesFedThrough = :fedThrough", ConditionExpression: `attribute_exists(pk)${fed.condition}`, ExpressionAttributeValues: fed.values },
+    } }),
   };
 }
 

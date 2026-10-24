@@ -78,7 +78,7 @@ async function world(agent = "root-cause-analyst") {
   };
   const approve = (approvalId: string) => decideApproval(routeDeps(), { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "member" }, approvalId, { requestId: randomUUID(), decision: "APPROVE" });
   return {
-    ...h, logs, taskId, workspaceId, sessionId, stepOps, meta, send, inputsOf, finishStep, note, delivery, refresh, sessionEvents, askWrite, approve, deps, caller,
+    ...h, logs, taskId, workspaceId, sessionId, stepOps, meta, send, inputsOf, finishStep, note, delivery, refresh, sessionEvents, askWrite, approve, deps, caller, routeDeps,
     finishPrepare: () => h.finish(workspaceId, prepareId, "SUCCEEDED", PREPARED),
     run: () => h.db.get(`DEVTASK#${taskId}`, "AGENT_RUN") as Item & { revision: number; state: string },
   };
@@ -215,9 +215,9 @@ describe("a message to an agent-step run", () => {
         late = await t.send("second thing");
       }
       return original(command as never);
-    }) as never;
+    });
     await t.finishPrepare();
-    t.db.send = original as never;
+    t.db.send = original;
     expect(late).toBeDefined();
     const inputs = t.inputsOf(t.stepOps(t.workspaceId)[0]!.id);
     expect(inputs).toContain("] first thing</thread_reply>");

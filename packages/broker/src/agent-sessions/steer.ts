@@ -3,8 +3,8 @@
 // can decide an approval or a gate or change the agent's tools, permissions or budget (it is never read for anything but being shown to the model).
 //
 // `planSteer` decides, before anything is written, where a message would go and refuses what can't take one: an ended session (`SESSION_ENDED`) and a kind of session whose delivery is a later
-// task (an agent-step run is Task 11b, a session on a Mac is Task 18; a chain waits for Plan 4's reads). A task paused for budget or stopped takes a message like any other: it is queued, and
-// read when the work resumes (a budget stop is a pause). The plan is a note (a Rovara Code workflow task, or a chain's running step) or `not_delivered` with the reason a person can read.
+// task (a session on a Mac is Task 18; a chain waits for Plan 4's reads). A task paused for budget or stopped takes a message like any other: it is queued, and
+// read when the work resumes (a budget stop is a pause). The plan is a note (a Rovara Code workflow task, an agent-step run whose next agent step reads it (Task 11b), or a chain's running step) or `not_delivered` with the reason a person can read.
 // The sender writes the message WITH its fate in one transaction: a queued message together with its note and the task's note count, or a `not_delivered` one with its reason, so no message is
 // ever left queued without a note. A queued message becomes `delivered` when the task's `threadNotesFedThrough` passes its note (`settleSteerDeliveries`, run by the session's summary refresh),
 // and when the session ends the messages no step took are made `not_delivered` (`closeQueuedSteers`). The session counts its queued messages (`sessionQueuedSteersKey`), so a session with none
@@ -96,8 +96,8 @@ function taskRoute(session: AgentSessionRecord, task: DeveloperTaskRecord): Rout
   if (taskEnded(task)) return { kind: "ended", taskId: task.taskId };
   // A Rovara Code (workflow) task reads notes at its next planning or coding step: today's path, whatever the task is doing now (a task paused for budget or stopped takes it too: it is read when the work resumes, since a budget stop is a pause).
   if (task.workflow !== undefined) return { kind: "note", task };
-  // An agent-step run reads them at its next agent step (Task 11b).
-  if (task.agent !== undefined) return { kind: "unavailable", message: STEER_UNAVAILABLE_TEXT };
+  // An agent-step run reads them at its next agent step, or at the continuation of the step after its write approvals (Task 11b: `advanceAgentRun`'s dispatch gives the task's unfed notes).
+  if (task.agent !== undefined) return { kind: "note", task };
   return { kind: "not_delivered", reason: PLAIN_TASK_REASON };
 }
 
