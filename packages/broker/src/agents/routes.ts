@@ -6,6 +6,10 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   AgentGuardrailsSchema,
+  AgentPublishBodySchema as PublishBodySchema,
+  AgentRollbackBodySchema as RollbackBodySchema,
+  AgentBudgetBodySchema as BudgetBodySchema,
+  AgentRunBodySchema as RunBodySchema,
   AgentCreateBodySchema as CreateBodySchema,
   AgentDraftPutBodySchema as PutDraftBodySchema,
   AgentIdSchema,
@@ -13,7 +17,6 @@ import {
   AgentXNameSchema,
   BUILTIN_AGENTS,
   ModelSourceIdSchema,
-  RunInputSchema,
   SkillIdSchema,
   SpendPolicyFieldsSchema,
   SpendPolicySchema,
@@ -148,11 +151,8 @@ export function isAgentRoute(pathname: string): boolean {
 const RequestIdSchema = z.string().uuid();
 const Hex64 = z.string().regex(/^[a-f0-9]{64}$/);
 const DeveloperRefSchema = z.object({ developerId: Hex64 }).strict();
-const NoteSchema = z.string().trim().min(1).max(200);
 
 const PatchBodySchema = z.object({ requestId: RequestIdSchema, name: z.string().optional(), description: z.string().optional() }).strict();
-const PublishBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(1), note: NoteSchema.optional() }).strict();
-const RollbackBodySchema = z.object({ requestId: RequestIdSchema, version: z.number().int().min(1) }).strict();
 const RequestOnlySchema = z.object({ requestId: RequestIdSchema }).strict();
 const SharesBodySchema = z.object({ requestId: RequestIdSchema, shares: z.array(z.unknown()) }).strict();
 const OwnerBodySchema = z.object({ requestId: RequestIdSchema, owner: AgentOwnerSchema, accountable: DeveloperRefSchema.optional() }).strict();
@@ -170,14 +170,7 @@ const ProjectAiBodySchema = z.object({
   planningLimitUsd: z.object({ QUICK: Amount.nullable().optional(), FULL: Amount.nullable().optional() }).strict().optional(),
   memberAcceptRunLimitUpToUsd: Amount.nullable().optional(),
 }).strict();
-const BudgetBodySchema = z.object({ requestId: RequestIdSchema, monthlyUsd: Amount.nullable().optional(), maxPerRunUsd: Amount.nullable().optional() }).strict();
 const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
-const RunBodySchema = z.object({
-  requestId: RequestIdSchema,
-  project: z.string().min(1).max(200),
-  version: z.union([z.number().int().min(1), z.literal("draft")]).optional(),
-  input: RunInputSchema,
-}).strict();
 const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema }).strict();
 
 function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {

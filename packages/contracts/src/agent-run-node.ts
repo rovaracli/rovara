@@ -3,52 +3,11 @@ import { AGENTX_NAME_PATTERN } from "./names.js";
 import { AgentIdSchema } from "./agent.js";
 import { StepIdSchema } from "./agent-recipe.js";
 import { OrgIdSchema } from "./org.js";
-import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
-
-
-export const RUN_INPUT_TEXT_MAX_BYTES = 8192;
-
-export const RUN_INPUT_CONTEXT_MAX = 10;
-
-export const RUN_INPUT_REF_MAX = 512;
-
-export const RUN_INPUT_TITLE_MAX = 200;
-
-export const RUN_INPUT_BODY_MAX_BYTES = 16_384;
-
-
-export const RUN_CONTEXT_KINDS = ["ticket", "pull_request", "deploy", "alert", "report", "text"] as const;
+import { RunInputSchema,RUN_INPUT_CONTEXT_MAX,type RunInput,type RunContextItem, AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
 
 
 const utf8 = new TextEncoder();
-
 const utf8Decoder = new TextDecoder("utf-8");
-
-
-/** Text of 1 to `max` UTF-8 bytes (`.max` would count UTF-16 units instead). */
-function boundedBytes(max: number) {
-  return z.string().min(1).refine((text) => utf8.encode(text).length <= max, `must be at most ${max} bytes`);
-}
-
-
-export const RunContextItemSchema = z.object({
-  kind: z.enum(RUN_CONTEXT_KINDS),
-  ref: z.string().min(1).max(RUN_INPUT_REF_MAX),
-  title: z.string().min(1).max(RUN_INPUT_TITLE_MAX).optional(),
-  body: boundedBytes(RUN_INPUT_BODY_MAX_BYTES).optional(),
-}).strict();
-
-export type RunContextItem = z.infer<typeof RunContextItemSchema>;
-
-
-/** The request an agent run is given: the text, and information from elsewhere that is shown as information only. */
-export const RunInputSchema = z.object({
-  text: boundedBytes(RUN_INPUT_TEXT_MAX_BYTES),
-  context: z.array(RunContextItemSchema).max(RUN_INPUT_CONTEXT_MAX).optional(),
-}).strict();
-
-export type RunInput = z.infer<typeof RunInputSchema>;
-
 
 /** Where a run was started from. */
 export const WORK_ORIGINS = ["app", "cli", "mcp", "slack", "linear", "offer", "test_run", "event", "schedule", "chain"] as const;
@@ -223,3 +182,5 @@ export const AgentRunStateSchema = z.object({
 export type AgentRunState = z.infer<typeof AgentRunStateSchema>;
 
 export { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
+
+export { RUN_INPUT_TEXT_MAX_BYTES,RUN_INPUT_CONTEXT_MAX,RUN_INPUT_REF_MAX,RUN_INPUT_TITLE_MAX,RUN_INPUT_BODY_MAX_BYTES,RUN_CONTEXT_KINDS,RunContextItemSchema,RunInputSchema,type RunContextItem,type RunInput } from "./agent-run.js";

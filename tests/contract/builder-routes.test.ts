@@ -1,3 +1,4 @@
+import { resolveAgent } from "../../packages/broker/src/agents/store.js";
 import type { AwsBrokerInput } from "../../packages/broker/src/aws/broker.js";
 import { getModels } from "../../packages/broker/src/agents/models-route.js";
 import { ModelSourceSchema, DEFAULT_AGENT_GUARDRAILS,agentGuardrailsKey } from "@agentx/contracts";
@@ -11,7 +12,7 @@ it("dispatches the member model picker route outside the agent pattern and inclu
 });
 it("returns all structural draft problems in path order with no cross-member draft leak", async () => {
  const h=await createDeveloperTaskBroker({register:false,brokerExtra:{agents:{projectMembers:new FakeProjectMembers()}}});const created=await h.dev(MAYA,"POST","/v1/app/agents",{requestId:randomUUID(),name:"Repair me",overlay:{sequence:[{id:"one",name:"One",kind:"agent",workspace:"none"},{id:"one",name:"Duplicate",kind:"agent",workspace:"none"}],steps:{missing:{instructions:"Nowhere"}}}});expect(created.status).toBe(201);const id=AgentWriteResponseReaderSchema.parse(created.body).agent.agentId;
- const read=await h.dev(MAYA,"GET","/v1/app/agents/"+id+"/draft");expect(read.status).toBe(200);expect(read.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({path:"steps.missing"}),expect.objectContaining({path:"steps.1.id"})]));const problems=read.body.problems as Array<{path:string}>;expect(problems.map(p=>p.path)).toEqual(problems.map(p=>p.path).sort());expect((await h.dev(OMAR,"GET","/v1/app/agents/"+id+"/draft")).status).toBe(404);
+ const read=await h.dev(MAYA,"GET","/v1/app/agents/"+id+"/draft");expect(read.status).toBe(200);expect(read.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({path:"steps.missing"}),expect.objectContaining({path:"steps.1.id"})]));const problems=read.body.problems as Array<{path:string}>;expect(problems.map(p=>p.path)).toEqual(problems.map(p=>p.path).sort());expect((await h.dev(OMAR,"GET","/v1/app/agents/"+id+"/draft")).status).toBe(404);const {createAgentRouteDependencies}=await import("../../packages/broker/src/aws/broker.js");const deps=createAgentRouteDependencies(h.brokerInput as unknown as AwsBrokerInput)!;const normal=resolveAgent(deps.store,(await h.orgOf(MAYA)).orgId,id,"draft");await expect(normal).rejects.toHaveProperty("code","CONFIG_INVALID");await expect(normal).rejects.toHaveProperty("problems.0.path","steps.missing");
 });
 
 it("excludes company-forbidden models and refuses an inaccessible project before returning models",async()=>{

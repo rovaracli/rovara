@@ -4,6 +4,7 @@ import { z } from "zod";
 import { ModelListSchema, AutonomySchema, SkillIdSchema, AgentIdSchema, AgentOwnerSchema, AgentPrincipalSchema, AgentAccessLevelSchema, BaseRefSchema } from "./agent.js";
 import { ResolvedRecipeSchema, RecipeOverlaySchema } from "./agent-recipe.js";
 import { AgentOriginViewSchema, SessionMakeAgentCopiedSchema } from "./agent-sessions.js";
+import { RunInputSchema } from "./agent-run.js";
 import { SPEND_ORIGIN_KINDS } from "./spend.js";
 import { forwardReader } from "./session-views.js";
 const Version = z.number().int().positive(), Usd = z.number().finite().nonnegative();
@@ -56,3 +57,12 @@ export const AgentDraftPutBodySchema = z.object({requestId:z.string().uuid(),exp
 
 export const BuilderGuardrailsReaderSchema = forwardReader(z.object({guardrails:z.object({maxAutonomy:AutonomySchema}).strict()}).strict());
 export const BuilderSkillsReaderSchema = forwardReader(z.object({skills:z.array(z.object({skillId:SkillIdSchema,name:z.string(),currentDigest:z.string()}).strict())}).strict());
+
+export const AgentPublishBodySchema = z.object({requestId:z.string().uuid(),expectedRevision:Version,note:z.string().trim().min(1).max(200).optional()}).strict();
+export const AgentRollbackBodySchema = z.object({requestId:z.string().uuid(),version:Version}).strict();
+export const AgentBudgetBodySchema = z.object({requestId:z.string().uuid(),monthlyUsd:z.number().min(0).max(1_000_000).nullable().optional(),maxPerRunUsd:z.number().min(0).max(1_000_000).nullable().optional()}).strict();
+export const AgentRunBodySchema = z.object({requestId:z.string().uuid(),project:z.string().min(1).max(200),version:z.union([Version,z.literal("draft")]).optional(),input:RunInputSchema}).strict();
+export const AgentPublishResponseSchema = AgentWriteResponseSchema.extend({version:AgentVersionViewSchema});
+export const AgentPublishResponseReaderSchema = forwardReader(AgentPublishResponseSchema);
+export const BuilderTestingBudgetSchema = z.object({month:AgentMonthSchema,perTestCapUsd:Usd.optional(),testing:z.object({spentUsd:Usd,committedUsd:Usd,limitUsd:Usd.optional()}).strict()}).strict();
+export const BuilderTestingBudgetReaderSchema = forwardReader(BuilderTestingBudgetSchema);
