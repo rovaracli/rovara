@@ -4,9 +4,12 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
+import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { startCodeIntent } from "../../packages/broker/src/rovara-code/intent.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { sessionBindingKey, sessionSurfaceKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgMemberKey, orgRemovedKey, developerOrgKey } from "../../packages/contracts/src/org.js";
 import { builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { CodeIntentBodySchema, CodeIntentRequestSchema } from "../../packages/contracts/src/rovara-code-intent.js";
 import { StartDeveloperTaskRequestSchema } from "../../packages/contracts/src/developer-tasks.js";
@@ -28,20 +31,21 @@ const ISSUE = { kind: "linear_issue" as const, issueId: "ENG-412", url: "https:/
 const THREAD = { kind: "slack_thread" as const, teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000777" };
 
 let createCodeIntentStarter: typeof BrokerModule.createCodeIntentStarter;
+let createCodeIntentDependencies: typeof BrokerModule.createCodeIntentDependencies;
 beforeAll(async () => {
   await loadSlackBroker();
-  ({ createCodeIntentStarter } = await import("../../packages/broker/src/aws/broker.js"));
+  ({ createCodeIntentStarter, createCodeIntentDependencies } = await import("../../packages/broker/src/aws/broker.js"));
 });
 
 type Reply = { status: number; body: Record<string, unknown> };
 const errorOf = (reply: Reply) => reply.body.error as { code: string; message: string };
 const refusal = (promise: Promise<unknown>) => promise.then(() => undefined, (error: AgentXError) => ({ code: error.code, message: error.message.replace(`${error.code}: `, "") }));
 
-async function setup(options: { v2?: boolean; proxy?: boolean; orgs?: boolean } = {}) {
+async function setup(options: { v2?: boolean; live?: boolean; proxy?: boolean; orgs?: boolean } = {}) {
   const access = options.proxy === true ? fakeModelAccess() : undefined;
   const h = await createDeveloperTaskBroker({
     ...(options.orgs === true ? { orgResolver: async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG) } : {}),
-    brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
+    brokerExtra: { agents: { ...((options.live ?? options.v2) === true ? { rovaraCodeV2Live: true } : {}) }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
@@ -74,10 +78,11 @@ async function setup(options: { v2?: boolean; proxy?: boolean; orgs?: boolean } 
   const sessions = () => h.db.find((item) => item.entityType === "AGENT_SESSION");
   const charges = () => h.db.find((item) => item.entityType === "DEVELOPER_LIMIT" || item.entityType === "SLACK_LIMIT");
   const pointer = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "DEVELOPER_TASK_POINTER")[0] as { pendingPrompt?: string; pendingWorkflowMode?: string } | undefined;
-  const starter = () => {
+  /** The broker's entry for Plan 9: the person is named by id and org, and re-read (sign-in, revocation, membership, role) on every call. */
+  const start = (who: Developer, request: unknown, orgId: OrgId = TEST_ORG, developerId: string = who.developerId) => {
     const found = createCodeIntentStarter(h.brokerInput as never);
     if (found === undefined) throw new Error("the broker has no code intent starter");
-    return found;
+    return found(orgId, developerId, request);
   };
   const callerOf = (who: Developer, orgId: OrgId = TEST_ORG) => ({
     developerId: who.developerId, sessionId: who.sessionId, amr: who.provider, name: who.name, orgId, orgRole: "member" as const,
@@ -87,7 +92,7 @@ async function setup(options: { v2?: boolean; proxy?: boolean; orgs?: boolean } 
     requestId: randomUUID(), project: "payments", input: { text: "Fix the retry bug" }, source: "app" as const, ...extra,
   });
   const bindings = () => h.db.find((item) => item.entityType === "AGENT_SESSION_BINDING" || item.entityType === "SESSION_SURFACE");
-  return { ...h, access, store, member, send, taskOf, meta, taskCount, sessions, charges, pointer, starter, callerOf, intent, bindings };
+  return { ...h, access, store, member, send, taskOf, meta, taskCount, sessions, charges, pointer, start, callerOf, intent, bindings };
 }
 
 describe("the request shapes", () => {
@@ -317,7 +322,7 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
   it("a Linear intent charges the assigner, binds the issue in the start transaction, and records the surface as the origin", async () => {
     const t = await setup({ v2: true });
     await t.member(ARJUN);
-    const result = await t.starter()(t.callerOf(MAYA), t.intent({ source: "linear", binding: ISSUE, assignedBy: { developerId: ARJUN.developerId, bot: false } }));
+    const result = await t.start(MAYA, t.intent({ source: "linear", binding: ISSUE, assignedBy: { developerId: ARJUN.developerId, bot: false } }));
     const stored = t.meta(result.task.taskId);
     expect(stored).toMatchObject({ origin: "linear", payer: { kind: "member", developerId: ARJUN.developerId }, startedBy: { developerId: MAYA.developerId } });
     expect(result.sessionId).toBe(stored.sessionId);
@@ -327,16 +332,16 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
 
   it("a Linear intent from a bot charges the project, not the person who happens to be the caller", async () => {
     const t = await setup({ v2: true });
-    const result = await t.starter()(t.callerOf(MAYA), t.intent({ source: "linear", binding: ISSUE, assignedBy: { bot: true } }));
+    const result = await t.start(MAYA, t.intent({ source: "linear", binding: ISSUE, assignedBy: { bot: true } }));
     expect(t.meta(result.task.taskId).payer).toEqual({ kind: "project", project: "payments" });
   });
 
   it("refuses an assigner who is only a viewer, and one who is not a member, before anything is written: naming a person never gives them spend", async () => {
     const t = await setup({ v2: true });
     await t.member(ARJUN, "viewer");
-    const viewer = await refusal(t.starter()(t.callerOf(MAYA), t.intent({ source: "linear", binding: ISSUE, assignedBy: { developerId: ARJUN.developerId, bot: false } })));
+    const viewer = await refusal(t.start(MAYA, t.intent({ source: "linear", binding: ISSUE, assignedBy: { developerId: ARJUN.developerId, bot: false } })));
     expect(viewer?.code).toBe("PROJECT_ACCESS_DENIED");
-    const stranger = await refusal(t.starter()(t.callerOf(MAYA), t.intent({ source: "linear", binding: ISSUE, assignedBy: { developerId: "9".repeat(64), bot: false } })));
+    const stranger = await refusal(t.start(MAYA, t.intent({ source: "linear", binding: ISSUE, assignedBy: { developerId: "9".repeat(64), bot: false } })));
     expect(stranger?.code).toBe("FORBIDDEN");
     expect(t.taskCount()).toBe(0);
     expect(t.bindings()).toEqual([]);
@@ -345,14 +350,14 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
   it("an offer charges the person who accepted it, and records the offer's origin", async () => {
     const t = await setup({ v2: true });
     await t.member(KIT);
-    const result = await t.starter()(t.callerOf(KIT), t.intent({ source: "offer", offerId: "off_17" }));
+    const result = await t.start(KIT, t.intent({ source: "offer", offerId: "off_17" }));
     expect(t.meta(result.task.taskId)).toMatchObject({ origin: "offer", payer: { kind: "member", developerId: KIT.developerId }, startedBy: { developerId: KIT.developerId } });
   });
 
   it("a Linear issue that already follows a session cannot be bound again: the second start is refused and starts no task", async () => {
     const t = await setup({ v2: true });
-    await t.starter()(t.callerOf(MAYA), t.intent({ source: "linear", binding: ISSUE, assignedBy: { bot: true } }));
-    const second = await refusal(t.starter()(t.callerOf(MAYA), t.intent({ source: "linear", binding: ISSUE, assignedBy: { bot: true } })));
+    await t.start(MAYA, t.intent({ source: "linear", binding: ISSUE, assignedBy: { bot: true } }));
+    const second = await refusal(t.start(MAYA, t.intent({ source: "linear", binding: ISSUE, assignedBy: { bot: true } })));
     expect(second).toEqual({ code: "CONFIG_INVALID", message: "This issue already follows another session." });
     expect(t.taskCount()).toBe(1);
     expect(t.sessions()).toHaveLength(1);
@@ -361,13 +366,13 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
   it("a repeat of a Linear start returns the first task and binds nothing twice", async () => {
     const t = await setup({ v2: true });
     const request = t.intent({ source: "linear", binding: ISSUE, assignedBy: { bot: true } });
-    const first = await t.starter()(t.callerOf(MAYA), request);
-    const again = await t.starter()(t.callerOf(MAYA), request);
+    const first = await t.start(MAYA, request);
+    const again = await t.start(MAYA, request);
     expect(again.task.taskId).toBe(first.task.taskId);
     expect(again.sessionId).toBe(first.sessionId);
     expect(t.taskCount()).toBe(1);
     expect(t.bindings()).toHaveLength(2);
-    const changed = await refusal(t.starter()(t.callerOf(MAYA), { ...request, assignedBy: { developerId: ARJUN.developerId, bot: false } }));
+    const changed = await refusal(t.start(MAYA, { ...request, assignedBy: { developerId: ARJUN.developerId, bot: false } }));
     expect(changed?.code).toBeDefined();
     expect(t.taskCount()).toBe(1);
   });
@@ -376,8 +381,8 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
     const t = await setup({ v2: true });
     await t.member(KIT);
     const request = t.intent();
-    const first = await t.starter()(t.callerOf(MAYA), request);
-    const other = await refusal(t.starter()(t.callerOf(KIT), request));
+    const first = await t.start(MAYA, request);
+    const other = await refusal(t.start(KIT, request));
     expect(other?.code).toBe("IDEMPOTENCY_CONFLICT");
     expect(t.taskCount()).toBe(1);
     expect(first.task.taskId).toBeDefined();
@@ -386,18 +391,18 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
   it("a start from another org's caller cannot reach this org's project", async () => {
     const t = await setup({ v2: true });
     seedMembership(t.db, KIT.developerId, { orgId: ORG_B, role: "member" });
-    const result = await refusal(t.starter()({ ...t.callerOf(KIT, ORG_B) }, t.intent()));
+    const result = await refusal(t.start(KIT, t.intent(), ORG_B));
     expect(result?.code).toBe("PROJECT_NOT_FOUND");
     expect(t.taskCount()).toBe(0);
   });
 
   it("refuses a Slack intent from a caller that is not the Slack workflow's own, and a hand-off or retry before those tasks exist", async () => {
     const t = await setup({ v2: true });
-    const notSlack = await refusal(t.starter()(t.callerOf(MAYA), t.intent({ source: "slack", binding: THREAD })));
+    const notSlack = await refusal(t.start(MAYA, t.intent({ source: "slack", binding: THREAD })));
     expect(notSlack?.code).toBe("FORBIDDEN");
-    const startAt = await refusal(t.starter()(t.callerOf(MAYA), t.intent({ startAt: { repository: "demo", commit: "a".repeat(40), summary: "Half done" } })));
+    const startAt = await refusal(t.start(MAYA, t.intent({ startAt: { repository: "demo", commit: "a".repeat(40), summary: "Half done" } })));
     expect(startAt?.code).toBe("RUNTIME_UNAVAILABLE");
-    const retry = await refusal(t.starter()(t.callerOf(MAYA), t.intent({ retryOf: TASK_ID_A })));
+    const retry = await refusal(t.start(MAYA, t.intent({ retryOf: TASK_ID_A })));
     expect(retry?.code).toBe("RUNTIME_UNAVAILABLE");
     expect(t.taskCount()).toBe(0);
   });
@@ -405,7 +410,7 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
   it("records the surface as the origin for every source a person can start from", async () => {
     const t = await setup({ v2: true });
     for (const source of ["app", "cli", "mcp"] as const) {
-      const result = await t.starter()(t.callerOf(MAYA), t.intent({ source }));
+      const result = await t.start(MAYA, t.intent({ source }));
       expect(t.meta(result.task.taskId), source).toMatchObject({ origin: source, payer: { kind: "member", developerId: MAYA.developerId } });
     }
   });
@@ -413,7 +418,8 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
   it("refuses a Slack intent whose thread is in another workspace than this one, rather than leaving the task unbound", async () => {
     const t = await setup({ v2: true });
     const slackCaller = { ...t.callerOf(MAYA), sessionId: "slack-workflow" };
-    const refused = await refusal(t.starter()(slackCaller, t.intent({ source: "slack", binding: { ...THREAD, teamId: "T0ELSEWHERE" } })));
+    const dependencies = createCodeIntentDependencies(t.brokerInput as never, slackCaller)!;
+    const refused = await refusal(startCodeIntent(dependencies, slackCaller, t.intent({ source: "slack", binding: { ...THREAD, teamId: "T0ELSEWHERE" } })));
     expect(refused).toEqual({ code: "CONFIG_INVALID", message: "this task can't be shared to that Slack thread" });
     expect(t.taskCount()).toBe(0);
     expect(t.bindings()).toEqual([]);
@@ -421,39 +427,107 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
 
   it("a request the schema refuses is refused before any read", async () => {
     const t = await setup({ v2: true });
-    const bad = await refusal(t.starter()(t.callerOf(MAYA), { ...t.intent(), source: "linear" }));
+    const bad = await refusal(t.start(MAYA, { ...t.intent(), source: "linear" }));
     expect(bad?.code).toBe("CONFIG_INVALID");
     expect(t.taskCount()).toBe(0);
   });
 });
 
 describe("a deployment where agents are not set up", () => {
-  async function plain() {
+  it("has no app route for starting work, and no Plan 9 entry", async () => {
     const h = await createDeveloperTaskBroker();
-    const starter = createCodeIntentStarter(h.brokerInput as never)!;
-    const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const, slackUserId: "U0MAYA001" };
-    return { h, starter, caller };
-  }
-
-  it("has no app route for starting work", async () => {
-    const { h } = await plain();
     const reply = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Fix it" } });
     expect(reply.status).toBe(404);
     expect(h.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
+    const refused = await refusal(createCodeIntentStarter(h.brokerInput as never)!(TEST_ORG, MAYA.developerId, { requestId: randomUUID(), project: "payments", input: { text: "Fix it" }, source: "app", path: "QUICK" }));
+    expect(refused?.code).toBe("RUNTIME_UNAVAILABLE");
   });
 
-  it("starts a person's own plain workflow with an explicit path, and refuses what needs the payer rules or sessions", async () => {
-    const { h, starter, caller } = await plain();
-    const result = await starter(caller, { requestId: randomUUID(), project: "payments", input: { text: "Fix it" }, source: "app", path: "QUICK" });
-    expect(result.sessionId).toBeUndefined();
-    expect((h.db.get(`DEVTASK#${result.task.taskId}`, "META") as { workflow?: { definitionVersion: string } }).workflow).toMatchObject({ definitionVersion: "1.0.0" });
-    const linear = await refusal(starter(caller, { requestId: randomUUID(), project: "payments", input: { text: "Fix it" }, source: "linear", binding: ISSUE, assignedBy: { bot: true } }));
+  /** The dependencies of a deployment with no agents, with a plain start that records what it was asked. */
+  const plain = () => {
+    const bodies: unknown[] = [];
+    const dependencies = {
+      starter: undefined, origin: "https://cell.example.com",
+      startPlainTask: async (_caller: unknown, body: unknown) => { bodies.push(body); return { task: { taskId: TASK_ID_A } } as never; },
+      ownedTask: async () => { throw new Error("not read"); },
+    };
+    const caller = { developerId: MAYA.developerId, sessionId: MAYA.sessionId, amr: MAYA.provider, name: MAYA.name, orgId: TEST_ORG, orgRole: "member" as const };
+    return { bodies, dependencies, caller };
+  };
+  const request = (extra: Record<string, unknown>) => ({ requestId: randomUUID(), project: "payments", input: { text: "Fix it" }, source: "app", ...extra });
+
+  it("hands a person's own start to the plain task start, with the path they chose and no session", async () => {
+    const { bodies, dependencies, caller } = plain();
+    const result = await startCodeIntent(dependencies, caller, request({ path: "FULL" }));
+    expect(result).toEqual({ task: { taskId: TASK_ID_A } });
+    expect(bodies).toEqual([expect.objectContaining({ project: "payments", instructions: "Fix it", workflow: true, workflowPath: "FULL", client: "app" })]);
+  });
+
+  it("refuses what needs the payer rules or sessions, and context it would drop, without starting anything", async () => {
+    const { bodies, dependencies, caller } = plain();
+    const linear = await refusal(startCodeIntent(dependencies, caller, request({ source: "linear", binding: ISSUE, assignedBy: { bot: true } })));
     expect(linear?.code).toBe("RUNTIME_UNAVAILABLE");
-    const withContext = await refusal(starter(caller, { requestId: randomUUID(), project: "payments", input: { text: "Fix it", context: [{ kind: "text", ref: "note", body: "More" }] }, source: "app", path: "QUICK" }));
+    const offer = await refusal(startCodeIntent(dependencies, caller, request({ source: "offer", offerId: "off_1" })));
+    expect(offer?.code).toBe("RUNTIME_UNAVAILABLE");
+    const withContext = await refusal(startCodeIntent(dependencies, caller, request({ input: { text: "Fix it", context: [{ kind: "text", ref: "note", body: "More" }] } })));
     expect(withContext?.code).toBe("CONFIG_INVALID");
-    const noPath = await refusal(starter(caller, { requestId: randomUUID(), project: "payments", input: { text: "Fix it" }, source: "app" }));
-    expect(noPath).toEqual({ code: "CONFIG_INVALID", message: "workflowPath: workflow requests require an explicit Quick or Full path" });
-    expect(h.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(1);
+    expect(bodies).toEqual([]);
+  });
+});
+
+describe("the person is re-read on every call to the Plan 9 entry", () => {
+  it("refuses a revoked person, and writes nothing", async () => {
+    const t = await setup({ v2: true });
+    await t.member(KIT);
+    t.db.set({ pk: `DEVELOPER#${KIT.developerId}`, sk: "META", developerId: KIT.developerId, provider: KIT.provider, displayName: KIT.name, firstSignInAt: "x", lastSignInAt: "x", revoked: true });
+    const refused = await refusal(t.start(KIT, t.intent()));
+    expect(refused).toEqual({ code: "FORBIDDEN", message: "The person this run is for isn't a member of the organization." });
+    expect(t.taskCount()).toBe(0);
+    expect(t.sessions()).toEqual([]);
+  });
+
+  it("refuses a member who was removed from the org, and a person who is in another org than the one named", async () => {
+    const t = await setup({ v2: true });
+    await t.member(KIT);
+    expect((await t.start(KIT, t.intent())).task.taskId).toBeDefined();
+    await t.db.send(new DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, KIT.developerId) }));
+    t.db.set({ ...orgRemovedKey(TEST_ORG, KIT.developerId), entityType: "ORG_REMOVED", removedAt: NOW });
+    t.db.set({ ...developerOrgKey(KIT.developerId), entityType: "DEVELOPER_ORG", orgId: ORG_B, role: "member", joinedAt: NOW });
+    const removed = await refusal(t.start(KIT, t.intent()));
+    expect(removed?.code).toBe("FORBIDDEN");
+    const elsewhere = await refusal(t.start(MAYA, t.intent(), ORG_B));
+    expect(elsewhere?.code).toBe("FORBIDDEN");
+    expect(t.taskCount()).toBe(1);
+  });
+
+  it("takes the role from the records, not from the caller: a project viewer is refused however the request is made", async () => {
+    const t = await setup({ v2: true });
+    await t.member(KIT, "viewer");
+    const refused = await refusal(t.start(KIT, t.intent()));
+    expect(refused?.code).toBe("PROJECT_ACCESS_DENIED");
+    expect(t.taskCount()).toBe(0);
+  });
+
+  it("refuses an unknown person id", async () => {
+    const t = await setup({ v2: true });
+    const refused = await refusal(t.start(MAYA, t.intent(), TEST_ORG, "7".repeat(64)));
+    expect(refused?.code).toBe("FORBIDDEN");
+  });
+});
+
+describe("while Understand is not live (ROVARA_CODE_V2_FOR_NEW_ORGS is off)", () => {
+  it("a task on a pinned version 2 starts on the plan step as after Task 2, with its planning run queued, and needs an explicit path", async () => {
+    const t = await setup({ v2: true, live: false });
+    const noPath = await t.send(MAYA, {});
+    expect(noPath.status).toBe(400);
+    expect(errorOf(noPath).message).toBe("workflowPath: workflow requests require an explicit Quick or Full path");
+    expect(t.taskCount()).toBe(0);
+    const reply = await t.send(MAYA, { path: "FULL" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const stored = t.meta(t.taskOf(reply).taskId);
+    expect(stored.workflow).toMatchObject({ definitionVersion: "1.1.0", stage: "PLAN", state: "RUNNING", path: "FULL" });
+    expect(stored.workflow?.intent).toBeUndefined();
+    expect(t.pointer(stored.workspaceId)).toMatchObject({ pendingPrompt: "Fix the retry bug", pendingWorkflowMode: "PLAN" });
   });
 });
 
@@ -484,7 +558,7 @@ describe("the Slack start goes through startCodeIntent", () => {
     const start = (instructions: string) => t.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: owner, instructions, workflowPath: "QUICK", requestId: randomUUID() });
     const tooLong = await start("x".repeat(9000));
     expect(tooLong.statusCode).toBe(400);
-    expect(JSON.parse(tooLong.body)).toMatchObject({ error: { code: "CONFIG_INVALID" } });
+    expect(JSON.parse(tooLong.body)).toMatchObject({ error: { code: "CONFIG_INVALID", message: "workflow request is empty or too long" } });
     expect(t.taskCount()).toBe(0);
     const first = await start("Add a greeting");
     expect(first.statusCode).toBe(200);

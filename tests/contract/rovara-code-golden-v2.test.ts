@@ -97,14 +97,14 @@ describe("review rounds on the v2 program", () => {
 describe("which version a task starts on", () => {
   beforeAll(async () => { await loadSlackBroker(); });
 
-  async function setup() {
-    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  async function setup(agents: Record<string, unknown> = {}) {
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents } });
     const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
     const run = async (who: Developer = MAYA) => {
       const reply = await h.dev(who, "POST", "/v1/app/agents/rovara-code/runs", { requestId: randomUUID(), project: "payments", input: { text: "Fix the retry bug" } });
       expect(reply.status, JSON.stringify(reply.body)).toBe(202);
       const task = reply.body.task as { taskId: string };
-      return h.db.get(`DEVTASK#${task.taskId}`, "META") as { workflow?: { definitionVersion: string; stage: string; state?: string; program?: { steps: Array<{ kind: string }> }; programStepId?: string }; agent?: { version: number; digest: string } };
+      return h.db.get(`DEVTASK#${task.taskId}`, "META") as { workflow?: { definitionVersion: string; stage: string; program?: { steps: Array<{ kind: string }> }; programStepId?: string }; agent?: { version: number; digest: string } };
     };
     return { ...h, store, run };
   }
@@ -123,8 +123,8 @@ describe("which version a task starts on", () => {
     await t.store.ensureBuiltinSettings(TEST_ORG, "rovara-code");
     t.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: now });
     const meta = await t.run();
-    // Plan 6 Task 3: a 1.1.0 task starts by understanding the intent (deliberate change; the plan stage follows in Task 4).
-    expect(meta.workflow).toMatchObject({ definitionVersion: "1.1.0", stage: "UNDERSTAND", state: "READY", programStepId: "plan" });
+    // Until Understand is live (Task 4), a 1.1.0 task starts on the plan step as it did after Task 2.
+    expect(meta.workflow).toMatchObject({ definitionVersion: "1.1.0", stage: "PLAN", programStepId: "plan" });
     expect(meta.workflow?.program?.steps.map((step) => step.kind)).toEqual(["plan", "plan_critic", "build", "check", "review", "pull_request"]);
     expect(meta.agent).toMatchObject({ version: 2, digest: recipeDigest(v2()) });
 
@@ -156,8 +156,8 @@ describe("which version a task starts on", () => {
     expect(await store.getBuiltinSettings(orgId, "ticket-triage")).toBeUndefined();
   });
 
-  it("R3-4: an org with no settings item sees version 1 in the roster, and adopting version 2 writes a pin of 2 so its next task is 1.1.0", async () => {
-    const t = await setup();
+  it("R3-4: an org with no settings item sees version 1 in the roster, and (once version 2 is available) adopting it writes a pin of 2 so its next task is 1.1.0", async () => {
+    const t = await setup({ rovaraCodeV2Live: true });
     seedMembership(t.db, MAYA.developerId, { orgId: TEST_ORG, role: "owner" });
     const listed = await t.dev(MAYA, "GET", "/v1/app/agents?scope=builtin");
     const entry = (listed.body.agents as Array<{ agentId: string; pinnedVersion: number; latestVersion: number }>).find((agent) => agent.agentId === "rovara-code")!;
@@ -170,6 +170,19 @@ describe("which version a task starts on", () => {
     expect(t.db.get(builtinSettingsKey(TEST_ORG, "rovara-code").pk, builtinSettingsKey(TEST_ORG, "rovara-code").sk)).toMatchObject({ pinnedVersion: 2 });
     const meta = await t.run();
     expect(meta.workflow).toMatchObject({ definitionVersion: "1.1.0" });
+  });
+
+  it("while version 2 is not available (ROVARA_CODE_V2_FOR_NEW_ORGS is off) an org admin cannot adopt it, and nothing is written", async () => {
+    const t = await setup();
+    seedMembership(t.db, MAYA.developerId, { orgId: TEST_ORG, role: "owner" });
+    const adopted = await t.dev(MAYA, "POST", "/v1/app/agents/rovara-code/adopt", { requestId: randomUUID(), version: 2 });
+    expect(adopted.status).toBe(400);
+    expect(adopted.body.error).toEqual({ code: "CONFIG_INVALID", message: "Version 2 of Rovara Code is not available yet." });
+    expect(t.db.get(builtinSettingsKey(TEST_ORG, "rovara-code").pk, builtinSettingsKey(TEST_ORG, "rovara-code").sk)).toBeUndefined();
+    expect(await t.store.pinnedBuiltinVersion(TEST_ORG, "rovara-code")).toBe(1);
+    // Version 1 can still be adopted (a no-op) and the other built-ins are untouched by the gate.
+    const same = await t.dev(MAYA, "POST", "/v1/app/agents/rovara-code/adopt", { requestId: randomUUID(), version: 1 });
+    expect(same.status, JSON.stringify(same.body)).toBe(200);
   });
 
   it("R3-4: a custom agent built on Rovara Code sees no update while the org is still on version 1", async () => {
