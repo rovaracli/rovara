@@ -27,7 +27,7 @@ function world(options: { audit?: boolean } = {}) {
   const audit = options.audit === true ? capturingAuditDeps({ db: w.db, now: () => w.clock.now }) : undefined;
   const calls = {
     cancel: [] as Array<{ taskId: string; requestId: string }>, workflow: [] as Array<{ taskId: string; requestId: string }>, start: [] as Array<Record<string, unknown>>,
-    chainCancel: [] as Array<{ actor: unknown; runId: string; requestId: string }>, chainRetry: [] as Array<{ actor: unknown; runId: string; requestId: string }>,
+    chainCancel: [] as Array<{ orgId: string; actor: unknown; runId: string; requestId: string }>, chainRetry: [] as Array<{ orgId: string; actor: unknown; runId: string; requestId: string }>,
     admissions: [] as Array<{ payer: Payer; project: string }>, published: [] as Array<{ channel: string; events: string[] }>,
   };
   const live = { budgetRefusal: undefined as string | undefined, startFailure: undefined as Error | undefined, cancelFailure: undefined as Error | undefined };
@@ -52,9 +52,9 @@ function world(options: { audit?: boolean } = {}) {
     },
   };
   const chainControl: ChainControl = {
-    cancel: async (actor, runId, requestId) => { calls.chainCancel.push({ actor, runId, requestId }); },
-    retry: async (actor, runId, requestId) => {
-      calls.chainRetry.push({ actor, runId, requestId });
+    cancel: async (orgId, actor, runId, requestId) => { calls.chainCancel.push({ orgId, actor, runId, requestId }); },
+    retry: async (orgId, actor, runId, requestId) => {
+      calls.chainRetry.push({ orgId, actor, runId, requestId });
       const seeded = w.seedSession({ kind: "chain", owner: actor.developerId });
       return { sessionId: seeded.sessionId };
     },
@@ -238,7 +238,7 @@ describe("stopping a session", () => {
     const run = chain.sessionId;
     // A grant maintainer reaches a chain session at edit.
     await w.stop(MAX, run, requestId);
-    expect(w.calls.chainCancel).toEqual([{ actor: { kind: "session", developerId: MAX }, runId: run, requestId }]);
+    expect(w.calls.chainCancel).toEqual([{ orgId: ORG_A, actor: { kind: "session", developerId: MAX }, runId: run, requestId }]);
     expect(w.eventTexts(run)).toEqual(["Max stopped this session."]);
     expect(w.calls.cancel).toEqual([]);
     const without = world();
@@ -448,7 +448,7 @@ describe("retrying a session", () => {
     w.patchSession(sessionId, { endedAt: "2026-10-22T08:30:00.000Z", summary: { ...(w.meta(sessionId).summary as Item), status: "failed" } });
     const requestId = randomUUID();
     const reply = await w.retry(MAX, sessionId, requestId);
-    expect(w.calls.chainRetry).toEqual([{ actor: { kind: "session", developerId: MAX }, runId: sessionId, requestId: retryRunRequestId(ORG_A, sessionId) }]);
+    expect(w.calls.chainRetry).toEqual([{ orgId: ORG_A, actor: { kind: "session", developerId: MAX }, runId: sessionId, requestId: retryRunRequestId(ORG_A, sessionId) }]);
     expect(w.meta(reply.session.sessionId)).toMatchObject({ retryOf: sessionId });
     expect(w.eventTexts(sessionId)).toEqual(["Max retried this in a new session."]);
     const bare = world();
