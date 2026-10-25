@@ -688,6 +688,11 @@ describe("an org is closed", () => {
       w.db.set({ ...changesKey(ORG_A, developerId, CREATED_AT, 2), entityType: "CHANGE_NOTICE", orgId: ORG_A, type: "session_shared", sessionId: a.sessionId });
     }
     w.db.set({ ...projectMonthStatsKey(ORG_A, "web", "2026-10"), entityType: "PROJECT_SESSION_STATS", orgId: ORG_A, started: 2 });
+    // A follower who is no member and owns nothing, with a feed and a device: only the session names him. And a member's list row for a session whose record is gone.
+    w.follow(ORG_A, a.sessionId, hex("7"));
+    w.db.set({ ...changesKey(ORG_A, hex("7"), CREATED_AT, 1), entityType: "CHANGE_NOTICE", orgId: ORG_A, type: "session_shared", sessionId: a.sessionId });
+    w.device(ORG_A, hex("7"), "dvc_dddddddddddddddddddd");
+    w.db.set({ ...mySessionsKey(ORG_A, PRIYA, CREATED_AT, "ses_eeeeeeeeeeeeeeeeeeee"), entityType: "MY_SESSION", orgId: ORG_A, sessionId: "ses_eeeeeeeeeeeeeeeeeeee", developerId: PRIYA, createdAt: CREATED_AT });
     // A long-ended session of a person who has left: no live tile, and no member whose own list names it; only its project's list does.
     const gone = w.session({ owner: hex("8"), ended: true });
     w.db.delete(liveSessionKey(ORG_A, gone.sessionId));
@@ -831,6 +836,7 @@ describe("an org is closed", () => {
     expect(w.get(sharedSessionsKey(ORG_A, { kind: "member", developerId: MIA }, a.sessionId))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(projectMonthStatsKey(ORG_A, "web", "2026-10"))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(agentSessionKey(ORG_A, gone.sessionId, "META"))!["indexExpiresAt"]).toBe(EXPIRES);
+    expect(w.get(mySessionsKey(ORG_A, PRIYA, CREATED_AT, "ses_eeeeeeeeeeeeeeeeeeee"))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(mySessionsKey(ORG_A, hex("8"), gone.createdAt, gone.sessionId))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(agentSessionKey(ORG_A, a.sessionId, "EVENT#2026-10-22T08:00:00.000Z#evt_1"))!["indexExpiresAt"]).toBe(EXPIRES - 5);
     expect(w.get(agentSessionKey(ORG_A, a.sessionId, "EVENT#2026-10-22T08:01:00.000Z#evt_2"))!["indexExpiresAt"]).toBe(EXPIRES);
