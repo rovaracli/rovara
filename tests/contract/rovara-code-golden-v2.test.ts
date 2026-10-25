@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore, updateAvailable } from "../../packages/broker/src/agents/store.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { codingProgram, recipeDigest, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
-import { builtinDefaultPin, builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
+import { ROVARA_CODE_V2_FOR_NEW_ORGS, builtinDefaultPin, builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import {
   WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, blockWorkflow,
@@ -133,14 +133,25 @@ describe("which version a task starts on", () => {
     expect(old.workflow?.program).toBeUndefined();
   });
 
-  it("a newly created org has an explicit pin of 2, written in the creating transaction", async () => {
+  it("the flag for new orgs is off until Task 8 flips it: a newly created org gets no Rovara Code pin and runs version 1 exactly as before", async () => {
+    expect(ROVARA_CODE_V2_FOR_NEW_ORGS).toBe(false);
     const db = new FakeDynamoDb();
     const orgs = new OrgStore({ documentClient: db, tableName: "state", now: Date.now });
     const orgId = await orgs.createOrgWithOwner({ name: "Acme", developerId: "dev-1" });
-    expect(db.get(builtinSettingsKey(orgId, "rovara-code").pk, builtinSettingsKey(orgId, "rovara-code").sk)).toMatchObject({ pinnedVersion: 2, entityType: "BUILTIN_AGENT_SETTINGS" });
+    const key = builtinSettingsKey(orgId, "rovara-code");
+    expect(db.get(key.pk, key.sk)).toBeUndefined();
+    const store = new AgentStore({ documentClient: db, tableName: "state", now: Date.now });
+    expect(await store.pinnedBuiltinVersion(orgId, "rovara-code")).toBe(1);
+  });
+
+  it("with the flag on, a newly created org has an explicit pin of 2, written in the creating transaction, and the templates are not touched", async () => {
+    const db = new FakeDynamoDb();
+    const orgs = new OrgStore({ documentClient: db, tableName: "state", now: Date.now, rovaraCodeV2ForNewOrgs: true });
+    const orgId = await orgs.createOrgWithOwner({ name: "Acme", developerId: "dev-1" });
+    const key = builtinSettingsKey(orgId, "rovara-code");
+    expect(db.get(key.pk, key.sk)).toMatchObject({ pinnedVersion: 2, entityType: "BUILTIN_AGENT_SETTINGS" });
     const store = new AgentStore({ documentClient: db, tableName: "state", now: Date.now });
     expect(await store.pinnedBuiltinVersion(orgId, "rovara-code")).toBe(2);
-    // The five templates are not touched: they read the newest release as before.
     expect(await store.getBuiltinSettings(orgId, "ticket-triage")).toBeUndefined();
   });
 
