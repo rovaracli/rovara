@@ -2,6 +2,7 @@
 // that person may do there, the agents that work on it with how many are running, the month's budget and cost per merged pull request (only for a maintainer, who may see spend), and the open
 // sessions the person may view. Everything is read now for the caller: a person with no role gets `PROJECT_NOT_FOUND`, the same as for a project that is not there. A merged pull request adds
 // one to the project's month count in the transaction that records the merge.
+import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
@@ -33,7 +34,7 @@ function world() {
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now });
   const approvals = {
     store, projectMembers: w.members, documentClient: w.db, tableName: "state", signInStore: w.signInStore, now: () => w.clock.now, confirmOrigin: CELL, log: () => undefined,
-  } as unknown as ApprovalDependencies;
+  } as unknown as ApprovalDependencies & AgentRouteDependencies;
   const page = (name: string) => ({ name, status: "active" as const, repositories: [{ fullName: `acme/${name}`, defaultBranch: "main" }], setup: { status: "ready" as const }, channels: ["C0123456789"] });
   const deps = (extra: Partial<SessionRouteDependencies> = {}): SessionRouteDependencies => ({
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),

@@ -2,6 +2,7 @@
 // of all their cards; `POST /v1/app/home/cards/{cardId}/dismiss` hides a failure or an offer for that person. What Home shows is read for the caller, now: an approval only to a person who
 // may decide it (and its confirm link only to them), a session only to a person who may view it, plan, pull request and failure cards only for sessions the caller owns now, and a dismissal
 // only ever in the caller's own partition. Each source of cards is bounded and may fail without taking the others down.
+import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -40,7 +41,7 @@ function world() {
   const approvals = {
     store: new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now }), projectMembers: w.members, documentClient: w.db, tableName: "state", signInStore: w.signInStore,
     now: () => w.clock.now, confirmOrigin: CELL, log: () => undefined,
-  } as unknown as ApprovalDependencies;
+  } as unknown as ApprovalDependencies & AgentRouteDependencies;
   const storeDeps = { documentClient: w.db, tableName: "state", now: () => w.clock.now };
   let counter = 0;
   const base = Date.parse("2026-10-22T06:00:00.000Z");
