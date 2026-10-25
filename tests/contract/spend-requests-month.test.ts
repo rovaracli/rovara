@@ -4,7 +4,7 @@
 // total (every budget they hold, this month's top-ups included) stays within the cap, else to the admins. The owner counter's `version` makes an owner's
 // approval race-safe (R4-6). An approval adds the top-up and resumes every task paused on that scope, keeping their cap windows.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MONTH_APPROVERS, OWNER_TOTAL_CONTRIBUTORS, createSpendRequest, decideSpendRequest, escalateOwnerRequests, ownerEffectiveTotal, requestForPausedTask, routeSpendRequests, spendApprovers,
   type OwnerTotalContributor,
@@ -23,6 +23,10 @@ import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { ADA, BEN, CARL, DEB, ORG_B, month, person, refusal, setup, type World } from "../support/spend-world.js";
 
+
+// Only `Date` is pinned (to the 10th of a month), so timers and promises run as they do.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z")); });
+afterEach(() => { vi.useRealTimers(); });
 
 // These tests expire requests 7 days on. Run late in a month, that crosses the month end, the month's budget resets and the paused task resumes, which is the
 // product working and not what they check: so they run on a clock that is mid-month.

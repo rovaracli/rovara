@@ -2,7 +2,7 @@
 // so the end handlers (Plan 4's chains, Plan 5's sessions) must not hear a "failed" end that would block its keys and release its workspace. The pause handlers
 // hear it instead, as they do for an agent-step run. The task's end is told when it really ends: the work finishes after the resume, the owner closes it
 // (also after the request expired), or it is cancelled or fails for another reason. Whatever happens, an end is told once.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { registerTaskEndHandler, registerTaskPauseHandler, type TaskEndEvent, type TaskPauseEvent } from "../../packages/broker/src/agents/task-end.js";
 import { operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
@@ -26,8 +26,12 @@ describe("the clock these tests run on", () => {
 
 const MEMBER: BudgetScope = { kind: "member", developerId: MAYA.developerId };
 
+// Only `Date` is pinned (to the 10th of a month), so timers and promises run as they do.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z")); });
+
 const unregister: Array<() => void> = [];
 afterEach(() => {
+  vi.useRealTimers();
   while (unregister.length > 0) unregister.pop()!();
 });
 
