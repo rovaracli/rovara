@@ -87,3 +87,19 @@ it("replaces inaccessible cached session details with the common NotFound screen
  await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID] });
  expect(await screen.findByRole("heading", { name: "Not found" })).toBeTruthy();expect(screen.queryByRole("heading", { name: "Fix duplicate refunds" })).toBeNull();expect(screen.queryByRole("button", { name: "Conversation" })).toBeNull();f.close();
 });
+
+it("offers stop from the session header only when the server permits it", async () => {
+ const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["stop"] } }));
+ fireEvent.click(await screen.findByRole("button", { name: "Stop", exact: true }));
+ expect(await screen.findByRole("dialog", { name: "Stop this session?" })).toBeTruthy();
+ expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
+ expect(screen.queryByRole("button", { name: "Share", exact: true })).toBeNull();
+ fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
+ expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/stop"))).toBe(false);f.close();
+});
+it("offers retry and takeover independently from the session capability list", async () => {
+ const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["retry", "take_over"] } }));
+ expect(await screen.findByRole("button", { name: "Retry", exact: true })).toBeTruthy();
+ expect(screen.getByRole("button", { name: "Take over" })).toBeTruthy();
+ expect(screen.queryByRole("button", { name: "Stop", exact: true })).toBeNull();f.close();
+});
