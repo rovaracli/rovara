@@ -284,7 +284,6 @@ export async function liveSessions(deps: LiveDependencies, caller: SessionReadCa
     };
 
     for (const { index: at, session } of sessions) {
-      if (judgedAll.length > limit) break;
       let judged: Awaited<ReturnType<typeof sessionAccessFor>>;
       try {
         judged = await sessionAccessFor(deps, caller, orgRole.data, session, { prefetch, memo, ...(filter === "team" ? { wantShareRole: true as const } : {}) });

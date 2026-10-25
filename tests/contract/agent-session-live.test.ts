@@ -11,6 +11,7 @@ import {
 import { decidingOf, routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { batchGetItems, liveSessions, type LiveDependencies } from "../../packages/broker/src/agent-sessions/live.js";
 import { recordPresence } from "../../packages/broker/src/agent-sessions/followers.js";
+import { sweepAgentSessions } from "../../packages/broker/src/agent-sessions/sweep.js";
 import { registerSessionNoticeSink } from "../../packages/broker/src/agent-sessions/notice-sink.js";
 import { installRealtimeSink } from "../../packages/broker/src/realtime/sink.js";
 import { createWriteApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
@@ -593,6 +594,25 @@ describe("the session record decides, and the tile only narrows what is read", (
     expect(await batches(w, () => w.live(ARJUN, { filter: "failed" }))).toBeLessThanOrEqual(3);
     expect(await batches(w, () => w.live(ARJUN, { filter: "all", project: "api" }))).toBeLessThanOrEqual(1);
     expect(await batches(w, () => w.live(ARJUN, { filter: "all", limit: "10" }))).toBeLessThanOrEqual(8);
+  });
+
+  it("reads none of the sessions that already ended when asked for the open ones", async () => {
+    const w = world();
+    const open = w.seed({});
+    for (let index = 0; index < 150; index += 1) w.seed({ status: "succeeded", endedAgoHours: 1 });
+    expect(await w.ids(PRIYA)).toEqual([open.sessionId]);
+    expect(await batches(w, () => w.live(PRIYA, {}))).toBeLessThanOrEqual(3);
+  });
+
+  it("closes a session made late for a task that had already ended: once the sweep has looked, it is off the wall (Task 5 hand-off)", async () => {
+    const pw = projectorWorld();
+    const { sessionId, taskId } = pw.open();
+    // As a lazily created session reads before anything has looked at its task: the start's summary, "starting", for a task that was closed long ago.
+    pw.patchTask(taskId, { closedAt: "2026-10-20T08:00:00.000Z", outcome: "completed", updatedAt: "2026-10-20T08:00:00.000Z" });
+    const deps = { documentClient: pw.w.db, tableName: "state", now: () => pw.w.clock.now, projectMembers: pw.w.members, signInStore: pw.w.signInStore, origin: CELL, cursorKey: "k".repeat(64), taskView: async () => ({}) as never };
+    expect((await liveSessions(deps, pw.w.caller(PRIYA), {})).tiles.map((tile) => tile.sessionId)).toEqual([sessionId]);
+    await sweepAgentSessions({ documentClient: pw.w.db, tableName: "state", now: () => pw.w.clock.now, log: () => undefined }, pw.w.clock.now, { budgetMs: 5000 });
+    expect((await liveSessions(deps, pw.w.caller(PRIYA), {})).tiles).toEqual([]);
   });
 
   it("reads none of the sessions of other orgs that sit in the index, and none that ended failed outside the window or with another status", async () => {
