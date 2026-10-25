@@ -47,6 +47,20 @@ export type SessionListRead = z.output<typeof SessionListReaderSchema>;
 export type SessionViewRead = z.output<typeof SessionResponseReaderSchema>["session"];
 export type SessionMessageRead = z.output<typeof SessionMessageReaderSchema>;
 
+/**
+ * A link the server sent, only when it is an https address on the control plane's own origin with no user name or password, printable ASCII, and at most
+ * 1,000 characters (so the tools' cleaning never cuts one in two). Anything else becomes "": the tools leave that field out.
+ */
+function pinnedLink(value: unknown, baseUrl: string): string {
+  if (typeof value !== "string" || value.length > 1_000 || !/^[\x21-\x7e]+$/.test(value)) return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "" && url.origin === new URL(baseUrl).origin ? value : "";
+  } catch {
+    return "";
+  }
+}
+
 export interface ControlPlaneSession { baseUrl: string; accessToken: string; signInCommand: string }
 
 /** For a read inside a wait: its own deadline, and the tool call's signal, so a cancel ends it at once. */
@@ -287,6 +301,11 @@ export function httpControlPlaneClient(options: {
   }
 
   const task = (response: { task: DeveloperTaskView }) => response.task;
+  /** A session view with its own link and its decision links kept only when they are the control plane's. */
+  const pinned = async (view: SessionViewRead): Promise<SessionViewRead> => {
+    const { baseUrl } = await session();
+    return { ...view, link: pinnedLink(view.link, baseUrl), approvals: view.approvals.map((approval) => ({ ...approval, confirmUrl: pinnedLink(approval.confirmUrl, baseUrl) })) };
+  };
   const sessionPath = (sessionId: string, rest = "") => `/v1/app/sessions/${encodeURIComponent(sessionId)}${rest}`;
   const path = (taskId: string, rest = "") => `/v1/dev/tasks/${encodeURIComponent(taskId)}${rest}`;
   return {
@@ -353,10 +372,10 @@ export function httpControlPlaneClient(options: {
       if (query.limit !== undefined) search.set("limit", String(query.limit));
       return call(SessionListReaderSchema, "GET", `/v1/app/sessions?${search.toString()}`);
     },
-    getSession: async (sessionId) => (await call(SessionResponseReaderSchema, "GET", sessionPath(sessionId))).session,
+    getSession: async (sessionId) => pinned((await call(SessionResponseReaderSchema, "GET", sessionPath(sessionId))).session),
     commentOnSession: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "comment", text: request.text }),
     tellSessionAgent: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "steer", text: request.text }),
-    stopSession: async (sessionId, requestId) => (await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/stop"), { requestId })).session,
+    stopSession: async (sessionId, requestId) => pinned((await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/stop"), { requestId })).session),
     approvalConfirmLink: (approvalId) => call(z.object({ confirmUrl: z.string(), ticketed: z.boolean() }), "POST", `/v1/app/approvals/${encodeURIComponent(approvalId)}/confirm-link`),
   };
 }

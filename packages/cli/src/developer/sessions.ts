@@ -22,11 +22,15 @@ const SAFE_URL = /^https:\/\/[A-Za-z0-9._~:/?#@!$&'()*+,;=%[\]-]+$/;
 const URL_MAX = 2048;
 const UNEXPECTED = `AgentX answered with something unexpected; try again, or upgrade: npx ${CLI_PACKAGE_NAME}@latest whoami`;
 
-/** A server's web address, only when it is plainly an https address; the caller never prints any other. */
-function safeUrl(value: unknown): string | undefined {
+/**
+ * A server's web address, only when it is plainly an https address on the control plane's own origin (the environment's URL) with no user name or
+ * password in it. This is where a person is told to sign in or decide, so a link to another host, port or `host@evil` address is never printed.
+ */
+function safeUrl(value: unknown, origin: string): string | undefined {
   if (typeof value !== "string" || value.length > URL_MAX || !SAFE_URL.test(value)) return undefined;
   try {
-    return new URL(value).protocol === "https:" ? value : undefined;
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "" && url.origin === new URL(origin).origin ? value : undefined;
   } catch {
     return undefined;
   }
@@ -41,7 +45,7 @@ function sessionIdOf(id: string): string {
 const sessionPath = (id: string, rest = "") => `/v1/app/sessions/${seg(sessionIdOf(id))}${rest}`;
 
 /** The link to a session: the server's own when it is a plain https address, else built from the ID. */
-const linkOf = (origin: string, sessionId: string, given?: unknown): string => safeUrl(given) ?? sessionLink(origin, sessionId);
+const linkOf = (origin: string, sessionId: string, given?: unknown): string => safeUrl(given, origin) ?? sessionLink(origin, sessionId);
 
 const statusWords = (status: unknown): string => (typeof status === "string" && status in SESSION_STATUS_WORDS ? SESSION_STATUS_WORDS[status as keyof typeof SESSION_STATUS_WORDS] : str(status, "unknown"));
 const levelWords = (level: unknown): string => (typeof level === "string" && level in LEVEL_WORDS ? LEVEL_WORDS[level as SessionLevel] : str(level, "unknown"));
@@ -56,7 +60,7 @@ const nameOf = (value: unknown): string => str((value as Body | undefined)?.name
  */
 function confirmationOf(answer: { env: string; url: string; body: Body }): AppResult {
   const parsed = NeedsConfirmationSchema.safeParse(answer.body);
-  if (!parsed.success || safeUrl(parsed.data.confirmUrl) === undefined) {
+  if (!parsed.success || safeUrl(parsed.data.confirmUrl, answer.url) === undefined) {
     throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
   }
   const { confirmUrl, changes } = parsed.data;
@@ -68,8 +72,8 @@ function confirmationOf(answer: { env: string; url: string; body: Body }): AppRe
 
 const tileLine = (tile: Body): string => `  ${str(tile.sessionId)}  ${statusWords((tile.summary as Body | undefined)?.status)}  ${str(tile.title)}${tile.project === undefined ? "" : `  ${str(tile.project)}`}  ${nameOf(tile.owner)}`;
 
-const liveLine = (tile: Body): string => {
-  const confirm = safeUrl(tile.approvalUrl);
+const liveLine = (origin: string) => (tile: Body): string => {
+  const confirm = safeUrl(tile.approvalUrl, origin);
   return `  ${str(tile.sessionId)}  ${str(tile.statusWords, statusWords(tile.status))}  ${str(tile.title)}${tile.project === undefined ? "" : `  ${str(tile.project)}`}  ${nameOf(tile.owner)}${tile.needsYou === true ? "  (needs you)" : ""}`
     + (tile.step === undefined ? "" : `\n      ${str(tile.step)}`) + (confirm === undefined ? "" : `\n      decide it: ${confirm}`);
 };
@@ -84,7 +88,7 @@ export async function sessionsList(
     const answer = await appRequest(deps, env, `/v1/app/live?filter=${input.live}${input.project === undefined ? "" : `&project=${seg(input.project)}`}${cursor}`);
     const tiles = list(answer.body.tiles);
     const next = typeof answer.body.next === "string" ? answer.body.next : undefined;
-    const lines = tiles.length === 0 ? [`Nothing is live for ${input.live} on ${answer.env}.`] : [`Live (${input.live}) on ${answer.env} (${answer.url}):`, ...tiles.map(liveLine)];
+    const lines = tiles.length === 0 ? [`Nothing is live for ${input.live} on ${answer.env}.`] : [`Live (${input.live}) on ${answer.env} (${answer.url}):`, ...tiles.map(liveLine(answer.url))];
     return result(answer, { tiles, ...(next === undefined ? {} : { next }) }, `${[...lines, ...(next === undefined ? [] : [`More: agentx sessions --live ${input.live} --cursor ${str(next)}`])].join("\n")}\n`);
   }
   const chosen = [input.mine === true, input.shared === true, input.project !== undefined].filter(Boolean).length;
@@ -123,7 +127,7 @@ export async function sessionShow(deps: DeveloperSessionDeps, env: string | unde
     ...headline(answer.url, view, id),
     `  spent ${money(cost.spentUsd)}; you ${levelWords(you.level)}${you.owner === true ? " (you own it)" : ""}${you.following === true ? "; you follow it" : ""}`,
     ...(view.peek === undefined ? [] : [`  now: ${str(view.peek)}`]),
-    ...(approvals.length === 0 ? [] : ["  waiting for you:", ...approvals.map((approval) => `    - ${str(approval.title)}: ${safeUrl(approval.confirmUrl) ?? "(open it in the app)"}`)]),
+    ...(approvals.length === 0 ? [] : ["  waiting for you:", ...approvals.map((approval) => `    - ${str(approval.title)}: ${safeUrl(approval.confirmUrl, answer.url) ?? "(open it in the app)"}`)]),
   ];
   return result(answer, answer.body, `${lines.join("\n")}\n`);
 }
@@ -206,7 +210,7 @@ export async function homeCards(deps: DeveloperSessionDeps, env: string | undefi
     if (typeof card.sessionId === "string" && SessionIdSchema.safeParse(card.sessionId).success) lines.push(`      session: ${sessionLink(answer.url, card.sessionId)}`);
     // Only the pages a button opens; a button that is a request (retry, dismiss) is the app's to send.
     for (const button of list(card.buttons)) {
-      const href = safeUrl(button.href);
+      const href = safeUrl(button.href, answer.url);
       if (href !== undefined && (button.action === "open" || button.action === "confirm" || button.action === "start")) lines.push(`      ${str(button.label)}: ${href}`);
     }
   }

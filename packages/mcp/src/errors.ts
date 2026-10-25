@@ -12,6 +12,8 @@ export const TOOL_ERROR_CODES = [
   "OWNER_APPROVAL_NEEDED",
   // Sessions (Plan 5): the session is not there for this person, or the server refused the action in its own words (too low a share, the session has ended, it runs on a Mac).
   "SESSION_NOT_FOUND", "SESSION_REFUSED",
+  // The server is counting how often the person sends (a message to an agent, a comment): wait, do not ask an admin.
+  "RATE_LIMITED",
 ] as const;
 export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
 
@@ -49,6 +51,7 @@ export const NEXT_STEPS: Record<ToolErrorCode, string> = {
   MACHINE_TIME_REACHED: MACHINE_TIME_STEP,
   OWNER_APPROVAL_NEEDED: "give the person the link in the message to pass to the agent's owner; the run starts once the owner approves it on that page. You cannot approve it",
   SESSION_NOT_FOUND: "run agentx_list_sessions to see the sessions you can see",
+  RATE_LIMITED: "wait a few minutes before sending again; do not retry in a loop",
   SESSION_REFUSED: "nothing was changed; tell the person what the message says, and do not try to get around it",
 };
 /** BUDGET_REACHED's next steps: whose budget is used up decides who can raise it. */
@@ -144,6 +147,7 @@ export function toolErrorFromResponse(status: number, value: unknown, signInComm
   if (code === "MACHINE_TIME_EXCEEDED") return new ToolError("MACHINE_TIME_REACHED", message, MACHINE_TIME_STEP);
   if (code === "ORG_BUDGET_EXCEEDED") return new ToolError("BUDGET_REACHED", message, ORG_BUDGET_STEP);
   if (code === "BUDGET_EXCEEDED") return new ToolError("BUDGET_REACHED", message, message.startsWith(TASK_BUDGET_EXCEEDED_PREFIX) ? TASK_BUDGET_STEP : MEMBER_BUDGET_STEP);
+  if (code === "TOO_MANY_REQUESTS") return new ToolError("RATE_LIMITED", message);
   if (code !== undefined && SESSION_REFUSALS.has(code)) return new ToolError("SESSION_REFUSED", message);
   if (status === 404 && code === "NOT_FOUND" && error?.message === SESSION_NOT_FOUND_TEXT) return new ToolError("SESSION_NOT_FOUND", message);
   if (code !== undefined && PASSED_THROUGH.has(code)) return new ToolError(code as ToolErrorCode, message, OWN_STEPS.get(`${code}:${message}`));
