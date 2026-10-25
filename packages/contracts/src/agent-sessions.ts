@@ -38,6 +38,10 @@ export const PRESENCE_HEARTBEAT_SECONDS = 30;
 export const LIVE_ENDED_KEEP_HOURS = 24;
 export const LIVE_PAGE_MAX = 100;
 export const LIVE_INDEX_SCAN_MAX = 1000;
+/** The people a Live tile names as looking at a session; `viewingNowCount` counts them all. */
+export const LIVE_VIEWING_MAX = 5;
+/** The filters of `GET /v1/app/live`. */
+export const LIVE_FILTERS = ["all", "mine", "team", "needs_me", "failed"] as const;
 export const HOME_CARDS_MAX = 10;
 export const HOME_CARD_BUTTONS_MAX = 3;
 export const HOME_FAILURE_DAYS = 7;
@@ -165,6 +169,11 @@ export const SESSION_MODES = ["delegate"] as const;
 export const LOCAL_TOOLS = ["rovara", "claude-code", "codex", "gemini-cli", "cursor-cli"] as const;
 /** What a person may do on a session; compared with `atLeast` from agent.ts (view < use < edit). */
 export const SESSION_LEVELS = ["view", "use", "edit"] as const;
+/** What a status says in one or two words on a tile, with no colour or icon to carry it: the fixed words of `STATUS_WORDS` where there are some, else the status plainly. */
+export const SESSION_STATUS_WORDS: Record<(typeof SESSION_STATUSES)[number], string> = {
+  starting: "Starting", running: "Running", needs_person: STATUS_WORDS.needs_person, paused: STATUS_WORDS.paused, waiting: STATUS_WORDS.waiting, stopped: STATUS_WORDS.stopped,
+  succeeded: "Succeeded", failed: "Failed", cancelled: "Cancelled",
+};
 export const LEVEL_WORDS = { view: "can view", use: "can use", edit: "can edit" } as const;
 
 /** What a person may do on a session (`sessionActionsFor` in the broker decides who gets which; `make_agent` is added when the person may create agents in the session's project, checked live as the route checks it). */

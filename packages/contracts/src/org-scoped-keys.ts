@@ -492,6 +492,14 @@ export function liveSessionKey(orgId: OrgId, sessionId: SessionId): OrgKey {
   return { pk: orgScoped(orgId, "LIVE_SESSIONS"), sk: keyPart(sessionId, "a session id") };
 }
 
+/**
+ * Who is looking at which session, for the whole org, so the Live wall reads every tile's viewers in one query instead of one per session: one item per (session, person), written
+ * by the same heartbeat as the session's own presence item and expiring with it. Display only; the session's own `PRESENCE#` items stay what a session's view reads.
+ */
+export function livePresenceKey(orgId: OrgId, sessionId: SessionId, developerId: string): OrgKey {
+  return { pk: orgScoped(orgId, "LIVE_PRESENCE"), sk: `${keyPart(sessionId, "a session id")}#${keyPart(developerId, "a developer id")}` };
+}
+
 /** The sessions one person owns, newest last; `createdAt` is an instant. */
 export function mySessionsKey(orgId: OrgId, developerId: string, createdAt: string, sessionId: SessionId): OrgKey {
   return { pk: orgScoped(orgId, `MY_SESSIONS#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(createdAt)}#${keyPart(sessionId, "a session id")}` };

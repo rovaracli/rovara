@@ -13,6 +13,8 @@ import {
   HOME_CARDS_MAX,
   HOME_CARD_BUTTONS_MAX,
   LIVE_PAGE_MAX,
+  LIVE_FILTERS,
+  LIVE_VIEWING_MAX,
   SESSION_EVENTS_PAGE_MAX,
   SESSION_ANCHORS_MAX,
   SESSION_MESSAGES_PAGE_MAX,
@@ -113,6 +115,12 @@ const CountSchema = z.number().int().min(0);
  */
 export const ChainRunViewPlaceholderSchema = z.looseObject({});
 
+/** Where a session runs as a person is told: the cloud, or a Mac by its label (never its device id) and whether it is offline. */
+export const SessionWhereViewSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("cloud") }).strict(),
+  z.object({ kind: z.literal("mac"), label: z.string().min(1).max(200), offline: z.boolean() }).strict(),
+]);
+
 /** Who pays for a session: the kind and a name to show (a person, a project or an agent). */
 const PayerNameSchema = z.object({ kind: z.enum(["member", "project", "agent"]), name: z.string().min(1).max(200) }).strict();
 
@@ -132,10 +140,7 @@ export const SessionViewSchema = z
     agent: SessionAgentSchema.optional(),
     owner: SessionOwnerSchema,
     startedBy: SessionStartedBySchema,
-    where: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("cloud") }).strict(),
-      z.object({ kind: z.literal("mac"), label: z.string().min(1).max(200), offline: z.boolean() }).strict(),
-    ]),
+    where: SessionWhereViewSchema,
     status: SessionSummarySchema.shape.status,
     step: SessionSummarySchema.shape.step,
     peek: SessionSummarySchema.shape.peek,
@@ -231,6 +236,52 @@ export const SessionTileSchema = z
   .strict();
 export type SessionTile = z.infer<typeof SessionTileSchema>;
 export const SessionTileReaderSchema = forwardReader(SessionTileSchema);
+
+// ---- the Live wall (Plan 5 Task 14)
+
+/** The filter of `GET /v1/app/live`. */
+export const LiveFilterSchema = z.enum(LIVE_FILTERS);
+export type LiveFilter = z.infer<typeof LiveFilterSchema>;
+
+/**
+ * One session on the Live wall, as one person sees it. Everything on it is read for that person now: `actions` is what they may do (the session view's `you.actions` without
+ * `make_agent`), `approvalUrl` is the bare confirmation link of the first pending decision they may make (never present for anyone who may not decide, and never with a ticket),
+ * `needsYou` says a decision or a plan waits on them, `following` that they follow it (the owner always does), and `viewingNow` names at most `LIVE_VIEWING_MAX` of the people
+ * looking at it now, of whom there are `viewingNowCount`. `status`, `step`, `peek`, `lastRunFailed`, `costUsd` and `updatedAt` are the session summary's; a client keeps the tile
+ * with the newer `updatedAt` when two answers cross.
+ */
+export const LiveTileSchema = z
+  .object({
+    contractVersion: z.literal(AGENT_SESSION_CONTRACT_VERSION),
+    sessionId: SessionIdSchema,
+    kind: z.enum(SESSION_KINDS),
+    title: z.string().min(1),
+    agent: SessionAgentSchema.optional(),
+    project: z.string().regex(AGENTX_NAME_PATTERN).optional(),
+    owner: SessionOwnerSchema,
+    where: SessionWhereViewSchema,
+    status: SessionSummarySchema.shape.status,
+    statusWords: z.string().min(1),
+    step: SessionSummarySchema.shape.step,
+    peek: SessionSummarySchema.shape.peek,
+    lastRunFailed: SessionSummarySchema.shape.lastRunFailed,
+    costUsd: SessionSummarySchema.shape.costUsd,
+    viewingNow: z.array(SessionOwnerSchema).max(LIVE_VIEWING_MAX),
+    viewingNowCount: CountSchema,
+    needsYou: z.boolean(),
+    following: z.boolean(),
+    actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length),
+    approvalUrl: LinkSchema.optional(),
+    updatedAt: InstantSchema,
+  })
+  .strict();
+export type LiveTile = z.infer<typeof LiveTileSchema>;
+export const LiveTileReaderSchema = forwardReader(LiveTileSchema);
+
+/** `GET /v1/app/live?filter=&project=&cursor=`: one page of tiles, newest session first; `next` is opaque, passed back as `cursor`. */
+export const LiveResponseSchema = z.object({ tiles: z.array(LiveTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();
+export type LiveResponse = z.infer<typeof LiveResponseSchema>;
+export const LiveResponseReaderSchema = forwardReader(LiveResponseSchema);
 
 /** `GET /v1/app/sessions`: one page of sessions, newest first; `next` is opaque, passed back as `cursor`. */
 export const SessionListSchema = z.object({ sessions: z.array(SessionTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();

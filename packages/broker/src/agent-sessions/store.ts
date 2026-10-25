@@ -62,6 +62,13 @@ export function sessionEventItem(table: Pick<TableInput, "tableName">, session: 
   };
 }
 
+/** A session's META item as a record, or undefined when it doesn't parse. `indexExpiresAt` is the table's own retention mark, set when the session ends; it is not part of the record. */
+export function sessionFromItem(item: Item): AgentSessionRecord | undefined {
+  const { [INDEX_EXPIRY_ATTRIBUTE]: _expires, ...fields } = strip(item); // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+  const record = AgentSessionRecordSchema.safeParse(fields);
+  return record.success ? record.data : undefined;
+}
+
 export class AgentSessionStore {
   constructor(private readonly table: TableInput) {}
 
@@ -70,11 +77,9 @@ export class AgentSessionStore {
     const response = await this.table.documentClient.send(new GetCommand({ TableName: this.table.tableName, Key: agentSessionKey(orgId, sessionId, "META"), ConsistentRead: true })) as { Item?: Item };
     const item = response.Item;
     if (item === undefined || item["orgId"] !== orgId) return undefined;
-    // `indexExpiresAt` is the table's own retention mark, set when the session ends; it is not part of the record.
-    const { [INDEX_EXPIRY_ATTRIBUTE]: _expires, ...fields } = strip(item); // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
-    const record = AgentSessionRecordSchema.safeParse(fields);
-    if (!record.success) throw agentXError("RUNTIME_UNAVAILABLE", "This session can't be read right now.");
-    return record.data;
+    const record = sessionFromItem(item);
+    if (record === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "This session can't be read right now.");
+    return record;
   }
 
   /**

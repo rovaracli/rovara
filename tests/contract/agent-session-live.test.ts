@@ -2,10 +2,10 @@
 // only the sessions they may view, with the actions they may take at their level, an approval link only for a decision they may make (bare, never with a ticket), nothing of another org,
 // and a fixed number of reads however many tiles there are. `SessionTileSchema` is the list's tile; the Live wall's is `LiveTileSchema`, read with `LiveResponseReaderSchema`.
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   LIVE_PAGE_MAX, LiveResponseReaderSchema, LiveResponseSchema, LiveTileReaderSchema, LiveTileSchema, SESSION_STATUS_WORDS, SESSION_STATUSES, agentSessionKey, liveSessionKey, livePresenceKey, orgMemberKey, projectMemberKey,
-  projectChannel, sharedSessionsKey, type OrgId, type SessionStatus,
+  projectChannel, sharedSessionsKey, type LiveResponse, type OrgId, type SessionStatus,
 } from "../../packages/contracts/src/index.js";
 import { decidingOf, routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { liveSessions, type LiveDependencies } from "../../packages/broker/src/agent-sessions/live.js";
@@ -15,7 +15,9 @@ import { installRealtimeSink } from "../../packages/broker/src/realtime/sink.js"
 import { createWriteApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { projectorWorld, workflow } from "../support/agent-session-projector-world.js";
-import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
+import { loadSlackBroker } from "../support/slack-broker.js";
+import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 type Item = Record<string, unknown>;
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
@@ -45,7 +47,7 @@ function world() {
     const createdAt = o.createdAt ?? iso(Date.parse("2026-10-22T07:00:00.000Z") + minute * 60_000);
     const updatedAt = iso(T0 - 5 * 60_000 + minute * 1000);
     const seeded = w.seedSession({ ...(o.kind === undefined ? {} : { kind: o.kind }), owner: o.owner ?? PRIYA, ...(o.project === undefined ? {} : { project: o.project }), orgId, ...(o.people === undefined ? {} : { people: o.people }), ...(o.currentOwner === undefined ? {} : { currentOwner: o.currentOwner }) });
-    const meta = w.db.get(agentSessionKey(orgId, seeded.sessionId, "META")) as Item;
+    const meta = w.db.get(agentSessionKey(orgId, seeded.sessionId, "META")) as Item & { kind: string; project?: string; owner: { developerId: string; name: string }; title: string; where: unknown; revision: number };
     const { endedAt: _unused, ...open } = meta; // eslint-disable-line @typescript-eslint/no-unused-vars -- the seed's own end is replaced
     const endedAt = ended ? iso(T0 - o.endedAgoHours! * HOUR) : undefined;
     const summary = {
@@ -86,9 +88,9 @@ function world() {
   const live = (who: string, query: Record<string, string> = {}, orgId: OrgId = ORG_A, extra: Partial<LiveDependencies> = {}) => {
     const search = new URLSearchParams(query).toString();
     const path = `/v1/app/live${search === "" ? "" : `?${search}`}`;
-    return routeAgentSessionRequest(deps(extra), w.caller(who, orgId), { method: "GET", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`)) as Promise<{ tiles: Array<Record<string, any>>; next?: string }>; // eslint-disable-line @typescript-eslint/no-explicit-any -- tiles are inspected field by field
+    return routeAgentSessionRequest(deps(extra), w.caller(who, orgId), { method: "GET", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`)) as Promise<LiveResponse>;
   };
-  const ids = async (who: string, query: Record<string, string> = {}, orgId: OrgId = ORG_A) => (await live(who, query, orgId)).tiles.map((tile) => tile.sessionId as string);
+  const ids = async (who: string, query: Record<string, string> = {}, orgId: OrgId = ORG_A) => (await live(who, query, orgId)).tiles.map((tile) => tile.sessionId);
   return { ...w, seed, deps, live, ids, calls, decisions };
 }
 type World = ReturnType<typeof world>;
@@ -205,7 +207,7 @@ describe("who sees what on the wall (the plan's company)", () => {
     const w = world();
     const own = w.seed({ owner: PRIYA });
     const started = w.seed({ owner: MAX, startedBy: PRIYA });
-    const taken = w.seed({ owner: PRIYA, currentOwner: MAX });
+    const taken = w.seed({ owner: PRIYA, currentOwner: MAX, startedBy: MAX });
     expect((await w.ids(PRIYA, { filter: "mine" })).sort()).toEqual([own.sessionId, started.sessionId].sort());
     expect((await w.ids(MAX, { filter: "mine" })).sort()).toEqual([started.sessionId, taken.sessionId].sort());
     expect((await w.live(MAX, { filter: "all" })).tiles.find((tile) => tile.sessionId === taken.sessionId)).toMatchObject({ owner: { developerId: MAX } });
@@ -381,7 +383,7 @@ describe("approval links", () => {
 
 describe("who is looking", () => {
   const viewer = (w: World, sessionId: string, name: string, digit: string, ageMs = 10_000) =>
-    w.db.set({ ...livePresenceKey(ORG_A, sessionId as never, hex(digit)), entityType: "LIVE_PRESENCE", orgId: ORG_A, sessionId, developerId: hex(digit), name, at: iso(T0 - ageMs), indexExpiresAt: Math.floor(T0 / 1000) + 60 });
+    w.db.set({ ...livePresenceKey(ORG_A, sessionId, hex(digit)), entityType: "LIVE_PRESENCE", orgId: ORG_A, sessionId, developerId: hex(digit), name, at: iso(T0 - ageMs), indexExpiresAt: Math.floor(T0 / 1000) + 60 });
 
   it("names at most five of the people looking, in name order, and counts them all; a stale heartbeat does not count, nor does a session the caller cannot see", async () => {
     const { w, s1, s2 } = company();
@@ -389,7 +391,7 @@ describe("who is looking", () => {
     viewer(w, s1.sessionId, "Old", "8", 200_000);
     viewer(w, s2.sessionId, "Elsewhere", "9");
     const tile = (await w.live(ARJUN, { filter: "all" })).tiles.find((entry) => entry.sessionId === s1.sessionId)!;
-    expect(tile.viewingNow.map((who: { name: string }) => who.name)).toEqual(["Ann", "Bea", "Cal", "Dan", "Eve"]);
+    expect(tile.viewingNow.map((who) => who.name)).toEqual(["Ann", "Bea", "Cal", "Dan", "Eve"]);
     expect(tile.viewingNowCount).toBe(7);
     expect(JSON.stringify(await w.live(ARJUN, { filter: "all" }))).not.toContain("Elsewhere");
   });
@@ -517,13 +519,13 @@ describe("realtime: the Task 8 notices are what tells the wall to read again", (
         fetch: (async (_url: unknown, init: { body: string }) => { published.push(JSON.parse(init.body) as { channel: string; events: string[] }); return new Response("{}", { status: 200 }); }) as never,
       },
     });
-    const { sessionId, taskId, workspaceId } = pw.open();
+    const { sessionId, taskId } = pw.open();
     // The same table: Arjun reads Priya's session on the world the projector wrote.
     const deps = { documentClient: pw.w.db, tableName: "state", now: () => pw.w.clock.now, projectMembers: pw.w.members, signInStore: pw.w.signInStore, origin: CELL, cursorKey: "k".repeat(64), taskView: async () => ({}) as never };
     const wall = async () => (await liveSessions(deps, pw.w.caller(ARJUN), {})).tiles;
-    expect(await wall()).toMatchObject([{ sessionId, status: "starting", statusWords: "Starting" }]);
-    pw.patchTask(taskId, { workflow: workflow("IMPLEMENT", "RUNNING") });
-    pw.operation(workspaceId, "task", "RUNNING");
+    expect(await wall()).toMatchObject([{ sessionId, status: "running", statusWords: "Running", needsYou: false }]);
+    // The plan is ready for its owner to review.
+    pw.patchTask(taskId, { workflow: workflow("PLAN_REVIEW", "WAITING") });
     pw.w.clock.now += 5_000;
     expect(await pw.refresh(sessionId)).toBe("updated");
     // The change told the project's channel (which a person on the wall listens to) and the session's own...
@@ -532,7 +534,36 @@ describe("realtime: the Task 8 notices are what tells the wall to read again", (
     expect(published.filter((entry) => entry.channel === projectChannel(ORG_A, "web")).flatMap((entry) => entry.events.map((event) => JSON.parse(event) as { type: string; sessionId: string }))).toContainEqual(expect.objectContaining({ type: "session.updated", sessionId }));
     // ...and the next read of the wall shows the new state, newer than the one before.
     const [after] = await wall();
-    expect(after).toMatchObject({ sessionId, status: "running", statusWords: "Running" });
+    expect(after).toMatchObject({ sessionId, status: "needs_person", statusWords: "Needs a person", needsYou: false });
+    expect((await liveSessions(deps, pw.w.caller(PRIYA), { filter: "needs_me" })).tiles.map((tile) => tile.sessionId)).toEqual([sessionId]);
     expect(Date.parse(after!.updatedAt)).toBeGreaterThan(T0);
+  });
+});
+
+describe("through the real broker", () => {
+  beforeAll(async () => { await loadSlackBroker(); });
+
+  it("serves the wall at /v1/app/live from the tile the start wrote: the starter sees it, a stranger sees nothing, and a person with a role sees it with their own actions", async () => {
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    const started = await h.dev(MAYA, "POST", "/v1/app/agents/root-cause-analyst/runs", { requestId: randomUUID(), project: "payments", input: { text: "Why did checkout fail?" } });
+    expect(started.status, JSON.stringify(started.body)).toBe(202);
+    const sessionId = (h.db.find((item) => item.entityType === "AGENT_SESSION")[0] as { sessionId: string }).sessionId;
+    const read = async (who: typeof MAYA, query = "") => {
+      const reply = await h.dev(who, "GET", `/v1/app/live${query}`);
+      expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+      const { requestId: _id, ...body } = reply.body; // eslint-disable-line @typescript-eslint/no-unused-vars -- the envelope's id
+      return LiveResponseReaderSchema.parse(body);
+    };
+    const mine = await read(MAYA, "?filter=mine");
+    expect(mine.tiles).toHaveLength(1);
+    expect(mine.tiles[0]).toMatchObject({ sessionId, kind: "task", project: "payments", owner: { developerId: MAYA.developerId }, status: "starting", statusWords: "Starting", following: true, needsYou: false });
+    expect(mine.tiles[0]!.actions).toEqual(expect.arrayContaining(["watch", "comment", "stop", "handoff"]));
+    expect((await read(OMAR)).tiles).toEqual([]);
+    grantProject(h.db, OMAR);
+    expect((await read(OMAR)).tiles.map((tile) => tile.sessionId)).toEqual([sessionId]);
+    expect((await read(OMAR)).tiles[0]!.actions).toEqual(["watch", "comment"]);
+    expect((await read(OMAR, "?filter=mine")).tiles).toEqual([]);
+    expect((await h.dev(OMAR, "GET", "/v1/app/live?filter=nope")).status).toBe(400);
+    expect((await h.dev(OMAR, "POST", "/v1/app/live", {})).status).toBe(404);
   });
 });

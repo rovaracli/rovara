@@ -45,6 +45,11 @@ export interface SessionDeciding {
   approvals(caller: SessionReadCaller, session: AgentSessionRecord): Promise<Array<{ approvalId: string; title: string }>>;
   /** Whether the caller may decide this budget request now. */
   spend(caller: SessionReadCaller, spendRequestId: string): Promise<boolean>;
+  /**
+   * `approvals` for many sessions at once (the Live wall asks for a whole page): the caller's decisions are listed once and matched to each session, so the answer is the same as asking
+   * one session at a time, in the reads of one. A session with no decision waiting for the caller is absent from the answer.
+   */
+  approvalsFor?(caller: SessionReadCaller, sessions: readonly AgentSessionRecord[]): Promise<Map<string, Array<{ approvalId: string; title: string }>>>;
 }
 
 export interface SessionReadDependencies extends SessionTakeOverDependencies {
@@ -77,7 +82,7 @@ const isAgentXError = (error: unknown) => error instanceof Error && error.name =
 const getItem = async (deps: Pick<SessionReadDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
 
-const approveLink = (deps: Pick<SessionReadDependencies, "origin">, id: string) => `${deps.origin.replace(/\/+$/u, "")}/v1/app/approve/${id}`;
+export const approveLink = (deps: Pick<SessionReadDependencies, "origin">, id: string) => `${deps.origin.replace(/\/+$/u, "")}/v1/app/approve/${id}`;
 
 // ---- the view
 
@@ -321,13 +326,13 @@ const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
 // it, change it, or carry it to another list or another person. Any failure is one message that echoes nothing (review m-1).
 
 const CURSOR_VERSION = "v1.";
-const cursorKeyOf = (deps: Pick<SessionReadDependencies, "cursorKey">): Buffer => {
+export const cursorKeyOf = (deps: Pick<SessionReadDependencies, "cursorKey">): Buffer => {
   if (deps.cursorKey === undefined || deps.cursorKey === "") throw agentXError("RUNTIME_UNAVAILABLE", "Sessions can't be listed right now.");
   return createHash("sha256").update(deps.cursorKey, "utf8").digest();
 };
 const cursorContext = (orgId: string, developerId: string, pk: string) => Buffer.from(`${orgId}\n${developerId}\n${pk}`, "utf8");
 
-function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, sk: string): string {
+export function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, sk: string): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", cursorKeyOf(deps), iv);
   cipher.setAAD(cursorContext(caller.orgId, caller.developerId, pk));
@@ -336,7 +341,7 @@ function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: Se
 }
 
 /** The sort key a cursor holds, or `CONFIG_INVALID` for anything this list, this person and this server key didn't give. */
-function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, cursor: string): string {
+export function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, cursor: string): string {
   const key = cursorKeyOf(deps);
   const refuse = () => invalid("cursor: is not one this list gave");
   if (!cursor.startsWith(CURSOR_VERSION)) throw refuse();
