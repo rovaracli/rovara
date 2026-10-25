@@ -133,3 +133,8 @@ it("does not claim signed out when refresh fails for another reason", async () =
   expect(b.assign).not.toHaveBeenCalled();
  }
 });
+it("navigates only app paths or the validated GitHub installation handoff",()=>{
+ const b=browser(async()=>json(empty)),host=createBrowserHost(b.win),url="https://github.com/apps/rovara/installations/new?state="+"a".repeat(43);
+ host.navigate(url);expect(b.assign).toHaveBeenCalledWith(url);
+ for(const bad of ["https://evil.example/apps/rovara/installations/new","https://github.com.evil.example/apps/rovara/installations/new","https://github.com/acme/repo","https://github.com/apps/rovara/installations/new?redirect_uri=https://evil.example","https://user@github.com/apps/rovara/installations/new","https://github.com/apps/rovara/installations/new#secret"]){expect(()=>host.navigate(bad)).toThrow("Invalid app destination.");}
+});
