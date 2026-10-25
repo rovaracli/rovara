@@ -67,4 +67,27 @@ describe("a session editor retries coding that stopped (13 review I-1)", () => {
     // Omar is not the owner: the task is still Maya's.
     expect((t.db.get(agentSessionKey(TEST_ORG, sessionId, "META")) as { owner: { developerId: string } }).owner.developerId).toBe(MAYA.developerId);
   });
+
+  it("asks for the authority to restart coding again before it commits: an editor made a project viewer while the retry is being prepared queues no run", async () => {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.blockedCoding();
+    const before = t.operations(workspaceId).length;
+    // The editor becomes a viewer of the project after the retry's first check and before its commit (the approved plan is read in between).
+    const send = t.db.send;
+    let demoted = false;
+    t.db.send = async (command) => {
+      const input = (command as { input: { Key?: { pk?: string; sk?: string } } }).input;
+      if (!demoted && command.constructor.name === "GetCommand" && input.Key?.pk === `WORKSPACE#${workspaceId}` && input.Key.sk === "META") {
+        demoted = true;
+        t.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "viewer", projectRole: "viewer" });
+      }
+      return send(command);
+    };
+    const refused = await t.dev(OMAR, "POST", `/v1/app/sessions/${sessionId}/retry`, { requestId: randomUUID() });
+    t.db.send = send;
+    expect(demoted).toBe(true);
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(t.operations(workspaceId)).toHaveLength(before);
+    expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+  });
 });
