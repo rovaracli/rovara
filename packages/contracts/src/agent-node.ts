@@ -39,4 +39,4 @@ export type Autonomy = z.infer<typeof AutonomySchema>;
 
 export type BaseRef = z.infer<typeof BaseRefSchema>;
 
-export { AGENT_NAME_MAX, AGENT_DESCRIPTION_MAX, BUILTIN_AGENT_IDS, type BuiltinAgentId, ROVARA_CODE_AGENT_ID, type IdPrefix, BuiltinAgentIdSchema, AgentIdSchema, SkillIdSchema, SpendRequestIdSchema, ApprovalIdSchema, ModelSourceIdSchema, type AgentId, isBuiltinAgentId, AgentOwnerSchema, AgentPrincipalSchema, AGENT_ACCESS_LEVELS, AgentAccessLevelSchema, type AgentAccessLevel, atLeast, AutonomySchema, BaseRefSchema } from "./agent.js";
+export { ModelListSchema, AGENT_NAME_MAX, AGENT_DESCRIPTION_MAX, BUILTIN_AGENT_IDS, type BuiltinAgentId, ROVARA_CODE_AGENT_ID, type IdPrefix, BuiltinAgentIdSchema, AgentIdSchema, SkillIdSchema, SpendRequestIdSchema, ApprovalIdSchema, ModelSourceIdSchema, type AgentId, isBuiltinAgentId, AgentOwnerSchema, AgentPrincipalSchema, AGENT_ACCESS_LEVELS, AgentAccessLevelSchema, type AgentAccessLevel, atLeast, AutonomySchema, BaseRefSchema } from "./agent.js";

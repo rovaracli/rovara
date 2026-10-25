@@ -1172,6 +1172,8 @@ export class AgentStore {
 }
 
 export interface ResolveOptions {
+  /** RULING Q48: draft inspection collects all structure issues; normal resolution still refuses. */
+  problems?: Array<{path:string;message:string}>;
   /** Looks up an added skill's name and digest. Without it, the org's skill registry (`store.skills`) does. */
   resolveSkill?: (ref: SkillRef) => ResolvedSkill | Promise<ResolvedSkill>;
   /** The draft of the agent being resolved, already read: used for `"draft"` in place of reading it again (a base layer's draft is never used). */
@@ -1227,7 +1229,7 @@ export async function resolveAgent(
 
     const base = content.extends === undefined ? EMPTY_RECIPE : await layer(content.extends.agentId, content.extends.version, [...trail, { agentId: id, name: agent.name }]);
     const problems = overlayProblems(base, content.overlay);
-    if (problems.length > 0) throw problemsError(problems);
+    if (problems.length > 0) { if (options.problems) options.problems.push(...problems); else throw problemsError(problems); }
     const recipeLayer: RecipeLayer = { agentId: id, name: content.name, version: content.version, builtin: false };
     // The registry is read here, not inside applyOverlay, which is synchronous: the layer's added skills are looked up first.
     const added = new Map<string, ResolvedSkill>();
@@ -1237,7 +1239,7 @@ export async function resolveAgent(
 
   const recipe = await layer(agentId, version, []);
   const problems = recipeProblems(recipe);
-  if (problems.length > 0) throw problemsError(problems);
+  if (problems.length > 0) { if (options.problems) options.problems.push(...problems); else throw problemsError(problems); }
   return recipe;
 }
 

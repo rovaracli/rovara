@@ -132,6 +132,7 @@ import {
   cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
+import { getModels } from "../agents/models-route.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { decidingOf, isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
@@ -1729,6 +1730,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   const caller = authenticated?.caller ?? await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
+  if (request.method === "GET" && url.pathname === "/v1/app/models") {
+    if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
+    return getModels(deps.agents, caller, url);
+  }
   if (isAgentRoute(url.pathname)) {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
     return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);

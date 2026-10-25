@@ -1,3 +1,4 @@
+import { builderFixture } from "../../web/support/builder-fixture.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID } from "../../web/support/agent-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
 import "../../../packages/broker/src/aws/broker-environment-init.js";
@@ -7,7 +8,7 @@ import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentDirectoryResponseSchema, AgentProfileResponseSchema, AgentVersionsResponseSchema, AgentSpendResponseSchema, AgentSharesResponseSchema, AgentSharesPutResponseSchema, AgentShareInputSchema, AgentOwnerPutBodySchema, AgentWriteResponseSchema, AppProjectsResponseSchema, SessionMakeAgentResponseSchema, AgentIdSchema, ProjectOverviewSchema, RunInputSchema, TaskResponseSchema, LiveResponseSchema, LiveTileSchema, SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
+import { AgentCreateBodySchema, AgentDraftPutBodySchema, AgentDraftResponseSchema, ModelListSchema, AgentDirectoryResponseSchema, AgentProfileResponseSchema, AgentVersionsResponseSchema, AgentSpendResponseSchema, AgentSharesResponseSchema, AgentSharesPutResponseSchema, AgentShareInputSchema, AgentOwnerPutBodySchema, AgentWriteResponseSchema, AppProjectsResponseSchema, SessionMakeAgentResponseSchema, AgentIdSchema, ProjectOverviewSchema, RunInputSchema, TaskResponseSchema, LiveResponseSchema, LiveTileSchema, SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
 import { createAppHandler } from "../../../packages/web/src/server/handler.js";
 import { authenticateWebRequest, webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 import type { DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
@@ -74,6 +75,15 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/auth/browser/sign-out") { revoked = true;response.writeHead(204, { "set-cookie": "__Host-agentx_review_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" });response.end();return; }
  if (url.pathname === "/v1/web/nav") { json(200, current.nav);return; }
  if (url.pathname === "/v1/web/me") { json(200, { ...current.me, csrf: appCsrfTokenFor(FIXTURE_SESSION) });return; }
+ if(current.builder!==undefined&&current.agent!==undefined){
+ const draftPath="/v1/web/agents/"+current.agent.agent.agentId+"/draft";
+ if(url.pathname==="/v1/web/models"&&method==="GET"){json(200,ModelListSchema.parse({models:[{provider:"openai",modelId:"gpt-5.4",label:"GPT-5.4",company:"openai",sources:["rovara"]}]}));return;}
+ if(url.pathname==="/v1/web/org/agent-guardrails"&&method==="GET"){json(200,{guardrails:{maxAutonomy:"prepare"},revision:1});return;}
+ if(url.pathname==="/v1/web/skills"&&method==="GET"){json(200,{skills:[]});return;}
+ if(url.pathname==="/v1/web/agents"&&method==="POST"){let body="";for await(const chunk of request)body+=String(chunk);const input=AgentCreateBodySchema.parse(JSON.parse(body));evidence.body=input;current.builder=builderFixture();current.agent=AgentProfileResponseSchema.parse({...current.agent,agent:{...current.agent.agent,name:input.name,description:input.description??"",currentVersion:undefined,latestVersion:0,draftRevision:1},current:undefined});json(201,AgentWriteResponseSchema.parse({agent:current.agent.agent}));return;}
+ if(url.pathname===draftPath&&method==="GET"){json(200,AgentDraftResponseSchema.parse(current.builder));return;}
+ if(url.pathname===draftPath&&method==="PUT"){let body="";for await(const chunk of request)body+=String(chunk);const input=AgentDraftPutBodySchema.parse(JSON.parse(body));evidence.body=input;if(input.expectedRevision!==current.builder.draft.revision){json(409,{error:{code:"AGENT_REVISION_CONFLICT",message:"Someone else changed this agent's draft. Reload it and make your change again."}});return;}current.builder=AgentDraftResponseSchema.parse({...current.builder,draft:{...current.builder.draft,overlay:input.overlay,revision:input.expectedRevision+1}});json(200,AgentDraftResponseSchema.parse({draft:current.builder.draft}));return;}
+ }
  if (current.agent !== undefined) {
   const agent = current.agent.agent, agentPath = "/v1/web/agents/" + agent.agentId;
   const builtin = { agentId: "ticket-triage", name: "Ticket triage", description: "Investigate an issue before deciding what to change.", builtin: true, access: "use", status: "active", pinnedVersion: 1, latestVersion: 1 };

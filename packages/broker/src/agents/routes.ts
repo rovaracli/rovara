@@ -6,12 +6,13 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   AgentGuardrailsSchema,
+  AgentCreateBodySchema as CreateBodySchema,
+  AgentDraftPutBodySchema as PutDraftBodySchema,
   AgentIdSchema,
   AgentOwnerSchema,
   AgentXNameSchema,
   BUILTIN_AGENTS,
   ModelSourceIdSchema,
-  RecipeOverlaySchema,
   RunInputSchema,
   SkillIdSchema,
   SpendPolicyFieldsSchema,
@@ -38,6 +39,7 @@ import {
   type ResolvedRecipe,
   type RunInput,
 } from "@agentx/contracts";
+import type { RoutingDependencies } from "../model-sources/routing.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import {
@@ -59,7 +61,7 @@ import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trig
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, versionSafety, type ChangeResult } from "./changes.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
 import type { ApprovalDependencies } from "./approvals.js";
-import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
+import { validateRecipeForOrg, readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
 import { lessSafeChanges } from "./less-safe.js";
 import { newOriginMemo, originView, withOriginView } from "../agent-sessions/origin.js";
 import type { PullRequestHeadReader } from "./runs.js";
@@ -78,10 +80,12 @@ import {
   applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicy, readSpendPolicyWithRevision,
   writeProjectAi, writeSpendPolicy, type ProjectAiChange,
 } from "../spend/settings.js";
-import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type OwnerCap, type RequestMark } from "./store.js";
+import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type OwnerCap, type RequestMark, resolveAgent } from "./store.js";
 
 /** What every agent route needs: the store, access, the approvals core and where the confirmation page lives. */
 export interface AgentRouteDependencies extends ApprovalDependencies {
+  /** Read-only model source routing used by the member picker. */
+  modelRouting?: RoutingDependencies;
   /** Where the org's plan is read (Task 28): a trial org keeps the placeholder limits (R49). Without it no org is a trial. */
   orgs?: Pick<OrgStore, "getOrg">;
   /** Whether the install is a cloud one, whose orgs start with the placeholder monthly limits (R47); the spend routes show limits accordingly. */
@@ -146,22 +150,7 @@ const Hex64 = z.string().regex(/^[a-f0-9]{64}$/);
 const DeveloperRefSchema = z.object({ developerId: Hex64 }).strict();
 const NoteSchema = z.string().trim().min(1).max(200);
 
-const CreateBodySchema = z.object({
-  requestId: RequestIdSchema,
-  name: z.string(),
-  description: z.string().optional(),
-  owner: AgentOwnerSchema.optional(),
-  accountable: DeveloperRefSchema.optional(),
-  extends: AgentIdSchema.optional(),
-  overlay: RecipeOverlaySchema.optional(),
-}).strict();
 const PatchBodySchema = z.object({ requestId: RequestIdSchema, name: z.string().optional(), description: z.string().optional() }).strict();
-const PutDraftBodySchema = z.object({
-  requestId: RequestIdSchema,
-  expectedRevision: z.number().int().min(1),
-  overlay: RecipeOverlaySchema,
-  extends: AgentIdSchema.nullable().optional(),
-}).strict();
 const PublishBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(1), note: NoteSchema.optional() }).strict();
 const RollbackBodySchema = z.object({ requestId: RequestIdSchema, version: z.number().int().min(1) }).strict();
 const RequestOnlySchema = z.object({ requestId: RequestIdSchema }).strict();
@@ -485,7 +474,12 @@ async function getDraft(deps: AgentRouteDependencies, caller: AgentCaller, agent
   await requireAgentAccess(deps, caller, agentId, "edit");
   const draft = await deps.store.getDraft(caller.orgId, agentId);
   if (draft === undefined) throw notFound();
-  return { draft: await withOriginView(deps, caller, draft) };
+  // RULING Q48: invalid drafts remain inspectable; publication still validates.
+  const problems: Array<{path:string;message:string}> = [];
+  const resolved = await resolveAgent(deps.store, caller.orgId, agentId, "draft", { draft, problems, ...(deps.resolveSkill === undefined ? {} : { resolveSkill: deps.resolveSkill }) });
+  for (const problem of await validateRecipeForOrg(deps, caller.orgId, resolved)) if (!problems.some(p => p.path === problem.path && p.message === problem.message)) problems.push(problem);
+  problems.sort((a,b)=>a.path.localeCompare(b.path)||a.message.localeCompare(b.message));
+  return { draft: await withOriginView(deps, caller, draft), resolved, base: await resolveBase(deps, caller.orgId, draft.extends), problems };
 }
 
 async function putDraft(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {

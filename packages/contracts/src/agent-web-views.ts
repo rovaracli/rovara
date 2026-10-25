@@ -1,7 +1,7 @@
 // RULING Q43: additive shared views of the existing agents and spend route projections.
 // These readers do not change broker policy or the stored agent records.
 import { z } from "zod";
-import { AgentIdSchema, AgentOwnerSchema, AgentPrincipalSchema, AgentAccessLevelSchema, BaseRefSchema } from "./agent.js";
+import { ModelListSchema, AutonomySchema, SkillIdSchema, AgentIdSchema, AgentOwnerSchema, AgentPrincipalSchema, AgentAccessLevelSchema, BaseRefSchema } from "./agent.js";
 import { ResolvedRecipeSchema, RecipeOverlaySchema } from "./agent-recipe.js";
 import { AgentOriginViewSchema, SessionMakeAgentCopiedSchema } from "./agent-sessions.js";
 import { SPEND_ORIGIN_KINDS } from "./spend.js";
@@ -20,7 +20,7 @@ export const AgentDirectoryResponseSchema = z.object({ agents: z.array(AgentView
 export const AgentProfileResponseSchema = z.object({ agent: AgentViewSchema, current: z.object({ version: Version, recipe: ResolvedRecipeSchema.optional(), changed: z.boolean(), problem: z.string().optional() }).strict().optional(), suggestedMaxPerRunUsd: Usd, maxPerRunUsd: Usd.optional() }).strict();
 export const AgentWriteResponseSchema = z.object({ agent: AgentViewSchema }).strict();
 export const AgentDraftViewSchema = z.object({ overlay: RecipeOverlaySchema, extends: BaseRefSchema.optional(), origin: AgentOriginViewSchema.optional(), revision: Version, updatedBy: z.string(), updatedAt: z.string() }).strict();
-export const AgentDraftResponseSchema = z.object({ draft: AgentDraftViewSchema, resolved: ResolvedRecipeSchema.optional(), updateAvailable: z.object({ from: Version, to: Version }).strict().optional(), problems: z.array(z.object({ path: z.string(), message: z.string() }).strict()).optional() }).strict();
+export const AgentDraftResponseSchema = z.object({ draft: AgentDraftViewSchema, resolved: ResolvedRecipeSchema.optional(), base: ResolvedRecipeSchema.optional(), updateAvailable: z.object({ from: Version, to: Version }).strict().optional(), problems: z.array(z.object({ path: z.string(), message: z.string() }).strict()).optional() }).strict();
 export const AgentVersionViewSchema = z.object({ version: Version, digest: z.string().optional(), name: z.string().optional(), description: z.string().optional(), publishedBy: z.string().optional(), publishedAt: z.string().optional(), note: z.string().optional(), releasedIn: z.string().optional(), notes: z.string().optional(), extends: BaseRefSchema.optional(), origin: AgentOriginViewSchema.optional(), current: z.boolean().optional(), safety: z.enum(["current", "same_or_safer", "less_safe", "unknown"]).optional(), needsOwnerOk: z.boolean().optional(), problem: z.string().optional(), lessSafe: z.array(z.string()).optional() }).strict();
 export const AgentVersionsResponseSchema = z.object({ versions: z.array(AgentVersionViewSchema) }).strict();
 export const AgentShareViewSchema = z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]), grantedBy: z.string(), grantedAt: z.string() }).strict();
@@ -49,3 +49,10 @@ export const AgentUpdateBaseResponseReaderSchema = forwardReader(AgentUpdateBase
 export const AgentSpendResponseReaderSchema = forwardReader(AgentSpendResponseSchema);
 export const AgentDiffResponseReaderSchema = forwardReader(AgentDiffResponseSchema);
 export const SessionMakeAgentResponseReaderSchema = forwardReader(SessionMakeAgentResponseSchema);
+
+export const ModelListReaderSchema = forwardReader(ModelListSchema);
+export const AgentCreateBodySchema = z.object({ requestId: z.string().uuid(), name:z.string(), description:z.string().optional(), owner:AgentOwnerSchema.optional(), accountable:AgentDeveloperRefSchema.optional(), extends:AgentIdSchema.optional(), overlay:RecipeOverlaySchema.optional() }).strict();
+export const AgentDraftPutBodySchema = z.object({requestId:z.string().uuid(),expectedRevision:Version,overlay:RecipeOverlaySchema,extends:AgentIdSchema.nullable().optional()}).strict();
+
+export const BuilderGuardrailsReaderSchema = forwardReader(z.object({guardrails:z.object({maxAutonomy:AutonomySchema}).strict()}).strict());
+export const BuilderSkillsReaderSchema = forwardReader(z.object({skills:z.array(z.object({skillId:SkillIdSchema,name:z.string(),currentDigest:z.string()}).strict())}).strict());

@@ -11,8 +11,8 @@ it("debounces edits for800ms and serializes saves with the returned revision", a
  release({ revision: 8 });await vi.advanceTimersByTimeAsync(0);expect(save).toHaveBeenCalledTimes(2);expect(save).toHaveBeenLastCalledWith({ instructions: "third" }, 8);expect(draft.snapshot().status).toBe("saved");draft.dispose();
 });
 it("keeps the exact edit and conflict message without retrying over newer work", async () => {
- vi.useFakeTimers();const save = vi.fn().mockRejectedValue(new ApiError(409, "AGENT_REVISION_CONFLICT", "This draft changed. Reload it and try again."));const draft = new DraftState({}, 2, save);
- draft.edit({ instructions: "Keep this unsaved work" });await vi.advanceTimersByTimeAsync(800);expect(draft.snapshot()).toMatchObject({ overlay: { instructions: "Keep this unsaved work" }, status: "conflict", error: "This draft changed. Reload it and try again." });
+ vi.useFakeTimers();const save = vi.fn().mockRejectedValue(new ApiError(409, "AGENT_REVISION_CONFLICT", "Someone else changed this agent's draft. Reload it and make your change again."));const draft = new DraftState({}, 2, save);
+ draft.edit({ instructions: "Keep this unsaved work" });await vi.advanceTimersByTimeAsync(800);expect(draft.snapshot()).toMatchObject({ overlay: { instructions: "Keep this unsaved work" }, status: "conflict", error: "Someone else changed this agent's draft. Reload it and make your change again." });
  draft.edit({ instructions: "More local work" });await vi.advanceTimersByTimeAsync(10000);expect(save).toHaveBeenCalledTimes(1);expect(draft.snapshot().overlay.instructions).toBe("More local work");draft.dispose();
 });
 it("never reports an older in-flight save as saving newer edits", async () => {

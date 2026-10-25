@@ -82,3 +82,6 @@ export const AutonomySchema = z.enum(["suggest", "prepare", "run"]);
 
 /** The agent an agent builds on, pinned to one published version. */
 export const BaseRefSchema = z.object({ agentId: AgentIdSchema, version: z.number().int().min(1) }).strict();
+
+/** Available picker models after company/project routing and guardrails. */
+export const ModelListSchema = z.object({ models: z.array(z.object({ provider: z.string(), modelId: z.string(), label: z.string(), company: z.enum(["anthropic","openai","google","other"]), sources: z.array(ModelSourceIdSchema) }).strict()) }).strict();

@@ -1,0 +1,23 @@
+.rv-builder { max-width: 1000px; margin-inline: auto; min-width: 0; }
+.rv-builder-choices { border: 0; padding: 0; display: grid; gap: var(--rv-space-3); margin-bottom: var(--rv-space-6); }
+.rv-builder-choices > label { display: flex; align-items: flex-start; gap: var(--rv-space-3); padding: var(--rv-space-4); border-bottom: 1px solid var(--rv-border); cursor: pointer; }
+.rv-builder-choices label:has(input:checked) { background: var(--rv-bg-raised); outline: 2px solid var(--rv-accent); }
+.rv-builder-choices label span span { display: block; margin-top: var(--rv-space-2); color: var(--rv-text-muted); }
+.rv-builder-toolbar { position: sticky; top: 0; z-index: 2; background: var(--rv-bg); border-bottom: 1px solid var(--rv-border); padding-block: var(--rv-space-3); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--rv-space-3); }
+.rv-builder-tabs { display: flex; gap: var(--rv-space-3); margin-block: var(--rv-space-4); }
+.rv-recipe-flow { display: grid; gap: var(--rv-space-3); padding: 0; list-style: none; }
+.rv-recipe-step { border-bottom: 1px solid var(--rv-border); background: var(--rv-bg); min-width: 0; }
+.rv-recipe-step.is-selected { background: var(--rv-bg-raised); border-inline-start: 3px solid var(--rv-accent); }
+.rv-recipe-step.is-moving { z-index: 3; outline: 2px solid var(--rv-focus); }
+.rv-recipe-step-heading { display: flex; gap: var(--rv-space-2); align-items: center; padding: var(--rv-space-2); }
+.rv-recipe-select { flex: 1; min-height: 44px; min-width: 0; text-align: start; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 600; overflow-wrap: anywhere; cursor: pointer; }
+.rv-recipe-select:focus-visible { outline: 2px solid var(--rv-focus); outline-offset: 2px; }
+.rv-builder-inspector { padding: var(--rv-space-4); max-width: 78ch; }
+.rv-builder-inspector details { padding-block: var(--rv-space-3); border-top: 1px solid var(--rv-border); }
+.rv-builder-inspector summary { min-height: 44px; cursor: pointer; font-weight: 600; }
+.rv-builder-inspector fieldset { border: 1px solid var(--rv-border); margin-block: var(--rv-space-4); }
+.rv-recipe-move { display: flex; gap: var(--rv-space-2); padding: var(--rv-space-4); }
+.rv-builder-conflict { border-inline-start: 3px solid var(--rv-status-needs-you); padding: var(--rv-space-4); }
+.rv-builder-conflict pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30vh; overflow: auto; }
+
+.rv-builder-instructions { white-space: pre-wrap; overflow-wrap: anywhere; }
