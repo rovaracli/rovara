@@ -17,7 +17,7 @@ it("does not offer editing or sharing to a view sharee", async () => {
 it("asks which project before opening the actual start form", async () => {
  const f = renderAgents({ path });fireEvent.click(await screen.findByRole("button", { name: "Start session" }));
  const project = await screen.findByRole("combobox", { name: "Project" });expect(project.querySelectorAll("option").length).toBe(3);expect(screen.queryByRole("textbox", { name: /What should/ })).toBeNull();
- fireEvent.change(project, { target: { value: "payments" } });fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+ fireEvent.change(project, { target: { value: "payments" } });await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Continue" }).disabled).toBe(false));fireEvent.click(screen.getByRole("button", { name: "Continue" }));
  expect(await screen.findByRole("textbox", { name: "What should Payments Expert do?" })).toBeTruthy();f.close();
 });
 it("keeps the old owner when transfer needs administrator approval", async () => {
@@ -57,4 +57,10 @@ it("refuses to erase a newer share type it does not understand", async () => {
 it("checks that the selected project really offers this workflow before asking for a task", async () => {
  const f = renderAgents({ path, agentOnProject: false });fireEvent.click(await screen.findByRole("button", { name: "Start session" }));fireEvent.change(await screen.findByRole("combobox", { name: "Project" }), { target: { value: "checkout" } });
  await screen.findByText("This workflow isn't available on that project. Choose another project.");expect(screen.getByRole<HTMLButtonElement>("button", { name: "Continue" }).disabled).toBe(true);expect(screen.queryByRole("textbox", { name: /What should/ })).toBeNull();f.close();
+});
+
+it("keeps a pending update with its workflow when another cached profile opens", async () => {
+ const base = agentProfile(), f = renderAgents({ path: "/app/agents/ticket-triage", profile: agentProfile({ agent: { ...base.agent, agentId: "ticket-triage", builtin: true, pinnedVersion: 1, latestVersion: 2 } }), reply: async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["Changes the built-in workflow."] } }) });
+ fireEvent.click(await screen.findByRole("button", { name: "Adopt v2" }));await screen.findByText("Waiting for you to confirm in your browser");
+ const next = agentProfile({ agent: { ...base.agent, agentId: "agt_bbbbbbbbbbbbbbbbbbbb", name: "Cached workflow" } });f.query.setQueryData(["agent", next.agent.agentId], next);f.setProfile(next);await act(() => f.router.navigate("/app/agents/" + next.agent.agentId));await screen.findByRole("heading", { name: "Cached workflow" });expect(screen.queryByText("Waiting for you to confirm in your browser")).toBeNull();f.close();
 });

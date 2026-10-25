@@ -25,3 +25,8 @@ it("preserves project scope without inventing a second scope filter", async () =
  expect(f.request.mock.calls[0]?.[0].path).toBe("/v1/app/agents?project=payments");
 });
 for (const theme of ["light", "dark"] as const) it("has an accessible directory in " + theme, async () => { const f = renderAgents({ theme });await screen.findByRole("link", { name: "Payments Expert" });await expectNoAxeViolations(f.container);f.close(); });
+it("removes a cached private profile title and row after its contextual read is denied", async () => {
+ const f = renderAgents();fireEvent.click(await screen.findByRole("link", { name: "Payments Expert" }));await screen.findByRole("dialog", { name: "Payments Expert" });
+ f.request.mockResolvedValue({ status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } });await f.query.invalidateQueries({ queryKey: ["agent", "agt_aaaaaaaaaaaaaaaaaaaa"], exact: true });await screen.findByRole("heading", { name: "Not found" });
+ expect(screen.queryByRole("dialog", { name: "Payments Expert" })).toBeNull();expect(screen.queryByText("Check refund idempotency.")).toBeNull();fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("link", { name: "Payments Expert" })).toBeNull());f.close();
+});
