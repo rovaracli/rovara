@@ -306,7 +306,7 @@ import type { AgentTokenOptions, GitHubAppCredentialProvider, GitHubTokenScope }
 import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { GithubMergeRateLimitError, isWebhookSecretMissing, parseGitHubRepository } from "../github-app.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
-import { GITHUB_WEBHOOK_SIGNATURE_INVALID, GithubWebhookRefusal, GithubWebhookRetryableError, authorizeLinkedGithubWebhook, handleGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, reconcileTaskPullRequestFeedback, verifyTaskPullRequestFeedbackCurrent, type ReceivedGithubWebhook } from "./github-webhooks.js";
+import { GITHUB_WEBHOOK_SIGNATURE_INVALID, GithubWebhookRefusal, GithubWebhookRetryableError, authorizeLinkedGithubWebhook, handleGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, mergedPullRequestCountItem, reconcileTaskPullRequestFeedback, verifyTaskPullRequestFeedbackCurrent, type ReceivedGithubWebhook } from "./github-webhooks.js";
 import { CatalogCache, CredentialUnavailable } from "@agentx/gateway";
 import { proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import { unsupportedThinkingLevels } from "@agentx/model-runtime/thinking-levels";
@@ -12107,7 +12107,11 @@ async function completedPullRequestUpdateItems(
     ? observeWorkflowPullRequestMergedWithFix(workflow, { repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha, observedAt: now }, now)
     : recordWorkflowPullRequestUpdate(workflow, { updates: [{ repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha }], now });
   const repositoryFullName = githubRepositoryFullName(repository.url);
-  return [taskUpdate(next), { Update: {
+  // A pull request this save moves to MERGED counts in the project's month of merges, in the same transaction as the move (the task update is conditioned on the revision read, so a replay
+  // counts nothing), as it does when a webhook or the sweep finds the merge. A task whose org is not known is not counted.
+  const countsAsMerged = current.pullRequest.state === "merged" && pullRequest.state !== "MERGED" && task.orgId !== undefined
+    && next.pullRequests?.some((after) => after.repositoryId === pullRequest.repositoryId && after.number === pullRequest.number && after.state === "MERGED") === true;
+  return [taskUpdate(next), ...(countsAsMerged ? [mergedPullRequestCountItem(dependencies.tableName, task.orgId!, task.project, now, 1)] : []), { Update: {
     TableName: dependencies.tableName,
     Key: githubWorkflowPullRequestKey(repositoryFullName, pullRequest.number),
     // The pull request's link to the task now names the fix it holds.

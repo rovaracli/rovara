@@ -224,6 +224,22 @@ function newlyMerged<Read extends { pr: { repositoryId: string; number: number; 
 }
 
 /**
+ * The item that adds `count` merged pull requests to a project's month count (Plan 5 Task 16). It is added by the same transaction as the workflow's move to MERGED, whatever path made it
+ * (a webhook or sweep read, or a pushed fix found merged), so the count has one meaning: a replay changes nothing and so adds nothing. The month is the UTC month of `now`.
+ */
+export function mergedPullRequestCountItem(tableName: string, orgId: OrgId, project: string, now: string, count: number): TransactItem {
+  const month = now.slice(0, 7);
+  return {
+    Update: {
+      TableName: tableName, Key: projectMonthStatsKey(orgId, project, month),
+      UpdateExpression: "SET entityType = :type, orgId = :orgId, #project = :project, #month = :month ADD mergedPullRequests :merged",
+      ExpressionAttributeNames: { "#project": "project", "#month": "month" },
+      ExpressionAttributeValues: { ":type": "PROJECT_SESSION_STATS", ":orgId": orgId, ":project": project, ":month": month, ":merged": count },
+    },
+  };
+}
+
+/**
  * The project's month count of merged pull requests (Plan 5 Task 16): one more for each pull request this save moves to MERGED, added by the same transaction as the move, so a
  * redelivered merge (which changes nothing) adds nothing and a save that does not commit counts nothing. The month is the UTC month the merge was found. A task whose org is not known
  * is not counted (the count is the org's own); a failing lookup is the same, and never stops the save.
@@ -240,15 +256,7 @@ export async function mergedPullRequestStats(
   try {
     const orgId = task.orgId ?? await input.auditOrgId?.(taskId);
     if (orgId === undefined) return [];
-    const month = input.now.slice(0, 7);
-    return [{
-      Update: {
-        TableName: input.tableName, Key: projectMonthStatsKey(orgId, task.project, month),
-        UpdateExpression: "SET entityType = :type, orgId = :orgId, #project = :project, #month = :month ADD mergedPullRequests :merged",
-        ExpressionAttributeNames: { "#project": "project", "#month": "month" },
-        ExpressionAttributeValues: { ":type": "PROJECT_SESSION_STATS", ":orgId": orgId, ":project": task.project, ":month": month, ":merged": merged.length },
-      },
-    }];
+    return [mergedPullRequestCountItem(input.tableName, orgId, task.project, input.now, merged.length)];
   } catch {
     return [];
   }
