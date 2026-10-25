@@ -306,22 +306,23 @@ describe("a task shared after it started", () => {
   it("binds a session that was given to the task while its thread was being recorded", async () => {
     // The notifier read the task with no session; the session is attached before its transaction commits. The task's update is conditioned on that, so it is refused,
     // read again, and the thread is recorded with the binding.
-    let sessionId: string | undefined;
-    let taskId = "";
+    const attach: { taskId: string; sessionId?: string } = { taskId: "" };
     let injected = false;
     const n = await notifierWorld(undefined, (db) => ({
       send: async (command: unknown) => {
         const input = (command as { input?: { TransactItems?: unknown[] } }).input;
         if (!injected && JSON.stringify(input?.TransactItems ?? []).includes("SHARED_TASK")) {
           injected = true;
-          db.set({ ...db.get(`DEVTASK#${taskId}`, "META")!, sessionId });
+          db.set({ ...db.get(`DEVTASK#${attach.taskId}`, "META")!, sessionId: attach.sessionId });
         }
         return db.send(command as never);
       },
     }));
     const started = await n.start();
-    taskId = started.taskId;
-    sessionId = started.meta().sessionId!;
+    const { taskId } = started;
+    const sessionId = started.meta().sessionId!;
+    attach.taskId = taskId;
+    attach.sessionId = sessionId;
     const { sessionId: _none, ...rest } = n.db.get(`DEVTASK#${taskId}`, "META")!; // eslint-disable-line @typescript-eslint/no-unused-vars -- the task has none when the notifier reads it
     n.db.set(rest);
     await n.pump();
