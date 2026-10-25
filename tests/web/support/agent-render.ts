@@ -10,11 +10,11 @@ import { h } from "./h.js";
 import { fakeHost } from "./fake-host.js";
 import { navFixture } from "./fixtures.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID, agentPerson } from "./agent-fixture.js";
-export function renderAgents(options: { path?: string; profile?: ReturnType<typeof agentProfile>; reply?: (request: ApiRequest) => Promise<ApiResponse>; shares?: unknown[]; theme?: "light" | "dark" } = {}) {
+export function renderAgents(options: { path?: string; profile?: ReturnType<typeof agentProfile>; reply?: (request: ApiRequest) => Promise<ApiResponse>; agentOnProject?: boolean; shares?: unknown[]; theme?: "light" | "dark" } = {}) {
  let profile = options.profile ?? agentProfile();
  const f = fakeHost(async request => {
   if (request.method !== "GET") return options.reply?.(request) ?? { status: 200, body: { agent: profile.agent } };
-  if (request.path.startsWith("/v1/app/agents?")) return { status: 200, body: agentDirectory() };
+  if (request.path.startsWith("/v1/app/agents?")) return { status: 200, body: request.path.includes("?project=") && options.agentOnProject === false ? { agents: [] } : agentDirectory() };
   if (request.path === "/v1/app/agents/" + AGENT_FIXTURE_ID || request.path === "/v1/app/agents/rovara-code" || request.path === "/v1/app/agents/ticket-triage") return { status: 200, body: profile };
   if (request.path.endsWith("/versions")) return { status: 200, body: { versions: [{ version: 3, publishedAt: "2026-10-23T12:00:00.000Z", publishedBy: agentPerson, note: "Refund checks", current: true }] } };
   if (request.path.endsWith("/shares")) return { status: 200, body: { shares: options.shares ?? [] } };

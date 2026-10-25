@@ -23,7 +23,7 @@ it("asks which project before opening the actual start form", async () => {
 it("keeps the old owner when transfer needs administrator approval", async () => {
  const f = renderAgents({ path, reply: async () => ({ status: 202, body: { status: "NEEDS_ADMIN_APPROVAL", spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", message: "This would take Arjun over the owner budget cap." } }) });
  await screen.findByRole("heading", { name: "Payments Expert" });fireEvent.click(screen.getByText("Sharing and versions"));fireEvent.click(await screen.findByRole("button", { name: "Change owner" }));fireEvent.change(await screen.findByRole("combobox", { name: "New owner" }), { target: { value: "b".repeat(64) } });fireEvent.click(screen.getByRole("button", { name: "Save owner" }));
- await screen.findByText("This would take Arjun over the owner budget cap.");expect(f.request.mock.calls.find(([request]) => request.method === "PUT")?.[0].body).toMatchObject({ requestId: expect.any(String), owner: { kind: "member", developerId: "b".repeat(64) } });
+ await screen.findByText("This would take Arjun over the owner budget cap.");expect(f.request.mock.calls.find(([request]) => request.method === "PUT")?.[0].body).toMatchObject({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown, owner: { kind: "member", developerId: "b".repeat(64) } });
  expect(f.query.getQueryData<{ agent: { owner: unknown } }>(["agent", AGENT_FIXTURE_ID])?.agent.owner).toEqual(agentProfile().agent.owner);f.close();
 });
 it("replaces cached profile details when access is lost", async () => {
@@ -48,8 +48,13 @@ it("uses the owning manage-only sharing rule for editors", async () => {
 it("preserves existing shares when adding a teammate and sends only input fields", async () => {
  const f = renderAgents({ path, shares: [{ principal: { kind: "project", project: "payments" }, level: "use", grantedBy: "a".repeat(64), grantedAt: "2026-10-23T12:00:00.000Z" }], reply: async () => ({ status: 200, body: { shares: [] } }) });
  fireEvent.click(await screen.findByRole("button", { name: "Share" }));await screen.findByRole("button", { name: "Remove" });fireEvent.change(await screen.findByRole("combobox", { name: "Person" }), { target: { value: "b".repeat(64) } });fireEvent.change(screen.getByRole("combobox", { name: "Access level" }), { target: { value: "edit" } });fireEvent.click(screen.getByRole("button", { name: "Add share" }));await screen.findByText("Sharing updated");
- expect(f.request.mock.calls.find(([request]) => request.method === "PUT")?.[0].body).toMatchObject({ requestId: expect.any(String), shares: [{ principal: { kind: "project", project: "payments" }, level: "use" }, { principal: { kind: "member", developerId: "b".repeat(64) }, level: "edit" }] });f.close();
+ expect(f.request.mock.calls.find(([request]) => request.method === "PUT")?.[0].body).toMatchObject({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown, shares: [{ principal: { kind: "project", project: "payments" }, level: "use" }, { principal: { kind: "member", developerId: "b".repeat(64) }, level: "edit" }] });f.close();
 });
 it("refuses to erase a newer share type it does not understand", async () => {
  const f = renderAgents({ path, shares: [{ principal: { kind: "future_team", id: "private-group" }, level: "use", grantedBy: "a".repeat(64), grantedAt: "2026-10-23T12:00:00.000Z" }] });fireEvent.click(await screen.findByRole("button", { name: "Share" }));await screen.findByText("This sharing includes a newer access type. Refresh before changing it.");expect(screen.getByRole<HTMLButtonElement>("button", { name: "Add share" }).disabled).toBe(true);expect(f.request.mock.calls.some(([request]) => request.method === "PUT")).toBe(false);f.close();
+});
+
+it("checks that the selected project really offers this workflow before asking for a task", async () => {
+ const f = renderAgents({ path, agentOnProject: false });fireEvent.click(await screen.findByRole("button", { name: "Start session" }));fireEvent.change(await screen.findByRole("combobox", { name: "Project" }), { target: { value: "checkout" } });
+ await screen.findByText("This workflow isn't available on that project. Choose another project.");expect(screen.getByRole<HTMLButtonElement>("button", { name: "Continue" }).disabled).toBe(true);expect(screen.queryByRole("textbox", { name: /What should/ })).toBeNull();f.close();
 });
