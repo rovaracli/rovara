@@ -60,7 +60,7 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
       .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))!;
     const variables = broker[1].Properties.Environment?.Variables;
     // Neither a variable of its own nor in AGENTX_NAMES: the broker's environment is held under Lambda's 4 KB (lambda-environment-size), and the role's name is fixed, so the broker
-    // builds the ARN from AGENTX_ENV where the cloud sign-in pool is passed (broker-environment.test.ts).
+    // builds the ARN from AGENTX_ENV where AGENTX_CLOUD is set (broker-environment.test.ts).
     expect(variables?.["BROKER_ROLE_ARN"]).toBeUndefined();
     expect(JSON.stringify(brokerNamesIn(variables))).not.toContain(brokerRoleName("staging"));
     expect(brokerNamesIn(variables)).toHaveProperty("cloudUserPool");

@@ -296,7 +296,9 @@ export class ControlPlaneStack extends Stack {
           StringLike: { "sts:ExternalId": "rovara-org_*" },
         },
       }));
-      // Not passed at all: the role has a fixed name, so the broker builds its ARN from AGENTX_ENV (on the hosted cloud, where the sign-in pool is passed) in the environment's role path, and its environment stays under Lambda's 4 KB.
+      // The ARN is not passed: the role has a fixed name, so the broker builds it from AGENTX_ENV in the environment's role path, and only where this flag is set (the same condition as the grant above), so its
+      // environment stays under Lambda's 4 KB.
+      broker.addEnvironment("AGENTX_CLOUD", "true");
     }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
