@@ -60,7 +60,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
   /** Runs once, just before the next move's transaction is sent: what another request or the Mac does in the moment between the move's last read and its write. */
   const race = { before: undefined as undefined | (() => Promise<void> | void) };
   const client = {
-    send: async (command: unknown) => {
+    send: async (command: Parameters<typeof w.db.send>[0]) => {
       if (command instanceof TransactWriteCommand && race.before !== undefined && JSON.stringify(command.input).includes("LEG#0000")) {
         const run = race.before;
         race.before = undefined;
