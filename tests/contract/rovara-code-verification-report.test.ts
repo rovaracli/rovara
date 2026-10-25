@@ -149,7 +149,7 @@ describe("verificationReport", () => {
   });
 
   it("treats model-written labels and worker paths as untrusted: redacted, one line, bounded, plain text", () => {
-    const label = `Retry\n‮test ghp_abcdefghijklmnopqrstuvwxyz0123456789 <script>alert(1)</script> ${"x".repeat(500)}`;
+    const label = `Retry\n\u202etest ghp_abcdefghijklmnopqrstuvwxyz0123456789 <script>alert(1)</script> ${"x".repeat(500)}`;
     const workflow = workflowWith({
       stage: "REVIEW", state: "WAITING", candidate: candidate("1"), checkPolicy: policy({ required: [], proposed: [check("proposed-1", label.slice(0, 80))] }),
       verification: verification([{ checkId: "proposed-1", status: "PASS" }]),
@@ -162,7 +162,7 @@ describe("verificationReport", () => {
     expect(VerificationReportSchema.safeParse(report).success).toBe(true);
     const text = JSON.stringify(report);
     expect(text).not.toContain("ghp_");
-    expect(text).not.toMatch(/[\u0000-\u001f‮\u007f]/u);
+    expect(text).not.toMatch(/[\p{Cc}\p{Cf}]/u);
     expect(text).not.toContain("\\n");
     for (const entry of report.testsAdded) expect([...entry.path].length).toBeLessThanOrEqual(500);
     // Nothing renders it as markup: it stays the plain string the model wrote, for each reader to escape.
@@ -188,7 +188,7 @@ describe("which changed files are tests", () => {
     for (const path of ["tests/a.py", "test/unit/a.js", "spec/a.rb", "src/__tests__/a.ts", "src/retry.test.ts", "src/retry.spec.tsx", "a/b.test.mjs", "pkg/x_test.go", "pkg/x_test.py", "pkg/test_x.py", "test_y.py"]) {
       expect(isTestPath(path), path).toBe(true);
     }
-    for (const path of ["src/testing.ts", "src/contest/a.ts", "src/latest/a.ts", "src/attest.ts", "docs/inspect.md", "src/a_test.ts", "src/mytest_x.py"]) {
+    for (const path of ["src/testing.ts", "src/contest/a.ts", "src/latest/a.ts", "src/attest.ts", "docs/inspect.md", "src/a_test.ts", "src/mytest_x.py", "src/retry.test.json", "docs/api.spec.md"]) {
       expect(isTestPath(path), path).toBe(false);
     }
   });
@@ -232,6 +232,9 @@ describe("the review round being fixed", () => {
     expect(workflowReviewRound(rounded(1, { stage: "REVIEW", state: "WAITING", programStepId: "review" }))).toBeUndefined();
     expect(workflowReviewRound(rounded(2, { stage: "PULL_REQUEST", state: "READY", programStepId: "pull_request" }))).toBeUndefined();
     expect(workflowReviewRound(rounded(1, { state: "BLOCKED", blockReason: "coding stopped" }))).toBeUndefined();
+    // Only the steps from the build the findings go back to up to the review count: not the steps before it, nor the review itself.
+    expect(workflowReviewRound(rounded(1, { programStepId: "plan_critic" }))).toBeUndefined();
+    expect(workflowReviewRound(rounded(1, { stage: "VERIFY", state: "WAITING", programStepId: "review" }))).toBeUndefined();
   });
 
   it("a version 1 task has no round counter, whatever its snapshot holds", () => {
