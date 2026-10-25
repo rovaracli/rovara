@@ -15,6 +15,8 @@ import type { SlackRequestQueue } from "../developer/page-comments.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXNameSchema,
+  RenameOrganizationBodySchema,
+  CreateOrganizationInviteBodySchema,
   CHANNEL_MEMBERS_MAX_CHANNELS,
   DEFAULT_AGENT_ALLOW_DOMAINS,
   DEFAULT_DEVCONTAINER_CONFIG_PATH,
@@ -208,7 +210,7 @@ export interface DeveloperRouteDependencies {
   /** Sign in with ChatGPT (#338): each developer's connection; without it /v1/dev/chatgpt/* answers NOT_FOUND. */
   chatgpt?: ChatGptConnections;
   /** Which org a developer belongs to: the membership a token's `org` claim is checked against on every request. */
-  orgs?: Pick<OrgStore, "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
+  orgs?: Pick<OrgStore, "renameOrg" | "orgForDeveloper" | "getOrg" | "createInvite" | "listMembers" | "setRole" | "removeMember" | "closeOrg">;
   /**
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
@@ -1786,6 +1788,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "POST" && (url.pathname === "/v1/app/projects" || url.pathname === "/v1/dev/projects")) return createProject(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/workspaces") return listWorkspaces(deps, caller);
+  if (request.method === "PATCH" && url.pathname === "/v1/app/org") {
+    if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can rename the organization");
+    if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+    const parsed = RenameOrganizationBodySchema.safeParse(jsonBody(request));
+    if (!parsed.success) throw bodyError(parsed.error);
+    await deps.orgs.renameOrg({ ...parsed.data, orgId: caller.orgId, developerId: caller.developerId });
+    return getOrganization(deps, caller);
+  }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   if (request.method === "GET" && url.pathname === "/v1/app/org/members") return listOrganizationMembers(deps, caller);
@@ -1930,11 +1940,7 @@ async function getOrganization(deps: DeveloperRouteDependencies, caller: Develop
   return { org: { orgId: org.orgId, name: org.name, plan: org.plan }, role: caller.orgRole };
 }
 
-const CreateInviteBodySchema = z.object({
-  requestId: z.string().uuid(),
-  role: z.enum(["admin", "member"]),
-  email: z.string().trim().email().max(254).optional(),
-}).strict();
+
 
 /**
  * An owner or admin invites someone to their org; only an owner may invite an admin. A replay of one requestId is
@@ -1943,7 +1949,7 @@ const CreateInviteBodySchema = z.object({
 async function createOrganizationInvite(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<{ inviteUrl: string }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can invite people to the organization");
-  const parsed = CreateInviteBodySchema.safeParse(body);
+  const parsed = CreateOrganizationInviteBodySchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     // Field names only: the values are the caller's.

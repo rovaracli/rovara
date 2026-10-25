@@ -398,7 +398,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (await store.chooseMethod(auth.id, methods[0]!) === undefined) return joinUnavailable([cookie]);
       return { ...await joinToProvider(auth.id, auth.nonce, methods[0]!), cookies: [cookie] };
     }
-    return { ...page(200, `Sign in to join ${found.invite.orgName}`, [], methods.map((method) => ({
+    return { ...page(200, "Sign in to Rovara", [], methods.map((method) => ({
       href: `${endpoint("/authorize")}?request=${encodeURIComponent(auth.id)}&method=${method}`,
       label: `Sign in with ${methodLabel(method)}`,
     }))), cookies: [cookie] };
@@ -622,6 +622,12 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       // Joining an org with a GitHub sign-in unlocks that org's trial as any GitHub sign-in does; no other outcome touches an org.
       if (outcome === "joined" && method === "github" && identity.githubUserId !== undefined && deps.onGithubSignIn !== undefined && org.orgId !== undefined) {
         await unlockTrialBestEffort(org.orgId, identity.githubUserId);
+      }
+      if (outcome === "joined") {
+        const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
+        const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime: signInTime(identity.authTime),
+          ...(slackUserId === undefined ? {} : { slackUserId }), reviewExpiresAt: endsAt, endsAt });
+        return browserReturn(endpoint(`/join/done?request=${request.id}`), true, session.sessionId);
       }
       return redirect(endpoint(`/join/done?request=${request.id}`));
     }

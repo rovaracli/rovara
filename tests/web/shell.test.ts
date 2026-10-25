@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -64,9 +64,10 @@ it("marks admin routes web-only and does not add them when the server disables a
 it("starts signup without navigation reads and welcome with only a me read", async () => {
  for (const path of ["/app/signup", "/app/signup/", "/app/welcome", "/app/welcome/"]) {
  const f = fakeHost(async () => ({ status: 200, body: { developer: { id: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }));
+ const navigation=vi.fn<(url:string)=>void>();f.host.navigate=navigation;
  f.host.currentPath = () => path;
  const mounted = renderUi(h(App, { host: f.host, createRouter: routes => createMemoryRouter(routes, { initialEntries: [path] }) }));
- await screen.findByRole("heading", { name: path.startsWith("/app/signup") ? "Start working together" : "Welcome, Priya" });
+ if(path.startsWith("/app/signup")) await screen.findByRole("heading", { name: "Start with Rovara" });else await waitFor(()=>expect(navigation).toHaveBeenCalledWith("/app"));
  expect(f.request.mock.calls.map(([request]) => request.path)).toEqual(path.startsWith("/app/signup") ? [] : ["/v1/app/me"]);mounted.unmount();
  }
 });

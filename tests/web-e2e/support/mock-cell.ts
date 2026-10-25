@@ -1,3 +1,6 @@
+import { joinDonePage } from "../../../packages/broker/src/developer/join-page.js";
+import { escapeHtml } from "../../../packages/broker/src/aws/web-session.js";
+import { AppProjectDetailSchema,CreateProjectBodySchema,CloudProjectCreatedResponseSchema,RenameOrganizationBodySchema,RenameOrganizationResponseSchema,GithubConnectResponseSchema,GithubInstallationsResponseSchema,GithubRepositoriesResponseSchema,ProjectSettingsBodySchema,ProjectSettingsResponseSchema,ProjectSetupCheckBodySchema,ProjectSetupCheckResponseSchema,ProjectRosterAddedResponseSchema } from "@agentx/contracts";
 import { builderFixture } from "../../web/support/builder-fixture.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID } from "../../web/support/agent-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
@@ -29,6 +32,8 @@ if (!existsSync(key) || !existsSync(cert)) {
  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "7", "-keyout", key, "-out", cert, "-config", config], { stdio: "ignore" });
 }
 let current = scenario("shell"), revoked = false, expired = false, refusedSignIn = false;
+let onboardingConnected=false;
+let onboardingProject:ReturnType<typeof AppProjectDetailSchema.parse>|undefined;
 const requests: Array<{ method: string; path: string; body?: unknown }> = [];
 const unavailable = async (): Promise<never> => { throw new Error("Mock operation is not configured."); };
 const deps: DeveloperRouteDependencies = {
@@ -41,20 +46,22 @@ const deps: DeveloperRouteDependencies = {
  return {};
  } },
  developer: { issuer: origin + "/v1/auth", env: "test", methods: { slack: false, oidc: false, cloud: true }, signInTableName: "mock-signin", verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
- orgs: { orgForDeveloper: async id => id === FIXTURE_DEVELOPER ? { orgId: FIXTURE_ORG, role: "member" } : undefined, getOrg: unavailable, createInvite: unavailable, listMembers: unavailable, setRole: unavailable, removeMember: unavailable, closeOrg: unavailable },
+ orgs: { renameOrg: unavailable, orgForDeveloper: async id => id === FIXTURE_DEVELOPER ? { orgId: FIXTURE_ORG, role: "member" } : undefined, getOrg: unavailable, createInvite: unavailable, listMembers: unavailable, setRole: unavailable, removeMember: unavailable, closeOrg: unavailable },
 };
 const handler = createAppHandler({ appDirectory: resolve("packages/web/dist/app"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
  const url = new URL(request.url ?? "/", origin), method = request.method ?? "GET", headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(",") : value]));
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
- if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);onboardingConnected=false;onboardingProject=undefined;revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/agent-state" && method === "POST" && current.agent !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.agent = AgentProfileResponseSchema.parse({ ...current.agent, agent: { ...current.agent.agent, ...changes } });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/requests") { json(200, requests);return; }
  const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
+ if (url.pathname === "/__mock/invite") { response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>Join Acme</title></head><body><main><h1>Join Acme on Rovara</h1><a href="/v1/auth/browser/authorize?return_to=%2Fapp%2Fwelcome%3Fjoined%3D1">Join Acme</a></main></body></html>');return; }
+ if (url.pathname === "/__mock/join-done") { const page=joinDonePage({outcome:"joined",orgName:"Acme",role:"member",invitedOrgName:"Acme",inviterName:"Maya",codeChallenge:"test-fixture",expiresAt:0},origin);response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>'+escapeHtml(page.title)+'</title></head><body><main><h1>'+escapeHtml(page.title)+'</h1>'+page.paragraphs.map(line=>'<p>'+escapeHtml(line)+'</p>').join('')+(page.links??[]).map(link=>'<a href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>').join('')+'</main></body></html>');return; }
  if (url.pathname === "/v1/auth/browser/authorize") {
  if (refusedSignIn) { response.writeHead(303, { location: "/app/signed-out?reason=removed" });response.end();return; }
  const path = url.searchParams.get("return_to") ?? "/app";const target = BROWSER_RETURN_TO.test(path) ? path : "/app";
@@ -62,8 +69,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (url.pathname === "/v1/auth/browser/callback" && method === "POST") {
  let body = "";for await (const chunk of request) body += String(chunk);const path = new URLSearchParams(body).get("return_to") ?? "/app";revoked = false;expired = false;
- response.writeHead(303, { location: BROWSER_RETURN_TO.test(path) ? path : "/app", "set-cookie": `__Host-agentx_review_session=${FIXTURE_SESSION}; Path=/; Secure; HttpOnly; SameSite=Strict` });response.end();return;
+ response.writeHead(303, { location: path === "/app/welcome?joined=1" ? "/__mock/join-done" : BROWSER_RETURN_TO.test(path) ? path : "/app", "set-cookie": `__Host-agentx_review_session=${FIXTURE_SESSION}; Path=/; Secure; HttpOnly; SameSite=Strict` });response.end();return;
  }
+ if (url.pathname === "/__mock/github-install") { onboardingConnected=true;response.writeHead(303,{location:"/app/onboard?github=connected"});response.end();return; }
  if (url.pathname.startsWith("/v1/app/approve/")) {
  try { requireDecideNavigation({ method, path: url.pathname, headers }); } catch { response.writeHead(403, CONFIRM_PAGE_HEADERS);response.end("Open this approval from its link.");return; }
  if (method === "POST") { const cards = current.home.cards.filter(card => !card.buttons.some(button => button.action === "confirm" && button.href !== undefined && new URL(button.href).pathname === url.pathname));current.home = homeFixture({ cards, total: Math.max(0, current.home.total - (current.home.cards.length - cards.length)) });json(200, { decided: true });return; }
@@ -75,6 +83,21 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/auth/browser/sign-out") { revoked = true;response.writeHead(204, { "set-cookie": "__Host-agentx_review_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" });response.end();return; }
  if (url.pathname === "/v1/web/nav") { json(200, current.nav);return; }
  if (url.pathname === "/v1/web/me") { json(200, { ...current.me, csrf: appCsrfTokenFor(FIXTURE_SESSION) });return; }
+ if(current.name==="onboarding") {
+ const body=async()=>{let raw="";for await(const chunk of request)raw+=String(chunk);return JSON.parse(raw) as unknown;};
+ if(url.pathname==="/v1/web/org"&&method==="PATCH"){const input=RenameOrganizationBodySchema.parse(await body());evidence.body=input;current.me.org={...current.me.org,name:input.name,nameIsDefault:false};json(200,RenameOrganizationResponseSchema.parse({org:current.me.org,role:"owner"}));return;}
+ if(url.pathname==="/v1/web/github/connect"&&method==="POST"){const result=GithubConnectResponseSchema.parse({installUrl:"https://github.com/apps/rovara/installations/new",expiresAt:"2026-10-26T12:00:00.000Z"});json(200,result);return;}
+ if(url.pathname==="/v1/web/github/installations"){json(200,GithubInstallationsResponseSchema.parse({installations:onboardingConnected||url.searchParams.has("fixture")?[{installationId:55,accountLogin:"acme",accountType:"Organization",repositorySelection:"selected",status:"active"}]:[]}));return;}
+ if(url.pathname==="/v1/web/github/repositories"){json(200,GithubRepositoriesResponseSchema.parse({repositories:[{fullName:"acme/payments",githubRepositoryId:101,private:true,defaultBranch:"main"}]}));return;}
+ if(url.pathname==="/v1/web/projects"&&method==="POST"){const input=CreateProjectBodySchema.parse(await body());evidence.body=input;onboardingProject=AppProjectDetailSchema.parse({name:input.name??"payments",description:input.description??"",status:"active",latestRevision:1,repositories:[{fullName:input.repository,defaultBranch:"main"}],myRole:"maintainer",setup:{status:"unchecked"},settings:{setupCommands:[],testCommands:[],devcontainer:null,allowedDomains:[]},createdAt:"2026-10-23T12:00:00.000Z",createdBy:{developerId:FIXTURE_DEVELOPER,name:"Priya"}});json(201,CloudProjectCreatedResponseSchema.parse({duplicate:false,project:{definition:{name:onboardingProject.name},registeredAt:"2026-10-23T12:00:00.000Z"}}));return;}
+ if(onboardingProject&&url.pathname.startsWith("/v1/web/projects/"+onboardingProject.name)){
+ if(url.pathname.endsWith("/settings")&&method==="PUT"){const input=ProjectSettingsBodySchema.parse(await body());evidence.body=input;onboardingProject=AppProjectDetailSchema.parse({...onboardingProject,latestRevision:onboardingProject.latestRevision+1,settings:{...onboardingProject.settings,...input}});json(200,ProjectSettingsResponseSchema.parse({project:onboardingProject,warnings:[]}));return;}
+ if(url.pathname.endsWith("/setup-check")&&method==="POST"){evidence.body=ProjectSetupCheckBodySchema.parse(await body());onboardingProject={...onboardingProject,setup:{status:"ready",checkedRevision:onboardingProject.latestRevision}};json(202,ProjectSetupCheckResponseSchema.parse({project:onboardingProject}));return;}
+ if(url.pathname.endsWith("/agents/rovara-code")&&method==="PUT"){json(200,ProjectRosterAddedResponseSchema.parse({agent:{agentId:"rovara-code",name:"Rovara Code"}}));return;}
+ if(method==="GET"&&!url.pathname.endsWith("/overview")){json(200,onboardingProject);return;}
+ }
+ if(url.pathname==="/v1/web/agents"&&method==="GET"){json(200,AgentDirectoryResponseSchema.parse({agents:[]}));return;}
+ }
  if(current.builder!==undefined&&current.agent!==undefined){
  const draftPath="/v1/web/agents/"+current.agent.agent.agentId+"/draft";
  const resolveDraft=()=>applyOverlay(current.builder!.base??EMPTY_RECIPE,current.builder!.draft.overlay,{agentId:current.agent!.agent.agentId,name:current.agent!.agent.name,version:"draft",builtin:false});

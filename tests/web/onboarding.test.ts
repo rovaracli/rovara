@@ -15,16 +15,16 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import type { ReactElement } from "react";
 const me = { developer: { id: "a".repeat(64), name: "Maya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "cloud", nameIsDefault: false }, identities: [] };
 const project = { name: "web", description: "Customer fixes", status: "active", latestRevision: 2, repositories: [{fullName: "acme/web", defaultBranch: "main"}], myRole: "maintainer", setup: {status: "failed", failedStep: "Install dependencies failed"}, settings: {setupCommands:["npm ci"],testCommands:["npm test"],devcontainer:null,allowedDomains:[]},createdAt:"2026-10-23T12:00:00.000Z",createdBy:{developerId:"a".repeat(64),name:"Maya"} };
-function setup(element: ReactElement, options: { path?:string; member?:boolean; defaultName?:boolean; theme?:"light"|"dark" } = {}) {
+function setup(element: ReactElement, options: { path?:string; member?:boolean; defaultName?:boolean; connected?:boolean; theme?:"light"|"dark" } = {}) {
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/me") return {status:200,body:{...me,developer:{...me.developer,orgRole:options.member?"member":"owner"},org:{...me.org,nameIsDefault:options.defaultName??false}}};
   if (request.path === "/v1/app/org/members") return {status:200,body:{members:[{developerId:"b".repeat(64),name:"Priya",role:"admin",joinedAt:"2026-10-23",identities:[]}]}};
-  if (request.path === "/v1/app/github/installations") return {status:200,body:{installations:[{installationId:55,accountLogin:"acme",accountType:"Organization",repositorySelection:"selected",status:"active"}]}};
+  if (request.path === "/v1/app/github/installations") return {status:200,body:{installations:options.connected===false?[]:[{installationId:55,accountLogin:"acme",accountType:"Organization",repositorySelection:"selected",status:"active"}]}};
   if (request.path.startsWith("/v1/app/github/repositories")) return {status:200,body:{repositories:[{fullName:"acme/web",githubRepositoryId:101,private:true,defaultBranch:"main"}]}};
   if (request.path === "/v1/app/projects/web") return {status:200,body:project};
   if (request.path.startsWith("/v1/app/agents?")) return {status:200,body:{agents:[]}};
   if (request.path === "/v1/app/org") return {status:200,body:{org:me.org,role:"owner"}};
-  return {status:200,body:{project}};
+  return {status:200,body:{project,warnings:[]}};
  });
  const navigate=vi.fn<(url:string)=>void>();f.host.navigate=navigate;const query=createQueryClient();
  const ui=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(MemoryRouter,{initialEntries:[options.path??"/app/onboard"],children:element})})}),{theme:options.theme??"light"});
@@ -39,3 +39,9 @@ it("reload resumes Setup for its actual project and shows failed check details",
 it("Code is prechecked but its excluded start is never invented",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?project=web&step=agents"});expect(await screen.findByRole("checkbox",{name:"Rovara Code"})).toHaveProperty("checked",true);expect(f.request.mock.calls.filter(([r])=>r.path.endsWith("/runs"))).toHaveLength(0);f.close();});
 it("shows the exact trial-used explanation",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?github=trial_used"});await screen.findByText("This GitHub account already started a free trial for another organization. Connect a different GitHub account, or ask us about a plan.");f.close();});
 for(const theme of ["light","dark"] as const)it("keeps onboarding accessible in "+theme,async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?github=connected",theme});await screen.findByLabelText("acme/web");await expectNoAxeViolations(document.body);f.close();});
+
+it("does not trust the connected query when the server has no installation",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?github=connected",connected:false});await screen.findByRole("heading",{name:"Connect GitHub"});expect(screen.queryByRole("heading",{name:"Choose repositories"})).toBeNull();f.close();});
+it("keeps a requested installation pending with honest recovery",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?github=requested",connected:false});await screen.findByText("We'll tell you when your GitHub admin approves it.");expect(screen.getByRole("button",{name:"Check connection"})).toBeTruthy();f.close();});
+it("a ready project can finish without manufacturing a first code session",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?project=web&step=first"});await screen.findByRole("link",{name:"Open project"});expect(screen.queryByRole("button",{name:/Start/})).toBeNull();expect(f.request.mock.calls.some(([r])=>r.path.endsWith("/runs"))).toBe(false);f.close();});
+
+it("saves setup against the read revision and checks the actual project",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?project=web&step=setup"});fireEvent.change(await screen.findByLabelText("Setup commands"),{target:{value:"npm ci\nnpm run generate"}});fireEvent.click(screen.getByRole("button",{name:"Check again"}));await waitFor(()=>expect(f.request.mock.calls.some(([r])=>r.method==="POST"&&r.path==="/v1/app/projects/web/setup-check")).toBe(true));expect(f.request.mock.calls.find(([r])=>r.method==="PUT")?.[0].body).toMatchObject({expectedRevision:2,setupCommands:["npm ci","npm run generate"],testCommands:["npm test"],devcontainer:null});f.close();});

@@ -220,7 +220,8 @@ describe("the join sign-in", () => {
     expect(h.state.get(orgInviteKey(sha256Hex(token)))).toMatchObject({ acceptedBy: idOf(bea) });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt).toBeDefined();
     expect(await h.orgs.orgForDeveloper(idOf(bea))).toEqual({ orgId, role: "member" });
-    expect(personItems(h, idOf(bea)).sessions).toHaveLength(1);
+    expect(personItems(h, idOf(bea)).sessions.filter(item => String(item.pk).startsWith("SESSION#"))).toHaveLength(1);
+    expect(personItems(h, idOf(bea)).sessions.filter(item => String(item.pk).startsWith("CODE#"))).toHaveLength(0);
     const sessionCookie = callback.cookies?.find(value => value.startsWith("__Host-agentx_review_session="));
     expect(sessionCookie).toMatch(/; Secure; HttpOnly; SameSite=Lax; Path=\/; Max-Age=2592000$/);
     expect(copy(done!).hrefs).toContain("/app/welcome?joined=1");

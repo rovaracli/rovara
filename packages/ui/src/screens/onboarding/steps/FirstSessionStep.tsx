@@ -1,0 +1,3 @@
+import { Link } from "react-router";
+import { VisibleText } from "../../../design/VisibleText.js";
+export function FirstSessionStep({project,ready}:{project:string;ready:boolean}){return <><h2>{ready?"Your project is ready":"Review your project"}</h2><p><VisibleText text={project}/> now has a shared place for its setup, workflows and work.</p>{/* PLAN6: first Rovara Code session is excluded from Part A; never call generic runs. */}<p>Open the project to review its setup and shared agents.</p><Link className="rv-button rv-button-primary" to={"/app/projects/"+encodeURIComponent(project)}>Open project</Link><Link className="rv-button" to="/app">Go to Home</Link></>;}

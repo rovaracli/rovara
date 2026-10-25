@@ -39,3 +39,5 @@ export { LIVE_FILTERS, LIVE_VIEWING_MAX, SESSION_STATUS_WORDS } from "./agent-se
 export * from "./agent-web-views.js";
 
 export { SessionMakeAgentBodySchema, AgentOriginViewSchema } from "./agent-sessions.js";
+
+export * from "./onboarding.js";

@@ -121,6 +121,11 @@ export function orgInviteKey(tokenHash: string): OrgKey {
 }
 
 
+/** Idempotent organization rename, separate from invite requests. */
+export function orgRenameRequestKey(orgId: OrgId, requestId: string): OrgKey {
+  return { pk: orgPk(orgId), sk: `RENAME_REQUEST#${requestId}` };
+}
+
 /** Marks that an org's invite request was served, so a replay of the same requestId is refused rather than minting a second invite. */
 export function orgInviteRequestKey(orgId: OrgId, requestId: string): OrgKey {
   return { pk: orgPk(orgId), sk: `INVITE_REQUEST#${requestId}` };

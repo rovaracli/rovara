@@ -88,8 +88,10 @@ export function githubConnectPage(kind: ConnectPageKind, data: ConnectPageData =
   const form = copy.form === true && data.connectId !== undefined
     ? `<form method="post" action="${GITHUB_CONFIRM_PATH}"><input type="hidden" name="connect" value="${escapeHtml(data.connectId)}"><button type="submit" name="decision" value="connect">Connect</button><button type="submit" name="decision" value="cancel">Cancel</button></form>`
     : "";
+  const appStatus = kind === "connected" ? "connected" : kind === "connected_trial_used" ? "trial_used" : kind === "requested" ? "requested" : undefined;
+  const appLink = appStatus === undefined ? "" : `<p><a href="/app/onboard?github=${appStatus}">Continue in Rovara</a></p>`;
   const next = copy.code === undefined ? "" : `<p>Next: <code>${escapeHtml(copy.code)}</code></p>`;
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style nonce="${nonce}">${STYLE}</style></head><body><main><h1>${title}</h1>${copy.body.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}${form}${next}</main></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style nonce="${nonce}">${STYLE}</style></head><body><main><h1>${title}</h1>${copy.body.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}${form}${appLink}${next}</main></body></html>`;
   const response = safeResponse(copy.status, html, nonce);
   return { ...response, headers: { ...response.headers, "referrer-policy": "same-origin" } };
 }

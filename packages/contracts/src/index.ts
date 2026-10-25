@@ -109,3 +109,5 @@ export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema } from "
 export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
 
 export * from "./agent-web-views.js";
+
+export * from "./onboarding.js";

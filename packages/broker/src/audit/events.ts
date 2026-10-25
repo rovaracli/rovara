@@ -203,6 +203,11 @@ export function auditIdentityUnlinked(input: AuditBuilderBase & { memberId: stri
   return build("identity.unlinked", input, { kind: "member", id: input.memberId }, { provider: input.provider });
 }
 
+/** The request UUID identifies one rename; names never enter the audit facts. */
+export function auditOrgRenamed(input: AuditBuilderBase): AuditEventInput {
+  return build("org.renamed", input, { kind: "org", id: input.orgId }, {});
+}
+
 /** `occurrence`: `closedAt`. */
 export function auditOrgClosed(input: AuditBuilderBase & { plan: string }): AuditEventInput {
   return build("org.closed", input, { kind: "org", id: input.orgId }, { plan: input.plan });

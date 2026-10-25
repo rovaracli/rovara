@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AGENTX_NAME_PATTERN } from "./names.js";
+import { AGENTX_NAME_PATTERN, AgentXNameSchema } from "./names.js";
 import { redactText } from "./redaction.js";
 import { RelativeWorkspacePathSchema, ProjectCommandSchema, DeveloperShareModeSchema } from "./project.js";
 import { StoredAllowedDomainSchema, firstRefusedDomainIndex, ALLOWED_DOMAIN_MESSAGE } from "./app-projects.js";
@@ -13,7 +13,7 @@ import { E2E_PROJECT_CHECK_ID } from "./e2e.js";
 export const OCI_DIGEST_PATTERN = /@sha256:[a-f0-9]{64}$/;
 
 
-export const AgentXNameSchema = z.string().regex(AGENTX_NAME_PATTERN);
+export { AgentXNameSchema } from "./names.js";
 
 
 export const GitBranchNameSchema = z

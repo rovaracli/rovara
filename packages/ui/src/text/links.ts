@@ -16,3 +16,10 @@ export function isConfirmUrl(value: string, origin: string): boolean {
  } catch { return false; }
 }
 export function safeAppPath(value: string): boolean { return !UNSAFE_TEXT.test(value) && !/%2e|%2f|%5c/i.test(value) && !value.includes("//") && !value.split(/[?#]/, 1)[0]!.split("/").some(part => part === "." || part === "..") && (value.startsWith("/app/") || value.startsWith("/s/")); }
+
+/** Same-tab GitHub installation handoff, never arbitrary external app navigation. */
+export function isGithubInstallationUrl(value: string): boolean {
+ const safe = safeExternalUrl(value);if(safe===undefined||safe!==value||/[#%]/.test(value))return false;
+ const url=new URL(safe),entries=[...url.searchParams];
+ return url.origin==="https://github.com"&&/^\/apps\/[a-z0-9-]+\/installations\/new$/.test(url.pathname)&&(entries.length===0||entries.length===1&&entries[0]![0]==="state"&&/^[A-Za-z0-9_-]{1,200}$/.test(entries[0]![1]));
+}
