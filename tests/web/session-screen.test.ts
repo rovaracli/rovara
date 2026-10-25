@@ -10,10 +10,11 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
+import { workspaceFixture } from "./support/workspace-fixture.js";
 import { navFixture } from "./support/fixtures.js";
 import { sessionFixture, messageFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
-function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor?: string) {
- let session = sessionFixture(), messages = initialMessages;
+function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor?: string, initialSession = sessionFixture()) {
+ let session = initialSession, messages = initialMessages;
  const f = fakeHost(async request => {
  if (request.path.split("?", 1)[0]!.endsWith("/messages")) { if (request.method === "POST") { messages = [messageFixture()];return { status: 200, body: messages[0] }; }return { status: 200, body: { messages: request.path.includes("?") ? [] : messages, ...(cursor === undefined ? {} : { next: cursor }) } }; }
  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
@@ -55,4 +56,18 @@ it("stops offering more conversation when the endpoint returns its unchanged cur
  fireEvent.click(await screen.findByRole<HTMLButtonElement>("button", { name: "Load more conversation" }));
  await waitFor(() => expect(screen.queryByRole("button", { name: "Load more conversation" })).toBeNull());
  expect(screen.getAllByText("Check refunds before retrying.")).toHaveLength(1);f.close();
+});
+
+it("opens a real changed-file discussion without replacing the work and restores source focus", async () => {
+ const anchor = { target: "change_file" as const, targetId: "acme/payments:src/refund.ts", revision: "+12-3" };
+ const f = setup([], undefined, workspaceFixture({ anchors: [anchor] }));f.query.setQueryData(["nav"], navFixture());
+ const heading = await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+ fireEvent.mouseDown(await screen.findByRole("tab", { name: "Changes" }), { button: 0, ctrlKey: false });
+ const source = screen.getByRole<HTMLButtonElement>("button", { name: "Comment on src/refund.ts" });source.focus();fireEvent.click(source);
+ await screen.findByRole("dialog", { name: "Discussion of this file" });expect(heading.isConnected).toBe(true);
+ expect(screen.queryByRole("button", { name: "Message the agent" })).toBeNull();
+ fireEvent.change(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }), { target: { value: "Check the refund key here" } });fireEvent.click(screen.getByRole("button", { name: "Send comment" }));
+ await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.method === "POST" && request.path.endsWith("/messages"))).toBe(true));
+ expect(f.request.mock.calls.find(([request]) => request.method === "POST" && request.path.endsWith("/messages"))?.[0].body).toMatchObject({ kind: "comment", anchor });
+ fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(document.activeElement).toBe(source));f.close();
 });
