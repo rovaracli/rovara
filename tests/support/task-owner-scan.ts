@@ -99,8 +99,10 @@ const TASK_SHAPE_FIELDS: readonly string[] = ["taskId", "workspaceId"];
  * `{ developerId: string }`, an inline parameter type), and the receiver is named for a task or its type carries the task's id or workspace.
  */
 function isStructuralTask(checker: ts.TypeChecker, receiver: ts.Node, field: ts.Symbol | undefined): boolean {
-  // Declared in an anonymous object type (`{ developerId: string }`, an inline parameter or cast type): a named interface other than the task record has its own meaning and its own rows.
-  if (!(field?.declarations ?? []).some((declaration) => ts.isTypeLiteralNode(declaration.parent))) return false;
+  // Declared in an object type that is not the task record: an anonymous literal (`{ developerId: string }`, an inline parameter or cast type), or a named interface or alias
+  // (`interface TaskLike { developerId: string }`). Such a type counts only when the receiver is named for a task or the type carries a task's id or workspace (below): a
+  // named type for something else has its own meaning and its own rows.
+  if (!(field?.declarations ?? []).some((declaration) => ts.isTypeLiteralNode(declaration.parent) || ts.isInterfaceDeclaration(declaration.parent))) return false;
   // `task.startedBy?.developerId` is the continuation of the read of `.startedBy`, which is counted already.
   let inner = receiver;
   while (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner)) inner = inner.expression;

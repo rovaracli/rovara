@@ -104,4 +104,5 @@ export * from "./builtin-triggers.js";
 export * from "./event-hooks.js";
 export * from "./agent-sessions.js";
 export * from "./session-views.js";
+export * from "./home.js";
 export * from "./realtime.js";

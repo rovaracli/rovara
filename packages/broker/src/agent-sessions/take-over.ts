@@ -415,7 +415,10 @@ export function registerSessionTakeOverApprovals(): void {
 
 const followUpKey = (orgId: OrgId, sessionId: string, approvalId: string) => agentSessionKey(orgId, sessionId, `TAKE_OVER_FOLLOW_UP#${approvalId}`);
 
-/** Whether the previous owner may still decide a write on the project as a maintainer, so their list keeps what is waiting. A read that fails keeps it (a list that shows too much is harmless: deciding is read live). */
+/**
+ * Whether the previous owner may still decide a write on the project as a maintainer, so their list keeps what is waiting. For an approval routed to a list of ids, being listed with
+ * `start_tasks` IS the authority to decide, so a list that shows too much is not harmless: a role that cannot be read answers no (fail closed), and the follow-up leaves them out.
+ */
 async function stillMayApprove(deps: SessionTakeOverDependencies, orgId: OrgId, project: string | undefined, developerId: string): Promise<boolean> {
   if (project === undefined) return false;
   try {
@@ -424,7 +427,7 @@ async function stillMayApprove(deps: SessionTakeOverDependencies, orgId: OrgId, 
     const role = await deps.projectMembers.roleOf(orgId, project, { developerId, orgRole: orgRole.data });
     return role !== undefined && projectAllows(role, "approve_writes");
   } catch {
-    return true;
+    return false;
   }
 }
 

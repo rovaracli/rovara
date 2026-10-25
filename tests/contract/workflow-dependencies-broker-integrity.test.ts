@@ -3,16 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { createCandidateManifest, workflowFindingFingerprint } from "../../packages/contracts/src/task-workflow.js";
 import { taskGraphDigest, type WorkItemProgressV1 } from "../../packages/contracts/src/workflow-dependencies.js";
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
-import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { agentSessionKey } from "../../packages/contracts/src/index.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const passingChecks = () => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64),
   checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }],
   extraTry: "not_needed", agentClaim: "success" });
 
-async function approvedGraph(includeGraphDigest = true, itemCount = 1) {
+async function approvedGraph(includeGraphDigest = true, itemCount = 1, sessions = false) {
   const harness = await createDeveloperTaskBroker({ developerExtra: { workflowDependenciesEnabled: true },
-    brokerExtra: { githubPullRequests: { getCommitTree: vi.fn(async () => "a".repeat(40)) } } });
+    brokerExtra: { ...(sessions ? { agents: {} } : {}), githubPullRequests: { getCommitTree: vi.fn(async () => "a".repeat(40)) } } });
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
     requestId: randomUUID(), project: "payments", instructions: "Implement the ordered change", client: "test-client", workflow: true, workflowPath: "QUICK",
   });
@@ -49,6 +51,42 @@ type ApprovedGraphSetup = Awaited<ReturnType<typeof approvedGraph>>;
 function implementationId(setup: ApprovedGraphSetup): string {
   if (setup.implementation === undefined) throw new Error("implementation operation missing from approved graph setup");
   return String(setup.implementation.id);
+}
+
+/** A required-E2E task whose implementation finished without a committed source export: VERIFY/BLOCKED, eligible for retained-source recovery. */
+async function blockedForRecovery(setup: ApprovedGraphSetup) {
+  const workflowRecord = setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META") as { workflow: Record<string, unknown> } & Record<string, unknown>;
+  const workflow = workflowRecord.workflow as { revision: number; workflowDependenciesApproval: { runId: string; graphDigest: string; workflowRevision: number }; [key: string]: unknown };
+  const approval = workflow.workflowDependenciesApproval;
+  const requiredE2E = { contractDigest: "1".repeat(64), policyDigest: "2".repeat(64), bundleDigest: "3".repeat(64),
+    executionPlanDigest: "4".repeat(64), required: true, currentGroupRunIds: [], resultRefs: [] };
+  setup.harness.db.set({ ...workflowRecord, workflow: { ...workflow, e2e: requiredE2E } });
+  const sourceOperationId = implementationId(setup);
+  const implementedAt = new Date().toISOString();
+  const implemented = { schemaVersion: 1, graphDigest: approval.graphDigest, runId: approval.runId, itemId: setup.graph.items[0]!.id,
+    sequence: 2, state: "IMPLEMENTED" as const, operationId: sourceOperationId, baseTreeSha: "a".repeat(40), candidateTreeSha: "b".repeat(40),
+    at: implementedAt, producer: "agentx-worker" };
+  await setup.harness.events(setup.workspaceId, sourceOperationId, [
+    { type: "progress", payload: { workItemProgress: { schemaVersion: 1, graphDigest: approval.graphDigest, runId: approval.runId,
+      itemId: setup.graph.items[0]!.id, sequence: 1, state: "STARTED", operationId: sourceOperationId,
+      baseTreeSha: "a".repeat(40), at: new Date().toISOString(), producer: "agentx-worker" } } },
+    { type: "progress", payload: { workItemProgress: implemented } },
+  ]);
+  const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
+  await setup.harness.finish(setup.workspaceId, sourceOperationId, "SUCCEEDED", { result: {
+    workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories,
+    checks: passingChecks(),
+    workflowDependenciesResult: { schemaVersion: 1, taskId: setup.taskId, graphDigest: approval.graphDigest, runId: approval.runId,
+      operationId: sourceOperationId, workflowRevision: approval.workflowRevision, status: "SUCCEEDED",
+      items: [implemented], candidateDigest: candidate.digest, at: new Date().toISOString() },
+  } });
+
+  const blocked = (setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META") as { workflow: { revision: number; stage: string; state: string; blockReason?: string; candidate?: unknown } }).workflow;
+  expect(blocked).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: "the final candidate has no first-party committed source export" });
+  expect(blocked.candidate).toBeUndefined();
+  const sourceOperation = (await setup.harness.actions.operations(setup.workspaceId)).find((operation) => operation.id === sourceOperationId)!;
+  expect(sourceOperation).not.toHaveProperty("workflowDependencies");
+  return { blocked, sourceOperationId };
 }
 
 describe("broker work-breakdown callback integrity", () => {
@@ -583,37 +621,7 @@ describe("broker work-breakdown callback integrity", () => {
 
   it("recovers a required-E2E missing-export block by finalizing the exact retained graph tree", async () => {
     const setup = await approvedGraph(true, 1);
-    const workflowRecord = setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META") as { workflow: Record<string, unknown> } & Record<string, unknown>;
-    const workflow = workflowRecord.workflow as { revision: number; workflowDependenciesApproval: { runId: string; graphDigest: string; workflowRevision: number }; [key: string]: unknown };
-    const approval = workflow.workflowDependenciesApproval;
-    const requiredE2E = { contractDigest: "1".repeat(64), policyDigest: "2".repeat(64), bundleDigest: "3".repeat(64),
-      executionPlanDigest: "4".repeat(64), required: true, currentGroupRunIds: [], resultRefs: [] };
-    setup.harness.db.set({ ...workflowRecord, workflow: { ...workflow, e2e: requiredE2E } });
-    const sourceOperationId = implementationId(setup);
-    const implementedAt = new Date().toISOString();
-    const implemented = { schemaVersion: 1, graphDigest: approval.graphDigest, runId: approval.runId, itemId: setup.graph.items[0]!.id,
-      sequence: 2, state: "IMPLEMENTED" as const, operationId: sourceOperationId, baseTreeSha: "a".repeat(40), candidateTreeSha: "b".repeat(40),
-      at: implementedAt, producer: "agentx-worker" };
-    await setup.harness.events(setup.workspaceId, sourceOperationId, [
-      { type: "progress", payload: { workItemProgress: { schemaVersion: 1, graphDigest: approval.graphDigest, runId: approval.runId,
-        itemId: setup.graph.items[0]!.id, sequence: 1, state: "STARTED", operationId: sourceOperationId,
-        baseTreeSha: "a".repeat(40), at: new Date().toISOString(), producer: "agentx-worker" } } },
-      { type: "progress", payload: { workItemProgress: implemented } },
-    ]);
-    const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
-    await setup.harness.finish(setup.workspaceId, sourceOperationId, "SUCCEEDED", { result: {
-      workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories,
-      checks: passingChecks(),
-      workflowDependenciesResult: { schemaVersion: 1, taskId: setup.taskId, graphDigest: approval.graphDigest, runId: approval.runId,
-        operationId: sourceOperationId, workflowRevision: approval.workflowRevision, status: "SUCCEEDED",
-        items: [implemented], candidateDigest: candidate.digest, at: new Date().toISOString() },
-    } });
-
-    const blocked = (setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META") as { workflow: { revision: number; stage: string; state: string; blockReason?: string; candidate?: unknown } }).workflow;
-    expect(blocked).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: "the final candidate has no first-party committed source export" });
-    expect(blocked.candidate).toBeUndefined();
-    const sourceOperation = (await setup.harness.actions.operations(setup.workspaceId)).find((operation) => operation.id === sourceOperationId)!;
-    expect(sourceOperation).not.toHaveProperty("workflowDependencies");
+    const { blocked, sourceOperationId } = await blockedForRecovery(setup);
     const route = `/v1/dev/tasks/${setup.taskId}/workflow/retry`;
     const stale = await setup.harness.dev(MAYA, "POST", route, {
       requestId: randomUUID(), expectedRevision: blocked.revision - 1, instructions: "Finalize the retained source.",
@@ -665,5 +673,21 @@ describe("broker work-breakdown callback integrity", () => {
     const conflict = await setup.harness.dev(MAYA, "POST", route, { ...recoveryRequest, instructions: "Change the retained source tree." });
     expect(conflict.body.error).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     expect(setup.operations().filter((operation) => operation.requestId === requestId)).toHaveLength(1);
+  });
+  it("lets a session editor retry the retained-source recovery in the same session, and records the retry (Task 13 review I-1)", async () => {
+    const setup = await approvedGraph(true, 1, true);
+    const { blocked } = await blockedForRecovery(setup);
+    const task = setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META") as { sessionId: string };
+    grantProject(setup.harness.db, OMAR);
+    const shared = await setup.harness.dev(MAYA, "PUT", `/v1/app/sessions/${task.sessionId}/shares`, { requestId: randomUUID(), principal: { kind: "member", developerId: OMAR.developerId }, level: "edit" });
+    expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+    const requestId = randomUUID();
+    const retried = await setup.harness.dev(OMAR, "POST", `/v1/app/sessions/${task.sessionId}/retry`, { requestId });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(setup.operations().filter((operation) => operation.requestId === requestId && operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+    expect((setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META") as { workflow: { stage: string; state: string; revision: number } }).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING", revision: blocked.revision + 1 });
+    const retriedEvents = setup.harness.db.find((item) => item.pk === agentSessionKey(TEST_ORG, task.sessionId, "META").pk && item.type === "retried").map((item) => item.text);
+    expect(retriedEvents).toEqual(["Omar Diaz retried this."]);
+    expect(setup.harness.db.get(agentSessionKey(TEST_ORG, task.sessionId, `REQUEST#${requestId}`))).toMatchObject({ action: "retry", by: OMAR.developerId });
   });
 });

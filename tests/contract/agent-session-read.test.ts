@@ -92,7 +92,30 @@ describe("reading a task session", () => {
       where: { kind: "cloud" }, link: `${CELL}/s/${sessionId}`, body: { kind: "task", task: { taskId } }, approvals: [], viewingNow: [], bindings: [],
       you: { level: "edit", owner: true, following: true }, followers: 0, revision: 1,
     });
-    expect(session.you.actions).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share", "handoff"]);
+    expect(session.you.actions).toEqual(["watch", "comment", "steer", "stop", "take_over", "share", "handoff"]);
+  });
+
+  it("offers retry only once the session has failed or been cancelled (13 review)", async () => {
+    const r = readWorld();
+    const { sessionId, record } = r.w.seedSession();
+    const meta = r.w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as Record<string, unknown>;
+    for (const [status, offered] of [["running", false], ["succeeded", false], ["failed", true], ["cancelled", true]] as const) {
+      r.w.db.set({ ...meta, summaryRevision: 2, summary: { ...record.summary, status } });
+      expect((await view(r, PRIYA, sessionId)).you.actions.includes("retry"), status).toBe(offered);
+    }
+  });
+
+  it("offers retry on a blocked workflow, which shows as needing a person, to the owner and not to a sharee (Task 14 ruling)", async () => {
+    const r = readWorld();
+    const { sessionId, record } = r.w.seedSession();
+    const meta = r.w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as Record<string, unknown>;
+    r.w.db.set({ ...meta, summaryRevision: 2, summary: { ...record.summary, status: "needs_person", workflowBlocked: true } });
+    expect((await view(r, PRIYA, sessionId)).you.actions).toContain("retry");
+    r.w.db.set({ ...meta, summaryRevision: 3, summary: { ...record.summary, status: "needs_person" } });
+    expect((await view(r, PRIYA, sessionId)).you.actions).not.toContain("retry");
+    r.w.db.set({ ...meta, summaryRevision: 4, summary: { ...record.summary, status: "needs_person", workflowBlocked: true } });
+    r.shareWith(sessionId, ZED);
+    expect((await view(r, ZED, sessionId)).you.actions).not.toContain("retry");
   });
 
   it("builds a sharee's view with the viewer's presentation, and gives them watch and comment only", async () => {

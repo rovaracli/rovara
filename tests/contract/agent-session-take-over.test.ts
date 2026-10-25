@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { agentSessionKey, agentXError, approvalKey, approverIndexKey, changesKey, liveSessionKey, mySessionsKey, sessionChannel, sessionEventId, sharedSessionsKey, userChannel, type OrgId, type Payer } from "@agentx/contracts";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
-import { createWriteApprovalRecord, getAnyApproval, getApprovalSubjectHandler, getApproverRule, listApprovalsFor, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
+import { createWriteApprovalRecord, getAnyApproval, getApprovalSubjectHandler, getApproverRule, listApprovalsFor, mayDecideApproval, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { WRITE_APPROVER_RULE } from "../../packages/broker/src/agents/write-gate.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
@@ -853,6 +853,55 @@ describe("approvals already waiting when the session is taken over (12b review I
     expect((await listed(w, PRIYA)).sort()).toEqual([mine, elsewhere].sort());
     expect(await listed(w, MAX)).toEqual([mine]);
     expect(await w.approvalOf(elsewhere)).toMatchObject({ owner: { developerId: PRIYA } });
+  });
+
+  // Approvals routed to a list of ids: being listed and holding start_tasks IS the authority to decide, so the previous owner must leave the list unless they qualify on their own.
+  const waitingByIds = async (w: World, taskId: string, ids: string[], approvalId = "apr_cccccccccccccccccccc") => {
+    const made = await createWriteApprovalRecord({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, {
+      orgId: ORG_A, approvalId, kind: "write", subject: { kind: "agent_run", taskId, stepId: "work" }, operationId: randomUUID(), connector: "linear", connectorType: "linear",
+      tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64), arguments: {}, argumentsHash: "c".repeat(64),
+      summary: "Create a Linear issue", class: "consequential", approvers: { kind: "ids", ids }, status: "PENDING", project: "web",
+      owner: { developerId: PRIYA, name: "Priya" }, attempts: 0, createdAt: "2026-10-22T08:30:00.000Z", expiresAt: "2026-10-29T08:30:00.000Z",
+    } as never, [], 8);
+    expect(made).toBe("created");
+    return approvalId;
+  };
+  const mayDecide = async (w: World, developerId: string, approvalId: string) =>
+    mayDecideApproval(w.deps, { orgId: ORG_A, developerId, orgRole: "member" }, await w.approvalOf(approvalId));
+
+  it("takes the previous owner out of an approval routed to ids, so they can no longer decide it, and the taker can", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    const approvalId = await waitingByIds(w, taskId, [PRIYA]);
+    expect(await mayDecide(w, PRIYA, approvalId)).toBe(true);
+    await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
+    expect(((await w.approvalOf(approvalId)).approvers as unknown as { ids: string[] }).ids).toEqual([MAX]);
+    expect(await mayDecide(w, PRIYA, approvalId)).toBe(false);
+    expect(await mayDecide(w, MAX, approvalId)).toBe(true);
+  });
+
+  it("keeps a previous owner who is a maintainer of the project (they qualify on their own), and no one else on the list", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    w.grant(PRIYA, "web", "maintainer");
+    const approvalId = await waitingByIds(w, taskId, [PRIYA, ARJUN]);
+    await w.confirm(MAX, (await w.asked(MAX, sessionId)).approvalId);
+    expect(((await w.approvalOf(approvalId)).approvers as unknown as { ids: string[] }).ids.sort()).toEqual([ARJUN, MAX, PRIYA].sort());
+    expect(await mayDecide(w, PRIYA, approvalId)).toBe(true);
+  });
+
+  it("fails closed when the previous owner's role cannot be read: they leave the list instead of staying on it", async () => {
+    const w = world();
+    const { sessionId, taskId } = sessionSeed(w);
+    w.grant(PRIYA, "web", "maintainer");
+    const approvalId = await waitingByIds(w, taskId, [PRIYA]);
+    const asked = await w.asked(MAX, sessionId);
+    const roleOf = w.members.roleOf;
+    w.members.roleOf = (orgId, project, who) => (who.developerId === PRIYA ? Promise.reject(new Error("the roster is down")) : roleOf(orgId, project, who));
+    await w.confirm(MAX, asked.approvalId);
+    w.members.roleOf = roleOf;
+    expect(((await w.approvalOf(approvalId)).approvers as unknown as { ids: string[] }).ids).toEqual([MAX]);
+    expect(await listed(w, PRIYA)).toEqual([]);
   });
 
   it("finishes the move when the handler is told again after a lost answer", async () => {

@@ -207,6 +207,20 @@ export class FakeDynamoDb {
         }
         return { Item: item === undefined ? undefined : this.readClone(item) };
       }
+      case "BatchGetCommand": {
+        // As DynamoDB takes it: at most 100 keys in all, none named twice; items come back in no promised order, and a key with no item is simply absent.
+        const request = input.RequestItems as Record<string, { Keys: Array<{ pk: string; sk: string }> }>;
+        const keys = Object.values(request).flatMap((spec) => spec.Keys);
+        if (keys.length === 0 || keys.length > 100) throw Object.assign(new Error("Too many items requested for the BatchGetItem call"), { name: "ValidationException", $metadata: {} });
+        if (new Set(keys.map((key) => itemKey(key.pk, key.sk))).size !== keys.length) throw Object.assign(new Error("Provided list of item keys contains duplicates"), { name: "ValidationException", $metadata: {} });
+        return {
+          Responses: Object.fromEntries(Object.entries(request).map(([table, spec]) => [table, spec.Keys.flatMap((key) => {
+            const item = this.get(key.pk, key.sk);
+            return item === undefined ? [] : [this.readClone(item)];
+          })])),
+          UnprocessedKeys: {},
+        };
+      }
       case "QueryCommand":
         return this.queryPage(input);
       case "ScanCommand":

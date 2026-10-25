@@ -143,6 +143,24 @@ const ROWS: readonly Row[] = [
   ["aws/workflow-e2e-notifier-projection.ts", "workflowE2EDisplayRef", "principal", ".ownerKey"],
   ["events.ts", "putArtifact", "principal", ".ownerKey*2"],
   ["repository-access.ts", "issue", "principal", ".ownerKey"],
+  // reads on NAMED interfaces and aliases that carry a task's id (13 review: the scan sees `interface TaskLike { developerId }` as it sees a literal type), each classified
+  ["agent-sessions/create.ts", "createTaskSessionItems", "history", ".startedBy*7"],
+  ["agent-sessions/create.ts", "ensureTaskSession", "history", ".developerId*2", ".startedBy"],
+  ["agent-sessions/create.ts", "startedText", "history", ".startedBy*4"],
+  ["agent-sessions/retry.ts", "repairLink", "other-record", ".developerId"],
+  ["agents/agent-tools-routes.ts", "callAgentTool>holdRecord", "principal", ".ownerKey"],
+  ["agents/agent-tools-routes.ts", "callAgentTool>replayOfRecorded", "principal", ".ownerKey*2"],
+  ["aws/activity-index.ts", "failureItem", "history", ".developerName"],
+  ["aws/activity-index.ts", "usageItem", "history", ".developerName"],
+  ["aws/broker.ts", "handleSlackTaskPeople", "other-record", ".slackUserId"],
+  ["aws/broker.ts", "writeGateRuntime>runConnector", "principal", ".ownerKey"],
+  ["aws/connector-ledger.ts", "finish", "principal", ".ownerKey"],
+  ["aws/connector-routes.ts", "scopeContext", "principal", ".ownerKey"],
+  ["aws/developer-tasks.ts", "sessionNoteItems", "other-record", ".developerId"],
+  ["developer/task-records.ts", "aiToolTurn", "history", ".developerId", ".developerName", ".provider", ".slackUserId*2"],
+  ["events.ts", "getArtifact", "principal", ".ownerKey"],
+  ["github-mcp.ts", "connectorContext", "principal", ".ownerKey"],
+  ["repository-access.ts", "inspect", "principal", ".ownerKey"],
 ];
 
 const PACKAGES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packages");

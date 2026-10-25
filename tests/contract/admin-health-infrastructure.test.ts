@@ -164,13 +164,17 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/events.ts", "packages/broker/src/agent-sessions/summary.ts", "packages/broker/src/agent-sessions/sweep.ts",
       // Plan 5, Task 9: a follower item expires with its ended session, and a presence item (who is looking now) expires in minutes (followers.ts writes both).
       "packages/broker/src/agent-sessions/followers.ts",
+      // Plan 5, Task 14 review: the Live wall leaves out a presence row whose own expiry has passed (live.ts reads it; the table deletes late).
+      "packages/broker/src/agent-sessions/live.ts",
       // Plan 5, Task 10: a session's comments, its per-hour comment rate item, its message count and its request items (replay keys) expire on it (messages.ts
       // writes them, drops a comment the table hasn't deleted yet, and replays a request only while its item lives).
       "packages/broker/src/agent-sessions/messages.ts",
       // Plan 5, Task 11a: the queued-steer count of a session expires with the session; the steer messages share messages.ts's items (steer.ts writes the count).
       "packages/broker/src/agent-sessions/steer.ts",
-      // Plan 5, Tasks 12b and 13: the request items of a stop, a retry and a take-over (their replay keys), and the take-over's follow-up mark, expire with the session's retention.
-      "packages/broker/src/agent-sessions/stop.ts", "packages/broker/src/agent-sessions/retry.ts", "packages/broker/src/agent-sessions/take-over.ts",
+      // Plan 5, Tasks 12b and 13: the take-over's follow-up mark and the request, stop and retry marks of a session expire with it (take-over.ts, stop.ts and retry.ts write them).
+      "packages/broker/src/agent-sessions/take-over.ts", "packages/broker/src/agent-sessions/stop.ts", "packages/broker/src/agent-sessions/retry.ts",
+      // Plan 5, Task 15: a dismissed Home card is kept 30 days, then deleted by the TTL (home.ts writes it and ignores one past its time).
+      "packages/broker/src/agent-sessions/home.ts",
       // Plan 5, Task 8: each person's change notices (the catch-up feed) expire a week after they are written.
       "packages/broker/src/realtime/changes.ts",
       // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
