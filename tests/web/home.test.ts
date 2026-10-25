@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { HomeResponseSchema } from "@agentx/contracts/web";
+import { HomeResponseSchema, HomeCardReaderSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { sessionFixture } from "./support/session-fixture.js";
 import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
@@ -62,7 +62,7 @@ it("opens the authoritative bare approval link externally without an inline deci
 });
 it("preserves a question's exact app anchor and only Open for unknown kinds", async () => {
  const href = "https://cell.example/s/" + sessionId + "#questions";
- const f = setup({ cards: [{ ...cards[0], kind: "question", cardId: "question:one", buttons: [{ action: "open", label: "Answer", method: "GET", href }] }, { ...cards[1], kind: "future_kind", cardId: "future:one", buttons: [{ action: "open", label: "Open", method: "GET", href }, { action: "retry", label: "Retry future", method: "POST", href: "https://cell.example/v1/app/sessions/" + sessionId + "/retry" }] }], total: 2 });
+ const f = setup({ cards: [{ ...cards[0], kind: "question", cardId: "question:one", buttons: [{ action: "open", label: "Answer", method: "GET", href }] }, { ...cards[1], sessionId, kind: "future_kind", cardId: "offer:future", buttons: [{ action: "open", label: "Open", method: "GET", href }, { action: "retry", label: "Retry future", method: "POST", href: "https://cell.example/v1/app/sessions/" + sessionId + "/retry" }] }], total: 2 });
  expect((await screen.findByRole("link", { name: "Answer" })).getAttribute("href")).toBe("/s/" + sessionId + "#questions");expect(screen.getByRole("link", { name: "Open" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Retry future" })).toBeNull();f.close();
 });
 it("dismisses a failure once with the exact occurrence and announces only server removal", async () => {
@@ -77,7 +77,7 @@ it("dismisses a failure once with the exact occurrence and announces only server
 it("retries the session once with a request id and uses the actual returned session", async () => {
  const returned = "ses_" + "b".repeat(20), sent = vi.fn(async () => ({ status: 200, body: { session: sessionFixture({ sessionId: returned }) } }));
  const f = setup({ cards: [{ ...cards[1], sessionId, buttons: [{ action: "retry", label: "Retry", method: "POST", href: "https://cell.example/v1/app/sessions/" + sessionId + "/retry" }] }], total: 1 }, "light", 200, sent);
- const button = await screen.findByRole("button", { name: "Retry" });fireEvent.click(button);fireEvent.click(button);await waitFor(() => expect(f.host.navigate).toHaveBeenCalledWith("/s/" + returned));expect(sent).toHaveBeenCalledTimes(1);expect(f.request.mock.calls.find(([request]) => request.method === "POST")?.[0].body).toMatchObject({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) });f.close();
+ const navigate = vi.spyOn(f.host, "navigate"), button = await screen.findByRole("button", { name: "Retry" });fireEvent.click(button);fireEvent.click(button);await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + returned));expect(sent).toHaveBeenCalledTimes(1);expect(f.request.mock.calls.find(([request]) => request.method === "POST")?.[0].body).toMatchObject({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown });f.close();
 });
 it("hides cross-origin writes, mismatched targets and unsupported start destinations", async () => {
  const f = setup({ cards: [{ ...cards[1], sessionId, buttons: [
@@ -86,4 +86,38 @@ it("hides cross-origin writes, mismatched targets and unsupported start destinat
  { action: "retry", label: "Wrong session", method: "POST", href: "https://cell.example/v1/app/sessions/ses_cccccccccccccccccccc/retry" },
  { action: "start", label: "Sign out start", method: "POST", href: "https://cell.example/v1/auth/browser/sign-out" },
  ] }], total: 1 });await screen.findByText("1 thing needs you");for (const name of ["Foreign dismiss", "Wrong card", "Wrong session", "Sign out start"]) expect(screen.queryByRole("button", { name })).toBeNull();expect(f.request.mock.calls.every(([request]) => request.method === "GET")).toBe(true);f.close();
+});
+
+it("refuses unsafe action schemes, methods, confirmation destinations and dismissal queries", async () => {
+ const { homeAction } = await import("../../packages/ui/src/api/home.js");
+ const card = HomeCardReaderSchema.parse({ ...cards[1]!, sessionId, buttons: [] });
+ for (const button of [
+ { action: "open", label: "Unsafe", method: "GET", href: "http://other.example/path" },
+ { action: "open", label: "Unsafe", method: "GET", href: "javascript:alert(1)" },
+ { action: "confirm", label: "Unsafe", method: "GET", href: "https://other.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" },
+ { action: "confirm", label: "Unsafe", method: "POST", href: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" },
+ { action: "dismiss", label: "Unsafe", method: "GET", href: "https://cell.example/v1/app/home/cards/failure%3Asecond/dismiss" },
+ { action: "dismiss", label: "Unsafe", method: "POST", href: "https://cell.example/v1/app/home/cards/failure%3Asecond/dismiss?other=1" },
+ { action: "dismiss", label: "Unsafe", method: "POST", href: "https://cell.example/v1/app/home/cards/failure%3Asecond/dismiss?occurrence=a&occurrence=b" },
+ { action: "retry", label: "Unsafe", method: "POST", href: "https://cell.example/v1/app/sessions/" + sessionId + "/retry?unexpected=1" },
+ { action: "start", label: "Unsafe", method: "POST", href: "https://cell.example/v1/app/org/close" },
+ ] as const) expect(homeAction(card, button, "https://cell.example"), button.href).toBeUndefined();
+});
+it("keeps an item visible when its dismissal fails or names a different card", async () => {
+ for (const response of [{ status: 403, body: { error: { code: "FORBIDDEN", message: "This item cannot be dismissed." } } }, { status: 200, body: { cardId: "failure:other", dismissed: true } }]) {
+ const f = setup({ cards: [{ ...cards[1], buttons: [{ action: "dismiss", label: "Dismiss", method: "POST", href: "https://cell.example/v1/app/home/cards/failure%3Asecond/dismiss" }] }], total: 1 }, "light", 200, async () => response);
+ fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));await screen.findByRole("alert");expect(screen.getByText(cards[1]!.title)).toBeTruthy();expect(screen.queryByText("Nothing needs you right now")).toBeNull();f.close();
+ }
+});
+
+it("revalidates forged Home write targets at the API boundary", async () => {
+ const { createHomeApi } = await import("../../packages/ui/src/api/home.js"), f = fakeHost();
+ const api = createHomeApi(f.host), card = HomeCardReaderSchema.parse({ ...cards[1], sessionId });
+ await expect(async () => api.dismissCard(card, { kind: "dismiss", label: "Dismiss", href: "/v1/app/home/cards/failure%3Aother/dismiss" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+ await expect(async () => api.retry(card, { kind: "retry", label: "Retry", href: "/v1/app/sessions/ses_cccccccccccccccccccc/retry" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+ expect(f.request).not.toHaveBeenCalled();
+});
+
+it("never claims nothing needs you when the server still reports pending items", async () => {
+ const f = setup({ cards: [], total: 14 });await screen.findByText("14 things need you");expect(screen.queryByText("Nothing needs you right now")).toBeNull();expect(screen.getByText("Showing 0 of 14")).toBeTruthy();expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();f.close();
 });
