@@ -129,8 +129,9 @@ export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask;
 // - a "[~] ... replace" resource line with no property lines under it (a type change);
 // - a line naming a guarded type that is not a resource line, in any section;
 // - a marked line in another section without that section's "[+|-|~] <EntryType> <id>:" shape;
-// - no Resources section, unless "There were no differences" is a column-0 line of its own, or
-//   the only sections are Outputs, Metadata, or Template with nothing but its Description.
+// - no Resources section, unless "There were no differences" (alone, or followed by one parenthesised
+//   note) is a column-0 line of its own, or the only sections are Outputs, Metadata, or Template with
+//   nothing but its Description.
 // Section headings are taken at face value: a column-0 line of a multi-line value could look like
 // one. That cannot hide a guarded change (every line naming a guarded type is a resource line or
 // unclear); at worst it adds an unclear entry or misses a non-guarded resource's IAM flag.
@@ -147,6 +148,9 @@ const LOGICAL_ID = /^[A-Za-z0-9]+$/;
 const REPLACING_PROPERTY = /\((?:requires|may cause) replacement\)/;
 const HEADINGS: ReadonlySet<string> = new Set(["Template", "IAM Statement Changes", "IAM Policy Changes", "IAM Identity Center Changes", "Security Group Changes", "Parameters", "Metadata", "Mappings", "Conditions", "Resources", "Outputs", "Other Changes", "Resources In Sync", "Unchecked Resources"]);
 const NO_DIFFERENCES = "There were no differences";
+/** The line alone, or (aws-cdk 2.1142.0, when it hid CDK metadata changes) with one parenthesised note:
+ * "There were no differences (CDK metadata changes were hidden, run cdk diff --strict to show)". */
+const NO_DIFFERENCES_LINE = /^There were no differences(?: \([^()]*\))?$/;
 /** The entry type formatDifference prints in each non-Resources section. */
 const ENTRY_TYPES: Readonly<Record<string, string>> = { Parameters: "Parameter", Metadata: "Metadata", Mappings: "Mapping", Conditions: "Condition", Outputs: "Output", "Other Changes": "Unknown", Template: "(?:AWSTemplateFormatVersion|Transform|Description)" };
 const SAFE_WITHOUT_RESOURCES: ReadonlySet<string> = new Set(["Outputs", "Metadata", "Template"]);
@@ -209,7 +213,7 @@ export function cdkDiffRisks(text: string): { data: DataChange[]; iam: boolean }
       pending = undefined;
       continue;
     }
-    if (!indented && line === NO_DIFFERENCES && sawHeader) noDifferencesLine = true;
+    if (!indented && NO_DIFFERENCES_LINE.test(line) && sawHeader) noDifferencesLine = true;
     if (indented || !MARK.test(line)) {
       // A property line, a JSON hunk line, or a multi-line value's continuation: detail of the resource above.
       if (resource?.type === "AWS::KMS::Key" && /^[├└]─ \[.\] KeyPolicy\b/.test(line)) iam = true;
