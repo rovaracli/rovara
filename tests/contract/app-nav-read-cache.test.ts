@@ -33,5 +33,5 @@ it("bounds retained read entries", async () => {
 });
 it("releases intermediate results when the navigation projection settles", async () => {
  const send = vi.fn(async () => ({})), cache = navigationReadCache({ send }), command = new GetCommand({ TableName: "a", Key: { pk: "p", sk: "s" } });
- await cache.documentClient.send(command);cache.release();await cache.documentClient.send(command);await cache.documentClient.send(command);expect(send).toHaveBeenCalledTimes(3);
+ await cache.documentClient.send(command);expect(cache.retainedReads).toBe(1);cache.release();expect(cache.retainedReads).toBe(0);await cache.documentClient.send(command);await cache.documentClient.send(command);expect(send).toHaveBeenCalledTimes(3);expect(cache.retainedReads).toBe(0);
 });

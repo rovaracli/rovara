@@ -49,3 +49,13 @@ describe("navigation contract and aggregation", () => {
  expect(AppNavReaderSchema.parse({ ...value, me: { ...value.me, orgRole: "future" }, extra: true })).toMatchObject({ me: { orgRole: "unknown" }, extra: true });
  });
 });
+
+it("keeps private-install and paid organizations out of trial prompts", async () => {
+ const { orgTrial } = await import("../../packages/broker/src/app-nav/nav.js");expect(orgTrial({ plan: "trial", createdBy: "system" })).toBeUndefined();expect(orgTrial({ plan: "team", createdBy: "member" })).toBeUndefined();
+});
+it("bounds retained navigation projections", async () => {
+ const f = fixture();for (let i = 0; i < 257; i++) await appNav(f.deps, { ...priya, developerId: i.toString(16).padStart(64, "0") });await appNav(f.deps, { ...priya, developerId: "0".repeat(64) });expect(f.sources.projects).toHaveBeenCalledTimes(258);
+});
+it("caps shared agents and open shared sessions independently", async () => {
+ const f = fixture();f.sources.sharedAgents.mockResolvedValue(Array.from({ length: 30 }, () => ({ agentId: A, name: "Shared agent" })));f.sources.sharedSessions.mockResolvedValue(Array.from({ length: 15 }, () => ({ sessionId: S, title: "Shared session" })));const nav = await appNav(f.deps, priya);expect(nav.shared.agents).toHaveLength(20);expect(nav.shared.sessions).toHaveLength(10);
+});
