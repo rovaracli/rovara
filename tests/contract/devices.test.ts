@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  DEVICES_LIMIT_MESSAGE,
   INDEX_EXPIRY_ATTRIBUTE,
   LOCAL_TOOLS,
   agentRequestKey,
@@ -27,6 +28,7 @@ type Item = Record<string, unknown>;
 type World = ReturnType<typeof world>;
 
 const TOOL_TEXT = (tool: string) => `${tool} isn't allowed in your company. Ask an admin to allow it.`;
+const NEED_PROJECT_TEXT = "Local agents need a project your company allows. Ask an admin to allow them.";
 const PROJECT_TEXT = (project: string) => `Local agents aren't allowed on ${project}. Ask an admin to allow them.`;
 const FULL: LocalAgentPolicy = { allowed: true, tools: [...LOCAL_TOOLS], projects: "all" };
 const CONFLICT_TEXT = "Someone else changed your company's rules for local agents. Reload them and make your change again.";
@@ -146,12 +148,27 @@ describe("registering and listing devices", () => {
     }
   });
 
-  it("refuses to register when it can't see the whole list (more rows than it reads), and when the list can't be read", async () => {
+  it("reads past 50 list rows: removed devices' rows stay, marked, and a live device after them is found and counted", async () => {
     const w = world();
     const priya = w.as(PRIYA);
-    for (let i = 0; i < 60; i += 1) {
+    const marked = (i: number) => `dvc_${String(i).padStart(20, "0")}`;
+    for (let i = 0; i < 120; i += 1) {
+      w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, marked(i)), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: marked(i), revokedAt: new Date(T0).toISOString() });
+    }
+    const last = "dvc_zzzzzzzzzzzzzzzzzzzy";
+    w.db.set({ ...deviceKey(ORG_A, last), entityType: "DEVICE", orgId: ORG_A, deviceId: last, developerId: PRIYA, label: "Far down the list", platform: "mac", createdAt: new Date(T0).toISOString(), lastSeenAt: new Date(T0).toISOString() });
+    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, last), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: last });
+    expect((await w.devicesOf(priya)).map((d) => d.deviceId)).toEqual([last]);
+    await expect(w.register(priya, "Next")).resolves.toBeDefined();
+    expect(await w.devicesOf(priya)).toHaveLength(2);
+  });
+
+  it("refuses to register when it can't see the whole list (more rows than its pages hold), and when the list can't be read", async () => {
+    const w = world();
+    const priya = w.as(PRIYA);
+    for (let i = 0; i < 1001; i += 1) {
       const id = `dvc_${String(i).padStart(20, "0")}`;
-      w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, id), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: id });
+      w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, id), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: id, revokedAt: new Date(T0).toISOString() });
     }
     const before = w.writes();
     expect(await outcome(w.call(priya, "POST", "/v1/app/devices", { requestId: randomUUID(), label: "Blind", platform: "mac" }))).toMatchObject({ code: "CONFIG_INVALID" });
@@ -163,7 +180,44 @@ describe("registering and listing devices", () => {
     expect(fresh.writes()).toBe(0);
   });
 
-  it("repeats: the same request id answers the first device and writes nothing; another body with that id is refused; a repeat after removal doesn't bring it back", async () => {
+  it("a failed take-back refuses the registration and never reports an eleventh device; the repeat finishes the take-back", async () => {
+    const w = world();
+    const priya = w.as(PRIYA);
+    for (let i = 0; i < 9; i += 1) await w.register(priya, `Mac ${String(i)}`);
+    let racerLanded = false;
+    let deletesToFail = 3;
+    const racing: DeviceRouteDependencies = {
+      ...w.deps,
+      documentClient: {
+        send: async (command: unknown) => {
+          const name = (command as { constructor: { name: string } }).constructor.name;
+          const items = (command as { input?: { TransactItems?: Array<Record<string, unknown>> } }).input?.TransactItems;
+          if (name === "TransactWriteCommand" && items?.every((entry) => "Delete" in entry) === true && deletesToFail > 0) {
+            deletesToFail -= 1;
+            throw new Error("table unavailable");
+          }
+          const result = await w.db.send(command as never);
+          if (name === "TransactWriteCommand" && !racerLanded && items?.some((entry) => "Put" in entry) === true) {
+            racerLanded = true;
+            const racer = "dvc_racerracerracerracer";
+            w.db.set({ ...deviceKey(ORG_A, racer), entityType: "DEVICE", orgId: ORG_A, deviceId: racer, developerId: PRIYA, label: "Racer", platform: "mac", createdAt: new Date(T0).toISOString(), lastSeenAt: new Date(T0).toISOString() });
+            w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, racer), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: racer });
+          }
+          return result;
+        },
+      },
+    };
+    const payload = { requestId: randomUUID(), label: "Late one", platform: "mac" };
+    expect(await outcome(w.call(priya, "POST", "/v1/app/devices", payload, racing))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // The repeat finds the member over the limit, takes the device back, and refuses; it never answers the device.
+    expect(await outcome(w.call(priya, "POST", "/v1/app/devices", payload))).toEqual({ code: "CONFIG_INVALID", message: DEVICES_LIMIT_MESSAGE });
+    const live = await w.devicesOf(priya);
+    expect(live).toHaveLength(10);
+    expect(live.map((d) => d.label)).not.toContain("Late one");
+    expect(w.db.get(agentRequestKey(ORG_A, PRIYA, payload.requestId))).toBeUndefined();
+  });
+
+  it("repeats: the same request id answers the first device and writes nothing; another body with that id is refused; a repeat after removal is refused and doesn't bring it back", async () => {
     const w = world();
     const priya = w.as(PRIYA);
     const requestId = randomUUID();
@@ -175,8 +229,9 @@ describe("registering and listing devices", () => {
     expect(await w.devicesOf(priya)).toHaveLength(1);
     expect(await outcome(w.call(priya, "POST", "/v1/app/devices", { requestId, label: "A different label", platform: "mac" }))).toMatchObject({ code: "CONFIG_INVALID" });
     await w.call(priya, "DELETE", `/v1/app/devices/${first.deviceId}`);
-    const late = w.deviceOf(await w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" }));
-    expect(late).toEqual(first);
+    const afterRemoval = w.writes();
+    expect(await outcome(w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.writes()).toBe(afterRemoval);
     expect(await w.devicesOf(priya)).toEqual([]);
     expect(w.meta(ORG_A, first.deviceId)).toHaveProperty("revokedAt");
   });
@@ -236,7 +291,10 @@ describe("removing a device", () => {
     expect(reply).toEqual({ deviceId: device.deviceId, revoked: true });
     expect(w.meta(ORG_A, device.deviceId)).toMatchObject({ revokedAt: new Date(T0).toISOString(), developerId: PRIYA });
     expect(w.meta(ORG_A, device.deviceId)![INDEX_EXPIRY_ATTRIBUTE]).toBe(Math.floor(T0 / 1000) + 365 * 86_400);
-    expect(w.row(ORG_A, PRIYA, device.deviceId)).toBeUndefined();
+    // The list row stays, marked and expiring with the record, so the member lifecycle (org close) still finds the device.
+    expect(w.row(ORG_A, PRIYA, device.deviceId)).toMatchObject({
+      orgId: ORG_A, developerId: PRIYA, deviceId: device.deviceId, revokedAt: new Date(T0).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(T0 / 1000) + 365 * 86_400,
+    });
     expect(await w.devicesOf(priya)).toEqual([]);
   });
 
@@ -250,7 +308,7 @@ describe("removing a device", () => {
     expect(await w.devicesOf(w.as(PRIYA))).toHaveLength(1);
     await w.call(w.as(OLA, "admin"), "DELETE", `/v1/app/devices/${device.deviceId}`);
     expect(w.meta(ORG_A, device.deviceId)).toHaveProperty("revokedAt");
-    expect(w.row(ORG_A, PRIYA, device.deviceId)).toBeUndefined();
+    expect(w.row(ORG_A, PRIYA, device.deviceId)).toMatchObject({ developerId: PRIYA, revokedAt: new Date(T0).toISOString() });
   });
 
   it("an owner may too; a maintainer-by-grant or project viewer who is only a member may not", async () => {
@@ -296,7 +354,7 @@ describe("removing a device", () => {
     expect(await readDevice(w.deps, ORG_A, "dvc_0123456789abcdefghij")).toBeUndefined();
   });
 
-  it("a removal that loses to a member merge reads the record again and removes it from its new owner's list", async () => {
+  it("a removal that loses to a member merge reads the record again and marks its new owner's list row", async () => {
     const w = world();
     const device = await w.register(w.as(PRIYA));
     // Task 21 moves the device to the survivor between the read and the write.
@@ -319,7 +377,7 @@ describe("removing a device", () => {
     await w.call(w.as(OLA, "admin"), "DELETE", `/v1/app/devices/${device.deviceId}`, undefined, racing);
     expect(w.meta(ORG_A, device.deviceId)).toMatchObject({ developerId: ARJUN });
     expect(w.meta(ORG_A, device.deviceId)).toHaveProperty("revokedAt");
-    expect(w.row(ORG_A, ARJUN, device.deviceId)).toBeUndefined();
+    expect(w.row(ORG_A, ARJUN, device.deviceId)).toMatchObject({ developerId: ARJUN, revokedAt: expect.any(String) as string });
   });
 
   it("a method other than DELETE on a device does nothing to it", async () => {
@@ -549,12 +607,20 @@ describe("checkLocalAgentAllowed", () => {
     expect(refusal(() => checkLocalAgentAllowed(policy({ allowed: false }), "claude-code", "web"))?.code).toBe("LOCAL_AGENT_NOT_ALLOWED");
   });
 
-  it("refuses a project the company didn't list, with the exact text; a listed project and no project pass", () => {
+  it("refuses a project the company didn't list, with the exact text; a listed project passes", () => {
     const rule = policy({ projects: ["web"] });
     expect(refusal(() => checkLocalAgentAllowed(rule, "claude-code", "api"))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: PROJECT_TEXT("api") });
     expect(() => checkLocalAgentAllowed(rule, "claude-code", "web")).not.toThrow();
-    expect(() => checkLocalAgentAllowed(rule, "claude-code")).not.toThrow();
     expect(refusal(() => checkLocalAgentAllowed(policy({ projects: [] }), "claude-code", "web"))?.code).toBe("LOCAL_AGENT_NOT_ALLOWED");
+  });
+
+  it("a rule that lists projects, even none, refuses a session with no project; a rule for all projects lets it pass", () => {
+    for (const projects of [["web"], []]) {
+      expect(refusal(() => checkLocalAgentAllowed(policy({ projects }), "claude-code"))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: NEED_PROJECT_TEXT });
+    }
+    expect(() => checkLocalAgentAllowed(policy({ projects: "all" }), "claude-code")).not.toThrow();
+    // The tool text still comes first.
+    expect(refusal(() => checkLocalAgentAllowed(policy({ tools: ["rovara"], projects: ["web"] }), "codex"))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: TOOL_TEXT("codex") });
   });
 
   it("the tool is checked before the project", () => {
