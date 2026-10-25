@@ -5,7 +5,7 @@
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   LIVE_PAGE_MAX, ProjectOverviewReaderSchema, ProjectOverviewSchema, agentKey, agentSessionKey, liveSessionKey, projectAiKey, orgMemberKey, projectMonthStatsKey, spendCounterKey, type OrgId, type ProjectOverview, type SessionStatus,
 } from "../../packages/contracts/src/index.js";
@@ -479,6 +479,23 @@ describe("a merged pull request adds one to the project's month, once", () => {
     expect(await mergedPullRequestStats(input, { orgId: ORG_A, project: "web" }, TASK, merged, reads)).toHaveLength(1);
     expect(await mergedPullRequestStats(input, { project: "web" }, TASK, merged, reads)).toEqual([]);
     expect(await mergedPullRequestStats({ ...(input as object), auditOrgId: async () => { throw new Error("no"); } } as never, { project: "web" }, TASK, merged, reads)).toEqual([]);
+  });
+
+  it("says in the log when a merge is not counted because its org is unknown or the lookup failed (Round 2 review M-2)", async () => {
+    const merged = { pullRequests: [{ repositoryId: "api", number: 1, state: "MERGED" }] } as never;
+    const reads = [{ pr: { repositoryId: "api", number: 1, state: "OPEN" } }];
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const events = () => log.mock.calls.flatMap(([line]) => { try { return [JSON.parse(String(line)) as Record<string, unknown>]; } catch { return []; } }).filter((entry) => entry["event"] === "merged_count.skipped");
+      const input = { tableName: "state", now: NOW };
+      expect(await mergedPullRequestStats({ ...input, auditOrgId: async () => { throw new Error("no"); } } as never, { project: "web" }, TASK, merged, reads)).toEqual([]);
+      expect(events().map((entry) => entry["reason"])).toEqual(["lookup_failed"]);
+      expect(await mergedPullRequestStats(input as never, { project: "web" }, TASK, merged, reads)).toEqual([]);
+      expect(events().map((entry) => entry["reason"])).toEqual(["lookup_failed", "org_unknown"]);
+      expect(events()[0]).toMatchObject({ taskId: TASK, project: "web" });
+      expect(await mergedPullRequestStats(input as never, { orgId: ORG_A, project: "web" }, TASK, merged, reads)).toHaveLength(1);
+      expect(events()).toHaveLength(2);
+    } finally { log.mockRestore(); }
   });
 
   it("counts nothing when the save does not commit, and nothing for a pull request that is still open", async () => {
