@@ -260,6 +260,7 @@ describe("recordTaskDuration", () => {
 
   it("loses no duration when another task's write lands between the read and the write", async () => {
     const db = new FakeDynamoDb();
+    seedDurations(db, "QUICK", [10]);
     const a = taskIn(db);
     const b = taskIn(db);
     let interleaved = false;
@@ -271,8 +272,8 @@ describe("recordTaskDuration", () => {
       return db.send(command as never);
     } };
     expect(await recordTaskDuration({ documentClient: racing, tableName: "state" }, a, { endedAt: "2026-10-25T10:20:00.000Z" })).toBe("recorded");
-    expect(stored(db)!.durations).toEqual([20, 50]);
-    expect(stored(db)!.version).toBe(2);
+    expect(stored(db)!.durations).toEqual([20, 50, 10]);
+    expect(stored(db)!.version).toBe(3);
   });
 
   it("gives up with an error, writing nothing twice, when the history keeps changing", async () => {
