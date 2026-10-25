@@ -28,6 +28,23 @@ const loggedEvents = (spy: { mock: { calls: unknown[][] } }): string[] => spy.mo
   try { return [String((JSON.parse(String(line)) as { event?: unknown }).event)]; } catch { return []; }
 });
 
+describe("the channel bindings behind access are not cut (Round 2 review I-1)", () => {
+  it("still lists a project to a member whose only route is a channel sorting past the project page's cap of bindings", async () => {
+    const h = await createDeveloperTaskBroker();
+    // Maya is a plain member in the channel bound to payments (C0123456789). More bindings than the project page reads, all sorting before her channel and none of them hers, are bound to another project.
+    h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "ledger"), entityType: "PROJECT_CATALOG", name: "ledger" });
+    for (let n = 0; n < SESSION_PROJECT_BINDINGS_MAX + 5; n += 1) {
+      const channelId = `A${String(n).padStart(10, "0")}`;
+      h.db.set({ ...slackBindingKey(TEST_ORG, SLACK_TEAM, channelId), entityType: "SLACK_CHANNEL_BINDING", projectName: "ledger", channelId });
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const listed = await h.dev(MAYA, "GET", "/v1/app/projects");
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect((listed.body.projects as Array<{ name: string }>).map((project) => project.name)).toEqual(["payments"]);
+    expect(loggedEvents(log)).not.toContain("slack_bindings.truncated");
+  });
+});
+
 describe("the project page's bounded reads", () => {
   it("reads at most SESSION_PROJECT_BINDINGS_MAX channel bindings and says so in the log when it cut", async () => {
     const { h, call } = await setup();
