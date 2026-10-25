@@ -1476,8 +1476,8 @@ function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionTakeOve
 
 /** The session routes' dependencies for one caller: the task view is built with that caller's task dependencies, so the task's own rules apply inside the session. */
 function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: DeveloperCaller): SessionRouteDependencies {
-  const sessions = sessionDependenciesOf(deps);
-  if (sessions === undefined || deps.tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
+  const sessions = sessionDependenciesOf(deps), tasks = deps.tasks;
+  if (sessions === undefined || tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
   const taskDeps = developerTaskRouteDependencies(deps, caller);
   const mint = deps.developer.realtimeToken;
   return {
@@ -1486,7 +1486,7 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
       files: deps.sessionDiffFiles,
       pullRequests: workspaceId => taskDeps.actions.pullRequests(workspaceId),
       repository: async (orgId, project, revision, repository) => {
-        const registered = await deps.tasks!.projectRevision(orgId, project, revision);
+        const registered = await tasks.projectRevision(orgId, project, revision);
         return registered?.definition.repositories.find(item => item.name === repository)?.url;
       },
     } satisfies NonNullable<SessionRouteDependencies["diff"]> }),
