@@ -29,6 +29,7 @@ import { taskActionRequestKey, taskAgentRunKey } from "../developer/task-records
 import type { AdmissionDependencies } from "../org/budget.js";
 import { readProjectAiWithRevision } from "../spend/settings.js";
 import type { ChainRunSpendReader } from "../spend/chain-run-spend.js";
+import { createChainSessionItems } from "../agent-sessions/create.js";
 import { chooseEdge, takeEdge } from "./branches.js";
 import { admitChainRun, chainRunLimitUsd, chainRunPayer, runRaiseMessage, settleStepSpend, stepRunLimitUsd, type ChainRunOrigin } from "./budget.js";
 import { requireChainAccess, type ChainAccessDeps } from "./access.js";
@@ -428,7 +429,8 @@ async function startOnce(deps: Deps, caller: AgentCaller | SystemCaller, input: 
     dueAt: new Date(deps.now() + FIRST_LOOK_MS).toISOString(),
   };
   try {
-    await transact(deps, runStartItems(deps, run, chain));
+    // Plan 5 Task 3: the run's session is created with the run, in the same transaction, so a run and its session exist together or not at all.
+    await transact(deps, [...runStartItems(deps, run, chain), ...await sessionItemsOf(deps, run)]);
   } catch (error) {
     if (failedIndexes(error) === undefined) throw error;
     // A lost race on a run id the caller gave: the run that won is the answer.
@@ -457,7 +459,28 @@ function parseTrigger(trigger: HandoffTrigger): HandoffTrigger {
   return parsed.data;
 }
 
-/** The items of a run's start transaction (Plan 5's session items join them here). */
+/** A member's name as the session shows it, read before the start's transaction; undefined when the member has none (the session says "Someone"). */
+async function memberNameOf(deps: Deps, developerId: string): Promise<string | undefined> {
+  try {
+    return (await deps.signInStore.getDeveloper(developerId))?.displayName;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The items of the run's session (Plan 5 Task 3): its starter by who or what began it, and its title from the first line of the input or the title of the event. */
+async function sessionItemsOf(deps: Deps, run: ChainRunRecord): Promise<TransactItem[]> {
+  const startedBy = run.startedBy.kind === "member" ? { kind: "member" as const, developerId: run.startedBy.developerId }
+    : { kind: run.startedBy.kind, triggerId: run.startedBy.triggerId };
+  const about = run.input ?? (run.startedBy.kind === "event" ? run.startedBy.title : run.trigger?.subject.title);
+  const starterName = run.startedBy.kind === "member" && run.startedBy.developerId !== run.owner.developerId ? await memberNameOf(deps, run.startedBy.developerId) : undefined;
+  return createChainSessionItems(deps, {
+    orgId: run.orgId, runId: run.runId, chainName: run.chainName, project: run.project, owner: { developerId: run.owner.developerId, name: await memberNameOf(deps, run.owner.developerId) ?? "Someone" },
+    startedBy, ...(starterName === undefined ? {} : { startedByName: starterName }), about, origin: run.origin, payer: run.payer, now: run.createdAt,
+  });
+}
+
+/** The items of a run's start transaction. */
 export function runStartItems(deps: Table, run: ChainRunRecord, chain: Pick<ChainRecord, "chainId" | "currentVersion">): TransactItem[] {
   const { orgId, runId, chainId, createdAt } = run;
   const aliases = new Aliases();

@@ -124,6 +124,87 @@ export function createTaskSessionItems(table: TableInput, input: TaskSessionInpu
 }
 
 
+// ---- a chain run (Plan 5 Task 3)
+
+export interface ChainSessionInput {
+  orgId: OrgId;
+  /** The run's own id: a chain run is one session and its id is the session's. */
+  runId: string;
+  chainName: string;
+  project: string;
+  owner: { developerId: string; name: string };
+  startedBy: AgentSessionRecord["startedBy"];
+  /** The name of the member who started the run, when it isn't the owner. */
+  startedByName?: string | undefined;
+  /** The first line of what the person said to start the run, else the title of the event that started it. */
+  about?: string | undefined;
+  origin: WorkOrigin;
+  payer: Payer;
+  now: string;
+}
+
+/** Slack's markup reduced to plain words, and a mention made inert (the same reduction a task's title gets for GitHub): the title is shown in lists and posted to channels. */
+function inertSessionText(text: string): string {
+  return text
+    .replace(/<(?:https?|mailto):[^|>]*\|([^>]*)>/giu, "$1")
+    .replace(/<#[A-Z0-9]+\|([^>]*)>/gu, "#$1")
+    .replace(/<[@#!][^>]*>/gu, "")
+    .replace(/@(?=\w)/gu, "@\u200D")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+/** The title of a chain session: `<chain>: <first line of the start input or the trigger title>`, redacted and made inert, and cut like any session title. */
+export function chainSessionTitle(chainName: string, about: string | undefined): string {
+  const first = about === undefined ? "" : inertSessionText(redactText(about.split(/\r?\n/u).find((line) => line.trim() !== "") ?? ""));
+  return sessionTitle(first === "" ? chainName : `${chainName}: ${first}`);
+}
+
+/**
+ * The items of a chain run's session, joining the run's own start transaction (Plan 4's `startChainRun`): the `META` header (status "starting", revision 1), its first leg, the
+ * `started` event, the entries that list it for its owner (and for a different member who started it), its project, the live wall and the sweep. `sessionId` is the run's id. The
+ * run's step tasks get no session of their own. Each is written only if absent.
+ */
+export function createChainSessionItems(table: TableInput, input: ChainSessionInput): TransactItem[] {
+  const owner = cleanSessionName(input.owner.name) ?? "Someone";
+  const chainName = cleanSessionName(input.chainName) ?? "A chain";
+  const starterName = input.startedByName === undefined ? undefined : cleanSessionName(input.startedByName);
+  const title = chainSessionTitle(chainName, input.about);
+  const subject = { kind: "chain" as const, chainRunId: input.runId };
+  const where = { kind: "cloud" as const };
+  const leg: SessionLeg = { seq: 1, subject, where, startedAt: input.now };
+  const summary = { status: "starting" as const, costUsd: 0, needsPeople: [], pendingApprovals: 0, digest: sha256("starting"), computedAt: input.now };
+  const record = AgentSessionRecordSchema.parse({
+    orgId: input.orgId, sessionId: input.runId, kind: "chain", mode: "delegate", subject, legs: [leg], where, project: input.project, title,
+    owner: { developerId: input.owner.developerId, name: owner }, startedBy: input.startedBy, origin: input.origin, payer: input.payer,
+    followerCount: 0, summary, summaryRevision: 1, revision: 1, createdAt: input.now, updatedAt: input.now,
+  } satisfies Record<string, unknown>);
+  const { orgId, sessionId } = record;
+  const startedByOwner = input.startedBy.kind === "member" && input.startedBy.developerId === input.owner.developerId;
+  const event: SessionEvent = {
+    eventId: sessionEventId("started", sessionId), at: input.now, type: "started",
+    actor: startedByOwner ? { kind: "member", developerId: input.owner.developerId, name: owner }
+      : input.startedBy.kind === "member" && starterName !== undefined ? { kind: "member", developerId: input.startedBy.developerId, name: starterName } : { kind: "system" },
+    text: input.startedBy.kind === "event" ? `An event started ${chainName}: ${title}`
+      : input.startedBy.kind === "schedule" ? `A schedule started ${chainName}: ${title}`
+        : input.startedBy.kind === "member" && !startedByOwner ? `${starterName ?? "Someone"} started ${chainName} for ${owner}: ${title}` : `${owner} started ${chainName}: ${title}`,
+  };
+  const listed = (developerId: string) => putNew(table, mySessionsKey(orgId, developerId, input.now, sessionId), "MY_SESSION", { orgId, sessionId, developerId, createdAt: input.now });
+  return [
+    putNew(table, agentSessionKey(orgId, sessionId, "META"), "AGENT_SESSION", { ...record }),
+    putNew(table, agentSessionKey(orgId, sessionId, sessionLegSk(leg.seq)), "AGENT_SESSION_LEG", { orgId, sessionId, ...leg }),
+    sessionEventItem(table, { orgId, sessionId }, event),
+    listed(input.owner.developerId),
+    ...(input.startedBy.kind === "member" && !startedByOwner ? [listed(input.startedBy.developerId)] : []),
+    putNew(table, projectSessionsKey(orgId, input.project, input.now, sessionId), "PROJECT_SESSION", { orgId, sessionId, project: input.project, createdAt: input.now }),
+    putNew(table, liveSessionKey(orgId, sessionId), "LIVE_SESSION", {
+      orgId, sessionId, kind: "chain", project: input.project, ownerId: input.owner.developerId, status: "starting", createdAt: input.now, updatedAt: input.now,
+    }),
+    putNew(table, openAgentSessionKey(orgId, sessionId), "OPEN_AGENT_SESSION", { orgId, sessionId }),
+  ];
+}
+
+
 // ---- a task from before sessions
 
 /** What a lazy creation reads of a task record. */

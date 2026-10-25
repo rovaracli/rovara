@@ -31,13 +31,14 @@ const startEvent = (w: ChainWorld, chainId: string, owner: string, trigger: Reco
     startedBy: { kind: "event", triggerId: TRIGGER_ID, eventKey: "sentry:evt-1", source: "sentry", type: "issue.created", title: "Refund errors" }, ...extra,
   } as never);
 const sessionOf = (w: ChainWorld, runId: string) => w.db.get(agentSessionKey(ORG_A, runId, "META").pk, "META");
+const withoutKeys = ({ pk: _pk, sk: _sk, entityType: _entityType, ...record }: Record<string, unknown>) => record; // eslint-disable-line @typescript-eslint/no-unused-vars
 
 describe("a chain run is one session", () => {
   it("writes the run and its session in one transaction: the session id is the run id, the owner's name is read, and the session is listed everywhere a session is", async () => {
     const w = world();
     const chain = await w.publish(ONE_STEP);
     const run = await start(w, PRIYA, chain.chainId, { input: "Why did checkout fail?\nIt started at noon." });
-    const session = AgentSessionRecordSchema.parse(sessionOf(w, run.runId)! as never);
+    const session = AgentSessionRecordSchema.parse(withoutKeys(sessionOf(w, run.runId)!));
     expect(session).toMatchObject({
       sessionId: run.runId, kind: "chain", mode: "delegate", subject: { kind: "chain", chainRunId: run.runId }, where: { kind: "cloud" }, project: "web",
       owner: { developerId: PRIYA, name: "Priya Shah" }, startedBy: { kind: "member", developerId: PRIYA }, origin: "app", payer: run.payer, revision: 1, followerCount: 0,
@@ -67,7 +68,10 @@ describe("a chain run is one session", () => {
     const w = world();
     const chain = await w.publish(ONE_STEP);
     const token = `ghp_${"a1".repeat(18)}`;
-    const run = await startEvent(w, chain.chainId, MAX, { eventKey: "sentry:evt-1", source: "sentry", type: "issue.created", subject: { kind: "alert", title: `<!channel> check ${token}` } });
+    const title = `<!channel> check ${token}`;
+    const run = await startEvent(w, chain.chainId, MAX, { eventKey: "sentry:evt-1", source: "sentry", type: "issue.created", subject: { kind: "alert", title } }, {
+      startedBy: { kind: "event", triggerId: TRIGGER_ID, eventKey: "sentry:evt-1", source: "sentry", type: "issue.created", title },
+    });
     const session = sessionOf(w, run.runId)!;
     expect(session["startedBy"]).toEqual({ kind: "event", triggerId: TRIGGER_ID });
     expect(session["origin"]).toBe("event");
