@@ -8,7 +8,7 @@ import { releaseFinishedTask } from "../../packages/broker/src/aws/developer-tas
 import { planDocumentInstructions } from "../../packages/broker/src/aws/broker-shared.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { estimateDuration, noteTaskDuration, recordTaskDuration } from "../../packages/broker/src/rovara-code/duration.js";
+import { estimateDuration, noteDurationAtPullRequest, noteFinishedTaskDuration, noteTaskDuration, recordTaskDuration } from "../../packages/broker/src/rovara-code/duration.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import {
   PLAN_MISSING_CHANGE, PLAN_MISSING_FILES, PLAN_MISSING_TESTS, asksForPlanParts, planAnswerProposesChecks, planMissingParts, parsePlanDocument, type PlanDocument,
@@ -277,6 +277,49 @@ describe("noteTaskDuration", () => {
     expect(log.mock.calls.map((call) => String(call[0])).join("\n")).toContain("duration.not_recorded");
     log.mockRestore();
     expect(markOf(db, task.taskId)).toBeUndefined();
+  });
+});
+
+describe("when a duration is owed", () => {
+  const raw = (extra: Record<string, unknown>) => ({ ...workflowOf(), ...extra }) as never;
+
+  it("is owed at the pull request only once every pull request the task needs is in (it waits for the merge)", async () => {
+    const db = new FakeDynamoDb();
+    const partway = taskIn(db, { workflow: raw({ stage: "PULL_REQUEST", state: "READY" }) });
+    await noteDurationAtPullRequest(deps(db), partway.taskId, "2026-10-25T10:20:00.000Z");
+    expect(stored(db)).toBeUndefined();
+    expect(markOf(db, partway.taskId)).toBeUndefined();
+    const done = taskIn(db, { workflow: raw({ stage: "WAIT_FOR_MERGE", state: "WAITING" }) });
+    await noteDurationAtPullRequest(deps(db), done.taskId, "2026-10-25T10:20:00.000Z");
+    expect(stored(db)!.durations).toEqual([20]);
+    // A task that is gone is no failure.
+    await expect(noteDurationAtPullRequest(deps(db), randomUUID(), "2026-10-25T10:20:00.000Z")).resolves.toBeUndefined();
+  });
+
+  it("is owed at the end only for a task that ran to the end: merged, or passed every step, or answered", async () => {
+    const db = new FakeDynamoDb();
+    const end = "2026-10-25T10:40:00.000Z";
+    const cases: Array<[string, Record<string, unknown>, boolean]> = [
+      ["merged", { stage: "MERGED", state: "COMPLETE", outcome: "MERGED" }, true],
+      ["passed", { stage: "CLOSED", state: "COMPLETE", outcome: "PASSED" }, true],
+      ["answered", { stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED" }, true],
+      ["rejected", { stage: "CLOSED", state: "COMPLETE", outcome: "REJECTED" }, false],
+      ["closed", { stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED" }, false],
+      ["not finished", { stage: "MERGED", state: "RUNNING", outcome: "MERGED" }, false],
+      ["merged stage, another outcome", { stage: "MERGED", state: "COMPLETE", outcome: "CLOSED" }, false],
+    ];
+    for (const [name, workflow, owed] of cases) {
+      const task = taskIn(db, { workflow: raw({ ...workflow, updatedAt: end }) });
+      await noteFinishedTaskDuration(deps(db), task);
+      expect(markOf(db, task.taskId), name).toBe(owed ? end : undefined);
+    }
+  });
+
+  it("is not owed again once the task is marked", async () => {
+    const db = new FakeDynamoDb();
+    const task = taskIn(db, { workflow: raw({ stage: "MERGED", state: "COMPLETE", outcome: "MERGED", updatedAt: "2026-10-25T10:40:00.000Z" }), durationRecordedAt: "2026-10-25T10:20:00.000Z" });
+    await noteFinishedTaskDuration(deps(db), task);
+    expect(stored(db)).toBeUndefined();
   });
 });
 
