@@ -12,6 +12,9 @@ import {
   deviceSessionKey,
   liveSessionKey,
   orgSettingsKey,
+  userChannel,
+  INDEX_EXPIRY_ATTRIBUTE,
+  SESSION_RETENTION_DAYS,
   projectMetaKey,
   sessionEventId,
   type OrgId,
@@ -238,6 +241,11 @@ describe("a session on a Mac moves to the cloud", () => {
     const text = JSON.stringify(tx);
     for (const part of ["LEG#000001", "LEG#000002", `SESSION#${sessionId}`, "COMMAND#", "REQUEST#", "handoff", "DEVTASK#"]) expect(text).toContain(part);
     expect(w.commands(deviceId)).toHaveLength(1);
+    // The tile moves in the same transaction (the summary refresh after it may rewrite it, so the transaction's own item is what is checked).
+    const tile = tx.find((item) => JSON.stringify(item).includes("LIVE_SESSIONS"))!;
+    expect(JSON.stringify(tile)).toContain('":kind":"task"');
+    // The Mac hears of its command through the owner's channel.
+    expect(w.published.some((post) => post.channel === userChannel(ORG_A, PRIYA) && post.events.some((event) => event.includes("device.command")))).toBe(true);
   });
 
   it("makes the session follow the task rules from now on: the project's maintainer sees it, who could not see the Mac session", async () => {
@@ -271,7 +279,7 @@ describe("a session on a Mac moves to the cloud", () => {
     const noList = world();
     const second = await noList.onMac();
     delete (noList.deps as { projectRepositories?: unknown }).projectRepositories;
-    expect(await code(noList.move(PRIYA, second.sessionId, noList.body()))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
+    expect(await code(noList.move(PRIYA, second.sessionId, noList.body()))).toEqual({ code: RUNTIME_UNAVAILABLE, message: NOT_READY });
     expect(w.calls.starts).toEqual([]);
     expect(noList.calls.starts).toEqual([]);
   });
@@ -478,6 +486,22 @@ describe("a move to the cloud never loses the session", () => {
     expect(w.calls.cancels).toHaveLength(1);
   });
 
+  it("does not use a task of another org, of another project, or one that already has a session; its own is cancelled, another org's is never touched", async () => {
+    for (const [fields, cancels] of [[{ project: "ops" }, 1], [{ sessionId: "ses_00000000000000000042" }, 1], [{ orgId: ORG_B }, 0]] as const) {
+      const w = world();
+      const { sessionId } = await w.onMac();
+      const original = w.runtime.startOnBranch.bind(w.runtime);
+      w.runtime.startOnBranch = async (deps, input) => {
+        const made = await original(deps, input);
+        w.db.set({ ...w.taskOf(made.taskId)!, ...fields });
+        return made;
+      };
+      expect(await code(w.move(PRIYA, sessionId, w.body()))).toEqual({ code: RUNTIME_UNAVAILABLE, message: "The move could not be completed right now. Try again in a moment." });
+      expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 1 });
+      expect(w.calls.cancels).toHaveLength(cancels);
+    }
+  });
+
   it("cancels the task it started when the Mac session ended while the task was starting, and the session is untouched", async () => {
     const w = world();
     const { sessionId, deviceId } = await w.onMac();
@@ -652,14 +676,29 @@ describe("a session in the cloud moves to a Mac", () => {
     await expect(w.view(ARJUN, sessionId)).resolves.toMatchObject({ sessionId });
   });
 
+  it("keeps a follower that the read-only check cannot decide (the project's channel might give them access); it only drops one that surely has none", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    w.seedShare(ORG_A, sessionId, { kind: "project", project: "web" }, "view");
+    // Zed holds no grant on web: only the project's channel (which the check does not ask) could make this share reach them.
+    w.follower(ORG_A, sessionId, ZED);
+    w.follower(ORG_A, sessionId, MAX);
+    w.patchSession(sessionId, { followerCount: 2 });
+    const deviceId = await w.mac(PRIYA);
+    await w.move(PRIYA, sessionId, w.toMac(deviceId));
+    // Max holds a grant on web, so the project share reaches him; Zed stays followed, undecided.
+    expect(w.under(sessionId, "FOLLOWER#").map((item) => item["developerId"]).sort()).toEqual([MAX, ZED].sort());
+    expect(w.meta(sessionId)["followerCount"]).toBe(2);
+  });
+
   it("drops more lost followers than one transaction holds: the rest go right after, and the count is right", async () => {
     const w = world();
     const { sessionId } = w.inCloud();
-    const ids = Array.from({ length: 90 }, (_, index) => `${String(index).padStart(2, "0")}${"c".repeat(62)}`);
+    const ids = Array.from({ length: 95 }, (_, index) => `${String(index).padStart(2, "0")}${"c".repeat(62)}`);
     for (const id of ids) w.follower(ORG_A, sessionId, id);
     w.follower(ORG_A, sessionId, ARJUN);
     w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "view");
-    w.patchSession(sessionId, { followerCount: 91 });
+    w.patchSession(sessionId, { followerCount: 96 });
     const deviceId = await w.mac(PRIYA);
     const before = w.writes();
     await w.move(PRIYA, sessionId, w.toMac(deviceId));
@@ -973,20 +1012,51 @@ describe("a request id belongs to one action", () => {
   });
 });
 
+describe("the number of legs", () => {
+  it("a cloud session with 20 legs is refused before its task is cancelled", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    const legs = Array.from({ length: SESSION_LEGS_MAX }, (_, index) => ({ seq: index + 1, subject: { kind: "task", taskId }, where: { kind: "cloud" }, startedAt: iso(T0), ...(index < SESSION_LEGS_MAX - 1 ? { endedAt: iso(T0), endedBy: "handoff" } : {}) }));
+    w.patchSession(sessionId, { legs });
+    expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toEqual({ code: "CONFIG_INVALID", message: "This session has moved as often as it can." });
+    expect(w.calls.cancels).toEqual([]);
+  });
+
+  it("a session that reached 20 legs in the moment of the write is not moved, and the started task is cancelled", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.onMac();
+    w.race.before = () => w.patchSession(sessionId, {
+      revision: 2,
+      legs: Array.from({ length: SESSION_LEGS_MAX }, (_, index) => ({ seq: index + 1, subject: { kind: "local", deviceId, tool: "claude-code" }, where: { kind: "mac", deviceId, label: "Priya's MacBook" }, startedAt: iso(T0), ...(index < SESSION_LEGS_MAX - 1 ? { endedAt: iso(T0), endedBy: "handoff" } : {}) })),
+    });
+    expect(await code(w.move(PRIYA, sessionId, w.body()))).toEqual({ code: "CONFIG_INVALID", message: "This session has moved as often as it can." });
+    expect(w.calls.cancels).toHaveLength(1);
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local" });
+  });
+});
+
 describe("one session across many legs", () => {
   it("goes Mac, cloud, Mac, cloud with the same id, numbered legs, a fresh Mac state each time, and the transcript count kept", async () => {
     const w = world();
     const { sessionId, deviceId } = await w.onMac();
     await recordLocalUpdate({ ...w.deps }, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "running", turns: [{ at: iso(T0), role: "person", text: "go" }, { at: iso(T0), role: "agent", text: "ok" }] });
     await w.move(PRIYA, sessionId, w.body());
+    w.clock.now += 60_000;
     await w.move(PRIYA, sessionId, w.toMac(deviceId));
     expect(w.local(sessionId)).toMatchObject({ status: "running", turnCount: 2, deviceId });
+    const lasts = Math.floor(w.clock.now / 1000) + SESSION_RETENTION_DAYS * 86_400;
+    expect(w.local(sessionId)![INDEX_EXPIRY_ATTRIBUTE]).toBe(lasts);
+    expect(w.db.get(deviceSessionKey(ORG_A, deviceId, sessionId))![INDEX_EXPIRY_ATTRIBUTE]).toBe(lasts);
     // The Mac can post again on the new leg.
     await expect(recordLocalUpdate({ ...w.deps }, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "running", turns: [{ at: iso(T0), role: "person", text: "back" }] })).resolves.toMatchObject({ accepted: 1 });
     expect(w.local(sessionId)).toMatchObject({ turnCount: 3 });
+    w.clock.now += 60_000;
     await w.move(PRIYA, sessionId, w.body());
     const legs = w.meta(sessionId).legs as Array<{ seq: number; endedAt?: string }>;
     expect(legs.map((leg) => leg.seq)).toEqual([1, 2, 3, 4]);
+    // A leg keeps the moment its move ended it.
+    expect(legs.map((leg) => leg.endedAt)).toEqual([iso(T0), iso(T0 + 60_000), iso(T0 + 120_000), undefined]);
     expect(legs.filter((leg) => leg.endedAt === undefined)).toHaveLength(1);
     expect(w.meta(sessionId)).toMatchObject({ sessionId, kind: "task", revision: 4 });
     expect(w.under(sessionId, "LEG#")).toHaveLength(4);
