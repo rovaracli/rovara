@@ -1,0 +1,657 @@
+// Plan 5 Task 18: local sessions. A person's Mac registers a session of a coding agent that runs there and shares it with named people; nothing about it reaches anyone else (not
+// the project's maintainers, not the org's admins) until it is shared. Authority is checked live on every call: the device is the caller's own and not removed, the session is that
+// device's and the caller's, the company's rule for local agents allows the tool and the project, and what the Mac may do through the session (a person's message, a stop) needs the
+// level the session's shares give. A removed Mac ends its open sessions on both paths (the device route and the member's removal).
+import { randomUUID } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import {
+  DEVICE_COMMAND_KEEP_DAYS,
+  INDEX_EXPIRY_ATTRIBUTE,
+  LOCAL_TURNS_MAX,
+  LOCAL_UPDATE_TURNS_MAX,
+  RealtimeNoticeSchema,
+  agentSessionKey,
+  deviceCommandCounterKey,
+  deviceCommandKey,
+  deviceKey,
+  deviceSessionKey,
+  liveSessionKey,
+  openAgentSessionKey,
+  orgSettingsKey,
+  userChannel,
+  type LiveResponse,
+  type OrgId,
+  type OrgRole,
+} from "../../packages/contracts/src/index.js";
+import { registerDevice } from "../../packages/broker/src/devices/store.js";
+import { endSessionsOfDevice, listDeviceCommands, recordLocalUpdate, registerLocalSession, type LocalSessionDependencies } from "../../packages/broker/src/devices/local-sessions.js";
+import { routeDeviceRequest } from "../../packages/broker/src/devices/routes.js";
+import { onSessionMemberRemoved } from "../../packages/broker/src/agent-sessions/lifecycle.js";
+import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
+import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
+import { sendSessionMessage } from "../../packages/broker/src/agent-sessions/messages.js";
+import { stopSession } from "../../packages/broker/src/agent-sessions/stop.js";
+import { sweepAgentSessions } from "../../packages/broker/src/agent-sessions/sweep.js";
+import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
+import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
+import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
+
+type Item = Record<string, unknown>;
+const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
+const iso = (ms: number) => new Date(ms).toISOString();
+const MINUTE = 60_000;
+const hex = (digit: string) => digit.repeat(64);
+const SECRET = `ghp_${"a1".repeat(18)}`;
+const REMOVED_TEXT = (label: string) => `${label} was removed, so this session stopped.`;
+const NEEDS_SHARE = "Share a local session before it can appear in Rovara.";
+const TOO_MANY = "Add up to 10 people when you share; add more afterwards.";
+const FULL_TEXT = "This session's transcript is full; start a new one.";
+
+function world() {
+  const w = sessionWorld();
+  const extras = ["1", "2", "3", "4", "5"].map((digit) => hex(digit));
+  for (const id of extras) w.member(ORG_A, id, "member");
+  const published: Array<{ channel: string; events: string[] }> = [];
+  const log: Array<Record<string, unknown>> = [];
+  const deviceDeps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, log: (entry: Record<string, unknown>) => { log.push(entry); } };
+  const deps: LocalSessionDependencies = {
+    documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, log: (entry) => { log.push(entry); },
+    realtimePublish: {
+      endpoint: "https://events.example.com/event", region: "us-east-1", credentials: async () => ({ accessKeyId: "AKIA", secretAccessKey: "secret" }),
+      fetch: (async (_url: unknown, init: { body: string }) => { published.push(JSON.parse(init.body) as { channel: string; events: string[] }); return new Response("{}", { status: 200 }); }) as never,
+    },
+  };
+  const read: SessionReadDependencies = {
+    ...deps, origin: CELL, cursorKey: "k".repeat(64),
+    taskView: async () => ({}) as never,
+  };
+  const as = (developerId: string, orgRole: OrgRole = "member", orgId: OrgId = ORG_A): DeveloperCaller => ({ ...w.caller(developerId, orgId), orgRole });
+  const setPolicy = (policy: { allowed?: boolean; tools?: string[]; projects?: "all" | string[] }) => w.db.set({
+    ...orgSettingsKey(ORG_A, "LOCAL_AGENTS"), entityType: "ORG_LOCAL_AGENTS", orgId: ORG_A, allowed: policy.allowed ?? true,
+    tools: policy.tools ?? ["rovara", "claude-code", "codex", "gemini-cli", "cursor-cli"], projects: policy.projects ?? "all", revision: 1,
+  });
+  const mac = async (who: string, label = "Priya's MacBook", orgId: OrgId = ORG_A): Promise<string> =>
+    (await registerDevice(deviceDeps, as(who, "member", orgId), { requestId: randomUUID(), label, platform: "mac" })).deviceId;
+  const body = (deviceId: string, extra: Record<string, unknown> = {}) => ({
+    requestId: randomUUID(), deviceId, tool: "claude-code", title: "Fix the flaky checkout test", project: "web", startedAt: iso(T0 - 2 * MINUTE),
+    shares: [{ principal: { kind: "member", developerId: ARJUN }, level: "view" }], ...extra,
+  });
+  const register = (who: string, deviceId: string, extra: Record<string, unknown> = {}, orgId: OrgId = ORG_A) => registerLocalSession(deps, as(who, "member", orgId), body(deviceId, extra));
+  /** A session of Priya's Mac shared with Arjun (view). */
+  const started = async (extra: Record<string, unknown> = {}, label = "Priya's MacBook") => {
+    const deviceId = await mac(PRIYA, label);
+    const { sessionId } = await register(PRIYA, deviceId, extra);
+    return { deviceId, sessionId };
+  };
+  const update = (who: string, sessionId: string, deviceId: string, extra: Record<string, unknown> = {}, orgId: OrgId = ORG_A) =>
+    recordLocalUpdate(deps, as(who, "member", orgId), sessionId, { requestId: randomUUID(), deviceId, status: "running", ...extra });
+  const turns = (count: number, prefix = "turn", at = iso(T0)) => Array.from({ length: count }, (_, index) => ({ at, role: index % 2 === 0 ? "person" : "agent", text: `${prefix} ${String(index)}` }));
+  const meta = (sessionId: string, orgId: OrgId = ORG_A) => w.db.get(agentSessionKey(orgId, sessionId, "META")) as Item | undefined;
+  const local = (sessionId: string) => w.db.get(agentSessionKey(ORG_A, sessionId, "LOCAL")) as Item | undefined;
+  const under = (sessionId: string, prefix: string) => w.db.find((item) => item.pk === agentSessionKey(ORG_A, sessionId, "META").pk && String(item.sk).startsWith(prefix));
+  const events = (sessionId: string) => under(sessionId, "EVENT#");
+  const commands = (deviceId: string) => w.db.find((item) => item.pk === deviceKey(ORG_A, deviceId).pk && String(item.sk).startsWith("COMMAND#"));
+  const device = (deviceId: string) => w.db.get(deviceKey(ORG_A, deviceId)) as Item | undefined;
+  const writes = () => w.db.transactions().length;
+  /** Sets the level of a share the registration wrote (the session's access reads the share item itself). */
+  const shareLevel = (sessionId: string, developerId: string, level: "view" | "use" | "edit") => w.db.set({ ...(w.db.get(agentSessionKey(ORG_A, sessionId, `SHARE#MEMBER#${developerId}`)) as Item), level });
+  const liveFor = async (who: string, orgId: OrgId = ORG_A): Promise<LiveResponse> => {
+    const path = "/v1/app/live";
+    return routeAgentSessionRequest(read, w.caller(who, orgId), { method: "GET", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`)) as Promise<LiveResponse>;
+  };
+  const view = (who: string, sessionId: string, orgId: OrgId = ORG_A) => sessionView(read, as(who, "member", orgId), sessionId);
+  const steer = (who: string, sessionId: string, text = "please use the staging key", orgId: OrgId = ORG_A) =>
+    sendSessionMessage(read, { ...as(who, "member", orgId), name: w.caller(who).name }, sessionId, { requestId: randomUUID(), kind: "steer", text });
+  const stop = (who: string, sessionId: string, requestId: string = randomUUID(), orgRole: OrgRole = "member") =>
+    stopSession(read, { ...as(who, orgRole), name: w.caller(who).name }, sessionId, { requestId });
+  const refresh = (sessionId: string) => refreshSessionSummary({ documentClient: w.db, tableName: "state", now: () => w.clock.now, log: () => undefined }, ORG_A, sessionId);
+  const commandPoll = (who: string, deviceId: string, after = 0, orgId: OrgId = ORG_A, orgRole: OrgRole = "member") => {
+    const path = `/v1/app/devices/${deviceId}/commands?after=${String(after)}`;
+    return routeDeviceRequest(deviceDeps, as(who, orgRole, orgId), { method: "GET", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`)) as Promise<{ commands: Array<Record<string, unknown>>; next: number }>;
+  };
+  const removeDevice = (who: string, deviceId: string, orgRole: OrgRole = "member") => {
+    const path = `/v1/app/devices/${deviceId}`;
+    return routeDeviceRequest(deviceDeps, as(who, orgRole), { method: "DELETE", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`));
+  };
+  return { ...w, extras, published, log, deviceDeps, deps, read, as, setPolicy, mac, body, register, started, update, turns, meta, local, under, events, commands, device, writes, shareLevel, liveFor, view, steer, stop, refresh, commandPoll, removeDevice };
+}
+
+describe("registering a local session", () => {
+  it("creates a session on the device, shared with Arjun: it shows in Arjun's Live with the device's label, and not in Max's (maintainer of web, not shared) or Ola's (admin)", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    expect(w.meta(sessionId)).toMatchObject({
+      orgId: ORG_A, sessionId, kind: "local", mode: "delegate", subject: { kind: "local", deviceId, tool: "claude-code" }, where: { kind: "mac", deviceId, label: "Priya's MacBook" },
+      project: "web", title: "Fix the flaky checkout test", owner: { developerId: PRIYA, name: "Priya" }, startedBy: { kind: "local" }, origin: "local", followerCount: 0,
+      summary: { status: "running", costUsd: 0 }, revision: 1, createdAt: iso(T0),
+    });
+    expect(w.meta(sessionId)).not.toHaveProperty("payer");
+    expect(w.meta(sessionId)).not.toHaveProperty("endedAt");
+    const arjun = (await w.liveFor(ARJUN)).tiles.find((tile) => tile.sessionId === sessionId);
+    expect(arjun).toMatchObject({ kind: "local", where: { kind: "mac", label: "Priya's MacBook", offline: false }, status: "running" });
+    for (const who of [MAX, MIA, ZED]) expect((await w.liveFor(who)).tiles.map((tile) => tile.sessionId)).not.toContain(sessionId);
+    expect((await w.liveFor(OLA)).tiles.map((tile) => tile.sessionId)).not.toContain(sessionId);
+    expect(await code(w.view(MAX, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(w.view(OLA, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+    expect((await w.view(ARJUN, sessionId)).you).toMatchObject({ level: "view", owner: false });
+    expect((await w.view(PRIYA, sessionId)).you).toMatchObject({ level: "edit", owner: true });
+  });
+
+  it("names the project for rules and budgets only: a project's maintainer or contributor is not given the session", async () => {
+    const w = world();
+    const { sessionId } = await w.started();
+    expect(await code(w.view(MAX, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(w.view(ZED, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("writes the session, its leg, its event, its lists, its shares, its device entry and the request in ONE transaction of fewer than 100 items", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const before = w.writes();
+    const shares = [ARJUN, MIA, MAX, OLA, ZED, ...w.extras].map((developerId) => ({ principal: { kind: "member", developerId }, level: "view" }));
+    expect(shares).toHaveLength(10);
+    const { sessionId } = await w.register(PRIYA, deviceId, { shares });
+    expect(w.writes()).toBe(before + 1);
+    const tx = w.db.transactions().at(-1)!;
+    expect(tx.length).toBeLessThan(100);
+    expect(w.under(sessionId, "SHARE#")).toHaveLength(10);
+    expect(w.under(sessionId, "LEG#")).toHaveLength(1);
+    expect(w.under(sessionId, "EVENT#")).toHaveLength(1);
+    expect(w.local(sessionId)).toMatchObject({ orgId: ORG_A, sessionId, deviceId, status: "running", turnCount: 0 });
+    expect(w.db.get(deviceSessionKey(ORG_A, deviceId, sessionId))).toMatchObject({ sessionId, deviceId });
+    expect(w.db.get(openAgentSessionKey(ORG_A, sessionId))).toBeDefined();
+    expect(w.db.get(liveSessionKey(ORG_A, sessionId))).toMatchObject({ kind: "local", ownerId: PRIYA });
+    expect(w.db.find((item) => String(item.pk).includes("AGENT_REQUEST#"))).toHaveLength(2); // the device's own and this one
+    expect((await w.liveFor(ZED)).tiles.map((tile) => tile.sessionId)).toContain(sessionId);
+  });
+
+  it("refuses a session with no shares and one with eleven, writing nothing; ten commit", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const before = w.writes();
+    expect(await code(w.register(PRIYA, deviceId, { shares: [] }))).toEqual({ code: "CONFIG_INVALID", message: NEEDS_SHARE });
+    const eleven = [ARJUN, MIA, MAX, OLA, ZED, ...w.extras, hex("6")].map((developerId) => ({ principal: { kind: "member", developerId }, level: "view" }));
+    expect(eleven).toHaveLength(11);
+    expect(await code(w.register(PRIYA, deviceId, { shares: eleven }))).toEqual({ code: "CONFIG_INVALID", message: TOO_MANY });
+    expect(w.writes()).toBe(before);
+    await expect(w.register(PRIYA, deviceId, { shares: eleven.slice(0, 10) })).resolves.toMatchObject({ sessionId: expect.stringMatching(/^ses_/) });
+  });
+
+  it("refuses what is not a person or project of the company, the owner themself, a repeat, and the whole company (that needs the confirmation page), all before writing", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const before = w.writes();
+    const one = (principal: Record<string, unknown>, level = "view") => [{ principal, level }];
+    expect(await code(w.register(PRIYA, deviceId, { shares: one({ kind: "member", developerId: BO }) }))).toEqual({ code: "CONFIG_INVALID", message: "That person isn't in your company." });
+    expect(await code(w.register(PRIYA, deviceId, { shares: one({ kind: "member", developerId: PRIYA }) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.register(PRIYA, deviceId, { shares: [...one({ kind: "member", developerId: ARJUN }), ...one({ kind: "member", developerId: ARJUN }, "edit")] }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.register(PRIYA, deviceId, { shares: one({ kind: "org" }) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.register(PRIYA, deviceId, { shares: one({ kind: "project", project: "nope" }) }))).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+    // Mia only views web: a "use" share to her would be refused on a share route too.
+    expect(await code(w.register(PRIYA, deviceId, { shares: one({ kind: "member", developerId: MIA }, "use") }))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(w.writes()).toBe(before);
+    await expect(w.register(PRIYA, deviceId, { shares: one({ kind: "project", project: "web" }, "use") })).resolves.toBeDefined();
+  });
+
+  it("answers a repeat of the same request with the same session and writes nothing; other words under the same id are refused", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const first = w.body(deviceId);
+    const a = await registerLocalSession(w.deps, w.as(PRIYA), first);
+    const before = w.writes();
+    const b = await registerLocalSession(w.deps, w.as(PRIYA), first);
+    expect(b.sessionId).toBe(a.sessionId);
+    expect(w.writes()).toBe(before);
+    expect(await code(registerLocalSession(w.deps, w.as(PRIYA), { ...first, title: "Something else" }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(w.db.find((item) => item.entityType === "AGENT_SESSION")).toHaveLength(1);
+  });
+
+  it("makes the title safe (redacted, one line) and stamps an honest start (never in the future)", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const { sessionId } = await w.register(PRIYA, deviceId, { title: `Use ${SECRET}‮ now\n please`, startedAt: iso(T0 + 3_600_000) });
+    const record = w.meta(sessionId)!;
+    expect(String(record.title)).not.toContain("ghp_");
+    expect(String(record.title)).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect((record.legs as Array<{ startedAt: string }>)[0]!.startedAt <= iso(T0)).toBe(true);
+  });
+
+  it("is refused for a device that is not the caller's own, is removed, is another org's or is missing, writing nothing", async () => {
+    const w = world();
+    const hers = await w.mac(PRIYA);
+    const his = await w.mac(ARJUN, "Arjun's Mac");
+    const removed = await w.mac(PRIYA, "Old Mac");
+    await w.removeDevice(PRIYA, removed);
+    const theirs = await w.mac(BO, "Bo's Mac", ORG_B);
+    const before = w.writes();
+    for (const id of [his, removed, theirs, "dvc_zzzzzzzzzzzzzzzzzzzz"]) expect(await code(w.register(PRIYA, id))).toEqual({ code: "NOT_FOUND", message: "device not found" });
+    expect(await code(w.register(BO, hers, {}, ORG_B))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.writes()).toBe(before);
+  });
+
+  it("applies the company's rule for local agents: a tool turned off gives the exact text, a project the rule doesn't list too, and a project-less session is held to a list", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    w.setPolicy({ tools: ["claude-code"], projects: "all" });
+    const before = w.writes();
+    expect(await code(w.register(PRIYA, deviceId, { tool: "codex" }))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: "codex isn't allowed in your company. Ask an admin to allow it." });
+    w.setPolicy({ projects: ["ops"] });
+    w.grant(PRIYA, "ops", "contributor");
+    expect(await code(w.register(PRIYA, deviceId))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: "Local agents aren't allowed on web. Ask an admin to allow them." });
+    expect(await code(w.register(PRIYA, deviceId, { project: undefined }))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: "Local agents need a project your company allows. Ask an admin to allow them." });
+    w.setPolicy({ allowed: false });
+    expect(await code(w.register(PRIYA, deviceId))).toMatchObject({ code: "LOCAL_AGENT_NOT_ALLOWED" });
+    expect(w.writes()).toBe(before);
+    w.setPolicy({ projects: ["web"] });
+    await expect(w.register(PRIYA, deviceId)).resolves.toBeDefined();
+  });
+
+  it("checks the person's role on the project BEFORE the rule, so a rule's text never names a project the person has no role on; and a policy that cannot be read refuses", async () => {
+    const w = world();
+    const zed = await w.mac(ZED, "Zed's Mac");
+    w.setPolicy({ projects: ["ops"] });
+    expect(await code(w.register(ZED, zed, { project: "web" }))).toEqual({ code: "PROJECT_NOT_FOUND", message: "project not found" });
+    expect(await code(w.register(ZED, zed, { project: "ghost-project" }))).toEqual({ code: "PROJECT_NOT_FOUND", message: "project not found" });
+    w.db.set({ ...orgSettingsKey(ORG_A, "LOCAL_AGENTS"), entityType: "ORG_LOCAL_AGENTS", orgId: ORG_A, allowed: "yes", revision: 1 });
+    const priya = await w.mac(PRIYA);
+    expect(await code(w.register(PRIYA, priya))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.db.find((item) => item.entityType === "AGENT_SESSION")).toHaveLength(0);
+  });
+
+  it("refuses a body with a field the route does not take, a tool Rovara does not know, and a repeated field shape", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    expect(await code(w.register(PRIYA, deviceId, { payer: { kind: "member" } }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.register(PRIYA, deviceId, { tool: "emacs" }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.register(PRIYA, deviceId, { shares: "all" }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(registerLocalSession(w.deps, w.as(PRIYA), "nope"))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("registers through the route (201, the session view) and a second org's person cannot register on this org's device", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const path = "/v1/app/sessions/local";
+    const reply = await routeAgentSessionRequest(w.read, w.caller(PRIYA), { method: "POST", path, headers: {}, requestId: "r", body: JSON.stringify(w.body(deviceId)) }, new URL(`${CELL}${path}`)) as { statusCode: number; body: { session: { sessionId: string; kind: string } } };
+    expect(reply.statusCode).toBe(201);
+    expect(reply.body.session).toMatchObject({ kind: "local", where: { kind: "mac", label: "Priya's MacBook" } });
+    expect(await code(routeAgentSessionRequest(w.read, w.caller(BO, ORG_B), { method: "POST", path, headers: {}, requestId: "r", body: JSON.stringify(w.body(deviceId)) }, new URL(`${CELL}${path}`)))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(routeAgentSessionRequest(w.read, w.caller(PRIYA), { method: "GET", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`)))).toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("updates from the Mac", () => {
+  it("adds one TURN# item and one local_turn event for each turn (a token redacted), refreshes the tile without the stream, and records the device's last sight", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.clock.now += 5 * MINUTE;
+    const reply = await w.update(PRIYA, sessionId, deviceId, {
+      status: "running", step: "Running the checkout tests", peek: `ran with ${SECRET}`,
+      turns: [{ at: iso(T0), role: "person", text: "fix the flaky test" }, { at: iso(T0), role: "agent", text: `I will use ${SECRET} to log in` }, { at: iso(T0), role: "agent", text: "done reading" }],
+    });
+    expect(reply).toMatchObject({ sessionId, status: "running", accepted: 3 });
+    const turns = w.under(sessionId, "TURN#");
+    expect(turns).toHaveLength(3);
+    expect(turns.map((turn) => turn.sk)).toEqual(["TURN#000001", "TURN#000002", "TURN#000003"]);
+    expect(turns.map((turn) => turn.role)).toEqual(["person", "agent", "agent"]);
+    expect(JSON.stringify(turns)).not.toContain("ghp_");
+    expect(w.under(sessionId, "EVENT#").filter((event) => event.type === "local_turn")).toHaveLength(3);
+    expect(JSON.stringify(w.events(sessionId))).not.toContain("ghp_");
+    const tile = (await w.liveFor(ARJUN)).tiles.find((candidate) => candidate.sessionId === sessionId)!;
+    expect(tile).toMatchObject({ status: "running", step: "Running the checkout tests" });
+    expect(JSON.stringify(tile)).not.toContain("ghp_");
+    expect(w.device(deviceId)).toMatchObject({ lastSeenAt: iso(T0 + 5 * MINUTE) });
+    expect(w.local(sessionId)).toMatchObject({ turnCount: 3, updatedAt: iso(T0 + 5 * MINUTE) });
+    for (const turn of turns) expect(typeof turn[INDEX_EXPIRY_ATTRIBUTE]).toBe("number");
+  });
+
+  it("is refused with NOT_FOUND, writing nothing, for another member's device, a removed device, another org's device, another device of the owner, and someone who does not own the session", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const arjunsMac = await w.mac(ARJUN, "Arjun's Mac");
+    const priyasSecond = await w.mac(PRIYA, "Priya's Mac mini");
+    const orgB = await w.mac(BO, "Bo's Mac", ORG_B);
+    const before = w.writes();
+    const attempts: Array<[string, string, OrgId?]> = [[ARJUN, arjunsMac], [PRIYA, arjunsMac], [ARJUN, deviceId], [PRIYA, priyasSecond], [BO, orgB, ORG_B], [BO, deviceId, ORG_B]];
+    for (const [who, id, orgId] of attempts) {
+      expect(await code(w.update(who, sessionId, id, { turns: w.turns(1) }, orgId))).toMatchObject({ code: "NOT_FOUND" });
+    }
+    expect(w.writes()).toBe(before);
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    await w.removeDevice(PRIYA, deviceId);
+    const afterRemoval = w.writes();
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.writes()).toBe(afterRemoval);
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+  });
+
+  it("refuses an update for a session that moved to the cloud (its subject is no longer local) with NOT_FOUND, so a late Mac update cannot touch the cloud session", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.db.set({ ...w.meta(sessionId)!, kind: "task", subject: { kind: "task", taskId: randomUUID() }, where: { kind: "cloud" } });
+    const before = w.writes();
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { status: "failed", turns: w.turns(1) }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.writes()).toBe(before);
+  });
+
+  it("ends the session when the Mac reports an end, and an ended session refuses with SESSION_ENDED", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const requestId = randomUUID();
+    const ended = await recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, { requestId, deviceId, status: "succeeded", step: "All tests pass" });
+    expect(ended).toMatchObject({ status: "succeeded" });
+    expect(w.meta(sessionId)).toMatchObject({ endedAt: iso(T0), summary: { status: "succeeded" } });
+    expect(w.db.get(openAgentSessionKey(ORG_A, sessionId))).toBeUndefined();
+    expect(w.db.get(deviceSessionKey(ORG_A, deviceId, sessionId))).toBeUndefined();
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) }))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    // The ending request, repeated, answers what it answered.
+    const before = w.writes();
+    await expect(recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, { requestId, deviceId, status: "succeeded", step: "All tests pass" })).resolves.toMatchObject({ status: "succeeded" });
+    expect(w.writes()).toBe(before);
+  });
+
+  it("keeps a failed end marked as a failed run, and treats a stopped report as open", async () => {
+    const w = world();
+    const a = await w.started();
+    await w.update(PRIYA, a.sessionId, a.deviceId, { status: "stopped" });
+    expect(w.meta(a.sessionId)).toMatchObject({ summary: { status: "stopped" } });
+    expect(w.meta(a.sessionId)).not.toHaveProperty("endedAt");
+    const b = await w.started();
+    await w.update(PRIYA, b.sessionId, b.deviceId, { status: "failed" });
+    expect(w.meta(b.sessionId)).toMatchObject({ endedAt: iso(T0), summary: { status: "failed", lastRunFailed: true } });
+  });
+
+  it("refuses a status the Mac may not report (paused), a field the route does not take, a turn that is too long, and more turns than one update may hold", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { status: "paused" }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { costUsd: 5 }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: [{ at: iso(T0), role: "agent", text: "x".repeat(4001) }] }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(LOCAL_UPDATE_TURNS_MAX + 1) }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    await expect(w.update(PRIYA, sessionId, deviceId, { turns: [{ at: iso(T0), role: "agent", text: "é".repeat(4000) }] })).resolves.toMatchObject({ accepted: 1 });
+  });
+
+  it("holds at most LOCAL_TURNS_MAX turns: more are refused with the exact text and nothing is written, but a status-only update still goes through", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.db.set({ ...w.local(sessionId)!, turnCount: LOCAL_TURNS_MAX - 1 });
+    await expect(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) })).resolves.toMatchObject({ accepted: 1 });
+    const before = w.writes();
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) }))).toEqual({ code: "CONFIG_INVALID", message: FULL_TEXT });
+    expect(w.writes()).toBe(before);
+    expect(w.local(sessionId)).toMatchObject({ turnCount: LOCAL_TURNS_MAX });
+    await expect(w.update(PRIYA, sessionId, deviceId, { status: "succeeded" })).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("takes a full update of 50 turns (more than one transaction holds with their events), in order, and finishes an update that stopped part-way when it is sent again", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const requestId = randomUUID();
+    const all = w.turns(LOCAL_UPDATE_TURNS_MAX);
+    // The last transaction fails once (a throttle), after the first has committed.
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AGENT_REQUEST"), error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
+    await expect(recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, { requestId, deviceId, status: "running", turns: all })).rejects.toBeDefined();
+    const partial = w.under(sessionId, "TURN#").length;
+    expect(partial).toBeGreaterThan(0);
+    expect(partial).toBeLessThan(LOCAL_UPDATE_TURNS_MAX);
+    await expect(recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, { requestId, deviceId, status: "running", turns: all })).resolves.toMatchObject({ accepted: LOCAL_UPDATE_TURNS_MAX });
+    const turns = w.under(sessionId, "TURN#").sort((a, b) => String(a.sk).localeCompare(String(b.sk)));
+    expect(turns).toHaveLength(LOCAL_UPDATE_TURNS_MAX);
+    expect(turns.map((turn) => turn.text)).toEqual(all.map((turn) => turn.text));
+    expect(w.under(sessionId, "EVENT#").filter((event) => event.type === "local_turn")).toHaveLength(LOCAL_UPDATE_TURNS_MAX);
+    expect(w.local(sessionId)).toMatchObject({ turnCount: LOCAL_UPDATE_TURNS_MAX });
+    expect(w.local(sessionId)).not.toHaveProperty("partial");
+    for (const transaction of w.db.transactions()) expect(transaction.length).toBeLessThanOrEqual(100);
+  });
+
+  it("keeps every turn of two updates that arrive together (the count is checked, one retries)", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    await Promise.all([w.update(PRIYA, sessionId, deviceId, { turns: w.turns(3, "a") }), w.update(PRIYA, sessionId, deviceId, { turns: w.turns(3, "b") })]);
+    const turns = w.under(sessionId, "TURN#");
+    expect(turns).toHaveLength(6);
+    expect(new Set(turns.map((turn) => turn.sk)).size).toBe(6);
+    expect(w.local(sessionId)).toMatchObject({ turnCount: 6 });
+  });
+
+  it("answers a repeat of an update with the same answer and writes nothing; other words under the same request id are refused", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const input = { requestId: randomUUID(), deviceId, status: "running", turns: w.turns(2) };
+    const first = await recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, input);
+    const before = w.writes();
+    await expect(recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, input)).resolves.toEqual(first);
+    expect(w.writes()).toBe(before);
+    expect(w.under(sessionId, "TURN#")).toHaveLength(2);
+    expect(await code(recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, { ...input, turns: w.turns(3) }))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("shows offline after 11 minutes without an update, and the next update clears it", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.clock.now += 11 * MINUTE;
+    await w.refresh(sessionId);
+    expect((await w.view(ARJUN, sessionId)).where).toEqual({ kind: "mac", label: "Priya's MacBook", offline: true });
+    w.clock.now += MINUTE;
+    await w.update(PRIYA, sessionId, deviceId, { status: "running" });
+    expect((await w.view(ARJUN, sessionId)).where).toEqual({ kind: "mac", label: "Priya's MacBook", offline: false });
+    // And the sweep finds a silent Mac on its own.
+    w.clock.now += 11 * MINUTE;
+    await sweepAgentSessions({ documentClient: w.db, tableName: "state", now: () => w.clock.now, log: () => undefined }, w.clock.now);
+    expect((await w.view(ARJUN, sessionId)).where).toMatchObject({ offline: true });
+  });
+
+  it("goes through the route: 200 for the Mac's person, NOT_FOUND for anyone else, GET refused", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const path = `/v1/app/sessions/${sessionId}/local/updates`;
+    const send = (who: string, method = "POST") => routeAgentSessionRequest(w.read, w.caller(who), { method, path, headers: {}, requestId: "r", body: JSON.stringify({ requestId: randomUUID(), deviceId, status: "running", turns: w.turns(1) }) }, new URL(`${CELL}${path}`));
+    await expect(send(PRIYA)).resolves.toMatchObject({ sessionId, accepted: 1 });
+    expect(await code(send(ARJUN))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(send(PRIYA, "GET"))).toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("messages and stops for a session on a Mac", () => {
+  it("gives the Mac a steer and a stop in order on its poll, each announced on the owner's channel, and never to anyone else", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.shareLevel(sessionId, ARJUN, "edit");
+    const message = await w.steer(ARJUN, sessionId, "use the staging database");
+    expect(message.delivery).toMatchObject({ state: "queued" });
+    await w.stop(ARJUN, sessionId);
+    const poll = await w.commandPoll(PRIYA, deviceId);
+    expect(poll.commands.map((command) => ({ seq: command.seq, kind: command.kind, sessionId: command.sessionId }))).toEqual([{ seq: 1, kind: "steer", sessionId }, { seq: 2, kind: "stop", sessionId }]);
+    expect(poll.commands[0]).toMatchObject({ messageId: message.messageId, text: "use the staging database" });
+    expect(poll.next).toBe(2);
+    expect((await w.commandPoll(PRIYA, deviceId, 1)).commands.map((command) => command.seq)).toEqual([2]);
+    expect((await w.commandPoll(PRIYA, deviceId, 2)).commands).toEqual([]);
+    const notices = w.published.filter((entry) => entry.channel === userChannel(ORG_A, PRIYA)).flatMap((entry) => entry.events.map((event) => RealtimeNoticeSchema.parse(JSON.parse(event))));
+    expect(notices.filter((notice) => notice.type === "device.command")).toEqual([{ type: "device.command", deviceId, seq: 1 }, { type: "device.command", deviceId, seq: 2 }]);
+    expect(JSON.stringify(w.published)).not.toContain("staging database");
+  });
+
+  it("expires the commands with the table's TTL and keeps the sequence beside them", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    await w.stop(PRIYA, sessionId);
+    const [command] = w.commands(deviceId);
+    expect(command).toMatchObject({ entityType: "DEVICE_COMMAND", orgId: ORG_A, deviceId, seq: 1, kind: "stop", sessionId });
+    expect(command![INDEX_EXPIRY_ATTRIBUTE]).toBe(Math.floor(T0 / 1000) + DEVICE_COMMAND_KEEP_DAYS * 86_400);
+    expect(w.db.get(deviceCommandKey(ORG_A, deviceId, 1))).toBeDefined();
+    expect(w.db.get(deviceCommandCounterKey(ORG_A, deviceId))).toMatchObject({ seq: 1 });
+    expect(typeof w.db.get(deviceCommandCounterKey(ORG_A, deviceId))![INDEX_EXPIRY_ATTRIBUTE]).toBe("number");
+    // A command past its time is not given although the table has not deleted it yet.
+    w.clock.now += (DEVICE_COMMAND_KEEP_DAYS + 1) * 86_400_000;
+    expect((await w.commandPoll(PRIYA, deviceId)).commands).toEqual([]);
+  });
+
+  it("needs the level the shares give: a viewer cannot steer, a user cannot stop, people the session is not shared with find nothing, an org admin has no say", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    expect(await code(w.steer(ARJUN, sessionId))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(await code(w.stop(ARJUN, sessionId))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(await code(w.steer(MAX, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(w.stop(MAX, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(w.stop(OLA, sessionId, randomUUID(), "admin"))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(w.steer(BO, sessionId, "hello", ORG_B))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.commands(deviceId)).toHaveLength(0);
+    w.shareLevel(sessionId, ARJUN, "use");
+    await expect(w.steer(ARJUN, sessionId)).resolves.toMatchObject({ delivery: { state: "queued" } });
+    expect(await code(w.stop(ARJUN, sessionId))).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(w.commands(deviceId)).toHaveLength(1);
+  });
+
+  it("stops by writing the command, the request, the stopped event in one transaction; a repeat of the request adds no second command; an ended session says so", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const requestId = randomUUID();
+    const before = w.writes();
+    const reply = await w.stop(PRIYA, sessionId, requestId);
+    expect(reply.session.sessionId).toBe(sessionId);
+    expect(w.writes()).toBe(before + 1);
+    expect(w.events(sessionId).some((event) => event.type === "stopped")).toBe(true);
+    await w.stop(PRIYA, sessionId, requestId);
+    expect(w.commands(deviceId)).toHaveLength(1);
+    await w.update(PRIYA, sessionId, deviceId, { status: "cancelled" });
+    expect(await code(w.stop(PRIYA, sessionId))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+    expect(w.commands(deviceId)).toHaveLength(1);
+  });
+
+  it("marks a steer delivered when the Mac's poll gives it, and not delivered when the session ends before the Mac asks", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.shareLevel(sessionId, ARJUN, "use");
+    const first = await w.steer(ARJUN, sessionId, "one");
+    const second = await w.steer(ARJUN, sessionId, "two");
+    const messageState = (id: string) => (w.db.get(agentSessionKey(ORG_A, sessionId, `MESSAGE#${id}`)) as { delivery: { state: string; reason?: string } }).delivery;
+    expect(messageState(first.messageId).state).toBe("queued");
+    await w.commandPoll(PRIYA, deviceId, 0);
+    expect(messageState(first.messageId).state).toBe("delivered");
+    expect(messageState(second.messageId).state).toBe("delivered");
+    const third = await w.steer(ARJUN, sessionId, "three");
+    await w.update(PRIYA, sessionId, deviceId, { status: "succeeded" });
+    await w.refresh(sessionId);
+    expect(messageState(third.messageId)).toMatchObject({ state: "not_delivered", reason: "the session has ended" });
+  });
+
+  it("does not hand a steer to a device that was removed or is not the owner's: the message is kept as not delivered, and a stop is refused", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.shareLevel(sessionId, ARJUN, "edit");
+    w.db.set({ ...w.device(deviceId)!, revokedAt: iso(T0) });
+    const message = await w.steer(ARJUN, sessionId, "anyone there?");
+    expect(message.delivery).toMatchObject({ state: "not_delivered" });
+    expect(await code(w.stop(ARJUN, sessionId))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.commands(deviceId)).toHaveLength(0);
+  });
+
+  it("serves the poll only to the device's own person: another member, another org and a removed device get NOT_FOUND", async () => {
+    const w = world();
+    const { deviceId } = await w.started();
+    expect(await code(w.commandPoll(ARJUN, deviceId))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(w.commandPoll(BO, deviceId, 0, ORG_B))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(w.commandPoll(OLA, deviceId, 0, ORG_A, "admin"))).toMatchObject({ code: "NOT_FOUND" });
+    await w.removeDevice(PRIYA, deviceId);
+    expect(await code(w.commandPoll(PRIYA, deviceId))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await code(w.commandPoll(PRIYA, "dvc_zzzzzzzzzzzzzzzzzzzz"))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("gives at most 100 commands to a poll, and a cursor that is not a number is refused", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    for (let seq = 1; seq <= 105; seq += 1) {
+      w.db.set({ ...deviceCommandKey(ORG_A, deviceId, seq), entityType: "DEVICE_COMMAND", orgId: ORG_A, deviceId, seq, kind: "stop", sessionId, at: iso(T0), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(T0 / 1000) + 3600 });
+    }
+    const page = await w.commandPoll(PRIYA, deviceId, 0);
+    expect(page.commands).toHaveLength(100);
+    expect(page.next).toBe(100);
+    expect((await w.commandPoll(PRIYA, deviceId, 100)).commands).toHaveLength(5);
+    expect(await code(listDeviceCommands(w.deviceDeps, w.as(PRIYA), deviceId, "abc"))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
+
+describe("a removed Mac ends its open sessions", () => {
+  it("ends them cancelled with the exact words when the device is removed, only those of that device, and takes the entry off the live and sweep lists", async () => {
+    const w = world();
+    const first = await w.started({}, "Priya's MacBook");
+    const second = await w.register(PRIYA, first.deviceId, { title: "A second session" });
+    const otherDevice = await w.mac(PRIYA, "Priya's Mac mini");
+    const other = await w.register(PRIYA, otherDevice);
+    const done = await w.register(PRIYA, first.deviceId, { title: "Already finished" });
+    await w.update(PRIYA, done.sessionId, first.deviceId, { status: "succeeded" });
+    w.clock.now += MINUTE;
+    await w.removeDevice(PRIYA, first.deviceId);
+    for (const id of [first.sessionId, second.sessionId]) {
+      expect(w.meta(id)).toMatchObject({ endedAt: iso(T0 + MINUTE), summary: { status: "cancelled", step: REMOVED_TEXT("Priya's MacBook") } });
+      expect(w.events(id).map((event) => event.text)).toContain(REMOVED_TEXT("Priya's MacBook"));
+      expect(w.db.get(openAgentSessionKey(ORG_A, id))).toBeUndefined();
+    }
+    expect(w.meta(other.sessionId)).not.toHaveProperty("endedAt");
+    expect(w.meta(done.sessionId)).toMatchObject({ endedAt: iso(T0), summary: { status: "succeeded" } });
+    expect(w.events(done.sessionId).map((event) => event.text)).not.toContain(REMOVED_TEXT("Priya's MacBook"));
+    // The late update of the removed Mac is refused.
+    expect(await code(w.update(PRIYA, first.sessionId, first.deviceId, { turns: w.turns(1) }))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("is done by an org admin removing someone's device too", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    await w.removeDevice(OLA, deviceId, "admin");
+    expect(w.meta(sessionId)).toMatchObject({ summary: { status: "cancelled" } });
+    expect(w.meta(sessionId)).toHaveProperty("endedAt");
+  });
+
+  it("finishes an end that stopped part-way when the removal is asked again, and refuses to end the sessions of a device that is not removed", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    // A device that is live: nothing is ended.
+    await expect(endSessionsOfDevice(w.deviceDeps, ORG_A, deviceId)).resolves.toBe(0);
+    expect(w.meta(sessionId)).not.toHaveProperty("endedAt");
+    // The device was marked removed, but the process died before the sessions were ended.
+    w.db.set({ ...w.device(deviceId)!, revokedAt: iso(T0), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(T0 / 1000) + 365 * 86_400 });
+    expect(w.meta(sessionId)).not.toHaveProperty("endedAt");
+    await w.removeDevice(PRIYA, deviceId);
+    expect(w.meta(sessionId)).toMatchObject({ summary: { status: "cancelled" } });
+    await expect(endSessionsOfDevice(w.deviceDeps, ORG_A, deviceId)).resolves.toBe(0);
+  });
+
+  it("does not end a session that names a different device, even when the removed device's entry lists it, and never one of another org", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const other = await w.mac(PRIYA, "Priya's Mac mini");
+    // A stale entry on the removed device for a session that runs elsewhere.
+    const elsewhere = await w.register(PRIYA, other);
+    w.db.set({ ...deviceSessionKey(ORG_A, deviceId, elsewhere.sessionId), entityType: "DEVICE_SESSION", orgId: ORG_A, deviceId, sessionId: elsewhere.sessionId, createdAt: iso(T0) });
+    await w.removeDevice(PRIYA, deviceId);
+    expect(w.meta(sessionId)).toHaveProperty("endedAt");
+    expect(w.meta(elsewhere.sessionId)).not.toHaveProperty("endedAt");
+    await expect(endSessionsOfDevice(w.deviceDeps, ORG_B, deviceId)).resolves.toBe(0);
+  });
+
+  it("is done by the member's removal as well (the lifecycle path), for every device they had", async () => {
+    const w = world();
+    const first = await w.started({}, "Priya's MacBook");
+    const otherDevice = await w.mac(PRIYA, "Priya's Mac mini");
+    const second = await w.register(PRIYA, otherDevice);
+    const arjunsDevice = await w.mac(ARJUN, "Arjun's Mac");
+    const arjuns = await w.register(ARJUN, arjunsDevice, { shares: [{ principal: { kind: "member", developerId: MAX }, level: "view" }] });
+    await onSessionMemberRemoved({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, developerId: PRIYA });
+    expect(w.meta(first.sessionId)).toMatchObject({ summary: { status: "cancelled", step: REMOVED_TEXT("Priya's MacBook") } });
+    expect(w.meta(second.sessionId)).toMatchObject({ summary: { status: "cancelled", step: REMOVED_TEXT("Priya's Mac mini") } });
+    expect(w.meta(arjuns.sessionId)).not.toHaveProperty("endedAt");
+    // Run again (a mover is repeatable): nothing more changes.
+    const before = w.writes();
+    await onSessionMemberRemoved({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, developerId: PRIYA });
+    expect(w.writes()).toBe(before);
+  });
+
+  it("a removal run that finds the device already marked still ends its sessions", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.db.set({ ...w.device(deviceId)!, revokedAt: iso(T0 - MINUTE) });
+    await onSessionMemberRemoved({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, developerId: PRIYA });
+    expect(w.meta(sessionId)).toMatchObject({ summary: { status: "cancelled" } });
+  });
+});

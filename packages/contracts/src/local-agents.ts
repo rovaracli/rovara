@@ -1,7 +1,21 @@
 // Plan 5 Task 17: a person's registered Macs (devices) and the company's rules for local agents (which tools, on which projects).
 // The ids, limits, tool names and the texts of LOCAL_AGENT_NOT_ALLOWED are in `agent-sessions.ts`; this file holds the shapes of what is stored and sent.
 import { z } from "zod";
-import { DEVICES_PER_MEMBER_MAX, DEVICE_LABEL_MAX, DeviceIdSchema, LOCAL_TOOLS, LocalToolSchema } from "./agent-sessions.js";
+import { AgentPrincipalSchema } from "./agent.js";
+import {
+  DEVICES_PER_MEMBER_MAX,
+  DEVICE_LABEL_MAX,
+  DeviceIdSchema,
+  LOCAL_TOOLS,
+  LOCAL_REGISTER_SHARES_MAX,
+  LOCAL_TURN_MAX_CHARS,
+  LOCAL_UPDATE_TURNS_MAX,
+  LocalToolSchema,
+  SESSION_STATUSES,
+  SessionIdSchema,
+  SessionLevelSchema,
+  SessionMessageIdSchema,
+} from "./agent-sessions.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { OrgIdSchema } from "./org.js";
 
@@ -87,3 +101,75 @@ export const LOCAL_AGENTS_CONFLICT_MESSAGE = "Someone else changed your company'
 
 /** LOCAL_AGENT_NOT_ALLOWED, third text: the rule lists projects and the session has none. */
 export const LOCAL_AGENTS_NEED_PROJECT_MESSAGE = "Local agents need a project your company allows. Ask an admin to allow them.";
+
+// ---- local sessions (Plan 5 Task 18)
+
+/** `POST /v1/app/sessions/local` refuses a session shared with nobody. */
+export const LOCAL_NEEDS_SHARE_MESSAGE = "Share a local session before it can appear in Rovara.";
+/** ... and one shared with more than `LOCAL_REGISTER_SHARES_MAX` at once (more go through `PUT …/shares`). */
+export const LOCAL_TOO_MANY_SHARES_MESSAGE = `Add up to ${String(LOCAL_REGISTER_SHARES_MAX)} people when you share; add more afterwards.`;
+/** An update with turns for a session that already holds `LOCAL_TURNS_MAX` of them. */
+export const LOCAL_TRANSCRIPT_FULL_MESSAGE = "This session's transcript is full; start a new one.";
+/** What a session says when its Mac was removed: the device's label, then this. */
+export function deviceRemovedMessage(label: string): string {
+  return `${label} was removed, so this session stopped.`;
+}
+
+/** How long a command waits for its device, and the most one poll gives. */
+export const DEVICE_COMMAND_KEEP_DAYS = 30;
+export const DEVICE_COMMANDS_PAGE_MAX = 100;
+/** What a device is told to do: pass on a message to the agent, or stop. */
+export const DEVICE_COMMAND_KINDS = ["steer", "stop"] as const;
+
+const InstantText = z.string().datetime();
+const codePoints = (max: number) => (value: string) => [...value].length <= max;
+
+/** The statuses a Mac reports: all but `paused` (a pause for budget is Rovara's, and a Mac session has no payer). */
+export const LOCAL_REPORTED_STATUSES = ["starting", "running", "needs_person", "waiting", "stopped", "succeeded", "failed", "cancelled"] as const satisfies ReadonlyArray<(typeof SESSION_STATUSES)[number]>;
+
+/** `POST /v1/app/sessions/local`. The counts of `shares` are checked with their own texts, after the shape. */
+export const RegisterLocalSessionBodySchema = z
+  .object({
+    requestId: z.string().uuid(),
+    deviceId: DeviceIdSchema,
+    tool: LocalToolSchema,
+    title: z.string().max(2000),
+    project: z.string().regex(AGENTX_NAME_PATTERN).optional(),
+    startedAt: InstantText,
+    shares: z.array(z.object({ principal: AgentPrincipalSchema, level: SessionLevelSchema }).strict()),
+  })
+  .strict();
+export type RegisterLocalSessionBody = z.infer<typeof RegisterLocalSessionBodySchema>;
+
+/** One line of the conversation on the Mac. */
+export const LocalTurnSchema = z
+  .object({ at: InstantText, role: z.enum(["person", "agent"]), text: z.string().min(1).refine(codePoints(LOCAL_TURN_MAX_CHARS), `must be at most ${String(LOCAL_TURN_MAX_CHARS)} characters`) })
+  .strict();
+export type LocalTurn = z.infer<typeof LocalTurnSchema>;
+
+/** `POST /v1/app/sessions/{id}/local/updates`. */
+export const LocalUpdateBodySchema = z
+  .object({
+    requestId: z.string().uuid(),
+    deviceId: DeviceIdSchema,
+    status: z.enum(LOCAL_REPORTED_STATUSES),
+    step: z.string().max(1000).optional(),
+    peek: z.string().max(2000).optional(),
+    turns: z.array(LocalTurnSchema).max(LOCAL_UPDATE_TURNS_MAX).optional(),
+    tokens: z.object({ input: z.number().int().min(0).max(1e12), output: z.number().int().min(0).max(1e12) }).strict().optional(),
+  })
+  .strict();
+export type LocalUpdateBody = z.infer<typeof LocalUpdateBodySchema>;
+
+/** One command as the device reads it from `GET /v1/app/devices/{id}/commands`. */
+export const DeviceCommandViewSchema = z
+  .object({
+    seq: z.number().int().min(1),
+    kind: z.enum(DEVICE_COMMAND_KINDS),
+    sessionId: SessionIdSchema,
+    messageId: SessionMessageIdSchema.optional(),
+    text: z.string().optional(),
+    at: InstantText,
+  })
+  .strict();
+export type DeviceCommandView = z.infer<typeof DeviceCommandViewSchema>;

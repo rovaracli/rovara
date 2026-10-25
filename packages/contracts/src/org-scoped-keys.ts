@@ -625,6 +625,7 @@ export type AgentSessionItemSk =
   | `PRESENCE#${string}`
   | `MESSAGE#${string}`
   | `TURN#${string}`
+  | "LOCAL"
   | `EVENT#${string}`
   | `LEG#${string}`
   | `TAKE_OVER_FOLLOW_UP#${string}`
@@ -634,6 +635,11 @@ export type AgentSessionItemSk =
 /** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
 export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
+}
+
+/** A local session's transcript line, `TURN#<number>`; six digits keep a query on `TURN#` in order. */
+export function sessionTurnSk(seq: number): `TURN#${string}` {
+  return `TURN#${paddedCounter(seq, "a turn number")}`;
 }
 
 /** An event's sort key: `EVENT#<instant>#<eventId>`, so a query on `EVENT#` reads them in order. */
@@ -761,6 +767,16 @@ export function deviceKey(orgId: OrgId, deviceId: DeviceId): OrgKey {
 /** The list of one member's devices, for the per-member limit and the settings page. */
 export function memberDevicesKey(orgId: OrgId, developerId: string, deviceId: DeviceId): OrgKey {
   return { pk: orgScoped(orgId, `MEMBER_DEVICES#${keyPart(developerId, "a developer id")}`), sk: keyPart(deviceId, "a device id") };
+}
+
+/** The count of commands a device was given: the next command is this plus one. Sits beside the commands (its sort key is not a command's) and expires with them. */
+export function deviceCommandCounterKey(orgId: OrgId, deviceId: DeviceId): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: "COMMAND_SEQ" };
+}
+
+/** Which sessions run on a device, one item per session (`SESSION#<sessionId>`), so removing the device finds them without reading its owner's whole list. */
+export function deviceSessionKey(orgId: OrgId, deviceId: DeviceId, sessionId: SessionId): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: `SESSION#${keyPart(sessionId, "a session id")}` };
 }
 
 /** One command waiting for a device (stop, move to the cloud, a steering message); six digits keep them in order. */
