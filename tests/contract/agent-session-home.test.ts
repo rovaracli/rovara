@@ -83,7 +83,7 @@ function world() {
   /** A write approval a running session of `owner` waits on, listed for `approvers`. */
   const writeApproval = async (o: { id: string; taskId: string; approvers?: string[]; summary?: string; agent?: { agentId: string; name: string } | null; minute: number; owner?: string; expiresInDays?: number; status?: string } ) => {
     const record = {
-      orgId: ORG_A, approvalId: o.id, kind: "write", subject: { kind: "agent_run", taskId: o.taskId, stepId: o.id.slice(4, 12) }, operationId: randomUUID(), connector: "linear", connectorType: "linear",
+      orgId: ORG_A, approvalId: o.id, kind: "write", subject: { kind: "agent_run", taskId: o.taskId, stepId: o.id.slice(4) }, operationId: randomUUID(), connector: "linear", connectorType: "linear",
       tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64), arguments: { title: "SECRET-ARGUMENT" }, argumentsHash: "c".repeat(64),
       summary: o.summary ?? "Create a Linear issue", class: "consequential", approvers: { kind: "ids", ids: o.approvers ?? [PRIYA] }, status: o.status ?? "PENDING", project: "web",
       owner: { developerId: o.owner ?? MAX, name: o.owner === undefined ? "Max" : "Someone" }, ...(o.agent === null ? {} : { agent: o.agent ?? { agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "Linear helper" } }),
@@ -259,7 +259,7 @@ describe("the ranking, the page and the total (the plan's fourteen cards)", () =
     }
   });
 
-  it("makes the same few reads for 300 sessions as for 250: never one per session, with the cut logged", async () => {
+  it("makes the same few reads for 450 sessions as for 250: never one per session, with the cut logged", async () => {
     const small = world();
     for (let index = 0; index < 5; index += 1) small.failed({ minute: index + 1 });
     const reads = async (w: World) => {
@@ -271,7 +271,7 @@ describe("the ranking, the page and the total (the plan's fourteen cards)", () =
     const medium = world();
     for (let index = 0; index < 250; index += 1) medium.failed({ minute: index + 1 });
     const large = world();
-    for (let index = 0; index < 300; index += 1) large.failed({ minute: index + 1 });
+    for (let index = 0; index < 450; index += 1) large.failed({ minute: index + 1 });
     const mediumReads = await reads(medium);
     const largeReads = await reads(large);
     expect(largeReads.length).toBe(mediumReads.length);
@@ -284,6 +284,22 @@ describe("the ranking, the page and the total (the plan's fourteen cards)", () =
 });
 
 describe("approval cards", () => {
+  it("checks a fixed number of approvals however many are waiting", async () => {
+    const reads = async (count: number) => {
+      const w = world();
+      const session = w.own({ owner: MAX });
+      for (let index = 0; index < count; index += 1) await w.writeApproval({ id: `apr_${String(index).padStart(20, "0")}`, taskId: session.taskId, minute: index + 1, approvers: [ARJUN] });
+      const before = w.db.commandNames().length;
+      const answer = await w.home(ARJUN);
+      return { total: answer.total, commands: w.db.commandNames().length - before };
+    };
+    const some = await reads(105);
+    const more = await reads(140);
+    // Listing reads one record each; Plan 3's decide check (several reads each) runs on a hundred of them at most.
+    expect(more.commands - some.commands).toBeLessThanOrEqual(140 - 105);
+    expect(more.total).toBe(100);
+  });
+
   it("shows an approval to the people who may decide it now, with the bare confirm link, and to nobody else", async () => {
     const w = world();
     const session = await w.blocking("apr_forarjunaaaaaaaaaaaa", 1, { approvers: [ARJUN, MIA] });
@@ -698,10 +714,10 @@ describe("the sources", () => {
     const w = world();
     unregister.push(registerHomeCardSource({
       kind: "offer",
-      list: async () => [offer("good", 1), { ...offer("bad", 2), reason: "" }, { ...offer("worse", 3), cardId: "failure:ses_00000000000000000001", kind: "failure" }, { ...offer("href", 4), buttons: [{ label: "x", action: "open", href: "javascript:alert(1)" }] }],
+      list: async () => [offer("good", 1), { ...offer("bad", 2), reason: "" }, { ...offer("worse", 3), cardId: "failure:ses_00000000000000000001", kind: "failure" }, { ...offer("wrongid", 5), cardId: "failure:ses_00000000000000000002" }, { ...offer("wrongkind", 6), kind: "failure" }, { ...offer("href", 4), buttons: [{ label: "x", action: "open", href: "javascript:alert(1)" }] }],
     }));
     expect(await w.ids(PRIYA)).toEqual(["offer:good"]);
-    expect(w.logs.filter((entry) => entry.event === "home.card_invalid")).toHaveLength(3);
+    expect(w.logs.filter((entry) => entry.event === "home.card_invalid")).toHaveLength(5);
     expect(JSON.stringify(w.logs)).not.toContain("Offer bad");
   });
 
