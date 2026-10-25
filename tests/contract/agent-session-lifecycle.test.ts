@@ -881,7 +881,7 @@ describe("the surface bindings of a closed org", () => {
     const s = w.session({ owner: PRIYA });
     const binding = { kind: "slack_thread" as const, teamId: "T0123456789", channelId: "C0123456789", threadTs: "1700000000.000100" };
     // Task 20 review I1: the binding sits in a partition of its own (`sessionBindingKey`), not the session's.
-    w.db.set({ ...sessionBindingKey(ORG_A, s.sessionId as never, "slack_thread"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId: s.sessionId, binding });
+    w.db.set({ ...sessionBindingKey(ORG_A, s.sessionId, "slack_thread"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId: s.sessionId, binding });
     w.db.set({ ...sessionSurfaceKey(ORG_A, binding), entityType: "SESSION_SURFACE", orgId: ORG_A, sessionId: s.sessionId, binding });
     await clearOrgSessions(w.deps, ORG_A);
     expect(w.get(sessionSurfaceKey(ORG_A, binding))!["indexExpiresAt"]).toBe(Math.floor(T0 / 1000) + 30 * DAY);

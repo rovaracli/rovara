@@ -47,7 +47,6 @@ import {
   type OrgId,
   type Payer,
   type SessionBinding,
-  type SessionId,
   type SessionLevel,
 } from "@agentx/contracts";
 import { checkTime, registerMemberMover } from "../agents/lifecycle.js";
@@ -759,7 +758,7 @@ async function stampSession(deps: SessionLifecycleDeps, run: CloseRun, sessionId
     }
   });
   // The bindings sit in a partition of their own (`sessionBindingKey`, Task 20 review I1), not the session's: each one and the surface item it names get the expiry too.
-  await eachPage(deps, { pk: sessionBindingKey(org, sessionId as SessionId, "slack_thread").pk }, async (items) => {
+  await eachPage(deps, { pk: sessionBindingKey(org, sessionId, "slack_thread").pk }, async (items) => {
     for (const item of items) {
       checkTime(deps);
       if (item["orgId"] !== org || !String(item["sk"]).startsWith(BINDING_PREFIX)) continue;
