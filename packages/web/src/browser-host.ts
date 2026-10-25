@@ -5,7 +5,7 @@ import { safeExternalUrl } from "../../ui/src/text/links.js";
 export interface BrowserWindow {
  location: Pick<Location, "origin" | "pathname" | "search" | "assign">;
  fetch: typeof fetch;localStorage: Pick<Storage, "getItem" | "setItem">;sessionStorage: Pick<Storage, "getItem" | "setItem">;
- document: Pick<Document, "createElement" | "body">;URL: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;WebSocket: typeof WebSocket;
+ document: Pick<Document, "createElement" | "body" | "title">;URL: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;WebSocket: typeof WebSocket;
  open(url: string, target: string, features: string): unknown;
 }
 function apiPath(path: string): string {
@@ -43,6 +43,7 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
  const host: AppHost = {
   kind: "web", origin: win.location.origin, transport, currentPath: () => win.location.pathname + win.location.search,
   async realtimeToken() { const result = await api.send("POST", "/v1/app/realtime/token", undefined, RealtimeTokenResponseReaderSchema);if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Live updates are temporarily unavailable.");return result.value; },
+  setTitle(title) { win.document.title = title; },
   openSocket(url, protocols): RealtimeSocket {
    const socket = new win.WebSocket(url, protocols);
    return { onOpen: listener => { socket.addEventListener("open", listener);return () => socket.removeEventListener("open", listener); }, onMessage: listener => { const receive = (event: MessageEvent<unknown>) => listener(event.data);socket.addEventListener("message", receive);return () => socket.removeEventListener("message", receive); }, onClose: listener => { socket.addEventListener("close", listener);return () => socket.removeEventListener("close", listener); }, onError: listener => { socket.addEventListener("error", listener);return () => socket.removeEventListener("error", listener); }, send: data => socket.send(data), close: () => socket.close() };

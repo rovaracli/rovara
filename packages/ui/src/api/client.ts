@@ -33,7 +33,7 @@ export function createApiClient(host: AppHost) {
  }
  function read<T>(body: unknown, schema: Reader<T>): T { try { return schema.parse(body); } catch { throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page."); } }
  return {
-  async get<T>(path: string, schema: Reader<T>): Promise<T> { return read((await request({ method: "GET", path })).body, schema); },
+  async get<T>(path: string, schema: Reader<T>, headers?: Record<string, string>): Promise<T> { return read((await request({ method: "GET", path, ...(headers === undefined ? {} : { headers }) })).body, schema); },
   async send<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>): Promise<SendResult<T>> {
    const response = await request({ method, path, body });
    if (response.status === 202) {

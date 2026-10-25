@@ -5,16 +5,17 @@ import type { SendResult } from "../api/client.js";
 import { isConfirmUrl } from "../text/links.js";
 import { CONFIRM_WAIT_MINUTES } from "../constants.js";
 import { Button } from "../design/Button.js";
-export function ConfirmInBrowser<T>({ result, subjectKey, isApplied }: { result: Exclude<SendResult<unknown>, { kind: "done" }>; subjectKey: QueryKey; isApplied: (data: T) => boolean }) {
+export function ConfirmInBrowser<T>({ result, subjectKey, isApplied, onApplied }: { result: Exclude<SendResult<unknown>, { kind: "done" }>; subjectKey: QueryKey; isApplied: (data: T) => boolean; onApplied?: (() => void) | undefined }) {
  const host = useAppHost(), query = useQueryClient();
  const applied = useEffectEvent((data: T) => isApplied(data));
+ const notifyApplied = useEffectEvent(() => onApplied?.());
  const [state, setState] = useState<"waiting" | "done" | "expired">("waiting");
  const key = hashKey(subjectKey);
  useEffect(() => {
  const deadline = setTimeout(() => setState("expired"), CONFIRM_WAIT_MINUTES * 60_000);
  const unsubscribe = query.getQueryCache().subscribe(event => {
  if (event.type !== "updated" || event.query.queryHash !== key || event.action.type !== "success" || event.action.manual === true) return;
- if (applied(event.query.state.data as T)) { clearTimeout(deadline);setState("done"); }
+ if (applied(event.query.state.data as T)) { clearTimeout(deadline);setState("done");notifyApplied(); }
  });
  return () => { clearTimeout(deadline);unsubscribe(); };
  }, [query, key, result]);

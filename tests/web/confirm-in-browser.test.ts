@@ -13,11 +13,11 @@ afterEach(() => { vi.useRealTimers(); });
 const key = ["session", "ses_aaaaaaaaaaaaaaaaaaaa"];
 const result = { kind: "needs_confirmation" as const, confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["Transfer the session"] };
 it("waits for a real refetch, never an optimistic cache change, before saying Done", async () => {
- vi.useFakeTimers();const query = createQueryClient(), f = fakeHost();let owner = false;await query.fetchQuery({ queryKey: key, queryFn: async () => ({ owner }) });
- const { unmount } = renderUi(h(QueryClientProvider, { client: query, children: h(AppHostProvider, { host: f.host, children: h(ConfirmInBrowser<{ owner: boolean }>, { result, subjectKey: key, isApplied: data => data.owner }) }) }));
+ vi.useFakeTimers();const query = createQueryClient(), f = fakeHost();let owner = false;const onApplied = vi.fn();await query.fetchQuery({ queryKey: key, queryFn: async () => ({ owner }) });
+ const { unmount } = renderUi(h(QueryClientProvider, { client: query, children: h(AppHostProvider, { host: f.host, children: h(ConfirmInBrowser<{ owner: boolean }>, { result, subjectKey: key, isApplied: data => data.owner, onApplied }) }) }));
  expect(screen.queryByText("Done")).toBeNull();expect(screen.getByText("Waiting for you to confirm in your browser")).toBeTruthy();
- act(() => { query.setQueryData(key, { owner: true }); });expect(screen.queryByText("Done")).toBeNull();
- owner = true;await act(async () => { await query.refetchQueries({ queryKey: key, exact: true }); });expect(screen.getByText("Done")).toBeTruthy();unmount();query.clear();
+ act(() => { query.setQueryData(key, { owner: true }); });expect(screen.queryByText("Done")).toBeNull();expect(onApplied).not.toHaveBeenCalled();
+ owner = true;await act(async () => { await query.refetchQueries({ queryKey: key, exact: true }); });expect(screen.getByText("Done")).toBeTruthy();expect(onApplied).toHaveBeenCalledTimes(1);unmount();query.clear();
 });
 it("shows the exact ten-minute recovery copy and cleans its timers on exit", async () => {
  vi.useFakeTimers();const query = createQueryClient(), f = fakeHost();await query.fetchQuery({ queryKey: key, queryFn: async () => ({ owner: false }) });

@@ -26,33 +26,33 @@ function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor
  return { ...f, ...ui, query, close() { ui.unmount();router.dispose();query.clear(); } };
 }
 it("opens conversation on demand, keeps the task in place and restores the opener focus", async () => {
- const f = setup(), heading = await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(document.activeElement).toBe(heading);expect(screen.queryByRole("textbox", { name: "Comment" })).toBeNull();const opener = screen.getByRole("button", { name: "Conversation" });opener.focus();fireEvent.click(opener);expect(await screen.findByRole("dialog", { name: "Conversation" })).toBeTruthy();expect(heading.isConnected).toBe(true);fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(document.activeElement).toBe(opener));f.close();
+ const f = setup(), heading = await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(document.activeElement).toBe(heading);expect(screen.queryByRole("textbox", { name: "Comment" })).toBeNull();const opener = screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" });opener.focus();fireEvent.click(opener);expect(await screen.findByRole("dialog", { name: "Conversation" })).toBeTruthy();expect(heading.isConnected).toBe(true);fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Close dialog" }));await waitFor(() => expect(document.activeElement).toBe(opener));f.close();
 });
-it("follows through the real API wrapper and refreshes the server view", async () => { const f = setup();fireEvent.click(await screen.findByRole("button", { name: "Follow" }));expect(await screen.findByRole("button", { name: "Following" })).toBeTruthy();expect(f.request.mock.calls.some(([request]) => request.method === "POST" && request.path.endsWith("/follow"))).toBe(true);f.close(); });
-it("does not fetch the conversation before the reader opens it", async () => { const f = setup();await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/messages"))).toBe(false);fireEvent.click(screen.getByRole("button", { name: "Conversation" }));await screen.findByRole("textbox", { name: "Comment" });await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/messages"))).toBe(true));f.close(); });
+it("follows through the real API wrapper and refreshes the server view", async () => { const f = setup();fireEvent.click(await screen.findByRole<HTMLButtonElement>("button", { name: "Follow" }));expect(await screen.findByRole<HTMLButtonElement>("button", { name: "Following" })).toBeTruthy();expect(f.request.mock.calls.some(([request]) => request.method === "POST" && request.path.endsWith("/follow"))).toBe(true);f.close(); });
+it("does not fetch the conversation before the reader opens it", async () => { const f = setup();await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/messages"))).toBe(false);fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" }));await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/messages"))).toBe(true));f.close(); });
 
 it("preserves an unsent comment when the conversation tray closes", async () => {
  const f = setup();await screen.findByRole("heading", { name: "Fix duplicate refunds" });
- fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
- fireEvent.change(await screen.findByRole("textbox", { name: "Comment" }), { target: { value: "Keep this question while I inspect the work" } });
- fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
- fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
- expect((await screen.findByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value).toBe("Keep this question while I inspect the work");f.close();
+ fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" }));
+ fireEvent.change(await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }), { target: { value: "Keep this question while I inspect the work" } });
+ fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Close dialog" }));
+ fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" }));
+ expect((await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" })).value).toBe("Keep this question while I inspect the work");f.close();
 });
 
 it("retains an unsaved comment edit when inspecting the task outside the tray", async () => {
  const f = setup([messageFixture()]);f.query.setQueryData(["nav"], navFixture());
- await screen.findByRole("heading", { name: "Fix duplicate refunds" });fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
- fireEvent.click(await screen.findByRole("button", { name: "Edit comment" }));fireEvent.change(screen.getByRole("textbox", { name: "Edit comment" }), { target: { value: "Keep my revised explanation" } });
- fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
- fireEvent.click(await screen.findByRole("button", { name: "Edit comment" }));
- expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Keep my revised explanation");f.close();
+ await screen.findByRole("heading", { name: "Fix duplicate refunds" });fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" }));
+ fireEvent.click(await screen.findByRole<HTMLButtonElement>("button", { name: "Edit comment" }));fireEvent.change(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Edit comment" }), { target: { value: "Keep my revised explanation" } });
+ fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Close dialog" }));fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" }));
+ fireEvent.click(await screen.findByRole<HTMLButtonElement>("button", { name: "Edit comment" }));
+ expect((screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Edit comment" })).value).toBe("Keep my revised explanation");f.close();
 });
 
 it("stops offering more conversation when the endpoint returns its unchanged cursor", async () => {
  const f = setup([messageFixture()], "2026-10-23T12:00:00.000Z#msg_aaaaaaaaaaaaaaaaaaaa");
- await screen.findByRole("heading", { name: "Fix duplicate refunds" });fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
- fireEvent.click(await screen.findByRole("button", { name: "Load more conversation" }));
+ await screen.findByRole("heading", { name: "Fix duplicate refunds" });fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" }));
+ fireEvent.click(await screen.findByRole<HTMLButtonElement>("button", { name: "Load more conversation" }));
  await waitFor(() => expect(screen.queryByRole("button", { name: "Load more conversation" })).toBeNull());
  expect(screen.getAllByText("Check refunds before retrying.")).toHaveLength(1);f.close();
 });

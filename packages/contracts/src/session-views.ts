@@ -238,6 +238,7 @@ export type SessionList = z.infer<typeof SessionListSchema>;
 export const SessionListReaderSchema = forwardReader(SessionListSchema);
 
 export const SessionEventReaderSchema = forwardReader(SessionEventSchema);
+export const SessionMessageReaderSchema = forwardReader(SessionMessageSchema);
 
 /** A page of a session's timeline, oldest first. `next` is the last event's sort key (`<at>#<eventId>`); readers re-read a little before it and de-duplicate by `eventId`. */
 export const SessionEventPageSchema = z

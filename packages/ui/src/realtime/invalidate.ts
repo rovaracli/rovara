@@ -4,7 +4,7 @@ import type { RealtimeNotice } from "@agentx/contracts/web";
 export function queryKeysFor(notice: RealtimeNotice): unknown[][] {
  switch (notice.type) {
  case "session.updated": return [["session", notice.sessionId], ["live"]];
- case "session.event": return [["session", notice.sessionId, "events"]];
+ case "session.event": return [["session", notice.sessionId, "events"], ["session", notice.sessionId, "messages"]];
  case "home.changed": return [["home"]];
  default: return [];
  }

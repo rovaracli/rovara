@@ -17,6 +17,8 @@ export interface AppHost {
  realtimeToken(): Promise<RealtimeTokenResponse>;
  // RULING Q14: routing and socket construction stay in the platform bridge, including desktop hosts.
  currentPath(): string;
+ // RULING Q29: optional platform title bridge; shared screens never read document.title.
+ setTitle?(title: string): void;
  openSocket(url: string, protocols: string[]): RealtimeSocket;
  openExternal(this: void, url: string): void;navigate(url: string): void;saveFile(name: string, data: Blob): void;
  signIn(this: void, returnPath: string, options?: { automatic?: boolean }): void;signOut(this: void): Promise<void>;

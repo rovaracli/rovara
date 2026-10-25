@@ -41,5 +41,5 @@ it("hides cached people when a refetch refuses access to the member list", async
  const query = createQueryClient();const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ShareDialog, { id: SESSION_FIXTURE_ID, orgName: "Acme" }) }) }));
  fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Share" }));await screen.findByRole<HTMLButtonElement>("button", { name: "Arjun" });refused = true;
  await act(async () => { await query.invalidateQueries({ queryKey: ["org", "members"] }); });
- expect(screen.getByRole("alert").textContent).toBe(refusal);expect(screen.queryByRole("button", { name: "Arjun" })).toBeNull();ui.unmount();query.clear();
+ expect((await screen.findByRole("alert")).textContent).toBe(refusal);expect(screen.queryByRole("button", { name: "Arjun" })).toBeNull();ui.unmount();query.clear();
 });

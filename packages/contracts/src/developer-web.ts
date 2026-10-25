@@ -32,3 +32,7 @@ export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
 
 
 export const AppMeResponseReaderSchema = forwardReader(AppMeResponseSchema);
+
+/** Exact existing GET /v1/app/org/members response from listOrganizationMembers. No provider subjects or issuer metadata. */
+export const AppOrgMembersResponseSchema = z.object({ members: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), email: z.string().optional(), role: OrgRoleSchema, joinedAt: z.string(), identities: z.array(DeveloperSignInMethodSchema) }).strict()) }).strict();
+export const AppOrgMembersResponseReaderSchema = forwardReader(AppOrgMembersResponseSchema);
