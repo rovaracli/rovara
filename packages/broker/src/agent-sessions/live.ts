@@ -253,14 +253,13 @@ export async function liveSessions(deps: LiveDependencies, caller: SessionReadCa
 
   const judgedAll: Array<Judged & { key: string }> = [];
   const followers = new Set<string>();
-  let lastIndex = -1;
-  for (let from = 0; from < candidates.length && judgedAll.length < limit; from += CHUNK) {
+  for (let from = 0; from < candidates.length && judgedAll.length <= limit; from += CHUNK) {
     const chunk = candidates.slice(from, from + CHUNK);
     const metas = await batchGetItems(deps, chunk.map((candidate) => agentSessionKey(orgId, candidate.sessionId, "META")));
     const sessions: Array<{ index: number; session: AgentSessionRecord }> = [];
     for (const [offset, candidate] of chunk.entries()) {
       const item = metas.get(keyText(agentSessionKey(orgId, candidate.sessionId, "META")));
-      if (item === undefined || item["orgId"] !== orgId) continue;
+      if (item === undefined) continue;
       const session = sessionFromItem(item);
       if (session === undefined || session.orgId !== orgId || session.sessionId !== candidate.sessionId) {
         log({ event: "agent_session.live_session_unreadable", sessionId: candidate.sessionId });
@@ -285,7 +284,7 @@ export async function liveSessions(deps: LiveDependencies, caller: SessionReadCa
     };
 
     for (const { index: at, session } of sessions) {
-      if (judgedAll.length >= limit) break;
+      if (judgedAll.length > limit) break;
       let judged: Awaited<ReturnType<typeof sessionAccessFor>>;
       try {
         judged = await sessionAccessFor(deps, caller, orgRole.data, session, { prefetch, memo, ...(filter === "team" ? { wantShareRole: true as const } : {}) });
@@ -299,15 +298,17 @@ export async function liveSessions(deps: LiveDependencies, caller: SessionReadCa
       if (filter === "mine" && !(access.owner || (session.startedBy.kind === "member" && session.startedBy.developerId === caller.developerId))) continue;
       if (filter === "team" && !(session.kind === "local" ? !access.owner : shareRole !== undefined)) continue;
       judgedAll.push({ session, access, key: candidates[at]!.key });
-      lastIndex = at;
       if (read.has(keyText(agentSessionKey(orgId, session.sessionId, `FOLLOWER#${caller.developerId}`)))) followers.add(session.sessionId);
     }
   }
   if (judgedAll.length === 0) return { tiles: [] };
+  // One more than a page is judged, so there is a next page exactly when a further session the caller may see exists (never a cursor to an empty page, and never a hint that hidden ones follow).
+  const more = judgedAll.length > limit;
+  const page = judgedAll.slice(0, limit);
 
   // The decisions the caller may make, listed once for the page, only for sessions that have one waiting.
   const decided = new Map<string, string>();
-  const waiting = judgedAll.filter(({ session }) => session.summary.pendingApprovals > 0).map(({ session }) => session);
+  const waiting = page.filter(({ session }) => session.summary.pendingApprovals > 0).map(({ session }) => session);
   if (waiting.length > 0 && deps.deciding?.approvalsFor !== undefined) {
     try {
       for (const [sessionId, decisions] of await deps.deciding.approvalsFor(caller, waiting)) {
@@ -322,7 +323,7 @@ export async function liveSessions(deps: LiveDependencies, caller: SessionReadCa
   const viewers = await readViewers(deps, orgId, nowMs);
 
   const tiles: LiveTile[] = [];
-  for (const { session, access } of judgedAll) {
+  for (const { session, access } of page) {
     const { summary } = session;
     const looking = [...(viewers.get(session.sessionId) ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.developerId < b.developerId ? -1 : a.developerId > b.developerId ? 1 : 0));
     const approvalUrl = decided.get(session.sessionId);
@@ -352,6 +353,5 @@ export async function liveSessions(deps: LiveDependencies, caller: SessionReadCa
     if (built.success) tiles.push(built.data);
     else log({ event: "agent_session.live_tile_invalid", sessionId: session.sessionId, problem: built.error.issues[0]?.path.join(".") ?? "tile" });
   }
-  const last = judgedAll.at(-1)!;
-  return { tiles, ...(judgedAll.length >= limit && lastIndex < candidates.length - 1 ? { next: sealCursor(deps, caller, cursorLabel, last.key) } : {}) };
+  return { tiles, ...(more ? { next: sealCursor(deps, caller, cursorLabel, page.at(-1)!.key) } : {}) };
 }

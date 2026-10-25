@@ -2,13 +2,14 @@
 // only the sessions they may view, with the actions they may take at their level, an approval link only for a decision they may make (bare, never with a ticket), nothing of another org,
 // and a fixed number of reads however many tiles there are. `SessionTileSchema` is the list's tile; the Live wall's is `LiveTileSchema`, read with `LiveResponseReaderSchema`.
 import { randomUUID } from "node:crypto";
+import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   LIVE_PAGE_MAX, LiveResponseReaderSchema, LiveResponseSchema, LiveTileReaderSchema, LiveTileSchema, SESSION_STATUS_WORDS, SESSION_STATUSES, agentSessionKey, liveSessionKey, livePresenceKey, orgMemberKey, projectMemberKey,
   projectChannel, sharedSessionsKey, type LiveResponse, type OrgId, type SessionStatus,
 } from "../../packages/contracts/src/index.js";
 import { decidingOf, routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
-import { liveSessions, type LiveDependencies } from "../../packages/broker/src/agent-sessions/live.js";
+import { batchGetItems, liveSessions, type LiveDependencies } from "../../packages/broker/src/agent-sessions/live.js";
 import { recordPresence } from "../../packages/broker/src/agent-sessions/followers.js";
 import { registerSessionNoticeSink } from "../../packages/broker/src/agent-sessions/notice-sink.js";
 import { installRealtimeSink } from "../../packages/broker/src/realtime/sink.js";
@@ -537,6 +538,156 @@ describe("realtime: the Task 8 notices are what tells the wall to read again", (
     expect(after).toMatchObject({ sessionId, status: "needs_person", statusWords: "Needs a person", needsYou: false });
     expect((await liveSessions(deps, pw.w.caller(PRIYA), { filter: "needs_me" })).tiles.map((tile) => tile.sessionId)).toEqual([sessionId]);
     expect(Date.parse(after!.updatedAt)).toBeGreaterThan(T0);
+  });
+});
+
+describe("the session record decides, and the tile only narrows what is read", () => {
+  /** Rewrites a session's index tile only; the session record stays as it was. */
+  const staleTile = (w: World, orgId: OrgId, sessionId: string, fields: Record<string, unknown>) => w.db.set({ ...(w.db.get(liveSessionKey(orgId, sessionId)) as Item), ...fields });
+  const batches = async (w: World, run: () => Promise<unknown>) => {
+    const before = w.db.commandNames().length;
+    await run();
+    return w.db.commandNames().slice(before).filter((name) => name === "BatchGetCommand").length;
+  };
+
+  it("does not show a session its record says is not a match, whatever its tile says", async () => {
+    const w = world();
+    const plain = w.seed({});
+    const webOnly = w.seed({});
+    const open = w.seed({});
+    const ended = w.seed({ status: "failed", endedAgoHours: 40 });
+    staleTile(w, ORG_A, plain.sessionId, { summary: { status: "needs_person", needsPeople: [ARJUN], pendingApprovals: 0 } });
+    staleTile(w, ORG_A, webOnly.sessionId, { project: "api" });
+    staleTile(w, ORG_A, open.sessionId, { summary: { status: "failed", lastRunFailed: true, needsPeople: [] } });
+    staleTile(w, ORG_A, ended.sessionId, { endedAt: iso(T0 - HOUR), status: "failed", summary: { status: "failed", needsPeople: [] } });
+    expect(await w.ids(ARJUN, { filter: "needs_me" })).toEqual([]);
+    expect(await w.ids(MAX, { filter: "all", project: "api" })).toEqual([]);
+    expect(await w.ids(ARJUN, { filter: "failed" })).toEqual([]);
+    // A tile that says a session ended while the record says it is open does not take it off the wall; one that says open does not bring back what ended.
+    staleTile(w, ORG_A, open.sessionId, { endedAt: iso(T0 - HOUR) });
+    staleTile(w, ORG_A, ended.sessionId, { endedAt: undefined });
+    const all = await w.ids(ARJUN, { filter: "all" });
+    expect(all).toEqual(expect.arrayContaining([plain.sessionId, webOnly.sessionId]));
+    expect(all).not.toContain(ended.sessionId);
+  });
+
+  it("skips a session record that is another org's, and one that names another session, without showing or failing", async () => {
+    const w = world();
+    const good = w.seed({});
+    const foreign = w.seed({});
+    const swapped = w.seed({});
+    w.db.set({ ...(w.db.get(agentSessionKey(ORG_A, foreign.sessionId, "META")) as Item), orgId: ORG_B });
+    w.db.set({ ...(w.db.get(agentSessionKey(ORG_A, swapped.sessionId, "META")) as Item), sessionId: good.sessionId });
+    const logs: Array<Record<string, unknown>> = [];
+    const answer = await liveSessions(w.deps({ log: (entry) => logs.push(entry) }), w.caller(PRIYA), {});
+    expect(answer.tiles.map((tile) => tile.sessionId)).toEqual([good.sessionId]);
+    expect(logs.filter((entry) => entry.event === "agent_session.live_session_unreadable")).toHaveLength(2);
+  });
+
+  it("reads nothing about sessions the filter cannot keep: Needs me, Failed and a project read one small batch among 300 sessions", async () => {
+    const w = world();
+    for (let index = 0; index < 299; index += 1) w.seed({});
+    const mine = w.seed({ status: "needs_person", needs: [ARJUN], pending: 0, lastRunFailed: true });
+    expect(await w.ids(ARJUN, { filter: "needs_me" })).toEqual([mine.sessionId]);
+    expect(await batches(w, () => w.live(ARJUN, { filter: "needs_me" }))).toBeLessThanOrEqual(3);
+    expect(await batches(w, () => w.live(ARJUN, { filter: "failed" }))).toBeLessThanOrEqual(3);
+    expect(await batches(w, () => w.live(ARJUN, { filter: "all", project: "api" }))).toBeLessThanOrEqual(1);
+    expect(await batches(w, () => w.live(ARJUN, { filter: "all", limit: "10" }))).toBeLessThanOrEqual(8);
+  });
+
+  it("reads none of the sessions of other orgs that sit in the index, and none that ended failed outside the window or with another status", async () => {
+    const w = world();
+    const good = w.seed({});
+    for (let index = 0; index < 150; index += 1) {
+      const id = `ses_${String(900_000 + index).padStart(20, "0")}`;
+      w.db.set({ ...liveSessionKey(ORG_A, id), entityType: "LIVE_SESSION", orgId: ORG_B, sessionId: id, kind: "task", project: "web", createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:00:00.000Z" });
+    }
+    expect(await w.ids(PRIYA)).toEqual([good.sessionId]);
+    expect(await batches(w, () => w.live(PRIYA, {}))).toBeLessThanOrEqual(3);
+  });
+
+  it("ignores a share row and a presence row that name another org, even in this org's partitions", async () => {
+    const w = world();
+    const api = w.seed({ project: "api" });
+    w.db.set({ ...sharedSessionsKey(ORG_A, { kind: "member", developerId: ARJUN }, api.sessionId), entityType: "SHARED_SESSION", orgId: ORG_B, sessionId: api.sessionId, principal: { kind: "member", developerId: ARJUN }, level: "view" });
+    expect(await w.ids(ARJUN, { filter: "all" })).toEqual([]);
+    w.db.set({ ...livePresenceKey(ORG_A, api.sessionId, hex("7")), entityType: "LIVE_PRESENCE", orgId: ORG_B, sessionId: api.sessionId, developerId: hex("7"), name: "Elsewhere", at: iso(T0 - 1000) });
+    const tile = (await w.live(MAX, { filter: "all" })).tiles[0]!;
+    expect(tile.viewingNowCount).toBe(0);
+    expect(JSON.stringify(tile)).not.toContain("Elsewhere");
+  });
+});
+
+describe("paging and bounds of the index", () => {
+  it("gives no next page when the last page is exactly full, or when everything after it is hidden from the caller", async () => {
+    const w = world();
+    for (let index = 0; index < 3; index += 1) w.seed({});
+    const exact = await w.live(PRIYA, { limit: "3" });
+    expect(exact.tiles).toHaveLength(3);
+    expect(exact.next).toBeUndefined();
+    // Two older sessions the caller may not see lie behind a full page of three they may.
+    const hidden = world();
+    hidden.seed({ project: "api" });
+    hidden.seed({ project: "api" });
+    for (let index = 0; index < 3; index += 1) hidden.seed({});
+    const page = await hidden.live(ARJUN, { limit: "3" });
+    expect(page.tiles).toHaveLength(3);
+    expect(page.next).toBeUndefined();
+    // A short page that ran out is not a page with more behind it.
+    const short = await hidden.live(ARJUN, { limit: "4" });
+    expect(short.tiles).toHaveLength(3);
+    expect(short.next).toBeUndefined();
+  });
+
+  it("gives a next page when more visible sessions follow, and the next page holds them", async () => {
+    const w = world();
+    const all = Array.from({ length: 5 }, () => w.seed({}).sessionId).reverse();
+    const first = await w.live(PRIYA, { limit: "3" });
+    expect(first.tiles.map((tile) => tile.sessionId)).toEqual(all.slice(0, 3));
+    expect(first.next).toBeDefined();
+    expect((await w.live(PRIYA, { limit: "3", cursor: first.next! })).tiles.map((tile) => tile.sessionId)).toEqual(all.slice(3));
+  });
+
+  it("reads at most LIVE_INDEX_SCAN_MAX index rows, in as many pages as the table gives, and logs that it cut the list", async () => {
+    const w = world();
+    const first = w.seed({});
+    for (let index = 0; index < 1100; index += 1) {
+      const id = `ses_${String(800_000 + index).padStart(20, "0")}`;
+      w.db.set({ ...liveSessionKey(ORG_A, id), entityType: "LIVE_SESSION", orgId: ORG_A, sessionId: id, kind: "task", project: "web", createdAt: "2026-10-21T08:00:00.000Z", updatedAt: "2026-10-21T08:00:00.000Z" });
+    }
+    // The table hands out 200 rows to a page.
+    const send = w.db.send;
+    const indexPages: number[] = [];
+    w.db.send = (command) => {
+      if (command.constructor.name !== "QueryCommand") return send(command);
+      const input = (command as unknown as { input: Record<string, unknown> }).input;
+      if (String(input.ExpressionAttributeValues && (input.ExpressionAttributeValues as Record<string, unknown>)[":pk"]).endsWith("LIVE_SESSIONS")) indexPages.push(1);
+      return send(new QueryCommand({ ...input, Limit: 200 } as never));
+    };
+    const logs: Array<Record<string, unknown>> = [];
+    const answer = await liveSessions(w.deps({ log: (entry) => logs.push(entry) }), w.caller(PRIYA), {});
+    w.db.send = send;
+    expect(indexPages.length).toBeLessThanOrEqual(5);
+    expect(logs.map((entry) => entry.event)).toContain("agent_session.live_index_truncated");
+    expect(answer.tiles.map((tile) => tile.sessionId)).toContain(first.sessionId);
+  });
+
+  it("takes the same item named twice in one batch once, and gives back items in no promised order", async () => {
+    const w = world();
+    const a = w.seed({});
+    const key = agentSessionKey(ORG_A, a.sessionId, "META");
+    const got = await batchGetItems({ documentClient: w.db, tableName: "state" }, [key, key, { pk: "NOT", sk: "THERE" }]);
+    expect([...got.values()].map((item) => item.sessionId)).toEqual([a.sessionId]);
+  });
+});
+
+describe("what the decisions source may do", () => {
+  it("gives no link for a session whose decisions came back empty, and lets an error that is not the app's own through", async () => {
+    const { w, s5 } = company();
+    const empty = (await w.live(ARJUN, { filter: "needs_me" }, ORG_A, { deciding: { approvals: async () => [], spend: async () => false, approvalsFor: async () => new Map([[s5.sessionId, []]]) } })).tiles[0]!;
+    expect(empty).not.toHaveProperty("approvalUrl");
+    const broken = { approvals: async () => [], spend: async () => false, approvalsFor: async () => { throw new TypeError("boom"); } };
+    expect(await code(w.live(ARJUN, { filter: "needs_me" }, ORG_A, { deciding: broken }))).toMatchObject({ message: "boom" });
   });
 });
 
