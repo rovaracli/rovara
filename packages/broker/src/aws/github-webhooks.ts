@@ -289,7 +289,7 @@ export const WORKFLOW_SAVE_CONFLICT_RETRIES = 3;
 /**
  * Runs a workflow save, and again (up to `WORKFLOW_SAVE_CONFLICT_RETRIES` more times, after a short, growing pause) when it failed only because another transaction held one of its items right
  * now: the whole-call `TransactionConflictException`, or a cancellation whose reasons hold a `TransactionConflict` and no failed condition. Nothing was written then, and the same save
- * is tried again as it is, without reading GitHub again. A failed condition is the caller's compare-and-set and is not retried here; the last conflict is thrown.
+ * is tried again as it is, without reading GitHub again. A failed condition is the caller's compare-and-set and is not retried here. The last conflict is thrown (a cancelled transaction as a `GithubWebhookRetryableError`, so that no caller takes it for a lost compare-and-set).
  */
 async function saveRetryingConflicts(save: () => Promise<void>): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
@@ -298,7 +298,13 @@ async function saveRetryingConflicts(save: () => Promise<void>): Promise<void> {
       return;
     } catch (error) {
       const conflictOnly = isTransactionConflict(error) && (failedIndexes(error)?.size ?? 0) === 0;
-      if (!conflictOnly || attempt >= WORKFLOW_SAVE_CONFLICT_RETRIES) throw error;
+      if (!conflictOnly) throw error;
+      if (attempt >= WORKFLOW_SAVE_CONFLICT_RETRIES) {
+        // A cancelled transaction would read as a lost compare-and-set to the callers (`isConditional`), which read GitHub again and save again; a conflict is not one. It is given up here, for the
+        // delivery to be tried again later (the recovery sweep).
+        if (isConditional(error)) throw new GithubWebhookRetryableError("the workflow's items stayed busy with another transaction");
+        throw error;
+      }
       await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
     }
   }
