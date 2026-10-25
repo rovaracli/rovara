@@ -1,3 +1,4 @@
+import { taskFixture } from "../../web/support/session-fixture.js";
 import "../../../packages/broker/src/aws/broker-environment-init.js";
 import { createServer } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -5,7 +6,7 @@ import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { LiveResponseSchema, LiveTileSchema, SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
+import { AgentIdSchema, ProjectOverviewSchema, RunInputSchema, TaskResponseSchema, LiveResponseSchema, LiveTileSchema, SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
 import { createAppHandler } from "../../../packages/web/src/server/handler.js";
 import { authenticateWebRequest, webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 import type { DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
@@ -71,6 +72,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/auth/browser/sign-out") { revoked = true;response.writeHead(204, { "set-cookie": "__Host-agentx_review_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" });response.end();return; }
  if (url.pathname === "/v1/web/nav") { json(200, current.nav);return; }
  if (url.pathname === "/v1/web/me") { json(200, { ...current.me, csrf: appCsrfTokenFor(FIXTURE_SESSION) });return; }
+ if (current.project !== undefined && url.pathname === "/v1/web/projects/" + current.project.project.name + "/overview" && method === "GET") { json(200, current.project);return; }
+ const run = /^\/v1\/web\/agents\/([^/]+)\/runs$/.exec(url.pathname);
+ if (current.project !== undefined && run !== null && method === "POST") {
+  let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 20000) throw new Error("Mock body limit"); }
+  const input = JSON.parse(body) as Record<string, unknown>, requestId = SessionMakeAgentBodySchema.shape.requestId.parse(input.requestId), agent = AgentIdSchema.parse(run[1]), project = ProjectOverviewSchema.shape.project.shape.name.parse(input.project), problem = RunInputSchema.parse(input.input);
+  if (agent === "rovara-code" || project !== current.project.project.name || !current.project.agents.some(item => item.agentId === agent)) { json(404, { error: { code: "NOT_FOUND", message: "Agent not available." } });return; }
+  evidence.body = { requestId, project, input: problem };json(202, TaskResponseSchema.parse({ task: taskFixture({ sessionId: current.session!.sessionId }) }));return;
+ }
  if (current.session !== undefined) {
  const session = current.session, path = "/v1/web/sessions/" + session.sessionId;
  if (url.pathname === path + "/diff" && method === "GET") {

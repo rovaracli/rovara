@@ -1,0 +1,14 @@
+import { test, expect } from "./support/csp.js";
+import { mockRealtime } from "./support/realtime.js";
+import { checkA11y } from "./support/axe.js";
+test("a project keeps workflows, running work and spending readable on desktop and phone", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "project" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);await mockRealtime(page);
+ await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/app/projects/payments");await expect(page.getByRole("heading", { name: "payments", exact: true })).toBeVisible();await expect(page.getByText("Everyone on this project can see its sessions, including people who reach it through its Slack channel.")).toBeVisible();await checkA11y(page, { theme: "light" });await page.screenshot({ path: ".test-build/web-e2e/project-desktop.png", fullPage: true });
+ await page.setViewportSize({ width: 360, height: 800 });expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);await checkA11y(page, { theme: "dark" });await page.screenshot({ path: ".test-build/web-e2e/project-phone-dark.png", fullPage: true });
+});
+test("starting a shared workflow preserves project context and reaches the returned session", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "project" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);await mockRealtime(page);await page.setViewportSize({ width: 360, height: 800 });await page.goto("/app/projects/payments");
+ await page.getByRole("button", { name: "New session", exact: true }).click();await page.getByRole("button", { name: "Payments expert", exact: true }).click();const problem = page.getByRole("textbox", { name: "What should Payments expert do?" });await expect(problem).toBeFocused();await expect(page.getByRole("dialog")).toHaveCSS("opacity", "1");await problem.fill("Investigate duplicate refunds");await checkA11y(page, { theme: "light" });await page.getByRole("button", { name: "Start session", exact: true }).click();await expect(page).toHaveURL(/\/s\/ses_bbbbbbbbbbbbbbbbbbbb$/u);await expect(page.getByRole("heading", { name: "Fix duplicate refunds", exact: true })).toBeVisible();
+ const sent = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string; body?: unknown }>;
+ const starts = sent.filter(item => item.method === "POST" && item.path.endsWith("/runs"));expect(starts).toHaveLength(1);expect(starts[0]?.body).toMatchObject({ project: "payments", input: { text: "Investigate duplicate refunds" } });
+});
