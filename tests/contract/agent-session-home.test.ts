@@ -300,6 +300,16 @@ describe("approval cards", () => {
     expect(more.total).toBe(100);
   });
 
+  it("keeps the longest-waiting hundred when more are waiting, not the newest", async () => {
+    const w = world();
+    const session = w.own({ owner: MAX });
+    for (let index = 0; index < 105; index += 1) await w.writeApproval({ id: `apr_${String(index).padStart(20, "0")}`, taskId: session.taskId, minute: index + 1, approvers: [ARJUN] });
+    const shown = (await w.home(ARJUN)).cards.map((card) => card.cardId);
+    expect(shown).toContain("approval:apr_00000000000000000000");
+    expect(shown).not.toContain("approval:apr_00000000000000000104");
+    expect((await w.home(ARJUN)).total).toBe(100);
+  });
+
   it("shows an approval to the people who may decide it now, with the bare confirm link, and to nobody else", async () => {
     const w = world();
     const session = await w.blocking("apr_forarjunaaaaaaaaaaaa", 1, { approvers: [ARJUN, MIA] });
@@ -450,6 +460,15 @@ describe("plan, pull request and failure cards", () => {
       const [card] = (await w.home(PRIYA)).cards;
       expect(card!.buttons, url).toEqual([{ label: "Open session", action: "open", href: `${CELL}/s/${pr.sessionId}`, method: "GET" }]);
     }
+  });
+
+  it("offers a pull request's address without its search and hash", async () => {
+    const w = world();
+    const pr = w.pullRequest({ pullRequests: [{ repositoryId: "r1", number: 7, url: `${PR_URL}?token=SECRET-TOKEN#discussion_r1`, candidateDigest: sha("c"), required: true, state: "OPEN" }] });
+    const [card] = (await w.home(PRIYA)).cards;
+    expect(card!.buttons).toEqual([{ label: "Open pull request", action: "open", href: PR_URL, method: "GET" }]);
+    expect(JSON.stringify(card)).not.toContain("SECRET-TOKEN");
+    expect(card!.sessionId).toBe(pr.sessionId);
   });
 
   it("shows a plan or pull request only while the workflow waits at that stage", async () => {
@@ -738,6 +757,19 @@ describe("dismissing", () => {
     expect(await w.ids(PRIYA)).toEqual([]);
     minute = 5;
     expect(await w.ids(PRIYA)).toEqual(["offer:o1"]);
+  });
+
+  it("logs when the person has more dismissals than are read", async () => {
+    const w = world();
+    for (let index = 0; index < 350; index += 1) {
+      const cardId = `offer:old${String(index)}`;
+      w.db.set({ ...homeDismissedKey(ORG_A, PRIYA, cardId), entityType: "HOME_DISMISSED", orgId: ORG_A, developerId: PRIYA, cardId, occurrence: "x", dismissedAt: iso(T0), indexExpiresAt: Math.floor(T0 / 1000) + 1000 });
+    }
+    await w.home(PRIYA);
+    expect(w.logs.filter((entry) => entry.event === "home.dismissals_truncated")).toEqual([{ event: "home.dismissals_truncated" }]);
+    const quiet = world();
+    await quiet.home(PRIYA);
+    expect(quiet.logs.map((entry) => entry.event)).not.toContain("home.dismissals_truncated");
   });
 
   it("offers the dismiss button's address as the route that dismisses it", async () => {

@@ -412,6 +412,20 @@ describe("a plan blocked on its run limit (Task 7a concern 2, Task 7b)", () => {
 });
 
 describe("a blocked workflow carries a flag so the session can offer retry (Task 14 ruling)", () => {
+  it("sets workflowBlocked on a budget-paused task whose workflow is also blocked", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.patchTask(s.taskId, { budgetPause: { scope: { kind: "task" }, at: iso(T0) }, workflow: workflow("IMPLEMENT", "BLOCKED") });
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "paused", workflowBlocked: true });
+    const plain = p.open();
+    p.patchTask(plain.taskId, { budgetPause: { scope: { kind: "task" }, at: iso(T0) } });
+    await p.refresh(plain.sessionId);
+    expect(p.sessionOf(plain.sessionId).summary.status).toBe("paused");
+    expect(p.sessionOf(plain.sessionId).summary.workflowBlocked).toBeUndefined();
+  });
+
+
   it("sets workflowBlocked while the workflow is BLOCKED, whatever the reason, and clears it when the workflow moves on", async () => {
     const p = projectorWorld();
     const s = p.open();
