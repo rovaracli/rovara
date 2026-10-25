@@ -358,6 +358,64 @@ describe("a change that lands between the read and the write", () => {
   });
 });
 
+describe("more authority and repair", () => {
+  it("refuses an update for a session whose owner is someone else even when the device is the caller's own and the session names it", async () => {
+    const w = world();
+    const { sessionId } = await w.started();
+    const arjunsMac = await w.mac(ARJUN, "Arjun's Mac");
+    const meta = w.meta(sessionId)!;
+    w.db.set({ ...meta, subject: { kind: "local", deviceId: arjunsMac, tool: "claude-code" }, where: { kind: "mac", deviceId: arjunsMac, label: "Arjun's Mac" } });
+    expect(await code(w.update(ARJUN, sessionId, arjunsMac, { turns: w.turns(1) }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+  });
+
+  it("refuses an update when the Mac's own state says the session ended although the session has not caught up yet", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.db.set({ ...w.local(sessionId)!, status: "succeeded", endedAt: iso(T0) });
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) }))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+  });
+
+  it("checks the state it read: a state that moved between the read and the write is read again, not written over", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const old = { ...w.local(sessionId)! };
+    w.db.set({ ...old, rev: 1, step: "A newer step" });
+    const racing = { ...w.deps, documentClient: staleOnce(w.db, agentSessionKey(ORG_A, sessionId, "LOCAL"), old) };
+    await recordLocalUpdate(racing, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "running" });
+    expect(w.local(sessionId)).toMatchObject({ rev: 2 });
+  });
+
+  it("does not hand a command to a device that is not the session owner's (a stale or moved device): a steer is not delivered and a stop is refused", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.shareLevel(sessionId, ARJUN, "edit");
+    w.db.set({ ...w.device(deviceId)!, developerId: ARJUN });
+    expect((await w.steer(ARJUN, sessionId, "hello")).delivery).toMatchObject({ state: "not_delivered" });
+    expect(await code(w.stop(ARJUN, sessionId))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.commands(deviceId)).toHaveLength(0);
+  });
+
+  it("gives a poll nothing that another org's command item claims", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.db.set({ ...deviceCommandKey(ORG_A, deviceId, 1), entityType: "DEVICE_COMMAND", orgId: ORG_B, deviceId, seq: 1, kind: "stop", sessionId, at: iso(T0), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(T0 / 1000) + 3600 });
+    expect((await w.commandPoll(PRIYA, deviceId)).commands).toEqual([]);
+  });
+
+  it("says so, and finishes on the next removal, when a session could not be ended", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AGENT_SESSION_LOCAL") && JSON.stringify(input).includes("removed, so this session stopped"), error: { name: "InternalServerError" }, times: 1 });
+    expect(await code(w.removeDevice(PRIYA, deviceId))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.meta(sessionId)).not.toHaveProperty("endedAt");
+    expect(w.device(deviceId)).toHaveProperty("revokedAt");
+    await w.removeDevice(PRIYA, deviceId);
+    expect(w.meta(sessionId)).toMatchObject({ summary: { status: "cancelled" } });
+  });
+});
+
 describe("the state a Mac left", () => {
   it("is read only when it is the session's own: another device's item, another session's and another org's say nothing, and the summary stays", async () => {
     const w = world();
