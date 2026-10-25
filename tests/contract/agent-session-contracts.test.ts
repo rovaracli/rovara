@@ -62,12 +62,9 @@ import {
   sharedSessionsKey,
   taskSpendKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
+import { HomeCardReaderSchema, HomeCardSchema, HomeResponseReaderSchema, HomeResponseSchema } from "../../packages/contracts/src/home.js";
 import { OrgIdSchema } from "../../packages/contracts/src/org.js";
 import {
-  HomeCardReaderSchema,
-  HomeCardSchema,
-  HomeResponseReaderSchema,
-  HomeResponseSchema,
   NeedsConfirmationSchema,
   ProjectOverviewReaderSchema,
   ProjectOverviewSchema,

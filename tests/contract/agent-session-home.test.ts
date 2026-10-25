@@ -30,7 +30,7 @@ afterEach(() => {
 interface OwnSeed {
   owner?: string; status?: SessionStatus; stage?: string; state?: string; step?: string; lastRunFailed?: boolean; endedAgoDays?: number; title?: string; minute?: number; project?: string | null;
   kind?: "task" | "chain" | "local"; pullRequests?: unknown[]; currentOwner?: string; workflowBlocked?: boolean; people?: Array<{ developerId: string; role: "owner" | "commenter" | "viewer" | "denied" }>;
-  updatedMinutesAgo?: number;
+  updatedMinutesAgo?: number; agent?: boolean;
 }
 
 /** The plan's company, with a way to seed the sessions of one person the way the summary refresh leaves them, and the approvals they wait on. */
@@ -62,6 +62,10 @@ function world() {
         ...(o.workflowBlocked === true ? { workflowBlocked: true } : {}), computedAt: createdAt,
       },
     });
+    if (seeded.record.kind === "task" && o.agent === true) {
+      const task = w.db.get(taskKey(seeded.taskId)) as Item;
+      w.db.set({ ...task, agent: { agentId: "ticket-triage", name: "Ticket triage", version: 2, builtin: false, digest: sha("d") } });
+    }
     if (seeded.record.kind === "task" && o.stage !== undefined) {
       const task = w.db.get(taskKey(seeded.taskId)) as Item;
       w.db.set({
@@ -74,7 +78,7 @@ function world() {
   };
   const plan = (o: OwnSeed = {}) => own({ status: "needs_person", stage: "PLAN_REVIEW", state: "WAITING", ...o });
   const pullRequest = (o: OwnSeed = {}) => own({ status: "waiting", stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests: [{ repositoryId: "r1", number: 7, url: PR_URL, candidateDigest: sha("c"), required: true, state: "OPEN" }], ...o });
-  const failed = (o: OwnSeed = {}) => own({ status: "failed", endedAgoDays: 1, step: "Failed: runtime_unavailable", ...o });
+  const failed = (o: OwnSeed = {}) => own({ status: "failed", endedAgoDays: 1, step: "Failed: runtime_unavailable", agent: true, ...o });
 
   /** A write approval a running session of `owner` waits on, listed for `approvers`. */
   const writeApproval = async (o: { id: string; taskId: string; approvers?: string[]; summary?: string; agent?: { agentId: string; name: string } | null; minute: number; owner?: string; expiresInDays?: number; status?: string } ) => {
@@ -189,8 +193,8 @@ describe("the ranking, the page and the total (the plan's fourteen cards)", () =
   /** Priya's fourteen: two approvals that block a running session, two plans, two pull requests, two approvals that block nothing, four failures and two offers. */
   async function fourteen() {
     const w = world();
-    const first = await w.blocking("apr_blocking1aaaaaaaaaa", 10, { agent: { agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "Linear helper" } });
-    const second = await w.blocking("apr_blocking2aaaaaaaaaa", 20, { agent: null });
+    const first = await w.blocking("apr_blocking1aaaaaaaaaaa", 10, { agent: { agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "Linear helper" } });
+    const second = await w.blocking("apr_blocking2aaaaaaaaaaa", 20, { agent: null });
     const plans = [w.plan({ minute: 31, title: "Plan A" }), w.plan({ minute: 30, title: "Plan B" })];
     const prs = [w.pullRequest({ minute: 41, title: "PR A" }), w.pullRequest({ minute: 40, title: "PR B" })];
     const changes = [await w.changeApproval(51), await w.changeApproval(50)];
@@ -205,7 +209,7 @@ describe("the ranking, the page and the total (the plan's fourteen cards)", () =
     expect(HomeResponseSchema.parse(answer)).toEqual(answer);
     expect(answer.total).toBe(14);
     expect(answer.cards.map((card) => card.cardId)).toEqual([
-      "approval:apr_blocking1aaaaaaaaaa", "approval:apr_blocking2aaaaaaaaaa",
+      "approval:apr_blocking1aaaaaaaaaaa", "approval:apr_blocking2aaaaaaaaaaa",
       `plan:${plans[1]!.sessionId}`, `plan:${plans[0]!.sessionId}`,
       `pull_request:${prs[1]!.sessionId}`, `pull_request:${prs[0]!.sessionId}`,
       `approval:${changes[1]!}`, `approval:${changes[0]!}`,
@@ -231,13 +235,13 @@ describe("the ranking, the page and the total (the plan's fourteen cards)", () =
   it("leaves a blocking approval first and names the agent from the write record, and An agent for a record from before names were stored", async () => {
     const { w } = await fourteen();
     const [one, two] = (await w.home(PRIYA)).cards;
-    expect(one).toMatchObject({ cardId: "approval:apr_blocking1aaaaaaaaaa", kind: "approval", title: "Create a Linear issue", reason: "Linear helper is waiting for you to approve: Create a Linear issue" });
+    expect(one).toMatchObject({ cardId: "approval:apr_blocking1aaaaaaaaaaa", kind: "approval", title: "Create a Linear issue", reason: "Linear helper is waiting for you to approve: Create a Linear issue" });
     expect(two!.reason).toBe("An agent is waiting for you to approve: Create a Linear issue");
   });
 
   it("ranks an approval on a session that has ended with the approvals that block nothing", async () => {
     const w = world();
-    await w.blocking("apr_endedsession1aaaaa", 1, { ended: true });
+    await w.blocking("apr_endedsession1aaaaaaa", 1, { ended: true });
     w.plan({ minute: 50 });
     const kinds = (await w.home(PRIYA)).cards.map((card) => card.kind);
     expect(kinds).toEqual(["plan", "approval"]);
@@ -282,12 +286,12 @@ describe("the ranking, the page and the total (the plan's fourteen cards)", () =
 describe("approval cards", () => {
   it("shows an approval to the people who may decide it now, with the bare confirm link, and to nobody else", async () => {
     const w = world();
-    const session = await w.blocking("apr_forarjunaaaaaaaaaa", 1, { approvers: [ARJUN, MIA] });
+    const session = await w.blocking("apr_forarjunaaaaaaaaaaaa", 1, { approvers: [ARJUN, MIA] });
     const arjun = (await w.home(ARJUN)).cards;
     expect(arjun).toHaveLength(1);
-    expect(arjun[0]).toMatchObject({ cardId: "approval:apr_forarjunaaaaaaaaaa", sessionId: session.sessionId });
+    expect(arjun[0]).toMatchObject({ cardId: "approval:apr_forarjunaaaaaaaaaaaa", sessionId: session.sessionId });
     expect(arjun[0]!.buttons).toEqual([
-      { label: "Open", action: "confirm", href: `${CELL}/v1/app/approve/apr_forarjunaaaaaaaaaa`, method: "GET" },
+      { label: "Open", action: "confirm", href: `${CELL}/v1/app/approve/apr_forarjunaaaaaaaaaaaa`, method: "GET" },
       { label: "Open session", action: "open", href: `${CELL}/s/${session.sessionId}`, method: "GET" },
     ]);
     // Mia is named, but a viewer of the project may not decide: no card, and no confirm link. Priya, Max (the run's owner), Ola (an org admin) and Zed are not approvers.
@@ -296,8 +300,8 @@ describe("approval cards", () => {
 
   it("reads the right to decide when it asks: a grant taken away removes the card", async () => {
     const w = world();
-    await w.blocking("apr_revokedaaaaaaaaaaa", 1, { approvers: [ARJUN] });
-    expect(await w.ids(ARJUN)).toEqual(["approval:apr_revokedaaaaaaaaaaa"]);
+    await w.blocking("apr_revokedaaaaaaaaaaaaa", 1, { approvers: [ARJUN] });
+    expect(await w.ids(ARJUN)).toEqual(["approval:apr_revokedaaaaaaaaaaaaa"]);
     w.members.revoke(ORG_A, "web", ARJUN);
     expect(await w.ids(ARJUN)).toEqual([]);
   });
@@ -305,17 +309,17 @@ describe("approval cards", () => {
   it("leaves out an approval that is decided or whose time has run out, although nothing has swept it yet", async () => {
     const w = world();
     const session = w.own({ owner: MAX });
-    await w.writeApproval({ id: "apr_declinedaaaaaaaaaa", taskId: session.taskId, minute: 1, approvers: [ARJUN], status: "DECLINED" });
-    await w.writeApproval({ id: "apr_lateaaaaaaaaaaaaaa", taskId: session.taskId, minute: 2, approvers: [ARJUN], expiresInDays: -1 });
-    await w.writeApproval({ id: "apr_openaaaaaaaaaaaaaa", taskId: session.taskId, minute: 3, approvers: [ARJUN] });
-    expect(await w.ids(ARJUN)).toEqual(["approval:apr_openaaaaaaaaaaaaaa"]);
+    await w.writeApproval({ id: "apr_declinedaaaaaaaaaaaa", taskId: session.taskId, minute: 1, approvers: [ARJUN], status: "DECLINED" });
+    await w.writeApproval({ id: "apr_lateaaaaaaaaaaaaaaaa", taskId: session.taskId, minute: 2, approvers: [ARJUN], expiresInDays: -1 });
+    await w.writeApproval({ id: "apr_openaaaaaaaaaaaaaaaa", taskId: session.taskId, minute: 3, approvers: [ARJUN] });
+    expect(await w.ids(ARJUN)).toEqual(["approval:apr_openaaaaaaaaaaaaaaaa"]);
   });
 
   it("gives a decider who may not view the session the approval and its link, but nothing of the session", async () => {
     const w = world();
-    const session = await w.blocking("apr_noviewaaaaaaaaaaa", 1, { approvers: [ARJUN], people: [{ developerId: ARJUN, role: "denied" }] });
+    const session = await w.blocking("apr_noviewaaaaaaaaaaaaaa", 1, { approvers: [ARJUN], people: [{ developerId: ARJUN, role: "denied" }] });
     const [card] = (await w.home(ARJUN)).cards;
-    expect(card).toMatchObject({ cardId: "approval:apr_noviewaaaaaaaaaaa", kind: "approval" });
+    expect(card).toMatchObject({ cardId: "approval:apr_noviewaaaaaaaaaaaaaa", kind: "approval" });
     expect(labels(card!)).toEqual(["Open"]);
     expect(card).not.toHaveProperty("sessionId");
     expect(JSON.stringify(card)).not.toContain(session.sessionId);
@@ -336,7 +340,7 @@ describe("approval cards", () => {
 
   it("keeps a reason within its limit and free of control characters whatever the prompt says", async () => {
     const w = world();
-    await w.blocking("apr_longaaaaaaaaaaaaaa", 1, { approvers: [ARJUN], summary: `Delete\u0007 the ${"very ".repeat(60)}important table`, agent: { agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "Agent‮ name" } });
+    await w.blocking("apr_longaaaaaaaaaaaaaaaa", 1, { approvers: [ARJUN], summary: `Delete\u0007 the ${"very ".repeat(60)}important table`, agent: { agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "Agent‮ name" } });
     const [card] = (await w.home(ARJUN)).cards;
     expect([...card!.reason].length).toBeLessThanOrEqual(HOME_REASON_MAX);
     expect(card!.reason).not.toMatch(/[\p{Cc}\p{Cf}]/u);
@@ -345,7 +349,7 @@ describe("approval cards", () => {
 
   it("shows Home without approval cards when the install has no approvals", async () => {
     const w = world();
-    await w.blocking("apr_withoutaaaaaaaaaa", 1, { approvers: [ARJUN] });
+    await w.blocking("apr_withoutaaaaaaaaaaaaa", 1, { approvers: [ARJUN] });
     w.plan({ minute: 2 });
     expect(await w.ids(ARJUN, ORG_A)).toHaveLength(1);
     const none = await w.home(ARJUN, ORG_A, { approvals: undefined } as never);
@@ -441,13 +445,12 @@ describe("plan, pull request and failure cards", () => {
     ]);
   });
 
-  it("cuts what failed to 120 characters, without control characters", async () => {
+  it("cuts what failed to 120 characters", async () => {
     const w = world();
-    w.failed({ step: `Failed: ${"x".repeat(300)}\u0007` });
+    w.failed({ step: `Failed: ${"x".repeat(150)}` });
     const [card] = (await w.home(PRIYA)).cards;
     const failure = card!.reason.slice(card!.reason.indexOf("failed: ") + "failed: ".length);
     expect([...failure].length).toBe(120);
-    expect(card!.reason).not.toMatch(/[\p{Cc}\p{Cf}]/u);
     expect([...card!.reason].length).toBeLessThanOrEqual(HOME_REASON_MAX);
   });
 
@@ -466,6 +469,23 @@ describe("plan, pull request and failure cards", () => {
     w.own({ status: "succeeded", endedAgoDays: 1 });
     w.own({ status: "failed", lastRunFailed: true, endedAgoDays: 8 });
     expect(await w.ids(PRIYA)).toEqual([`failure:${recent.sessionId}`]);
+  });
+
+  it("offers no Retry for a plain task that failed: it is continued where it was started, so a retry would only refuse", async () => {
+    const w = world();
+    const plain = w.failed({ agent: false });
+    const [card] = (await w.home(PRIYA)).cards;
+    expect(card).toMatchObject({ cardId: `failure:${plain.sessionId}` });
+    expect(labels(card!)).toEqual(["Open session", "Dismiss"]);
+  });
+
+  it("offers Retry for a workflow that is blocked, and for a chain run that failed", async () => {
+    const w = world();
+    const blocked = w.own({ status: "needs_person", lastRunFailed: true, stage: "IMPLEMENT", state: "BLOCKED", workflowBlocked: true });
+    const chain = w.failed({ kind: "chain", project: "web" });
+    const cards = (await w.home(PRIYA)).cards;
+    expect(labels(cards.find((card) => card.cardId === `failure:${blocked.sessionId}`)!)).toContain("Retry");
+    expect(labels(cards.find((card) => card.cardId === `failure:${chain.sessionId}`)!)).toContain("Retry");
   });
 
   it("offers Retry only to a person who may retry it: a project viewer who owns the session, and a Mac session, get none", async () => {

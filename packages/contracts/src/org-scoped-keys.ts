@@ -505,6 +505,14 @@ export function mySessionsKey(orgId: OrgId, developerId: string, createdAt: stri
   return { pk: orgScoped(orgId, `MY_SESSIONS#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(createdAt)}#${keyPart(sessionId, "a session id")}` };
 }
 
+/**
+ * The cards one person dismissed from Home (Plan 5 Task 15), one item per card, in a partition of their own: a person's dismissals are read in one query and are never another person's.
+ * `cardId` is `<kind>:<id>`.
+ */
+export function homeDismissedKey(orgId: OrgId, developerId: string, cardId: string): OrgKey {
+  return { pk: orgScoped(orgId, `HOME_DISMISSED#${keyPart(developerId, "a developer id")}`), sk: keyPart(cardId, "a card id") };
+}
+
 /** The sessions on one project, newest last; `createdAt` is an instant. */
 export function projectSessionsKey(orgId: OrgId, project: string, createdAt: string, sessionId: SessionId): OrgKey {
   return { pk: orgScoped(orgId, `PROJECT_SESSIONS#${keyPart(project, "a project name")}`), sk: `${canonicalInstant(createdAt)}#${keyPart(sessionId, "a session id")}` };

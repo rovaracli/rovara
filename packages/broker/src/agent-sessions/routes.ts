@@ -14,6 +14,7 @@ import { readSessionEvents } from "./events.js";
 import { mayCreateAgentIn, makeAgentFromSession } from "./make-agent.js";
 import { followSession, recordPresence, unfollowSession } from "./followers.js";
 import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage, editSessionMessage, listSessionMessages, parseMessageBody, sendSessionMessage } from "./messages.js";
+import { dismissHomeCard, homeCards, type HomeDependencies } from "./home.js";
 import { liveSessions, type LiveQuery } from "./live.js";
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import type { ChainSteerReads } from "./steer.js";
@@ -34,6 +35,8 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
   realtimePublish?: RealtimeConfig | undefined;
   /** PLAN4: what a chain run is doing now, for a message to a chain (Task 11a). Without it a message to a chain session is refused before it is written. */
   chainSteer?: ChainSteerReads | undefined;
+  /** How long one of Home's sources may take (Task 15; default two seconds). */
+  homeSourceTimeoutMs?: number | undefined;
 }
 
 /** The caller of a route. */
@@ -42,12 +45,14 @@ export type SessionRouteCaller = DeveloperCaller;
 const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry))?)?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const LIVE_PATH = "/v1/app/live";
+const HOME_PATH = "/v1/app/home";
+const HOME_DISMISS_PATH = /^\/v1\/app\/home\/cards\/([^/]*)\/dismiss$/;
 const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
 const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
 
 /** The paths this module owns under `/v1/app/`: the sessions, the Live wall (Task 14), the changes feed and the realtime token (Task 8). */
 export function isAgentSessionRoute(pathname: string): boolean {
-  return /^\/v1\/app\/sessions(\/|$)/.test(pathname) || pathname === CHANGES_PATH || pathname === REALTIME_TOKEN_PATH || pathname === LIVE_PATH;
+  return /^\/v1\/app\/sessions(\/|$)/.test(pathname) || pathname === CHANGES_PATH || pathname === REALTIME_TOKEN_PATH || pathname === LIVE_PATH || /^\/v1\/app\/home(\/|$)/.test(pathname);
 }
 
 /** `/s/<anything>`: a session's link, served to a browser. */
@@ -128,7 +133,7 @@ function liveQueryOf(url: URL): LiveQuery {
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
  * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET` and `POST …/messages` and `PATCH` and
  * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `POST …/take-over` (Task 12b: ask to take the session over, answered `202` with the link to confirm it); `POST …/stop` and `POST …/retry` (Task 13); `GET /v1/app/changes?since=` (the caller's own change notices) and
- * `POST /v1/app/realtime/token`; `GET /v1/app/live?filter=&project=&cursor=&limit=` (Task 14: the Live wall's tiles). Any other path or method is `NOT_FOUND`.
+ * `POST /v1/app/realtime/token`; `GET /v1/app/home` and `POST /v1/app/home/cards/{cardId}/dismiss` (Task 15: Home's ranked cards); `GET /v1/app/live?filter=&project=&cursor=&limit=` (Task 14: the Live wall's tiles). Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   if (url.pathname === CHANGES_PATH) {
@@ -149,6 +154,23 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   if (url.pathname === LIVE_PATH) {
     if (request.method !== "GET") throw notFound();
     return liveSessions(read, caller, liveQueryOf(url));
+  }
+  if (url.pathname === HOME_PATH || url.pathname.startsWith(`${HOME_PATH}/`)) {
+    // Task 15: Home's cards, and a dismissal of one of them.
+    const home: HomeDependencies = { ...read, ...(approvals === undefined ? {} : { approvals }), ...(deps.homeSourceTimeoutMs === undefined ? {} : { homeSourceTimeoutMs: deps.homeSourceTimeoutMs }) };
+    if (url.pathname === HOME_PATH) {
+      if (request.method !== "GET") throw notFound();
+      return homeCards(home, caller);
+    }
+    const dismissing = HOME_DISMISS_PATH.exec(url.pathname);
+    if (dismissing === null || request.method !== "POST") throw notFound();
+    let cardId: string;
+    try {
+      cardId = decodeURIComponent(dismissing[1]!);
+    } catch {
+      throw agentXError("CONFIG_INVALID", "cardId: is not a card on Home");
+    }
+    return dismissHomeCard(home, caller, cardId);
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();

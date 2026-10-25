@@ -10,8 +10,6 @@ import {
   SESSION_SHARES_MAX,
   LocalToolSchema,
   SessionActionSchema,
-  HOME_CARDS_MAX,
-  HOME_CARD_BUTTONS_MAX,
   LIVE_PAGE_MAX,
   LIVE_FILTERS,
   LIVE_VIEWING_MAX,
@@ -44,7 +42,6 @@ export const PRESENCE_VIEWERS_MAX = 20;
 const NEEDS_CONFIRMATION_CHANGES_MAX = 10;
 const CHANGE_TEXT_MAX = 300;
 const URL_MAX = 2048;
-const HOME_TEXT_MAX = 300;
 
 // ---- forward-compatible readers
 
@@ -308,25 +305,7 @@ export const SessionMessagePageSchema = z
 export type SessionMessagePage = z.infer<typeof SessionMessagePageSchema>;
 export const SessionMessagePageReaderSchema = forwardReader(SessionMessagePageSchema);
 
-// ---- Home and the project page (declared here; Tasks 15 and 16 fill them in)
-
-/** One card on Home. Task 15 adds its kinds and their fields; until then a card has an id, a kind, a title and a time. */
-export const HomeCardSchema = z
-  .object({
-    cardId: z.string().min(1).max(200),
-    kind: z.enum(["needs_you", "failed", "finished", "running"]),
-    title: z.string().min(1).max(HOME_TEXT_MAX),
-    sessionId: SessionIdSchema.optional(),
-    buttons: z.array(z.object({ label: z.string().min(1).max(HOME_TEXT_MAX), action: z.string().min(1).max(HOME_TEXT_MAX) }).strict()).max(HOME_CARD_BUTTONS_MAX).optional(),
-    at: InstantSchema,
-  })
-  .strict();
-export type HomeCard = z.infer<typeof HomeCardSchema>;
-export const HomeCardReaderSchema = forwardReader(HomeCardSchema);
-
-export const HomeResponseSchema = z.object({ cards: z.array(HomeCardSchema).max(HOME_CARDS_MAX) }).strict();
-export type HomeResponse = z.infer<typeof HomeResponseSchema>;
-export const HomeResponseReaderSchema = forwardReader(HomeResponseSchema);
+// ---- the project page (declared here; Task 16 fills it in; Home's shapes are in home.ts)
 
 /** A project's page of sessions. Task 16 adds counts and cost; until then it lists what is running. */
 export const ProjectOverviewSchema = z

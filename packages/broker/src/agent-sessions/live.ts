@@ -72,7 +72,7 @@ const BATCH_BACKOFF_MS = 25;
 const ROWS_MAX = LIVE_INDEX_SCAN_MAX;
 const UNAVAILABLE = "The Live wall can't be shown right now. Try again in a moment.";
 
-const keyText = (key: Key) => `${key.pk}\u0000${key.sk}`;
+export const keyText = (key: Key) => `${key.pk}\u0000${key.sk}`;
 
 /**
  * The items at `keys` (any number, repeats ignored), in batches of 100, asking again for the keys the table left unprocessed (with a short wait between rounds). Keys with no item are

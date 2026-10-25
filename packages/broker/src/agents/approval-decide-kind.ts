@@ -61,6 +61,9 @@ const TITLES: Record<string, string> = {
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
 };
 
+/** What a pending change is called: the title of its page (Home shows it too). */
+export const changeTitleOf = (kind: string): string => TITLES[kind] ?? "Confirm a change";
+
 const fact = (label: string, value: string) => ({ label, value });
 const prefix = (digest: string) => digest.slice(0, 12);
 
@@ -140,7 +143,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   if (subject.kind === "session_owner") facts.push(...await takeOverFacts(deps.agentSessions, record));
   facts.push(expires);
-  return { title: TITLES[subject.kind] ?? "Confirm a change", facts, paragraphs: record.changes };
+  return { title: changeTitleOf(subject.kind), facts, paragraphs: record.changes };
 }
 
 async function callerOf(deps: ApprovalDependencies, target: DecideTarget, proof?: AuditProof): Promise<AgentCaller | undefined> {
