@@ -1,0 +1,41 @@
+// @vitest-environment jsdom
+import { expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
+import { AppHostProvider } from "../../packages/ui/src/host.js";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { SignupScreen } from "../../packages/ui/src/screens/onboarding/SignupScreen.js";
+import { WelcomeScreen } from "../../packages/ui/src/screens/onboarding/WelcomeScreen.js";
+import { OnboardScreen } from "../../packages/ui/src/screens/onboarding/OnboardScreen.js";
+import { fakeHost } from "./support/fake-host.js";
+import { renderUi } from "./support/render.js";
+import { h } from "./support/h.js";
+import { expectNoAxeViolations } from "./support/axe.js";
+import type { ReactElement } from "react";
+const me = { developer: { id: "a".repeat(64), name: "Maya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "cloud", nameIsDefault: false }, identities: [] };
+const project = { name: "web", description: "Customer fixes", status: "active", latestRevision: 2, repositories: [{fullName: "acme/web", defaultBranch: "main"}], myRole: "maintainer", setup: {status: "failed", failedStep: "Install dependencies failed"}, settings: {setupCommands:["npm ci"],testCommands:["npm test"],devcontainer:null,allowedDomains:[]},createdAt:"2026-10-23T12:00:00.000Z",createdBy:{developerId:"a".repeat(64),name:"Maya"} };
+function setup(element: ReactElement, options: { path?:string; member?:boolean; defaultName?:boolean; theme?:"light"|"dark" } = {}) {
+ const f = fakeHost(async request => {
+  if (request.path === "/v1/app/me") return {status:200,body:{...me,developer:{...me.developer,orgRole:options.member?"member":"owner"},org:{...me.org,nameIsDefault:options.defaultName??false}}};
+  if (request.path === "/v1/app/org/members") return {status:200,body:{members:[{developerId:"b".repeat(64),name:"Priya",role:"admin",joinedAt:"2026-10-23",identities:[]}]}};
+  if (request.path === "/v1/app/github/installations") return {status:200,body:{installations:[{installationId:55,accountLogin:"acme",accountType:"Organization",repositorySelection:"selected",status:"active"}]}};
+  if (request.path.startsWith("/v1/app/github/repositories")) return {status:200,body:{repositories:[{fullName:"acme/web",githubRepositoryId:101,private:true,defaultBranch:"main"}]}};
+  if (request.path === "/v1/app/projects/web") return {status:200,body:project};
+  if (request.path.startsWith("/v1/app/agents?")) return {status:200,body:{agents:[]}};
+  if (request.path === "/v1/app/org") return {status:200,body:{org:me.org,role:"owner"}};
+  return {status:200,body:{project}};
+ });
+ const navigate=vi.fn<(url:string)=>void>();f.host.navigate=navigate;const query=createQueryClient();
+ const ui=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(MemoryRouter,{initialEntries:[options.path??"/app/onboard"],children:element})})}),{theme:options.theme??"light"});
+ return {...f,navigate,close(){ui.unmount();query.clear();}};
+}
+it("signup explains the trial and performs no API read",()=>{const f=setup(h(SignupScreen));expect(screen.getByRole("heading",{name:"Start with Rovara"})).toBeTruthy();expect(screen.getByText("A free trial starts when you connect GitHub.")).toBeTruthy();fireEvent.click(screen.getByRole("button",{name:"Sign up or sign in"}));expect(f.host.signIn).toHaveBeenCalledWith("/app/welcome");expect(f.request).not.toHaveBeenCalled();f.close();});
+it("joined people go home even with a default name",async()=>{const f=setup(h(WelcomeScreen),{path:"/app/welcome?joined=1",defaultName:true});await waitFor(()=>expect(f.navigate).toHaveBeenCalledWith("/app"));expect(screen.queryByLabelText("Company name")).toBeNull();f.close();});
+it("an owner names the company before onboarding",async()=>{const f=setup(h(WelcomeScreen),{defaultName:true});fireEvent.change(await screen.findByLabelText("Company name"),{target:{value:"Acme"}});fireEvent.click(screen.getByRole("button",{name:"Continue"}));await waitFor(()=>expect(f.navigate).toHaveBeenCalledWith("/app/onboard"));expect(f.request.mock.calls.find(([r])=>r.method==="PATCH")?.[0].body).toMatchObject({name:"Acme"});f.close();});
+it("members see the actual admins and cannot create projects",async()=>{const f=setup(h(OnboardScreen),{member:true});await screen.findByText("Only owners and admins can add projects. Ask Priya to add one.");expect(screen.queryByRole("button",{name:"Connect GitHub"})).toBeNull();f.close();});
+it("verifies an installation and resumes repository selection",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?github=connected"});await screen.findByRole("heading",{name:"Choose repositories"});expect(screen.getByText("Step 2 of 6")).toBeTruthy();await screen.findByLabelText("acme/web");f.close();});
+it("reload resumes Setup for its actual project and shows failed check details",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?project=web&step=setup"});await screen.findByLabelText("Setup commands");expect(screen.getByLabelText("Setup commands")).toHaveProperty("value","npm ci");await screen.findByText("Install dependencies failed");expect(screen.getByRole("button",{name:"Check again"})).toBeTruthy();f.close();});
+it("Code is prechecked but its excluded start is never invented",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?project=web&step=agents"});expect(await screen.findByRole("checkbox",{name:"Rovara Code"})).toHaveProperty("checked",true);expect(f.request.mock.calls.filter(([r])=>r.path.endsWith("/runs"))).toHaveLength(0);f.close();});
+it("shows the exact trial-used explanation",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?github=trial_used"});await screen.findByText("This GitHub account already started a free trial for another organization. Connect a different GitHub account, or ask us about a plan.");f.close();});
+for(const theme of ["light","dark"] as const)it("keeps onboarding accessible in "+theme,async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?github=connected",theme});await screen.findByLabelText("acme/web");await expectNoAxeViolations(document.body);f.close();});
