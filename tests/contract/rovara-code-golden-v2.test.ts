@@ -104,7 +104,7 @@ describe("which version a task starts on", () => {
       const reply = await h.dev(who, "POST", "/v1/app/agents/rovara-code/runs", { requestId: randomUUID(), project: "payments", input: { text: "Fix the retry bug" } });
       expect(reply.status, JSON.stringify(reply.body)).toBe(202);
       const task = reply.body.task as { taskId: string };
-      return h.db.get(`DEVTASK#${task.taskId}`, "META") as { workflow?: { definitionVersion: string; stage: string; program?: { steps: Array<{ kind: string }> }; programStepId?: string }; agent?: { version: number; digest: string } };
+      return h.db.get(`DEVTASK#${task.taskId}`, "META") as { workflow?: { definitionVersion: string; stage: string; state?: string; program?: { steps: Array<{ kind: string }> }; programStepId?: string }; agent?: { version: number; digest: string } };
     };
     return { ...h, store, run };
   }
@@ -123,7 +123,8 @@ describe("which version a task starts on", () => {
     await t.store.ensureBuiltinSettings(TEST_ORG, "rovara-code");
     t.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: now });
     const meta = await t.run();
-    expect(meta.workflow).toMatchObject({ definitionVersion: "1.1.0", stage: "PLAN", programStepId: "plan" });
+    // Plan 6 Task 3: a 1.1.0 task starts by understanding the intent (deliberate change; the plan stage follows in Task 4).
+    expect(meta.workflow).toMatchObject({ definitionVersion: "1.1.0", stage: "UNDERSTAND", state: "READY", programStepId: "plan" });
     expect(meta.workflow?.program?.steps.map((step) => step.kind)).toEqual(["plan", "plan_critic", "build", "check", "review", "pull_request"]);
     expect(meta.agent).toMatchObject({ version: 2, digest: recipeDigest(v2()) });
 
