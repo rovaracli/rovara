@@ -158,7 +158,7 @@ async function retryWorkflow(deps: SessionReadDependencies, caller: ControlCalle
   } catch (error) {
     // Plan 3 may fail after its transaction committed (the run is queued and spend can start). A retry that started a run is recorded whatever came after: the workflow moved on from the
     // revision this retry read, and the event, the request item and the audit item are written. A workflow that did not move is a refusal, and nothing is written.
-    if (!await workflowMovedOn(deps, session, task)) throw error;
+    if (!await workflowMovedOn(deps, session, task, requestId)) throw error;
   }
 
   const nowMs = deps.now();
@@ -181,13 +181,18 @@ async function retryWorkflow(deps: SessionReadDependencies, caller: ControlCalle
   return answerOf(deps, caller, session.sessionId);
 }
 
-/** Whether the task's workflow left the blocked state this retry read it in (a run was queued by the retry), read fresh. */
-async function workflowMovedOn(deps: SessionReadDependencies, session: AgentSessionRecord, read: DeveloperTaskRecord): Promise<boolean> {
+/**
+ * Whether Plan 3 committed THIS request's run before its call failed: the workflow's revision moved on from the one this retry read, and the idempotency item of this request id (written
+ * in the transaction that starts the run) is there. The state alone is not asked: a run that stopped again before this looked is BLOCKED once more, and is still this retry's. Another
+ * person's retry moves the revision too but leaves its own request id, never this one, so it is not recorded as this caller's.
+ */
+async function workflowMovedOn(deps: SessionReadDependencies, session: AgentSessionRecord, read: DeveloperTaskRecord, requestId: string): Promise<boolean> {
   try {
     const fresh = await taskOfSession(deps, session);
     const before = read.workflow;
     const after = fresh?.workflow;
-    return before !== undefined && after !== undefined && after.revision > before.revision && after.state !== "BLOCKED";
+    if (fresh === undefined || before === undefined || after === undefined || after.revision <= before.revision) return false;
+    return await getItem(deps, { pk: `IDEMPOTENCY#${fresh.ownerKey}#${fresh.workspaceId}`, sk: `REQUEST#${requestId}` }) !== undefined;
   } catch {
     return false;
   }

@@ -9,6 +9,7 @@
 import { BatchGetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENTX_NAME_PATTERN,
+  INDEX_EXPIRY_ATTRIBUTE,
   LIVE_ENDED_KEEP_HOURS,
   LIVE_FILTERS,
   LIVE_INDEX_SCAN_MAX,
@@ -168,11 +169,13 @@ async function readGrants(deps: LiveDependencies, caller: SessionReadCaller): Pr
 }
 
 /** The shares that reach the caller, by session: those to them, to the whole company and to each of `projects`, from the org's share index. */
-async function readShares(deps: LiveDependencies, caller: SessionReadCaller, projects: Iterable<string>): Promise<Map<string, Array<{ principal: AgentPrincipal; level: SessionLevel }>>> {
+async function readShares(deps: LiveDependencies, caller: SessionReadCaller, projects: Iterable<string>, log: (entry: Record<string, unknown>) => void): Promise<Map<string, Array<{ principal: AgentPrincipal; level: SessionLevel }>>> {
   const principals: AgentPrincipal[] = [{ kind: "member", developerId: caller.developerId }, { kind: "org" }, ...[...projects].map((project) => ({ kind: "project" as const, project }))];
   const shares = new Map<string, Array<{ principal: AgentPrincipal; level: SessionLevel }>>();
   for (const principal of principals) {
-    const { items } = await queryPartition(deps, sharedSessionsKey(caller.orgId, principal, "ses_00000000000000000000").pk, { max: ROWS_MAX });
+    const { items, more } = await queryPartition(deps, sharedSessionsKey(caller.orgId, principal, "ses_00000000000000000000").pk, { max: ROWS_MAX });
+    // Shares past the cap are not read, so a session shared only through them stays off the wall: say so (the kind of partition only; never a project name or a session).
+    if (more) log({ event: "agent_session.live_shares_truncated", orgId: caller.orgId, principal: principal.kind });
     for (const item of items) {
       const id = SessionIdSchema.safeParse(item["sessionId"]);
       const level = SessionLevelSchema.safeParse(item["level"]);
@@ -183,15 +186,19 @@ async function readShares(deps: LiveDependencies, caller: SessionReadCaller, pro
   return shares;
 }
 
+/** Whether a row's own expiry (epoch seconds, set by the heartbeat) has passed; the table deletes late. A row with no readable expiry is judged by its heartbeat time alone. */
+const presenceHasExpired = (expiresAt: unknown, nowMs: number): boolean => typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt * 1000 <= nowMs;
+
 /** The people looking now, by session, from the org's presence index: fresh heartbeats only (the table deletes late), the names as the heartbeat stored them. */
-async function readViewers(deps: LiveDependencies, orgId: OrgId, nowMs: number): Promise<Map<string, SessionOwner[]>> {
+async function readViewers(deps: LiveDependencies, orgId: OrgId, nowMs: number, log: (entry: Record<string, unknown>) => void): Promise<Map<string, SessionOwner[]>> {
   const viewers = new Map<string, SessionOwner[]>();
-  const { items } = await queryPartition(deps, livePresenceKey(orgId, "ses_00000000000000000000", "x").pk, { max: ROWS_MAX });
+  const { items, more } = await queryPartition(deps, livePresenceKey(orgId, "ses_00000000000000000000", "x").pk, { max: ROWS_MAX });
+  if (more) log({ event: "agent_session.live_presence_truncated", orgId });
   for (const item of items) {
     const sessionId = text(item["sessionId"]);
     const developerId = text(item["developerId"]);
     const name = text(item["name"]);
-    if (item["orgId"] !== orgId || sessionId === undefined || developerId === undefined || name === undefined || !presenceIsFresh(item["at"], nowMs)) continue;
+    if (item["orgId"] !== orgId || sessionId === undefined || developerId === undefined || name === undefined || !presenceIsFresh(item["at"], nowMs) || presenceHasExpired(item[INDEX_EXPIRY_ATTRIBUTE], nowMs)) continue;
     viewers.set(sessionId, [...(viewers.get(sessionId) ?? []), { developerId, name }]);
   }
   return viewers;
@@ -248,7 +255,7 @@ export async function liveSessions(deps: LiveDependencies, caller: SessionReadCa
 
   // What the rules need that is the same for every session: the caller's grants, and the shares that reach them.
   const grants = await readGrants(deps, caller);
-  const shares = await readShares(deps, caller, new Set([...grants.keys(), ...tileProjects]));
+  const shares = await readShares(deps, caller, new Set([...grants.keys(), ...tileProjects]), log);
   const memo = newSessionRoleMemo();
 
   const judgedAll: Array<Judged & { key: string }> = [];
@@ -319,7 +326,7 @@ export async function liveSessions(deps: LiveDependencies, caller: SessionReadCa
       if (!isAgentXError(error)) throw error;
     }
   }
-  const viewers = await readViewers(deps, orgId, nowMs);
+  const viewers = await readViewers(deps, orgId, nowMs, log);
 
   const tiles: LiveTile[] = [];
   for (const { session, access } of page) {

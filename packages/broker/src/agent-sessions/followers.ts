@@ -209,7 +209,7 @@ export async function recordPresence(deps: SessionFollowerDependencies, caller: 
     TableName: deps.tableName,
     Item: {
       ...agentSessionKey(session.orgId, session.sessionId, `${PRESENCE_PREFIX}${caller.developerId}`), entityType: "AGENT_SESSION_PRESENCE", orgId: session.orgId, sessionId: session.sessionId,
-      developerId: caller.developerId, name: cleanSessionName(caller.name) ?? "Someone", at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PRESENCE_TTL_SECONDS,
+      developerId: caller.developerId, name: cleanSessionName(caller.name) ?? "a member", at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PRESENCE_TTL_SECONDS,
     },
     ReturnValues: "ALL_OLD",
   })) as { Attributes?: Item };
@@ -219,7 +219,7 @@ export async function recordPresence(deps: SessionFollowerDependencies, caller: 
       TableName: deps.tableName,
       Item: {
         ...livePresenceKey(session.orgId, session.sessionId, caller.developerId), entityType: "LIVE_PRESENCE", orgId: session.orgId, sessionId: session.sessionId,
-        developerId: caller.developerId, name: cleanSessionName(caller.name) ?? "Someone", at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PRESENCE_TTL_SECONDS,
+        developerId: caller.developerId, name: cleanSessionName(caller.name) ?? "a member", at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PRESENCE_TTL_SECONDS,
       },
     }));
   } catch (error) {
