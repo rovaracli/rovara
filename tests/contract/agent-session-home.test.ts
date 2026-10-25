@@ -678,6 +678,68 @@ describe("dismissing", () => {
     expect(await w.ids(PRIYA)).toEqual([`failure:${open.sessionId}`]);
   });
 
+  it("shows a card again when the same session fails anew, and keeps it hidden while the same failure stands", async () => {
+    const w = world();
+    const open = w.own({ status: "waiting", lastRunFailed: true });
+    const key = agentSessionKey(ORG_A, open.sessionId, "META");
+    await w.dismiss(PRIYA, `failure:${open.sessionId}`);
+    expect(await w.ids(PRIYA)).toEqual([]);
+    // Nothing about the failure moved (a later touch of the record only): still hidden.
+    w.db.set({ ...(w.db.get(key) as Item), updatedAt: iso(w.clock.now - 1000) });
+    expect(await w.ids(PRIYA)).toEqual([]);
+    // The run is retried and fails again: the summary moved on, so this is a new failure.
+    const meta = w.db.get(key) as Item;
+    w.db.set({ ...meta, summaryRevision: (meta["summaryRevision"] as number) + 2 });
+    expect(await w.ids(PRIYA)).toEqual([`failure:${open.sessionId}`]);
+    // Dismissing it again hides this occurrence and replaces the old row.
+    await w.dismiss(PRIYA, `failure:${open.sessionId}`);
+    expect(await w.ids(PRIYA)).toEqual([]);
+    expect(w.db.find((item) => item.entityType === "HOME_DISMISSED")).toHaveLength(1);
+  });
+
+  it("shows an ended failure again when the session ended anew", async () => {
+    const w = world();
+    const failure = w.failed({ endedAgoDays: 3 });
+    await w.dismiss(PRIYA, `failure:${failure.sessionId}`);
+    expect(await w.ids(PRIYA)).toEqual([]);
+    const key = agentSessionKey(ORG_A, failure.sessionId, "META");
+    w.db.set({ ...(w.db.get(key) as Item), endedAt: iso(w.clock.now - DAY) });
+    expect(await w.ids(PRIYA)).toEqual([`failure:${failure.sessionId}`]);
+  });
+
+  it("does not let a failure that happens between seeing the card and dismissing it be hidden unseen", async () => {
+    const w = world();
+    const open = w.own({ status: "waiting", lastRunFailed: true });
+    const [card] = (await w.home(PRIYA)).cards;
+    const dismissButton = card!.buttons.find((button) => button.action === "dismiss")!;
+    const key = agentSessionKey(ORG_A, open.sessionId, "META");
+    const meta = w.db.get(key) as Item;
+    w.db.set({ ...meta, summaryRevision: (meta["summaryRevision"] as number) + 1 });
+    const url = new URL(dismissButton.href!);
+    expect(await w.call("POST", `${url.pathname}${url.search}`, PRIYA)).toEqual({ cardId: `failure:${open.sessionId}`, dismissed: true });
+    expect(await w.ids(PRIYA)).toEqual([`failure:${open.sessionId}`]);
+  });
+
+  it("hides nothing for a dismissal row that names no occurrence, or another one", async () => {
+    const w = world();
+    const failure = w.failed({});
+    const row = { ...homeDismissedKey(ORG_A, PRIYA, `failure:${failure.sessionId}`), entityType: "HOME_DISMISSED", orgId: ORG_A, developerId: PRIYA, cardId: `failure:${failure.sessionId}`, dismissedAt: iso(T0), indexExpiresAt: Math.floor(T0 / 1000) + 1000 };
+    w.db.set(row);
+    expect(await w.ids(PRIYA)).toEqual([`failure:${failure.sessionId}`]);
+    w.db.set({ ...row, occurrence: "ended:2020-01-01T00:00:00.000Z" });
+    expect(await w.ids(PRIYA)).toEqual([`failure:${failure.sessionId}`]);
+  });
+
+  it("shows an offer again when its source offers it anew (a later time)", async () => {
+    const w = world();
+    let minute = 1;
+    fakeSource("offer", () => [offer("o1", minute)]);
+    await w.dismiss(PRIYA, "offer:o1");
+    expect(await w.ids(PRIYA)).toEqual([]);
+    minute = 5;
+    expect(await w.ids(PRIYA)).toEqual(["offer:o1"]);
+  });
+
   it("offers the dismiss button's address as the route that dismisses it", async () => {
     const w = world();
     const failure = w.failed({});
