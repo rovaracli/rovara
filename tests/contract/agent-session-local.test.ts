@@ -553,25 +553,37 @@ describe("updates from the Mac", () => {
     await expect(w.update(PRIYA, sessionId, deviceId, { status: "succeeded" })).resolves.toMatchObject({ status: "succeeded" });
   });
 
-  it("takes a full update of 50 turns (more than one transaction holds with their events), in order, and finishes an update that stopped part-way when it is sent again", async () => {
+  it("takes a full update of 40 turns as ONE transaction with their events (all or nothing), and refuses 41 with a clear text, writing nothing", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    expect(LOCAL_UPDATE_TURNS_MAX).toBe(40);
+    const before = w.writes();
+    const all = w.turns(LOCAL_UPDATE_TURNS_MAX);
+    await expect(w.update(PRIYA, sessionId, deviceId, { turns: all })).resolves.toMatchObject({ accepted: 40 });
+    const updateTransactions = w.db.transactions().slice(before).filter((tx) => JSON.stringify(tx).includes("AGENT_SESSION_LOCAL_TURN"));
+    expect(updateTransactions).toHaveLength(1);
+    expect(updateTransactions[0]!.length).toBeLessThanOrEqual(100);
+    const turns = w.under(sessionId, "TURN#").sort((a, b) => String(a.sk).localeCompare(String(b.sk)));
+    expect(turns.map((turn) => turn.text)).toEqual(all.map((turn) => turn.text));
+    expect(w.under(sessionId, "EVENT#").filter((event) => event.type === "local_turn")).toHaveLength(40);
+    const afterWrites = w.writes();
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(41) }))).toEqual({ code: "CONFIG_INVALID", message: "turns: An update holds at most 40 turns; send the rest in the next update." });
+    expect(w.writes()).toBe(afterWrites);
+    expect(w.under(sessionId, "TURN#")).toHaveLength(40);
+    expect(w.local(sessionId)).not.toHaveProperty("partial");
+  });
+
+  it("writes a failed update whole or not at all: nothing of it is left when its transaction fails, and the same request then writes it", async () => {
     const w = world();
     const { sessionId, deviceId } = await w.started();
     const requestId = randomUUID();
     const all = w.turns(LOCAL_UPDATE_TURNS_MAX);
-    // The last transaction fails once (a throttle), after the first has committed.
     w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AGENT_REQUEST"), error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
     await expect(recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, { requestId, deviceId, status: "running", turns: all })).rejects.toBeDefined();
-    const partial = w.under(sessionId, "TURN#").length;
-    expect(partial).toBeGreaterThan(0);
-    expect(partial).toBeLessThan(LOCAL_UPDATE_TURNS_MAX);
-    await expect(recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, { requestId, deviceId, status: "running", turns: all })).resolves.toMatchObject({ accepted: LOCAL_UPDATE_TURNS_MAX });
-    const turns = w.under(sessionId, "TURN#").sort((a, b) => String(a.sk).localeCompare(String(b.sk)));
-    expect(turns).toHaveLength(LOCAL_UPDATE_TURNS_MAX);
-    expect(turns.map((turn) => turn.text)).toEqual(all.map((turn) => turn.text));
-    expect(w.under(sessionId, "EVENT#").filter((event) => event.type === "local_turn")).toHaveLength(LOCAL_UPDATE_TURNS_MAX);
-    expect(w.local(sessionId)).toMatchObject({ turnCount: LOCAL_UPDATE_TURNS_MAX });
-    expect(w.local(sessionId)).not.toHaveProperty("partial");
-    for (const transaction of w.db.transactions()) expect(transaction.length).toBeLessThanOrEqual(100);
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    expect(w.local(sessionId)).toMatchObject({ turnCount: 0 });
+    await expect(recordLocalUpdate(w.deps, w.as(PRIYA), sessionId, { requestId, deviceId, status: "running", turns: all })).resolves.toMatchObject({ accepted: 40 });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(40);
   });
 
   it("keeps every turn of two updates that arrive together (the count is checked, one retries)", async () => {
