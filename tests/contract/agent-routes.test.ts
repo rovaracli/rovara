@@ -315,7 +315,7 @@ describe("access", () => {
     const detail = await call(MAYA, "GET", "/v1/app/agents/rovara-code");
     expect(detail.status).toBe(200);
     expect(detail.body).toMatchObject({ agent: { builtin: true, pinnedVersion: 1, access: "use" }, current: { version: 1 }, suggestedMaxPerRunUsd: 20 });
-    expect((await call(MAYA, "GET", "/v1/app/agents/rovara-code/versions")).body.versions).toEqual([expect.objectContaining({ version: 1, current: true }), expect.objectContaining({ version: 2, current: false })]);
+    expect((await call(MAYA, "GET", "/v1/app/agents/rovara-code/versions")).body.versions).toEqual([expect.objectContaining({ version: 1, current: true, safety: "current" }), expect.objectContaining({ version: 2, current: false, safety: "same_or_safer" })]);
     expect((await call(MAYA, "GET", "/v1/app/agents/rovara-code/versions/1")).body).toMatchObject({ recipe: { chain: [{ agentId: "rovara-code" }] } });
   });
 });
