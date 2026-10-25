@@ -2,7 +2,7 @@
 // owner's alone, the destination's rules apply (the company's rule for local agents on a Mac; the project role, the archive state and the owner's budget for the cloud, which is paid
 // work), and the legs are atomic: the session is never in two places and never lost if one side fails. Plan 6's `HandoffRuntime` is a fake here.
 import { randomUUID } from "node:crypto";
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   SESSION_LEGS_MAX,
@@ -23,9 +23,10 @@ import {
 import { registerDevice } from "../../packages/broker/src/devices/store.js";
 import { recordLocalUpdate, registerLocalSession, listDeviceCommands } from "../../packages/broker/src/devices/local-sessions.js";
 import { routeDeviceRequest } from "../../packages/broker/src/devices/routes.js";
-import { handoffSession, type HandoffDependencies, type HandoffRuntime } from "../../packages/broker/src/agent-sessions/handoff.js";
+import { handoffCancelRequestId, handoffSession, makeHandoffRecovery, type HandoffDependencies, type HandoffRuntime } from "../../packages/broker/src/agent-sessions/handoff.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
+import { sweepAgentSessions } from "../../packages/broker/src/agent-sessions/sweep.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
 import { sessionView } from "../../packages/broker/src/agent-sessions/read.js";
 import { stopSession, type SessionControlHost } from "../../packages/broker/src/agent-sessions/stop.js";
@@ -51,16 +52,25 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
   const calls = {
     starts: [] as Array<Record<string, unknown>>, pushes: [] as Array<Record<string, unknown>>, cancels: [] as Array<{ taskId: string; requestId: string }>,
     admissions: [] as Array<{ payer: unknown; project: string; agentId: string; path: string }>, order: [] as string[],
+    /** The session as the cancel found it: the claim (revision and marker) must be in place before anything is cancelled. */
+    atCancel: [] as Array<{ revision: unknown; moving: unknown; owner: unknown }>, systemCancels: [] as Array<{ taskId: string; requestId: string }>,
   };
   const live = {
     startFailure: undefined as Error | undefined, pushFailure: undefined as Error | undefined, cancelFailure: undefined as Error | undefined, budgetRefusal: undefined as string | undefined,
     proxyDown: false, onStart: undefined as undefined | ((call: number) => Promise<void>), push: { repository: "acme/web", branch: "rovara/fix-checkout", headSha: SHA_PUSHED } as unknown,
     repositories: [{ name: "web", url: "https://github.com/acme/web" }] as Array<{ name: string; url: string }>, repositoriesBroken: false,
+    /** Runs inside the cancel, as another request would in the moment between the claim and the write. */
+    onCancel: undefined as undefined | (() => Promise<void> | void), noMarker: false, wrongTaskId: false,
   };
   /** Runs once, just before the next move's transaction is sent: what another request or the Mac does in the moment between the move's last read and its write. */
-  const race = { before: undefined as undefined | (() => Promise<void> | void) };
+  const race = { before: undefined as undefined | (() => Promise<void> | void), beforeClaim: undefined as undefined | (() => Promise<void> | void) };
   const client = {
     send: async (command: Parameters<typeof w.db.send>[0]) => {
+      if (command instanceof TransactWriteCommand && race.beforeClaim !== undefined && JSON.stringify(command.input).includes(":moving")) {
+        const run = race.beforeClaim;
+        race.beforeClaim = undefined;
+        await run();
+      }
       if (command instanceof TransactWriteCommand && race.before !== undefined && JSON.stringify(command.input).includes("LEG#0000")) {
         const run = race.before;
         race.before = undefined;
@@ -78,14 +88,20 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
       await live.onStart?.(calls.starts.length);
       const prior = started.get(input.requestId);
       if (prior !== undefined) return { taskId: prior };
-      const taskId = randomUUID();
+      const taskId = live.wrongTaskId ? randomUUID() : input.taskId;
       // As Plan 6's start leaves a task: the owner's, on the project, with no session of its own yet (this module names the session on it).
       w.db.set({
         ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: input.orgId, developerId: input.owner.developerId, developerName: input.owner.name, provider: "oidc", project: input.project,
         workspaceId: randomUUID(), ownerKey: `owner-${input.owner.developerId.slice(0, 6)}`, payer: { kind: "member", developerId: input.owner.developerId }, createdAt: iso(w.clock.now), updatedAt: iso(w.clock.now),
+        ...(live.noMarker ? {} : { handoffOf: input.handoffOf }),
       });
       started.set(input.requestId, taskId);
       return { taskId };
+    },
+    cancelStarted: async (_deps, input) => {
+      calls.systemCancels.push({ taskId: input.taskId, requestId: input.requestId });
+      const task = w.taskOf(input.taskId);
+      if (task !== undefined) w.db.set({ ...task, cancelledBySystem: true });
     },
     pushToBranch: async (_deps, input) => {
       calls.order.push("push");
@@ -98,6 +114,9 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     cancelTask: async (task, requestId) => {
       calls.order.push("cancel");
       calls.cancels.push({ taskId: task.taskId, requestId });
+      const meta = task.sessionId === undefined ? undefined : (w.db.get(agentSessionKey(ORG_A, task.sessionId, "META")) as Item | undefined);
+      calls.atCancel.push({ revision: meta?.["revision"], moving: meta?.["moving"], owner: meta?.["owner"] });
+      await live.onCancel?.();
       if (live.cancelFailure !== undefined) throw live.cancelFailure;
     },
     retryWorkflow: async () => { throw new Error("not asked"); },
@@ -131,11 +150,11 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     ...orgSettingsKey(ORG_A, "LOCAL_AGENTS"), entityType: "ORG_LOCAL_AGENTS", orgId: ORG_A, allowed: policy.allowed ?? true,
     tools: policy.tools ?? ["rovara", "claude-code", "codex", "gemini-cli", "cursor-cli"], projects: policy.projects ?? "all", revision: 1,
   });
+  const taskOf = (taskId: string) => w.db.get(taskKey(taskId)) as Item | undefined;
   const meta = (sessionId: string) => w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as Item;
   const local = (sessionId: string) => w.db.get(agentSessionKey(ORG_A, sessionId, "LOCAL")) as Item | undefined;
   const under = (sessionId: string, prefix: string) => w.db.find((item) => item.pk === agentSessionKey(ORG_A, sessionId, "META").pk && String(item.sk).startsWith(prefix));
   const commands = (deviceId: string) => w.db.find((item) => item.pk === deviceKey(ORG_A, deviceId).pk && String(item.sk).startsWith("COMMAND#"));
-  const taskOf = (taskId: string) => w.db.get(taskKey(taskId)) as Item | undefined;
   const patchSession = (sessionId: string, fields: Record<string, unknown>) => w.db.set({ ...meta(sessionId), ...fields });
 
   /** A session of Priya's Mac on web, shared with Arjun (view). */
@@ -148,13 +167,15 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     return { sessionId, deviceId };
   };
   /** A cloud task session of Priya's on web (the task, its first leg, its tile and its sweep entry as the start writes them). */
-  const inCloud = (options: { owner?: string; agent?: boolean } = {}) => {
+  const inCloud = (options: { owner?: string; agent?: boolean | "rovara-code" } = {}) => {
     const seeded = w.seedSession({ owner: options.owner ?? PRIYA });
     const subject = { kind: "task", taskId: seeded.taskId };
     const leg = { seq: 1, subject, where: { kind: "cloud" }, startedAt: "2026-10-22T08:00:00.000Z" };
     patchSession(seeded.sessionId, { legs: [leg], payer: { kind: "member", developerId: options.owner ?? PRIYA } });
     w.db.set({ ...agentSessionKey(ORG_A, seeded.sessionId, "LEG#000001"), entityType: "AGENT_SESSION_LEG", orgId: ORG_A, sessionId: seeded.sessionId, ...leg });
     w.db.set({ ...liveSessionKey(ORG_A, seeded.sessionId), entityType: "LIVE_SESSION", orgId: ORG_A, sessionId: seeded.sessionId, kind: "task", project: "web", ownerId: options.owner ?? PRIYA, status: "running", createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:00:00.000Z" });
+    // As `startTask` leaves every task when agents are set up: the built-in Rovara Code agent is on the task (and a workflow runs the work).
+    if (options.agent === "rovara-code") w.db.set({ ...taskOf(seeded.taskId), agent: { agentId: "rovara-code", name: "Rovara Code", version: 1, builtin: true, digest: "d".repeat(64) }, workflow: { revision: 2, stage: "IMPLEMENT", state: "WAITING" } });
     if (options.agent === true) w.db.set({ ...taskOf(seeded.taskId), agent: { agentId: "ticket-triage", name: "Ticket triage", version: 2, builtin: false, digest: "d".repeat(64) } });
     return seeded;
   };
@@ -348,26 +369,43 @@ describe("a session on a Mac moves to the cloud", () => {
     expect(await code(stopSession(w.deps, { ...w.as(PRIYA), name: "Priya" }, sessionId, { requestId: input.requestId }))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   });
 
-  it("is idempotent across a lost answer: the commit failed after the task started, the same request id finishes with the same task", async () => {
+  it("a commit whose outcome is unknown, and the session not linked: the task it started is cancelled, the Mac session goes on alone, and the same request id then starts a fresh task", async () => {
     const w = world();
-    const { sessionId } = await w.onMac();
+    const { sessionId, deviceId } = await w.onMac();
     const input = w.body();
     w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
     await expect(w.move(PRIYA, sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
     // Nothing of the move is there: the session is still on the Mac, leg 1 is open, no command, the task has no session.
     expect(w.meta(sessionId)).toMatchObject({ kind: "local", where: { kind: "mac" }, revision: 1 });
-    expect((w.meta(sessionId).legs as unknown[])).toHaveLength(1);
     expect(w.under(sessionId, "LEG#")).toHaveLength(1);
-    // An unknown outcome never cancels a task that might be the session's now.
-    expect(w.calls.cancels).toEqual([]);
+    expect(w.commands(deviceId)).toEqual([]);
+    // Nobody pays for a task that nobody sees, and the branch is worked in one place only.
     const taskIds = () => w.db.find((item) => item.entityType === "DEVELOPER_TASK").map((item) => item["taskId"] as string);
     expect(taskIds()).toHaveLength(1);
+    expect(w.calls.cancels.map((call) => call.taskId)).toEqual(taskIds());
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, `HANDOFF_PENDING#${input.requestId}`))).toMatchObject({ state: "abandoned", attempt: 1 });
+    // The same request id later is a new attempt with a new task (the cancelled one is never linked).
     await w.move(PRIYA, sessionId, input);
-    // The runtime was asked twice with the same request id and answered the same task.
     expect(w.calls.starts).toHaveLength(2);
-    expect(w.calls.starts[0]!["requestId"]).toBe(w.calls.starts[1]!["requestId"]);
-    expect(w.meta(sessionId).subject).toMatchObject({ kind: "task", taskId: taskIds()[0] });
-    expect(taskIds()).toHaveLength(1);
+    expect(w.calls.starts[0]!["requestId"]).not.toBe(w.calls.starts[1]!["requestId"]);
+    expect(w.calls.starts[0]!["taskId"]).not.toBe(w.calls.starts[1]!["taskId"]);
+    expect(taskIds()).toHaveLength(2);
+    expect(w.meta(sessionId).subject).toMatchObject({ kind: "task", taskId: w.calls.starts[1]!["taskId"] });
+    expect(w.calls.cancels).toHaveLength(1);
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, `HANDOFF_PENDING#${input.requestId}`))).toBeUndefined();
+  });
+
+  it("a commit that was actually written but whose answer was lost is found, not cancelled", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    const input = w.body();
+    // The table commits, then the answer is lost.
+    const send = w.deps.documentClient.send;
+    let lose = true;
+    w.deps.documentClient = { send: async (command) => { const reply = await send(command); if (lose && command instanceof TransactWriteCommand && JSON.stringify(command.input).includes("LEG#000002")) { lose = false; throw Object.assign(new Error("timeout"), { name: "TimeoutError" }); } return reply; } };
+    await expect(w.move(PRIYA, sessionId, input)).resolves.toMatchObject({ session: { where: { kind: "cloud" } } });
+    expect(w.calls.cancels).toEqual([]);
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: 2 });
   });
 
   it("gives each request id its own runtime request id, tied to the org and the session", async () => {
@@ -628,7 +666,9 @@ describe("a session in the cloud moves to a Mac", () => {
     expect(JSON.stringify(tx.find((item) => JSON.stringify(item).includes("LIVE_SESSIONS")))).toContain('":kind":"local"');
 
     expect(w.calls.order).toEqual(["cancel", "push"]);
-    expect(w.calls.cancels).toEqual([{ taskId, requestId: input.requestId }]);
+    // The cancel has an id of its own (not the client's, which could collide with an id used on the task page).
+    expect(w.calls.cancels).toEqual([{ taskId, requestId: handoffCancelRequestId(ORG_A, sessionId, input.requestId) }]);
+    expect(input.requestId).not.toBe(handoffCancelRequestId(ORG_A, sessionId, input.requestId));
     expect(w.calls.pushes).toEqual([{ orgId: ORG_A, taskId }]);
     expect(reply).toEqual({ repository: "acme/web", branch: "rovara/fix-checkout", headSha: SHA_PUSHED, summary: expect.stringContaining("Bump the Stripe SDK") as string });
     expect(Object.keys(reply).sort()).toEqual(["branch", "headSha", "repository", "summary"]);
@@ -781,6 +821,22 @@ describe("a session in the cloud moves to a Mac", () => {
     expect(w.meta(sessionId)).toMatchObject({ kind: "task" });
   });
 
+  it("moves a Rovara Code task as the broker really leaves it (the built-in agent is on the task, a workflow runs it); only another agent's run stays in the cloud", async () => {
+    const w = world();
+    const code1 = w.inCloud({ agent: "rovara-code" });
+    const deviceId = await w.mac(PRIYA);
+    await expect(w.move(PRIYA, code1.sessionId, w.toMac(deviceId))).resolves.toMatchObject({ headSha: SHA_PUSHED });
+    expect(w.calls.cancels).toHaveLength(1);
+    expect(w.meta(code1.sessionId)).toMatchObject({ kind: "local" });
+    // A built-in agent that is not Rovara Code, and a custom agent called "rovara-code", are agent-step runs.
+    const triage = w.inCloud({ agent: true });
+    expect(await code(w.move(PRIYA, triage.sessionId, w.toMac(await w.mac(PRIYA, "Second"))))).toEqual({ code: "CONFIG_INVALID", message: "An agent run stays in the cloud." });
+    const custom = w.inCloud();
+    w.db.set({ ...w.taskOf(custom.taskId)!, agent: { agentId: "rovara-code", name: "Rovara Code", version: 1, builtin: false, digest: "d".repeat(64) } });
+    expect(await code(w.move(PRIYA, custom.sessionId, w.toMac(await w.mac(PRIYA, "Third"))))).toEqual({ code: "CONFIG_INVALID", message: "An agent run stays in the cloud." });
+    expect(w.calls.cancels).toHaveLength(1);
+  });
+
   it("refuses an agent-step run, which stays in the cloud, and a session that is already on a Mac", async () => {
     const w = world();
     const agent = w.inCloud({ agent: true });
@@ -829,7 +885,8 @@ describe("a session in the cloud moves to a Mac", () => {
     expect(w.local(sessionId)).toBeUndefined();
     w.live.pushFailure = undefined;
     await expect(w.move(PRIYA, sessionId, input)).resolves.toMatchObject({ headSha: SHA_PUSHED });
-    expect(w.calls.cancels).toEqual([{ taskId, requestId: input.requestId }, { taskId, requestId: input.requestId }]);
+    const cancelId = handoffCancelRequestId(ORG_A, sessionId, input.requestId);
+    expect(w.calls.cancels).toEqual([{ taskId, requestId: cancelId }, { taskId, requestId: cancelId }]);
     expect(w.meta(sessionId)).toMatchObject({ kind: "local" });
   });
 
@@ -918,6 +975,8 @@ describe("a move that races another write is decided by the table, not by what i
     const { sessionId, deviceId } = await w.onMac();
     w.race.before = () => { const task = w.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]!; w.db.set({ ...task, sessionId: "ses_00000000000000000042" }); };
     expect(await code(w.move(PRIYA, sessionId, w.body()))).toEqual({ code: RUNTIME_UNAVAILABLE, message: "This session is busy right now. Try again." });
+    // The task that could not be linked is cancelled: nothing pays for work nobody sees.
+    expect(w.calls.cancels).toHaveLength(1);
     expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 1 });
     expect(w.under(sessionId, "LEG#")).toHaveLength(1);
     expect(w.commands(deviceId)).toEqual([]);
@@ -954,6 +1013,59 @@ describe("a move that races another write is decided by the table, not by what i
     expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toEqual({ code: "FORBIDDEN", message: "Only Arjun can move this session." });
     expect(w.meta(sessionId)).toMatchObject({ kind: "task" });
     expect(w.local(sessionId)).toBeUndefined();
+  });
+
+  it("to a Mac: a take-over that lands before the cancel refuses the old owner's move, and the new owner's task is NOT cancelled", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    // Arjun takes the session over just before the claim (the session and its task move together; the revision moves).
+    w.race.beforeClaim = () => {
+      w.patchSession(sessionId, { owner: { developerId: ARJUN, name: "Arjun" }, revision: 2 });
+      w.db.set({ ...w.taskOf(taskId)!, currentOwner: { developerId: ARJUN, name: "Arjun", provider: "oidc", since: iso(T0) } });
+    };
+    expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toEqual({ code: "FORBIDDEN", message: "Only Arjun can move this session." });
+    expect(w.calls.cancels).toEqual([]);
+    expect(w.calls.pushes).toEqual([]);
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task", owner: { developerId: ARJUN } });
+    expect(w.meta(sessionId)).not.toHaveProperty("moving");
+  });
+
+  it("to a Mac: the move claims the session before it cancels (the revision moves and a marker is set), so a take-over decided on the old revision cannot land after; the marker is gone when the move is done", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    let takeOver: unknown;
+    w.live.onCancel = async () => {
+      // A take-over applies conditional on the revision it was asked at (Task 12b): the claim has moved it.
+      takeOver = await code(w.db.send(new UpdateCommand({
+        TableName: "state", Key: agentSessionKey(ORG_A, sessionId, "META"), UpdateExpression: "SET #owner = :owner ADD #revision :one",
+        ConditionExpression: "attribute_exists(pk) AND #revision = :revision", ExpressionAttributeNames: { "#owner": "owner", "#revision": "revision" },
+        ExpressionAttributeValues: { ":owner": { developerId: ARJUN, name: "Arjun" }, ":one": 1, ":revision": 1 },
+      })));
+    };
+    await w.move(PRIYA, sessionId, w.toMac(deviceId));
+    expect(w.calls.atCancel).toEqual([{ revision: 2, moving: { requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as string, until: iso(T0 + 300_000) }, owner: expect.objectContaining({ developerId: PRIYA }) as unknown }]);
+    expect(takeOver).toMatchObject({ code: undefined });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local", owner: { developerId: PRIYA }, revision: 3 });
+    expect(w.meta(sessionId)).not.toHaveProperty("moving");
+  });
+
+  it("to a Mac: while another move holds the claim, a different request is refused; the same request goes on, and an expired claim is taken over", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    const mine = randomUUID();
+    w.patchSession(sessionId, { moving: { requestId: randomUUID(), until: iso(T0 + 120_000) } });
+    expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toEqual({ code: RUNTIME_UNAVAILABLE, message: "This session is being moved right now. Try again in a minute." });
+    expect(w.calls.cancels).toEqual([]);
+    w.patchSession(sessionId, { moving: { requestId: mine, until: iso(T0 + 120_000) } });
+    await expect(w.move(PRIYA, sessionId, w.toMac(deviceId, { requestId: mine }))).resolves.toMatchObject({ headSha: SHA_PUSHED });
+    const again = world();
+    const second = again.inCloud();
+    const device = await again.mac(PRIYA);
+    again.patchSession(second.sessionId, { moving: { requestId: randomUUID(), until: iso(T0 - 1000) } });
+    await expect(again.move(PRIYA, second.sessionId, again.toMac(device))).resolves.toMatchObject({ headSha: SHA_PUSHED });
   });
 
   it("to a Mac: a person who followed in that moment is judged too (the count it read no longer holds), and the count ends right", async () => {
@@ -999,6 +1111,126 @@ describe("a move that races another write is decided by the table, not by what i
     expect(w.under(sessionId, "EVENT#").filter((event) => event.type === "handoff")).toHaveLength(1);
     expect(w.under(sessionId, "LEG#")).toHaveLength(2);
     expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 2 });
+  });
+});
+
+describe("no paid work is left unlinked", () => {
+  const pendingOf = (w: ReturnType<typeof world>, sessionId: string, requestId: string) => w.db.get(agentSessionKey(ORG_A, sessionId, `HANDOFF_PENDING#${requestId}`)) as Item | undefined;
+
+  it("writes a pending record before the task starts (with the task id it will have), hands the runtime the id and the marker, and removes the record when the move is done", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    const input = w.body();
+    let during: Item | undefined;
+    w.live.onStart = async () => { during = pendingOf(w, sessionId, input.requestId); };
+    await w.move(PRIYA, sessionId, input);
+    const start = w.calls.starts[0]!;
+    expect(during).toMatchObject({ state: "started", attempt: 1, taskId: start["taskId"], startedAt: iso(T0), orgId: ORG_A, sessionId });
+    expect(start["handoffOf"]).toEqual({ sessionId, requestId: input.requestId });
+    expect(w.taskOf(start["taskId"] as string)).toMatchObject({ handoffOf: { sessionId, requestId: input.requestId } });
+    expect(w.meta(sessionId).subject).toMatchObject({ taskId: start["taskId"] });
+    expect(pendingOf(w, sessionId, input.requestId)).toBeUndefined();
+  });
+
+  it("refuses a runtime that does not mark the task or answers another task than the one asked for, and cancels what it made", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    w.live.noMarker = true;
+    expect(await code(w.move(PRIYA, sessionId, w.body()))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
+    expect(w.calls.cancels).toHaveLength(1);
+    w.live.noMarker = false;
+    w.live.wrongTaskId = true;
+    expect(await code(w.move(PRIYA, sessionId, w.body()))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 1 });
+    expect(w.calls.cancels.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("when even the cancel fails after an unknown outcome and the Mac ends its session, the repeat of the request cancels the orphan before it says the session ended", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.onMac();
+    const input = w.body();
+    w.live.cancelFailure = agentXError("WORKSPACE_BUSY", "busy");
+    w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
+    await expect(w.move(PRIYA, sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
+    const orphan = (w.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]!)["taskId"] as string;
+    expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "started" });
+    // The Mac ends its own session (no stop command was committed); a minute and a half later the owner repeats the request.
+    await recordLocalUpdate({ ...w.deps }, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "succeeded" });
+    w.clock.now += 90_000;
+    w.live.cancelFailure = undefined;
+    w.calls.cancels.length = 0;
+    expect(await code(w.move(PRIYA, sessionId, input))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+    expect(w.calls.cancels.map((call) => call.taskId)).toEqual([orphan]);
+    expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "abandoned" });
+  });
+
+  it("a repeat that comes at once does not cancel a move that may still be committing", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.onMac();
+    const input = w.body();
+    w.live.cancelFailure = agentXError("WORKSPACE_BUSY", "busy");
+    w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
+    await expect(w.move(PRIYA, sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
+    await recordLocalUpdate({ ...w.deps }, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "succeeded" });
+    w.calls.cancels.length = 0;
+    w.clock.now += 5_000;
+    expect(await code(w.move(PRIYA, sessionId, input))).toMatchObject({ code: "SESSION_ENDED" });
+    expect(w.calls.cancels).toEqual([]);
+  });
+
+  describe("the session sweep", () => {
+    const recovery = (w: ReturnType<typeof world>) => makeHandoffRecovery({ ...w.deps, handoff: w.runtime });
+    const orphaned = async (w: ReturnType<typeof world>) => {
+      const mac = await w.onMac();
+      const input = w.body();
+      w.live.cancelFailure = agentXError("WORKSPACE_BUSY", "busy");
+      w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
+      await expect(w.move(PRIYA, mac.sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
+      w.live.cancelFailure = undefined;
+      w.calls.cancels.length = 0;
+      return { ...mac, input, taskId: (w.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]!)["taskId"] as string };
+    };
+    const sweep = (w: ReturnType<typeof world>) => sweepAgentSessions({ documentClient: w.db, tableName: "state", now: () => w.clock.now, log: () => undefined, recoverHandoffs: recovery(w) }, w.clock.now);
+
+    it("cancels a marked task that never got linked, once it is older than the window, through the runtime, and marks it done", async () => {
+      const w = world();
+      const { sessionId, input, taskId } = await orphaned(w);
+      w.clock.now += 5 * 60_000;
+      await sweep(w);
+      expect(w.calls.systemCancels).toEqual([]);
+      w.clock.now += 6 * 60_000;
+      await sweep(w);
+      expect(w.calls.systemCancels).toEqual([{ taskId, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as string }]);
+      expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "abandoned" });
+      await sweep(w);
+      expect(w.calls.systemCancels).toHaveLength(1);
+    });
+
+    it("leaves a task alone when the move was recorded, when the task has a session, or when it is another org's", async () => {
+      const w = world();
+      const first = await orphaned(w);
+      // The move was in fact recorded (its request item is there).
+      w.db.set({ ...agentSessionKey(ORG_A, first.sessionId, `REQUEST#${first.input.requestId}`), entityType: "AGENT_SESSION_REQUEST", orgId: ORG_A, action: "handoff", by: PRIYA, at: iso(T0), sessionId: first.sessionId });
+      w.clock.now += 11 * 60_000;
+      await sweep(w);
+      expect(w.calls.systemCancels).toEqual([]);
+      expect(pendingOf(w, first.sessionId, first.input.requestId)).toBeUndefined();
+
+      const second = world();
+      const linked = await orphaned(second);
+      second.db.set({ ...second.taskOf(linked.taskId)!, sessionId: linked.sessionId });
+      second.clock.now += 11 * 60_000;
+      await sweep(second);
+      expect(second.calls.systemCancels).toEqual([]);
+      expect(pendingOf(second, linked.sessionId, linked.input.requestId)).toBeUndefined();
+
+      const third = world();
+      const foreign = await orphaned(third);
+      third.db.set({ ...third.taskOf(foreign.taskId)!, orgId: ORG_B });
+      third.clock.now += 11 * 60_000;
+      await sweep(third);
+      expect(third.calls.systemCancels).toEqual([]);
+    });
   });
 });
 
