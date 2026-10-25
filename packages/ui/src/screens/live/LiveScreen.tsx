@@ -5,7 +5,7 @@ import { AppNavReaderSchema, ProjectOverviewProjectSchema, LIVE_FILTERS, LiveFil
 import { useAppHost } from "../../host.js";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";
-import { useLive, type ReadLiveTile } from "../../api/live.js";
+import { useLive, mergeLiveTiles, type ReadLiveTile } from "../../api/live.js";
 import { createRealtimeClient } from "../../realtime/client.js";
 import { createNoticeInvalidator } from "../../realtime/invalidate.js";
 import { useAnnounce } from "../../design/Announcer.js";
@@ -25,7 +25,7 @@ export function LiveScreen() {
  const live = useLive(filter, project), nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema) }), ready = live.data !== undefined && !live.isError;
  const [connection, setConnection] = useState("connecting");
  useEffect(() => { if (!ready) return;const invalidator = createNoticeInvalidator(query), realtime = createRealtimeClient(host, { onNotice: notice => invalidator.notice(notice), onStatus: setConnection, onReset: () => invalidator.reset() });realtime.start();return () => { realtime.stop();invalidator.stop(); }; }, [host, query, ready]);
- const tiles = useMemo(() => { if (live.isError || live.data === undefined) return undefined;const byId = new Map<string, ReadLiveTile>();for (const tile of live.data.pages.flatMap(page => page.tiles)) { const old = byId.get(tile.sessionId);if (old === undefined || Date.parse(tile.updatedAt) >= Date.parse(old.updatedAt)) byId.set(tile.sessionId, tile); }return [...byId.values()]; }, [live.data, live.isError]);
+ const tiles = useMemo(() => { if (live.isError || live.data === undefined) return undefined;return mergeLiveTiles(live.data.pages); }, [live.data, live.isError]);
  const previous = useRef<{ key: string; tiles: ReadLiveTile[] } | undefined>(undefined), selection = filter + ":" + (project ?? "");
  useEffect(() => { if (tiles === undefined) return;if (previous.current?.key === selection) for (const tile of previous.current.tiles) if (!tiles.some(next => next.sessionId === tile.sessionId)) announce(tile.title + " left Live");previous.current = { key: selection, tiles }; }, [tiles, selection, announce]);
  function choose(key: string, value: string | undefined) { const next = new URLSearchParams(params);if (value === undefined) next.delete(key);else next.set(key, value);setParams(next); }

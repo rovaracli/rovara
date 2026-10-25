@@ -107,3 +107,5 @@ export { TICKET_PATTERN } from "./confirmation.js";
 export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema } from "./developer-web.js";
 
 export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
+
+export * from "./agent-web-views.js";

@@ -1,3 +1,4 @@
+import { agentDirectory, agentProfile, AGENT_FIXTURE_ID } from "../../web/support/agent-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
 import "../../../packages/broker/src/aws/broker-environment-init.js";
 import { createServer } from "node:https";
@@ -6,7 +7,7 @@ import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentIdSchema, ProjectOverviewSchema, RunInputSchema, TaskResponseSchema, LiveResponseSchema, LiveTileSchema, SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
+import { AgentDirectoryResponseSchema, AgentProfileResponseSchema, AgentVersionsResponseSchema, AgentSpendResponseSchema, AgentSharesResponseSchema, AgentSharesPutResponseSchema, AgentShareInputSchema, AgentOwnerPutBodySchema, AgentWriteResponseSchema, AppProjectsResponseSchema, SessionMakeAgentResponseSchema, AgentIdSchema, ProjectOverviewSchema, RunInputSchema, TaskResponseSchema, LiveResponseSchema, LiveTileSchema, SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
 import { createAppHandler } from "../../../packages/web/src/server/handler.js";
 import { authenticateWebRequest, webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 import type { DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
@@ -50,6 +51,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/agent-state" && method === "POST" && current.agent !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.agent = AgentProfileResponseSchema.parse({ ...current.agent, agent: { ...current.agent.agent, ...changes } });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/requests") { json(200, requests);return; }
  const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
  if (url.pathname === "/v1/auth/browser/authorize") {
@@ -72,6 +74,19 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/auth/browser/sign-out") { revoked = true;response.writeHead(204, { "set-cookie": "__Host-agentx_review_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" });response.end();return; }
  if (url.pathname === "/v1/web/nav") { json(200, current.nav);return; }
  if (url.pathname === "/v1/web/me") { json(200, { ...current.me, csrf: appCsrfTokenFor(FIXTURE_SESSION) });return; }
+ if (current.agent !== undefined) {
+  const agent = current.agent.agent, agentPath = "/v1/web/agents/" + agent.agentId;
+  const builtin = { agentId: "ticket-triage", name: "Ticket triage", description: "Investigate an issue before deciding what to change.", builtin: true, access: "use", status: "active", pinnedVersion: 1, latestVersion: 1 };
+  if (url.pathname === "/v1/web/agents" && method === "GET") { const scope = url.searchParams.get("scope") ?? "all", own = agentDirectory().agents[0]!;json(200, AgentDirectoryResponseSchema.parse({ agents: scope === "builtin" ? [builtin] : scope === "mine" || scope === "shared" ? [own] : [own, builtin] }));return; }
+  if (url.pathname === agentPath && method === "GET") { json(200, current.agent);return; }
+  if (url.pathname === "/v1/web/agents/ticket-triage" && method === "GET") { const recipe = agentProfile().current!.recipe!;json(200, AgentProfileResponseSchema.parse({ agent: builtin, current: { version: 1, changed: false, recipe: { ...recipe, chain: recipe.chain.slice(0, 1), instructions: recipe.instructions.slice(0, 1) } }, suggestedMaxPerRunUsd: 2 }));return; }
+  if (url.pathname === agentPath + "/versions" && method === "GET") { json(200, AgentVersionsResponseSchema.parse({ versions: [{ version: 3, digest: "a".repeat(64), name: agent.name, description: agent.description, publishedAt: "2026-10-23T12:00:00.000Z", publishedBy: FIXTURE_DEVELOPER, note: "Check payment safety before changing the implementation.", current: true, safety: "current", needsOwnerOk: false }] }));return; }
+  if (url.pathname === agentPath + "/spend" && method === "GET") { json(200, AgentSpendResponseSchema.parse({ month: url.searchParams.get("month"), totalUsd: 3.25, byOrigin: { person: 2, autonomous: 1, test: 0.25 }, recentRuns: [] }));return; }
+  if (url.pathname === agentPath + "/shares" && method === "GET") { json(200, AgentSharesResponseSchema.parse({ shares: current.agentShares ?? [] }));return; }
+  if (url.pathname === agentPath + "/shares" && method === "PUT") { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as Record<string, unknown>, requestId = SessionMakeAgentBodySchema.shape.requestId.parse(input.requestId), shares = Array.isArray(input.shares) ? input.shares.map(value => AgentShareInputSchema.parse(value)) : undefined;if (shares === undefined) throw new Error("Invalid mock shares");evidence.body = { requestId, shares };current.agentShares = AgentSharesResponseSchema.parse({ shares: shares.map(share => ({ ...share, grantedBy: FIXTURE_DEVELOPER, grantedAt: "2026-10-23T12:00:00.000Z" })) }).shares;json(200, AgentSharesPutResponseSchema.parse({ shares }));return; }
+  if (url.pathname === agentPath + "/owner" && method === "PUT") { let body = "";for await (const chunk of request) body += String(chunk);const input = AgentOwnerPutBodySchema.parse(JSON.parse(body));evidence.body = input;current.agent = AgentProfileResponseSchema.parse({ ...current.agent, agent: { ...agent, owner: input.owner, ...(input.accountable === undefined ? {} : { accountable: input.accountable }) } });json(200, AgentWriteResponseSchema.parse({ agent: current.agent.agent }));return; }
+  if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, AppProjectsResponseSchema.parse({ projects: ["payments", "checkout"].map(name => ({ name, status: "active", latestRevision: 1, repositories: [], myRole: "contributor", setup: { status: "ready" } })) }));return; }
+ }
  if (current.project !== undefined && url.pathname === "/v1/web/projects/" + current.project.project.name + "/overview" && method === "GET") { json(200, current.project);return; }
  const run = /^\/v1\/web\/agents\/([^/]+)\/runs$/.exec(url.pathname);
  if (current.project !== undefined && run !== null && method === "POST") {
@@ -92,6 +107,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  const anchor = url.searchParams.get("anchor"), visible = anchor === null || session.anchors?.some(part => part.target + ":" + part.targetId === anchor) === true;
  const messages = visible ? (current.messages ?? []).filter(message => anchor === null || (message.anchor !== undefined && "targetId" in message.anchor && message.anchor.target + ":" + message.anchor.targetId === anchor)) : [];
  json(200, SessionMessagePageSchema.parse({ messages }));return;
+ }
+ if (url.pathname === path + "/agent" && method === "POST" && current.agent !== undefined) {
+  if (!session.you.actions.includes("make_agent")) { json(403, { error: { code: "FORBIDDEN", message: "This task cannot create a workflow." } });return; }
+  let body = "";for await (const chunk of request) body += String(chunk);const input = SessionMakeAgentBodySchema.parse(JSON.parse(body));evidence.body = input;
+  const agent = { ...current.agent.agent, agentId: "agt_bbbbbbbbbbbbbbbbbbbb", name: input.name ?? session.title, currentVersion: undefined, latestVersion: 0, draftRevision: 1, owner: { kind: "project", project: "payments" }, accountable: { developerId: FIXTURE_DEVELOPER } };
+  json(201, SessionMakeAgentResponseSchema.parse({ agent, draft: { overlay: { instructions: session.title }, extends: { agentId: AGENT_FIXTURE_ID, version: 3 }, revision: 1, updatedBy: FIXTURE_DEVELOPER, updatedAt: "2026-10-23T12:00:00.000Z", origin: { kind: "session", visible: true, sessionId: session.sessionId, title: session.title, link: origin + "/s/" + session.sessionId, createdBy: FIXTURE_DEVELOPER, createdAt: "2026-10-23T12:00:00.000Z" } }, copied: true }));return;
  }
  if (url.pathname === path + "/events" && method === "GET") { json(200, { events: [] });return; }
  if (url.pathname === path + "/presence" && method === "POST") { json(200, { viewingNow: session.viewingNow });return; }

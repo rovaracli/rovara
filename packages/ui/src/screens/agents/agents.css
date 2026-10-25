@@ -1,0 +1,17 @@
+.rv-agent-list { list-style: none; margin: 0; padding: 0; }
+.rv-agent-list > li { display: flex; justify-content: space-between; gap: var(--rv-space-4); border-bottom: 1px solid var(--rv-border); padding: var(--rv-space-5) 0; }
+.rv-agent-list h2 { margin: 0; font-size: var(--rv-font-lg); }
+.rv-agent-list p { max-width: 65ch; }
+.rv-agent-profile-tray { inset: 0 0 0 auto; transform: none; width: min(840px, 88vw); max-width: none; max-height: 100dvh; border-radius: 0; animation: rv-agent-enter var(--rv-motion-normal) ease-out; }
+.rv-agent-profile { display: grid; gap: var(--rv-space-5); }
+.rv-agent-section { border-top: 1px solid var(--rv-border); padding-block: var(--rv-space-4); }
+.rv-agent-section > summary { cursor: pointer; min-height: 44px; font-weight: 600; display: list-item; padding-block: var(--rv-space-2); }
+.rv-agent-section h3 { font-size: var(--rv-font-lg); }
+.rv-agent-instructions { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 70ch; }
+.rv-agent-steps { display: grid; gap: var(--rv-space-3); padding-inline-start: var(--rv-space-5); }
+.rv-agent-facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--rv-space-2) var(--rv-space-4); }
+.rv-agent-facts dd { margin: 0; }
+@keyframes rv-agent-enter { from { opacity: 0; translate: var(--rv-space-4) 0; } to { opacity: 1; translate: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .rv-agent-profile-tray { animation: none; } }
+.rv-agent-profile { min-width: 0; overflow-wrap: anywhere; }
+.rv-agent-profile-tray .rv-dialog-heading { position: sticky; top: 0; z-index: 1; background: var(--rv-bg-raised); padding-block: var(--rv-space-2); }

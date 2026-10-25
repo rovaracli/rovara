@@ -6,6 +6,7 @@ import { createApiClient } from "./client.js";
 export type ReadLivePage = ReturnType<typeof LiveResponseReaderSchema.parse>;
 export type ReadLiveTile = ReturnType<typeof LiveTileReaderSchema.parse>;
 export type LiveFilter = ReturnType<typeof LiveFilterSchema.parse>;
+export function mergeLiveTiles(pages: readonly ReadLivePage[]): ReadLiveTile[] { const byId = new Map<string, ReadLiveTile>();for (const tile of pages.flatMap(page => page.tiles)) { const old = byId.get(tile.sessionId);if (old === undefined || Date.parse(tile.updatedAt) >= Date.parse(old.updatedAt)) byId.set(tile.sessionId, tile); }return [...byId.values()]; }
 export function acceptLivePage(previous: ReadLivePage | undefined, next: ReadLivePage): ReadLivePage {
  const old = new Map(previous?.tiles.map(tile => [tile.sessionId, tile]));
  return { ...next, tiles: next.tiles.map(tile => { const earlier = old.get(tile.sessionId);return earlier !== undefined && Date.parse(tile.updatedAt) < Date.parse(earlier.updatedAt) ? earlier : tile; }) };

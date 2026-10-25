@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { TaskResponseReaderSchema, DeveloperTaskViewSchema, SessionIdSchema, SessionMessageIdSchema, SessionResponseReaderSchema, SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionEventPageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema, SessionSharesResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionShareDeleteResponseReaderSchema, type SessionAnchorInput, type AgentPrincipalSchema } from "@agentx/contracts/web";
+import { SessionMakeAgentBodySchema, SessionMakeAgentResponseReaderSchema, TaskResponseReaderSchema, DeveloperTaskViewSchema, SessionIdSchema, SessionMessageIdSchema, SessionResponseReaderSchema, SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionEventPageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema, SessionSharesResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionShareDeleteResponseReaderSchema, type SessionAnchorInput, type AgentPrincipalSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import type { ReadSession } from "../screens/session/SessionHeader.js";
@@ -19,6 +19,7 @@ export function mergeSessionMessages(pages: readonly (readonly ReadMessage[])[])
 export function createSessionApi(host: AppHost) {
  const api = createApiClient(host);
  return {
+ makeAgent(id: string, input: { requestId: string; name?: string }) { return api.send("POST", sessionPath(id) + "/agent", SessionMakeAgentBodySchema.parse(input), SessionMakeAgentResponseReaderSchema); },
  continueTask(taskId: string) { return api.send("POST", "/v1/app/tasks/" + encodeURIComponent(DeveloperTaskViewSchema.shape.taskId.parse(taskId)) + "/continue-as-task", { requestId: crypto.randomUUID() }, TaskResponseReaderSchema); },
  async read(id: string) { return (await api.get(sessionPath(id), SessionResponseReaderSchema, { "x-agentx-task-view": "2" })).session; },
  sendMessage(id: string, input: { kind: "comment" | "steer"; text: string; anchor?: SessionAnchorInput; threadId?: string }) { return api.send("POST", sessionPath(id) + "/messages", { ...input, requestId: crypto.randomUUID() }, SessionMessageReaderSchema); },

@@ -75,3 +75,4 @@ button:disabled{cursor:default;opacity:.65}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 @media(max-width:767px){.rv-page-header{flex-direction:column}
 .rv-dialog{padding:var(--rv-space-4)}}
+.rv-page-header>div{min-width:0}.rv-page-header h1{overflow-wrap:anywhere}.rv-dialog-heading h2{min-width:0;overflow-wrap:anywhere}.rv-dialog-heading>button{flex-shrink:0}

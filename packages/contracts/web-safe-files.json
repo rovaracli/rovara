@@ -3,6 +3,7 @@
   "packages/contracts/src/agent-recipe.ts",
   "packages/contracts/src/agent-run.ts",
   "packages/contracts/src/agent-sessions.ts",
+  "packages/contracts/src/agent-web-views.ts",
   "packages/contracts/src/agent.ts",
   "packages/contracts/src/app-nav.ts",
   "packages/contracts/src/app-projects.ts",
