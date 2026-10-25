@@ -621,7 +621,11 @@ describe("a session in the cloud moves to a Mac", () => {
     const deviceId = await w.mac(PRIYA);
     w.patchSession(sessionId, { summary: { ...(w.meta(sessionId).summary as Item), step: "Fixing the checkout test", status: "stopped" } });
     const input = w.toMac(deviceId);
+    const before = w.writes();
     const reply = await w.move(PRIYA, sessionId, input);
+    // The tile moves in the move's own transaction (the summary refresh after it may rewrite it).
+    const tx = w.db.transactions().slice(before).find((items) => JSON.stringify(items).includes("LEG#000002"))!;
+    expect(JSON.stringify(tx.find((item) => JSON.stringify(item).includes("LIVE_SESSIONS")))).toContain('":kind":"local"');
 
     expect(w.calls.order).toEqual(["cancel", "push"]);
     expect(w.calls.cancels).toEqual([{ taskId, requestId: input.requestId }]);
