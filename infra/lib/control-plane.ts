@@ -273,7 +273,7 @@ export class ControlPlaneStack extends Stack {
     // update and read that one list and nothing else in Route 53 Resolver, and no other role here has these actions.
     let projectAllowListArn: string | undefined;
     if (props?.cloud === true && naming.env !== undefined) {
-      const projectAllowListId = new CfnParameter(this, "ProjectAllowListId", { type: "String", description: "The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains" }).valueAsString;
+      const projectAllowListId = new CfnParameter(this, "ProjectAllowListId", { type: "String", allowedPattern: "^rslvr-fdl-[0-9a-zA-Z]{8,32}$", description: "The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains" }).valueAsString;
       // An AWS-generated id, in the broker's names (BrokerNames; its variables are held to Lambda's 4 KB).
       BrokerNames.of(broker).add("projectAllowList", projectAllowListId);
       projectAllowListArn = this.formatArn({ service: "route53resolver", resource: "firewall-domain-list", resourceName: projectAllowListId });

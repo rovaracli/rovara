@@ -2695,6 +2695,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Type": "String",
     },
     "Ec2WorkerLaunchTemplateId": {
+      "AllowedPattern": "^lt-[0-9a-f]{17}$",
       "Description": "The EC2 workers' launch template",
       "Type": "String",
     },

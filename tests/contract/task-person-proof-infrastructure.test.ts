@@ -271,18 +271,19 @@ describe("the named TEST proof-only installation gate", () => {
     // ENV-ROOM (the broker's environment room): the named and foreign digests were taken again from the synthesized templates. The broker's variables moved: the State table, the artifact
     // bucket, the launch template, the allow list and the model proxy joined AGENTX_NAMES, the audit queue's URL is derived, and eleven constrained parameters joined AGENTX_SETTINGS
     // (the workflow flag and the launch template stay out of the hash, as before). The legacy digests did not move: its broker is given its variables whole.
+    // ENV-ROOM review fix: the named and foreign digests were taken again after Ec2WorkerLaunchTemplateId gained its AllowedPattern (named environments only); the legacy digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "150f364a30a7e8d2d6cbf49cc2aa0b69bebafbb7ef54cbc959cb41f59364e606",
-        withoutRoute: "d8f16de9169c192441176fabb6c8fdef04e5ac3247e23f6f7a7c8d53f1af4d84",
+        withRoute: "2cf29cb6dbe88a92b36c617ea0113883ff7125d9f87f1a11de8a5bc50ba5814a",
+        withoutRoute: "4696962c1a20b51174ccf2d6c0a52ecda4cd5303dab2b7acd82c3235b6c53803",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "f90f4ac249a6c75d3455dd1329be292ec0c6343a7ed6d1929286dada0b7a12c1",
-        withoutRoute: "ebbd5dbed184fe117e3c6f2cec13313800009c11ce8568cf6a0d22a4c68c2e7c",
+        withRoute: "47011cc3f5acea68ef362d926595461f41733387f8351c1bf86a38be37a9f3b8",
+        withoutRoute: "67ad661608c356b8ef6225f79ea76aaf154782c52f68b1c85ff259a59ddbad6f",
       },
       {
         label: "legacy",
