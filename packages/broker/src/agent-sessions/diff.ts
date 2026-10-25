@@ -17,7 +17,7 @@ export async function sessionDiff(deps: SessionDiffDependencies, caller: Session
  // RULING Q36: unspecified upstream omission has no guessed binary/size reason.
  // PLAN4: chain PR enumeration needs the owning readable-section contract; never guess a step task.
  if (session.subject.kind !== "task") throw missing();
- const result = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(session.subject.taskId), ConsistentRead: true }));
+ const result = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(session.subject.taskId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
  const task = result.Item as DeveloperTaskRecord | undefined;
  if (task === undefined || task.orgId !== caller.orgId || task.taskId !== session.subject.taskId || task.project !== session.project) throw missing();
  const pr = (await deps.diff.pullRequests(task.workspaceId)).find(item => item.repository === query.repository && item.number === query.number);
