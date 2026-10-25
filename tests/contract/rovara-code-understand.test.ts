@@ -358,6 +358,16 @@ describe("a version 2 task starts by understanding", () => {
     expect(t.meta(run.taskId).budgetPause).toMatchObject({ scope: { kind: "planning" } });
   });
 
+  it("derives a planning pause for an Understand that spent its limit and ended on the budget with no pause written (the same pause a planning run gets)", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    expect((await t.ask(run.invocation)).status).toBe(200);
+    t.access!.setKeySpent(t.access!.mintedKeys()[0]!, 2);
+    // The run's keys have spent the whole planning limit, and it ends on the budget message; nothing wrote a pause before (the proxy refused it mid-call).
+    await t.finish(run.workspaceId, run.operationId, "FAILED", { error: "Stopped: the AI budget for this task ran out. Raise the budget and choose Continue to resume." });
+    expect(t.meta(run.taskId).budgetPause).toMatchObject({ scope: { kind: "planning" } });
+  });
+
   it("stops with Plan 3's words when the run ends on its budget, and does not plan", async () => {
     const t = await world();
     const run = await t.understanding();
