@@ -986,11 +986,11 @@ describe("a removal that leaves an approval with no one to decide it (Re-check R
   });
 
   it("never lists the person who is leaving, though their member record is still there as an admin", async () => {
-    const { w, asked, record } = setup({ owner: true });
+    const { w, asked, record } = setup({ owner: false });
     w.db.set({ ...w.get(orgMemberKey(ORG_A, ARJUN))!, role: "admin", joinedAt: "2020-01-01T00:00:00.000Z" });
     const made = await asked({ kind: "rule", rule: "lifecycle_any", candidates: [ARJUN] });
     await onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ARJUN, by: PRIYA });
-    expect((await record(made.approvalId)).approvers).toEqual({ kind: "rule", rule: "lifecycle_any", candidates: [OWNER] });
+    expect((await record(made.approvalId)).approvers).toEqual({ kind: "rule", rule: "lifecycle_any", candidates: [hex("e")] });
   });
 
   it("adds a person the rule lets decide when the candidates left do not satisfy it, and keeps the ones listed", async () => {
