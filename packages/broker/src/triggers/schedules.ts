@@ -50,6 +50,8 @@ const DAY_SECONDS = 86_400;
 const OPEN_TASK_MAX_MS = CHAIN_RUN_MAX_HOURS * 3_600_000;
 /** How long one slot's start claim keeps another slot from starting (Task 26 review M-1): a start takes seconds, so one this old was cut short. */
 const START_CLAIM_HOLD_MS = 10 * MINUTE;
+/** How long a claim counts as a start that is under way, whoever reads it first: a start takes seconds, so one younger than this is another fire's, and one older is a leftover of a start that was cut short. */
+const LIVE_CLAIM_MS = 30_000;
 /** A dead letter is handled this many times, then parked (Task 26 review M-4) for this long, still on the queue, where its age is alarmed. */
 export const SCHEDULE_DEAD_LETTER_MAX_RECEIVES = 5;
 const DEAD_LETTER_PARK_SECONDS = 12 * HOUR_SECONDS;
@@ -347,8 +349,12 @@ async function takeSlot(deps: TriggerDispatchDependencies, orgId: OrgId, trigger
   for (let attempt = 0; attempt < CLAIM_TRIES; attempt += 1) {
     if (current === undefined || !current.enabled || current.spec.kind !== "schedule") return { gone: true };
     const rival = current.startClaim;
-    if (attempt > 0 && rival !== undefined && rival.slot === scheduledAt && rival.at !== seenClaimAt && Date.parse(rival.at) + START_CLAIM_HOLD_MS > now) {
-      // Another fire of this very slot won the claim and is starting the run: this one spends no cap count and starts nothing (the run's identity is the slot's, so it is that run).
+    const sameSlot = rival !== undefined && rival.slot === scheduledAt;
+    // Another fire's claim of this very slot is live when it is new since this fire last read the trigger (a lost race), or young enough to be a start still under way even on this fire's
+    // first read: an agent's task has no identity to be covered by before its cap counts are spent, so a fire that took such a claim over would spend them a second time.
+    const live = sameSlot && ((attempt > 0 && rival.at !== seenClaimAt && Date.parse(rival.at) + START_CLAIM_HOLD_MS > now) || Date.parse(rival.at) + LIVE_CLAIM_MS > now);
+    if (live) {
+      // Another fire of this very slot won the claim and is starting the work: this one spends no cap count and starts nothing (a chain's run identity is the slot's, so it is that run).
       return { answer: { outcome: "duplicate", reason: "start_in_progress", ...(current.target.kind === "chain" ? { runId: runIdFor(eventIdentity(trigger.triggerId, scheduledAt)) } : {}) } };
     }
     seenClaimAt = rival?.at;
