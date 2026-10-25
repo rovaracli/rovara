@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { call } from "../support/slack-broker.js";
+import { orgScoped } from "@agentx/contracts";
+import { TEST_ORG } from "../support/orgs.js";
 
 // Task AUTH1 (finding N2b of the Task 3.1 reviews): registering a revision of an existing project does not make the registrant its administrator.
 // A first registration does; a revision needs the project's own administrator membership; an instance administrator takes a project over only by asking
@@ -88,6 +90,9 @@ describe("registering a project", () => {
       expect(broker.memberships()).toHaveLength(2);
       const [record, ...rest] = broker.takeovers();
       expect(rest).toEqual([]);
+      // The audit row sits in the org's own partition, never one shared with another org's project of the same name.
+      expect(record!.pk).toBe(orgScoped(TEST_ORG, "PROJECT_TAKEOVER#payments"));
+      expect(record).toMatchObject({ orgId: TEST_ORG });
       const taker = broker.memberships().find((row) => row.ownerKey !== ownerKey)!.ownerKey;
       expect(record).toMatchObject({ projectName: "payments", revision: 2, reason: "the previous owner left the company", takenBy: taker, subject: OTHER.subject });
       expect(Date.parse(String(record!.at))).toBeGreaterThanOrEqual(before - 1000);

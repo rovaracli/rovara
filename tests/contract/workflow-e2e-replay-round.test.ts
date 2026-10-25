@@ -12,6 +12,7 @@ import type { DurableOutboxRecord } from "../../packages/broker/src/aws/lambda.j
 import { startTaskWorkflowE2EReplayFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
 import { replayStartItem, requestWorkflowE2EReplay } from "../../packages/broker/src/aws/workflow-e2e-replay.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { machineTimeMonthKey, orgMetaKey } from "@agentx/contracts";
 
 // M1.4 Task 4.6b (tests 16 and 17) on the real broker: the operator's request to replay a task's qualified round refuses before a runner is started or anything is recorded, for each of its
 // reasons; and a replay round, whatever its result, changes nothing in the workflow, the qualification, send-back or publication.
@@ -33,6 +34,38 @@ const roundIdOf = (round: RoundCore) => String(e2eOf(round).qualifiedRound!.roun
 const record = (round: RoundCore, attempt: number, overrides: Record<string, unknown> = {}) => round.harness.db.set({ pk: `DEVTASK#${round.taskId}`, sk: `E2E_REPLAY#${roundIdOf(round)}#${attempt}`,
   entityType: "WORKFLOW_E2E_REPLAY", schemaVersion: 1, taskId: round.taskId, sourceRoundId: roundIdOf(round), purpose: "replay", attempt, state: "RECORDED",
   requestedAt: "2026-10-22T10:00:00.000Z", replay: { status: "PASS", reproduced: true, downloadSha256Match: true }, ...overrides });
+
+describe("on a cloud install the replay is admitted for the org's machine time, like any other launch", () => {
+  const cloudRound = async (plan: "trial" | "team", extra: Record<string, unknown> = {}) => {
+    const round = await startApplicationRound({ baseline: "off", brokerExtra: { cloud: true } });
+    round.harness.db.set({ ...orgMetaKey(TEST_ORG), entityType: "ORG", orgId: TEST_ORG, name: "acme", createdAt: "2026-10-01T00:00:00.000Z", createdBy: "dev1", plan, ...extra });
+    return round;
+  };
+
+  it("refuses an org whose month of machine time is used up with MACHINE_TIME_EXCEEDED, before anything is created", async () => {
+    const round = await cloudRound("trial", { trialUnlockedAt: 1 });
+    round.harness.db.set({ ...machineTimeMonthKey(TEST_ORG, new Date().toISOString().slice(0, 7)), entityType: "MACHINE_TIME", seconds: 20 * 3600 });
+    const before = round.checksOperations().length;
+    const response = await replayCall(round, "POST", { body: { roundId: randomUUID() } });
+    expect(response.status, JSON.stringify(response.body)).toBe(402);
+    expect(response.body).toMatchObject({ error: { code: "MACHINE_TIME_EXCEEDED" } });
+    expect(round.checksOperations()).toHaveLength(before);
+    expect(replayRows(round)).toEqual([]);
+  });
+
+  it("refuses a locked trial org with TRIAL_LOCKED", async () => {
+    const round = await cloudRound("trial");
+    const response = await replayCall(round, "POST", { body: { roundId: randomUUID() } });
+    expect(response.body).toMatchObject({ error: { code: "TRIAL_LOCKED" } });
+    expect(replayRows(round)).toEqual([]);
+  });
+
+  it("an org with time left goes on to the replay's own checks", async () => {
+    const round = await cloudRound("team");
+    const response = await replayCall(round, "POST", { body: { roundId: randomUUID() } });
+    expect(messageOf(response)).toMatch(/^replay-not-qualified/);
+  });
+});
 
 describe("the operator's request to replay a qualified round refuses before anything is started or recorded", () => {
   it("test 17a: a round that is not the task's qualified round (none yet, or another id) is refused, and nothing is created", async () => {

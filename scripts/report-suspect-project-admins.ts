@@ -8,6 +8,9 @@
 // the registrant of the project's lowest revision, or an instance administrator whose takeover left a PROJECT_OWNERSHIP_TAKEOVER
 // audit row. This lists every other administrator membership, and every project that has no administrator at all.
 //
+// A cloud table keeps each org's projects under `ORG#<org>#...` keys, so two orgs can each have a project of the same name. The report
+// reads both key shapes and groups by (org, project): a cloud project is listed as `<org>/<name>`, a legacy one by its bare name.
+//
 // Exactly one of --env, --stack or --table decides the table: --env reads StateTableName from the stack agentx-<env>-control-plane,
 // --stack reads it from the named stack (production's legacy control-plane stack is AgentXControlPlane), --table names the table
 // and skips the stack lookup. There is no default.
@@ -201,6 +204,19 @@ function afterPrefix(key: unknown, prefix: string): string | undefined {
   return text !== undefined && text.startsWith(prefix) && text.length > prefix.length ? text.slice(prefix.length) : undefined;
 }
 
+const ORG_KEY_PREFIX = /^ORG#(org_[0-9a-z]{20})#/;
+
+/** A key split into the org it is scoped to (a cloud table's `ORG#<org>#` prefix; none on a legacy table) and the rest. */
+function splitOrg(key: unknown): { orgId: string | undefined; rest: string } | undefined {
+  const text = str(key);
+  if (text === undefined) return undefined;
+  const match = ORG_KEY_PREFIX.exec(text);
+  return match === null ? { orgId: undefined, rest: text } : { orgId: match[1], rest: text.slice(match[0].length) };
+}
+
+/** What a project is called in the report: its bare name on a legacy table, `<org>/<name>` where two orgs can share a name. */
+const scopedProject = (orgId: string | undefined, name: string): string => (orgId === undefined ? name : `${orgId}/${name}`);
+
 function grantedByOf(value: unknown): string | GrantedBy | null {
   if (typeof value === "string") return value;
   if (value !== null && typeof value === "object") {
@@ -221,7 +237,7 @@ export async function collectReport(rawClient: ReportClient, tableName: string, 
   const items = await scanAll(client, {
     TableName: tableName,
     FilterExpression: "#t IN (:project, :membership, :takeover)",
-    ProjectionExpression: "pk, sk, #t, registeredBy, registeredAt, ownerKey, projectName, #role, grantedAt, grantedBy, takenBy, #at",
+    ProjectionExpression: "pk, sk, #t, registeredBy, registeredAt, ownerKey, projectName, orgId, #role, grantedAt, grantedBy, takenBy, #at",
     ExpressionAttributeNames: { "#t": "entityType", "#role": "role", "#at": "at" },
     ExpressionAttributeValues: { ":project": "PROJECT", ":membership": "MEMBERSHIP", ":takeover": "PROJECT_OWNERSHIP_TAKEOVER" },
   }, options);
@@ -230,7 +246,9 @@ export async function collectReport(rawClient: ReportClient, tableName: string, 
   const projects = new Map<string, ProjectFacts>();
   let revisionCount = 0;
   for (const item of items.filter((candidate) => candidate.entityType === "PROJECT")) {
-    const name = afterPrefix(item.pk, "PROJECT#");
+    const split = splitOrg(item.pk);
+    const bare = split === undefined ? undefined : afterPrefix(split.rest, "PROJECT#");
+    const name = bare === undefined ? undefined : scopedProject(split!.orgId, bare);
     const match = /^REV#(\d+)$/.exec(str(item.sk) ?? "");
     const registeredBy = str(item.registeredBy);
     if (name === undefined || match === null || registeredBy === undefined) {
@@ -248,7 +266,9 @@ export async function collectReport(rawClient: ReportClient, tableName: string, 
   const takeovers = new Map<string, Map<string, string>>();
   const takeoverItems = items.filter((candidate) => candidate.entityType === "PROJECT_OWNERSHIP_TAKEOVER");
   for (const item of takeoverItems) {
-    const project = str(item.projectName) ?? afterPrefix(item.pk, "PROJECT_TAKEOVER#");
+    const split = splitOrg(item.pk);
+    const bare = str(item.projectName) ?? (split === undefined ? undefined : afterPrefix(split.rest, "PROJECT_TAKEOVER#"));
+    const project = bare === undefined ? undefined : scopedProject(str(item.orgId) ?? split?.orgId, bare);
     const takenBy = str(item.takenBy);
     if (project === undefined || takenBy === undefined) {
       skipped.takeovers += 1;
@@ -266,8 +286,10 @@ export async function collectReport(rawClient: ReportClient, tableName: string, 
   const administered = new Set<string>();
   let administrators = 0;
   for (const item of items.filter((candidate) => candidate.entityType === "MEMBERSHIP" && candidate.role === "administrator")) {
-    const project = afterPrefix(item.sk, "PROJECT#");
-    const subject = str(item.ownerKey) ?? afterPrefix(item.pk, "MEMBER#");
+    const split = splitOrg(item.pk);
+    const bare = afterPrefix(item.sk, "PROJECT#");
+    const project = bare === undefined ? undefined : scopedProject(split?.orgId, bare);
+    const subject = str(item.ownerKey) ?? (split === undefined ? undefined : afterPrefix(split.rest, "MEMBER#"));
     if (project === undefined || subject === undefined) {
       skipped.memberships += 1;
       continue;

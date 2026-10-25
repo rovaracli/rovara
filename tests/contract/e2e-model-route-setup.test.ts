@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { E2EPolicySchema, E2E_DEFAULT_LIMITS, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, canonicalJson, e2ePolicyDigest, type E2EApplicationPlanIntent } from "@agentx/contracts";
+import { E2EPolicySchema, E2E_DEFAULT_LIMITS, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, canonicalJson, e2ePolicyDigest, OrgIdSchema, type OrgId, type E2EApplicationPlanIntent } from "@agentx/contracts";
 import { STALE_RUN_SWEEP_AGE_MS } from "../../packages/verifier/src/host/docker-application-host.js";
 import { e2eApplicationModelUseWithinRound } from "../../packages/verifier/src/application-result-adapter.js";
 import { DEFAULT_E2E_AGENT_MODELS } from "../../packages/model-runtime/src/config.js";
@@ -16,14 +16,21 @@ import { call, loadSlackBroker } from "../support/slack-broker.js";
 import { contractSnapshot } from "../support/e2e-application-plan-fixtures.js";
 import { FakeDynamoDb, assumeDrivingTestsPassed } from "../support/fake-dynamodb.js";
 import { SECRET_ARN } from "../support/e2e-model-fixtures.js";
+import { TEST_ORG, testProjectPk } from "../support/orgs.js";
 
 // The gate itself is tested in e2e-driving-test-gate.test.ts; here every digest counts as driven (Task 4.10C).
 assumeDrivingTestsPassed();
 
 // Task 4.2: setup approval derives the route from the installation's worker settings and pins it in the project's policy; dispatch re-derives it.
-type RequireAgentRoute = (dependencies: never, projectName: string, intent: E2EApplicationPlanIntent, policy: ReturnType<typeof E2EPolicySchema.parse>) => Promise<boolean>;
+type RequireAgentRoute = (dependencies: never, orgId: OrgId, projectName: string, intent: E2EApplicationPlanIntent, policy: ReturnType<typeof E2EPolicySchema.parse>) => Promise<boolean>;
+type OfferedToPlanner = (dependencies: never, modelRouteRevision: string | null) => Promise<boolean>;
 let requireAgentRouteStillCurrent: RequireAgentRoute;
-beforeAll(async () => { requireAgentRouteStillCurrent = (await loadSlackBroker() as unknown as { requireAgentRouteStillCurrent: RequireAgentRoute }).requireAgentRouteStillCurrent; });
+let agentStepsOfferedToPlanner: OfferedToPlanner;
+beforeAll(async () => {
+  const broker = await loadSlackBroker() as unknown as { requireAgentRouteStillCurrent: RequireAgentRoute; agentStepsOfferedToPlanner: OfferedToPlanner };
+  requireAgentRouteStillCurrent = broker.requireAgentRouteStillCurrent;
+  agentStepsOfferedToPlanner = broker.agentStepsOfferedToPlanner;
+});
 
 const admin = { subject: "admin-subject", admin: true };
 const anthropic: E2EAgentInstallation = { provider: "anthropic", secretArn: SECRET_ARN };
@@ -314,6 +321,7 @@ describe("a setup proposal and its approval carry the AI navigation route", () =
 
 describe("dispatch re-derives the route before an AI navigation round starts", () => {
   const TABLE = "state";
+  const OTHER_ORG = OrgIdSchema.parse("org_zzzzzzzzzzzzzzzzzzzz");
   const agentIntent = { scenarios: [{ steps: [{ kind: "navigate", path: "/" }, { kind: "agent", goal: "export", maxActions: 4 }] }] } as unknown as E2EApplicationPlanIntent;
   const plainIntent = { scenarios: [{ steps: [{ kind: "navigate", path: "/" }] }] } as unknown as E2EApplicationPlanIntent;
   const policyAt = (modelRouteRevision: string | null) => E2EPolicySchema.parse({ schemaVersion: 1, policyRevision: 1, executionMode: "trusted-scenarios", baselineScenarioIds: [], targets: [],
@@ -332,12 +340,12 @@ describe("dispatch re-derives the route before an AI navigation round starts", (
 
   it("judges nothing for a plan with no agent step", async () => {
     const { dependencies } = await approved(anthropic);
-    expect(await requireAgentRouteStillCurrent(dependencies(undefined) as never, "payments", plainIntent, policyAt(null))).toBe(false);
+    expect(await requireAgentRouteStillCurrent(dependencies(undefined) as never, TEST_ORG, "payments", plainIntent, policyAt(null))).toBe(false);
   });
 
   it("accepts the route the policy pinned while the installation is unchanged, and says the round has agent steps", async () => {
     const { dependencies, revision } = await approved(anthropic);
-    expect(await requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, "payments", agentIntent, policyAt(revision))).toBe(true);
+    expect(await requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, TEST_ORG, "payments", agentIntent, policyAt(revision))).toBe(true);
   });
 
   it.each<[string, E2EAgentInstallation]>([
@@ -345,7 +353,7 @@ describe("dispatch re-derives the route before an AI navigation round starts", (
     ["secret ARN", { provider: "anthropic", secretArn: OTHER_ARN }],
   ])("refuses with model-route-changed-reapprove when the %s changed, as a terminal dispatch refusal", async (_name, changed) => {
     const { dependencies, revision } = await approved(anthropic);
-    const error = await refusal(requireAgentRouteStillCurrent(dependencies(async () => changed) as never, "payments", agentIntent, policyAt(revision)));
+    const error = await refusal(requireAgentRouteStillCurrent(dependencies(async () => changed) as never, TEST_ORG, "payments", agentIntent, policyAt(revision)));
     expect(error).toBeInstanceOf(ApplicationDispatchRefusal);
     expect(error?.message).toMatch(/^model-route-changed-reapprove: The AI navigation settings changed; approve the checks again/);
   });
@@ -357,27 +365,56 @@ describe("dispatch re-derives the route before an AI navigation round starts", (
     const second = await planE2EAgentRoute(store, bedrock);
     if (second.status !== "available") throw new Error("unavailable");
     await approveE2EAgentRoute(store, bedrock, second.revision);
-    const error = await refusal(requireAgentRouteStillCurrent(dependencies(async () => bedrock) as never, "payments", agentIntent, policyAt(revision)));
+    const error = await refusal(requireAgentRouteStillCurrent(dependencies(async () => bedrock) as never, TEST_ORG, "payments", agentIntent, policyAt(revision)));
     expect(error?.message).toMatch(/^model-route-changed-reapprove:/);
   });
 
   it("refuses with agent-route-not-approved when the policy has no route, the settings cannot be read, or the installation lost its secret", async () => {
     const { dependencies, revision } = await approved(anthropic);
-    expect((await refusal(requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, "payments", agentIntent, policyAt(null))))?.message).toMatch(/^agent-route-not-approved:/);
-    expect((await refusal(requireAgentRouteStillCurrent(dependencies(undefined) as never, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
-    expect((await refusal(requireAgentRouteStillCurrent(dependencies(async () => { throw new Error("ssm down"); }) as never, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
-    expect((await refusal(requireAgentRouteStillCurrent(dependencies(async () => ({ provider: "anthropic" })) as never, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
+    expect((await refusal(requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, TEST_ORG, "payments", agentIntent, policyAt(null))))?.message).toMatch(/^agent-route-not-approved:/);
+    expect((await refusal(requireAgentRouteStillCurrent(dependencies(undefined) as never, TEST_ORG, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
+    expect((await refusal(requireAgentRouteStillCurrent(dependencies(async () => { throw new Error("ssm down"); }) as never, TEST_ORG, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
+    expect((await refusal(requireAgentRouteStillCurrent(dependencies(async () => ({ provider: "anthropic" })) as never, TEST_ORG, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
+  });
+
+  it("offers the planner agent steps only on a non-cloud install whose pinned route is the current one; never on a cloud install", async () => {
+    const { dependencies, revision } = await approved(anthropic);
+    const current = dependencies(async () => anthropic);
+    // Unchanged where it is offered today.
+    expect(await agentStepsOfferedToPlanner(current as never, revision)).toBe(true);
+    expect(await agentStepsOfferedToPlanner(dependencies(undefined) as never, revision)).toBe(false);
+    expect(await agentStepsOfferedToPlanner(current as never, null)).toBe(false);
+    expect(await agentStepsOfferedToPlanner(dependencies(async () => ({ provider: "amazon-bedrock", region: "us-east-1" })) as never, revision)).toBe(false);
+    expect(await agentStepsOfferedToPlanner(dependencies(async () => { throw new Error("ssm down"); }) as never, revision)).toBe(false);
+    // The same approved, current route on a cloud install offers none.
+    expect(await agentStepsOfferedToPlanner({ ...current, cloud: true } as never, revision)).toBe(false);
+  });
+
+  it("on a cloud install refuses every round with an AI navigation step, even with the route approved and the day empty, and judges a plan without one as before", async () => {
+    const { dependencies, db, revision } = await approved(anthropic);
+    const cloud = { ...dependencies(async () => anthropic), cloud: true };
+    const reads = db.commandNames().length;
+    const error = await refusal(requireAgentRouteStillCurrent(cloud as never, TEST_ORG, "payments", agentIntent, policyAt(revision)));
+    expect(error).toBeInstanceOf(ApplicationDispatchRefusal);
+    expect(error?.message).toMatch(/^ai-navigation-not-available: AI navigation steps are not available on Rovara Cloud yet/);
+    // It never gets as far as reading the route or the day.
+    expect(db.commandNames()).toHaveLength(reads);
+    expect(await requireAgentRouteStillCurrent({ ...dependencies(undefined), cloud: true } as never, TEST_ORG, "payments", plainIntent, policyAt(null))).toBe(false);
+    // The same install without the cloud flag (legacy and self-hosted) keeps today's behaviour.
+    expect(await requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, TEST_ORG, "payments", agentIntent, policyAt(revision))).toBe(true);
   });
 
   it("refuses with model-route-budget-exhausted before the run starts when the project's day has no room for the round", async () => {
     const { dependencies, db, revision } = await approved(anthropic);
     const day = new Date().toISOString().slice(0, 10);
-    db.set({ pk: "PROJECT#payments", sk: `E2E_MODEL_BUDGET#${day}`, inputTokens: 1_990_000, calls: 10 });
-    const error = await refusal(requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, "payments", agentIntent, policyAt(revision)));
+    db.set({ pk: testProjectPk("payments"), sk: `E2E_MODEL_BUDGET#${day}`, inputTokens: 1_990_000, calls: 10 });
+    const error = await refusal(requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, TEST_ORG, "payments", agentIntent, policyAt(revision)));
     expect(error).toBeInstanceOf(ApplicationDispatchRefusal);
     expect(error?.message).toMatch(/^model-route-budget-exhausted:/);
     // Another project's day is its own.
-    expect(await requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, "billing", agentIntent, policyAt(revision))).toBe(true);
+    expect(await requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, TEST_ORG, "billing", agentIntent, policyAt(revision))).toBe(true);
+    // So is another org's project of the same name.
+    expect(await requireAgentRouteStillCurrent(dependencies(async () => anthropic) as never, OTHER_ORG, "payments", agentIntent, policyAt(revision))).toBe(true);
     expect(db.commandNames()).not.toContain("ScanCommand");
   });
 });
