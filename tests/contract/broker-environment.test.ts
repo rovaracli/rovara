@@ -76,10 +76,17 @@ describe("awsPartitionOf", () => {
 
 describe("hydrateBrokerEnvironment: the broker's own role", () => {
   it("builds the ARN of the broker's role from the environment's name on the hosted cloud, in the environment's role path, and on no other install", () => {
-    const cloud = hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag() });
+    const cloud = hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag() });
     expect(cloud.BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role");
-    expect(hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag({ signInTable: "t" }) }).BROKER_ROLE_ARN).toBeUndefined();
-    expect(hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag(), BROKER_ROLE_ARN: "given" }).BROKER_ROLE_ARN).toBe("given");
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag({ signInTable: "t" }) }).BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role");
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag(), BROKER_ROLE_ARN: "given" }).BROKER_ROLE_ARN).toBe("given");
+  });
+
+  it("is tied to the cloud flag the control plane sets with the broker's IAM grant (props.cloud and a named environment), not to the sign-in pool being present", () => {
+    // The pool's presence does not decide it: no flag, no ARN, so no function builds a principal for a grant that does not exist.
+    expect(hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag() }).BROKER_ROLE_ARN).toBeUndefined();
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "false", [BROKER_NAMES_VARIABLE]: bag() }).BROKER_ROLE_ARN).toBeUndefined();
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true" }).BROKER_ROLE_ARN).toBeUndefined(); // an unnamed install hydrates nothing
   });
 });
 

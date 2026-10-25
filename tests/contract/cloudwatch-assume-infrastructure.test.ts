@@ -68,6 +68,20 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
     expect(role).toBeDefined();
   });
 
+  it("passes the broker the cloud flag exactly where the grant exists (one condition for both: the cloud and a named environment)", () => {
+    const flagOf = (template: Template) => {
+      const broker = Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
+        .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))!;
+      return broker[1].Properties.Environment?.Variables?.["AGENTX_CLOUD"];
+    };
+    expect(assumesOf(cloud)).toHaveLength(1);
+    expect(flagOf(cloud)).toBe("true");
+    for (const template of [stack({ cloud: false }), Template.fromStack(new ControlPlaneStack(new App(), "AssumeCwFlagLegacy"))]) {
+      expect(assumesOf(template)).toEqual([]);
+      expect(flagOf(template)).toBeUndefined();
+    }
+  });
+
   it("does not exist on a named environment without the cloud, nor on the legacy install", () => {
     for (const template of [stack({ cloud: false }), Template.fromStack(new ControlPlaneStack(new App(), "AssumeCwLegacy"))]) {
       expect(assumesOf(template)).toEqual([]);
