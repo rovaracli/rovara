@@ -5,7 +5,7 @@ import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
+import { LiveResponseSchema, LiveTileSchema, SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
 import { createAppHandler } from "../../../packages/web/src/server/handler.js";
 import { authenticateWebRequest, webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 import type { DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
@@ -46,6 +46,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
  if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/requests") { json(200, requests);return; }
@@ -100,9 +101,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/web/org/members" && method === "GET") { json(200, AppOrgMembersResponseSchema.parse({ members: [{ developerId: FIXTURE_DEVELOPER, name: "Priya", role: "member", identities: ["cloud"], joinedAt: "2026-10-23T12:00:00.000Z" }, { developerId: "b".repeat(64), name: "Arjun", role: "member", identities: ["cloud"], joinedAt: "2026-10-23T12:00:00.000Z" }] }));return; }
  if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, { projects: [] });return; }
  }
+ if (url.pathname === "/v1/web/live" && method === "GET") { json(200, LiveResponseSchema.parse({ tiles: (current.live ?? []).filter(tile => (url.searchParams.get("filter") !== "needs_me" || tile.needsYou) && (!url.searchParams.has("project") || tile.project === url.searchParams.get("project"))) }));return; }
  if (url.pathname === "/v1/web/home") { json(200, current.home);return; }
  if (url.pathname === "/v1/web/realtime/token" && method === "POST") { json(200, RealtimeTokenResponseSchema.parse({ token: "fixture-realtime-value", expiresAt: new Date(Date.now() + 900_000).toISOString(), endpoint: origin.replace("https:", "wss:") + "/event/realtime", channels: { user: userChannel(FIXTURE_ORG, FIXTURE_DEVELOPER), projects: { payments: projectChannel(FIXTURE_ORG, "payments") } } }));return; }
- if (url.pathname === "/v1/web/changes") { json(200, { notices: [], next: "settled" });return; }
+ if (url.pathname === "/v1/web/changes") { json(200, { notices: current.changes ?? [], next: "settled" });return; }
  json(404, { error: { code: "NOT_FOUND", message: "This mock route is not configured." } });return;
  }
  const page = await handler({ rawPath: url.pathname, headers, requestContext: { http: { method } } });response.writeHead(page.statusCode, page.headers);response.end(page.isBase64Encoded ? Buffer.from(page.body, "base64") : page.body);
