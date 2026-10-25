@@ -18,3 +18,26 @@ test("collaborates in one task without losing its evidence, with real refetch an
  await request.post("/__mock/session-state", { data: { status: "waiting", revision: 2, updatedAt: new Date().toISOString() } });await expect.poll(() => realtime.connections()).toBeGreaterThanOrEqual(1);await realtime.push({ type: "session.updated", sessionId: id, revision: 2 });await expect(page.getByRole("img", { name: "Waiting for you" })).toBeVisible();expect(await heading?.evaluate(node => node.isConnected)).toBe(true);
  await page.setViewportSize({ width: 360, height: 800 });expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
 });
+
+test("phone session actions share one workflow and return focus to the overflow opener", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "session" } });
+ await request.post("/__mock/session-state", { data: { you: { owner: false, following: false, level: "edit", actions: ["watch", "share", "stop", "retry", "take_over"] } } });
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
+ await page.setViewportSize({ width: 360, height: 800 });await mockRealtime(page);await page.goto("/s/" + id);
+ const opener = page.getByRole("button", { name: "Session actions", exact: true });await expect(opener).toBeVisible();
+ await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
+ await opener.click();for (const name of ["Follow", "Share", "Stop", "Retry", "Take over"]) await expect(page.getByRole("menuitem", { name, exact: true })).toBeVisible();
+ await page.getByRole("menuitem", { name: "Stop", exact: true }).click();
+ const stop = page.getByRole("dialog", { name: "Stop this session?" });await expect(stop).toBeVisible();
+ await expect.poll(() => stop.evaluate(node => getComputedStyle(node).opacity)).toBe("1");
+ await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+ await page.getByRole("button", { name: "Keep running" }).click();await expect(opener).toBeFocused();
+ await opener.click();await page.getByRole("menuitem", { name: "Share", exact: true }).click();await expect(page.getByRole("dialog", { name: "Share this session" })).toBeVisible();
+ await page.getByRole("button", { name: "Close dialog" }).click();await expect(opener).toBeFocused();
+ await opener.click();await page.getByRole("menuitem", { name: "Follow", exact: true }).click();
+ await opener.click();await expect(page.getByRole("menuitem", { name: "Following", exact: true })).toBeVisible();await page.keyboard.press("Escape");await expect(opener).toBeFocused();
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+ await request.post("/__mock/session-state", { data: { you: { owner: false, following: false, level: "view", actions: ["watch"] } } });await page.reload();await opener.click();
+ await expect(page.getByRole("menuitem", { name: "Follow", exact: true })).toBeVisible();
+ for (const name of ["Share", "Stop", "Retry", "Take over"]) await expect(page.getByRole("menuitem", { name, exact: true })).toHaveCount(0);
+});

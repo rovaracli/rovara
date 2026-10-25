@@ -17,17 +17,17 @@ import { SessionHeader, type ReadSession } from "./SessionHeader.js";
 import { MoneyBanners } from "./MoneyBanners.js";
 import { Conversation, type CommentDraft } from "./Conversation.js";
 import { Composer, type MessageInput, type ComposerDrafts } from "./Composer.js";
-import { ShareDialog } from "./ShareDialog.js";
+import { SessionControls } from "./SessionControls.js";
 import { Workspace } from "./Workspace.js";
 import { usePageVisible } from "./presence.js";
 import "./session.css";
 export function SessionScreen() {
  const id = useParams().id ?? "", host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionApi(host), [host]), read = useSession(id), visible = usePageVisible();
- const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [connection, setConnection] = useState("connecting");
+ const [open, setOpen] = useState(false), [connection, setConnection] = useState("connecting");
  const [editDrafts, setEditDrafts] = useState<Record<string, Record<string, CommentDraft>>>({});
  const [drafts, setDrafts] = useState<Record<string, ComposerDrafts>>({}), [sending, setSending] = useState(false), sendingRef = useRef(false);
  const [selection, setSelection] = useState<{ sessionId: string; anchor: SessionAnchorRef }>();
- const sourceControl = useRef<HTMLElement | undefined>(undefined), root = useRef<HTMLElement>(null), pending = useRef(false);
+ const sourceControl = useRef<HTMLElement | undefined>(undefined), root = useRef<HTMLElement>(null);
  const session = read.isError ? undefined : read.data, ready = session !== undefined, title = session?.title;
  const selected = selection?.sessionId === id ? selection.anchor : undefined;
  const currentPart = selected === undefined ? undefined : session?.anchors?.find(part => part.target === selected.target && part.targetId === selected.targetId);
@@ -42,7 +42,6 @@ export function SessionScreen() {
  const heartbeat = async () => { if (writing) return;writing = true;try { const result = await api.presence(id);if (active && result.kind === "done") query.setQueryData<ReadSession>(["session", id], old => old === undefined ? undefined : { ...old, viewingNow: result.value.viewingNow }); } catch { if (active) void query.invalidateQueries({ queryKey: ["session", id], exact: true }); } finally { writing = false; } };
  void heartbeat();const timer = setInterval(() => { void heartbeat(); }, PRESENCE_HEARTBEAT_SECONDS * 1000);return () => { active = false;clearInterval(timer); };
  }, [api, id, query, visible, ready]);
- async function follow() { if (pending.current || session === undefined) return;pending.current = true;setBusy(true);setError(undefined);try { const result = await api.setFollowing(id, !session.you.following);if (result.kind !== "done") throw new ApiError(409, "PENDING", "This change is waiting for confirmation.");await read.refetch(); } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't change following. Try again."); } finally { pending.current = false;setBusy(false); } }
  async function send(input: MessageInput) {
  if (sendingRef.current) throw new ApiError(409, "PENDING", "Your previous message is still being sent.");sendingRef.current = true;setSending(true);
  try { if (selected !== undefined && currentPart === undefined) throw new ApiError(404, "NOT_FOUND", "That part of this session is no longer available.");const result = await api.sendMessage(id, { ...input, ...(input.kind === "comment" && selected !== undefined ? { anchor: selected } : {}) });if (result.kind !== "done") throw new ApiError(409, "PENDING", "This message is waiting for confirmation.");await query.invalidateQueries({ queryKey: ["session", id, "messages"] }); }
@@ -55,7 +54,7 @@ export function SessionScreen() {
  if (read.error instanceof ApiError && read.error.status === 404) return <NotFound />;
  if (session === undefined) return <section><h1 tabIndex={-1}>Session unavailable</h1><p role="alert"><VisibleText text={read.error instanceof ApiError ? read.error.message : "Couldn't load this session. Try again."} /></p><Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
  const agent = session.agent?.name ?? "The agent", nav = query.getQueryData<ReadAppNav>(["nav"]), orgName = nav?.org.name ?? "your company";
- return <section ref={root} className="rv-session"><SessionHeader session={session} busy={busy} onAction={action => { if (action === "watch") void follow(); }} shareControl={<ShareDialog id={id} orgName={orgName} />} /><MoneyBanners session={session} />{error && <p role="alert"><VisibleText text={error} /></p>}{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
+ return <section ref={root} className="rv-session"><SessionHeader session={session} onAction={() => undefined} controls={<SessionControls key={id} id={id} agent={agent} actions={session.you.actions} following={session.you.following} responsive share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />} /><MoneyBanners session={session} />{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
  <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2><Dialog title={selected === undefined ? "Conversation" : selected.target === "change_file" ? "Discussion of this file" : selected.target === "step" ? "Discussion of this step" : "Discussion of this plan paragraph"} className="rv-conversation-tray" open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { const source = sourceControl.current;if (source?.isConnected) { event.preventDefault();source.focus(); }sourceControl.current = undefined; }} trigger={<Button onClick={() => { setSelection(undefined);sourceControl.current = undefined; }}>Conversation</Button>}>
  {selected && <Button variant="quiet" onClick={() => setSelection(undefined)}>All conversation</Button>}
  {selected && currentPart === undefined ? <p>That part of this session is no longer available.</p> : <>

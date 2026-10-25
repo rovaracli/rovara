@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -117,8 +117,9 @@ it("keeps a header takeover pending until ownership arrives in a real session re
 });
 it("retries the header session once and navigates to the returned session", async () => {
  const base = sessionFixture(), returned = "ses_bbbbbbbbbbbbbbbbbbbb", f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["retry"] } }), async () => ({ status: 200, body: { session: sessionFixture({ sessionId: returned }) } }));
+ const navigate = vi.spyOn(f.host, "navigate");
  const retry = await screen.findByRole("button", { name: "Retry" });act(() => { retry.click();retry.click(); });
- await waitFor(() => expect(f.host.navigate).toHaveBeenCalledWith("/s/" + returned));
+ await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + returned));
  expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/retry"))).toHaveLength(1);f.close();
 });
 it("posts stop only after explicit confirmation and refreshes the session", async () => {
@@ -134,5 +135,5 @@ it("does not carry a pending takeover into a different already-cached session", 
  fireEvent.click(await screen.findByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");
  const next = sessionFixture({ sessionId: "ses_bbbbbbbbbbbbbbbbbbbb", title: "Another task", you: { ...base.you, actions: ["watch"] } });f.setSession(next);f.query.setQueryData(["session", next.sessionId], next);
  await act(() => f.router.navigate("/app/sessions/" + next.sessionId));await screen.findByRole("heading", { name: "Another task" });
- expect(screen.queryByText("Waiting for you to confirm in your browser")).toBeNull();expect((screen.getByRole("button", { name: "Follow" }) as HTMLButtonElement).disabled).toBe(false);f.close();
+ expect(screen.queryByText("Waiting for you to confirm in your browser")).toBeNull();expect(screen.getByRole<HTMLButtonElement>("button", { name: "Follow" }).disabled).toBe(false);f.close();
 });

@@ -9,3 +9,9 @@
 [aria-label="Pull request diff"] summary { cursor: pointer; overflow-wrap: anywhere; min-height: 44px; padding-block: 8px; }
 [aria-label="Pull request diff"] summary span { margin-inline-start: 12px; }
 [aria-label="Pull request diff"] pre { max-width: 100%; overflow-x: auto; padding: 12px; }
+
+.rv-controls-overflow { display: none; }
+@media (max-width: 600px) {
+ .rv-controls-overflow { display: block; }
+ .rv-controls-inline { display: none; }
+}
