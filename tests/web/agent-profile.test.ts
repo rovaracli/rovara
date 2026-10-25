@@ -64,3 +64,4 @@ it("keeps a pending update with its workflow when another cached profile opens",
  fireEvent.click(await screen.findByRole("button", { name: "Adopt v2" }));await screen.findByText("Waiting for you to confirm in your browser");
  const next = agentProfile({ agent: { ...base.agent, agentId: "agt_bbbbbbbbbbbbbbbbbbbb", name: "Cached workflow" } });f.query.setQueryData(["agent", next.agent.agentId], next);f.setProfile(next);await act(() => f.router.navigate("/app/agents/" + next.agent.agentId));await screen.findByRole("heading", { name: "Cached workflow" });expect(screen.queryByText("Waiting for you to confirm in your browser")).toBeNull();f.close();
 });
+it("uses the canonical directory summary for a profile's available base update", async () => { const f = renderAgents({ path });expect(await screen.findByRole("button", { name: "Review update" })).toBeTruthy();f.close(); });

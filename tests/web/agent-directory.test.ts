@@ -4,7 +4,8 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { createAgentApi } from "../../packages/ui/src/api/agents.js";
 import { renderAgents } from "./support/agent-render.js";
 import { fakeHost } from "./support/fake-host.js";
-import { agentDirectory } from "./support/agent-fixture.js";
+import { agentAllows } from "../../packages/ui/src/screens/agents/agent-access.js";
+import { agentDirectory, agentProfile } from "./support/agent-fixture.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 it("keeps directory scope in the URL and sends the exact selected scope", async () => {
  const f = renderAgents();await screen.findByRole("link", { name: "Payments Expert" });
@@ -29,4 +30,12 @@ it("removes a cached private profile title and row after its contextual read is 
  const f = renderAgents();fireEvent.click(await screen.findByRole("link", { name: "Payments Expert" }));await screen.findByRole("dialog", { name: "Payments Expert" });
  f.request.mockResolvedValue({ status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } });await f.query.invalidateQueries({ queryKey: ["agent", "agt_aaaaaaaaaaaaaaaaaaaa"], exact: true });await screen.findByRole("heading", { name: "Not found" });
  expect(screen.queryByRole("dialog", { name: "Payments Expert" })).toBeNull();expect(screen.queryByText("Check refund idempotency.")).toBeNull();fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("link", { name: "Payments Expert" })).toBeNull());f.close();
+});
+it("rejects malformed workflow and project identifiers before transport", () => {
+ const f = fakeHost(), api = createAgentApi(f.host);for (const id of ["../agents", "agt_bad", "ses_aaaaaaaaaaaaaaaaaaaa"]) expect(() => api.read(id)).toThrow();expect(() => api.list("all", "payments/other")).toThrow();expect(() => api.spend("agt_aaaaaaaaaaaaaaaaaaaa", "2026-13")).toThrow();expect(f.request).not.toHaveBeenCalled();
+});
+
+it("keeps newer access values readable without granting any action", async () => {
+ const base = agentProfile(), f = fakeHost(async () => ({ status: 200, body: { ...base, agent: { ...base.agent, access: "future_manager" } } })), read = await createAgentApi(f.host).read(base.agent.agentId);
+ expect(read.agent.access).toBe("unknown");for (const wanted of ["use", "edit", "manage"] as const) expect(agentAllows(read.agent, wanted)).toBe(false);
 });
