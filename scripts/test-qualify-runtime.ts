@@ -31,6 +31,7 @@ import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { ec2Binding } from "../packages/cli/src/setup/project-add.js";
 import { environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/environments.js";
+import { getParametersInBatches } from "../packages/contracts/src/ssm-parameters.js";
 import {
   BOOT_STAGE2_SHA256_PARAMETER,
   E2E_QUALIFICATION_PROFILE_ID,
@@ -590,7 +591,7 @@ function createAwsEffects(args: QualifyArgs, runner: Runner): QualificationEffec
       const prefix = environmentSettingsPrefix(args.env);
       const names = Object.fromEntries(Object.entries(WORKER_SETTING_PARAMETERS).map(([key, name]) => [key, `${prefix}${name}`]));
       const bootStage2Name = `${prefix}${BOOT_STAGE2_SHA256_PARAMETER}`;
-      const found = new Map(((await ssm.send(new GetParametersCommand({ Names: [...Object.values(names), bootStage2Name] }))).Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
+      const found = new Map((await getParametersInBatches([...Object.values(names), bootStage2Name], (batch) => ssm.send(new GetParametersCommand({ Names: batch })))).Parameters.map((parameter) => [parameter.Name, parameter.Value]));
       const value = (key: keyof typeof WORKER_SETTING_PARAMETERS) => found.get(names[key] ?? "");
       const required = (key: keyof typeof WORKER_SETTING_PARAMETERS) => {
         const setting = value(key);

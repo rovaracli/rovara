@@ -271,6 +271,7 @@ import {
   ROVARA_CODE_AGENT_ID,
   ResolvedRecipeSchema,
   cloudwatchRoleAccount,
+  getParametersInBatches,
   type AgentId,
   type HookSource,
   type Payer,
@@ -14718,7 +14719,7 @@ export const handler = createAwsBrokerHandler({
     ? {
         swebench: {
           deployment: () => swebenchDeploymentFromParameters(requiredEnvironment("SWEBENCH_SETTINGS_PREFIX"), async (names) => {
-            const response = await ssm.send(new GetParametersCommand({ Names: [...names] }));
+            const response = await getParametersInBatches(names, (batch) => ssm.send(new GetParametersCommand({ Names: batch })));
             return new Map((response.Parameters ?? []).flatMap((parameter) => parameter.Name && parameter.Value ? [[parameter.Name, parameter.Value] as const] : []));
           }),
           async startExecution(input) {

@@ -34,6 +34,7 @@ export * from "./redaction.js";
 export * from "./review-output.js";
 export * from "./release.js";
 export * from "./session.js";
+export * from "./ssm-parameters.js";
 export * from "./runtime-installation.js";
 export * from "./e2e-web-api-qualification.js";
 export * from "./e2e-chromium-sandbox.js";
