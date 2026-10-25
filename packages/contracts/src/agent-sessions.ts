@@ -38,6 +38,10 @@ export const PRESENCE_TTL_SECONDS = 90;
 export const PRESENCE_HEARTBEAT_SECONDS = 30;
 export const LIVE_ENDED_KEEP_HOURS = 24;
 export const LIVE_PAGE_MAX = 100;
+/** The most Slack channel bindings of an org the project page reads to find a project's channels (a longer list is cut, and the cut is logged). */
+export const SESSION_PROJECT_BINDINGS_MAX = 2000;
+/** The most entries of a project's roster that a list of its agents reads (a longer roster is cut, and the cut is logged). */
+export const PROJECT_ROSTER_LIST_MAX = 200;
 export const LIVE_INDEX_SCAN_MAX = 1000;
 /** The people a Live tile names as looking at a session; `viewingNowCount` counts them all. */
 export const LIVE_VIEWING_MAX = 5;

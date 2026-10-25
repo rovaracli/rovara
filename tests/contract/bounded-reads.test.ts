@@ -1,0 +1,73 @@
+// Plan 5 Task 16 review: the reads behind a project's page are bounded. The org's Slack channel bindings (read for the project's channels) and a project's roster (read for its agents)
+// are cut at a cap, and a read that was cut says so in the log, so a very large org gets a page with fewer channels or agents and never a request that reads without end.
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { MAYA, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
+import { FakeProjectMembers } from "../support/fake-project-members.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";
+import { orgProjectCatalogKey, projectAgentKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { SESSION_PROJECT_BINDINGS_MAX, PROJECT_ROSTER_LIST_MAX } from "../../packages/contracts/src/agent-sessions.js";
+
+beforeAll(async () => { await loadSlackBroker(); });
+afterEach(() => { vi.restoreAllMocks(); });
+
+async function setup() {
+  const members = new FakeProjectMembers();
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: { projectMembers: members } } });
+  members.setOrgRole(TEST_ORG, MAYA.developerId, "owner");
+  members.grant(TEST_ORG, "payments", MAYA.developerId, "maintainer");
+  h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "payments"), entityType: "PROJECT_CATALOG", name: "payments" });
+  const call = async (who: Developer, method: string, path: string) => {
+    const reply = await h.dev(who, method, path, undefined);
+    return { status: reply.status, body: reply.body };
+  };
+  return { h, call };
+}
+
+const loggedEvents = (spy: { mock: { calls: unknown[][] } }): string[] => spy.mock.calls.flatMap(([line]) => {
+  try { return [String((JSON.parse(String(line)) as { event?: unknown }).event)]; } catch { return []; }
+});
+
+describe("the project page's bounded reads", () => {
+  it("reads at most SESSION_PROJECT_BINDINGS_MAX channel bindings and says so in the log when it cut", async () => {
+    const { h, call } = await setup();
+    for (let n = 0; n < SESSION_PROJECT_BINDINGS_MAX + 5; n += 1) {
+      h.db.set({ ...slackBindingKey(TEST_ORG, SLACK_TEAM, `C${String(n).padStart(10, "0")}`), entityType: "SLACK_CHANNEL_BINDING", projectName: "payments", channelId: `C${String(n).padStart(10, "0")}` });
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const overview = await call(MAYA, "GET", "/v1/app/projects/payments/overview");
+    expect(overview.status, JSON.stringify(overview.body)).toBe(200);
+    expect(loggedEvents(log)).toContain("project_page.bindings_truncated");
+  });
+
+  it("does not log a cut for a few bindings", async () => {
+    const { h, call } = await setup();
+    h.db.set({ ...slackBindingKey(TEST_ORG, SLACK_TEAM, "C0000000001"), entityType: "SLACK_CHANNEL_BINDING", projectName: "payments", channelId: "C0000000001" });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect((await call(MAYA, "GET", "/v1/app/projects/payments/overview")).status).toBe(200);
+    expect(loggedEvents(log)).not.toContain("project_page.bindings_truncated");
+  });
+
+  it("looks at no more than PROJECT_ROSTER_LIST_MAX entries of a roster and says so in the log when it cut", async () => {
+    const { h, call } = await setup();
+    const ids = Array.from({ length: PROJECT_ROSTER_LIST_MAX + 7 }, (_, n) => `agt_${String(n).padStart(20, "0")}`);
+    for (const agentId of ids) h.db.set({ ...projectAgentKey(TEST_ORG, "payments", agentId), entityType: "PROJECT_AGENT", agentId, addedBy: MAYA.developerId, addedAt: "2026-10-24T00:00:00.000Z" });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const reads = vi.spyOn(h.db, "send");
+    const listed = await call(MAYA, "GET", "/v1/app/projects/payments/agents");
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(loggedEvents(log)).toContain("roster.list_truncated");
+    const agentReads = reads.mock.calls.filter(([command]) => {
+      const key = (command as { input?: { Key?: { pk?: string; sk?: string } } }).input?.Key;
+      return key?.sk === "META" && String(key.pk).includes("AGENT#agt_");
+    });
+    expect(agentReads.length).toBeLessThanOrEqual(PROJECT_ROSTER_LIST_MAX);
+  });
+
+  it("does not log a cut for a short roster", async () => {
+    const { call } = await setup();
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect((await call(MAYA, "GET", "/v1/app/projects/payments/agents")).status).toBe(200);
+    expect(loggedEvents(log)).not.toContain("roster.list_truncated");
+  });
+});
