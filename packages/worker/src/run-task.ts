@@ -23,7 +23,7 @@ import { sweepFileOps } from "./sandbox-file-tools.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 import { EventBatcher, redactCredentials, type EventAppendOptions, type EventBatchSink, type WorkerEvent } from "./events.js";
 import {
-  CANCEL_FLUSH_MAX_MS, ModelCallMonitor, PLANNING_ABORT_CONFIRM_MS, PLANNING_STALL_MS, describeModelCallNote, expiryNote, logEventsRefused, logModelCallNote, modelFailureNextAction,
+  CANCEL_FLUSH_MAX_MS, ModelCallMonitor, PLANNING_ABORT_CONFIRM_MS, PLANNING_STALL_MS, expiryNote, logEventsRefused, logModelCallNote,
   planningDeadlineMs, sanitizeModelCallEvent, type ModelCallExpiryInfo, type ModelCallNote,
 } from "./model-call-monitor.js";
 import { consoleWorkerLog, type WorkerLogSink } from "./worker-log.js";

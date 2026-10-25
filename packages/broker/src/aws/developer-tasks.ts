@@ -202,7 +202,6 @@ import {
   byCreated,
   deriveTaskStatus,
   developerTaskIdentity,
-  E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON,
   effectiveTaskOwner,
   isE2EPlanCorrectionBlockReason,
   inertName,
