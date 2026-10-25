@@ -10,6 +10,9 @@ import {
   DeveloperPullRequestResponseSchema,
   DeveloperTaskListResponseSchema,
   DeveloperTaskResponseSchema,
+  SessionListReaderSchema,
+  SessionMessageSchema,
+  SessionResponseReaderSchema,
   TaskPeopleChangeResponseSchema,
   TaskPeopleViewResponseSchema,
   type AgentXConfigurationConfirm,
@@ -33,9 +36,30 @@ import {
   type WorkflowFeedbackReviewRetryRequest,
   type WorkflowPublishRetryRequest,
   type WorkflowResolveFindingsInput,
+  forwardReader,
 } from "@agentx/contracts";
 import { z } from "zod";
 import { CLOSE_BUSY_STEP, NEXT_STEPS, SHARE_BUSY_STEP, START_BUSY_STEP, ToolError, isMeaningfulCode, plainText, signInStep, toolErrorFromResponse } from "./errors.js";
+
+/** What the session routes answer, read leniently: a newer server's extra fields and values are kept, not refused. */
+const SessionMessageReaderSchema = forwardReader(SessionMessageSchema);
+export type SessionListRead = z.output<typeof SessionListReaderSchema>;
+export type SessionViewRead = z.output<typeof SessionResponseReaderSchema>["session"];
+export type SessionMessageRead = z.output<typeof SessionMessageReaderSchema>;
+
+/**
+ * A link the server sent, only when it is an https address on the control plane's own origin with no user name or password, printable ASCII, and at most
+ * 1,000 characters (so the tools' cleaning never cuts one in two). Anything else becomes "": the tools leave that field out.
+ */
+function pinnedLink(value: unknown, baseUrl: string): string {
+  if (typeof value !== "string" || value.length > 1_000 || !/^[\x21-\x7e]+$/.test(value)) return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "" && url.origin === new URL(baseUrl).origin ? value : "";
+  } catch {
+    return "";
+  }
+}
 
 export interface ControlPlaneSession { baseUrl: string; accessToken: string; signInCommand: string }
 
@@ -104,6 +128,16 @@ export interface ControlPlaneClient {
   listApprovals(): Promise<ApprovalSummary[]>;
   getApproval(approvalId: string): Promise<ApprovalSummary>;
   approvalConfirmLink(approvalId: string): Promise<{ confirmUrl: string; ticketed: boolean }>;
+  /**
+   * Plan 5 Task 23: sessions. Exactly one of owner, shared and project names the list. There is no call here that takes a session over, retries it or
+   * shares it: a person does those on the CLI or in a browser.
+   */
+  listSessions(query: { owner?: "me"; shared?: "me"; project?: string; status?: "open" | "ended"; cursor?: string; limit?: number }): Promise<SessionListRead>;
+  getSession(sessionId: string): Promise<SessionViewRead>;
+  commentOnSession(sessionId: string, request: { requestId: string; text: string }): Promise<SessionMessageRead>;
+  /** A message to the session's agent; the caller needs "can use". */
+  tellSessionAgent(sessionId: string, request: { requestId: string; text: string }): Promise<SessionMessageRead>;
+  stopSession(sessionId: string, requestId: string): Promise<SessionViewRead>;
 }
 
 /** An agent as the agent routes list it; the tool reads only the fields it shows. */
@@ -267,6 +301,12 @@ export function httpControlPlaneClient(options: {
   }
 
   const task = (response: { task: DeveloperTaskView }) => response.task;
+  /** A session view with its own link and its decision links kept only when they are the control plane's. */
+  const pinned = async (view: SessionViewRead): Promise<SessionViewRead> => {
+    const { baseUrl } = await session();
+    return { ...view, link: pinnedLink(view.link, baseUrl), approvals: view.approvals.map((approval) => ({ ...approval, confirmUrl: pinnedLink(approval.confirmUrl, baseUrl) })) };
+  };
+  const sessionPath = (sessionId: string, rest = "") => `/v1/app/sessions/${encodeURIComponent(sessionId)}${rest}`;
   const path = (taskId: string, rest = "") => `/v1/dev/tasks/${encodeURIComponent(taskId)}${rest}`;
   return {
     configuration: async () => {
@@ -322,6 +362,20 @@ export function httpControlPlaneClient(options: {
     listApprovals: async () => (await call(z.object({ approvals: z.array(ApprovalSummarySchema) }), "GET", "/v1/app/approvals?status=PENDING")).approvals,
     getApproval: async (approvalId) => (await call(z.object({ approval: ApprovalSummarySchema }), "GET", `/v1/app/approvals/${encodeURIComponent(approvalId)}`)).approval,
     // A POST without a body: repeatable() keeps it to one try, so a ticket is minted at most once per call.
+    listSessions: (query) => {
+      const search = new URLSearchParams();
+      if (query.owner !== undefined) search.set("owner", query.owner);
+      if (query.shared !== undefined) search.set("shared", query.shared);
+      if (query.project !== undefined) search.set("project", query.project);
+      if (query.status !== undefined) search.set("status", query.status);
+      if (query.cursor !== undefined) search.set("cursor", query.cursor);
+      if (query.limit !== undefined) search.set("limit", String(query.limit));
+      return call(SessionListReaderSchema, "GET", `/v1/app/sessions?${search.toString()}`);
+    },
+    getSession: async (sessionId) => pinned((await call(SessionResponseReaderSchema, "GET", sessionPath(sessionId))).session),
+    commentOnSession: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "comment", text: request.text }),
+    tellSessionAgent: (sessionId, request) => call(SessionMessageReaderSchema, "POST", sessionPath(sessionId, "/messages"), { requestId: request.requestId, kind: "steer", text: request.text }),
+    stopSession: async (sessionId, requestId) => pinned((await call(SessionResponseReaderSchema, "POST", sessionPath(sessionId, "/stop"), { requestId })).session),
     approvalConfirmLink: (approvalId) => call(z.object({ confirmUrl: z.string(), ticketed: z.boolean() }), "POST", `/v1/app/approvals/${encodeURIComponent(approvalId)}/confirm-link`),
   };
 }

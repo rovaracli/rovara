@@ -86,6 +86,7 @@ import {
 import { hooksCreate, hooksDelete, hooksList, hooksRotate } from "./developer/hooks.js";
 import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
+import { homeCards, sessionControl, sessionFollow, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -767,6 +768,71 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .argument("<chain-id>", "the chain's ID")
     .option("--file <shares.json>", "the shares, as a JSON array")
     .action(async (chainId: string, options: { file?: string }, command: Command) => printResult(command, await chainsShare(developerSession(), developerEnv(command), chainId, options.file)));
+
+  // Plan 5, Task 23: sessions. A take-over and a company-wide share answer 202 with a link to confirm in a browser: it is printed, never retried as a sign-in.
+  program
+    .command("sessions")
+    .description("list sessions: yours by default, those shared with you, a project's, or the Live wall for a filter")
+    .option("--mine", "sessions you own (the default)", false)
+    .option("--shared", "sessions shared with you", false)
+    .option("--project <name>", "a project's sessions; with --live, the Live wall of that project")
+    .option("--live <filter>", "the Live wall: all, mine, team, needs_me or failed")
+    .option("--cursor <cursor>", "continue a list from the cursor it printed")
+    .action(async (options: { mine: boolean; shared: boolean; project?: string; live?: string; cursor?: string }, command: Command) => {
+      const project = options.project ?? globalOptions(command).project;
+      printResult(command, await sessionsList(developerSession(), developerEnv(command), {
+        mine: options.mine, shared: options.shared, ...(project === undefined ? {} : { project }), ...(options.live === undefined ? {} : { live: options.live }), ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+      }));
+    });
+  const session = program.command("session").description("look at one session, comment on it, tell its agent, stop it, retry it, take it over or share it");
+  session
+    .command("show")
+    .description("show a session: its link, status, owner, cost and what waits for you")
+    .argument("<session-id>", "the session's ID, from agentx sessions")
+    .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionShow(developerSession(), developerEnv(command), id)));
+  for (const follow of [true, false]) {
+    session
+      .command(follow ? "follow" : "unfollow")
+      .description(follow ? "follow a session: you are told when it needs you" : "stop following a session")
+      .argument("<session-id>", "the session's ID")
+      .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionFollow(developerSession(), developerEnv(command), id, follow)));
+  }
+  session
+    .command("comment")
+    .description("write a comment on a session, for the people on it (the agent does not read it)")
+    .argument("<session-id>", "the session's ID")
+    .argument("<text>", "the comment")
+    .action(async (id: string, text: string, _options: unknown, command: Command) => printResult(command, await sessionSay(developerSession(), developerEnv(command), id, "comment", text)));
+  session
+    .command("tell")
+    .description("send a message to the session's agent; it needs \"can use\" on the session")
+    .argument("<session-id>", "the session's ID")
+    .argument("<text>", "the message")
+    .action(async (id: string, text: string, _options: unknown, command: Command) => printResult(command, await sessionSay(developerSession(), developerEnv(command), id, "steer", text)));
+  for (const action of ["stop", "retry"] as const) {
+    session
+      .command(action)
+      .description(action === "stop" ? "stop a session's work; the session stays open" : "retry a session that failed or was cancelled")
+      .argument("<session-id>", "the session's ID")
+      .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionControl(developerSession(), developerEnv(command), id, action)));
+  }
+  session
+    .command("take-over")
+    .description("ask to take a session over; you confirm it in your browser from the link this prints")
+    .argument("<session-id>", "the session's ID")
+    .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionTakeOver(developerSession(), developerEnv(command), id)));
+  session
+    .command("share")
+    .description("share a session with a person, a project or the company (the company share is confirmed in your browser)")
+    .argument("<session-id>", "the session's ID")
+    .option("--with <who>", "an email or developer ID, project:<name>, or company")
+    .option("--level <level>", "view, use or edit")
+    .action(async (id: string, options: { with?: string; level?: string }, command: Command) =>
+      printResult(command, await sessionShare(developerSession(), developerEnv(command), id, { ...(options.with === undefined ? {} : { with: options.with }), ...(options.level === undefined ? {} : { level: options.level }) })));
+  program
+    .command("home")
+    .description("what needs you now: approvals, plans, spend requests, pull requests and failures")
+    .action(async (_options: unknown, command: Command) => printResult(command, await homeCards(developerSession(), developerEnv(command))));
 
   /** `agentx chains triggers ...` and `agentx agents triggers ...`: the same four commands on a chain and on an agent (Plan 4 Task 18). */
   const addTriggerCommands = (parent: Command, kind: TriggerOwnerKind, noun: string) => {
