@@ -80,3 +80,10 @@ it("hides an anchored discussion and cached target when its part disappears", as
  await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID], exact: true });await screen.findByText("That part of this session is no longer available.");
  expect(screen.queryByText("A permitted comment")).toBeNull();expect(screen.queryByText("src/refund.ts")).toBeNull();expect(screen.queryByRole("textbox", { name: "Comment" })).toBeNull();f.close();
 });
+
+it("replaces inaccessible cached session details with the common NotFound screen", async () => {
+ const f = setup();await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+ f.request.mockResolvedValue({ status: 404, body: { error: { code: "NOT_FOUND", message: "not found" } } });
+ await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID] });
+ expect(await screen.findByRole("heading", { name: "Not found", exact: true })).toBeTruthy();expect(screen.queryByRole("heading", { name: "Fix duplicate refunds" })).toBeNull();expect(screen.queryByRole("button", { name: "Conversation", exact: true })).toBeNull();f.close();
+});
