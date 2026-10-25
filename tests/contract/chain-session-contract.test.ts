@@ -18,8 +18,8 @@ import {
   ChainRunViewSchema,
   ChainStepTaskViewReaderSchema,
   ChainStepTaskViewSchema,
-  openEnum,
 } from "../../packages/contracts/src/chain-session.js";
+import { openEnum } from "../../packages/contracts/src/forward-reader.js";
 
 const HEX = "a".repeat(64);
 const RUN = `crn_${"a".repeat(20)}`;
@@ -145,5 +145,10 @@ describe("openEnum", () => {
   it("reads a listed value as itself and anything else as unknown", () => {
     expect(color.parse("red")).toBe("red");
     expect(color.parse("blue")).toBe("unknown");
+  });
+  // One definition for both plans (forward-reader.ts): Plan 4's read a missing or non-string value as "unknown" too; Plan 5's, which won, keeps that an error.
+  it("keeps a missing or non-string value an error", () => {
+    expect(color.safeParse(undefined).success).toBe(false);
+    expect(color.safeParse(3).success).toBe(false);
   });
 });
