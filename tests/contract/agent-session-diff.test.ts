@@ -96,9 +96,9 @@ it("reuses read-only diff tokens across pages but checks the org binding on ever
  const provider = new GitHubAppCredentialProvider({ credentialRef: "test", appId: "123", getPrivateKey: async () => key, now: () => now,
  requireInstallationBound: async () => { bindings++;if (!bound) throw agentXError("GITHUB_NOT_CONNECTED", "not connected"); },
  fetchImplementation: async (input, init) => {
- const url = String(input);
+ const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
  if (url.endsWith("/installation")) return Response.json({ id: 123, account: { login: "acme" } });
- if (url.endsWith("/access_tokens")) { mints++;expect(JSON.parse(String(init?.body))).toEqual({ repositories: ["app"], permissions: { contents: "read", pull_requests: "read" } });return Response.json({ token: "fake-test-only", expires_at: "2030-01-01T00:00:00Z" }); }
+ if (url.endsWith("/access_tokens")) { mints++;if (typeof init?.body !== "string") throw new Error("Expected JSON body");expect(JSON.parse(init.body)).toEqual({ repositories: ["app"], permissions: { contents: "read", pull_requests: "read" } });return Response.json({ token: "fake-test-only", expires_at: "2030-01-01T00:00:00Z" }); }
  return Response.json([{ filename: "a", status: "modified", additions: 1, deletions: 0 }]);
  } });
  await Promise.all([1, 2, 3].map(page => provider.listPullRequestFiles("https://github.com/acme/app", 42, { page }, { orgId: ORG_A })));
@@ -108,7 +108,7 @@ it("reuses read-only diff tokens across pages but checks the org binding on ever
 });
 
 it("checks view access without rebuilding decisions or the full session view for a diff", async () => {
- const f = setup(), fullView = vi.fn(f.deps.taskView);f.deps.taskView = fullView;
+ const f = setup(), fullView = vi.fn(f.deps.taskView.bind(f.deps));f.deps.taskView = fullView;
  await sessionDiff(f.deps, f.w.caller(ARJUN), f.sessionId, { repository: "app", number: 42, page: 1 });
  expect(fullView).not.toHaveBeenCalled();
 });
