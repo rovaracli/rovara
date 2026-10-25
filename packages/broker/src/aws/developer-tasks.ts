@@ -177,6 +177,8 @@ import {
   ROVARA_CODE_AGENT_ID,
   newPrefixedId,
   sessionLink,
+  sessionSurfaceKey,
+  WORKFLOW_PATH_REQUIRED,
   RUN_LIMIT_ASK_COOLDOWN_MS,
   RUN_LIMIT_BLOCK_PREFIX,
   isRunLimitBlockReason,
@@ -185,6 +187,7 @@ import {
   runLimitAskedKey,
   runLimitBlockText,
   type ProjectRole,
+  type SessionBinding,
 } from "@agentx/contracts";
 import { z } from "zod";
 import { channelLabel, decideMode, decideShare, type BoundChannel, type ShareDecision } from "../developer/share.js";
@@ -270,7 +273,7 @@ import type { TaskPeopleDisplayAdmission } from "../developer/task-people-displa
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
-import { threadBindingItems } from "../agent-sessions/bindings.js";
+import { bindingItems, threadBindingItems } from "../agent-sessions/bindings.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
 import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
@@ -1658,6 +1661,11 @@ async function confirmMayShareInto(deps: DeveloperTaskRouteDependencies, caller:
   if (!(await deps.channelMember(caller.slackUserId, channel.channelId))) throw refusal();
 }
 
+/** Whether a session already follows this surface in the org (the reverse item of a binding exists). */
+async function surfaceIsBound(deps: DeveloperTaskRouteDependencies, binding: SessionBinding): Promise<boolean> {
+  return await get(deps, sessionSurfaceKey(deps.orgId, binding)) !== undefined;
+}
+
 /**
  * Starts a task. `run` is passed by `startAgentRun` for a start that is not a person's own request (an event, a schedule, a chain step, the app route):
  * it names the origin, who started it and who pays, takes a run limit and a result contract, and makes the start write the run's request item; its
@@ -1682,6 +1690,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(request.workflow === true ? { workflow: true, ...(request.workflowPath === undefined ? {} : { workflowPath: request.workflowPath }) } : {}),
     ...(request.agent === undefined ? {} : { agent: request.agent }),
     ...(request.input === undefined ? {} : { input: request.input }),
+    // Plan 6 Task 3: what a Rovara Code intent adds (its binding), so the same request id with another binding is another request. Absent for every other start.
+    ...(run?.codeIntent?.binding === undefined ? {} : { binding: run.codeIntent.binding }),
   });
   const idempotencyKey = startIdempotencyKey(caller.developerId, request.requestId);
   // A start of a published older version that waited for the agent's owner was started, once approved, with `input` (the text again) and no title, so a client's
@@ -1783,6 +1793,13 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     return refused(agentXError("CONFIG_INVALID", "agents are not set up in this deployment"));
   }
   const paused = prepared?.paused === true;
+  // Plan 6 Task 3: the binding a Rovara Code intent asks for. Without agents there is no session to bind, and a Slack thread is bound only by the share this start makes
+  // to that very thread, so a start that could not share to it is refused rather than left unbound.
+  const codeBinding = run?.codeIntent?.binding;
+  if (codeBinding !== undefined && prepared === undefined) return refused(agentXError("RUNTIME_UNAVAILABLE", "this start can't follow a Slack thread or a Linear issue here"));
+  if (codeBinding?.kind === "slack_thread" && (share?.threadTs !== codeBinding.threadTs || share.channelId !== codeBinding.channelId || share.teamId !== codeBinding.teamId)) {
+    return refused(agentXError("CONFIG_INVALID", "this task can't be shared to that Slack thread"));
+  }
   // Who started the run, kept on the record: a person's start is the caller; a run no person started has none.
   const startedBy = run === undefined ? { developerId: caller.developerId } : run.startedBy;
   // Plan 5, Task 2: every run is a session, created in this start transaction. A chain step's task is not (its chain run is the session), and a
@@ -1794,6 +1811,10 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ? await deps.agentRuns?.signInStore.getDeveloper(sessionStartedBy.developerId).then((developer) => developer?.displayName, () => undefined) : undefined;
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
   const asWorkflow = request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding");
+  // Plan 6: a recipe with a plan check step (Rovara Code version 2, or an agent built on it) makes a 1.1.0 workflow, which starts by understanding the intent. Every other task stays 1.0.0.
+  const understandsFirst = asWorkflow && prepared?.recipe.steps.some((step) => step.kind === "plan_critic") === true;
+  // A workflow asked for with no Quick or Full path is Understand's to choose on version 2; anywhere else the explicit path is still required, in the words the request schema used to give.
+  if (request.workflow === true && request.workflowPath === undefined && !understandsFirst) return refused(agentXError("CONFIG_INVALID", WORKFLOW_PATH_REQUIRED));
   const workflowPath = request.workflowPath ?? "QUICK";
   // Plan 3, Task 34: with a model proxy a workflow task starts at its planning limit, a task with no workflow at the TASK estimate's run limit and an
   // agent-step run at the AGENT estimate's; a request can only lower it. Without a proxy nothing is limited, as before.
@@ -1852,8 +1873,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(asWorkflow ? { workflow: createWorkflowSnapshot({
       taskId, ownerId: identity.ownerKey, now: receivedAt, path: workflowPath, checkPolicy: taskWorkflowCheckPolicy(project.definition),
       ...(prepared?.program === undefined ? {} : { program: prepared.program }),
-      // Plan 6: a recipe with a plan check step (Rovara Code version 2, or an agent built on it) is a 1.1.0 workflow, which alone may hold the new stages. Every other task stays 1.0.0.
-      ...(prepared?.recipe.steps.some((step) => step.kind === "plan_critic") === true ? { definitionVersion: "1.1.0" as const } : {}),
+      // A 1.1.0 workflow alone may hold the new stages: it starts at UNDERSTAND/READY, and says whether the request or Understand chose the path.
+      ...(understandsFirst ? { definitionVersion: "1.1.0" as const, understand: true, pathFrom: request.workflowPath === undefined ? "understand" as const : "request" as const } : {}),
     }) } : {}),
     ...(prepared === undefined ? {} : {
       agent: prepared.ref, origin: prepared.origin, payer: prepared.payer, place: prepared.place,
@@ -1874,8 +1895,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     requester: { kind: "developer", developerId: caller.developerId, provider: caller.amr },
     // FR-019: the instructions exactly as the tool sent them; only the audit record is redacted.
     // An agent-step run queues no coding task: its first step is the engine's (Task 22), never Pi's task run.
-    conversationId, firstRequestId: randomUUID(), ...(prepared?.runner === "agent_steps" ? {} : { pendingPrompt: requestText }),
-    ...(asWorkflow ? { pendingWorkflowMode: "PLAN" as const } : {}),
+    // A task that understands first queues no planning run: its first step is the engine's (like an agent-step run's), so no model is asked before Understand runs.
+    conversationId, firstRequestId: randomUUID(), ...(prepared?.runner === "agent_steps" || understandsFirst ? {} : { pendingPrompt: requestText }),
+    ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : {}),
   };
   const turn = aiToolTurn({
     party: { ...party, workspaceId, settingsRevision: revision }, turnId: randomUUID(), action: "start", phase: "accepted", outcome: "accepted",
@@ -1921,6 +1943,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         title: inertTaskTitle(title), owner: { developerId: caller.developerId, name: caller.name }, startedBy: sessionStartedBy, ...(starterName === undefined ? {} : { startedByName: starterName }), origin: prepared.origin, payer: prepared.payer, now: receivedAt,
       }),
       ...threadBindingItems({ tableName: deps.tableName }, deps.orgId, sessionId, share, receivedAt),
+      // Plan 6 Task 3: a Linear issue a Rovara Code intent came from is bound in this same transaction (a Slack thread is bound by the share above).
+      ...(codeBinding === undefined || codeBinding.kind === "slack_thread" ? [] : bindingItems({ tableName: deps.tableName }, deps.orgId, sessionId, codeBinding, receivedAt)),
     ]),
   ];
   try {
@@ -1943,6 +1967,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     }
     // A counter filled between the check and the transaction.
     if (conflict !== undefined) return refused(await limitError(deps, caller, conflict, limits));
+    // The Linear issue already follows a session: the binding's own items refused the start, and nothing else was written.
+    if (codeBinding?.kind === "linear_issue" && await surfaceIsBound(deps, codeBinding)) throw agentXError("CONFIG_INVALID", "This issue already follows another session.");
     throw agentXError("WORKSPACE_BUSY", "AgentX could not start the task just now; try again with the same request_id");
   }
   return {

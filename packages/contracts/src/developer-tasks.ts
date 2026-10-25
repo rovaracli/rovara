@@ -178,6 +178,9 @@ export const StartAgentSelectionSchema = z.object({
 }).strict();
 export type StartAgentSelection = z.infer<typeof StartAgentSelectionSchema>;
 
+/** The refusal for a workflow request with no Quick or Full path where Understand does not choose it (a Rovara Code version 1 task). */
+export const WORKFLOW_PATH_REQUIRED = "workflowPath: workflow requests require an explicit Quick or Full path";
+
 export const StartDeveloperTaskRequestSchema = z
   .object({
     requestId: RequestIdSchema,
@@ -201,7 +204,8 @@ export const StartDeveloperTaskRequestSchema = z
   .strict().superRefine((request, context) => {
     if (request.input !== undefined && request.instructions !== request.input.text) context.addIssue({ code: "custom", path: ["instructions"], message: "instructions must equal input.text" });
     if (request.workflowPath !== undefined && request.workflow !== true) context.addIssue({ code: "custom", path: ["workflowPath"], message: "workflowPath requires workflow: true" });
-    if (request.workflow === true && request.workflowPath === undefined) context.addIssue({ code: "custom", path: ["workflowPath"], message: "workflow requests require an explicit Quick or Full path" });
+    // Plan 6 Task 3: a workflow request without a path is allowed here and means "Understand chooses" on Rovara Code version 2; the start itself refuses it, with
+    // `WORKFLOW_PATH_REQUIRED`'s words, where the agent it resolved is not version 2.
   });
 export type StartDeveloperTaskRequest = z.infer<typeof StartDeveloperTaskRequestSchema>;
 

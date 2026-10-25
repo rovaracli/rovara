@@ -67,6 +67,7 @@ import {
   type PlanClaim,
   type WorkflowDecisionDetail,
   type DeveloperTaskView,
+  type CodeIntentResult,
   retiredClaimIds,
   canonicalPlanJson,
   canonicalJson,
@@ -484,7 +485,7 @@ import type { DecideKinds } from "../developer/decide-kinds.js";
 import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../developer/decide-inspect.js";
 import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
 import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -527,6 +528,7 @@ import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSl
 import { batchResults, parseStartBody, requireBatchProject, showBatch, startBatch, stopBatchById } from "./eval-batch-admin.js";
 import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { slackWorkflowCaller } from "./slack-workflow-caller.js";
+import { startCodeIntent } from "../rovara-code/intent.js";
 import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 
@@ -1434,16 +1436,33 @@ export function createAgentRunStarter(input: AwsBrokerInput): AgentRunStarter | 
   return agentRunStarterFrom(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
 }
 
-function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): AgentRunStarter | undefined {
+/** The developer API's dependencies for starting work as a person, from the broker's own: what the run starter and the code intent start are made from. */
+function startRouteDependencies(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): DeveloperRouteDependencies | undefined {
   const developer = dependencies.developer;
   if (developer === undefined) return undefined;
-  return agentRunStarterOf({
+  return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
     ...(dependencies.cloud === true ? { cloud: true } : {}),
     ...(agents === undefined ? {} : { agents }),
     ...repositoriesGateRoute(dependencies),
-  });
+  };
+}
+
+function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): AgentRunStarter | undefined {
+  const routeDependencies = startRouteDependencies(dependencies, tasks, agents);
+  return routeDependencies === undefined ? undefined : agentRunStarterOf(routeDependencies);
+}
+
+/**
+ * Plan 6 Task 3: Rovara Code's one entry point for an intent, as a function of the person who asks (`startCodeIntent`); the entry for Plan 9's Linear and offer starts and for tests.
+ * Undefined where developer sign-in is not set up.
+ */
+export function createCodeIntentStarter(input: AwsBrokerInput): ((caller: DeveloperCaller, request: unknown) => Promise<CodeIntentResult<DeveloperTaskView>>) | undefined {
+  const dependencies = brokerDependencies(input);
+  const tasks = developerTaskActions(dependencies);
+  const routeDependencies = startRouteDependencies(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
+  return routeDependencies === undefined ? undefined : (caller, request) => startCodeIntent(codeIntentDependenciesOf(routeDependencies, caller), caller, request);
 }
 
 /** The latest broker's chain runner dependencies, which the one registration of the chain runner's end and pause handlers reads (Plan 4 Task 6). */
@@ -7897,16 +7916,17 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
   }
   const caller = await slackCallerFor(dependencies, userId, thread.teamId);
   const agents = agentRouteDependencies(dependencies, tasks);
-  const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+  const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
     ...(dependencies.cloud === true ? { cloud: true } : {}),
     // Plan 3, Task 15: a Slack-started workflow stores its agent snapshot like any other start.
-    ...(agents === undefined ? {} : { agents }) }, caller, thread);
-  const request = {
-    method: "POST", path: "/v1/dev/tasks", headers: {}, requestId,
-    body: JSON.stringify({ requestId, project: binding.projectName, instructions, client: "slack", workflow: true, workflowPath: event.workflowPath, shareToChannel: true, channel: thread.channelId }),
-  };
-  return await routeDeveloperTaskRequest(routeDeps, caller, request, new URL(request.path, "https://agentx.invalid")) as { task: { taskId: string } };
+    ...(agents === undefined ? {} : { agents }) };
+  // Plan 6 Task 3: the Slack start is a Rovara Code intent from the thread, through the one entry point; the explicit path the member chose is the request's.
+  const started = await startCodeIntent(codeIntentDependenciesOf(routeDependencies, caller), caller, {
+    requestId, project: binding.projectName, input: { text: instructions }, path: event.workflowPath, source: "slack",
+    binding: { kind: "slack_thread", teamId: thread.teamId, channelId: thread.channelId, threadTs: thread.threadTs },
+  });
+  return { task: started.task };
 }
 
 const randomUUIDSchema = { parse(value: string): string { if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw agentXError("CONFIG_INVALID", "workflow request ID is invalid"); return value; } };

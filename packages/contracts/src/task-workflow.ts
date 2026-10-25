@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, StepIdSchema } from "./agent-recipe.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
-import { FixSourceSchema, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, RiskAssessmentSchema } from "./rovara-code.js";
+import { FixSourceSchema, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, RiskAssessmentSchema, type WorkflowIntent } from "./rovara-code.js";
 import { E2EWorkflowProgressSchema, E2EQualifiedRoundSchema, E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { z } from "zod";
 import { ProjectCommandSchema } from "./project.js";
@@ -2028,7 +2028,14 @@ function validSnapshot(input: unknown): WorkflowSnapshot {
   return parsed.data;
 }
 
-export function createWorkflowSnapshot(input: { taskId: string; ownerId: string; now: string; path?: WorkflowPath; checkPolicy?: WorkflowCheckPolicyInput; program?: WorkflowProgram; definitionVersion?: WorkflowDefinitionVersion }): WorkflowSnapshot {
+/**
+ * A new workflow. A Rovara Code version 2 task (`definitionVersion: "1.1.0"`) passes `understand: true` and starts at UNDERSTAND/READY: Understand reads the
+ * intent before any plan is written. `pathFrom` says who chose the path (the request, Understand, or a hand-off) and is kept on `intent`; a version 1 task
+ * has neither (its snapshot refuses `intent`).
+ */
+export function createWorkflowSnapshot(input: { taskId: string; ownerId: string; now: string; path?: WorkflowPath; checkPolicy?: WorkflowCheckPolicyInput; program?: WorkflowProgram; definitionVersion?: WorkflowDefinitionVersion; understand?: boolean; pathFrom?: WorkflowIntent["pathFrom"] }): WorkflowSnapshot {
+  const understand = input.understand === true;
+  if ((understand || input.pathFrom !== undefined) && input.definitionVersion !== "1.1.0") throw new WorkflowTransitionError("only a version 1.1.0 workflow understands the intent first");
   const parsed = WorkflowSnapshotSchema.safeParse({
     schemaVersion: 1,
     definitionId: "agentx-task-to-pr",
@@ -2038,8 +2045,9 @@ export function createWorkflowSnapshot(input: { taskId: string; ownerId: string;
     path: input.path ?? "QUICK",
     ...(input.path === "FULL" ? { reviewPhase: "REQUIREMENTS" as const } : {}),
     revision: 1,
-    stage: "PLAN",
-    state: "RUNNING",
+    stage: understand ? "UNDERSTAND" : "PLAN",
+    state: understand ? "READY" : "RUNNING",
+    ...(understand || input.pathFrom !== undefined ? { intent: { rounds: 0, pathFrom: input.pathFrom ?? "understand", answers: [] } } : {}),
     createdAt: input.now,
     updatedAt: input.now,
     artifacts: [],

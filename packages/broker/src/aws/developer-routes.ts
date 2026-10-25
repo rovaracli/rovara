@@ -143,6 +143,7 @@ import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js
 import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
+import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
 import { pausedTaskGate, requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
@@ -1441,7 +1442,10 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
       };
     },
     startTask: async (caller, body, run) => {
-      const answer = await startTask(developerTaskRouteDependencies(deps, caller), caller, body, run);
+      // Plan 6 Task 3: a Rovara Code intent from a Slack thread is started shared to that thread, as the Slack workflow always was.
+      const binding = run.codeIntent?.binding;
+      const thread = binding?.kind === "slack_thread" ? { teamId: binding.teamId, channelId: binding.channelId, threadTs: binding.threadTs } : undefined;
+      const answer = await startTask(developerTaskRouteDependencies(deps, caller, thread), caller, body, run);
       if (answer.run === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the run did not report its limits");
       // Plan 3, Task 32 (PF17): a run started with a run limit of 0 waits for its limit: the run_limit request asks for it. The start stands either way; a
       // request that can't be made now is asked for again by the next pause, or by a repeat of the start (the request is once per task).
@@ -1462,6 +1466,21 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
         throw error;
       }
     },
+  };
+}
+
+/**
+ * Plan 6 Task 3: what `startCodeIntent` needs for one caller, from the developer API's dependencies: Plan 3's run start where agents are set up, the plain task start where they are
+ * not, the person's own task view, and the origin session links are made from. The routes and the broker's Slack start and `createCodeIntentStarter` all build it here.
+ */
+export function codeIntentDependenciesOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller): CodeIntentRouteDependencies {
+  const taskDeps = developerTaskRouteDependencies(deps, caller);
+  return {
+    starter: agentRunStarterOf(deps),
+    startPlainTask: (who, body, thread) => startTask(developerTaskRouteDependencies(deps, who, thread), who, body),
+    ownedTask: async (who, taskId) => taskView(taskDeps, await loadOwnedTask(taskDeps, who, taskId), { events: 0, details: false }),
+    origin: new URL(deps.developer.issuer).origin,
+    visibleProject: async (who, rawName) => (await projectRoleForRoute(deps, who, rawName)).name,
   };
 }
 
@@ -1820,6 +1839,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
+  const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
+  if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
   const projectSetupCheckRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-check$/.exec(url.pathname);
   if (request.method === "POST" && projectSetupCheckRoute !== null) return startProjectSetupCheck(deps, caller, projectSetupCheckRoute[1]!, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {

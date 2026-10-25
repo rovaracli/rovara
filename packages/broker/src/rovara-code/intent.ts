@@ -1,0 +1,96 @@
+// Rovara Code (Plan 6 Task 3): the one entry point for an intent. Every surface that starts Rovara Code work (the app route, Slack today; Linear, an accepted offer, the CLI and MCP
+// through Plan 9 and Task 25) calls `startCodeIntent`, which starts the work through the same run start every task uses (`startAgentRun`, then `startTask`). Nothing here decides
+// access or money: the project role and `requireNewWorkAllowed` are `startTask`'s, the payer is `resolvePayer`'s (a person named as the payer must still be allowed to start work
+// on the project), and the budget floor and the planning limit are `admitWork`'s and `startingLimitUsd`'s. This file only says what kind of start it is.
+import {
+  CodeIntentRequestSchema,
+  ROVARA_CODE_AGENT_ID,
+  SessionIdSchema,
+  agentXError,
+  sessionLink,
+  type CodeIntentRequest,
+  type CodeIntentResult,
+  type DeveloperTaskView,
+  type OrgId,
+} from "@agentx/contracts";
+import { startAgentRun, type AgentRunRequest, type AgentRunStarter } from "../agents/runs.js";
+import { SLACK_WORKFLOW_SESSION_ID } from "../developer/task-records.js";
+import type { DeveloperCaller } from "../aws/developer-routes.js";
+import type { PayerFacts } from "../spend/payer.js";
+
+/** What `startCodeIntent` needs from the developer API, built for one caller (see `codeIntentDependenciesOf`). */
+export interface CodeIntentDependencies {
+  /** Plan 3's run start for a person; undefined where agents are not set up. Only a plain task start is possible then (see `startCodeIntent`). */
+  starter: AgentRunStarter | undefined;
+  /** The plain task start, for a deployment without agents. */
+  startPlainTask(caller: DeveloperCaller, body: unknown, thread?: { teamId: string; channelId: string; threadTs: string }): Promise<{ task: DeveloperTaskView }>;
+  /** The person's own task, as the view a client reads; another person's or another org's is `TASK_NOT_FOUND`. */
+  ownedTask(caller: DeveloperCaller, taskId: string): Promise<DeveloperTaskView>;
+  /** The origin session links are made from (the cell's own). */
+  origin: string;
+}
+
+/** The sources that are a person's own start, so a deployment without agents (no payer rules, no sessions) may still start them. */
+const PLAIN_SOURCES: ReadonlySet<CodeIntentRequest["source"]> = new Set(["app", "cli", "mcp", "slack"]);
+
+/** The facts a source hands the payer rules, from the request and the caller (never from a request body: the app route's body cannot carry them). */
+function payerFactsOf(request: CodeIntentRequest, caller: DeveloperCaller): PayerFacts | undefined {
+  if (request.source === "linear" && request.assignedBy !== undefined) {
+    return { assignedBy: { bot: request.assignedBy.bot, ...(request.assignedBy.developerId === undefined ? {} : { developerId: request.assignedBy.developerId }) } };
+  }
+  // The person who accepted an offer is the one asking, and pays.
+  if (request.source === "offer") return { acceptedBy: { developerId: caller.developerId } };
+  return undefined;
+}
+
+function parsed(value: unknown): CodeIntentRequest {
+  const result = CodeIntentRequestSchema.safeParse(value);
+  if (result.success) return result.data;
+  const issue = result.error.issues[0];
+  // Field names only: the values are the person's text.
+  throw agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "request"}: ${issue?.message ?? "is not valid"}`);
+}
+
+/**
+ * Starts Rovara Code work for `caller` in `caller.orgId`. Idempotent on `requestId`: a repeat returns the first task and its session and writes nothing, and the same id with
+ * another request is `IDEMPOTENCY_CONFLICT`. On a version 2 org the task starts at UNDERSTAND/READY; on version 1 it starts as it always did, and a request with no path is refused.
+ *
+ * `startAt` (a hand-off from the Mac) and `retryOf` (a retry after an answer) are accepted by shape and refused here until the tasks that act on them exist. A Slack intent is
+ * accepted only from the Slack workflow's own caller. A Linear or offered intent needs the payer rules, so it needs agents to be set up.
+ */
+export async function startCodeIntent(deps: CodeIntentDependencies, caller: DeveloperCaller, value: unknown): Promise<CodeIntentResult<DeveloperTaskView>> {
+  const request = parsed(value);
+  if (request.startAt !== undefined || request.retryOf !== undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting from a hand-off or a retry isn't available yet");
+  if (request.source === "slack" && (caller.sessionId !== SLACK_WORKFLOW_SESSION_ID || caller.slackUserId === undefined)) {
+    throw agentXError("FORBIDDEN", "only a Slack member's own request can start work as Slack");
+  }
+  const orgId: OrgId = caller.orgId;
+  const intent = {
+    ...(request.path === undefined ? {} : { path: request.path }),
+    ...(request.binding === undefined ? {} : { binding: request.binding }),
+  };
+  if (deps.starter === undefined) return startWithoutAgents(deps, caller, request);
+  const payerFacts = payerFactsOf(request, caller);
+  const run: AgentRunRequest = {
+    requestId: request.requestId, orgId, project: request.project, agent: { agentId: ROVARA_CODE_AGENT_ID }, input: request.input, origin: request.source,
+    owner: { developerId: caller.developerId }, startedBy: { developerId: caller.developerId }, caller,
+    ...(payerFacts === undefined ? {} : { payerFacts }),
+    codeIntent: intent,
+  };
+  const started = await startAgentRun(deps.starter, run);
+  const task = await deps.ownedTask(caller, started.taskId);
+  if (task.sessionId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the task started without a session");
+  return { task, sessionId: task.sessionId, sessionUrl: task.sessionUrl ?? sessionLink(deps.origin, SessionIdSchema.parse(task.sessionId)) };
+}
+
+/** A deployment where agents are not set up: no payer rules and no sessions, so only a person's own plain start, as the Slack workflow made before agents existed. */
+async function startWithoutAgents(deps: CodeIntentDependencies, caller: DeveloperCaller, request: CodeIntentRequest): Promise<CodeIntentResult<DeveloperTaskView>> {
+  if (!PLAIN_SOURCES.has(request.source)) throw agentXError("RUNTIME_UNAVAILABLE", "starting work from here isn't set up in this deployment");
+  if (request.input.context !== undefined && request.input.context.length > 0) throw agentXError("CONFIG_INVALID", "agents are not set up in this deployment");
+  const answer = await deps.startPlainTask(caller, {
+    requestId: request.requestId, project: request.project, instructions: request.input.text, client: request.source, workflow: true,
+    ...(request.path === undefined ? {} : { workflowPath: request.path }),
+    ...(request.binding?.kind === "slack_thread" ? { shareToChannel: true, channel: request.binding.channelId } : {}),
+  }, request.binding?.kind === "slack_thread" ? { teamId: request.binding.teamId, channelId: request.binding.channelId, threadTs: request.binding.threadTs } : undefined);
+  return { task: answer.task };
+}

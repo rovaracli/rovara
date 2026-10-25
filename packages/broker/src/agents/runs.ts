@@ -20,8 +20,10 @@ import {
   ResolvedRecipeSchema,
   ResultContractSchema,
   RunInputSchema,
+  SessionBindingSchema,
   SessionTriggerSchema,
   WORK_ORIGINS,
+  WorkflowPathSchema,
   WorkflowProgramSchema,
   agentTasksKey,
   agentXError,
@@ -41,8 +43,10 @@ import {
   type ResultContract,
   type RunCheckout,
   type RunInput,
+  type SessionBinding,
   type SessionTrigger,
   type WorkOrigin,
+  type WorkflowPath,
   type WorkflowProgram,
 } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
@@ -112,7 +116,15 @@ export interface AgentRunRequest {
    * skips that one check and no other. Only the broker's own approval handler sets it, never a request body.
    */
   versionApproved?: true;
+  /** Plan 6 Task 3: the run is a Rovara Code intent, started as a coding workflow. Only `startCodeIntent` sets it, never a request body. */
+  codeIntent?: CodeIntentStart;
 }
+
+/**
+ * What `startCodeIntent` adds to a run (trusted, set by broker code): the start is a coding workflow, `path` is the Quick or Full path the request chose (absent: Understand
+ * chooses it on version 2), and `binding` is the Slack thread or Linear issue the session follows. A Slack thread also shares the task to the thread's channel.
+ */
+export interface CodeIntentStart { path?: WorkflowPath; binding?: SessionBinding }
 
 export interface AgentRunResult { taskId: string; runLimitUsd: number; stopAtUsd: number; paused: boolean }
 
@@ -136,6 +148,8 @@ export interface RunStartOptions {
   versionApproved?: true;
   /** The fingerprint of the request; when present the start also writes the run's request item. */
   requestFingerprint?: string;
+  /** Plan 6 Task 3: the binding a Rovara Code intent's session follows (see `CodeIntentStart`). The workflow itself is asked for in the body. */
+  codeIntent?: CodeIntentStart;
 }
 
 /** What `startAgentRun` needs from the developer API: who the owner is as a caller, and the task start. */
@@ -166,6 +180,7 @@ const AgentRunRequestShape = z.object({
   chain: z.object({ chainRunId: z.string().min(1).max(200), stepId: z.string().min(1).max(200) }).strict().optional(),
   trigger: SessionTriggerSchema.optional(),
   runLimitUsd: z.number().finite().min(0).optional(),
+  codeIntent: z.object({ path: WorkflowPathSchema.optional(), binding: SessionBindingSchema.optional() }).strict().optional(),
 }).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
@@ -483,6 +498,8 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
     payer: request.payer ?? null, payerFacts: request.payerFacts ?? null, chain: request.chain ?? null, runLimitUsd: request.runLimitUsd ?? null, resultContract: request.resultContract ?? null,
     // Only when there is one, so a request stored before triggers existed keeps the fingerprint it was stored with.
     ...(request.trigger === undefined ? {} : { trigger: request.trigger }),
+    // Likewise: a run that is not a Rovara Code intent keeps the fingerprint it always had.
+    ...(request.codeIntent === undefined ? {} : { codeIntent: request.codeIntent }),
   });
 }
 
@@ -526,7 +543,13 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
   const fingerprint = runRequestFingerprint({ ...rest, payer });
   const named = new Set([request.startedBy?.developerId, payer.kind === "member" ? payer.developerId : undefined].filter((id): id is string => id !== undefined && id !== request.owner.developerId));
   for (const developerId of named) await requireMayStart(deps, { orgId: request.orgId, project: request.project, developerId });
-  const body = { requestId: request.requestId, project: request.project, instructions: request.input.text, input: request.input, agent: request.agent, client: request.origin };
+  // A Rovara Code intent is a coding workflow: it asks for one (with the request's path, if it chose one) and, for a Slack thread, for the task to be shared to that thread's channel.
+  const intent = request.codeIntent;
+  const body = {
+    requestId: request.requestId, project: request.project, instructions: request.input.text, input: request.input, agent: request.agent, client: request.origin,
+    ...(intent === undefined ? {} : { workflow: true as const, ...(intent.path === undefined ? {} : { workflowPath: intent.path }) }),
+    ...(intent?.binding?.kind === "slack_thread" ? { shareToChannel: true, channel: intent.binding.channelId } : {}),
+  };
   const started = await deps.startTask(actingAs, body, {
     origin: request.origin, autonomous, payer, ...(request.payer === undefined ? { payerFromRules: true } : {}), requestFingerprint: fingerprint,
     ...(request.payerFacts === undefined ? {} : { payerFacts: request.payerFacts }),
@@ -536,6 +559,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(request.runLimitUsd === undefined ? {} : { runLimitUsd: request.runLimitUsd }),
     ...(request.resultContract === undefined ? {} : { resultContract: request.resultContract }),
     ...(request.versionApproved === true ? { versionApproved: true as const } : {}),
+    ...(intent === undefined ? {} : { codeIntent: intent }),
   });
   return started.run;
 }
