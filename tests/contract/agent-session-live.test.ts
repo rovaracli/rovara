@@ -796,3 +796,12 @@ describe("through the real broker", () => {
     expect((await h.dev(OMAR, "POST", "/v1/app/live", {})).status).toBe(404);
   });
 });
+
+it("lets navigation count all 300 visible open sessions through the same visibility policy and one index read", async () => {
+ const { navigationLive } = await import("../../packages/broker/src/agent-sessions/live.js");
+ const w = world();for (let i = 0; i < 300; i++) w.seed({});
+ const original = w.db.send.bind(w.db);let indexReads = 0;
+ w.db.send = async command => { if (command instanceof QueryCommand && command.input.ExpressionAttributeValues?.[":pk"] === liveSessionKey(ORG_A, "ses_00000000000000000000").pk) indexReads++;return original(command); };
+ expect(await navigationLive(w.deps(), w.caller(PRIYA))).toHaveLength(300);expect(indexReads).toBe(1);
+ expect(await navigationLive(w.deps(), w.caller(BO, ORG_B))).toEqual([]);
+});
