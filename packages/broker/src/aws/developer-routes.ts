@@ -781,12 +781,14 @@ async function grantRowsOf(deps: DeveloperRouteDependencies, caller: ProjectAcce
 }
 type GrantRow = { role?: unknown; projectRole?: unknown; grantedBy?: unknown };
 
-/** The install's Slack team's channel bindings inside one org. */
-async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId, event = "slack_bindings.truncated"): Promise<SlackChannelBinding[]> {
-  return deps.developer.slackTeamId === undefined ? [] : queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX, {
-    // Bounded (Plan 5 Task 16 review): an org with more channels than this reads the first of them, and the cut is logged with the org's id and no other detail.
-    max: SESSION_PROJECT_BINDINGS_MAX, onCut: () => logDeveloperEvent({ event, orgId }),
-  });
+/**
+ * The install's Slack team's channel bindings inside one org. Every one of them is read, because a person's access to a project is computed from them: a cut here would silently take a
+ * channel's access away. Only the project page (which shows a few channels) passes `boundEvent`, and then reads at most `SESSION_PROJECT_BINDINGS_MAX`, logging the cut with the org's id.
+ */
+async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId, boundEvent?: string): Promise<SlackChannelBinding[]> {
+  if (deps.developer.slackTeamId === undefined) return [];
+  const bound = boundEvent === undefined ? undefined : { max: SESSION_PROJECT_BINDINGS_MAX, onCut: () => logDeveloperEvent({ event: boundEvent, orgId }) };
+  return queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX, bound);
 }
 
 /** A developer's name for display: their sign-in record's, else "Unknown". */
