@@ -51,7 +51,7 @@ export const SESSION_ENDED_REASON = "the session has ended";
  * Plan 4's chain run, as far as a message needs it: what the run is doing now. Injected where Plan 4 is merged; until it is, a message to a chain session is refused before anything is written.
  * `step` names the task of the section that is running; the broker checks that it is this chain's, in this org, before giving it anything.
  */
-// PLAN4: supplied by Plan 4's chain run view (`chainRunView` / `chainStepTask`) when the branches meet.
+// Supplied by Plan 4 (`chainSteerReadsFor`, chains/session-seam.ts).
 export interface ChainSteerReads {
   current(orgId: OrgId, chainRunId: string): Promise<{ kind: "gate" } | { kind: "step"; taskId: string } | { kind: "none" }>;
 }
@@ -114,7 +114,7 @@ async function routeOf(deps: SteerDependencies, session: AgentSessionRecord): Pr
     return task === undefined ? { kind: "unavailable", message: NOT_READABLE_TEXT } : taskRoute(session, task);
   }
   if (session.subject.kind === "chain") {
-    // PLAN4: until Plan 4's reads are wired a message to a chain is refused (nothing says which step is running).
+    // Without Plan 4's reads (no chains in this deployment) a message to a chain is refused: nothing says which step is running.
     if (deps.chainSteer === undefined) return { kind: "unavailable", message: STEER_UNAVAILABLE_TEXT };
     const current = await deps.chainSteer.current(session.orgId, session.sessionId);
     if (current.kind === "gate") return { kind: "not_delivered", reason: CHAIN_GATE_REASON };

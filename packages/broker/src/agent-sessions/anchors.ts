@@ -3,7 +3,8 @@
 //   - `plan_block`: a non-empty paragraph of the plan (`p1`, `p2`, ... in order, at most 200); its revision is `v<newest plan version>`;
 //   - `step`: a step of an agent-step run, by its id (at most 100); its revision is the step's status;
 //   - `change_file`: a changed file, `<repository>:<path>` (at most 300); its revision is `+<added>-<removed>`.
-// A chain's sections arrive with Plan 4 (the view has no section yet): a chain session or a session on a Mac has no part to pin to.
+// OPEN (at the merge of Plans 4 and 5): a chain run's sections now exist (`ChainRunSectionSchema`: one per step attempt, never reordered), but anchors on them are not built yet, so a chain session
+// or a session on a Mac still has no part to pin to. Section anchors for chain sessions come later (a `step` target whose id is the section's seq, checked against Plan 4's run view).
 //
 // Every question is answered against the view built for the CALLER (the owner's view for the effective owner, the viewer's for everybody else), so a part a person can't see is not there for them:
 // a write to it is `NOT_FOUND`, and a comment already pinned to it reads as `gone` with no excerpt. `current`, `outdated` and `gone` are worked out on every read from the revision the person was

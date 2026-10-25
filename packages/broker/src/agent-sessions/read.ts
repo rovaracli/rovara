@@ -51,7 +51,7 @@ export interface SessionDeciding {
 export interface SessionReadDependencies extends SessionTakeOverDependencies {
   /** Plan 5 Task 13: Plan 3's cancel, workflow retry and run start for the signed-in person. Without it stop and retry of a task session answer `RUNTIME_UNAVAILABLE`. */
   control?: SessionControlHost | undefined;
-  /** Plan 5 Task 13, PLAN4: Plan 4's chain cancel and retry with the session actor. Without it a chain session is neither stopped nor retried, and nothing is written. */
+  /** Plan 5 Task 13: Plan 4's chain cancel and retry with the session actor (`chainControlFor`, built for each request). Without it a chain session is neither stopped nor retried, and nothing is written. */
   chainControl?: ChainControl | undefined;
   /** The Audit Ledger's outbox: a stop or retry adds its pending item to its own transaction. Absent on a legacy install, where nothing is recorded. */
   audit?: AuditRuntime;

@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AgentIdSchema, ApprovalIdSchema } from "./agent.js";
+import { ChainRunIdSchema, TriggerIdSchema } from "./chains.js";
 import { cleanDisplayName } from "./display-name.js";
 import { PayerSchema, WorkOriginSchema } from "./agent-run.js";
 import { OrgIdSchema } from "./org.js";
@@ -120,18 +121,13 @@ const CountSchema = z.number().int().min(0);
 // ---- ids
 
 const SESSION_ID_PATTERN = /^ses_[0-9a-z]{20}$/;
-// TODO(Plan 4 merge): Plan 4 defines `ChainRunIdSchema` (`/^crn_[0-9a-z]{20}$/`) in `packages/contracts/src/chains.ts` (branch
-// feat/chains-plan4-a). It is not on this branch. Replace this private copy with that import when the branches meet.
-const chainRunIdPlaceholder = z.string().regex(/^crn_[0-9a-z]{20}$/);
-// TODO(Plan 4 merge): likewise Plan 4's `TriggerIdSchema` (`/^ctr_[0-9a-z]{20}$/`), in the same file.
-const triggerIdPlaceholder = z.string().regex(/^ctr_[0-9a-z]{20}$/);
 
 /** What started a run no person started (Plan 4's trigger dispatch passes it; Plan 5 records it on the session). */
-export const SessionTriggerSchema = z.object({ kind: z.enum(["event", "schedule"]), triggerId: triggerIdPlaceholder }).strict();
+export const SessionTriggerSchema = z.object({ kind: z.enum(["event", "schedule"]), triggerId: TriggerIdSchema }).strict();
 export type SessionTrigger = z.infer<typeof SessionTriggerSchema>;
 
 /** A session id: `ses_` for a task or local session, the chain run's own id for a chain session (Plan 4 pins `sessionId = ChainRunId`). */
-export const SessionIdSchema = z.union([z.string().regex(SESSION_ID_PATTERN), chainRunIdPlaceholder]);
+export const SessionIdSchema = z.union([z.string().regex(SESSION_ID_PATTERN), ChainRunIdSchema]);
 export const DeviceIdSchema = z.string().regex(/^dvc_[0-9a-z]{20}$/);
 export const SessionMessageIdSchema = z.string().regex(/^msg_[0-9a-z]{20}$/);
 export const SessionEventIdSchema = z.string().regex(/^evt_[0-9a-f]{24}$/);
@@ -188,7 +184,7 @@ export type SessionLevel = z.infer<typeof SessionLevelSchema>;
 /** What the session is about: a Rovara Code or agent task, a chain run, or a local agent on a Mac. */
 export const SessionSubjectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("task"), taskId: z.string().uuid() }).strict(),
-  z.object({ kind: z.literal("chain"), chainRunId: chainRunIdPlaceholder }).strict(),
+  z.object({ kind: z.literal("chain"), chainRunId: ChainRunIdSchema }).strict(),
   z.object({ kind: z.literal("local"), deviceId: DeviceIdSchema, tool: LocalToolSchema }).strict(),
 ]);
 export type SessionSubject = z.infer<typeof SessionSubjectSchema>;
@@ -238,8 +234,8 @@ export const SessionAgentSchema = z
   .strict();
 export const SessionStartedBySchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("member"), developerId: DeveloperIdSchema }).strict(),
-  z.object({ kind: z.literal("event"), triggerId: triggerIdPlaceholder }).strict(),
-  z.object({ kind: z.literal("schedule"), triggerId: triggerIdPlaceholder }).strict(),
+  z.object({ kind: z.literal("event"), triggerId: TriggerIdSchema }).strict(),
+  z.object({ kind: z.literal("schedule"), triggerId: TriggerIdSchema }).strict(),
   z.object({ kind: z.literal("local") }).strict(),
 ]);
 export type SessionOwner = z.infer<typeof SessionOwnerSchema>;

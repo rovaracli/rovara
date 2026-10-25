@@ -31,7 +31,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
   realtime?: RealtimeTokenDependencies;
   /** The events API a presence notice is posted to (Task 9); without it a heartbeat is kept and nothing is posted. */
   realtimePublish?: RealtimeConfig | undefined;
-  /** PLAN4: what a chain run is doing now, for a message to a chain (Task 11a). Without it a message to a chain session is refused before it is written. */
+  /** What a chain run is doing now, for a message to a chain (Task 11a): Plan 4's `chainSteerReadsFor`, built for each request. Without it a message to a chain session is refused before it is written. */
   chainSteer?: ChainSteerReads | undefined;
 }
 
