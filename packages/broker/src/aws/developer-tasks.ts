@@ -1690,8 +1690,6 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(request.workflow === true ? { workflow: true, ...(request.workflowPath === undefined ? {} : { workflowPath: request.workflowPath }) } : {}),
     ...(request.agent === undefined ? {} : { agent: request.agent }),
     ...(request.input === undefined ? {} : { input: request.input }),
-    // Plan 6 Task 3: what a Rovara Code intent adds (its binding), so the same request id with another binding is another request. Absent for every other start.
-    ...(run?.codeIntent?.binding === undefined ? {} : { binding: run.codeIntent.binding }),
   });
   const idempotencyKey = startIdempotencyKey(caller.developerId, request.requestId);
   // A start of a published older version that waited for the agent's owner was started, once approved, with `input` (the text again) and no title, so a client's
@@ -1797,7 +1795,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // to that very thread, so a start that could not share to it is refused rather than left unbound.
   const codeBinding = run?.codeIntent?.binding;
   if (codeBinding !== undefined && prepared === undefined) return refused(agentXError("RUNTIME_UNAVAILABLE", "this start can't follow a Slack thread or a Linear issue here"));
-  if (codeBinding?.kind === "slack_thread" && (share?.threadTs !== codeBinding.threadTs || share.channelId !== codeBinding.channelId || share.teamId !== codeBinding.teamId)) {
+  if (codeBinding?.kind === "slack_thread" && (share?.threadTs !== codeBinding.threadTs || share.teamId !== codeBinding.teamId)) {
     return refused(agentXError("CONFIG_INVALID", "this task can't be shared to that Slack thread"));
   }
   // Who started the run, kept on the record: a person's start is the caller; a run no person started has none.
