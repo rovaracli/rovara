@@ -23,8 +23,14 @@ assumeDrivingTestsPassed();
 
 // Task 4.2: setup approval derives the route from the installation's worker settings and pins it in the project's policy; dispatch re-derives it.
 type RequireAgentRoute = (dependencies: never, orgId: OrgId, projectName: string, intent: E2EApplicationPlanIntent, policy: ReturnType<typeof E2EPolicySchema.parse>) => Promise<boolean>;
+type OfferedToPlanner = (dependencies: never, modelRouteRevision: string | null) => Promise<boolean>;
 let requireAgentRouteStillCurrent: RequireAgentRoute;
-beforeAll(async () => { requireAgentRouteStillCurrent = (await loadSlackBroker() as unknown as { requireAgentRouteStillCurrent: RequireAgentRoute }).requireAgentRouteStillCurrent; });
+let agentStepsOfferedToPlanner: OfferedToPlanner;
+beforeAll(async () => {
+  const broker = await loadSlackBroker() as unknown as { requireAgentRouteStillCurrent: RequireAgentRoute; agentStepsOfferedToPlanner: OfferedToPlanner };
+  requireAgentRouteStillCurrent = broker.requireAgentRouteStillCurrent;
+  agentStepsOfferedToPlanner = broker.agentStepsOfferedToPlanner;
+});
 
 const admin = { subject: "admin-subject", admin: true };
 const anthropic: E2EAgentInstallation = { provider: "anthropic", secretArn: SECRET_ARN };
@@ -369,6 +375,19 @@ describe("dispatch re-derives the route before an AI navigation round starts", (
     expect((await refusal(requireAgentRouteStillCurrent(dependencies(undefined) as never, TEST_ORG, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
     expect((await refusal(requireAgentRouteStillCurrent(dependencies(async () => { throw new Error("ssm down"); }) as never, TEST_ORG, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
     expect((await refusal(requireAgentRouteStillCurrent(dependencies(async () => ({ provider: "anthropic" })) as never, TEST_ORG, "payments", agentIntent, policyAt(revision))))?.message).toMatch(/^agent-route-not-approved:/);
+  });
+
+  it("offers the planner agent steps only on a non-cloud install whose pinned route is the current one; never on a cloud install", async () => {
+    const { dependencies, revision } = await approved(anthropic);
+    const current = dependencies(async () => anthropic);
+    // Unchanged where it is offered today.
+    expect(await agentStepsOfferedToPlanner(current as never, revision)).toBe(true);
+    expect(await agentStepsOfferedToPlanner(dependencies(undefined) as never, revision)).toBe(false);
+    expect(await agentStepsOfferedToPlanner(current as never, null)).toBe(false);
+    expect(await agentStepsOfferedToPlanner(dependencies(async () => ({ provider: "amazon-bedrock", region: "us-east-1" })) as never, revision)).toBe(false);
+    expect(await agentStepsOfferedToPlanner(dependencies(async () => { throw new Error("ssm down"); }) as never, revision)).toBe(false);
+    // The same approved, current route on a cloud install offers none.
+    expect(await agentStepsOfferedToPlanner({ ...current, cloud: true } as never, revision)).toBe(false);
   });
 
   it("on a cloud install refuses every round with an AI navigation step, even with the route approved and the day empty, and judges a plan without one as before", async () => {

@@ -229,6 +229,7 @@ import {
   projectMetaKey,
   projectMemberKey,
   projectSetupApprovalKey,
+  defaultWorkspaceKey,
   orgScoped,
   slackBindingKey,
   slackBindingPk,
@@ -3796,7 +3797,7 @@ async function prepareWorkspace(
     return { operationId: idempotency.operationId, workspace: publicWorkspace(workspace), alreadyReady: workspace.status === "READY", duplicate: true };
   }
   const project = await requireProject(dependencies, requireOrgId(identity.orgId), projectName, projectRevision);
-  const existing = await getDefaultWorkspace(dependencies, targetOwnerKey, projectName);
+  const existing = await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), targetOwnerKey, projectName);
   if (existing) {
     if (existing.projectRevision !== projectRevision) {
       throw agentXError("PROJECT_REVISION_MISMATCH", "existing workspace is pinned to another revision");
@@ -3962,7 +3963,7 @@ async function newWorkspacePreparation(
     membership: existingMembership,
     items: [
       { Put: { TableName: dependencies.tableName, Item: workspaceItem(requireOrgId(identity.orgId), workspace), ConditionExpression: "attribute_not_exists(pk)" } },
-      { Put: { TableName: dependencies.tableName, Item: { pk: `OWNER#${targetOwnerKey}`, sk: `PROJECT#${projectName}`, entityType: "DEFAULT_WORKSPACE", workspaceId }, ConditionExpression: "attribute_not_exists(pk)" } },
+      { Put: { TableName: dependencies.tableName, Item: { ...defaultWorkspaceKey(requireOrgId(identity.orgId), targetOwnerKey, projectName), entityType: "DEFAULT_WORKSPACE", workspaceId }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
       // The target's membership is created here only when absent, recording who granted it; an existing row is required to be as it was read, never rewritten.
@@ -4744,7 +4745,7 @@ async function ensureThreadWorkspace(
       throw agentXError("FORBIDDEN", "this thread's workspace belongs to the channel's previous project binding");
     }
   }
-  const existing = threadWorkspace ?? await getDefaultWorkspace(dependencies, identity.ownerKey, slack.binding.projectName);
+  const existing = threadWorkspace ?? await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName);
   if (existing) {
     if (existing.status === "CLOSED" && existing.closedAt) {
       return { outcome: "CLOSED", workspaceId: existing.id, closedAt: existing.closedAt };
@@ -4803,7 +4804,7 @@ async function ensureThreadWorkspace(
       if (!isConditional(error)) throw error;
       // The membership changed since it was read: decide again from the row as it now is, never over it.
       if (await membershipMovedSince(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName, attempted.membership)) continue;
-      const concurrent = await getDefaultWorkspace(dependencies, identity.ownerKey, slack.binding.projectName);
+      const concurrent = await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName);
       if (concurrent) {
         return existingThreadWorkspace(dependencies, identity, requestId, concurrent, include, includeSettingsRevision, input.includeOpenTaskCount === true);
       }
@@ -4850,7 +4851,7 @@ async function createUnpreparedThreadWorkspace(
         { Put: { TableName: dependencies.tableName, Item: workspaceItem(orgId, attempted), ConditionExpression: "attribute_not_exists(pk)" } },
         { Put: {
           TableName: dependencies.tableName,
-          Item: { pk: `OWNER#${identity.ownerKey}`, sk: `PROJECT#${projectName}`, entityType: "DEFAULT_WORKSPACE", workspaceId: attempted.id },
+          Item: { ...defaultWorkspaceKey(orgId, identity.ownerKey, projectName), entityType: "DEFAULT_WORKSPACE", workspaceId: attempted.id },
           ConditionExpression: "attribute_not_exists(pk)",
         } },
         // Created only when absent; an existing row is required to be as it was read, never rewritten.
@@ -4876,7 +4877,7 @@ async function createUnpreparedThreadWorkspace(
       // The membership changed since it was read: decide again from the row as it now is, never over it.
       if (await membershipMovedSince(dependencies, orgId, identity.ownerKey, projectName, existingMembership)) continue;
       // Another first message in this thread created the record.
-      const concurrent = await getDefaultWorkspace(dependencies, identity.ownerKey, projectName);
+      const concurrent = await getDefaultWorkspace(dependencies, orgId, identity.ownerKey, projectName);
       if (concurrent) return existingThreadWorkspace(dependencies, identity, requestId, concurrent, include, includeSettingsRevision);
       throw agentXError("WORKSPACE_BUSY", "thread workspace creation conflicted with another request; retry");
     }
@@ -4952,7 +4953,7 @@ async function prepareThreadWorkspace(
     return { outcome: "WORKSPACE", workspaceId: workspace.id, status: workspace.status, operationId: (await activeOperationForChannel(dependencies, workspace)).operationId, created: false };
   }
   const workspace = await getThreadWorkspace(dependencies, identity.ownerKey)
-    ?? await getDefaultWorkspace(dependencies, identity.ownerKey, slack.binding.projectName);
+    ?? await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), identity.ownerKey, slack.binding.projectName);
   if (!workspace) throw agentXError("NOT_FOUND", "thread workspace not found");
   if (workspace.status === "CLOSED" && workspace.closedAt) {
     return { outcome: "CLOSED", workspaceId: workspace.id, closedAt: workspace.closedAt };
@@ -5716,7 +5717,7 @@ async function resolveWorkspace(
   const orgId = requireOrgId(identity.orgId);
   await requireMembership(dependencies, orgId, identity.ownerKey, projectName);
   await requireProject(dependencies, orgId, projectName, revision);
-  const workspace = await getDefaultWorkspace(dependencies, identity.ownerKey, projectName);
+  const workspace = await getDefaultWorkspace(dependencies, orgId, identity.ownerKey, projectName);
   if (!workspace) throw agentXError("WORKSPACE_NOT_READY", "workspace has not been prepared by an administrator");
   if (workspace.projectRevision !== revision) {
     throw agentXError("PROJECT_REVISION_MISMATCH", "workspace is pinned to another project revision");
@@ -6164,6 +6165,18 @@ async function validateWorkflowE2EApplicationPlan(dependencies: AwsBrokerDepende
   throw agentXError("CONFIG_INVALID", `the application E2E plan cannot be approved: ${derived.reason}. Request changes to correct the plan, or approve it again once the runtime is ready`);
 }
 
+/**
+ * Whether `agent` steps are offered to the planner: only while the route the policy pinned is the one the installation would use now (Task 4.2); a registry or settings read that
+ * fails offers none. Never on a cloud install: AI navigation is not available to a Cloud org until its model calls are charged through the cloud spend ledger
+ * (`AI_NAVIGATION_NOT_ON_CLOUD`), so the planner is not told it may write them.
+ */
+export async function agentStepsOfferedToPlanner(dependencies: Pick<AwsBrokerDependencies, "cloud" | "documentClient" | "tableName" | "e2eAgentInstallation">, modelRouteRevision: string | null): Promise<boolean> {
+  if (dependencies.cloud === true || modelRouteRevision === null || dependencies.e2eAgentInstallation === undefined) return false;
+  try {
+    return (await checkE2EAgentRouteCurrent({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, await dependencies.e2eAgentInstallation(), modelRouteRevision)).ok;
+  } catch { return false; }
+}
+
 /** Supplies source-backed feature-plan references only from the task's pinned project and immutable prepared commit. */
 async function codingPlanFeatureE2EContext(dependencies: AwsBrokerDependencies, workspaceId: string) {
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
@@ -6220,15 +6233,7 @@ async function codingPlanFeatureE2EContext(dependencies: AwsBrokerDependencies, 
       parsedPolicy.data.targets.map((target) => ({ applicationId: target.applicationId, profileId: target.accountProfileId })),
       { earlierFor: accountDefinitionIsForOtherContract(snapshot) })).entries;
   } catch { accountRegistry = []; }
-  // `agent` steps are offered to the planner only while the route the policy pinned is the one the installation would use now (Task 4.2); a registry or settings read that fails offers none.
-  let agentRouteApproved = false;
-  // Never on a cloud install: AI navigation is not offered to a Cloud org until its model calls are charged through the cloud spend ledger (see `AI_NAVIGATION_NOT_ON_CLOUD`).
-  if (dependencies.cloud !== true && parsedPolicy.data.modelRouteRevision !== null && dependencies.e2eAgentInstallation !== undefined) {
-    try {
-      agentRouteApproved = (await checkE2EAgentRouteCurrent({ documentClient: dependencies.documentClient, tableName: dependencies.tableName },
-        await dependencies.e2eAgentInstallation(), parsedPolicy.data.modelRouteRevision)).ok;
-    } catch { agentRouteApproved = false; }
-  }
+  const agentRouteApproved = await agentStepsOfferedToPlanner(dependencies, parsedPolicy.data.modelRouteRevision);
   return buildFeatureE2EPlanningContext(parsedPolicy.data, snapshot, { origin: sourceOrigin,
     preparedCommitSha: prepared?.baseCommitSha ?? null, readyRuntimes, accountRegistry, agentRouteApproved });
 }
@@ -15692,16 +15697,25 @@ async function requireWorkspace(dependencies: AwsBrokerDependencies, workspaceId
   return WorkspaceInstanceSchema.parse(workspaceRecordFields(item));
 }
 
+/**
+ * A person's default workspace for a project in one org. The map is keyed by org, person and project (`defaultWorkspaceKey`): a person has one owner key across orgs, so a
+ * person who left one org and joined another with a same-named project must not read the first org's workspace. A row written before the key carried the org (the old
+ * `OWNER#<person>` / `PROJECT#<name>`) is still found, but is returned only if the workspace it names belongs to this very org (one with no org recorded belongs to the install's single org);
+ * a workspace of any other org reads as absent.
+ */
 async function getDefaultWorkspace(
   dependencies: AwsBrokerDependencies,
+  orgId: OrgId,
   ownerKey: string,
   projectName: string,
 ): Promise<WorkspaceInstance | undefined> {
-  const mapping = await getItem<{ workspaceId: string }>(dependencies, {
-    pk: `OWNER#${ownerKey}`,
-    sk: `PROJECT#${projectName}`,
-  });
-  return mapping ? requireWorkspace(dependencies, mapping.workspaceId) : undefined;
+  const scoped = await getItem<{ workspaceId: string }>(dependencies, defaultWorkspaceKey(orgId, ownerKey, projectName));
+  if (scoped) return requireWorkspace(dependencies, scoped.workspaceId);
+  const earlier = await getItem<{ workspaceId: string }>(dependencies, { pk: `OWNER#${ownerKey}`, sk: `PROJECT#${projectName}` });
+  if (!earlier) return undefined;
+  const workspace = await requireWorkspace(dependencies, earlier.workspaceId);
+  // A workspace from before records named their org belongs to the install's single org (the same rule as `installOrgId`); a workspace of another org reads as absent.
+  return (workspace.orgId ?? installOrgId(dependencies)) === orgId ? workspace : undefined;
 }
 
 async function getThreadWorkspace(

@@ -78,6 +78,14 @@ export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string
   return { pk: memberGrantsPk(orgId, ownerKey), sk: `PROJECT#${project}` };
 }
 
+/**
+ * A person's default workspace for a project in one org: the map from (person, project) to the workspace an administrator prepared or the Slack channel started. A person has one
+ * owner key across orgs, so the org is part of the key: leaving one org and joining another with a project of the same name never reads the old org's workspace.
+ */
+export function defaultWorkspaceKey(orgId: OrgId, ownerKey: string, project: string): OrgKey {
+  return { pk: orgScoped(orgId, `OWNER#${ownerKey}`), sk: `PROJECT#${project}` };
+}
+
 export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS";
 
 export function orgSettingsKey(orgId: OrgId, name: OrgSettingName): OrgKey {
