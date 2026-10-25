@@ -60,16 +60,16 @@ for (const [label, env, context, cloud] of [
           expect(started[entry.variable]).toBe(entry.value(env));
         });
       } else if (entry.kind === "roleArn") {
-        it(`${entry.variable}: ${expected ? "is the ARN of the one role CDK named " + entry.roleName(env) : "is not built, as the role does not exist"}`, () => {
+        it(`${entry.variable}: ${expected ? "is the ARN of the one role CDK named " + entry.roleName(env) : "is left unbuilt (the role exists, the cloud grant that names it does not)"}`, () => {
+          // The role has a fixed name in every named environment (the default boundary names it); only the variable is cloud-only.
           const roles = withName(resources, "AWS::IAM::Role", "RoleName", entry.roleName(env));
-          if (!expected) {
-            expect(roles, "the role exists only where the broker is given it").toEqual([]);
-            expect(started[entry.variable]).toBeUndefined();
-            return;
-          }
           expect(roles).toHaveLength(1);
           const path = roles[0]!.Properties?.Path;
           expect(path, "the role is in the environment's role path").toBe(`/agentx/${env}/`);
+          if (!expected) {
+            expect(started[entry.variable]).toBeUndefined();
+            return;
+          }
           expect(started[entry.variable]).toBe(`arn:aws:iam::${ACCOUNT}:role${path as string}${entry.roleName(env)}`);
         });
       } else {
@@ -103,6 +103,6 @@ describe("the legacy install, whose templates this leaves as they were", () => {
   });
 
   it("has no audit intake queue, so no name there to change", () => {
-    expect(resources.filter((resource) => resource.Type === "AWS::SQS::Queue" && String(resource.Properties?.QueueName ?? "").includes("audit-intake"))).toEqual([]);
+    expect(resources.filter((resource) => resource.Type === "AWS::SQS::Queue" && JSON.stringify(resource.Properties?.QueueName ?? "").includes("audit-intake"))).toEqual([]);
   });
 });

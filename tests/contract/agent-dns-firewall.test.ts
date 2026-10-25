@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { DEFAULT_AGENT_ALLOW_DOMAINS, DNS_FIREWALL_ASSOCIATION_PRIORITY } from "../../infra/lib/agent-dns-firewall.js";
 import { AGENTX_PRODUCTION_VPC_CIDR } from "../../infra/lib/production-foundation.js";
+import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -231,7 +232,9 @@ describe("the project allow list in the control plane (cloud installs)", () => {
     const parameters = template.toJSON().Parameters as Record<string, { Type: string; Default?: unknown }>;
     expect(parameters.ProjectAllowListId).toMatchObject({ Type: "String" });
     expect(parameters.ProjectAllowListId).not.toHaveProperty("Default");
-    expect(brokerEnvironment(template).AGENT_PROJECT_ALLOW_LIST_ID).toStrictEqual({ Ref: "ProjectAllowListId" });
+    // In the broker's names (its variables are held to Lambda's 4 KB); the broker puts it back as AGENT_PROJECT_ALLOW_LIST_ID.
+    expect(brokerNamesIn(brokerEnvironment(template)).projectAllowList).toStrictEqual({ Ref: "ProjectAllowListId" });
+    expect(brokerEnvironment(template)).not.toHaveProperty("AGENT_PROJECT_ALLOW_LIST_ID");
   });
 
   it("lets only the broker update and read that one list: exact actions, the list's ARN, no wildcard, and no other role", () => {
@@ -275,6 +278,7 @@ describe("the project allow list in the control plane (cloud installs)", () => {
       const plain = controlPlane(context);
       expect(Object.keys(plain.toJSON().Parameters as object)).not.toContain("ProjectAllowListId");
       expect(brokerEnvironment(plain)).not.toHaveProperty("AGENT_PROJECT_ALLOW_LIST_ID");
+      expect(brokerNamesIn(brokerEnvironment(plain))).not.toHaveProperty("projectAllowList");
       expect(resolverStatements(plain)).toStrictEqual([]);
       expect(resourcesOf(plain, "AWS::Scheduler::Schedule").map(([id]) => id).filter((id) => id.startsWith("EgressDomainsSync"))).toStrictEqual([]);
     }

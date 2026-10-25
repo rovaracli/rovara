@@ -22,6 +22,7 @@ export * from "./workflow-plan-document.js";
 export * from "./workflow-dependencies.js";
 export * from "./display-name.js";
 export * from "./broker-names.js";
+export * from "./derived-names.js";
 export * from "./environments.js";
 export * from "./github-mcp.js";
 export * from "./oauth-profiles.js";

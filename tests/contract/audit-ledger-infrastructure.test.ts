@@ -961,13 +961,15 @@ describe("the audit ledger in templates", () => {
           }
         });
 
-        it("gives the export function (which flushes its audit.exported item) and the sign-in function (Task 18) the intake queue's URL, the broker its name (the broker builds the URL), and no other function", () => {
+        it("gives the export function (which flushes its audit.exported item) and the sign-in function (Task 18) the intake queue's URL, the broker neither (its name is fixed, so the broker builds the URL: DERIVED_BROKER_VARIABLES), and no other function", () => {
           const functions = ofType(synthesis.template, "AWS::Lambda::Function");
           const withUrl = functions.filter(([, fn]) => (fn.Properties.Environment as { Variables?: Json } | undefined)?.Variables?.AUDIT_INTAKE_QUEUE_URL !== undefined);
           expect(withUrl.map(([id]) => withoutHash(id)).sort()).toStrictEqual(["AuditLedgerAuditExport", "DeveloperSignInFunction"]);
           const variables = (one(synthesis.template, "AWS::Lambda::Function", "Broker")[1].Properties.Environment as { Variables: Json }).Variables;
           expect(variables.AUDIT_INTAKE_QUEUE_URL).toBeUndefined();
-          expect(brokerNamesIn(variables).auditIntakeQueue).toStrictEqual({ "Fn::GetAtt": [one(synthesis.template, "AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue")[0], "QueueName"] });
+          expect(brokerNamesIn(variables)).not.toHaveProperty("auditIntakeQueue");
+          // The queue is created with the fixed name the broker derives its URL from (derived-names.test.ts holds the two together).
+          expect(one(synthesis.template, "AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue")[1].Properties.QueueName).toMatch(/^agentx-[a-z0-9-]+-audit-intake\.fifo$/);
         });
 
         it("drains every minute: one schedule, invoking the broker through a scheduler role with { source: agentx.audit-drain }", () => {
@@ -1825,7 +1827,6 @@ describe("the audit ledger in templates", () => {
             auditKeysTable: { Ref: id("AWS::DynamoDB::Table", "AuditLedgerAuditKeysTable") },
             auditExportsBucket: { Ref: id("AWS::S3::Bucket", "AuditLedgerAuditExportsBucket") },
             auditExportFunction: { Ref: id("AWS::Lambda::Function", "AuditLedgerAuditExport") },
-            auditIntakeQueue: { "Fn::GetAtt": [id("AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue"), "QueueName"] },
             // The key's id (a Ref), never its ARN or its alias: the broker builds the ARN.
             auditVaultKey: { Ref: id("AWS::KMS::Key", "AuditLedgerAuditVaultKey") },
           });

@@ -3013,7 +3013,11 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Fn::Join": [
                 "",
                 [
-                  "{"ck":"",
+                  "{"ar":"",
+                  {
+                    "Ref": "Artifacts82DD59A1",
+                  },
+                  "","ck":"",
                   {
                     "Ref": "ChatGptConnectionKey03C49F9D",
                   },
@@ -3048,6 +3052,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "","if":"",
                   {
                     "Ref": "DeveloperSignInFunction10B62B05",
+                  },
+                  "","lt":"",
+                  {
+                    "Ref": "Ec2WorkerLaunchTemplateId",
                   },
                   "","pe":"",
                   {
@@ -3101,33 +3109,59 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "TurnRecords69ECFCD9",
                   },
+                  "","ts":"",
+                  {
+                    "Ref": "State1C20CC9A",
+                  },
                   ""}",
                 ],
               ],
             },
-            "AGENTX_WORKFLOW_DEPENDENCIES_ENABLED": {
-              "Ref": "WorkflowDependenciesEnabled",
-            },
-            "ARTIFACT_BUCKET_NAME": {
-              "Ref": "Artifacts82DD59A1",
+            "AGENTX_SETTINGS": {
+              "Fn::Join": [
+                "",
+                [
+                  "{"mc":"",
+                  {
+                    "Ref": "McpConfirmElicitation",
+                  },
+                  "","ml":"",
+                  {
+                    "Ref": "SlackMemberWorkspaceLimit",
+                  },
+                  "","ol":"",
+                  {
+                    "Ref": "SlackOrganizationWorkspaceLimit",
+                  },
+                  "","os":"",
+                  {
+                    "Ref": "DeveloperOidcSince",
+                  },
+                  "","sn":"",
+                  {
+                    "Ref": "DeveloperSignInSlackSince",
+                  },
+                  "","ss":"",
+                  {
+                    "Ref": "DeveloperSignInSlack",
+                  },
+                  "","tm":"",
+                  {
+                    "Ref": "SlackTeamId",
+                  },
+                  "","wd":"",
+                  {
+                    "Ref": "WorkflowDependenciesEnabled",
+                  },
+                  ""}",
+                ],
+              ],
             },
             "CALLBACK_SIGNING_KEY": {
               "Ref": "CallbackSigningKey",
             },
             "DEVELOPER_OIDC_ISSUER": {
               "Ref": "DeveloperOidcIssuer",
-            },
-            "DEVELOPER_OIDC_SINCE": {
-              "Ref": "DeveloperOidcSince",
-            },
-            "DEVELOPER_SIGNIN_SLACK": {
-              "Ref": "DeveloperSignInSlack",
-            },
-            "DEVELOPER_SIGNIN_SLACK_SINCE": {
-              "Ref": "DeveloperSignInSlackSince",
-            },
-            "EC2_WORKER_LAUNCH_TEMPLATE_ID": {
-              "Ref": "Ec2WorkerLaunchTemplateId",
             },
             "EC2_WORKER_SUBNETS": {
               "Ref": "Ec2WorkerSubnets",
@@ -3141,23 +3175,8 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "GITHUB_APP_PRIVATE_KEY_SECRET_ARN": {
               "Ref": "GitHubAppPrivateKeySecretArn",
             },
-            "MCP_CONFIRM_ELICITATION": {
-              "Ref": "McpConfirmElicitation",
-            },
             "OIDC_ISSUER": {
               "Ref": "OidcIssuer",
-            },
-            "SLACK_MEMBER_WORKSPACE_LIMIT": {
-              "Ref": "SlackMemberWorkspaceLimit",
-            },
-            "SLACK_ORGANIZATION_WORKSPACE_LIMIT": {
-              "Ref": "SlackOrganizationWorkspaceLimit",
-            },
-            "SLACK_TEAM_ID": {
-              "Ref": "SlackTeamId",
-            },
-            "STATE_TABLE_NAME": {
-              "Ref": "State1C20CC9A",
             },
           },
         },

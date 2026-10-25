@@ -6,7 +6,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
-import { brokerNamesIn } from "../support/broker-names-template.js";
+import { brokerNamesIn, brokerSettingsIn, takeBrokerNames, takeBrokerSettings } from "../support/broker-names-template.js";
 import { hasModelProxy, withoutModelProxy } from "../support/model-proxy-template.js";
 import { hasAuditLedger, withoutAuditLedger } from "../support/audit-ledger-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -113,10 +113,13 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete variables.Variables.DEVELOPER_SIGNIN_TABLE_NAME;
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
+    // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
     // Task 23 (ruling R55): where a cloud org's projects run. A named environment's control plane only; it is no part of the proof addition.
+    if (brokerVariables.Variables.AGENTX_NAMES !== undefined) takeBrokerNames(brokerVariables.Variables, ["launchTemplate"]);
     delete brokerVariables.Variables.EC2_WORKER_LAUNCH_TEMPLATE_ID;
     delete brokerVariables.Variables.EC2_WORKER_SUBNETS;
   }
@@ -229,7 +232,8 @@ describe("the named TEST proof-only installation gate", () => {
       const broker = workflowDependencyEnvironmentEntries(template);
       expect(broker, `${label} has exactly one Broker with the workflow flag`).toHaveLength(1);
       const variables = broker[0]![1].Properties!.Environment as { Variables: Record<string, unknown> };
-      expect(variables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED, `${label} wires only the parameter reference`).toEqual({ Ref: "WorkflowDependenciesEnabled" });
+      expect(brokerSettingsIn(variables.Variables).workflowDependencies, `${label} wires only the parameter reference`).toEqual({ Ref: "WorkflowDependenciesEnabled" });
+      expect(variables.Variables, `${label} has it in the broker's settings, not as a variable of its own`).not.toHaveProperty("AGENTX_WORKFLOW_DEPENDENCIES_ENABLED");
     }
     expect(legacy.Parameters?.WorkflowDependenciesEnabled, "legacy has no workflow gate parameter").toBeUndefined();
     const legacyBrokers = workflowDependencyEnvironmentEntries(legacy);
@@ -264,18 +268,21 @@ describe("the named TEST proof-only installation gate", () => {
     // name) moved the named and foreign digests; the legacy template has no sign-in stack and none of it, and its digests did not move.
     // Merge of Plans 4 and 5 (chains-sessions-merge): the named and foreign digests were taken again from the synthesized merged template (Plan 4's schedule group, queue and roles beside Plan 5's
     // realtime API and session routes, and the fixed-name roles' lookup grant); the legacy digests did not move.
+    // ENV-ROOM (the broker's environment room): the named and foreign digests were taken again from the synthesized templates. The broker's variables moved: the State table, the artifact
+    // bucket, the launch template, the allow list and the model proxy joined AGENTX_NAMES, the audit queue's URL is derived, and eleven constrained parameters joined AGENTX_SETTINGS
+    // (the workflow flag and the launch template stay out of the hash, as before). The legacy digests did not move: its broker is given its variables whole.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "caf25e932063b06af208ba6d6ba0c053d91600a3a660d1dca226773526b21cab",
-        withoutRoute: "58f9446f10c1848b79d628457c95c44cd68a93710309dc4e1a7d2971907c71d2",
+        withRoute: "150f364a30a7e8d2d6cbf49cc2aa0b69bebafbb7ef54cbc959cb41f59364e606",
+        withoutRoute: "d8f16de9169c192441176fabb6c8fdef04e5ac3247e23f6f7a7c8d53f1af4d84",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "7bacfdf7fc1f76c167ba128ff174c80b8c1b0bd69d667ac6b5c5e09ec209e37d",
-        withoutRoute: "de127de27e9c50dbeabef4bb4d29a136d3a56db21b3b3b951aa3a29c5aadd662",
+        withRoute: "f90f4ac249a6c75d3455dd1329be292ec0c6343a7ed6d1929286dada0b7a12c1",
+        withoutRoute: "ebbd5dbed184fe117e3c6f2cec13313800009c11ce8568cf6a0d22a4c68c2e7c",
       },
       {
         label: "legacy",
@@ -441,7 +448,8 @@ describe("the named TEST proof-only installation gate", () => {
       expect(envVars, `${id} must not receive proof-only runtime configuration`).not.toHaveProperty("TASK_PERSON_PROOF_FUNCTION_ARN");
     }
     const brokerVars = (broker.Properties!.Environment as { Variables: Record<string, unknown> }).Variables;
-    expect(brokerVars.SLACK_TEAM_ID).toEqual({ Ref: "SlackTeamId" });
+    expect(brokerSettingsIn(brokerVars).slackTeamId).toEqual({ Ref: "SlackTeamId" });
+    expect(brokerVars.SLACK_TEAM_ID).toBeUndefined();
     expect(brokerVars.DEVELOPER_SIGNIN_TABLE_NAME).toBeUndefined();
     expect(brokerNamesIn(brokerVars).signInTable).toEqual({ Ref: tableId });
     const notifierVars = (notifier.Properties!.Environment as { Variables: Record<string, unknown> }).Variables;

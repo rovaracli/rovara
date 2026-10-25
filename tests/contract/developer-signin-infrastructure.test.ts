@@ -3,7 +3,7 @@ import { Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { brokerNamesIn } from "../support/broker-names-template.js";
+import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
 import { evaluate } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -363,7 +363,10 @@ describe("developer sign-in infrastructure (named environments)", () => {
     ]));
     // The table, the sign-in function and the API are in the broker's one variable of names (its variables are held to Lambda's 4 KB), and the
     // broker puts them back as DEVELOPER_SIGNIN_TABLE_NAME, DEVELOPER_IDENTITY_FUNCTION_NAME and DEVELOPER_TOKEN_ISSUER.
-    expect(functions.Broker).toEqual(expect.arrayContaining(["AGENTX_NAMES", "AGENTX_ENV", "SLACK_TEAM_ID", "DEVELOPER_SIGNIN_SLACK", "DEVELOPER_OIDC_ISSUER"]));
+    expect(functions.Broker).toEqual(expect.arrayContaining(["AGENTX_NAMES", "AGENTX_SETTINGS", "AGENTX_ENV", "DEVELOPER_OIDC_ISSUER"]));
+    // The Slack team and the Slack switch are in the broker's settings (ENV-ROOM), not variables of their own.
+    expect(functions.Broker).not.toEqual(expect.arrayContaining(["SLACK_TEAM_ID"]));
+    expect(functions.Broker).not.toEqual(expect.arrayContaining(["DEVELOPER_SIGNIN_SLACK"]));
     expect(functions.Broker).not.toEqual(expect.arrayContaining(["DEVELOPER_TOKEN_ISSUER"]));
     expect(functions.Broker).not.toEqual(expect.arrayContaining(["DEVELOPER_SIGNIN_TABLE_NAME"]));
     expect(functions.Broker).not.toEqual(expect.arrayContaining(["DEVELOPER_IDENTITY_FUNCTION_NAME"]));
@@ -422,16 +425,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(grants(named).filter(({ role, statement }) => withoutHash(role) !== "DeveloperSignInFunctionServiceRole" && JSON.stringify(statement.Condition ?? {}).includes("MEMBER_MERGE_QUEUE"))).toEqual([]);
     // FR-045: both functions get each method's enabled-since cutoff straight from its parameter.
     const variables = (prefix: string) => (named.Resources[functionId(named, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
-    expect(variables("Broker")).toMatchObject({
-      AGENTX_TASK_PEOPLE_CHANGES_ENABLED: { Ref: "TaskPeopleChangesEnabled" },
-      AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED: { Ref: "TaskPeoplePublicInvitationsEnabled" },
-      AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED: { Ref: "TaskPeoplePrivateInvitationsEnabled" },
-      AGENTX_WORKFLOW_DEPENDENCIES_ENABLED: { Ref: "WorkflowDependenciesEnabled" },
+    expect(brokerSettingsIn(variables("Broker"))).toMatchObject({
+      taskPeopleChanges: { Ref: "TaskPeopleChangesEnabled" },
+      taskPeoplePublicInvitations: { Ref: "TaskPeoplePublicInvitationsEnabled" },
+      taskPeoplePrivateInvitations: { Ref: "TaskPeoplePrivateInvitationsEnabled" },
+      workflowDependencies: { Ref: "WorkflowDependenciesEnabled" },
+      signInSlackSince: { Ref: "DeveloperSignInSlackSince" },
+      oidcSince: { Ref: "DeveloperOidcSince" },
     });
-    for (const prefix of ["Broker", "DeveloperSignInFunction"]) {
-      expect(variables(prefix).DEVELOPER_SIGNIN_SLACK_SINCE).toEqual({ Ref: "DeveloperSignInSlackSince" });
-      expect(variables(prefix).DEVELOPER_OIDC_SINCE).toEqual({ Ref: "DeveloperOidcSince" });
-    }
+    expect(variables("DeveloperSignInFunction").DEVELOPER_SIGNIN_SLACK_SINCE).toEqual({ Ref: "DeveloperSignInSlackSince" });
+    expect(variables("DeveloperSignInFunction").DEVELOPER_OIDC_SINCE).toEqual({ Ref: "DeveloperOidcSince" });
     const [separator, [endpoint, suffix]] = (named.Outputs.DeveloperSignInIssuer!.Value as { "Fn::Join": [string, [{ "Fn::GetAtt": [string, string] }, string]] })["Fn::Join"];
     expect(separator).toBe("");
     expect(endpoint["Fn::GetAtt"][0]).toMatch(/^HttpApi/);

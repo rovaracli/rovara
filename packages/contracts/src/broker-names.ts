@@ -1,4 +1,7 @@
 /**
+ * What the broker is given in two variables, AGENTX_NAMES and AGENTX_SETTINGS, and what it builds itself (derived-names.ts). ENV-ROOM (owner decision 2026-10-24): a value the
+ * broker can derive is not passed at all (derived-names.ts); a true input is passed once, compactly, here.
+ *
  * The names the broker is given in one variable, AGENTX_NAMES (Plan 3 final review C1).
  *
  * Lambda holds all of a function's environment variables, keys and values together, to 4 KB, and the broker's passed it: every
@@ -28,6 +31,8 @@ export type BrokerNameKind =
   | "apiIssuer"
   /** An AppSync Events API's id; the variable gets its HTTP endpoint (`https://<id>.appsync-api.<region>.amazonaws.com/event`). */
   | "eventApiEndpoint"
+  /** An internal load balancer's name (the first label of its DNS name); the variable gets `http://<name>.<region>.elb.amazonaws.com:<inference port>`. */
+  | "modelProxyUrl"
   /** A dead-letter queue's name, which the health route lists under `label`; the variable gets the JSON of every such queue, `{ label: URL }`. */
   | "deadLetterQueue";
 
@@ -42,12 +47,19 @@ export interface BrokerNameSpec {
 }
 
 export const BROKER_NAMES = {
+  // ENV-ROOM: the State table and the artifact bucket, the EC2 workers' launch template and the project allow list were variables of their own; their names were already the
+  // longest values in the broker's environment, and a variable's key doubles the cost.
+  stateTable: { code: "ts", variable: "STATE_TABLE_NAME", kind: "name" },
+  artifactBucket: { code: "ar", variable: "ARTIFACT_BUCKET_NAME", kind: "name" },
+  launchTemplate: { code: "lt", variable: "EC2_WORKER_LAUNCH_TEMPLATE_ID", kind: "name" },
+  projectAllowList: { code: "pl", variable: "AGENT_PROJECT_ALLOW_LIST_ID", kind: "name" },
+  modelProxy: { code: "mp", variable: "MODEL_PROXY_URL", kind: "modelProxyUrl" },
   auditLedgerTable: { code: "al", variable: "AUDIT_LEDGER_TABLE_NAME", kind: "name" },
   auditSealsTable: { code: "as", variable: "AUDIT_SEALS_TABLE_NAME", kind: "name" },
   auditKeysTable: { code: "ak", variable: "AUDIT_KEYS_TABLE_NAME", kind: "name" },
   auditExportsBucket: { code: "ab", variable: "AUDIT_EXPORTS_BUCKET_NAME", kind: "name" },
   auditExportFunction: { code: "af", variable: "AUDIT_EXPORT_FUNCTION_NAME", kind: "name" },
-  auditIntakeQueue: { code: "aq", variable: "AUDIT_INTAKE_QUEUE_URL", kind: "queueUrl" },
+  // The audit intake queue has a fixed name (auditIntakeQueueName), so the broker derives its URL: see DERIVED_BROKER_VARIABLES.
   auditVaultKey: { code: "av", variable: "AUDIT_VAULT_KEY_ARN", kind: "kmsKeyArn" },
   signInTable: { code: "st", variable: "DEVELOPER_SIGNIN_TABLE_NAME", kind: "name" },
   identityFunction: { code: "if", variable: "DEVELOPER_IDENTITY_FUNCTION_NAME", kind: "name" },
@@ -70,3 +82,39 @@ export const BROKER_NAMES = {
 } as const satisfies Record<string, BrokerNameSpec>;
 
 export type BrokerNameKey = keyof typeof BROKER_NAMES;
+
+/**
+ * The broker's settings, in one variable, AGENTX_SETTINGS: a JSON object of values under two-letter codes, as AGENTX_NAMES is. A setting here is a CloudFormation parameter
+ * whose value is constrained to plain text already (an enum, a number, a Slack team id), so the control plane can join the JSON from the parameters without escaping anything
+ * (infra/lib/broker-names.ts), and the broker checks each value is plain (`BROKER_SETTING_VALUE`) before it puts it back under the variable its code reads. A variable's
+ * key is the longest part of a short value (`AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED` is 46 bytes, `"tv":` is 5), which is why these are folded.
+ *
+ * A value that is free text (an issuer URL, an email address) does not belong here: it could carry a quote. It stays a variable of its own, or it is derived.
+ */
+export const BROKER_SETTINGS_VARIABLE = "AGENTX_SETTINGS";
+
+/** What a setting's value may be: letters, digits and `. _ : -`, at most 64 characters, or empty. */
+export const BROKER_SETTING_VALUE = /^[A-Za-z0-9._:-]{0,64}$/;
+
+export interface BrokerSettingSpec {
+  /** The key in AGENTX_SETTINGS: two letters. */
+  readonly code: string;
+  /** The variable the broker's code reads the value as. */
+  readonly variable: string;
+}
+
+export const BROKER_SETTINGS = {
+  memberWorkspaceLimit: { code: "ml", variable: "SLACK_MEMBER_WORKSPACE_LIMIT" },
+  organizationWorkspaceLimit: { code: "ol", variable: "SLACK_ORGANIZATION_WORKSPACE_LIMIT" },
+  taskPeopleChanges: { code: "tc", variable: "AGENTX_TASK_PEOPLE_CHANGES_ENABLED" },
+  taskPeoplePublicInvitations: { code: "tu", variable: "AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED" },
+  taskPeoplePrivateInvitations: { code: "tv", variable: "AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED" },
+  workflowDependencies: { code: "wd", variable: "AGENTX_WORKFLOW_DEPENDENCIES_ENABLED" },
+  slackTeamId: { code: "tm", variable: "SLACK_TEAM_ID" },
+  signInSlack: { code: "ss", variable: "DEVELOPER_SIGNIN_SLACK" },
+  signInSlackSince: { code: "sn", variable: "DEVELOPER_SIGNIN_SLACK_SINCE" },
+  oidcSince: { code: "os", variable: "DEVELOPER_OIDC_SINCE" },
+  mcpConfirmElicitation: { code: "mc", variable: "MCP_CONFIRM_ELICITATION" },
+} as const satisfies Record<string, BrokerSettingSpec>;
+
+export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

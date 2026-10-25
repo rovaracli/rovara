@@ -45,7 +45,7 @@ import { TaskPersonProof } from "./task-person-proof.js";
 import { DeveloperTaskNotifier } from "./developer-task-notifier.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
 import { AuditLedger } from "./audit-ledger.js";
-import { BrokerNames } from "./broker-names.js";
+import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
 
@@ -192,9 +192,9 @@ export class ControlPlaneStack extends Stack {
     });
 
     const broker = packagedFunction(this, "Broker", "packages/broker/src/aws/broker.ts", {
-      STATE_TABLE_NAME: state.tableName,
+      // A named environment's broker is given the State table's and the bucket's names in AGENTX_NAMES (BrokerNames, below), not as variables of their own: its variables are held to Lambda's 4 KB.
+      ...(naming.env === undefined ? { STATE_TABLE_NAME: state.tableName, ARTIFACT_BUCKET_NAME: artifacts.bucketName } : {}),
       ...(naming.env === undefined ? { AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID: projectSetupRuntimeCatalogId, AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: e2eFeatureRuntimeCatalogId } : {}),
-      ARTIFACT_BUCKET_NAME: artifacts.bucketName,
       OIDC_ISSUER: oidcIssuer.valueAsString,
       ADMIN_CLAIM: adminClaim.valueAsString,
       ADMIN_VALUES: adminValues.valueAsString,
@@ -203,6 +203,10 @@ export class ControlPlaneStack extends Stack {
       GITHUB_APP_ID: githubAppId.valueAsString,
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
+    if (naming.env !== undefined) {
+      BrokerNames.of(broker).add("stateTable", state.tableName);
+      BrokerNames.of(broker).add("artifactBucket", artifacts.bucketName);
+    }
     // The merged control plane's broker policy is past CDK's 10,000-character inline limit, and CDK would move the overflow into a
     // managed policy, which the deploy's CloudFormation role may not create (R53). Merge same-shaped statements instead.
     // Then they move into named managed policies (agentx-<env>-broker-<group>, ruling M2): a role's inline policies are capped at 10,240
@@ -270,7 +274,8 @@ export class ControlPlaneStack extends Stack {
     let projectAllowListArn: string | undefined;
     if (props?.cloud === true && naming.env !== undefined) {
       const projectAllowListId = new CfnParameter(this, "ProjectAllowListId", { type: "String", description: "The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains" }).valueAsString;
-      broker.addEnvironment("AGENT_PROJECT_ALLOW_LIST_ID", projectAllowListId);
+      // An AWS-generated id, in the broker's names (BrokerNames; its variables are held to Lambda's 4 KB).
+      BrokerNames.of(broker).add("projectAllowList", projectAllowListId);
       projectAllowListArn = this.formatArn({ service: "route53resolver", resource: "firewall-domain-list", resourceName: projectAllowListId });
       // A broker grant like the rest: it lives in the broker's managed policy group for its service (route53resolver falls in "integrations",
       // see brokerPolicyGroup), not in a policy of its own, so the broker role's inline and managed policies stay within the M2 size guard.
@@ -742,8 +747,14 @@ export class ControlPlaneStack extends Stack {
     // A named environment's broker is given the role's name (BrokerNames): the role is under /agentx/<env>/, so the broker builds the ARN.
     if (naming.env === undefined) broker.addEnvironment("SLACK_ORCHESTRATOR_ROLE_ARN", slackOrchestratorRole.roleArn);
     else BrokerNames.of(broker).add("slackOrchestratorRole", slackOrchestratorRole.roleName);
-    broker.addEnvironment("SLACK_MEMBER_WORKSPACE_LIMIT", memberWorkspaceLimit.valueAsString);
-    broker.addEnvironment("SLACK_ORGANIZATION_WORKSPACE_LIMIT", organizationWorkspaceLimit.valueAsString);
+    // A named environment's broker is given the limits in its settings (BrokerSettings: Number parameters, so plain text), not as variables of their own: its variables are held to Lambda's 4 KB.
+    if (naming.env === undefined) {
+      broker.addEnvironment("SLACK_MEMBER_WORKSPACE_LIMIT", memberWorkspaceLimit.valueAsString);
+      broker.addEnvironment("SLACK_ORGANIZATION_WORKSPACE_LIMIT", organizationWorkspaceLimit.valueAsString);
+    } else {
+      BrokerSettings.of(broker).add("memberWorkspaceLimit", memberWorkspaceLimit.valueAsString);
+      BrokerSettings.of(broker).add("organizationWorkspaceLimit", organizationWorkspaceLimit.valueAsString);
+    }
 
     const appPostedMessages = new CfnParameter(this, "SlackAppPostedMessages", {
       type: "String",
@@ -1133,10 +1144,12 @@ export class ControlPlaneStack extends Stack {
           dispatcher,
         });
       }
-      broker.addEnvironment("AGENTX_TASK_PEOPLE_CHANGES_ENABLED", signInParameters.taskPeopleChangesEnabled.valueAsString);
-      broker.addEnvironment("AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED", signInParameters.taskPeoplePublicInvitationsEnabled.valueAsString);
-      broker.addEnvironment("AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED", signInParameters.taskPeoplePrivateInvitationsEnabled.valueAsString);
-      broker.addEnvironment("AGENTX_WORKFLOW_DEPENDENCIES_ENABLED", signInParameters.workflowDependenciesEnabled.valueAsString);
+      // The four flags are parameters with an allowed list (true, false), so the broker is given them in its settings (BrokerSettings), not as variables of their own.
+      const brokerSettings = BrokerSettings.of(broker);
+      brokerSettings.add("taskPeopleChanges", signInParameters.taskPeopleChangesEnabled.valueAsString);
+      brokerSettings.add("taskPeoplePublicInvitations", signInParameters.taskPeoplePublicInvitationsEnabled.valueAsString);
+      brokerSettings.add("taskPeoplePrivateInvitations", signInParameters.taskPeoplePrivateInvitationsEnabled.valueAsString);
+      brokerSettings.add("workflowDependencies", signInParameters.workflowDependenciesEnabled.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context
@@ -1292,7 +1305,8 @@ export class ControlPlaneStack extends Stack {
       const vpcId = new CfnParameter(this, "VpcId", { type: "String", description: "The foundation's VPC" }).valueAsString;
       // Ruling R55: the broker binds a cloud org's new project to the same EC2 workers `agentx project add` binds to
       // (launch template, and one private subnet per availability zone as availabilityZone=subnetId pairs).
-      broker.addEnvironment("EC2_WORKER_LAUNCH_TEMPLATE_ID", sessions.launchTemplateId.valueAsString);
+      // In the broker's names (BrokerNames): an AWS-generated id, and its variables are held to Lambda's 4 KB.
+      BrokerNames.of(broker).add("launchTemplate", sessions.launchTemplateId.valueAsString);
       broker.addEnvironment("EC2_WORKER_SUBNETS", new CfnParameter(this, "Ec2WorkerSubnets", { type: "String", description: "The foundation's EC2 worker subnets, as availabilityZone=subnetId pairs" }).valueAsString);
       modelProxy = new ModelProxy(this, "ModelProxy", {
         naming,
@@ -1318,7 +1332,8 @@ export class ControlPlaneStack extends Stack {
       modelAccessFunction.grantInvoke(broker);
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);
       // Ruling R29: the proxy's address, which the broker hands a task's worker together with its key.
-      broker.addEnvironment("MODEL_PROXY_URL", modelProxy.url);
+      // The load balancer's name, in the broker's names: the host is <name>.<region>.elb.amazonaws.com and the port is MODEL_PROXY_INFERENCE_PORT, so the broker builds the URL.
+      BrokerNames.of(broker).add("modelProxy", modelProxy.loadBalancerName);
       // The worker asks for its key with the operation's callback capability, which the broker verifies; like the
       // setup execution read above, the one GET is exempt from the JWT authorizer.
       new apigwv2.CfnRoute(this, "ModelAccessRoute", {

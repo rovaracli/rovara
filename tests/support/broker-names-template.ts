@@ -50,11 +50,10 @@ export function brokerSettingsIn(variables: Variables | undefined): Partial<Reco
   }));
 }
 
-/** The variable written back from names (the order is the code order, as the control plane writes it; adjacent literals are one piece). */
-function joinedNames(names: Partial<Record<BrokerNameKey, Node>>): Node {
-  const entries = Object.entries(names).sort(([a], [b]) => BROKER_NAMES[a as BrokerNameKey].code.localeCompare(BROKER_NAMES[b as BrokerNameKey].code));
+/** A JSON object of `code: node` pairs written back as a template node (the order is the code order, as the control plane writes it; adjacent literals are one piece). */
+function joinedPairs(entries: Array<[string, Node]>): Node {
   const pieces: Node[] = ["{"];
-  entries.forEach(([key, node], index) => { pieces.push(`${index === 0 ? "" : ","}"${BROKER_NAMES[key as BrokerNameKey].code}":"`, node, '"'); });
+  entries.sort(([a], [b]) => a.localeCompare(b)).forEach(([code, node], index) => { pieces.push(`${index === 0 ? "" : ","}"${code}":"`, node, '"'); });
   pieces.push("}");
   const merged: Node[] = [];
   for (const piece of pieces) {
@@ -78,6 +77,20 @@ export function takeBrokerNames(variables: Variables, keys: readonly BrokerNameK
     delete all[key];
   }
   if (Object.keys(all).length === 0) delete variables[BROKER_NAMES_VARIABLE];
-  else variables[BROKER_NAMES_VARIABLE] = joinedNames(all);
+  else variables[BROKER_NAMES_VARIABLE] = joinedPairs(Object.entries(all).map(([key, node]) => [BROKER_NAMES[key as BrokerNameKey].code, node]));
+  return taken;
+}
+
+/** The same for the broker's settings (AGENTX_SETTINGS). */
+export function takeBrokerSettings(variables: Variables, keys: readonly BrokerSettingKey[]): Partial<Record<BrokerSettingKey, Node>> {
+  const all = brokerSettingsIn(variables);
+  const taken: Partial<Record<BrokerSettingKey, Node>> = {};
+  for (const key of keys) {
+    if (!(key in all)) throw new Error(`the broker's settings hold no ${key}`);
+    taken[key] = all[key];
+    delete all[key];
+  }
+  if (Object.keys(all).length === 0) delete variables[BROKER_SETTINGS_VARIABLE];
+  else variables[BROKER_SETTINGS_VARIABLE] = joinedPairs(Object.entries(all).map(([key, node]) => [BROKER_SETTINGS[key as BrokerSettingKey].code, node]));
   return taken;
 }

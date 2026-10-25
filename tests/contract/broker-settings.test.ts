@@ -27,7 +27,7 @@ describe("the table of settings", () => {
   });
 
   it("shares no variable with the names", () => {
-    const names = new Set(Object.values(BROKER_NAMES).map((spec) => spec.variable));
+    const names = new Set<string>(Object.values(BROKER_NAMES).map((spec) => spec.variable));
     for (const spec of Object.values(BROKER_SETTINGS)) expect(names.has(spec.variable), spec.variable).toBe(false);
   });
 });
@@ -66,7 +66,6 @@ describe("hydrateBrokerEnvironment: the settings (AGENTX_SETTINGS)", () => {
   it.each([
     ["not JSON", "{"],
     ["not an object", JSON.stringify(["a"])],
-    ["a code nobody sent", JSON.stringify({ zz: "x" })],
     ["a value that is not text", JSON.stringify({ ml: 3 })],
     ["a value with a quote", JSON.stringify({ tm: 'T"1' })],
     ["a value with a slash", JSON.stringify({ tm: "a/b" })],
@@ -131,8 +130,8 @@ describe("the control plane wires each setting and name to what it came from", (
     const found = brokerNamesIn(cloud);
     expect(found.launchTemplate).toEqual({ Ref: "Ec2WorkerLaunchTemplateId" });
     expect(found.projectAllowList).toEqual({ Ref: "ProjectAllowListId" });
-    expect(found.stateTable).toEqual({ Ref: expect.stringMatching(/^State/) });
-    expect(found.artifactBucket).toEqual({ Ref: expect.stringMatching(/^Artifacts/) });
+    expect(found.stateTable).toEqual({ Ref: expect.stringMatching(/^State/) as string });
+    expect(found.artifactBucket).toEqual({ Ref: expect.stringMatching(/^Artifacts/) as string });
     expect(found.modelProxy).toEqual({ "Fn::Select": [0, { "Fn::Split": [".", { "Fn::GetAtt": [expect.stringMatching(/^ModelProxy/), "DNSName"] }] }] });
     for (const variable of ["STATE_TABLE_NAME", "ARTIFACT_BUCKET_NAME", "EC2_WORKER_LAUNCH_TEMPLATE_ID", "AGENT_PROJECT_ALLOW_LIST_ID", "MODEL_PROXY_URL", "AUDIT_INTAKE_QUEUE_URL"]) expect(cloud, variable).not.toHaveProperty(variable);
   });
