@@ -13112,7 +13112,7 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
           error: blockError instanceof Error ? blockError.name : "unknown" }));
       }
       // If the block keeps failing until the budget is spent, the task still ends with this reason, not the generic one.
-      await recordWorkflowDispatchFailure(dependencies, item, error.message);
+      await recordWorkflowDispatchFailure(dependencies, item, undefined, error.message);
       return "RETRY";
     }
     if (error instanceof E2EPortablePlanReferenceError) {
