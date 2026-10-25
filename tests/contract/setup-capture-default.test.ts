@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { E2EPolicySchema, canonicalJson } from "@agentx/contracts";
+import { E2EPolicySchema, canonicalJson, projectSetupApprovalKey } from "@agentx/contracts";
+import { TEST_ORG } from "../support/orgs.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { call } from "../support/slack-broker.js";
 import { contractSnapshot } from "../support/e2e-application-plan-fixtures.js";
@@ -49,8 +50,14 @@ describe("the capture policy a new setup proposal carries", () => {
   it("still answers an idempotent retry of an approval that was already decided with duplicate: true, even for such an earlier proposal", async () => {
     const { harness, proposal } = await proposeAndStore();
     const old = asEarlierRelease(harness, String(proposal.body.proposalRef));
-    harness.db.set({ pk: "PROJECT_SETUP#payments", sk: `PROPOSAL#${old.sha}`, entityType: "PROJECT_SETUP_APPROVAL", ownerKey: old.ownerKey, projectName: "payments", proposalRef: old.ref,
-      proposalSha256: old.sha, decision: "approve" });
+    const decided = { entityType: "PROJECT_SETUP_APPROVAL", ownerKey: old.ownerKey, projectName: "payments", proposalRef: old.ref, proposalSha256: old.sha, decision: "approve" };
+    // A decision recorded under another org's project of the same name answers nothing here.
+    const otherOrg = projectSetupApprovalKey("org_zzzzzzzzzzzzzzzzzzzz", "payments", old.sha);
+    harness.db.set({ ...otherOrg, ...decided });
+    expect((await approve(harness, old.ref, old.sha)).status).not.toBe(200);
+    // The decision is the org's own, at the key the approval is recorded under.
+    const key = projectSetupApprovalKey(TEST_ORG, "payments", old.sha);
+    harness.db.set({ ...key, ...decided });
     const retry = await approve(harness, old.ref, old.sha);
     expect(retry.status, JSON.stringify(retry.body)).toBe(200);
     expect(retry.body).toMatchObject({ decision: "approve", duplicate: true });

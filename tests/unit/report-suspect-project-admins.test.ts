@@ -215,6 +215,37 @@ describe("report-suspect-project-admins", () => {
     });
   });
 
+  describe("a cloud table, whose keys are scoped by org", () => {
+    const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa";
+    const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb";
+    const inOrg = (org: string, row: Row): Row => ({ ...row, pk: `ORG#${org}#${String(row.pk)}` });
+
+    it("groups by (org, project): two orgs' projects of one name are judged apart, and an org's administrators are not unknown", async () => {
+      const { client } = fakeTable([
+        inOrg(ORG_A, projectRow("billing", 1, "alice", "2026-01-01T00:00:00.000Z")), inOrg(ORG_A, adminRow("alice", "billing")),
+        inOrg(ORG_B, projectRow("billing", 1, "bob", "2026-01-02T00:00:00.000Z")), inOrg(ORG_B, adminRow("bob", "billing")), inOrg(ORG_B, adminRow("mallory", "billing")),
+      ]);
+      const report = await collectReport(client, TABLE);
+      expect(report.counts).toMatchObject({ projects: 2, revisions: 2, administrators: 3 });
+      expect(report.skippedRows).toEqual({ revisions: 0, memberships: 0, takeovers: 0 });
+      expect(report.administratorsOfUnknownProjects).toEqual([]);
+      expect(report.projectsWithoutAdministrator).toEqual([]);
+      expect(report.suspectAdministrators.map(({ project, subject, originalRegistrant }) => ({ project, subject, originalRegistrant })))
+        .toEqual([{ project: `${ORG_B}/billing`, subject: "mallory", originalRegistrant: "bob" }]);
+    });
+
+    it("explains an administrator by a takeover recorded in the same org only, with the org on the row or in its key", async () => {
+      const { client } = fakeTable([
+        inOrg(ORG_A, projectRow("billing", 1, "alice", "2026-01-01T00:00:00.000Z")), inOrg(ORG_A, adminRow("alice", "billing")), inOrg(ORG_A, adminRow("carol", "billing")),
+        inOrg(ORG_B, projectRow("billing", 1, "bob", "2026-01-02T00:00:00.000Z")), inOrg(ORG_B, adminRow("bob", "billing")), inOrg(ORG_B, adminRow("carol", "billing")),
+        { ...inOrg(ORG_B, takeoverRow("billing", "carol", "2026-02-01T00:00:00.000Z")), orgId: ORG_B },
+      ]);
+      const report = await collectReport(client, TABLE);
+      expect(report.explainedByTakeover.map(({ project, subject }) => ({ project, subject }))).toEqual([{ project: `${ORG_B}/billing`, subject: "carol" }]);
+      expect(report.suspectAdministrators.map(({ project, subject }) => ({ project, subject }))).toEqual([{ project: `${ORG_A}/billing`, subject: "carol" }]);
+    });
+  });
+
   describe("table output", () => {
     it("shows the project, subject, grant, revisions and original registrant, and the projects without an administrator", async () => {
       const { client } = fakeTable([

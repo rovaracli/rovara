@@ -229,6 +229,7 @@ import {
   projectMetaKey,
   projectMemberKey,
   projectSetupApprovalKey,
+  orgScoped,
   slackBindingKey,
   slackBindingPk,
   SLACK_BINDING_SK_PREFIX,
@@ -352,7 +353,7 @@ import {
 } from "../org/github-connection.js";
 import { bindRequestedInstallation, cancelInstallRequest, drainInstallNoticeOutbox, listInstallRequests, sendInstallRequestReminders } from "../org/github-install-requests.js";
 import { sendGithubConnectedNotice, sendGithubRequestReminder, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
-import { monthOf, unlockTrial } from "../org/trial.js";
+import { admitMachineTime, admitTrial, monthOf, unlockTrial } from "../org/trial.js";
 import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js";
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
@@ -2429,7 +2430,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         const policy = projectSetupPolicy(proposal, agentRoute);
         if (!sameJsonContent(artifact.policy, policy)) {
           // A proposal made under an earlier default is not approvable now, but a decision already recorded for it is still answered the same way (an idempotent retry).
-          const decided = await getItem<Record<string, unknown>>(dependencies, { pk: `PROJECT_SETUP#${approvalInput.projectName}`, sk: `PROPOSAL#${approvalInput.proposalSha256}` });
+          const decided = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(requireOrgId(identity.orgId), approvalInput.projectName, approvalInput.proposalSha256));
           if (decided) {
             if (decided.ownerKey !== identity.ownerKey || decided.decision !== approvalInput.decision) throw agentXError("PROJECT_REVISION_MISMATCH", "setup proposal already has a different immutable decision");
             return json({ proposalRef: approvalInput.proposalRef, proposalSha256: approvalInput.proposalSha256, decision: approvalInput.decision, duplicate: true }, request.requestId);
@@ -3150,7 +3151,7 @@ export async function registerProjectFor(
   }
   const planAccounts = async () => {
     if (accountSetup === undefined) return { items: [] as TransactItems, written: 0, planKey: "" };
-    try { return await planSetupAccountWrites(dependencies, { projectId: definition.name, snapshot: accountSetup.snapshot, setup: accountSetup, now: Date.now() }); }
+    try { return await planSetupAccountWrites(dependencies, { orgId, projectId: definition.name, snapshot: accountSetup.snapshot, setup: accountSetup, now: Date.now() }); }
     catch (error) {
       if (error instanceof E2EAccountRegistryError) throw agentXError("PROJECT_REVISION_MISMATCH", error.message);
       throw error;
@@ -3188,7 +3189,7 @@ export async function registerProjectFor(
           ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":administrator": "administrator" } } }]
         : membership === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: membership } }]),
       ...(authority === "takeover" && takeover !== undefined ? [{ Put: { TableName: dependencies.tableName, ConditionExpression: "attribute_not_exists(pk)", Item: {
-        pk: `PROJECT_TAKEOVER#${definition.name}`, sk: `AT#${now}#${randomUUID()}`, entityType: "PROJECT_OWNERSHIP_TAKEOVER",
+        pk: orgScoped(orgId, `PROJECT_TAKEOVER#${definition.name}`), sk: `AT#${now}#${randomUUID()}`, entityType: "PROJECT_OWNERSHIP_TAKEOVER",
         projectName: definition.name, revision: definition.revision, takenBy: actor.ownerKey, subject: actor.subject, orgId, reason: takeover.reason, at: now,
       } } }] : []),
       // Only a project new to the org gets a META item; a revision of an existing one leaves its META alone.
@@ -6115,9 +6116,10 @@ async function evaluateWorkflowE2EApplicationSelectionNow(dependencies: AwsBroke
     binding: parseRuntimeBinding(project.runtimeBinding), now, read: (key) => getItem<Record<string, unknown>>(dependencies, key) });
   // The test accounts the plan's executable targets run as: the registry's rows for exactly those (application, account profile) pairs (Task 3.1).
   const projectId = project.definition.name;
+  const orgId = await orgOfRecord(dependencies, task);
   let accountEntries: E2EAccountRegistryEntry[];
   try {
-    const read = await readAccountRegistryEntries(dependencies, projectId, intent.applicationRuntimeRefs.map((ref) => ({ applicationId: ref.applicationId, profileId: ref.accountProfileId })),
+    const read = await readAccountRegistryEntries(dependencies, orgId, projectId, intent.applicationRuntimeRefs.map((ref) => ({ applicationId: ref.applicationId, profileId: ref.accountProfileId })),
       { earlierFor: accountDefinitionIsForOtherContract(setup.snapshot) });
     // An account whose rows cannot be read refuses only the plans that run as it, and says which account to repair (registering the project's setup again does).
     if (read.corrupt.length > 0) return { ok: false, kind: "refused", reason: unreadableAccountMessage(read.corrupt[0]!.applicationId, read.corrupt[0]!.profileId), scope: "accounts" };
@@ -6132,7 +6134,7 @@ async function evaluateWorkflowE2EApplicationSelectionNow(dependencies: AwsBroke
   if (!evaluation.ok) return { ok: false, kind: "refused", reason: evaluation.reason, ...(evaluation.scope === undefined ? {} : { scope: evaluation.scope }) };
   // The rows and account pointers this derivation was made from must still be exactly those when the transaction commits.
   const conditions: TransactItems = [...applicationRuntimeRowFences({ tableName: dependencies.tableName, rows, selected: evaluation.selection.runtimeRows }),
-    ...accountRegistryFences({ tableName: dependencies.tableName, projectId, refs: evaluation.accountRefs, entries: accountEntries })];
+    ...accountRegistryFences({ orgId, tableName: dependencies.tableName, projectId, refs: evaluation.accountRefs, entries: accountEntries })];
   return { ok: true, selection: evaluation.selection, conditions, inputs: { policy: policy.data,
     setup: { snapshot: setup.snapshot, setupProposal: setup.setupProposal, setupApproval: setup.setupApproval }, rows, runtimeCatalogId: catalogId, runtimeBinding: parseRuntimeBinding(project.runtimeBinding),
     accountEntries } };
@@ -6214,13 +6216,14 @@ async function codingPlanFeatureE2EContext(dependencies: AwsBrokerDependencies, 
   let accountRegistry: E2EAccountRegistryEntry[];
   try {
     // An account whose rows cannot be read is left out, so only its own targets are listed as unavailable.
-    accountRegistry = (await readAccountRegistryEntries(dependencies, project.definition.name,
+    accountRegistry = (await readAccountRegistryEntries(dependencies, await orgOfRecord(dependencies, task), project.definition.name,
       parsedPolicy.data.targets.map((target) => ({ applicationId: target.applicationId, profileId: target.accountProfileId })),
       { earlierFor: accountDefinitionIsForOtherContract(snapshot) })).entries;
   } catch { accountRegistry = []; }
   // `agent` steps are offered to the planner only while the route the policy pinned is the one the installation would use now (Task 4.2); a registry or settings read that fails offers none.
   let agentRouteApproved = false;
-  if (parsedPolicy.data.modelRouteRevision !== null && dependencies.e2eAgentInstallation !== undefined) {
+  // Never on a cloud install: AI navigation is not offered to a Cloud org until its model calls are charged through the cloud spend ledger (see `AI_NAVIGATION_NOT_ON_CLOUD`).
+  if (dependencies.cloud !== true && parsedPolicy.data.modelRouteRevision !== null && dependencies.e2eAgentInstallation !== undefined) {
     try {
       agentRouteApproved = (await checkE2EAgentRouteCurrent({ documentClient: dependencies.documentClient, tableName: dependencies.tableName },
         await dependencies.e2eAgentInstallation(), parsedPolicy.data.modelRouteRevision)).ok;
@@ -8495,7 +8498,10 @@ async function handleCallback(
     return json(await handleWorkflowE2EEvidenceUpload(dependencies, operation, parseBody(request.body)), request.requestId);
   }
   if (action === "e2e-model-budget") {
+    // Defence in depth with the dispatch refusal: nothing on a cloud install may spend the installation's model credentials through this meter.
+    if (dependencies.cloud === true) throw agentXError("CALLBACK_FORBIDDEN", AI_NAVIGATION_NOT_ON_CLOUD);
     return json(await handleE2EModelBudgetCallback({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+      orgOf: (record) => orgOfRecord(dependencies, record),
       log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
       ...(dependencies.e2eAgentInstallation === undefined ? {} : { e2eAgentInstallation: dependencies.e2eAgentInstallation }) }, operation, body), request.requestId);
   }
@@ -13241,7 +13247,7 @@ async function refuseApplicationRoundBeforeWarmUp(dependencies: AwsBrokerDepende
   const current = await requireApplicationSelectionStillCurrent(dependencies, task, approved.plan.e2e, artifact);
   // Task 4.2: a round with an agent step is refused here, before compute is woken, when its route is no longer the installation's or the project's day has no room. The dispatch
   // checks it again once the round is being admitted (`startApplicationE2EChecksDispatch`).
-  await requireAgentRouteStillCurrent(dependencies, task.project, approved.plan.e2e, E2EPolicySchema.parse(current.inputs.policy));
+  await requireAgentRouteStillCurrent(dependencies, await orgOfRecord(dependencies, task), task.project, approved.plan.e2e, E2EPolicySchema.parse(current.inputs.policy));
   if (workflow.candidate === undefined) return;
   const source = await candidateSourceOperation(dependencies, task, workflow.candidate.digest);
   if (source === undefined) throw applicationRoundRefusal(NO_COMMITTED_EXPORT_REASON);
@@ -13288,14 +13294,23 @@ async function storeWorkflowE2EAdmission(dependencies: AwsBrokerDependencies, in
 }
 
 /**
+ * AI navigation steps call a model provider with the installation's own credentials; the only meter is the project's day budget, and none of it is charged to the org's
+ * spend ledger or held to its limits. So a cloud install refuses every round with an `agent` step until those calls are charged through the cloud spend ledger. Legacy and self-hosted
+ * installs (no `cloud` flag) keep the day budget as their only meter.
+ */
+export const AI_NAVIGATION_NOT_ON_CLOUD = "ai-navigation-not-available: AI navigation steps are not available on Rovara Cloud yet, because their model calls are not yet charged to your organization's spend limits. The checks did not start; remove the AI navigation steps from the plan, or run them on a self-hosted install";
+
+/**
  * Task 4.2, the dispatch half of the route registry. For a plan with an `agent` step: the route is derived from the installation's worker settings again and must be the one the
  * project's policy pinned and the registry holds (any change of provider, model, secret ARN or OpenRouter policy is `model-route-changed-reapprove`; no usable route is
  * `agent-route-not-approved`), and the project's UTC day must have room for the round's worst case (`model-route-budget-exhausted`, before anything starts). Each is a terminal
  * refusal that blocks the workflow with its code and a plain sentence. A plan with no agent step is not judged here. Returns whether the plan has an agent step.
  */
-export async function requireAgentRouteStillCurrent(dependencies: AwsBrokerDependencies, projectName: string, intent: E2EApplicationPlanIntent, policy: ReturnType<typeof E2EPolicySchema.parse>): Promise<boolean> {
+export async function requireAgentRouteStillCurrent(dependencies: AwsBrokerDependencies, orgId: OrgId, projectName: string, intent: E2EApplicationPlanIntent, policy: ReturnType<typeof E2EPolicySchema.parse>): Promise<boolean> {
   const agentSteps = intent.scenarios.reduce((total, scenario) => total + scenario.steps.filter((step) => step.kind === "agent").length, 0);
   if (agentSteps === 0) return false;
+  // Fail closed on a cloud install, before the route, the budget or any compute is looked at.
+  if (dependencies.cloud === true) throw new ApplicationDispatchRefusal(AI_NAVIGATION_NOT_ON_CLOUD);
   const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   // No round starts without the check. What cannot be read for a lasting reason (settings missing or denied, a malformed row) is a plain refusal with its code. A fault that a later
   // attempt can get past (throttling, a 5xx, a network error, a timeout) is rethrown, so the dispatch takes its ordinary bounded retry path and the task is not blocked.
@@ -13315,7 +13330,7 @@ export async function requireAgentRouteStillCurrent(dependencies: AwsBrokerDepen
   const calls = Math.min(budgets.maxModelCallsPerGroup, agentSteps * (budgets.maxActionsPerStep + budgets.extraModelCallsPerStep));
   const need = { calls, inputTokens: Math.min(budgets.maxInputTokensPerGroup, calls * budgets.maxInputTokens) };
   let room: boolean;
-  try { room = await e2eDayBudgetRoom({ ...store, projectName, now: Date.now() }, need, { maxInputTokens: budgets.maxInputTokensPerProjectDay, maxCalls: budgets.maxCallsPerProjectDay }); }
+  try { room = await e2eDayBudgetRoom({ ...store, orgId, projectName, now: Date.now() }, need, { maxInputTokens: budgets.maxInputTokensPerProjectDay, maxCalls: budgets.maxCallsPerProjectDay }); }
   catch (error) { throw unreadable("The project's daily AI navigation budget", error); }
   if (!room) throw new ApplicationDispatchRefusal("model-route-budget-exhausted: This project's daily AI navigation budget is spent, so the checks did not start. They can run again tomorrow (UTC)");
   return true;
@@ -13339,7 +13354,7 @@ async function startApplicationE2EChecksDispatch(
   const candidate = workflow.candidate!;
   const current = await requireApplicationSelectionStillCurrent(dependencies, task, intent, artifact);
   // Task 4.2: a round with an agent step runs only on the route the installation has now, and only while the project's day has room for its worst case.
-  const usesAgentSteps = await requireAgentRouteStillCurrent(dependencies, task.project, intent, E2EPolicySchema.parse(current.inputs.policy));
+  const usesAgentSteps = await requireAgentRouteStillCurrent(dependencies, await orgOfRecord(dependencies, task), task.project, intent, E2EPolicySchema.parse(current.inputs.policy));
   const sourceOperation = await candidateSourceOperation(dependencies, task, candidate.digest);
   if (sourceOperation === undefined) throw applicationRoundRefusal(NO_COMMITTED_EXPORT_REASON);
   const stored = readyCandidateBuildSource(sourceOperation, candidate.digest);
@@ -16117,6 +16132,12 @@ async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, identity:
     return { sourceRoundId: roundId.data, replays: records.map(replayRecordView) };
   }
   const { roundId } = z.object({ roundId: z.string().uuid() }).strict().parse(value);
+  // A replay runs a runner for the task's org, so on a cloud install it is admitted like any other launch: a locked trial, or a month of machine time used up, refuses it before anything is created.
+  if (dependencies.cloud === true) {
+    const trial = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
+    await admitTrial(trial, orgId);
+    await admitMachineTime(trial, orgId);
+  }
   // The route dependencies act for the task's developer (the task's owner); the request is the administrator's, and is recorded as theirs (Task FU2, REPLAYACTOR).
   // The task's owner now (Plan 5 Task 12a): the person who took it over, else its creator.
   const owner = effectiveTaskOwner(task);
