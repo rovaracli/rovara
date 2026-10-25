@@ -176,6 +176,9 @@ describe("a confirmed take-over", () => {
     });
     const recorded = w.audit!.recordedBy("session.owner_changed");
     expect(recorded).toHaveLength(1);
+    // After the commit it was sent to the queue and its pending item deleted.
+    expect(w.audit!.flushed().filter((event) => event.action === "session.owner_changed")).toHaveLength(1);
+    expect(w.audit!.pending()).toEqual([]);
     // The decision of the same approval is in the ledger beside it.
     expect(w.audit!.recordedBy("approval.decided")).toHaveLength(1);
     expect(JSON.stringify(recorded)).not.toMatch(PEOPLE_WORDS);
@@ -236,6 +239,9 @@ describe("a company-wide share", () => {
       facts: { level: "use", principalKind: "org" }, related: [PRIYA, taskId], proof: { kind: "fresh_sign_in", method: "email_code" },
     });
     expect(w.audit!.recordedBy("session.shared")).toHaveLength(1);
+    // After the commit it was sent to the queue and its pending item deleted.
+    expect(w.audit!.flushed().filter((event) => event.action === "session.shared")).toHaveLength(1);
+    expect(w.audit!.pending()).toEqual([]);
     expect(w.audit!.recordedBy("approval.decided")).toHaveLength(1);
     expect(JSON.stringify(w.audit!.recorded())).not.toMatch(PEOPLE_WORDS);
   });
@@ -355,6 +361,9 @@ describe("a change to the company's rules for local agents", () => {
     expect(JSON.stringify(projects.facts)).not.toMatch(/web|ops/u);
     expect(projects.details).toEqual([{ subject: "org", fields: { projectsFrom: "all", projectsTo: "ops,web" } }]);
     expect(w.audit!.recordedBy("local_agents.policy_changed")).toHaveLength(2);
+    // After the commit both were sent to the queue and their pending items deleted.
+    expect(w.audit!.flushed()).toHaveLength(2);
+    expect(w.audit!.pending()).toEqual([]);
     for (const event of w.audit!.recorded()) expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
   });
 
