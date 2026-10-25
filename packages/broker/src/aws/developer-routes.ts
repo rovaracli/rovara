@@ -193,6 +193,7 @@ export interface DeveloperRouteDependencies {
   /** Builds E2E projections only from the task's current server-owned admission and evidence references. */
   workflowE2EPresentation?: DeveloperTaskRouteDependencies["workflowE2EPresentation"];
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
+  sessionDiffFiles?: NonNullable<SessionRouteDependencies["diff"]>["files"] | undefined;
   registeredRepositoryIdentity?: DeveloperTaskRouteDependencies["registeredRepositoryIdentity"];
   /** Plan 2, Task 15: the check that an org's GitHub connection still reaches a project's repositories (cloud installs). */
   requireRepositoriesConnected?: DeveloperTaskRouteDependencies["requireRepositoriesConnected"];
@@ -1474,6 +1475,13 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
   const mint = deps.developer.realtimeToken;
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
+    ...(deps.sessionDiffFiles === undefined ? {} : { diff: {
+      files: deps.sessionDiffFiles,
+      repository: async (orgId, project, revision, repository) => {
+        const registered = await deps.tasks!.projectRevision(orgId, project, revision);
+        return registered?.definition.repositories.find(item => item.name === repository)?.url;
+      },
+    } satisfies NonNullable<SessionRouteDependencies["diff"]> }),
     taskView: (task, options) => taskView(taskDeps, task, options),
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
     // Plan 5 Task 9: a person arriving on a session is told to its channel through the same API the sink publishes to.

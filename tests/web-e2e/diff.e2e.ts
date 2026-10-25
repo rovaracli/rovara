@@ -12,5 +12,6 @@ test("loads the selected PR diff on demand with safe patch text and bounded pagi
  await expect(page.getByRole("link", { name: "Open on GitHub" })).toBeVisible();await expect(page.getByRole("button", { name: "Load more files" })).toHaveCount(0);
  await page.locator('summary').first().click();await expect(patch).toBeHidden();
  await page.locator('summary').first().click();
- await checkA11y(page, { theme: "light" });await page.setViewportSize({ width: 360, height: 800 });await patch.focus();await expect(patch).toBeFocused();await checkA11y(page, { theme: "dark" });expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+ await page.screenshot({ path: ".test-build/web-e2e/diff-desktop.png", fullPage: true });
+ await checkA11y(page, { theme: "light" });await page.setViewportSize({ width: 360, height: 800 });await patch.focus();await expect(patch).toBeFocused();await checkA11y(page, { theme: "dark" });expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);await page.screenshot({ path: ".test-build/web-e2e/diff-phone-dark.png", fullPage: true });
 });

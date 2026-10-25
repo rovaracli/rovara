@@ -30,3 +30,4 @@ export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
 
 export { DeveloperTaskViewReaderSchema } from "./session-views.js";
 export { SessionAnchorRefSchema } from "./agent-sessions.js";
+export { DIFF_FILES_PAGE_MAX, DIFF_PATCH_MAX_BYTES, SessionDiffSchema, SessionDiffReaderSchema, type SessionDiff } from "./session-views.js";

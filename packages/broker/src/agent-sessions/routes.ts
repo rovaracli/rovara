@@ -10,6 +10,7 @@ import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { SESSION_COOKIE, escapeHtml, parseCookie, safeResponse, signInLocation, type WebResponse } from "../aws/web-session.js";
 import { randomBytes } from "node:crypto";
+import { sessionDiff, type SessionDiffDependencies } from "./diff.js";
 import { readSessionEvents } from "./events.js";
 import { mayCreateAgentIn, makeAgentFromSession } from "./make-agent.js";
 import { followSession, recordPresence, unfollowSession } from "./followers.js";
@@ -22,7 +23,7 @@ import type { RealtimeConfig } from "../realtime/publish.js";
 import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/token.js";
 
 /** What the session routes need: the read dependencies, and (for a company-wide share and the decisions a caller may make) Plan 3's approvals core. */
-export interface SessionRouteDependencies extends SessionReadDependencies {
+export interface SessionRouteDependencies extends SessionReadDependencies, Pick<SessionDiffDependencies, "diff"> {
   approvals?: ApprovalDependencies & Partial<AgentRouteDependencies>;
   /** What the realtime token route needs (Task 8). Without it the route answers `RUNTIME_UNAVAILABLE`. */
   realtime?: RealtimeTokenDependencies;
@@ -110,6 +111,13 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     if (request.method !== "POST") throw notFound();
     if (deps.realtime === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Live updates aren't available right now.");
     return realtimeTokenFor(deps.realtime, caller);
+  }
+  const diffMatch = /^\/v1\/app\/sessions\/([^/]+)\/diff$/.exec(url.pathname);
+  if (diffMatch !== null) {
+    if (request.method !== "GET" || !SessionIdSchema.safeParse(diffMatch[1]).success) throw notFound();
+    const number = url.searchParams.get("number") ?? "", page = url.searchParams.get("page") ?? "1";
+    if (!/^[1-9][0-9]{0,9}$/.test(number) || !/^[1-9][0-9]{0,4}$/.test(page)) throw notFound();
+    return sessionDiff(deps, caller, diffMatch[1]!, { repository: url.searchParams.get("repository") ?? "", number: Number(number), page: Number(page) });
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();

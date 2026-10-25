@@ -301,3 +301,21 @@ export const NeedsConfirmationSchema = z
   })
   .strict();
 export type NeedsConfirmation = z.infer<typeof NeedsConfirmationSchema>;
+
+/** Plan 7 Task 13c: a bounded, redacted page of an authorized session's PR files. */
+export const DIFF_FILES_PAGE_MAX = 100;
+export const DIFF_PATCH_MAX_BYTES = 65_536;
+export const SessionDiffSchema = z.object({
+ files: z.array(z.object({
+  path: z.string().min(1).max(4096),
+  status: z.enum(["added", "removed", "modified", "renamed"]),
+  previousPath: z.string().max(4096).optional(),
+  additions: z.number().int().nonnegative(), deletions: z.number().int().nonnegative(),
+  patch: z.string().refine(value => new TextEncoder().encode(value).length <= DIFF_PATCH_MAX_BYTES).optional(),
+  patchOmitted: z.enum(["too_large", "binary"]).optional(),
+ }).strict()).max(DIFF_FILES_PAGE_MAX),
+ nextPage: z.number().int().positive().optional(),
+ pullRequest: z.object({ repository: z.string(), number: z.number().int().positive(), url: z.string().url() }).strict(),
+}).strict();
+export type SessionDiff = z.infer<typeof SessionDiffSchema>;
+export const SessionDiffReaderSchema = forwardReader(SessionDiffSchema);

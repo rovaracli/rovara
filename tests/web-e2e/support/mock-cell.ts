@@ -5,7 +5,7 @@ import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
+import { SessionDiffSchema, AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
 import { createAppHandler } from "../../../packages/web/src/server/handler.js";
 import { authenticateWebRequest, webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 import type { DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
@@ -69,6 +69,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/web/me") { json(200, { ...current.me, csrf: appCsrfTokenFor(FIXTURE_SESSION) });return; }
  if (current.session !== undefined) {
  const session = current.session, path = "/v1/web/sessions/" + session.sessionId;
+ if (url.pathname === path + "/diff" && method === "GET") {
+ if (url.searchParams.get("repository") !== "acme/payments" || url.searchParams.get("number") !== "42") { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
+ const second = url.searchParams.get("page") === "2";
+ json(200, SessionDiffSchema.parse({ files: [{ path: second ? "assets/refund.png" : "src/refund.ts", status: "modified", additions: second ? 0 : 1, deletions: 0, ...(second ? { patchOmitted: "binary" } : { patch: "+</pre><script>window.__pwned=1</script>" }) }], ...(second ? {} : { nextPage: 2 }), pullRequest: { repository: "acme/payments", number: 42, url: "https://github.com/acme/payments/pull/42" } }));return;
+ }
  if (url.pathname === path && method === "GET") { json(200, { session });return; }
  if (url.pathname === path + "/messages" && method === "GET") {
  const anchor = url.searchParams.get("anchor"), visible = anchor === null || session.anchors?.some(part => part.target + ":" + part.targetId === anchor) === true;
