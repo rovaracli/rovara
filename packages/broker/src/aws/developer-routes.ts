@@ -147,6 +147,9 @@ import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
 
+/** How long the close spends asking running sessions to stop; the rest are stopped by the model-key mint and the dispatch guard. */
+const CLOSE_STOP_BUDGET_MS = 8_000;
+
 export interface DeveloperApiConfiguration {
   issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean }; slackTeamId?: string;
   /** Each method's enabled-since cutoff, epoch seconds (FR-045): a session started before it was ended by a disable. */
@@ -2080,10 +2083,11 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       let sessionDeps: SessionRouteDependencies;
       try {
         sessionDeps = sessionReadDependencies(deps, caller);
-      } catch {
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "agent_session.close_stop_unavailable", orgId, error: error instanceof Error ? error.name : "unknown" }));
         return;
       }
-      await stopOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, async (sessionId, requestId) => { await stopSession(sessionDeps, caller, sessionId, { requestId }); });
+      await stopOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, deadline: deps.now() + CLOSE_STOP_BUDGET_MS }, orgId, async (sessionId, requestId) => { await stopSession(sessionDeps, caller, sessionId, { requestId }); });
     });
     const clearSessions = deps.closeOrgHooks?.clearSessions ?? ((orgId: OrgId) => closeOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId));
     await deps.orgs.closeOrg(caller.orgId, {

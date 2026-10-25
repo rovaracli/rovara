@@ -1321,15 +1321,25 @@ describe("a removal in an org with no owner left", () => {
   });
 
   it("ends a request nobody else can decide, with the reason the asker reads, and tells the asker; it is never approved", async () => {
-    const { t, id, recordOf, setApprovers, noticesOf } = await waiting();
+    const { t, recordOf, setApprovers, noticesOf } = await waiting();
     setApprovers([DEB.developerId]);
+    // Ada, the only other admin, is a plain member now: nobody is left who could decide it.
+    t.db.set({ ...(t.db.get(orgMemberKey(TEST_ORG, ADA.developerId)) as Record<string, unknown>), role: "member" });
     t.db.delete(orgMemberKey(TEST_ORG, DEB.developerId));
     await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
     expect(recordOf()).toMatchObject({ status: "EXPIRED", endedBecause: "approver_left" });
     expect(t.openItems()).toEqual([]);
     expect(noticesOf(MAYA.developerId)).toHaveLength(1);
-    const refused = await refusal(t.decide(ADA, id));
-    expect(refused).toMatchObject({ code: "APPROVAL_CLOSED", message: "Everyone who could decide this has left your organization, so it was closed without a decision. Ask again if it is still needed." });
+  });
+
+  it("lists the approvers who can decide it now, whatever the stored list said, with an owner left too (Re-check R-1)", async () => {
+    const { t, recordOf, setApprovers } = await waiting();
+    // Ada is the owner again; the stored list names only Deb, who leaves. Who may decide is read live: Ada.
+    t.db.set({ ...(t.db.get(orgMemberKey(TEST_ORG, ADA.developerId)) as Record<string, unknown>), role: "owner" });
+    setApprovers([DEB.developerId]);
+    t.db.delete(orgMemberKey(TEST_ORG, DEB.developerId));
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
+    expect(recordOf()).toMatchObject({ status: "PENDING", approverIds: [ADA.developerId] });
   });
 
   it("leaves a request alone that does not name the person who left, and repeating changes nothing", async () => {

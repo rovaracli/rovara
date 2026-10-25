@@ -119,7 +119,7 @@ describe("closing an org stops the work that is running (Review M-6)", () => {
 });
 
 describe("the store's stop of running work (Review M-6)", () => {
-  it("runs before anything is torn down, and a failure of it never stops the close", async () => {
+  it("runs after triggers and hooks are cleared and before the sessions go, and a failure of it never stops the close", async () => {
     const db = new FakeDynamoDb();
     const store = new OrgStore({ documentClient: db, tableName: "T", now: () => Date.parse("2026-10-24T12:00:00.000Z"), newOrgId: () => "org_cccccccccccccccccccc" });
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "dev-1" });
@@ -128,9 +128,12 @@ describe("the store's stop of running work (Review M-6)", () => {
       stopWork: async () => { order.push("stop"); throw new Error("a stop that fails"); },
       archiveProjects: async () => { order.push("archive"); },
       clearEgress: async () => { order.push("egress"); },
+      clearTriggers: async () => { order.push("triggers"); },
+      clearHooks: async () => { order.push("hooks"); },
       clearSessions: async () => { order.push("sessions"); },
     });
-    expect(order).toEqual(["stop", "archive", "egress", "sessions"]);
+    // Triggers, schedules and hooks that could start new runs are cleared before the running ones are asked to stop (Re-check R-2).
+    expect(order).toEqual(["archive", "egress", "triggers", "hooks", "stop", "sessions"]);
     expect(db.get(orgMetaKey(orgId))?.["closedAt"]).toBeDefined();
   });
 });

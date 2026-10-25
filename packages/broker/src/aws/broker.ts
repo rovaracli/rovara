@@ -224,6 +224,8 @@ import {
   projectAllows,
   PROJECT_REVISION_SK_PREFIX,
   orgMemberKey,
+  orgMetaKey,
+  orgRemovedKey,
   orgProjectCatalogKey,
   projectMetaKey,
   projectMemberKey,
@@ -6085,6 +6087,28 @@ function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: DeveloperT
 }
 
 /**
+ * Task 21, Re-check R-2: no key is minted once the org is closed, or for work whose owner (or whose paying member) has been removed from it. Read live at every mint, so work that
+ * is still running when an org closes (a plain task, a task from before sessions, a Slack thread's operation) gets no new key at its next model call. A read that fails is the proxy's
+ * retryable answer, and nothing is minted. An org with no record of its own (an install from before orgs) is not closed by this; a person with no member record and no removal tombstone never joined.
+ */
+async function requireOrgOpenFor(dependencies: AwsBrokerDependencies, orgId: OrgId, people: ReadonlyArray<string | undefined>): Promise<void> {
+  const denied = agentXError("TASK_ACCESS_DENIED", "This organization is closed, or the person this work is for has left it, so Rovara stopped this work.");
+  try {
+    const meta = await getItem<{ closedAt?: unknown }>(dependencies, orgMetaKey(orgId));
+    if (meta?.closedAt !== undefined) throw denied;
+    for (const developerId of new Set(people)) {
+      if (developerId === undefined) throw denied;
+      if (await getItem(dependencies, orgMemberKey(orgId, developerId)) !== undefined) continue;
+      if (await getItem(dependencies, orgRemovedKey(orgId, developerId)) !== undefined) throw denied;
+    }
+  } catch (error) {
+    if (error === denied) throw error;
+    console.log(JSON.stringify({ component: "broker", event: "model_access.org_state_unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  }
+}
+
+/**
  * Ruling R29: the key a running task's worker calls models with, minted for the task's org and developer and capped at the
  * task's budget. The capability is checked like a callback's (signature, expiry, scope, fence); a refused one is 401.
  * The proxy's own failures all answer MODEL_PROXY_UNAVAILABLE, without their detail. The key is never stored or logged.
@@ -6125,6 +6149,8 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       if (task.orgId === undefined) return undefined;
       // A payer recorded before a merge counts against the member they are now (Task 21, M-3); a merge pointer that can't be read is the proxy's retryable answer.
       const payment = withAgents ? await unreadable("payer", () => paymentOfTaskResolved(task, resolveMember)) : undefined;
+      // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).
+      await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])]);
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];
@@ -6164,8 +6190,11 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
     });
     const taskKeyIds = current.modelKeyIds ?? [];
+    const keyed = slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer);
+    // A thread's work has no task record: the org must still be open and the member the key is for still in it (Task 21, Re-check R-2).
+    await requireOrgOpenFor(dependencies, current.orgId, keyed === undefined ? [] : [keyed]);
     return {
-      orgId: current.orgId, developerId: slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer), refId: current.id,
+      orgId: current.orgId, developerId: keyed, refId: current.id,
       ...(route === undefined ? {} : { route }),
       runLimitUsd: PER_TASK_BUDGET_USD, stopAtUsd: PER_TASK_BUDGET_USD, taskKeyIds, budgetBaselineUsd: 0,
       recordOn: [{ key: operationKey(current.workspaceId, current.id), knownCount: taskKeyIds.length }],

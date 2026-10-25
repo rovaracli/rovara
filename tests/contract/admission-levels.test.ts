@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, PER_TEST_CAP_USD, TASK_BUDGET_EXCEEDED_PREFIX,
-  agentKey, errorStatus, modelKeyKey, orgMetaKey, orgSettingsKey, pauseKey, scopeKey, spendCounterKey, topUpKey,
+  agentKey, errorStatus, modelKeyKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, pauseKey, scopeKey, spendCounterKey, topUpKey,
   type BudgetScope, type OrgId, type PauseScope,
 } from "@agentx/contracts";
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
@@ -860,6 +860,28 @@ describe("a task's key at the broker", () => {
     expect(record.scopes).toContainEqual({ kind: "member", developerId: DEV_MAYA.developerId });
     expect(record.scopes).not.toContainEqual({ kind: "member", developerId: DUPLICATE });
     expect(t.access.mintKey.mock.calls[0]![0]).toMatchObject({ tags: { payerId: DEV_MAYA.developerId } });
+  });
+
+  it("mints no key once the org is closed, whatever the task: fail closed (Re-check R-2 of Task 21)", async () => {
+    const t = await brokerSetup();
+    const r = await t.running();
+    expect((await r.ask()).status).toBe(200);
+    expect(t.access.mintedKeys()).toHaveLength(1);
+    t.db.set({ ...(t.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>), closedAt: "2026-10-24T12:00:00.000Z" });
+    const refused = await r.ask();
+    expect(refused.status).toBe(403);
+    expect((refused.body.error as { code: string }).code).toBe("TASK_ACCESS_DENIED");
+    expect(t.access.mintedKeys()).toHaveLength(1);
+  });
+
+  it("mints no key for a task whose owner is no longer a member of the org (Re-check R-2 of Task 21)", async () => {
+    const t = await brokerSetup();
+    const r = await t.running();
+    t.db.delete(orgMemberKey(TEST_ORG, DEV_MAYA.developerId));
+    t.db.set({ ...orgRemovedKey(TEST_ORG, DEV_MAYA.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-24T12:00:00.000Z" });
+    const refused = await r.ask();
+    expect(refused.status).toBe(403);
+    expect(t.access.mintedKeys()).toHaveLength(0);
   });
 
   it("gives a task's second operation the room that is left, not the room less its own first key's hold", async () => {

@@ -951,3 +951,91 @@ describe("a removal in an org with no owner left (Review M-5)", () => {
     expect(await record(other.approvalId)).toEqual(before);
   });
 });
+
+// Re-check R-1 of Plan 5 Task 21: whenever a waiting approval can no longer be decided because the person who left was its only possible decider, it is re-listed to someone the rule lets decide, or ended
+// with the reason and the asker told, with an owner left or not. Nothing is ever approved.
+describe("a removal that leaves an approval with no one to decide it (Re-check R-1)", () => {
+  const SUBJECT = { kind: "session_owner" as const, sessionId: `ses_${"1".repeat(20)}`, to: PRIYA, sessionRevision: 1 };
+  const setup = (options: { owner: boolean }) => {
+    const w = world();
+    registerApproverRule("lifecycle_any", async () => true);
+    registerApproverRule("lifecycle_none", async () => false);
+    registerApproverRule("lifecycle_staff", async (_deps, _record, caller) => caller.developerId === OWNER || caller.developerId === hex("e"));
+    registerApprovalSubjectHandler("session_owner", async () => undefined);
+    if (!options.owner) w.db.delete(orgMemberKey(ORG_A, OWNER));
+    const asked = (approvers: { kind: "rule"; rule: string; candidates: string[] } | { kind: "ids"; ids: string[] }) =>
+      createPendingChange(w.deps, { orgId: ORG_A, requestId: randomUUID(), requestedBy: PRIYA, subject: SUBJECT, changes: ["a change"], approvers });
+    const record = async (approvalId: string) => (await getAnyApproval(w.deps, ORG_A, approvalId))!;
+    const listed = (approvalId: string) => w.db.find((item) => item.entityType === "APPROVER_INDEX" && item.approvalId === approvalId).map((item) => String(item.pk).split("APPROVER#")[1]).sort();
+    const notices = (developerId: string) => w.db.find((item) => item.entityType === "CHANGE_NOTICE" && item.pk === changesKey(ORG_A, developerId, CREATED_AT, 0).pk && (item.notice as { type?: string } | undefined)?.type === "home.changed");
+    const leave = async () => {
+      w.db.delete(orgMemberKey(ORG_A, ARJUN));
+      await onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ARJUN, by: PRIYA });
+    };
+    return { w, asked, record, listed, notices, leave };
+  };
+  const REASON = "Everyone who could decide this has left your organization, so it was closed without a decision. Ask again if it is still needed.";
+
+  it("lists a rule-kind approval whose only candidate left to someone the rule lets decide (an owner is left)", async () => {
+    const { asked, record, listed, leave } = setup({ owner: true });
+    const made = await asked({ kind: "rule", rule: "lifecycle_any", candidates: [ARJUN] });
+    await leave();
+    expect(await record(made.approvalId)).toMatchObject({ status: "PENDING", approvers: { kind: "rule", rule: "lifecycle_any", candidates: [OWNER] } });
+    expect(listed(made.approvalId)).toEqual([OWNER]);
+  });
+
+  it("adds a person the rule lets decide when the candidates left do not satisfy it, and keeps the ones listed", async () => {
+    const { asked, record, leave } = setup({ owner: true });
+    const made = await asked({ kind: "rule", rule: "lifecycle_staff", candidates: [ARJUN, MAX] });
+    await leave();
+    const after = await record(made.approvalId);
+    expect(after.status).toBe("PENDING");
+    expect([...(after.approvers as unknown as { candidates: string[] }).candidates].sort()).toEqual([MAX, OWNER].sort());
+  });
+
+  it("leaves a rule-kind approval alone whose remaining candidates the rule lets decide", async () => {
+    const { asked, record, leave } = setup({ owner: true });
+    const made = await asked({ kind: "rule", rule: "lifecycle_staff", candidates: [ARJUN, OWNER] });
+    await leave();
+    expect(await record(made.approvalId)).toMatchObject({ status: "PENDING", approvers: { kind: "rule", rule: "lifecycle_staff", candidates: [OWNER] } });
+  });
+
+  it("ends a rule-kind approval nobody the rule lets decide is left for, with the reason, and tells the asker; never approved", async () => {
+    const { asked, record, listed, notices, leave } = setup({ owner: true });
+    const made = await asked({ kind: "rule", rule: "lifecycle_none", candidates: [ARJUN, MAX] });
+    await leave();
+    expect(await record(made.approvalId)).toMatchObject({ status: "EXPIRED", closedBy: "system", closedReason: REASON });
+    expect(listed(made.approvalId)).toEqual([]);
+    expect(notices(PRIYA)).toHaveLength(1);
+  });
+
+  it("does the same in an org with no owner: the admins are looked at, and the approval ends when none satisfies the rule", async () => {
+    const lists = setup({ owner: false });
+    const listedOne = await lists.asked({ kind: "rule", rule: "lifecycle_staff", candidates: [ARJUN] });
+    const ended = await lists.asked({ kind: "rule", rule: "lifecycle_none", candidates: [ARJUN] });
+    await lists.leave();
+    expect(await lists.record(listedOne.approvalId)).toMatchObject({ status: "PENDING", approvers: { kind: "rule", candidates: [hex("e")] } });
+    expect(await lists.record(ended.approvalId)).toMatchObject({ status: "EXPIRED", closedReason: REASON });
+  });
+
+  it("hands an id-list approval to the successor, as before, and names no one the list did not", async () => {
+    const { asked, record, leave } = setup({ owner: true });
+    const made = await asked({ kind: "ids", ids: [ARJUN, MIA] });
+    await leave();
+    expect((await record(made.approvalId)).approvers).toEqual({ kind: "ids", ids: [OWNER, MIA] });
+  });
+});
+
+describe("the stop of running work has a time limit (Re-check R-2)", () => {
+  it("stops asking once its time is over, and says so", async () => {
+    const w = world();
+    const ids = Array.from({ length: 12 }, () => w.session({ owner: PRIYA }).sessionId);
+    for (const sessionId of ids) w.db.set({ ...openAgentSessionKey(ORG_A, sessionId), entityType: "OPEN_AGENT_SESSION", orgId: ORG_A, sessionId });
+    let clock = T0;
+    const asked: string[] = [];
+    await stopOrgSessions({ ...w.deps, now: () => (clock += 1), deadline: T0 + 5 }, ORG_A, async (sessionId) => { asked.push(sessionId); });
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.length).toBeLessThan(12);
+    expect(w.lines.map((line) => line.event)).toContain("agent_session.close_stop_deadline");
+  });
+});

@@ -661,7 +661,7 @@ const CLOSE_STOP_MAX = 500;
 /**
  * Asks the org's open sessions to stop before the org is closed, so that no work keeps spending (Plan 5 Task 21, review M-6). `stop` is the existing stop of a session (the task's own
  * cancel, or the chain run's), bound by the caller; the request id is `closeStopRequestId`, so it is idempotent. Best effort: a session that can't be stopped (a Mac session, a stop that
- * fails) is logged and the close goes on; the dispatch guard stays the backstop. The org's open list is read before the close deletes it.
+ * fails) is logged and the close goes on; the dispatch guard and the model-key mint stay the backstops. It stops asking at `deps.deadline`. The org's open list is read before the close deletes it.
  */
 export async function stopOrgSessions(deps: SessionLifecycleDeps, orgId: string, stop: (sessionId: string, requestId: string) => Promise<void>): Promise<void> {
   const org = requireIds(orgId);
@@ -681,6 +681,11 @@ export async function stopOrgSessions(deps: SessionLifecycleDeps, orgId: string,
   } while (start !== undefined);
   if (ids.length >= CLOSE_STOP_MAX) log(deps, "agent_session.close_stop_capped", { orgId: org, max: CLOSE_STOP_MAX });
   for (const sessionId of ids.slice(0, CLOSE_STOP_MAX)) {
+    // The time this takes is bounded: what is not asked in time is stopped by the model-key mint and the dispatch guard at its next step, and a repeat of the leave asks again.
+    if (deps.deadline !== undefined && deps.now() >= deps.deadline) {
+      log(deps, "agent_session.close_stop_deadline", { orgId: org });
+      break;
+    }
     try {
       await stop(sessionId, closeStopRequestId(org, sessionId));
     } catch (error) {
