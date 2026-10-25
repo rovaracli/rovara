@@ -177,6 +177,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/home.ts",
       // Plan 5, Task 21: a closed org's session data, and a removed member's revoked devices, are given a short expiry (lifecycle.ts shortens it, never lengthens).
       "packages/broker/src/agent-sessions/lifecycle.ts",
+      // Plan 5, Task 17: a removed device keeps its record, and its row in the member's list, for a year (`revokedAt`), then the TTL deletes both.
+      "packages/broker/src/devices/store.ts",
       // Plan 5, Task 8: each person's change notices (the catch-up feed) expire a week after they are written.
       "packages/broker/src/realtime/changes.ts",
       // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
