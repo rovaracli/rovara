@@ -56,6 +56,13 @@ export const AgentOwnerSchema = z.discriminatedUnion("kind", [MemberOwnerSchema,
 export const AgentPrincipalSchema = z.discriminatedUnion("kind", [MemberOwnerSchema, ProjectOwnerSchema, z.object({ kind: z.literal("org") }).strict()]);
 
 
+/** The principal component used by agent and session share keys. */
+export function principalKey(principal: z.infer<typeof AgentPrincipalSchema>): string {
+  if (principal.kind === "member") return `MEMBER#${principal.developerId}`;
+  if (principal.kind === "project") return `PROJECT#${principal.project}`;
+  return "ORG";
+}
+
 export const AGENT_ACCESS_LEVELS = ["none", "view", "use", "edit", "manage"] as const;
 
 export const AgentAccessLevelSchema = z.enum(AGENT_ACCESS_LEVELS);

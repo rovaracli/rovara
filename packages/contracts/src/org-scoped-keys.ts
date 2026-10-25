@@ -2,7 +2,8 @@
 // grant on it, the workspace limits) or that list across tenants (the usage and failure indexes).
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { canonicalInstant, indexDay } from "./admin.js";
-import type { AgentId } from "./agent.js";
+import { principalKey, type AgentId } from "./agent.js";
+export { principalKey } from "./agent.js";
 import type { AgentPrincipal, ApprovalId, SkillId } from "./agent-node.js";
 import type { DeviceId, SessionBinding, SessionId } from "./agent-sessions-node.js";
 import { OrgIdSchema, type OrgId } from "./org.js";
@@ -207,13 +208,6 @@ export function agentDirectoryKey(orgId: OrgId, agentId: AgentId): OrgKey {
 /** The item that makes an agent's name unique in its org, ignoring case and surrounding spaces. */
 export function agentNameKey(orgId: OrgId, name: string): OrgKey {
   return { pk: orgScoped(orgId, "AGENT_NAME"), sk: name.trim().toLowerCase() };
-}
-
-/** `MEMBER#<developerId>`, `PROJECT#<project>` or `ORG`: the principal's part of a key. */
-export function principalKey(principal: AgentPrincipal): string {
-  if (principal.kind === "member") return `MEMBER#${principal.developerId}`;
-  if (principal.kind === "project") return `PROJECT#${principal.project}`;
-  return "ORG";
 }
 
 /** The index item that lists, per principal, the agents shared with it. */
