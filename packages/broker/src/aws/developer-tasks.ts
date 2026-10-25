@@ -256,7 +256,7 @@ import type { TaskPeopleDisplayAdmission } from "../developer/task-people-displa
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
-import { bindingItems } from "../agent-sessions/bindings.js";
+import { threadBindingItems } from "../agent-sessions/bindings.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
 import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
@@ -1885,7 +1885,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         orgId: deps.orgId, sessionId, taskId, project: request.project, agent: { agentId: prepared.ref.agentId, name: prepared.ref.name, version: prepared.ref.version },
         title: inertTaskTitle(title), owner: { developerId: caller.developerId, name: caller.name }, startedBy: sessionStartedBy, ...(starterName === undefined ? {} : { startedByName: starterName }), origin: prepared.origin, payer: prepared.payer, now: receivedAt,
       }),
-      ...threadBinding(deps.tableName, deps.orgId, sessionId, share, receivedAt),
+      ...threadBindingItems({ tableName: deps.tableName }, deps.orgId, sessionId, share, receivedAt),
     ]),
   ];
   try {
@@ -1914,13 +1914,6 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     task: await taskView(deps, task, { events: 0, details: false }),
     ...(run === undefined || prepared === undefined ? {} : { run: { taskId, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused } }),
   };
-}
-
-/** The Slack thread a task shared at its start follows, as the items that bind it to the session (none when it wasn't shared to a thread). */
-function threadBinding(tableName: string, orgId: OrgId, sessionId: string, share: TaskShare | undefined, at: string): TransactItems {
-  if (share?.threadTs === undefined) return [];
-  const thread = SlackThreadSchema.safeParse({ teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs });
-  return thread.success ? bindingItems({ tableName }, orgId, sessionId, { kind: "slack_thread", ...thread.data }, at) : [];
 }
 
 /** The limits of a run as its task record keeps them, for a repeat of the start that finds the task already made. */

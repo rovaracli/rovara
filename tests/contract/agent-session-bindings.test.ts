@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { agentSessionKey, sessionSurfaceKey, slackThreadUrl, type SessionBinding } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, sessionSurfaceKey, type SessionBinding } from "../../packages/contracts/src/index.js";
 import { createTaskSessionItems, ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { bindSessionSurface, sessionForSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
@@ -106,7 +106,7 @@ describe("binding a surface to a session", () => {
     const b = w.seedSession({ orgId: ORG_B, owner: BO }).sessionId;
     expect(await code(bindSessionSurface(table, { orgId: ORG_B, sessionId: a, binding: THREAD }))).toEqual({ code: "NOT_FOUND", message: "session not found" });
     expect(await code(bindSessionSurface(table, { orgId: ORG_A, sessionId: b, binding: THREAD }))).toEqual({ code: "NOT_FOUND", message: "session not found" });
-    expect(await code(bindSessionSurface(table, { orgId: ORG_A, sessionId: "ses_zzzzzzzzzzzzzzzzzzzz" as never, binding: THREAD }))).toEqual({ code: "NOT_FOUND", message: "session not found" });
+    expect(await code(bindSessionSurface(table, { orgId: ORG_A, sessionId: "ses_zzzzzzzzzzzzzzzzzzzz", binding: THREAD }))).toEqual({ code: "NOT_FOUND", message: "session not found" });
     expect((await code(bindSessionSurface(table, { orgId: ORG_A, sessionId: ended, binding: THREAD })))?.code).toBe("SESSION_ENDED");
     expect(surfaceItems()).toEqual([]);
   });
@@ -181,8 +181,10 @@ describe("what the session view shows of its bindings", () => {
       taskView: async (task: { taskId: string; project: string }) => ({ taskId: task.taskId, title: "Bump", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }),
     } as unknown as SessionReadDependencies;
     const session = await sessionView(deps, w.caller(ARJUN), sessionId);
-    expect(session.bindings).toEqual([{ kind: "slack_thread", url: slackThreadUrl({ teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000031" } as never) }, { kind: "linear_issue", url: "https://linear.app/acme/issue/ENG-142/fix-the-retry-bug" }]);
-    expect(session.bindings[0]!.url).toBe(`https://slack.com/archives/${SLACK_CHANNEL}/p1695500000000031`);
+    expect(session.bindings).toEqual([
+      { kind: "slack_thread", url: `https://app.slack.com/client/${SLACK_TEAM}/${SLACK_CHANNEL}/thread/${SLACK_CHANNEL}-1695500000.000031` },
+      { kind: "linear_issue", url: "https://linear.app/acme/issue/ENG-142/fix-the-retry-bug" },
+    ]);
   });
 });
 
@@ -211,7 +213,7 @@ describe("a task from before sessions that is already shared to a thread", () =>
 type Post = (input: { channel: string; threadTs?: string; text: string }) => Promise<{ ts: string }>;
 
 async function notifierWorld(post: Post = async () => ({ ts: NOTIFIED_TS })) {
-  const harness = await createDeveloperTaskBroker();
+  const harness = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
   const stream = recordStream(harness.db);
   const queue: Notice[] = [];
   const logs: Array<Record<string, unknown>> = [];
@@ -299,7 +301,7 @@ describe("a task shared after it started", () => {
     const n = await notifierWorld();
     const { meta } = await n.start();
     const sessionId = meta().sessionId!;
-    n.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("SHARED_TASK"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] } });
+    n.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("SHARED_TASK"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] }, times: 4 });
     await n.pump();
     expect(meta().share.threadTs).toBeUndefined();
     expect(surfaceOf(n.db)).toBeUndefined();

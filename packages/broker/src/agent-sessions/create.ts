@@ -23,6 +23,7 @@ import {
   type WorkOrigin,
 } from "@agentx/contracts";
 import { putNew, type TableInput, type TransactItem } from "../agents/table-writes.js";
+import { threadBindingItems } from "./bindings.js";
 import { sessionEventItem } from "./store.js";
 
 const UNTITLED = "Untitled task";
@@ -220,6 +221,8 @@ export interface LazySessionTask {
   payer?: Payer | undefined;
   startedBy?: { developerId: string } | undefined;
   chain?: { chainRunId: string; stepId: string } | undefined;
+  /** The Slack thread the task is shared to, if it has one: the session is bound to it as it is made (Task 20). */
+  share?: { teamId: string; channelId: string; threadTs?: string | undefined } | undefined;
 }
 
 /**
@@ -255,6 +258,7 @@ export async function ensureTaskSession(
         title: input.title, owner: { developerId: task.developerId, name: input.ownerName }, startedBy, origin: task.origin,
         payer: task.payer ?? { kind: "member", developerId: task.developerId }, now: task.createdAt,
       }),
+      ...threadBindingItems(table, task.orgId, sessionId, task.share, task.createdAt),
       {
         Update: {
           TableName: table.tableName, Key: key, UpdateExpression: "SET sessionId = :sessionId",
