@@ -60,7 +60,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     proxyDown: false, onStart: undefined as undefined | ((call: number) => Promise<void>), push: { repository: "acme/web", branch: "rovara/fix-checkout", headSha: SHA_PUSHED } as unknown,
     repositories: [{ name: "web", url: "https://github.com/acme/web" }] as Array<{ name: string; url: string }>, repositoriesBroken: false,
     /** Runs inside the cancel, as another request would in the moment between the claim and the write. */
-    onCancel: undefined as undefined | (() => Promise<void> | void), noMarker: false, wrongTaskId: false,
+    onCancel: undefined as undefined | (() => Promise<void> | void), noMarker: false, wrongTaskId: false, marker: undefined as undefined | { sessionId: string; requestId: string }, badAnswer: false,
   };
   /** Runs once, just before the next move's transaction is sent: what another request or the Mac does in the moment between the move's last read and its write. */
   const race = { before: undefined as undefined | (() => Promise<void> | void), beforeClaim: undefined as undefined | (() => Promise<void> | void) };
@@ -93,10 +93,10 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
       w.db.set({
         ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: input.orgId, developerId: input.owner.developerId, developerName: input.owner.name, provider: "oidc", project: input.project,
         workspaceId: randomUUID(), ownerKey: `owner-${input.owner.developerId.slice(0, 6)}`, payer: { kind: "member", developerId: input.owner.developerId }, createdAt: iso(w.clock.now), updatedAt: iso(w.clock.now),
-        ...(live.noMarker ? {} : { handoffOf: input.handoffOf }),
+        ...(live.noMarker ? {} : { handoffOf: live.marker ?? input.handoffOf }),
       });
       started.set(input.requestId, taskId);
-      return { taskId };
+      return live.badAnswer ? { taskId: "not-a-task-id" } : { taskId };
     },
     cancelStarted: async (_deps, input) => {
       calls.systemCancels.push({ taskId: input.taskId, requestId: input.requestId });
@@ -832,6 +832,9 @@ describe("a session in the cloud moves to a Mac", () => {
     // A built-in agent that is not Rovara Code, and a custom agent called "rovara-code", are agent-step runs.
     const triage = w.inCloud({ agent: true });
     expect(await code(w.move(PRIYA, triage.sessionId, w.toMac(await w.mac(PRIYA, "Second"))))).toEqual({ code: "CONFIG_INVALID", message: "An agent run stays in the cloud." });
+    const otherBuiltin = w.inCloud();
+    w.db.set({ ...w.taskOf(otherBuiltin.taskId)!, agent: { agentId: "ticket-triage", name: "Ticket triage", version: 1, builtin: true, digest: "d".repeat(64) } });
+    expect(await code(w.move(PRIYA, otherBuiltin.sessionId, w.toMac(await w.mac(PRIYA, "Fourth"))))).toEqual({ code: "CONFIG_INVALID", message: "An agent run stays in the cloud." });
     const custom = w.inCloud();
     w.db.set({ ...w.taskOf(custom.taskId)!, agent: { agentId: "rovara-code", name: "Rovara Code", version: 1, builtin: false, digest: "d".repeat(64) } });
     expect(await code(w.move(PRIYA, custom.sessionId, w.toMac(await w.mac(PRIYA, "Third"))))).toEqual({ code: "CONFIG_INVALID", message: "An agent run stays in the cloud." });
@@ -1032,6 +1035,16 @@ describe("a move that races another write is decided by the table, not by what i
     expect(w.meta(sessionId)).not.toHaveProperty("moving");
   });
 
+  it("to a Mac: a session that ended in the moment of the claim is not claimed, and nothing is cancelled", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    w.race.beforeClaim = () => w.patchSession(sessionId, { endedAt: iso(T0), summary: { ...(w.meta(sessionId).summary as Item), status: "succeeded" } });
+    expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+    expect(w.calls.cancels).toEqual([]);
+    expect(w.meta(sessionId)).not.toHaveProperty("moving");
+  });
+
   it("to a Mac: the move claims the session before it cancels (the revision moves and a marker is set), so a take-over decided on the old revision cannot land after; the marker is gone when the move is done", async () => {
     const w = world();
     const { sessionId } = w.inCloud();
@@ -1144,6 +1157,71 @@ describe("no paid work is left unlinked", () => {
     expect(await code(w.move(PRIYA, sessionId, w.body()))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
     expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 1 });
     expect(w.calls.cancels.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("refuses a task whose marker names another session or another request, and an answer that is not a task id; what it made is cancelled", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    w.live.marker = { sessionId: "ses_00000000000000000042", requestId: randomUUID() };
+    const input = w.body();
+    w.live.marker = { sessionId: "ses_00000000000000000042", requestId: input.requestId };
+    expect(await code(w.move(PRIYA, sessionId, input))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
+    expect(w.calls.cancels).toHaveLength(1);
+    const other = w.body();
+    w.live.marker = { sessionId, requestId: randomUUID() };
+    expect(await code(w.move(PRIYA, sessionId, other))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
+    expect(w.calls.cancels).toHaveLength(2);
+    w.live.marker = undefined;
+    w.live.badAnswer = true;
+    expect(await code(w.move(PRIYA, sessionId, w.body()))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
+    expect(w.calls.cancels).toHaveLength(3);
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local" });
+  });
+
+  it("a move that was cut off and cancelled nothing resumes the same attempt: the same task and the same start time", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    const input = w.body();
+    w.live.cancelFailure = agentXError("WORKSPACE_BUSY", "busy");
+    w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
+    await expect(w.move(PRIYA, sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
+    w.live.cancelFailure = undefined;
+    w.clock.now += 30_000;
+    let during: Item | undefined;
+    w.live.onStart = async () => { during = pendingOf(w, sessionId, input.requestId); };
+    await w.move(PRIYA, sessionId, input);
+    expect(w.calls.starts[1]!["taskId"]).toBe(w.calls.starts[0]!["taskId"]);
+    expect(during).toMatchObject({ attempt: 1, startedAt: iso(T0) });
+    expect(w.meta(sessionId).subject).toMatchObject({ taskId: w.calls.starts[0]!["taskId"] });
+  });
+
+  it("a repeat that is refused cancels nothing for an attempt that was already cancelled, or whose task is linked", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.onMac();
+    const input = w.body();
+    w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
+    await expect(w.move(PRIYA, sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
+    expect(w.calls.cancels).toHaveLength(1);
+    expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "abandoned" });
+    await recordLocalUpdate({ ...w.deps }, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "succeeded" });
+    w.clock.now += 5 * 60_000;
+    expect(await code(w.move(PRIYA, sessionId, input))).toMatchObject({ code: "SESSION_ENDED" });
+    expect(w.calls.cancels).toHaveLength(1);
+    // A started attempt whose task already names a session is not cancelled either.
+    const linked = world();
+    const mac = await linked.onMac();
+    const again = linked.body();
+    linked.live.cancelFailure = agentXError("WORKSPACE_BUSY", "busy");
+    linked.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
+    await expect(linked.move(PRIYA, mac.sessionId, again)).rejects.toMatchObject({ name: "InternalServerError" });
+    const task = linked.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]!;
+    linked.db.set({ ...task, sessionId: mac.sessionId });
+    await recordLocalUpdate({ ...linked.deps }, linked.as(PRIYA), mac.sessionId, { requestId: randomUUID(), deviceId: mac.deviceId, status: "succeeded" });
+    linked.clock.now += 5 * 60_000;
+    linked.live.cancelFailure = undefined;
+    linked.calls.cancels.length = 0;
+    expect(await code(linked.move(PRIYA, mac.sessionId, again))).toMatchObject({ code: "SESSION_ENDED" });
+    expect(linked.calls.cancels).toEqual([]);
   });
 
   it("when even the cancel fails after an unknown outcome and the Mac ends its session, the repeat of the request cancels the orphan before it says the session ended", async () => {
