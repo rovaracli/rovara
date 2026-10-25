@@ -159,7 +159,9 @@ describe("model access function infrastructure (named environments)", () => {
   it("tells the broker where the proxy is (ruling R29) but gives it no read of the master key", () => {
     const [, broker] = only(resources, "AWS::Lambda::Function", "Broker");
     // The address only: the broker hands it to a task's worker with the task's key.
-    expect(JSON.stringify(broker.Properties.Environment!.Variables!.MODEL_PROXY_URL)).toContain("LoadBalancer");
+    // (The load balancer's name, in the broker's names; the broker builds the URL from it, and the address is not a variable of its own.)
+    expect(JSON.stringify(brokerNamesIn(broker.Properties.Environment!.Variables).modelProxy)).toContain("LoadBalancer");
+    expect(broker.Properties.Environment!.Variables).not.toHaveProperty("MODEL_PROXY_URL");
     expect(JSON.stringify(broker.Properties.Environment)).not.toContain("LITELLM");
     expect(statementsOf(roleOf(broker.Properties.Role!)).some((statement) => mentions(statement.Resource, masterKeyId))).toBe(false);
   });

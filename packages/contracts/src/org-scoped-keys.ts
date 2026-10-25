@@ -626,13 +626,12 @@ export type AgentSessionItemSk =
   | `MESSAGE#${string}`
   | `TURN#${string}`
   | `EVENT#${string}`
-  | `BINDING#${string}`
   | `LEG#${string}`
   | `TAKE_OVER_FOLLOW_UP#${string}`
   | `REQUEST#${string}`
   | "RETRIED";
 
-/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, bindings, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
+/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
 export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
 }
@@ -722,6 +721,14 @@ export function endedSessionWorkKey(day: string, orgId: OrgId, sessionId: Sessio
 
 /** Where the sweep remembers how far it got. A global item holding no org. */
 export const SESSION_SWEEP_CURSOR_KEY: OrgKey = { pk: "SESSION_SWEEP_CURSOR", sk: "META" };
+
+/**
+ * A session's own record of an outside place it follows (`BINDING#<kind>`: `slack_thread` or `linear_issue`), in a partition of its own, not the session's. The Slack notifier writes it, and
+ * an IAM grant can limit a writer by partition key only, so keeping it out of the session partition keeps that role away from the session's META, shares and everything else in it.
+ */
+export function sessionBindingKey(orgId: OrgId, sessionId: SessionId, kind: SessionBinding["kind"]): OrgKey {
+  return { pk: orgScoped(orgId, `SESSION_BINDING#${keyPart(sessionId, "a session id")}`), sk: `BINDING#${kind}` };
+}
 
 /** The item that binds one outside surface (a Slack thread or a Linear issue) to one session: one binding per surface per org. */
 export function sessionSurfaceKey(orgId: OrgId, binding: SessionBinding): OrgKey {

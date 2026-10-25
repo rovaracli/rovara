@@ -142,7 +142,7 @@ describe("session steps", () => {
       expect(userData).not.toContain("run_stage2");
       // The script after the exports is boot-legacy.sh without its shebang line, exactly.
       expect(userData.endsWith(`\n${legacyBootScript.replace(/^#!.*\n/, "")}`)).toBe(true);
-      expect(createHash("sha256").update(legacyBootScript).digest("hex")).toBe("b54a0b0b0dabf8b19afc5737425392bfb37fe684a8bd68b06dd94f38570cefe2");
+      expect(createHash("sha256").update(legacyBootScript).digest("hex")).toBe("a731533fe3cd7bca59455befabed6d9f1747022b005a3a1db4e8bf8f5c4c19e1");
     });
 
     it("hands a named launch the named script", async () => {

@@ -14,7 +14,7 @@ import { GetAccountSettingsCommand, LambdaClient } from "@aws-sdk/client-lambda"
 import { GetServiceQuotaCommand, ServiceQuotasClient } from "@aws-sdk/client-service-quotas";
 import { DescribeStateMachineCommand, SFNClient } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS, environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/index.js";
+import { BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS, environmentSettingsPrefix, environmentStackName, getParametersInBatches } from "../packages/contracts/src/index.js";
 
 /** The worker instance type's vCPUs: one session needs this much On-Demand Standard headroom. */
 const WORKER_VCPUS = 1;
@@ -117,7 +117,7 @@ export async function gatherEc2Facts(options: { region: string; env?: string }):
   const imageParameter = version?.ImageId?.startsWith("resolve:ssm:") ? version.ImageId.slice("resolve:ssm:".length) : undefined;
   const resolvedImageId = imageParameter === undefined
     ? version?.ImageId
-    : (await ssm.send(new GetParametersCommand({ Names: [imageParameter] }))).Parameters?.[0]?.Value;
+    : (await getParametersInBatches([imageParameter], (batch) => ssm.send(new GetParametersCommand({ Names: batch })))).Parameters[0]?.Value;
   const image = resolvedImageId === undefined ? undefined : (await ec2.send(new DescribeImagesCommand({ ImageIds: [resolvedImageId] }))).Images?.[0];
 
   const pairs = (foundation.Ec2WorkerSubnets ?? "").split(",").filter(Boolean).map((pair) => pair.split("=") as [string, string]);
@@ -135,7 +135,7 @@ export async function gatherEc2Facts(options: { region: string; env?: string }):
   const prefix = options.env === undefined ? "/agentx/production/" : environmentSettingsPrefix(options.env);
   const settingNames = Object.fromEntries(Object.entries(WORKER_SETTING_PARAMETERS).map(([setting, name]) => [setting, `${prefix}${name}`]));
   const bootHashName = options.env === undefined ? undefined : `${prefix}${BOOT_STAGE2_SHA256_PARAMETER}`;
-  const settingValues = new Map(((await ssm.send(new GetParametersCommand({ Names: [...Object.values(settingNames), ...(bootHashName === undefined ? [] : [bootHashName])] }))).Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
+  const settingValues = new Map((await getParametersInBatches([...Object.values(settingNames), ...(bootHashName === undefined ? [] : [bootHashName])], (batch) => ssm.send(new GetParametersCommand({ Names: batch })))).Parameters.map((parameter) => [parameter.Name, parameter.Value]));
 
   const sfn = new SFNClient(config);
   const stateMachines: Ec2PreflightFacts["stateMachines"] = [];

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { INDEX_EXPIRY_ATTRIBUTE } from "@agentx/contracts";
+import { brokerSettingsIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -103,7 +104,10 @@ describe("admin change infrastructure", () => {
   });
 
   it("passes McpConfirmElicitation to DeveloperIdentity and the broker straight from the parameter", () => {
-    for (const prefix of ["Broker", "DeveloperSignInFunction"]) expect(variablesOf(named, prefix).MCP_CONFIRM_ELICITATION).toEqual({ Ref: "McpConfirmElicitation" });
+    expect(variablesOf(named, "DeveloperSignInFunction").MCP_CONFIRM_ELICITATION).toEqual({ Ref: "McpConfirmElicitation" });
+    // The named broker has it in its settings (AGENTX_SETTINGS: its variables are held to Lambda's 4 KB), not as a variable of its own.
+    expect(brokerSettingsIn(variablesOf(named, "Broker")).mcpConfirmElicitation).toEqual({ Ref: "McpConfirmElicitation" });
+    expect(variablesOf(named, "Broker")).not.toHaveProperty("MCP_CONFIRM_ELICITATION");
     expect(variablesOf(legacy, "Broker")).not.toHaveProperty("MCP_CONFIRM_ELICITATION");
   });
 

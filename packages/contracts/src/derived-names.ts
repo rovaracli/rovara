@@ -1,0 +1,64 @@
+/**
+ * The names and variables a Lambda function builds at run time instead of being given them (ENV-ROOM, owner decision 2026-10-24).
+ *
+ * Lambda holds all of a function's environment variables, keys and values together, to 4 KB, and the broker's reached the ceiling again and again. A value the function can
+ * compute is not passed: a resource with a fixed name under the `agentx-<env>-...` naming, or a value the environment's name decides, is built from the environment's name
+ * (AGENTX_ENV), the region (AWS_REGION) and the account (AGENTX_ACCOUNT_ID). This module is the ONE place such a derivation is written:
+ *  - CDK names the resource with these functions (`auditIntakeQueueName` for the queue, `connectorSecretsRoleName` for the role, and so on), so a resource cannot be named
+ *    one way and looked for another;
+ *  - the broker (`hydrateBrokerEnvironment`, packages/broker/src/aws/broker-environment.ts) builds each variable of DERIVED_BROKER_VARIABLES from the same functions;
+ *  - tests/contract/derived-names.test.ts synthesizes the named templates and checks that each role and queue in the table is the resource CDK created.
+ *
+ * Adding a Lambda setting: if the function can derive it, add an entry here (and name the resource with the function); do not add an environment variable. Only a true input
+ * (a feature flag, a parameter, a generated name or id) is passed: see AGENTX_NAMES and AGENTX_SETTINGS in broker-names.ts. tests/contract/lambda-environment-size.test.ts
+ * holds the broker to 400 bytes of room under its ceiling, so a variable that is added anyway fails there.
+ */
+import {
+  environmentAlarmPrefix,
+  environmentConnectorSecretPrefix,
+  environmentE2eFeatureRuntimeCatalogId,
+  environmentMetricsNamespace,
+  environmentProjectSetupRuntimeCatalogId,
+  environmentSettingsPrefix,
+} from "./environments.js";
+import { brokerRoleName, chainScheduleQueueName, chainScheduleRoleName, connectorSecretsRoleName } from "./access-policies.js";
+
+/** The audit ledger's intake queue (FIFO, one appender per org). The queue is created with this name, and the broker builds its URL from it. */
+export function auditIntakeQueueName(env: string): string {
+  return `agentx-${env}-audit-intake.fifo`;
+}
+
+/** The port the model proxy's inference listener serves on; the broker builds the proxy's URL from the load balancer's name and this. */
+export const MODEL_PROXY_INFERENCE_PORT = 4000;
+
+/**
+ * A variable the broker builds, by what it is:
+ *  - `text`: a string the environment's name decides;
+ *  - `roleArn`: the ARN of a role with a fixed name, in the environment's role path (`/agentx/<env>/`);
+ *  - `queueUrl`: the URL of a queue with a fixed name.
+ * `cloudOnly`: built only on the hosted cloud (AGENTX_CLOUD is "true"), the one condition under which the control plane creates the resource.
+ */
+export type DerivedBrokerVariable =
+  | { readonly variable: string; readonly kind: "text"; readonly value: (env: string) => string; readonly cloudOnly?: true }
+  | { readonly variable: string; readonly kind: "roleArn"; readonly roleName: (env: string) => string; readonly cloudOnly?: true }
+  | { readonly variable: string; readonly kind: "queueUrl"; readonly queueName: (env: string) => string; readonly cloudOnly?: true };
+
+export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
+  { variable: "CONNECTOR_SECRET_PREFIX", kind: "text", value: environmentConnectorSecretPrefix },
+  { variable: "SWEBENCH_SETTINGS_PREFIX", kind: "text", value: environmentSettingsPrefix },
+  // M1.4 Task 4.10 (PREFIXGAP): where the installation's worker settings are, so the AI navigation route can be derived. Mainline passed it as a variable; here the broker builds it from the environment's name (ENV-ROOM).
+  { variable: "AGENTX_E2E_AGENT_SETTINGS_PREFIX", kind: "text", value: environmentSettingsPrefix },
+  { variable: "AGENTX_ALARM_PREFIX", kind: "text", value: environmentAlarmPrefix },
+  { variable: "AGENTX_METRICS_NAMESPACE", kind: "text", value: environmentMetricsNamespace },
+  { variable: "AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID", kind: "text", value: environmentProjectSetupRuntimeCatalogId },
+  { variable: "AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID", kind: "text", value: environmentE2eFeatureRuntimeCatalogId },
+  // Plan 4 Task 26: the role the scheduler assumes and the queue its failed invocations go to.
+  { variable: "CHAIN_SCHEDULE_ROLE_ARN", kind: "roleArn", roleName: chainScheduleRoleName },
+  { variable: "CHAIN_SCHEDULE_QUEUE_URL", kind: "queueUrl", queueName: chainScheduleQueueName },
+  // The Audit Ledger's intake queue (named environments only: the legacy install has no ledger).
+  { variable: "AUDIT_INTAKE_QUEUE_URL", kind: "queueUrl", queueName: auditIntakeQueueName },
+  // The broker's own role (the hosted cloud only): the principal a customer's trust policy names for the CloudWatch connector's cross-account assume (Plan 4 Task 16).
+  { variable: "BROKER_ROLE_ARN", kind: "roleArn", roleName: brokerRoleName, cloudOnly: true },
+  // The one role the broker assumes for an org's connection secrets.
+  { variable: "CONNECTOR_SECRETS_ROLE_ARN", kind: "roleArn", roleName: connectorSecretsRoleName },
+];

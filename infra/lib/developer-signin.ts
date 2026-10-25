@@ -3,7 +3,7 @@
 import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, Lazy, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
-import { BrokerNames } from "./broker-names.js";
+import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { packagedFunction } from "./control-plane.js";
 import { CloudIdentity } from "./cloud-identity.js";
 
@@ -374,12 +374,15 @@ export class DeveloperSignIn extends Construct {
     const brokerNames = BrokerNames.of(broker);
     brokerNames.add("signInTable", table.tableName);
     brokerNames.add("identityFunction", fn.functionName);
-    broker.addEnvironment("SLACK_TEAM_ID", p.slackTeamId.valueAsString);
-    broker.addEnvironment("DEVELOPER_SIGNIN_SLACK", p.slack.valueAsString);
+    // The constrained parameters (a Slack team id pattern, allowed lists, digit patterns) are the broker's settings (BrokerSettings: one JSON variable, as its names are; Lambda's 4 KB).
+    // The issuer URL is free text, so it stays a variable of its own.
+    const brokerSettings = BrokerSettings.of(broker);
+    brokerSettings.add("slackTeamId", p.slackTeamId.valueAsString);
+    brokerSettings.add("signInSlack", p.slack.valueAsString);
     broker.addEnvironment("DEVELOPER_OIDC_ISSUER", p.oidcIssuer.valueAsString);
-    broker.addEnvironment("DEVELOPER_SIGNIN_SLACK_SINCE", p.slackSince.valueAsString);
-    broker.addEnvironment("DEVELOPER_OIDC_SINCE", p.oidcSince.valueAsString);
-    broker.addEnvironment("MCP_CONFIRM_ELICITATION", p.mcpConfirmElicitation.valueAsString);
+    brokerSettings.add("signInSlackSince", p.slackSince.valueAsString);
+    brokerSettings.add("oidcSince", p.oidcSince.valueAsString);
+    brokerSettings.add("mcpConfirmElicitation", p.mcpConfirmElicitation.valueAsString);
     // The broker reads only whether the cloud sign-in is configured (it then resolves orgs by membership, R6)
     // and where invite links point; the sign-in function holds the client settings and the secret.
     if (cloud !== undefined) {

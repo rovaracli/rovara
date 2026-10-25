@@ -63,7 +63,7 @@ export class SessionLifecycle extends Construct {
     this.invokeSigningKey = props.invokeSigningKey;
     this.notifyOperator = props.notifyOperator;
     // Parameter ids match the foundation outputs they are filled from.
-    const parameter = (name: string, description: string) => new CfnParameter(stack, name, { type: "String", description });
+    const parameter = (name: string, description: string, allowedPattern?: string) => new CfnParameter(stack, name, { type: "String", description, ...(allowedPattern === undefined ? {} : { allowedPattern }) });
     const privateSubnetIds = parameter("PrivateSubnetIds", "Comma-separated private subnet IDs of the foundation VPC");
     const sessionManagerSecurityGroupId = parameter("SessionManagerSecurityGroupId", "The foundation's session manager security group");
     this.dispatcherSecurityGroupId = parameter("DispatcherSecurityGroupId", "The foundation's dispatcher security group");
@@ -73,7 +73,9 @@ export class SessionLifecycle extends Construct {
     // Foundation roles use / for legacy deployments and /agentx/<env>/ for named environments.
     // IAM inline-policy attachments require the name, without the role's path.
     this.instanceRoleName = Fn.select(naming.env === undefined ? 1 : 3, Fn.split("/", instanceRoleArn.valueAsString));
-    const launchTemplateId = parameter("Ec2WorkerLaunchTemplateId", "The EC2 workers' launch template");
+    const launchTemplateId = parameter("Ec2WorkerLaunchTemplateId", "The EC2 workers' launch template",
+      // Named environments pack it into the broker's AGENTX_NAMES JSON unescaped (BrokerNames), so it carries the pattern of the id AWS gives; the legacy template is left as it was.
+      naming.env === undefined ? undefined : "^lt-[0-9a-f]{17}$");
     this.launchTemplateId = launchTemplateId;
 
     // Named environments (Task 14): workers hold no provider keys or Bedrock access and call models through the

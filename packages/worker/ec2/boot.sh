@@ -17,17 +17,17 @@ readonly FILESYSTEM_LABEL=agentx-workspace
 readonly WORKER_UID=1000
 readonly WORKER_GID=1000
 readonly WORKER_UNIT=agentx-worker.service
-# Docker's data root, on the workspace volume so images and volumes survive an idle stop.
+# Docker's data root, on the workspace volume: it survives an idle stop (#121).
 readonly DOCKER_DATA_ROOT=$MOUNT_PATH/.docker
 # The volume is attached after the instance runs, so it may appear late.
 readonly DEVICE_WAIT_SECONDS=${AGENTX_DEVICE_WAIT_SECONDS:-120}
 # Where /sys and /dev/disk are; tests set it.
 readonly HOST_ROOT=${AGENTX_HOST_ROOT:-}
-# Network steps try 5 times, waiting 2, 4, 8, 16 seconds plus jitter: at most 45 seconds of waiting per step.
+# Network steps try 5 times (2, 4, 8, 16 s waits plus jitter): at most 45 s per step.
 readonly RETRY_ATTEMPTS=5
 readonly RETRY_BASE_SECONDS=2
 readonly RETRY_MAX_SECONDS=30
-# No network try runs or waits past this many seconds from boot start: a failure reports inside the 10 minute /ping window.
+# No try runs past this many seconds from boot start, so failures show within /ping's 10 minutes.
 readonly BOOT_DEADLINE=$((SECONDS + ${AGENTX_BOOT_DEADLINE_SECONDS:-480}))
 # The worker's port, which the provisioner probes; a failed boot answers there instead.
 readonly WORKER_PORT=8080
@@ -50,7 +50,8 @@ try_seconds() {
 
 tries() { if (($1 == 1)); then printf '1 try'; else printf '%s tries' "$1"; fi; }
 
-# retry DESCRIPTION COMMAND... retries with bounded backoff, then fails. Commands run in an until condition: they return their own failures.
+# retry DESCRIPTION COMMAND... retries with bounded backoff, then fails with DESCRIPTION.
+# Commands in an until condition must return their own failures under set -e.
 retry() {
   local description=$1 attempt=1 delay wait
   shift
@@ -94,7 +95,7 @@ server.serve_forever()
 ' "$WORKER_PORT" "$FAILURE_FILE" >/dev/null 2>&1 || log "could not start the boot failure report on port $WORKER_PORT"
 }
 
-# Reports any non-zero exit: fail's reason, or the step that stopped (set -e) without one.
+# Reports any non-zero exit: fail's reason, or the step that stopped (set -e).
 BOOT_STEP="start"
 on_exit() {
   local status=$? reason
@@ -122,7 +123,7 @@ require_configuration() {
     || fail "AGENTX_EXPECT_NEW_VOLUME must be true or false"
 }
 
-# Prints the value only once it is whole.
+# Prints the value only once whole, so a failed try leaves nothing behind.
 imds_once() {
   local token value
   token=$(curl -fsS --connect-timeout 2 --max-time 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300') \
@@ -221,7 +222,7 @@ prepare_contained_runtime_directories() {
   CONTAINED_RUNTIME_AVAILABLE_BOOT=true
 }
 
-# A failed try may leave stale mirror metadata (#211): drop it before the next try.
+# A failed try may leave stale mirror metadata (#211): dropped before the next try.
 install_docker_package() {
   timeout "$(try_seconds 120)" dnf install -y docker && return 0
   dnf clean metadata >/dev/null 2>&1 || true
@@ -229,6 +230,7 @@ install_docker_package() {
 }
 
 ensure_docker() {
+  [ -f /etc/dnf/dnf.conf ] && { grep -q ^exclude= /etc/dnf/dnf.conf || echo 'exclude=kernel*' >>/etc/dnf/dnf.conf; }
   command -v docker >/dev/null || retry "could not install Docker: package download failed" install_docker_package
   install -d -m 0755 /etc/docker
   printf '{"data-root": "%s"}\n' "$DOCKER_DATA_ROOT" >/etc/docker/daemon.json
@@ -237,8 +239,8 @@ ensure_docker() {
   wall_off_containers
 }
 
-# Untrusted containers (build bridges rvb*, internal bridges rvi*) cannot reach IMDS, the host or private ranges; only VPC DNS
-# stays open. The oneshot unit re-applies the rules after Docker rebuilds its chains; CI runs this heredoc as is.
+# Untrusted containers (rvb*, rvi*) cannot reach IMDS, the host or private ranges; only VPC DNS stays open.
+# A oneshot unit re-applies the rules after Docker rebuilds its chains.
 readonly FIREWALL_UNIT=rovara-container-firewall.service
 wall_off_containers() {
   install -d -o root -g root -m 0755 /usr/local/libexec

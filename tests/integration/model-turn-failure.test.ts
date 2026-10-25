@@ -54,19 +54,20 @@ async function run(adapter: PiSessionAdapter, cancellationController?: WorkerCan
 }
 
 describe("a task whose model call fails", () => {
-  it("fails with the model's error instead of succeeding, and records FAILED usage", async () => {
+  it("fails with a fixed-text error instead of succeeding, and records FAILED usage", async () => {
     const adapter = await realPi([fauxAssistantMessage([], {
       stopReason: "error", errorMessage: "OpenRouter request failed; check the key's credit balance and spending limit",
     })]);
     const { outcome, usageOutcome, events } = await run(adapter);
     expect(outcome).toBeInstanceOf(Error);
-    expect((outcome as Error).message).toBe("RUNTIME_UNAVAILABLE: the model call failed: OpenRouter request failed; check the key's credit balance and spending limit");
+    // PLANINC-3b: the provider's message is never copied into the error; the failure class, call number and next action are.
+    expect((outcome as Error).message).toBe("RUNTIME_UNAVAILABLE: the model call failed: unknown attempt 1; retry the step");
     expect(usageOutcome).toBe("FAILED");
     expect(events.filter((event) => event.type === "result")).toEqual([]);
     expect(events).toContainEqual(expect.objectContaining({ type: "error", payload: { message: (outcome as Error).message } }));
   });
 
-  it("redacts credentials that a provider's error message carries", async () => {
+  it("never copies a provider's error message into the error, so the credentials it carries cannot reach it", async () => {
     const adapter = await realPi([fauxAssistantMessage([], {
       // Not a transient error, so pi does not retry it.
       stopReason: "error", errorMessage: "400 invalid request to https://user:hunter2@proxy.example.test/v1?token=abc123",
@@ -74,7 +75,8 @@ describe("a task whose model call fails", () => {
     const { outcome } = await run(adapter);
     expect((outcome as Error).message).not.toContain("hunter2");
     expect((outcome as Error).message).not.toContain("abc123");
-    expect((outcome as Error).message).toContain("[REDACTED]");
+    expect((outcome as Error).message).not.toContain("proxy.example.test");
+    expect((outcome as Error).message).toBe("RUNTIME_UNAVAILABLE: the model call failed: unknown attempt 1; retry the step");
   });
 
   it("judges the turn by its last model call: a transient failure pi retries successfully is a success", async () => {
@@ -191,6 +193,47 @@ describe("a planning run whose answer AgentX cannot read as a plan", () => {
     const { artifacts } = await run(await realPi(steps), undefined, planning("IMPLEMENTATION_PLAN"));
     expect(asked[1]).toContain("check Probe: arguments may not contain line breaks or control characters; write \\n as a two-character escape inside your script if you need it");
     expect(artifacts.filter((artifact) => artifact.name === "plan.md").map((artifact) => artifact.content)).toEqual([fixed.trim()]);
+  });
+
+  describe("a version 2 application E2E intent", () => {
+    const scenario = { scenarioId: "s1", requirementId: "r1", requestedTargetIds: ["web-1"], required: true, accountProfileId: "synthetic",
+      minimumEvidence: "runtime" as const, requiredRealComponentIds: [] as string[], steps: [{ kind: "navigate" as const, path: "/" }],
+      assertions: [{ kind: "visible" as const, testId: "home", equals: true }] };
+    const v2 = { schemaVersion: 2 as const, requestedTargetIds: ["web-1"], portableOperationRefs: [], mockFixtureRefs: [],
+      accountContextRefs: [{ applicationId: "orders", profileId: "synthetic", sourcePath: "package.json", sourceSha256: "a".repeat(64) }],
+      scenarios: [scenario], semanticExportDeltas: [],
+      applicationRuntimeRefs: [{ targetId: "web-1", applicationId: "orders", recipeDigest: "c".repeat(64), sourceRefs: [{ path: "package.json", sha256: "b".repeat(64) }],
+        runtimeProfileId: "linux-arm64-web-api-v1", accountProfileId: "synthetic" }],
+      runtimeAccountRefs: [{ applicationId: "orders", profileId: "synthetic", revision: 1, definitionDigest: "d".repeat(64) }], unavailableTargetRefs: [] };
+    const v1 = { schemaVersion: 1 as const, requestedTargetIds: ["web-1"], accountContextRefs: v2.accountContextRefs, scenarios: [scenario], semanticExportDeltas: [] };
+
+    it("is accepted when the broker negotiated it", async () => {
+      const answer = planAnswer({ ...planDocument(), e2e: v2 });
+      const { asked, steps } = planner([answer]);
+      const base = planning("IMPLEMENTATION_PLAN");
+      const { artifacts } = await run(await realPi(steps), undefined, { ...base, payload: { ...base.payload, workflowE2EPlanVersion: 2 as const } });
+      expect(asked).toEqual(["add the footer"]);
+      expect(artifacts.filter((artifact) => artifact.name === "plan.md").map((artifact) => artifact.content)).toEqual([answer.trim()]);
+    });
+
+    it("is not accepted from a planning run the broker did not negotiate it for: the agent is asked once more", async () => {
+      const refused = planAnswer({ ...planDocument(), e2e: v2 });
+      const portable = planAnswer({ ...planDocument(), e2e: v1 });
+      const { asked, steps } = planner([refused, portable]);
+      const { artifacts, events } = await run(await realPi(steps), undefined, planning("IMPLEMENTATION_PLAN"));
+      expect(asked).toHaveLength(2);
+      expect(asked[1]).toContain("schemaVersion 2 was not offered for this planning step");
+      expect(artifacts.filter((artifact) => artifact.name === "plan.md").map((artifact) => artifact.content)).toEqual([portable.trim()]);
+      expect(retryProgress(events)).toHaveLength(1);
+    });
+
+    it("leaves a portable v1 intent alone on a run that negotiated nothing", async () => {
+      const answer = planAnswer({ ...planDocument(), e2e: v1 });
+      const { asked, steps } = planner([answer]);
+      const { artifacts } = await run(await realPi(steps), undefined, planning("IMPLEMENTATION_PLAN"));
+      expect(asked).toEqual(["add the footer"]);
+      expect(artifacts.filter((artifact) => artifact.name === "plan.md").map((artifact) => artifact.content)).toEqual([answer.trim()]);
+    });
   });
 
   it("asks only once: a second unreadable answer is uploaded as it is, for the broker to decide", async () => {

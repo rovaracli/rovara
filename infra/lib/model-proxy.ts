@@ -1,7 +1,8 @@
-import { INFERENCE_PATHS, MODEL_PROXY_URL_PARAMETER, modelProxyTaskRoleName } from "@agentx/contracts";
+import { INFERENCE_PATHS, MODEL_PROXY_INFERENCE_PORT, MODEL_PROXY_URL_PARAMETER, modelProxyTaskRoleName } from "@agentx/contracts";
 import { ROVARA_GUARD_PY, litellmConfig } from "@agentx/model-proxy";
 import {
   Duration,
+  Fn,
   RemovalPolicy,
   SecretValue,
   aws_ec2 as ec2,
@@ -19,7 +20,8 @@ import type { AgentXNaming } from "./naming.js";
 
 /** LiteLLM, pinned by digest (spike: docs/learnings/model-proxy-spike.md). ghcr.io is public; the tasks pull it through the NAT. */
 export const LITELLM_IMAGE = "ghcr.io/berriai/litellm-database:v1.105.1@sha256:2bcadb9905b692a5ca4dadd51bccaaa23a95dc8a0f9322d9c9787f0ac2aeb50e";
-export const MODEL_PROXY_PORT = 4000;
+// Shared with the broker, which builds the proxy's URL from the load balancer's name and this port (derived-names.ts).
+export const MODEL_PROXY_PORT = MODEL_PROXY_INFERENCE_PORT;
 /**
  * The load balancer's second listener, for LiteLLM's management routes (teams, users, key minting, spend). Only the
  * ModelAccessFunction's group may reach it; the worker and orchestrator groups reach port 4000 alone, where only inference
@@ -83,6 +85,8 @@ export class ModelProxy extends Construct {
   readonly taskRole: iam.Role;
   /** The inference listener (port 4000): what workers and the orchestrator call, and what a member's key is handed out with. */
   readonly url: string;
+  /** The load balancer's name, the first label of its DNS name; the URL is `http://<name>.<region>.elb.amazonaws.com:<MODEL_PROXY_PORT>` (the broker builds it from this). */
+  readonly loadBalancerName: string;
   /** The management listener (port 4001): every path, reachable only from the ModelAccessFunction. */
   readonly managementUrl: string;
   readonly masterKeySecret: secretsmanager.Secret;
@@ -394,6 +398,7 @@ export class ModelProxy extends Construct {
     service.addResourceDependency(managementListener);
     service.addResourceDependency(databaseInstance);
 
+    this.loadBalancerName = Fn.select(0, Fn.split(".", loadBalancer.attrDnsName));
     this.url = `http://${loadBalancer.attrDnsName}:${port}`;
     this.managementUrl = `http://${loadBalancer.attrDnsName}:${MODEL_PROXY_MANAGEMENT_PORT}`;
     new ssm.StringParameter(this, "UrlParameter", {

@@ -1,7 +1,8 @@
 import { Buffer } from "node:buffer";
 import { gzipSync } from "node:zlib";
 import { z } from "zod";
-import { KEYED_MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN } from "./model-providers.js";
+import { SSM_GET_PARAMETERS_MAX_NAMES } from "./ssm-parameters.js";
+import { KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN } from "./model-providers.js";
 
 // Contracts for ec2-ebs workspaces, whose compute the Session Manager provisions on self-managed
 // EC2 instances with one EBS volume per workspace (design in issue #76).
@@ -245,7 +246,24 @@ export const WORKER_SETTING_PARAMETERS = {
   openRouterProviders: "worker-openrouter-providers",
   anthropicSecretArn: "worker-anthropic-secret-arn",
   openaiSecretArn: "worker-openai-secret-arn",
+  /**
+   * The AI navigation model the installation chose (Task 4.10): `default` (Rovara's recommendation) or an eligible model id. Read by the broker and the deploy check, never put in the
+   * worker's boot environment: the worker searches the eligible models for the revision an admission names.
+   */
+  e2eAgentModel: "worker-e2e-agent-model",
+  /**
+   * The model the coding roles run on when their provider's key secret is missing (Task 4.10D, MODEL3): `none` or a Bedrock model id. It is a boot variable (`AGENTX_MODEL_FALLBACK`),
+   * because the worker's own runtime needs it before any broker call. It is the eleventh name, so the readers of every worker setting read them in chunks (`chunkParameterNames`).
+   */
+  modelFallback: "worker-model-fallback",
 } as const;
+
+/** Splits parameter names into calls of at most SSM_GET_PARAMETERS_MAX_NAMES, in order. */
+export function chunkParameterNames(names: readonly string[], size: number = SSM_GET_PARAMETERS_MAX_NAMES): string[][] {
+  const chunks: string[][] = [];
+  for (let index = 0; index < names.length; index += size) chunks.push(names.slice(index, index + size));
+  return chunks;
+}
 
 /**
  * The setting, under the same SSM prefix, where a named environment publishes its model proxy's URL (Task 10). A
@@ -422,6 +440,8 @@ export const Ec2WorkerBootConfigSchema = z
     bootStage2Sha256: z.string().regex(BOOT_STAGE2_SHA256_PATTERN, "boot stage 2 hash must be 64 lower-case hex digits").optional(),
     /** PI_CACHE_RETENTION */
     promptCacheRetention: z.enum(["short", "long"]),
+    /** AGENTX_MODEL_FALLBACK: the chosen Bedrock fallback model when a provider's key secret is missing; absent when none was chosen. */
+    modelFallback: z.string().regex(MODEL_FALLBACK_PATTERN, "model fallback must be a model ID of at most 80 safe characters").refine((value) => value !== MODEL_FALLBACK_NONE, "model fallback none is the absence of the variable").optional(),
     /** AGENTX_LOG_GROUP: the CloudWatch Logs group the worker container writes to. */
     logGroupName: z.string().regex(/^[A-Za-z0-9._/-]{1,512}$/, "invalid log group name"),
   })
@@ -459,6 +479,7 @@ export function ec2WorkerBootScript(config: Ec2WorkerBootConfig, bootScript: str
   if (parsed.environmentKind) variables.push(["AGENTX_ENVIRONMENT_KIND", parsed.environmentKind]);
   if (parsed.bootStage2Sha256) variables.push([AGENTX_BOOT_STAGE2_SHA256, parsed.bootStage2Sha256]);
   if (parsed.executorImage) variables.push(["EXECUTOR_IMAGE", parsed.executorImage]);
+  if (parsed.modelFallback) variables.push(["AGENTX_MODEL_FALLBACK", parsed.modelFallback]);
   if (parsed.e2eQualification) {
     variables.push(
       ["AGENTX_E2E_QUALIFICATION_BUCKET", parsed.e2eQualification.bucket],

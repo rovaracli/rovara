@@ -2,7 +2,7 @@
 // short-lived token that a Lambda authorizer checks; only the broker and the outbox publisher publish, over IAM (SigV4), and only to the namespace. Named environments
 // only; the legacy install has no events API. API logging is off: a channel's name and a notice's content are ids, and nothing is gained by keeping them in a log.
 import type { aws_dynamodb as dynamodb} from "aws-cdk-lib";
-import { Duration, aws_appsync as appsync, aws_iam as iam, type aws_kms as kms, type aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
+import { Duration, Fn, aws_appsync as appsync, aws_iam as iam, type aws_kms as kms, type aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { REALTIME_NAMESPACE } from "@agentx/contracts";
 import { packagedFunction } from "./control-plane.js";
@@ -52,6 +52,14 @@ export class RealtimeEvents extends Construct {
     });
     this.namespaceArn = namespace.channelNamespaceArn;
     // The API's own construct lets `appsync.amazonaws.com` invoke the authorizer, for this API's ARN only.
+  }
+
+  /**
+   * The first label of the API's DNS names (its `Dns.Http` host, `<prefix>.appsync-api.<region>.amazonaws.com`; `Dns.Realtime` has the same prefix). It is not the API's id:
+   * a host built from the id does not resolve (staging 0.4.3). The broker is given this and builds both addresses from it.
+   */
+  get dnsPrefix(): string {
+    return Fn.select(0, Fn.split(".", this.api.httpDns));
   }
 
   /** The HTTP endpoint publishers post to. */

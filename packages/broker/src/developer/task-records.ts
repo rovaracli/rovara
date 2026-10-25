@@ -14,6 +14,7 @@ import {
   PullRequestResultSchema,
   TURN_TEXT_LIMIT,
   UNKNOWN_CLIENT_NAME,
+  WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX,
   aiToolTurnRecordKeys,
   capText,
   lastAssistantResponse,
@@ -42,7 +43,13 @@ import {
 } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { TaskAgentRef } from "../agents/roster.js";
+import { isHeartbeat, modelCallView } from "./model-call-view.js";
 import type { ShareDecision } from "./share.js";
+
+/** Whether a block reason is one of the two that send a task back to plan review for a corrected E2E plan: a source reference that does not match the candidate, or an application plan that can no longer run as written. */
+export function isE2EPlanCorrectionBlockReason(blockReason: string | undefined): boolean {
+  return blockReason !== undefined && (blockReason === E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON || blockReason.startsWith(WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX));
+}
 
 export const E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON = "The approved feature E2E plan references a source operation that does not match the protected candidate. Request changes and submit a corrected E2E plan before coding resumes.";
 
@@ -360,6 +367,24 @@ export function takenOverSince(task: TaskOwnerSource): string | undefined {
 }
 
 /**
+ * A merge hands the duplicate's hold on a task to the survivor (Plan 5 Task 21), through the same `currentOwner` a take-over uses, so every authority read follows the survivor and the
+ * creator's own fields, the principal and the earlier decisions stay as history: a taker's record with the person changed and the take-over's `since` kept; or, for a task the
+ * duplicate created and nobody took over, a new record that begins at `at`. Undefined when the duplicate does not hold the task (someone else took it over, the taker can't be read, or it
+ * is another person's), so a merge never touches a task it does not own.
+ */
+export function currentOwnerAfterMerge(task: TaskOwnerSource, duplicateId: string, survivor: TaskOwner, at: string): TaskCurrentOwner | undefined {
+  const person = { developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) };
+  if (!isTaskTakenOver(task)) return tryEffectiveTaskOwner(task)?.developerId === duplicateId ? { ...person, since: at } : undefined;
+  const taker = readCurrentOwner(task.currentOwner);
+  return taker === undefined || taker.developerId !== duplicateId ? undefined : { ...person, since: taker.since };
+}
+
+/** Whether `developerId` holds the task by a take-over (it is theirs now and they did not create it): their task-list row is a copy of the creator's, which moves with them. */
+export function holdsTaskByTakeOver(task: TaskOwnerSource, developerId: string): boolean {
+  return isTaskTakenOver(task) && tryEffectiveTaskOwner(task)?.developerId === developerId && task.developerId !== developerId;
+}
+
+/**
  * Whether an owner's decision (made by `actorId` at `decidedAt`, the time stored with it) still counts as the task owner's now: the owner's actor id counts; so does the
  * creator's, when the decision was made before someone took the task over (never judged by the time it is acted on); `ownerActorIds` (the task's People owners, when it
  * has any) count as well. A taker's decision from before they took the task over does not.
@@ -543,6 +568,10 @@ export function taskEvent(event: StoredEvent): DeveloperTaskEvent | undefined {
       return { at, kind: "tool", text: text(`${verb} ${tool}`) };
     }
     case "progress": {
+      // PLANINC-1: a model failure, retry or wait reads as a fixed sentence; the provider's own text is never shown. null: a sanitized payload with nothing to show.
+      const modelCall = modelCallView(payload);
+      if (modelCall === null) return undefined;
+      if (modelCall !== undefined) return { at, kind: modelCall.kind, text: text(modelCall.text) };
       const message = field(payload, "message");
       if (typeof message === "string") return { at, kind: "progress", text: text(message) };
       // F7: reuse lastAssistantResponse (Task 2) instead of a second copy of its block-extraction logic.
@@ -554,11 +583,16 @@ export function taskEvent(event: StoredEvent): DeveloperTaskEvent | undefined {
   }
 }
 
-/** The newest `count` readable events, returned oldest first. */
+/** The newest `count` readable events, returned oldest first. A heartbeat (one a minute) is kept only when it is the newest, so a long wait never pushes a failure or a retry out of the list. */
 export function recentTaskEvents(newestFirst: readonly StoredEvent[], count: number): DeveloperTaskEvent[] {
   const picked: DeveloperTaskEvent[] = [];
+  let heartbeatKept = false;
   for (const event of newestFirst) {
     if (picked.length >= count) break;
+    if (event.type === "progress" && isHeartbeat(event.payload)) {
+      if (heartbeatKept) continue;
+      heartbeatKept = true;
+    }
     const readable = taskEvent(event);
     if (readable !== undefined) picked.push(readable);
   }

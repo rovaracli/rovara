@@ -18,6 +18,7 @@ import {
   projectAllows,
   projectSessionsKey,
   sessionLink,
+  sessionBindingKey,
   sharedSessionsKey,
   type AgentSessionRecord,
   type DeveloperTaskView,
@@ -142,7 +143,7 @@ function bindingLink(binding: SessionBinding): { kind: SessionBinding["kind"]; u
 async function bindingsOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<Array<{ kind: SessionBinding["kind"]; url: string }>> {
   const found: Array<{ kind: SessionBinding["kind"]; url: string }> = [];
   for (const kind of ["slack_thread", "linear_issue"] as const) {
-    const item = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `BINDING#${kind}`));
+    const item = await getItem(deps, sessionBindingKey(session.orgId, session.sessionId, kind));
     const parsed = SessionBindingSchema.safeParse(item?.["binding"]);
     if (parsed.success && parsed.data.kind === kind) found.push(bindingLink(parsed.data));
   }

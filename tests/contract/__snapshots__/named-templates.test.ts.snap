@@ -2695,6 +2695,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Type": "String",
     },
     "Ec2WorkerLaunchTemplateId": {
+      "AllowedPattern": "^lt-[0-9a-f]{17}$",
       "Description": "The EC2 workers' launch template",
       "Type": "String",
     },
@@ -2883,6 +2884,21 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
           ],
         },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "ExpirationInDays": 30,
+              "Id": "ExpireE2EScreenshots",
+              "Status": "Enabled",
+              "TagFilters": [
+                {
+                  "Key": "rovara-retention",
+                  "Value": "e2e-screenshot",
+                },
+              ],
+            },
+          ],
+        },
         "PublicAccessBlockConfiguration": {
           "BlockPublicAcls": true,
           "BlockPublicPolicy": true,
@@ -3013,121 +3029,163 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Fn::Join": [
                 "",
                 [
-                  "{"ck":"",
+                  "ar=",
+                  {
+                    "Ref": "Artifacts82DD59A1",
+                  },
+                  ",ck=",
                   {
                     "Ref": "ChatGptConnectionKey03C49F9D",
                   },
-                  "","dl":"",
+                  ",dl=",
                   {
                     "Fn::GetAtt": [
                       "SessionsDeleterB48741EA",
                       "Name",
                     ],
                   },
-                  "","dn":"",
+                  ",dn=",
                   {
                     "Fn::GetAtt": [
                       "DeveloperTaskNotifierNoticeDeadLetterQueue3C87E1D7",
                       "QueueName",
                     ],
                   },
-                  "","dq":"",
+                  ",dq=",
                   {
                     "Fn::GetAtt": [
                       "DispatchDeadLetterQueue3E30F4B8",
                       "QueueName",
                     ],
                   },
-                  "","ds":"",
+                  ",ds=",
                   {
                     "Fn::GetAtt": [
                       "DeveloperTaskNotifierStreamFailureQueue58891933",
                       "QueueName",
                     ],
                   },
-                  "","if":"",
+                  ",if=",
                   {
                     "Ref": "DeveloperSignInFunction10B62B05",
                   },
-                  "","pe":"",
+                  ",lt=",
+                  {
+                    "Ref": "Ec2WorkerLaunchTemplateId",
+                  },
+                  ",pe=",
                   {
                     "Ref": "PlanEvidence3615C4CB",
                   },
-                  "","pv":"",
+                  ",pv=",
                   {
                     "Fn::GetAtt": [
                       "SessionsProvisioner9C44055B",
                       "Name",
                     ],
                   },
-                  "","rt":"",
+                  ",rt=",
                   {
-                    "Fn::GetAtt": [
-                      "RealtimeApiD4415F9E",
-                      "ApiId",
+                    "Fn::Select": [
+                      0,
+                      {
+                        "Fn::Split": [
+                          ".",
+                          {
+                            "Fn::GetAtt": [
+                              "RealtimeApiD4415F9E",
+                              "Dns.Http",
+                            ],
+                          },
+                        ],
+                      },
                     ],
                   },
-                  "","sl":"",
+                  ",sl=",
                   {
                     "Ref": "SlackThreads36E14C1E",
                   },
-                  "","so":"",
+                  ",so=",
                   {
                     "Ref": "SlackOrchestratorTaskRole2372FE40",
                   },
-                  "","sq":"",
+                  ",sq=",
                   {
                     "Fn::GetAtt": [
                       "SlackRequestQueueCC82C864",
                       "QueueName",
                     ],
                   },
-                  "","sr":"",
+                  ",sr=",
                   {
                     "Fn::GetAtt": [
                       "SlackRequestDeadLetterQueueBBBDDF4E",
                       "QueueName",
                     ],
                   },
-                  "","st":"",
+                  ",st=",
                   {
                     "Ref": "DeveloperSignInTable26CE739E",
                   },
-                  "","ti":"",
+                  ",ti=",
                   {
                     "Ref": "HttpApi",
                   },
-                  "","tr":"",
+                  ",tr=",
                   {
                     "Ref": "TurnRecords69ECFCD9",
                   },
-                  ""}",
+                  ",ts=",
+                  {
+                    "Ref": "State1C20CC9A",
+                  },
                 ],
               ],
             },
-            "AGENTX_WORKFLOW_DEPENDENCIES_ENABLED": {
-              "Ref": "WorkflowDependenciesEnabled",
-            },
-            "ARTIFACT_BUCKET_NAME": {
-              "Ref": "Artifacts82DD59A1",
+            "AGENTX_SETTINGS": {
+              "Fn::Join": [
+                "",
+                [
+                  "mc=",
+                  {
+                    "Ref": "McpConfirmElicitation",
+                  },
+                  ",ml=",
+                  {
+                    "Ref": "SlackMemberWorkspaceLimit",
+                  },
+                  ",ol=",
+                  {
+                    "Ref": "SlackOrganizationWorkspaceLimit",
+                  },
+                  ",os=",
+                  {
+                    "Ref": "DeveloperOidcSince",
+                  },
+                  ",sn=",
+                  {
+                    "Ref": "DeveloperSignInSlackSince",
+                  },
+                  ",ss=",
+                  {
+                    "Ref": "DeveloperSignInSlack",
+                  },
+                  ",tm=",
+                  {
+                    "Ref": "SlackTeamId",
+                  },
+                  ",wd=",
+                  {
+                    "Ref": "WorkflowDependenciesEnabled",
+                  },
+                ],
+              ],
             },
             "CALLBACK_SIGNING_KEY": {
               "Ref": "CallbackSigningKey",
             },
             "DEVELOPER_OIDC_ISSUER": {
               "Ref": "DeveloperOidcIssuer",
-            },
-            "DEVELOPER_OIDC_SINCE": {
-              "Ref": "DeveloperOidcSince",
-            },
-            "DEVELOPER_SIGNIN_SLACK": {
-              "Ref": "DeveloperSignInSlack",
-            },
-            "DEVELOPER_SIGNIN_SLACK_SINCE": {
-              "Ref": "DeveloperSignInSlackSince",
-            },
-            "EC2_WORKER_LAUNCH_TEMPLATE_ID": {
-              "Ref": "Ec2WorkerLaunchTemplateId",
             },
             "EC2_WORKER_SUBNETS": {
               "Ref": "Ec2WorkerSubnets",
@@ -3141,23 +3199,8 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "GITHUB_APP_PRIVATE_KEY_SECRET_ARN": {
               "Ref": "GitHubAppPrivateKeySecretArn",
             },
-            "MCP_CONFIRM_ELICITATION": {
-              "Ref": "McpConfirmElicitation",
-            },
             "OIDC_ISSUER": {
               "Ref": "OidcIssuer",
-            },
-            "SLACK_MEMBER_WORKSPACE_LIMIT": {
-              "Ref": "SlackMemberWorkspaceLimit",
-            },
-            "SLACK_ORGANIZATION_WORKSPACE_LIMIT": {
-              "Ref": "SlackOrganizationWorkspaceLimit",
-            },
-            "SLACK_TEAM_ID": {
-              "Ref": "SlackTeamId",
-            },
-            "STATE_TABLE_NAME": {
-              "Ref": "State1C20CC9A",
             },
           },
         },
@@ -3433,94 +3476,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
-              "Action": [
-                "scheduler:CreateSchedule",
-                "scheduler:UpdateSchedule",
-                "scheduler:DeleteSchedule",
-                "scheduler:GetSchedule",
-              ],
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition",
-                    },
-                    ":scheduler:",
-                    {
-                      "Ref": "AWS::Region",
-                    },
-                    ":",
-                    {
-                      "Ref": "AWS::AccountId",
-                    },
-                    ":schedule/agentx-staging-chain-triggers/*",
-                  ],
-                ],
-              },
-              "Sid": "ManageChainSchedules",
-            },
-            {
-              "Action": "iam:PassRole",
-              "Condition": {
-                "StringEquals": {
-                  "iam:PassedToService": "scheduler.amazonaws.com",
-                },
-              },
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::GetAtt": [
-                  "ChainScheduleInvokeRole6FCCDCC3",
-                  "Arn",
-                ],
-              },
-              "Sid": "PassChainScheduleRole",
-            },
-            {
-              "Action": "appsync:EventPublish",
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::GetAtt": [
-                  "RealtimeApiNamespaceD999AC81",
-                  "ChannelNamespaceArn",
-                ],
-              },
-            },
-          ],
-          "Version": "2012-10-17",
-        },
-        "Roles": [
-          {
-            "Ref": "BrokerServiceRole1938BCC9",
-          },
-        ],
-      },
-      "Type": "AWS::IAM::ManagedPolicy",
-    },
-    "BrokerServiceRoleServiceRoleOrchestrationPolicy4038649D": {
-      "Properties": {
-        "Description": "AgentX broker grants (orchestration), moved out of the role's inline policy for size",
-        "ManagedPolicyName": "agentx-staging-broker-orchestration",
-        "Path": "/agentx/staging/",
-        "PolicyDocument": {
-          "Statement": [
-            {
-              "Action": [
-                "sts:AssumeRole",
-                "sts:TagSession",
-              ],
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::GetAtt": [
-                  "ConnectorSecretsRole",
-                  "Arn",
-                ],
-              },
-              "Sid": "AssumeConnectorSecretsRole",
-            },
-            {
               "Action": "ssm:GetParameters",
               "Effect": "Allow",
               "Resource": [
@@ -3764,7 +3719,135 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     ],
                   ],
                 },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":parameter/agentx/staging/worker-e2e-agent-model",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":parameter/agentx/staging/worker-model-fallback",
+                    ],
+                  ],
+                },
               ],
+            },
+            {
+              "Action": [
+                "scheduler:CreateSchedule",
+                "scheduler:UpdateSchedule",
+                "scheduler:DeleteSchedule",
+                "scheduler:GetSchedule",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":scheduler:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":schedule/agentx-staging-chain-triggers/*",
+                  ],
+                ],
+              },
+              "Sid": "ManageChainSchedules",
+            },
+            {
+              "Action": "iam:PassRole",
+              "Condition": {
+                "StringEquals": {
+                  "iam:PassedToService": "scheduler.amazonaws.com",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ChainScheduleInvokeRole6FCCDCC3",
+                  "Arn",
+                ],
+              },
+              "Sid": "PassChainScheduleRole",
+            },
+            {
+              "Action": "appsync:EventPublish",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "RealtimeApiNamespaceD999AC81",
+                  "ChannelNamespaceArn",
+                ],
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Roles": [
+          {
+            "Ref": "BrokerServiceRole1938BCC9",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::ManagedPolicy",
+    },
+    "BrokerServiceRoleServiceRoleOrchestrationPolicy4038649D": {
+      "Properties": {
+        "Description": "AgentX broker grants (orchestration), moved out of the role's inline policy for size",
+        "ManagedPolicyName": "agentx-staging-broker-orchestration",
+        "Path": "/agentx/staging/",
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ConnectorSecretsRole",
+                  "Arn",
+                ],
+              },
+              "Sid": "AssumeConnectorSecretsRole",
             },
             {
               "Action": "states:StartExecution",
@@ -5941,6 +6024,50 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:PutItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#SESSION_BINDING#*",
+                    "ORG#org_????????????????????#SESSION_SURFACE",
+                  ],
+                },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:ConditionCheckItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#AGENT_SESSION#*",
+                  ],
+                },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": [
                 "dynamodb:GetItem",
                 "dynamodb:UpdateItem",
@@ -6371,6 +6498,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           "Variables": {
             "AGENTX_ENV": "staging",
             "AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID": "agentx-staging-project-setup-runtime-v1",
+            "ARTIFACT_BUCKET_NAME": {
+              "Ref": "Artifacts82DD59A1",
+            },
             "DELETER_ARN": {
               "Ref": "SessionsDeleterB48741EA",
             },
@@ -6612,6 +6742,24 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ],
                 },
               ],
+            },
+            {
+              "Action": "s3:GetObject",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "Artifacts82DD59A1",
+                        "Arn",
+                      ],
+                    },
+                    "/workflow-e2e-admissions/*",
+                  ],
+                ],
+              },
             },
             {
               "Action": "kms:Sign",
@@ -11615,6 +11763,46 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                       {
                         "Ref": "AWS::AccountId",
                       },
+                      ":parameter/agentx/staging/worker-e2e-agent-model",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":parameter/agentx/staging/worker-model-fallback",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
                       ":parameter/agentx/staging/model-proxy-url",
                     ],
                   ],
@@ -14993,6 +15181,12 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
       "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
       "Type": "AWS::SSM::Parameter::Value<String>",
     },
+    "E2eAgentModelId": {
+      "AllowedPattern": "^(default|[A-Za-z0-9][A-Za-z0-9._:/-]{0,199})$",
+      "Default": "default",
+      "Description": "AI navigation model for browser checks: default (Rovara's recommendation) or an eligible model id",
+      "Type": "String",
+    },
     "Ec2WorkerInstanceRoleArn": {
       "AllowedPattern": "^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$",
       "Description": "The EC2 workers' instance role, which is allowed to pull the worker image",
@@ -15002,6 +15196,12 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
       "AllowedPattern": "^(none|[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9]([a-z0-9._/-]*[a-z0-9])?@sha256:[a-f0-9]{64})$",
       "Default": "none",
       "Description": "Immutable private ECR linux/arm64 browser executor image URI, or none",
+      "Type": "String",
+    },
+    "ModelFallback": {
+      "AllowedPattern": "^(none|[A-Za-z0-9][A-Za-z0-9._:-]{0,79})$",
+      "Default": "none",
+      "Description": "Bedrock model used when a provider key secret is missing: none, or a Bedrock model id",
       "Type": "String",
     },
     "ModelId": {
@@ -15340,6 +15540,20 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
       },
       "Type": "AWS::SSM::Parameter",
     },
+    "WorkerE2eAgentModelParameter3B6AA65C": {
+      "Properties": {
+        "Description": "AgentX worker e2eAgentModel for EC2 workers",
+        "Name": "/agentx/staging/worker-e2e-agent-model",
+        "Tags": {
+          "agentx:env": "staging",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "E2eAgentModelId",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
     "WorkerExecutorImageParameter4915196F": {
       "Properties": {
         "Description": "AgentX worker executorImage for EC2 workers",
@@ -15640,6 +15854,20 @@ exports[`named environment templates > agentx-staging-runtime is unchanged 1`] =
       },
       "Type": "AWS::IAM::Policy",
     },
+    "WorkerModelFallbackParameter4DCAF22C": {
+      "Properties": {
+        "Description": "AgentX worker modelFallback for EC2 workers",
+        "Name": "/agentx/staging/worker-model-fallback",
+        "Tags": {
+          "agentx:env": "staging",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "ModelFallback",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
     "WorkerModelIdParameter02DE997A": {
       "Properties": {
         "Description": "AgentX worker modelId for EC2 workers",
@@ -15810,6 +16038,12 @@ exports[`named environment templates > agentx-staging-slack is unchanged 1`] = `
         "openai",
       ],
       "Default": "amazon-bedrock",
+      "Type": "String",
+    },
+    "ModelFallback": {
+      "AllowedPattern": "^(none|[A-Za-z0-9][A-Za-z0-9._:-]{0,79})$",
+      "Default": "none",
+      "Description": "Bedrock model used when a provider key secret is missing: none, or a Bedrock model id",
       "Type": "String",
     },
     "ModelId": {
@@ -17168,6 +17402,12 @@ exports[`named environment templates > agentx-staging-slack is unchanged 1`] = `
                 "Name": "AGENTX_MODEL_PROXY_URL",
                 "Value": {
                   "Ref": "ModelProxyUrl",
+                },
+              },
+              {
+                "Name": "AGENTX_MODEL_FALLBACK",
+                "Value": {
+                  "Ref": "ModelFallback",
                 },
               },
             ],

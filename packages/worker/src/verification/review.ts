@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
-import { promisify } from "node:util";
 import {
   WorkflowFeedbackBundleRefSchema,
   WorkflowFeedbackBundleSchema,
@@ -33,9 +31,7 @@ import { candidateChanges, candidateDiff, type CandidateChange } from "./diff.js
 import type { FileOpsTarget } from "../file-ops-exec.js";
 import type { AgentSkillFile } from "../agent-step.js";
 import { assertFileToolsContained, createWorkspacePiSession, type PiSessionAdapter, type PiSessionHandle, type WorkspaceModelConfiguration } from "../pi-session.js";
-import { gitHardenedEnvironment } from "../git.js";
-
-const execFile = promisify(execFileCallback);
+import { withIsolatedGit } from "../isolated-git.js";
 
 const FEEDBACK_REVIEW_OUTPUT_MAX_BYTES = 2_000_000;
 const FEEDBACK_BUNDLE_MAX_BYTES = 5_000_000;
@@ -342,9 +338,7 @@ async function readCandidateFilePaths(
   for (const identity of candidate) {
     const repository = byId.get(identity.repositoryId);
     if (repository === undefined) throw new Error("candidate repository path is unavailable");
-    const { stdout } = await execFile("git", ["-C", repository.directory, "ls-tree", "-rz", "--name-only", identity.treeSha], {
-      env: await gitHardenedEnvironment(repository.directory), encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
-    });
+    const stdout = await withIsolatedGit(repository.directory, "read", (git) => git.text(["ls-tree", "-rz", "--name-only", identity.treeSha], { index: "none", maxBuffer: 8 * 1024 * 1024 }));
     result.set(identity.repositoryId, new Set(stdout.split("\0").filter(Boolean)));
   }
   return result;

@@ -25,6 +25,7 @@ import {
   workflowResolveFindingsOffered,
   workflowSelectedChecks,
   workflowSendBackOffered,
+  workflowReadmitsApplicationRound,
   answeredConfirmationBlocks,
   confirmationClickEventId,
   confirmationKey,
@@ -69,7 +70,7 @@ import {
   type HandedOffChatGptFinish,
 } from "./slack-chatgpt.js";
 import { chatPostEphemeral } from "./slack-web.js";
-import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
+import { PROJECT_TASKS_DISABLED_TEXT, WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { FEEDBACK_REVIEW_RETRY_ACTION, WORKFLOW_ACTION_IDS, answeredWorkflowCard, cleanLine, slackText, workflowModalCopy } from "../developer/workflow-messages.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type TaskOwnerSource } from "../developer/task-records.js";
 
@@ -154,6 +155,18 @@ export const CLICK_FAILED_TEXT = "I couldn't process that click. Press the butto
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : "unknown";
 }
+
+/** What a member hears when the task authorization itself failed, not when it said no. */
+export const AUTHORIZATION_UNAVAILABLE_TEXT = "Something went wrong; try again in a minute.";
+
+/** The AgentX error code a failed authorization carries (the broker's own, from its reply), if any. */
+function authorizationErrorCode(error: unknown): string | undefined {
+  const code = error !== null && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && code.length > 0 ? code : undefined;
+}
+
+/** Broker answers that say "no" about this member and this task: retrying cannot change them. */
+const DEFINITE_ACCESS_REFUSALS: ReadonlySet<string> = new Set(["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "PROJECT_ACCESS_DENIED"]);
 
 interface HttpResponse { statusCode: number; headers: Record<string, string>; body: string }
 
@@ -254,7 +267,7 @@ function reviewOnlySentence(noneReason: string | undefined): string {
  * and choosing none of anything is review only, which the form says. A verification retry (`retry`) starts with the
  * optional checks chosen before, and must run at least one check.
  */
-export function workflowCheckControls(policy: WorkflowCheckPolicy | undefined, options: { codingPlan: boolean; retry?: boolean }): Array<Record<string, unknown>> {
+export function workflowCheckControls(policy: WorkflowCheckPolicy | undefined, options: { codingPlan: boolean; retry?: boolean; applicationRound?: boolean }): Array<Record<string, unknown>> {
   const required = policy?.required ?? [];
   const optional = policy?.optional ?? [];
   // A task stored before proposals has no `proposed`.
@@ -264,6 +277,8 @@ export function workflowCheckControls(policy: WorkflowCheckPolicy | undefined, o
     return [requiredSection ?? { type: "section", text: { type: "mrkdwn", text: "Checks are chosen when you approve the coding plan." } }];
   }
   const blocks: Array<Record<string, unknown>> = [];
+  // A retry of a browser and API round re-admits the approved round; it needs no project check chosen, and the form says what it will do.
+  if (options.retry === true && options.applicationRound === true) blocks.push({ type: "section", text: { type: "mrkdwn", text: "The approved browser and API checks will run again on the same code." } });
   if (requiredSection !== undefined) blocks.push(requiredSection);
   if (proposed.length > 0 && options.retry === true) {
     // A retry may drop a proposed check (one the worker can't run, say), never add one: those still kept start ticked.
@@ -282,7 +297,7 @@ export function workflowCheckControls(policy: WorkflowCheckPolicy | undefined, o
   }
   const choices = optional.map((check) => ({ text: { type: "plain_text", text: optionText(check.label) }, value: check.id }));
   // A retry must still run a check: with nothing else to run, one must be chosen.
-  const mustChoose = options.retry === true && locked === 0;
+  const mustChoose = options.retry === true && locked === 0 && options.applicationRound !== true;
   const chosenBefore = options.retry === true ? choices.filter((choice) => policy?.selectedOptionalIds.includes(choice.value)) : [];
   const initial = chosenBefore.length > 0 ? { initial_options: chosenBefore } : {};
   blocks.push({ type: "input", block_id: "workflow_checks", optional: !mustChoose,
@@ -790,6 +805,12 @@ export function createAwsSlackInteractivityHandler() {
     if (response.FunctionError !== undefined || response.Payload === undefined) throw new Error(`broker ${String(event.action)} failed`);
     return JSON.parse(Buffer.from(response.Payload).toString("utf8")) as BrokerReply;
   };
+  const brokerReplyErrorCode = (answer: BrokerReply): string | undefined => {
+    try {
+      const code = asRecord(asRecord(JSON.parse(answer.body ?? "")).error).code;
+      return typeof code === "string" ? code : undefined;
+    } catch { return undefined; }
+  };
   const taskPeopleRefusal = (answer: BrokerReply, fallback: string): WorkflowInteractionRefusal => {
     try {
       const message = asRecord(asRecord(JSON.parse(answer.body ?? "")).error).message;
@@ -804,7 +825,7 @@ export function createAwsSlackInteractivityHandler() {
     },
     async authorize(taskId, userId, thread, taskAction) {
       const answer = await invokeBroker({ source: "agentx.slack-ingress", action: "task-people-authorize", taskId, userId, thread, taskAction }, SLACK_FETCH_TIMEOUT_MILLISECONDS);
-      if (answer.statusCode !== 200) throw new Error("task authorization refused");
+      if (answer.statusCode !== 200) throw Object.assign(new Error("task authorization refused"), { code: brokerReplyErrorCode(answer) });
     },
     async getPeople(input) {
       const answer = await invokeBroker({ source: "agentx.slack-ingress", action: "task-people-read", ...input }, SLACK_FETCH_TIMEOUT_MILLISECONDS);
@@ -1168,7 +1189,13 @@ export function workflowSlackHandlers(deps: {
   const requireOwnerAction = async (task: Record<string, unknown>, taskId: string, userId: string, thread: SlackThread,
     action: "decide" | "retry" | "publish" | "feedback" | "close" | "control", legacyMessage: string, mention = true): Promise<void> => {
     if (deps.authorize !== undefined) {
-      try { await deps.authorize(taskId, userId, thread, action); } catch { throw new WorkflowInteractionRefusal(legacyMessage); }
+      try { await deps.authorize(taskId, userId, thread, action); } catch (error) {
+        // Only a definite "not yours", "no such task" or "no access" answer is the owner's message; anything else (a broker fault, a timeout, a malformed reply)
+        // says nothing about the member, so it is logged with its code and answered as a retryable failure.
+        const code = authorizationErrorCode(error);
+        console.log(JSON.stringify({ component: "slack-interactivity", event: "workflow.authorize_failed", taskId, action, code: code ?? "UNKNOWN", errorName: errorName(error) }));
+        throw new WorkflowInteractionRefusal(code === "PROJECT_TASKS_DISABLED" ? PROJECT_TASKS_DISABLED_TEXT : code !== undefined && DEFINITE_ACCESS_REFUSALS.has(code) ? legacyMessage : AUTHORIZATION_UNAVAILABLE_TEXT);
+      }
       return;
     }
     // The owner's Slack id is the effective owner's (Plan 5 Task 12a): the person who took the task over when someone did, else the creator's, as stored.
@@ -1389,7 +1416,7 @@ export function workflowSlackHandlers(deps: {
           throw new WorkflowInteractionRefusal("This verification retry must be opened from the task's AgentX workspace.");
         }
         const { workflow } = await currentVerificationRetry(taskId, Number(retry.revision), action.userId, action.thread);
-        const modalBlocks = workflowCheckControls(workflow.checkPolicy, { codingPlan: true, retry: true });
+        const modalBlocks = workflowCheckControls(workflow.checkPolicy, { codingPlan: true, retry: true, applicationRound: workflowReadmitsApplicationRound(workflow) });
         await deps.openView(action.triggerId, {
           type: "modal", callback_id: "agentx_workflow_checks_retry_submission",
           private_metadata: JSON.stringify({ taskId, revision: workflow.revision, requestId: randomUUID(), thread: action.thread }),
@@ -1744,7 +1771,7 @@ export function workflowSlackHandlers(deps: {
         // A retry runs the project's checks, the proposed ones kept here and the optional ones chosen here.
         const remaining = workflow.checkPolicy === undefined ? 0 : workflowSelectedChecks({ ...workflow.checkPolicy, selectedOptionalIds: selectedOptionalCheckIds,
           ...(selectedProposedCheckIds === undefined ? {} : { selectedProposedIds: selectedProposedCheckIds }) }).length;
-        if (remaining === 0) {
+        if (remaining === 0 && !workflowReadmitsApplicationRound(workflow)) {
           throw new WorkflowCheckSelectionRequired(proposed.length > 0 ? "Keep at least one check, or close the task." : "Choose at least one check before retrying verification.");
         }
         if (deps.retryChecks === undefined) throw new Error("verification retry is not configured");

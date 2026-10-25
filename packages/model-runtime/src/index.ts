@@ -1,11 +1,20 @@
-import { MissingProviderSecret, defaultBedrockModel, type ModelRole } from "./config.js";
+import { MissingProviderSecret, type ModelRole } from "./config.js";
 import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.js";
-import { bedrockClaudeModelIds, catalogModelByName, proxyGeographyOfModelId } from "./catalog.js";
+import { bedrockClaudeModelIds, catalogModel, catalogModelByName, proxyGeographyOfModelId } from "./catalog.js";
+import { TRANSPORTS, requestCompat } from "./transport.js";
 import { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedMarker, budgetScopeOfProxyBody, modelNotAllowedMarker, type ModelBudgetScope } from "./budget.js";
 export { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedFromMarker, modelNotAllowedFromMarker, type ModelBudgetScope } from "./budget.js";
 export { readOpenRouterKey, readProviderKey, openRouterRouting, openRouterModel, requireKeyedModel } from "./config.js";
-import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, agentXError, isKeyedModelProvider, type InvocationModelRoute, type KeyedModelProvider, type ModelIdentifier } from "@agentx/contracts";
-import { InMemoryCredentialStore, createAssistantMessageEventStream, type Api, type Model, type SimpleStreamOptions, type TranscriptContext, type AssistantMessage, type AssistantMessageEventStream, type AnthropicMessagesCompat, type OpenAICompletionsCompat, type OpenAIResponsesCompat } from "@earendil-works/pi-ai";
+// The governed e2e model route (M1.4): its own surface, never reached through the coding-task fallback above.
+export * from "./e2e-route.js";
+export { createE2EProviderInvoke } from "./e2e-provider-invoke.js";
+export type { E2EProviderInvoke, E2EProviderInvokeDependencies } from "./e2e-provider-invoke.js";
+export * from "./e2e-environment-guard.js";
+export * from "./e2e-route-derive.js";
+export { classifyProviderFailure, isNetworkCode, signalPattern, BEDROCK_SIGNAL_PATTERN, KEYED_SIGNAL_PATTERN } from "./provider-failure.js";
+export type { ProviderFailureFacts } from "./provider-failure.js";
+import { CHATGPT_PLAN_LIMIT_ERROR, KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, agentXError, isKeyedModelProvider, type InvocationModelRoute, type KeyedModelProvider, type ModelIdentifier, type ThinkingLevel } from "@agentx/contracts";
+import { InMemoryCredentialStore, createAssistantMessageEventStream, type Api, type Model, type SimpleStreamOptions, type TranscriptContext, type AssistantMessage, type AssistantMessageEventStream, type OpenAICompletionsCompat } from "@earendil-works/pi-ai";
 import { streamSimple as openAICompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
 import { streamSimple as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { streamSimple as openAIResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
@@ -26,6 +35,8 @@ export interface ModelRuntimeOptions {
    * it no longer allows). The request that found it goes there before Pi sees anything, and so does every later one.
    */
   chatgptFallback?: ChatGptFallback;
+  /** MODEL3: told when a missing provider secret sent the work to the installation's chosen fallback model. */
+  onFallback?: (notice: ModelFallbackNotice) => void;
   /**
    * The model proxy (ruling R29): every request goes to `baseUrl` with a per-task proxy key, and no provider secret is read.
    * Only the Claude models the proxy serves (Bedrock's, under the catalog's own ids) are available; any other model is refused.
@@ -99,12 +110,36 @@ function chatGptRefusal(status: number, body: string): ChatGptFallbackReason | u
   return undefined;
 }
 
-/** Resolve missing-credential fallback before creating a session, so its model and usage agree. */
+/** The environment variable that carries the installation's chosen fallback model (`none`, unset, or a Bedrock model id of the pinned catalog). */
+export const MODEL_FALLBACK_VARIABLE = "AGENTX_MODEL_FALLBACK";
+
+/** Told, once per runtime, that work ran on the chosen fallback because a provider's key secret is missing (MODEL3). `text` is the sentence for the task page and Slack. */
+export interface ModelFallbackNotice {
+  role: ModelRole;
+  reason: string;
+  requested: { provider: string; modelId: string };
+  effective: { provider: "amazon-bedrock"; modelId: string };
+  text: string;
+}
+
+/** The chosen fallback as a model, or undefined for `none`, an unset or malformed setting, and an id the pinned Bedrock catalog does not know. */
+export function modelFallbackModel(value: string | undefined): { provider: "amazon-bedrock"; modelId: string } | undefined {
+  const id = value?.trim();
+  if (id === undefined || id === "" || id === MODEL_FALLBACK_NONE || !MODEL_FALLBACK_PATTERN.test(id)) return undefined;
+  return catalogModel({ provider: "amazon-bedrock", modelId: id }) === undefined ? undefined : { provider: "amazon-bedrock", modelId: id };
+}
+
+const FALLBACK_COMMAND = "`agentx --env <env> config set models.fallback <bedrock model id>`";
+
+/**
+ * Resolve a missing provider secret before creating a session, so its model and usage agree. There is no default fallback (MODEL3): with no chosen fallback the call fails by name, and with
+ * one it runs on that model and says so, in the log, in the result and through `options.onFallback`.
+ */
 export async function createModelRuntimeWithFallback<T extends ModelIdentifier>(selected: T, role: ModelRole, options: ModelRuntimeOptions = {}) {
   const route = options.apiKey === undefined ? options.proxy?.route : undefined;
   // A routed task runs the route's model whatever was configured, so what it reports is the route's, not the configured model.
   if (route !== undefined) {
-    const { thinkingLevel, ...rest } = selected as T & { thinkingLevel?: string };
+    const { thinkingLevel, ...rest } = selected as T & { thinkingLevel?: ThinkingLevel };
     const level = routedThinkingLevel(route, thinkingLevel);
     return { runtime: await createConfiguredModelRuntime(selected, options), model: { ...rest, provider: ROUTE_PROVIDER, modelId: route.alias, ...(level === undefined ? {} : { thinkingLevel: level }) } };
   }
@@ -112,18 +147,25 @@ export async function createModelRuntimeWithFallback<T extends ModelIdentifier>(
     return { runtime: await createConfiguredModelRuntime(selected, options), model: selected };
   } catch (error) {
     if (!(error instanceof MissingProviderSecret)) throw error;
-    const model = defaultBedrockModel(role, options.environment ?? process.env);
-    console.info(JSON.stringify({ event: "model_fallback", role, reason: `${error.provider}_secret_missing`, requested: { provider: selected.provider, modelId: selected.modelId }, effective: model }));
-    return { runtime: await createConfiguredModelRuntime(model, options), model };
+    const label = KEYED_MODEL_PROVIDERS[error.provider].label;
+    const chosen = ((options.environment ?? process.env)[MODEL_FALLBACK_VARIABLE] ?? "").trim();
+    const model = modelFallbackModel(chosen);
+    if (model === undefined) {
+      const named = MODEL_FALLBACK_PATTERN.test(chosen) && chosen !== MODEL_FALLBACK_NONE;
+      throw agentXError("CONFIG_INVALID", named
+        ? `The ${label} key secret is missing, and the fallback model ${chosen} is not a Bedrock model in this Rovara's model catalog. Add or restore the key, or choose another fallback with ${FALLBACK_COMMAND}`
+        : `The ${label} key secret is missing, and no fallback model was chosen. Add or restore the key, or choose a fallback with ${FALLBACK_COMMAND}`);
+    }
+    const reason = `${error.provider}_secret_missing`;
+    const notice: ModelFallbackNotice = {
+      role, reason, requested: { provider: selected.provider, modelId: selected.modelId }, effective: model,
+      text: `ran on Amazon Bedrock \`${model.modelId}\` because the ${label} key secret is missing`,
+    };
+    console.info(JSON.stringify({ event: "model_fallback", role, reason, requested: notice.requested, effective: model }));
+    try { options.onFallback?.(notice); } catch { /* Reporting must not fail the run it is about. */ }
+    return { runtime: await createConfiguredModelRuntime(model, options), model, fallback: notice };
   }
 }
-
-/** How each keyed provider reaches its API through Pi. OpenRouter adds its routing policy. */
-const TRANSPORTS = {
-  openrouter: { api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1" },
-  anthropic: { api: "anthropic-messages", baseUrl: "https://api.anthropic.com" },
-  openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" },
-} as const satisfies Record<KeyedModelProvider, { api: Api; baseUrl: string }>;
 
 /**
  * Construct fresh credentials per session so secrets never enter Pi's file-backed auth store. The
@@ -231,24 +273,6 @@ function routeCompat(api: InvocationModelRoute["api"], compat: unknown) {
   if (api === "anthropic-messages") return requestCompat("anthropic", compat);
   if (api === "openai-responses") return requestCompat("openai", compat);
   return { ...(compat as OpenAICompletionsCompat | undefined), sendSessionAffinityHeaders: false, supportsMidConvoSystemMessages: false };
-}
-
-/**
- * The request each provider gets on Pi 1.0 (spec 050 Ruling 7). Pi records prompt changes as
- * mid-conversation system messages, which a model would receive after the old prompt; without them Pi
- * collapses the transcript into one leading, current prompt, as 0.85.1 sent (a resumed Slack turn
- * changes the orchestrator's cwd every turn). OpenRouter also sends no x-session-id header, as on
- * 0.85.1. Anthropic's catalog lists server-side fallback models for some Claude models; AgentX never
- * lets another model answer for the one requested, so they are dropped (spec 054 FR-003).
- */
-function requestCompat(provider: KeyedModelProvider, compat: unknown) {
-  if (provider === "openrouter") return { ...(compat as OpenAICompletionsCompat | undefined), sendSessionAffinityHeaders: false, supportsMidConvoSystemMessages: false };
-  if (provider === "anthropic") {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the server-side fallbacks
-    const { allowedFallbackModels: _fallbacks, ...rest } = (compat ?? {}) as AnthropicMessagesCompat;
-    return { ...rest, supportsMidConvoSystemMessages: false };
-  }
-  return { ...(compat as OpenAIResponsesCompat | undefined), supportsMidConvoSystemMessages: false };
 }
 
 function upstreamStream(provider: KeyedModelProvider, model: Model<Api>, context: TranscriptContext, options: SimpleStreamOptions, routing: Record<string, unknown> | undefined): AssistantMessageEventStream {

@@ -82,7 +82,8 @@ describe("a path or workflow id a newer server changed", () => {
   });
 
   it("still defaults a missing path to QUICK and keeps known values", () => {
-    const { path: _path, ...withoutPath } = snapshot();
+    const withoutPath: Record<string, unknown> = { ...snapshot() };
+    delete withoutPath.path;
     const task = DeveloperTaskResponseSchema.parse({ task: view(withoutPath) }).task;
     expect(task.workflow?.path).toBe("QUICK");
     expect(task.workflow?.definitionId).toBe("agentx-task-to-pr");

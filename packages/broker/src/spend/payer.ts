@@ -109,6 +109,24 @@ export function paymentOfTask(task: Pick<DeveloperTaskRecord, "payer" | "place" 
   return { payer, place, agentId, origin: task.origin, scopes: budgetScopesFor(payer, place, { agentId, testRunBy: task.origin === "test_run" ? (task.startedBy?.developerId ?? task.developerId) : undefined }) };
 }
 
+/**
+ * `paymentOfTask`, with every member named in it read as the member they were merged into (Plan 5 Task 21, review M-3). A payer or a test-run starter recorded before a merge
+ * (a task the duplicate neither created nor took over, whose payer the merge could not find) is counted against the survivor, in the key's scopes, tags and name. `resolve` follows
+ * a merge pointer to the end of its chain; a failure is the caller's to refuse on (nothing is minted).
+ */
+export async function paymentOfTaskResolved(
+  task: Parameters<typeof paymentOfTask>[0],
+  resolve: (developerId: string) => Promise<string>,
+): Promise<TaskPayment> {
+  const base = paymentOfTask(task);
+  const payer: Payer = base.payer.kind === "member" ? { kind: "member", developerId: await resolve(base.payer.developerId) } : base.payer;
+  const scopes: BudgetScope[] = [];
+  for (const scope of base.scopes) {
+    scopes.push(scope.kind === "member" ? { kind: "member", developerId: await resolve(scope.developerId) } : scope.kind === "testing" ? { kind: "testing", developerId: await resolve(scope.developerId) } : scope);
+  }
+  return { ...base, payer, scopes };
+}
+
 /** What identifies the payer in a key's tags and the ledger: the member, the project, the agent or the chain. */
 export const payerIdOf = (payer: Payer): string => (payer.kind === "member" ? payer.developerId : payer.kind === "project" ? payer.project : payer.kind === "chain" ? payer.chainId : payer.agentId);
 

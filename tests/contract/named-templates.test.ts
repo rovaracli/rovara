@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { normalizedTemplate } from "../support/template-snapshot.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
+import { brokerSettingsIn, takeBrokerSettings } from "../support/broker-names-template.js";
 import { withoutModelProxy } from "../support/model-proxy-template.js";
 import { withoutAuditLedger } from "../support/audit-ledger-template.js";
 
@@ -226,19 +227,16 @@ function withoutTaskPeopleControls(template: unknown): unknown {
     (resource.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
   const brokerFunctions = functions.filter(([id]) => id.startsWith("Broker"));
   expect(brokerFunctions).toHaveLength(1);
-  const brokerEnvironmentNames = [
-    "AGENTX_TASK_PEOPLE_CHANGES_ENABLED",
-    "AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED",
-    "AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED",
-  ];
+  // The broker has the three flags in its settings (AGENTX_SETTINGS, ENV-ROOM), not as variables of their own: taken out of them here.
   const brokerVariables = variablesFor(brokerFunctions[0]![1]);
-  const expectedBrokerReferences = {
-    AGENTX_TASK_PEOPLE_CHANGES_ENABLED: { Ref: "TaskPeopleChangesEnabled" },
-    AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED: { Ref: "TaskPeoplePublicInvitationsEnabled" },
-    AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED: { Ref: "TaskPeoplePrivateInvitationsEnabled" },
-  };
-  expect(Object.fromEntries(brokerEnvironmentNames.map((name) => [name, brokerVariables[name]]))).toStrictEqual(expectedBrokerReferences);
-  for (const name of brokerEnvironmentNames) delete brokerVariables[name];
+  for (const name of ["AGENTX_TASK_PEOPLE_CHANGES_ENABLED", "AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED", "AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED"]) expect(brokerVariables).not.toHaveProperty(name);
+  const flags = brokerSettingsIn(brokerVariables);
+  expect({ taskPeopleChanges: flags.taskPeopleChanges, taskPeoplePublicInvitations: flags.taskPeoplePublicInvitations, taskPeoplePrivateInvitations: flags.taskPeoplePrivateInvitations }).toStrictEqual({
+    taskPeopleChanges: { Ref: "TaskPeopleChangesEnabled" },
+    taskPeoplePublicInvitations: { Ref: "TaskPeoplePublicInvitationsEnabled" },
+    taskPeoplePrivateInvitations: { Ref: "TaskPeoplePrivateInvitationsEnabled" },
+  });
+  takeBrokerSettings(brokerVariables, ["taskPeopleChanges", "taskPeoplePublicInvitations", "taskPeoplePrivateInvitations"]);
 
   const notifierFunctions = functions.filter(([id]) => id.startsWith("DeveloperTaskNotifier"));
   expect(notifierFunctions).toHaveLength(1);

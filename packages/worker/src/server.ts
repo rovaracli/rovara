@@ -9,6 +9,7 @@ import {
   type InvokeAuthentication,
   type InvokeRejection,
 } from "./invoke-auth.js";
+import { logInvocationStarted, type WorkerInvocationLog, type WorkerLogSink } from "./worker-log.js";
 
 const MAX_INVOCATION_BYTES = 1_048_576;
 
@@ -18,6 +19,14 @@ export interface WorkerExecutor {
   invocationFeatures?: readonly WorkerInvocationFeature[];
   /** Feature-specific optional runtime gates are reported independently of ordinary worker health. */
   invocationFeatureDiagnostics?: Readonly<Record<string, unknown>>;
+  /**
+   * Listed features this worker cannot use right now (for example application CHECKS while the executor image is missing), answered from what it already knows:
+   * /ping never waits on anything slow, because the broker's probes give up after 2 to 3 seconds. Each is left out of the list the dispatcher reads, and its
+   * diagnostic says why. Features the executor does not name stay listed.
+   */
+  withheldInvocationFeatures?(): Readonly<Partial<Record<WorkerInvocationFeature, unknown>>>;
+  /** Every feature `withheldInvocationFeatures` may name. If asking throws, all of these are withheld (fail closed). */
+  withholdableInvocationFeatures?: readonly WorkerInvocationFeature[];
 }
 
 export interface WorkerTerminalResult {
@@ -37,6 +46,8 @@ export interface WorkerServerCallbacks {
   onTerminal?: (result: WorkerTerminalResult, invocation: WorkerInvocation) => Promise<void>;
   /** Injectable wait between terminal callback retries; tests pass one that does not wait. */
   retrySleep?: (ms: number) => Promise<void>;
+  /** Where the structured per-invocation lines go (worker-log.ts). Absent: no lines, as in tests that do not look. */
+  log?: WorkerLogSink;
 }
 
 export interface WorkerServerState {
@@ -67,15 +78,26 @@ export function createWorkerServerState(
   };
 }
 
+/** What /ping lists: the features this build implements, less those the executor withholds right now (and why). */
+export function advertisedInvocationFeatures(state: WorkerServerState): { features: string[]; withheld: Readonly<Record<string, unknown>> } {
+  let withheld: Readonly<Record<string, unknown>> = {};
+  try { withheld = state.executor.withheldInvocationFeatures?.() ?? {}; } catch {
+    withheld = Object.fromEntries((state.executor.withholdableInvocationFeatures ?? []).map((feature) => [feature, { status: "unavailable", reason: "availability-check-failed" }]));
+  }
+  return { features: state.invocationFeatures.filter((feature) => !Object.hasOwn(withheld, feature)), withheld };
+}
+
 export async function handleWorkerRequest(request: Request, state: WorkerServerState): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/ping") {
+    const { features, withheld } = advertisedInvocationFeatures(state);
+    const diagnostics = { ...state.invocationFeatureDiagnostics, ...withheld };
     return response(200, {
       status: state.activeOperations.size === 0 ? "Healthy" : "HealthyBusy",
       activeOperations: state.activeOperations.size,
-      // Spec 053: the optional invocation fields this build parses; the dispatcher sends one only when listed.
-      [WORKER_PING_FEATURES_FIELD]: [...state.invocationFeatures],
-      ...(state.invocationFeatureDiagnostics === undefined ? {} : { invocationFeatureDiagnostics: state.invocationFeatureDiagnostics }),
+      // Spec 053: the optional invocation fields this build parses and can use now; the dispatcher sends one only when listed.
+      [WORKER_PING_FEATURES_FIELD]: features,
+      ...(Object.keys(diagnostics).length === 0 ? {} : { invocationFeatureDiagnostics: diagnostics }),
     });
   }
   if (request.method === "POST" && url.pathname === "/invocations") {
@@ -153,6 +175,7 @@ export function startWorkerServer(
 
 async function executeInBackground(invocation: WorkerInvocation, state: WorkerServerState): Promise<void> {
   let terminal: WorkerTerminalResult;
+  const log: WorkerInvocationLog | undefined = state.callbacks.log === undefined ? undefined : logInvocationStarted(state.callbacks.log, invocation);
   try {
     await state.journal.transition(invocation.operationId, "RUNNING");
     const result = await state.executor.execute(invocation);
@@ -162,14 +185,18 @@ async function executeInBackground(invocation: WorkerInvocation, state: WorkerSe
       status: "SUCCEEDED",
       ...(result === undefined ? {} : { result }),
     };
+    log?.finished("succeeded");
   } catch (error) {
     if (error instanceof WorkerOperationCancelledError) {
+      // Logged before the journal write, as a failure is, so a journal fault leaves a line too.
+      log?.finished("cancelled");
       await state.journal.transition(invocation.operationId, "CANCELLED", error.message);
       terminal = { operationId: invocation.operationId, status: "CANCELLED", error: error.message, ...checksResult(error) };
     } else {
       // Redacted before the journal stores it on disk or the terminal callback sends it: an error
       // can carry a command's or Git's output (#170).
       const message = redactText(error instanceof Error ? error.message : "worker execution failed");
+      log?.failed(error);
       await state.journal.transition(
         invocation.operationId,
         "FAILED",

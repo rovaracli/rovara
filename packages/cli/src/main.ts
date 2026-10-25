@@ -37,6 +37,7 @@ import { cliRuntimeBinding, registerProject } from "./admin/register.js";
 import { bindSlackChannel, unbindSlackChannel } from "./admin/slack.js";
 import { stopWorkspace } from "./admin/stop.js";
 import { setTaskShareMode } from "./admin/task-share-mode.js";
+import { showTaskE2EReplays, startTaskE2EReplay } from "./admin/task-e2e-replay.js";
 import { cancelWorkspaceTask } from "./admin/cancel.js";
 import { askToApply, exportChanges, runCliChange } from "./admin/changes.js";
 import { batchResultsOutput, evalBatchShowText, evalBatchStartText, fetchEvalBatchResults, showEvalBatch, startEvalBatch, stopEvalBatch } from "./admin/eval-batch.js";
@@ -86,13 +87,16 @@ import {
 import { hooksCreate, hooksDelete, hooksList, hooksRotate } from "./developer/hooks.js";
 import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
+import { homeCards, sessionControl, sessionFollow, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
 import { ssmParameterStore, type ParameterStore } from "./environments/parameter-store.js";
 import { settingsParameterName, type EnvironmentSettings } from "./environments/settings.js";
 import { ReportedFailure, formatError, formatSuccess } from "./output.js";
-import { realSetupContext, type SetupCommandContext } from "./setup/command-context.js";
+import { projectModelChecker, realSetupContext, type SetupCommandContext } from "./setup/command-context.js";
+import { checkModelsForRegistration } from "./setup/register-model-check.js";
+import type { ProjectModelChecker } from "./setup/project-model-check.js";
 import { registerSetupCommands } from "./setup/cli.js";
 import { registerConfigCommands } from "./config/cli.js";
 import type { ConfigServices } from "./config/commands.js";
@@ -117,6 +121,7 @@ interface GlobalOptions {
   deploymentFile?: string;
   env: string;
   allowLoopback: boolean;
+  acceptUncheckedModel?: string;
   json: boolean;
 }
 
@@ -125,6 +130,8 @@ interface TextWriter {
 }
 
 export interface CliDependencies {
+  /** `admin project register --file`: the single-call model check, for tests; the real one is built from the environment's settings. */
+  registerModelCheck?: ProjectModelChecker;
   /**
    * Owner decision 2026-10-02 (#218, #235 follow-up): how this CLI process was launched, for tests;
    * `currentCliInvocation()` otherwise. Shared by the admin sign-in notices, the Ctrl-C stop line,
@@ -322,6 +329,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--deployment-file <path>", "AgentX deployment settings; defaults to this environment's local cache, or, for production, ~/.agentx/deployment.yaml")
     .option("--env <name>", "AgentX environment", DEFAULT_ENVIRONMENT)
     .option("--allow-loopback", "allow loopback HTTP endpoints for local testing only", false)
+    .option("--accept-unchecked-model <reason>", "register a project whose default model failed its check anyway (project add, setup-approve, connector add, admin project register); the reason is recorded with the revision")
     .option("--json", "emit stable machine-readable output", false);
 
   // Refuse an invalid --env before any command runs, so a malformed name never reaches AWS.
@@ -768,6 +776,71 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--file <shares.json>", "the shares, as a JSON array")
     .action(async (chainId: string, options: { file?: string }, command: Command) => printResult(command, await chainsShare(developerSession(), developerEnv(command), chainId, options.file)));
 
+  // Plan 5, Task 23: sessions. A take-over and a company-wide share answer 202 with a link to confirm in a browser: it is printed, never retried as a sign-in.
+  program
+    .command("sessions")
+    .description("list sessions: yours by default, those shared with you, a project's, or the Live wall for a filter")
+    .option("--mine", "sessions you own (the default)", false)
+    .option("--shared", "sessions shared with you", false)
+    .option("--project <name>", "a project's sessions; with --live, the Live wall of that project")
+    .option("--live <filter>", "the Live wall: all, mine, team, needs_me or failed")
+    .option("--cursor <cursor>", "continue a list from the cursor it printed")
+    .action(async (options: { mine: boolean; shared: boolean; project?: string; live?: string; cursor?: string }, command: Command) => {
+      const project = options.project ?? globalOptions(command).project;
+      printResult(command, await sessionsList(developerSession(), developerEnv(command), {
+        mine: options.mine, shared: options.shared, ...(project === undefined ? {} : { project }), ...(options.live === undefined ? {} : { live: options.live }), ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+      }));
+    });
+  const session = program.command("session").description("look at one session, comment on it, tell its agent, stop it, retry it, take it over or share it");
+  session
+    .command("show")
+    .description("show a session: its link, status, owner, cost and what waits for you")
+    .argument("<session-id>", "the session's ID, from agentx sessions")
+    .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionShow(developerSession(), developerEnv(command), id)));
+  for (const follow of [true, false]) {
+    session
+      .command(follow ? "follow" : "unfollow")
+      .description(follow ? "follow a session: you are told when it needs you" : "stop following a session")
+      .argument("<session-id>", "the session's ID")
+      .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionFollow(developerSession(), developerEnv(command), id, follow)));
+  }
+  session
+    .command("comment")
+    .description("write a comment on a session, for the people on it (the agent does not read it)")
+    .argument("<session-id>", "the session's ID")
+    .argument("<text>", "the comment")
+    .action(async (id: string, text: string, _options: unknown, command: Command) => printResult(command, await sessionSay(developerSession(), developerEnv(command), id, "comment", text)));
+  session
+    .command("tell")
+    .description("send a message to the session's agent; it needs \"can use\" on the session")
+    .argument("<session-id>", "the session's ID")
+    .argument("<text>", "the message")
+    .action(async (id: string, text: string, _options: unknown, command: Command) => printResult(command, await sessionSay(developerSession(), developerEnv(command), id, "steer", text)));
+  for (const action of ["stop", "retry"] as const) {
+    session
+      .command(action)
+      .description(action === "stop" ? "stop a session's work; the session stays open" : "retry a session that failed or was cancelled")
+      .argument("<session-id>", "the session's ID")
+      .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionControl(developerSession(), developerEnv(command), id, action)));
+  }
+  session
+    .command("take-over")
+    .description("ask to take a session over; you confirm it in your browser from the link this prints")
+    .argument("<session-id>", "the session's ID")
+    .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionTakeOver(developerSession(), developerEnv(command), id)));
+  session
+    .command("share")
+    .description("share a session with a person, a project or the company (the company share is confirmed in your browser)")
+    .argument("<session-id>", "the session's ID")
+    .option("--with <who>", "an email or developer ID, project:<name>, or company")
+    .option("--level <level>", "view, use or edit")
+    .action(async (id: string, options: { with?: string; level?: string }, command: Command) =>
+      printResult(command, await sessionShare(developerSession(), developerEnv(command), id, { ...(options.with === undefined ? {} : { with: options.with }), ...(options.level === undefined ? {} : { level: options.level }) })));
+  program
+    .command("home")
+    .description("what needs you now: approvals, plans, spend requests, pull requests and failures")
+    .action(async (_options: unknown, command: Command) => printResult(command, await homeCards(developerSession(), developerEnv(command))));
+
   /** `agentx chains triggers ...` and `agentx agents triggers ...`: the same four commands on a chain and on an agent (Plan 4 Task 18). */
   const addTriggerCommands = (parent: Command, kind: TriggerOwnerKind, noun: string) => {
     const triggers = parent.command("triggers").description(`what starts a ${noun} without a person: events and schedules`);
@@ -1189,25 +1262,48 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--subnets <pairs>", "availabilityZone=subnetId pairs, comma-separated (ec2-ebs), the foundation's Ec2WorkerSubnets")
     .option("--volume-size-gib <size>", "workspace volume size in GiB (ec2-ebs)", "20")
     .option("--volume-type <type>", "workspace volume type (ec2-ebs)", "gp3")
+    .option("--take-ownership", "register a revision of an existing project you do not administer, becoming its administrator; needs --ownership-reason and is recorded")
+    .option("--ownership-reason <why>", "why you are taking the project over (with --take-ownership); recorded with your identity and the time")
+    .option("--region <region>", "AWS region of the environment, to read its settings for the project models' check; defaults to your AWS configuration")
     .action(async (options: {
+      region?: string;
       file: string;
       deploymentMode: string;
       launchTemplateId?: string;
       subnets?: string;
       volumeSizeGib: string;
       volumeType: string;
+      takeOwnership?: boolean;
+      ownershipReason?: string;
     }, command: Command) => {
       const globals = globalOptions(command);
+      if (options.takeOwnership === true && (options.ownershipReason === undefined || options.ownershipReason.trim() === "")) {
+        throw agentXError("CONFIG_INVALID", "--take-ownership needs --ownership-reason <why>; the takeover is recorded with who took the project over, when, and why");
+      }
+      if (options.takeOwnership !== true && options.ownershipReason !== undefined) {
+        throw agentXError("CONFIG_INVALID", "--ownership-reason only goes with --take-ownership; add it only if you mean to take the project over");
+      }
       const deploymentMode = WorkspaceDeploymentModeSchema.parse(options.deploymentMode);
       const runtimeBinding = cliRuntimeBinding(deploymentMode, options);
-      const definition = await projectFromFile(options.file, globals.allowLoopback);
+      const parsedDefinition = await projectFromFile(options.file, globals.allowLoopback);
+      // MODEL1: the project's models are checked here too; a failing default refuses, anything else warns.
+      const modelChecked = await checkModelsForRegistration({
+        definition: parsedDefinition, env: globals.env, store: parameterStore(options.region),
+        checker: (environment) => dependencies.registerModelCheck ?? projectModelChecker(environment, { parameterStore, fetch: services.fetchImplementation, stderr: services.stderr }),
+        acceptUncheckedModel: globals.acceptUncheckedModel,
+      });
+      const definition = modelChecked.definition;
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
       const result = await registerProject({
         controlPlaneUrl: settings.controlPlaneUrl,
         accessToken,
         definition,
         runtimeBinding,
+        ...(options.takeOwnership === true ? { takeOwnership: { reason: options.ownershipReason! } } : {}),
       }, services.fetchImplementation);
+      if ((result as { ownershipTakenOver?: unknown } | undefined)?.ownershipTakenOver === true) {
+        services.stderr.write(`Warning: you took over project ${definition.name}: you are now one of its administrators, and the takeover is recorded with your identity, the time and your reason.\n`);
+      }
       try {
         const enrollment = await recordRegisteredLoopEnrollment({
           home, env: globals.env, controlPlaneUrl: settings.controlPlaneUrl, definition, response: result,
@@ -1218,7 +1314,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         services.stderr.write(`Warning: native project registration succeeded, but local Rovara enrollment could not be saved (${(error as Error).message}); publication will remain on hold.\n`);
       }
       services.stdout.write(formatSuccess(result, globals.json));
-      for (const warning of registrationWarnings(result, definition)) services.stderr.write(`Warning: ${warning}\n`);
+      for (const warning of [...modelChecked.warnings, ...registrationWarnings(result, definition)]) services.stderr.write(`Warning: ${warning}\n`);
     });
 
   const runtimeInstallation = admin.command("runtime-installation").description("qualify and register the standard portable runtime");
@@ -1697,6 +1793,32 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const globals = globalOptions(command);
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
       const result = await setTaskShareMode({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, taskId: options.task, mode: options.mode }, services.fetchImplementation);
+      services.stdout.write(formatSuccess(result, globals.json));
+    });
+
+  // M1.4 Task 4.6b: the audit replay of a task's qualified AI-navigated round (no model; recorded apart from the task, which it never changes).
+  const taskE2EReplay = adminTask.command("e2e-replay").description("replay a task's verified AI-navigated round with no model, for an audit; the result never changes the task");
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  taskE2EReplay.command("start")
+    .description("start a replay of the task's qualified round (refused when it left no recording, is not PASS now, or one is already running)")
+    .requiredOption("--task <task-id>", "the task")
+    .requiredOption("--round <round-id>", "the task's qualified round")
+    .action(async (options: { task: string; round: string }, command: Command) => {
+      if (!uuidPattern.test(options.task) || !uuidPattern.test(options.round)) throw agentXError("CONFIG_INVALID", "--task and --round must be IDs, such as 44444444-4444-4444-8444-444444444444");
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await startTaskE2EReplay({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, taskId: options.task, roundId: options.round }, services.fetchImplementation);
+      services.stdout.write(formatSuccess(result, globals.json));
+    });
+  taskE2EReplay.command("show")
+    .description("read the record of each replay attempt of a task's round")
+    .requiredOption("--task <task-id>", "the task")
+    .option("--round <round-id>", "the round (default: the task's qualified round)")
+    .action(async (options: { task: string; round?: string }, command: Command) => {
+      if (!uuidPattern.test(options.task) || (options.round !== undefined && !uuidPattern.test(options.round))) throw agentXError("CONFIG_INVALID", "--task and --round must be IDs, such as 44444444-4444-4444-8444-444444444444");
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await showTaskE2EReplays({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, taskId: options.task, ...(options.round === undefined ? {} : { roundId: options.round }) }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
     });
 

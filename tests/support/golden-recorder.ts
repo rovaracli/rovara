@@ -365,6 +365,7 @@ async function captureOperation(handles: BrokerHandles, workspaceId: string, ope
   const invocation = WorkerInvocationSchema.parse(outbox.invocation);
   const posted: string[] = [];
   const delivery = await createEc2Delivery({
+    applicationPlanNotNegotiated: async () => undefined,
     sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "10.0.0.7" }) },
     binding: async () => ({ deploymentMode: "ec2-ebs" }) as never,
     sign: async () => new Uint8Array(64).fill(7),

@@ -54,7 +54,7 @@ import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../a
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
-import { resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
+import { NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import {
   expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
@@ -170,6 +170,11 @@ const publicJson = (body: unknown): HttpResult =>
 const redirect = (location: string): HttpResult => ({ statusCode: 302, headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" }, body: "" });
 const oauthError = (status: number, error: string, description: string) => jsonResult(status, { error, error_description: description });
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
+/** An AgentXError's code (a fixed upper-case word like CONFIG_INVALID), as a log field; nothing for any other error. Never the message, which may hold a person's details. */
+const errorCode = (error: unknown): { code?: string } => {
+  const code = error instanceof Error && error.name === "AgentXError" ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && /^[A-Z_]+$/.test(code) ? { code } : {};
+};
 const isCode = (error: unknown, code: string) => (error as { code?: unknown } | null)?.code === code;
 /** An AgentXError's own words, without its `CODE: ` prefix. */
 const refusalWords = (error: unknown) => (error instanceof Error ? error.message : "").replace(/^[A-Z_]+: /, "");
@@ -450,9 +455,9 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   }
 
   /** Once the CLI's redirect URI and state are known, any failure goes back to the CLI, so it never
-   * waits out its timeout behind a 500 page. Only the error's name is logged. */
+   * waits out its timeout behind a 500 page. Only the error's name and, for an AgentXError, its code are logged: never its message. */
   function serverError(error: unknown, path: string, clientRedirect: string, clientState: string): HttpResult {
-    deps.log({ event: "signin.error", path, error: errorName(error) });
+    deps.log({ event: "signin.error", path, error: errorName(error), ...errorCode(error) });
     return toClient(clientRedirect, { error: "server_error", error_description: "sign-in failed on the AgentX server; run agentx login again", state: clientState });
   }
 
@@ -603,6 +608,12 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       org = join ? await resolveOrgOnSignIn(orgDependencies, { ...orgInput, allowCreate: false }) : await resolveOrgOnSignIn(orgDependencies, orgInput);
     } catch (error) {
       if (join) throw error;
+      // A Slack or company sign-in on a cloud install has no org to join (R51): told to sign in with Rovara, not shown an internal error.
+      if (isCode(error, "CONFIG_INVALID") && refusalWords(error) === NO_ORG_ON_INSTALL_MESSAGE) {
+        deps.log({ event: "signin.refused", method, reason: "no_org_on_install", developerId });
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
+        return client({ error: "access_denied", error_description: `${NO_ORG_ON_INSTALL_MESSAGE}; run agentx login again and choose Sign in with Rovara` });
+      }
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;
       deps.log({ event: "signin.refused", method, reason: "removed_from_org", developerId });
