@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { chainRunViewOf } from "../support/chain-run-view.js";
 import { DeveloperTaskViewSchema } from "@agentx/contracts";
 import { sessionDiff, type SessionDiffDependencies } from "../../packages/broker/src/agent-sessions/diff.js";
 import { ARJUN, BO, CELL, ORG_A, ORG_B, PRIYA, sessionWorld } from "../support/agent-session-world.js";
@@ -11,7 +12,7 @@ function setup() {
  const deps: SessionDiffDependencies = { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL,
  taskView: async task => DeveloperTaskViewSchema.parse({ taskId: task.taskId, project: task.project, title: "Fix", status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:00:00.000Z", events: [], pullRequests: [{ repository: "app", number: 42, url: "https://github.com/acme/app/pull/42", state: "open" }] }),
  diff: { repository, files, pullRequests: async () => [{ repository: "app", number: 42, url: "https://github.com/acme/app/pull/42", state: "open" }] } };
- return { w, sessionId, deps, files, repository };
+ return { w, sessionId, taskId, deps, files, repository };
 }
 it("allows an explicit view share and redacts token text", async () => {
  const f = setup();expect(await sessionDiff(f.deps, f.w.caller(ARJUN), f.sessionId, { repository: "app", number: 42, page: 1 })).toMatchObject({ files: [{ patch: "+[REDACTED]" }], nextPage: 2 });
@@ -111,4 +112,31 @@ it("checks view access without rebuilding decisions or the full session view for
  const f = setup(), fullView = vi.fn(f.deps.taskView.bind(f.deps));f.deps.taskView = fullView;
  await sessionDiff(f.deps, f.w.caller(ARJUN), f.sessionId, { repository: "app", number: 42, page: 1 });
  expect(fullView).not.toHaveBeenCalled();
+});
+
+function chainDiffSetup() {
+ const f=setup(),chain=f.w.seedSession({kind:"chain"}),stored=f.w.db.get({pk:"DEVTASK#"+f.taskId,sk:"META"})!;
+ f.w.db.set({...stored,chain:{chainRunId:chain.sessionId}});
+ const runView=vi.fn(async()=>chainRunViewOf(chain.sessionId,{sections:[{seq:1,stepId:"fix",name:"Fix",kind:"agent",status:"running",attempt:1,startedAt:"2026-10-22T08:00:00.000Z",detail:{kind:"task",taskId:f.taskId,rovaraCode:true}}]}));
+ const stepTask=vi.fn(async()=>f.deps.taskView(stored as unknown as Parameters<typeof f.deps.taskView>[0],{events:0,details:true,actor:"viewer"}));
+ f.deps.chain={runView,stepTask};return {...f,chain,runView,stepTask};
+}
+it("reads only a readable chain step's own pull request and pinned repository revision",async()=>{
+ const f=chainDiffSetup();
+ const result=await sessionDiff(f.deps,f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:42,page:1});
+ expect(result.pullRequest.number).toBe(42);expect(f.stepTask).toHaveBeenCalledWith({kind:"session",developerId:PRIYA},f.chain.sessionId,1);
+ expect(f.repository).toHaveBeenCalledWith(ORG_A,"web",1,"app");expect(f.files).toHaveBeenCalledTimes(1);
+});
+it("refuses chain diff reads without start permission, across organizations, or from unrelated task records",async()=>{
+ for(const mode of ["viewer","foreign","unrelated","selector"]){
+ const f=chainDiffSetup();if(mode==="viewer")f.w.grant(PRIYA,"web","viewer");
+ if(mode==="unrelated"){const key={pk:"DEVTASK#"+f.taskId,sk:"META"};f.w.db.set({...f.w.db.get(key)!,chain:{chainRunId:"crn_"+"z".repeat(20)}});}
+ await expect(sessionDiff(f.deps,mode==="foreign"?f.w.caller(BO,ORG_B):f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:mode==="selector"?43:42,page:1})).rejects.toMatchObject({code:"NOT_FOUND"});expect(f.files).not.toHaveBeenCalled();
+ }
+});
+it("refuses malformed or excessive chain sections before reading step tasks",async()=>{
+ for(const sections of [undefined,Array.from({length:31},(_,i)=>({seq:i+1,stepId:"fix",name:"Fix",kind:"agent",status:"running",attempt:1,startedAt:"2026-10-22T08:00:00.000Z",detail:{kind:"task",taskId:"11111111-1111-4111-8111-111111111111",rovaraCode:true}}))]){
+ const f=chainDiffSetup();f.runView.mockResolvedValue({...chainRunViewOf(f.chain.sessionId),sections} as ReturnType<typeof chainRunViewOf>);
+ await expect(sessionDiff(f.deps,f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:42,page:1})).rejects.toMatchObject({code:"NOT_FOUND"});expect(f.stepTask).not.toHaveBeenCalled();expect(f.files).not.toHaveBeenCalled();
+ }
 });
