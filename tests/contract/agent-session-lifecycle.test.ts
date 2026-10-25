@@ -976,12 +976,21 @@ describe("a removal that leaves an approval with no one to decide it (Re-check R
   };
   const REASON = "Everyone who could decide this has left your organization, so it was closed without a decision. Ask again if it is still needed.";
 
-  it("lists a rule-kind approval whose only candidate left to someone the rule lets decide (an owner is left)", async () => {
-    const { asked, record, listed, leave } = setup({ owner: true });
+  it("lists a rule-kind approval whose only candidate left to someone the rule lets decide (an owner is left), the owner before an admin who joined earlier", async () => {
+    const { w, asked, record, listed, leave } = setup({ owner: true });
+    w.db.set({ ...w.get(orgMemberKey(ORG_A, hex("e")))!, joinedAt: "2026-09-01T00:00:00.000Z" });
     const made = await asked({ kind: "rule", rule: "lifecycle_any", candidates: [ARJUN] });
     await leave();
     expect(await record(made.approvalId)).toMatchObject({ status: "PENDING", approvers: { kind: "rule", rule: "lifecycle_any", candidates: [OWNER] } });
     expect(listed(made.approvalId)).toEqual([OWNER]);
+  });
+
+  it("never lists the person who is leaving, though their member record is still there as an admin", async () => {
+    const { w, asked, record } = setup({ owner: true });
+    w.db.set({ ...w.get(orgMemberKey(ORG_A, ARJUN))!, role: "admin", joinedAt: "2020-01-01T00:00:00.000Z" });
+    const made = await asked({ kind: "rule", rule: "lifecycle_any", candidates: [ARJUN] });
+    await onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ARJUN, by: PRIYA });
+    expect((await record(made.approvalId)).approvers).toEqual({ kind: "rule", rule: "lifecycle_any", candidates: [OWNER] });
   });
 
   it("adds a person the rule lets decide when the candidates left do not satisfy it, and keeps the ones listed", async () => {

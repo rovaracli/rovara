@@ -1342,6 +1342,18 @@ describe("a removal in an org with no owner left", () => {
     expect(recordOf()).toMatchObject({ status: "PENDING", approverIds: [ADA.developerId] });
   });
 
+  it("lists only the approvers who can decide it now: not the person who asked, nor someone who is no approver (Re-check R-1)", async () => {
+    const { t, id, recordOf, setApprovers } = await waiting();
+    // Ada (the owner) asked this change; Ben is made an admin; the stored list names Deb, who leaves, and Carl, who is no approver at all.
+    t.db.set({ ...(t.db.get(orgMemberKey(TEST_ORG, ADA.developerId)) as Record<string, unknown>), role: "owner" });
+    t.db.set({ ...(t.db.get(orgMemberKey(TEST_ORG, BEN.developerId)) as Record<string, unknown>), role: "admin" });
+    t.db.set({ ...(t.db.get(spendRequestKey(TEST_ORG, id)) as Record<string, unknown>), requestedBy: { kind: "member", developerId: ADA.developerId } });
+    setApprovers([DEB.developerId, CARL.developerId]);
+    t.db.delete(orgMemberKey(TEST_ORG, DEB.developerId));
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
+    expect(recordOf()).toMatchObject({ status: "PENDING", approverIds: [BEN.developerId] });
+  });
+
   it("leaves a request alone that does not name the person who left, and repeating changes nothing", async () => {
     const { t, recordOf, setApprovers } = await waiting();
     setApprovers([ADA.developerId]);

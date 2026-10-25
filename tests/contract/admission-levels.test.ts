@@ -874,6 +874,19 @@ describe("a task's key at the broker", () => {
     expect(t.access.mintedKeys()).toHaveLength(1);
   });
 
+  it("mints no key when the org's state can't be read, or the task's owner can't be told (Re-check R-2 of Task 21)", async () => {
+    const t = await brokerSetup();
+    const r = await t.running();
+    t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify((input as { Key?: unknown }).Key) === JSON.stringify(orgMetaKey(TEST_ORG)), error: { name: "InternalServerError" }, times: 1 });
+    const unread = await r.ask();
+    expect(unread.status).toBeGreaterThanOrEqual(500);
+    expect(t.access.mintedKeys()).toHaveLength(0);
+    t.db.set({ ...(t.db.get(taskKey(r.taskId)) as Record<string, unknown>), currentOwner: { developerId: "", name: "?", provider: "nope", since: "x" } });
+    const unknown = await r.ask();
+    expect(unknown.status).toBeGreaterThanOrEqual(400);
+    expect(t.access.mintedKeys()).toHaveLength(0);
+  });
+
   it("mints no key for a task whose owner is no longer a member of the org (Re-check R-2 of Task 21)", async () => {
     const t = await brokerSetup();
     const r = await t.running();
