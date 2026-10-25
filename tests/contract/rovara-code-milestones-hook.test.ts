@@ -91,6 +91,17 @@ describe("writing a milestone", () => {
     expect(() => codeMilestoneItems(table, milestone(), -1)).toThrow();
   });
 
+  it("refuses to decide for itself: a milestone before the pull request needs the task's definition version (fail closed)", () => {
+    for (const kind of ["questions", "answered", "plan_ready"] as const) {
+      expect(() => codeMilestoneItems(table, milestone({ kind }), 1)).toThrow(/definition version/u);
+      expect(() => codeMilestoneItems(table, milestone({ kind }), 1, {})).toThrow(/definition version/u);
+    }
+    // After the pull request both versions get it, so the version is not needed.
+    for (const kind of ["pr_ready", "review_nudge", "fixing", "stuck", "approved", "merged"] as const) {
+      expect(codeMilestoneItems(table, milestone({ kind }), 1)).toHaveLength(1);
+    }
+  });
+
   it("is written before the pull request only for a 1.1.0 task, and after it for both", () => {
     for (const kind of ["questions", "answered", "plan_ready"] as const) {
       expect(codeMilestoneWrittenFor(kind, "1.1.0")).toBe(true);

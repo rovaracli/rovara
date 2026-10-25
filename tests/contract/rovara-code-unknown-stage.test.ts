@@ -51,6 +51,17 @@ describe("knownTaskView", () => {
     expect(knownTaskView(task)).toBeUndefined();
   });
 
+  it("does not take free text or data that is the word unknown for the reader's own marker", () => {
+    const task = DeveloperTaskResponseSchema.parse({ task: view(snapshot({ stage: "BLOCKED_NOT", state: "BLOCKED", blockReason: "unknown" })) }).task;
+    expect(task.workflow?.stage).toBe("unknown");
+    const text = DeveloperTaskResponseSchema.parse({ task: view(snapshot({ state: "BLOCKED", blockReason: "unknown" })) }).task;
+    expect(text.workflow?.stage).toBe("PLAN");
+    expect(knownTaskView(text)?.workflow?.blockReason).toBe("unknown");
+    // A title or a repository named unknown is data too.
+    const titled = DeveloperTaskResponseSchema.parse({ task: { ...view(snapshot()), title: "unknown", project: "unknown" } }).task;
+    expect(knownTaskView(titled)).toBeDefined();
+  });
+
   it("returns a task with no workflow as it is", () => {
     const plain = DeveloperTaskResponseSchema.parse({ task: view(undefined) }).task;
     expect(knownTaskView(plain)).toEqual(plain);
@@ -59,6 +70,23 @@ describe("knownTaskView", () => {
   it("keeps the plan content and work breakdown digest the page adds to the workflow", () => {
     const task = DeveloperTaskResponseSchema.parse({ task: view({ ...snapshot(), planContent: "# Plan", workBreakdownDigest: "b".repeat(64) }) }).task;
     expect(knownTaskView(task)?.workflow).toMatchObject({ planContent: "# Plan", workBreakdownDigest: "b".repeat(64) });
+  });
+});
+
+describe("a path or workflow id a newer server changed", () => {
+  it("reads as unknown, as the type says, instead of failing the whole task", () => {
+    const task = DeveloperTaskResponseSchema.parse({ task: view(snapshot({ path: "TRIAGE", definitionId: "agentx-other-flow" })) }).task;
+    expect(task.workflow?.path).toBe("unknown");
+    expect(task.workflow?.definitionId).toBe("unknown");
+    expect(knownTaskView(task)).toBeUndefined();
+  });
+
+  it("still defaults a missing path to QUICK and keeps known values", () => {
+    const { path: _path, ...withoutPath } = snapshot();
+    const task = DeveloperTaskResponseSchema.parse({ task: view(withoutPath) }).task;
+    expect(task.workflow?.path).toBe("QUICK");
+    expect(task.workflow?.definitionId).toBe("agentx-task-to-pr");
+    expect(DeveloperTaskResponseSchema.parse({ task: view(snapshot({ path: "FULL", reviewPhase: "REQUIREMENTS" })) }).task.workflow?.path).toBe("FULL");
   });
 });
 

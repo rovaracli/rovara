@@ -1,4 +1,6 @@
 // Rovara Code (Plan 6) Task 1: the contracts, the tolerant client view of a task, and the keys.
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -323,22 +325,13 @@ describe("a task read by an older client (Finding 13)", () => {
     createdAt: now, updatedAt: now, events: [], workflow,
   });
 
-  // What a client built before Plan 6 parsed (the workflow part of `DeveloperTaskResponseSchema` at 09da2b0e): a fixed version, the nine stages,
-  // the six outcomes and a strict pull request.
-  const LEGACY_STAGES = ["PLAN", "PLAN_REVIEW", "IMPLEMENT", "VERIFY", "REVIEW", "PULL_REQUEST", "WAIT_FOR_MERGE", "MERGED", "CLOSED"] as const;
-  const LEGACY_OUTCOMES = ["PASSED", "SKIPPED", "CHANGES_REQUESTED", "REJECTED", "MERGED", "CLOSED"] as const;
-  const LegacyPullRequest = z.object({
-    repositoryId: z.string(), number: z.number(), url: z.string(), headSha: z.string().optional(), headTreeSha: z.string().optional(),
-    candidateDigest: z.string(), required: z.boolean(), state: z.enum(["UNKNOWN", "OPEN", "CLOSED", "MERGED"]), observedAt: z.string().optional(),
-  }).strict();
-  const LegacyResponse = z.object({
-    task: z.object({
-      taskId: z.string(), title: z.string(),
-      workflow: z.object({
-        definitionVersion: z.literal("1.0.0"), stage: z.enum(LEGACY_STAGES), outcome: z.enum(LEGACY_OUTCOMES).optional(), pullRequests: z.array(LegacyPullRequest).optional(),
-      }).optional(),
-    }),
-  });
+  // What a client built before Plan 6 parsed: the JSON Schema of the real `DeveloperTaskResponseSchema` as it was at 09da2b0e (version a fixed "1.0.0", nine stages, six
+  // outcomes, a strict pull request, every strict nested object of the view), generated from that commit with `z.toJSONSchema(schema, { io: "input", unrepresentable: "any",
+  // target: "draft-7" })` and frozen in tests/fixtures. It is the whole view, so a later task that adds a field to any strict object of it fails here until
+  // `taskViewForClient` projects it away.
+  const legacySchema = JSON.parse(readFileSync("tests/fixtures/pre-plan6-task-response.schema.json", "utf8")) as object;
+  const validateLegacy = new (createRequire(import.meta.url)("ajv") as typeof import("ajv").default)({ strict: false, validateFormats: false }).compile(legacySchema);
+  const LegacyResponse = { safeParse: (value: unknown) => ({ success: validateLegacy(value) as boolean, errors: validateLegacy.errors }) };
   const pullRequest = { repositoryId: "payments", number: 7, url: "https://github.com/acme/payments/pull/7", candidateDigest: "d".repeat(64), required: true, state: "OPEN", syncedFrom: "e".repeat(40) };
 
   const understanding = () => view(v2({ stage: "UNDERSTAND", state: "WAITING", intent, fixRounds: { ci: 0, conflict: 0, feedbackAuto: 0 }, fixSource: "ci", pullRequests: [pullRequest] }));
@@ -347,8 +340,9 @@ describe("a task read by an older client (Finding 13)", () => {
     expect(LegacyResponse.safeParse({ task: understanding() }).success).toBe(false);
     const projected = taskViewForClient(understanding() as never, {});
     const parsed = LegacyResponse.safeParse({ task: projected });
+    expect(parsed.errors ?? []).toEqual([]);
     expect(parsed.success).toBe(true);
-    expect(parsed.success && parsed.data.task.workflow).toMatchObject({ definitionVersion: "1.0.0", stage: "PLAN" });
+    expect(projected.workflow).toMatchObject({ definitionVersion: "1.0.0", stage: "PLAN" });
   });
 
   it("projects each new stage, the answered outcome and every new field away", () => {

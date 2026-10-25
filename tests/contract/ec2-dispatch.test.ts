@@ -447,6 +447,21 @@ describe("ec2-ebs delivery", () => {
       expect(postedPayload(post).workflowMode).toBe("PLAN");
     });
 
+    it("sends the Understand and plan-critic modes only to a worker that lists their feature, and never drops the mode (Rovara Code v2)", async () => {
+      for (const [workflowMode, feature] of [["UNDERSTAND", "task.workflowUnderstand"], ["PLAN_CRITIQUE", "task.workflowPlanCritique"]] as const) {
+        const record = taskRecord({ workflowMode });
+        const older = delivery({ workerFeatures: async () => ["task.workflowMode"] });
+        await expect(older.deliver(record, record.invocation)).rejects.toThrow(/needs a newer worker/);
+        expect(older.post).not.toHaveBeenCalled();
+        // The other new feature is not enough.
+        const other = delivery({ workerFeatures: async () => ["task.workflowMode", feature === "task.workflowUnderstand" ? "task.workflowPlanCritique" : "task.workflowUnderstand"] });
+        await expect(other.deliver(record, record.invocation)).rejects.toThrow(/needs a newer worker/);
+        const capable = delivery({ workerFeatures: async () => ["task.workflowMode", feature] });
+        expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+        expect(postedPayload(capable.post).workflowMode).toBe(workflowMode);
+      }
+    });
+
     it("refuses workflow dispatch when a worker cannot prove it enforces the requested tool boundary", async () => {
       const { deliver, post } = delivery({ workerFeatures: async () => [] });
       const record = taskRecord({ workflowMode: "PLAN" });
