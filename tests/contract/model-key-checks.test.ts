@@ -25,7 +25,7 @@ interface StoredKey { key: string; token: string; models: string[]; team_id?: st
 interface Seen { method: string; path: string; search: string; body: Record<string, unknown> | undefined }
 
 /** A stateful fake of the LiteLLM routes the mint checks use. `store` lets a test make LiteLLM keep something other than what was asked. */
-function litellm(options: { teams?: Record<string, string[] | undefined>; store?: (body: Record<string, unknown>) => Partial<StoredKey>; pageSize?: number; failOn?: (seen: Seen) => Response | undefined } = {}) {
+function litellm(options: { teams?: Record<string, string[] | undefined>; /** The proxy's /model/info entries. */ modelList?: Array<Record<string, unknown>>; store?: (body: Record<string, unknown>) => Partial<StoredKey>; pageSize?: number; failOn?: (seen: Seen) => Response | undefined } = {}) {
   const teams = new Map<string, string[] | undefined>(Object.entries(options.teams ?? { [ORG]: [OWN, ...CATALOG] }));
   const keys: StoredKey[] = [];
   const seen: Seen[] = [];
@@ -41,6 +41,14 @@ function litellm(options: { teams?: Record<string, string[] | undefined>; store?
     if (entry.method === "GET" && entry.path === "/team/info") {
       const id = params.get("team_id") ?? "";
       return teams.has(id) ? json({ team_id: id, team_info: { team_id: id, models: teams.get(id), max_budget: 500, spend: 0 } }) : json({ error: { message: "team not found" } }, 404);
+    }
+    if (entry.method === "GET" && entry.path === "/model/info") return json({ data: options.modelList ?? [] });
+    if (entry.method === "POST" && entry.path === "/team/update") {
+      const id = String(entry.body!.team_id);
+      if (!teams.has(id)) return json({ error: { message: "team not found" } }, 404);
+      // LiteLLM changes only the fields it is sent: the budget and its reset stay as they were.
+      if (Array.isArray(entry.body!.models)) teams.set(id, entry.body!.models as string[]);
+      return json({ team_id: id });
     }
     if (entry.method === "POST" && entry.path === "/key/generate") {
       counter += 1;
@@ -95,8 +103,6 @@ describe("validate_mint: the team must be scoped before a scoped key is minted f
 
   it("refuses an unscoped team: empty models (which means every model), a wildcard, an access group, a foreign alias or an unknown id", async () => {
     const teams: Array<[string, string[] | undefined]> = [
-      ["no models at all", undefined],
-      ["an empty list", []],
       ["a bare wildcard", ["*"]],
       ["all-proxy-models", ["all-proxy-models"]],
       ["a wildcard beside valid models", [OWN, "*"]],
@@ -126,6 +132,94 @@ describe("validate_mint: the team must be scoped before a scoped key is minted f
     const proxy = litellm();
     await client(proxy).mintKey(mint([], { models: undefined }));
     expect(proxy.calls()).toEqual(["POST /key/generate"]);
+  });
+});
+
+const deployment = (name: string, org: string | undefined, extra: Record<string, unknown> = {}) => ({
+  model_name: name,
+  model_info: { id: `id-${name}`, ...(org === undefined ? {} : { rovara_org: org }), ...extra },
+  litellm_params: {},
+});
+
+describe("a team left unscoped by an earlier deploy heals at the mint, to exactly the org's allowed models", () => {
+  const SERVED = `${ORG}.${SRC}.claude-sonnet-4-6`;
+  const REVOKED = `${ORG}.src_revoked00000000000000.claude-sonnet-4-6`;
+  const UNTESTED = `${ORG}.src_bedrock0000000000000.claude-sonnet-4-6`;
+  const FOREIGN = `${OTHER_ORG}.${SRC}.claude-sonnet-4-6`;
+  // The proxy holds the org's served alias, a Bedrock alias that has not passed its probe, another org's alias and a model of nobody's.
+  // The revoked source's alias is gone from the proxy: removing a source deletes its models.
+  const modelList = [
+    deployment(SERVED, ORG),
+    deployment(UNTESTED, ORG, { rovara_role_arn: "arn:aws:iam::123456789012:role/x", rovara_tested: false }),
+    deployment(FOREIGN, OTHER_ORG),
+    deployment("us.anthropic.claude-opus-9", undefined),
+  ];
+
+  for (const [what, models] of [["an empty models list", [] as string[]], ["no models field at all", undefined]] as const) {
+    it(`mints for a team with ${what}, after limiting the team to the org's served aliases and the catalog`, async () => {
+      const proxy = litellm({ teams: { [ORG]: models }, modelList });
+      const minted = await client(proxy).mintKey(mint([SERVED]));
+      expect(minted.key).toBe("sk-virtual-1");
+      expect(proxy.calls()).toEqual(["GET /team/info", "GET /model/info", "POST /team/update", "GET /team/info", "POST /key/generate", "GET /key/info"]);
+      const update = proxy.seen.find((entry) => entry.path === "/team/update")!;
+      // Only the model list is sent: the team's budget, its reset and its spend are left as they were.
+      expect(Object.keys(update.body!).sort()).toEqual(["models", "team_id"]);
+      expect(update.body!.team_id).toBe(ORG);
+      expect([...(update.body!.models as string[])].sort()).toEqual([SERVED, ...CATALOG].sort());
+      expect([...(proxy.teams.get(ORG) ?? [])].sort()).toEqual([SERVED, ...CATALOG].sort());
+    });
+  }
+
+  it("never adds a revoked alias, a Bedrock alias that failed its probe, another org's alias or a model nobody owns", async () => {
+    const proxy = litellm({ teams: { [ORG]: [] }, modelList });
+    await client(proxy).mintKey(mint([SERVED]));
+    const team = proxy.teams.get(ORG)!;
+    for (const forbidden of [REVOKED, UNTESTED, FOREIGN, "us.anthropic.claude-opus-9", "*"]) expect(team, forbidden).not.toContain(forbidden);
+  });
+
+  it("refuses a key that names a revoked alias or one that failed its probe, and does not add it to the team", async () => {
+    for (const asked of [REVOKED, UNTESTED]) {
+      const proxy = litellm({ teams: { [ORG]: [] }, modelList });
+      const refused = await failure(client(proxy).mintKey(mint([SERVED, asked])));
+      expect(refused.code, asked).toBe("CONFIG_INVALID");
+      expect(proxy.calls(), asked).toEqual(["GET /team/info", "GET /model/info"]);
+      expect(proxy.teams.get(ORG), asked).toEqual([]);
+    }
+  });
+
+  it("refuses a key that names another org's alias before reading anything", async () => {
+    const proxy = litellm({ teams: { [ORG]: [] }, modelList });
+    expect((await failure(client(proxy).mintKey(mint([SERVED, FOREIGN])))).code).toBe("CONFIG_INVALID");
+    expect(proxy.calls()).toEqual([]);
+  });
+
+  it("fails closed when the allowed models cannot be read: the team is not touched and no key is minted", async () => {
+    const proxy = litellm({ teams: { [ORG]: [] }, modelList, failOn: (seen) => (seen.path === "/model/info" ? json({ error: "down" }, 503) : undefined) });
+    expect((await failure(client(proxy).mintKey(mint([SERVED])))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+    expect(proxy.calls()).toEqual(["GET /team/info", "GET /model/info"]);
+    expect(proxy.teams.get(ORG)).toEqual([]);
+  });
+
+  it("fails closed when the team update is refused, and when the team still reads as unscoped afterwards", async () => {
+    const refused = litellm({ teams: { [ORG]: [] }, modelList, failOn: (seen) => (seen.path === "/team/update" ? json({ error: { message: "no" } }, 400) : undefined) });
+    expect((await failure(client(refused).mintKey(mint([SERVED])))).code).toBe("CONFIG_INVALID");
+    expect(refused.calls()).toEqual(["GET /team/info", "GET /model/info", "POST /team/update"]);
+    // An update the proxy accepts but does not keep: the second read still shows no models.
+    const ignored = litellm({ teams: { [ORG]: [] }, modelList, failOn: (seen) => (seen.path === "/team/update" ? json({ team_id: ORG }) : undefined) });
+    expect((await failure(client(ignored).mintKey(mint([SERVED])))).code).toBe("CONFIG_INVALID");
+    expect(ignored.calls()).toEqual(["GET /team/info", "GET /model/info", "POST /team/update", "GET /team/info"]);
+  });
+
+  it("does not touch a team that is already scoped: no model listing, no update", async () => {
+    const proxy = litellm({ modelList });
+    await client(proxy).mintKey(mint([SERVED]));
+    expect(proxy.calls()).toEqual(["GET /team/info", "POST /key/generate", "GET /key/info"]);
+  });
+
+  it("needs the catalog, since a team is never written without it", async () => {
+    const proxy = litellm({ teams: { [ORG]: [] }, modelList });
+    expect((await failure(client(proxy, { catalog: [] }).mintKey(mint([SERVED])))).code).toBe("CONFIG_INVALID");
+    expect(proxy.calls()).toEqual([]);
   });
 });
 

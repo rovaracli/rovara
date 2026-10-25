@@ -67,6 +67,7 @@ function hostnameOf(value: unknown): string | undefined {
 
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const unavailable = (message: string) => agentXError("MODEL_PROXY_UNAVAILABLE", message);
+const notScoped = () => agentXError("CONFIG_INVALID", "this organization's model team is not limited to its own models; ask a Rovara admin to look at it");
 
 /** The proxy's own words for a refusal, with anything shaped like a key and the exact `secret` removed first, and only then the length capped. */
 function proxyMessage(body: unknown, secret?: string): string {
@@ -200,7 +201,7 @@ export class ModelProxyClient implements ModelAccess {
     if (input.models !== undefined) assertKeyModels(input.orgId, input.models, catalog);
     const master = await this.master();
     // validate_mint: a scoped key is only as narrow as its team lets it be, so the team is read first and must itself be limited to the org's own models.
-    if (input.models !== undefined) await this.requireScopedTeam(master, input.orgId, catalog);
+    if (input.models !== undefined) await this.requireScopedTeam(master, input.orgId, catalog, input.models);
     const tags = input.tags === undefined ? {} : Object.fromEntries(Object.entries(input.tags).filter(([, value]) => value !== undefined));
     const reply = await this.request("POST", "/key/generate", master, {
       team_id: input.orgId,
@@ -218,15 +219,35 @@ export class ModelProxyClient implements ModelAccess {
     return { key, expiresAt: requestedAt + input.ttlSeconds * 1000 };
   }
 
-  /** The team's `models` must be non-empty (empty means every model) and hold only the org's own aliases and Rovara AI catalog ids. */
-  private async requireScopedTeam(master: string, orgId: OrgId, catalog: readonly string[]): Promise<void> {
+  /**
+   * The team's `models` must be non-empty (empty means every model) and hold only the org's own aliases and Rovara AI catalog ids.
+   * A team with no models at all is the state an earlier deploy left (the team was created before teams were scoped, and nothing upserts an existing org again): it is
+   * limited here, once, to exactly the org's allowed models, and read back before anything is minted. Any other list that is not the org's own is not Rovara's doing
+   * and stays refused.
+   */
+  private async requireScopedTeam(master: string, orgId: OrgId, catalog: readonly string[], requested: readonly string[]): Promise<void> {
+    const models = await this.readTeamModels(master, orgId);
+    if (models !== undefined && models.length > 0) {
+      if (!models.every((model) => typeof model === "string" && ownOrCatalog(orgId, model, catalog))) throw notScoped();
+      return;
+    }
+    // The allowed models are the proxy's own: the org's served aliases (a removed source's are gone, a Bedrock source's before its probe has passed are not served) and the catalog.
+    // They are read before anything is written, so a proxy that cannot say leaves the team and the mint as they were.
+    const own = (await this.listModels(master)).filter((entry) => entry.org === orgId && entry.served).map((entry) => entry.name);
+    const allowed = [...new Set([...own, ...catalog])];
+    // Only the key's own models are measured against the allowed ones; the team is never widened to fit a request.
+    if (!requested.every((model) => allowed.includes(model))) throw agentXError("CONFIG_INVALID", "a key may name only models this organization may use");
+    await this.setTeamModels(master, orgId, own, catalog);
+    const healed = await this.readTeamModels(master, orgId);
+    if (healed === undefined || !sameModels(healed, allowed)) throw notScoped();
+  }
+
+  /** The team's `models` as the proxy holds them (undefined when it holds none). */
+  private async readTeamModels(master: string, orgId: OrgId): Promise<unknown[] | undefined> {
     const reply = await this.request("GET", `/team/info?team_id=${encodeURIComponent(orgId)}`, master, undefined);
     if (reply.status !== 200) throw refusal(reply);
     const info = isRecord(reply.body) ? reply.body.team_info : undefined;
-    const models = isRecord(info) && Array.isArray(info.models) ? info.models : undefined;
-    if (models === undefined || models.length === 0 || !models.every((model) => typeof model === "string" && ownOrCatalog(orgId, model, catalog))) {
-      throw agentXError("CONFIG_INVALID", "this organization's model team is not limited to its own models; ask a Rovara admin to look at it");
-    }
+    return isRecord(info) && Array.isArray(info.models) ? info.models : undefined;
   }
 
   /**
