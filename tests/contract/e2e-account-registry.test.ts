@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { projectSetupApprovalKey } from "@agentx/contracts";
+import { TEST_ORG } from "../support/orgs.js";
 import {
   E2EApplicationAccountDefinitionSchema, E2EApplicationPlanIntentSchema, E2EApplicationSelectionRecordSchema, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX,
   canonicalJson, createE2ESyntheticAccountDefinition, deriveE2EApplicationRuntimeAccountRef, deriveE2ESyntheticRuntimeAccountRef, e2eApplicationAccountDefinitionDigest,
@@ -431,7 +433,7 @@ describe("the broker's project registration writes the accounts (Task 3.1, owner
       const response = await call(harness.handler, { method: "POST", path: "/v1/admin/projects/setup-approvals", user,
         body: { projectName: "payments", proposalRef: proposal.ref, proposalSha256: proposal.sha, decision: "approve" } });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
-      if (approvedAt !== undefined) harness.db.set({ ...harness.db.get("PROJECT_SETUP#payments", `PROPOSAL#${proposal.sha}`)!, approvedAt });
+      if (approvedAt !== undefined) { const key = projectSetupApprovalKey(TEST_ORG, "payments", proposal.sha); harness.db.set({ ...harness.db.get(key.pk, key.sk)!, approvedAt }); }
     };
     const register = (proposal: Proposal, user = admin, revision?: number) => {
       const rows = projectRows();

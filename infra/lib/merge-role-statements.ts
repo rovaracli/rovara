@@ -75,7 +75,9 @@ export type BrokerPolicyGroup = (typeof BROKER_POLICY_GROUPS)[number];
 const STATE_SERVICES = new Set(["dynamodb", "s3", "kms"]);
 // `scheduler` and `iam` are not here (Plan 4 Task 26): the broker's schedule statements (manage the group's schedules, pass the one invoke role) fall in the integrations group,
 // which has room, because the orchestration group was past the 5,500-character guard with them. No grant of either service existed before, so no other statement moved.
-const ORCHESTRATION_SERVICES = new Set(["lambda", "sqs", "states", "events", "ecs", "ec2", "ssm", "sts", "logs", "cloudwatch"]);
+// `ssm` is not here either (round 4 merge): mainline's AI navigation model and fallback settings added two parameter ARNs to the broker's worker-settings read, which put this group
+// at 5,730 characters against the 5,500 guard. The worker-settings read falls in the integrations group, which has room. No grant of the service is new, so no grant is lost.
+const ORCHESTRATION_SERVICES = new Set(["lambda", "sqs", "states", "events", "ecs", "ec2", "sts", "logs", "cloudwatch"]);
 
 /** The group a statement belongs to, by the service of its first action (a stable choice, so a new grant never reshuffles the others). */
 export function brokerPolicyGroup(statement: iam.PolicyStatement): BrokerPolicyGroup {

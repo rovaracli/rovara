@@ -16118,8 +16118,10 @@ async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, identity:
   }
   const { roundId } = z.object({ roundId: z.string().uuid() }).strict().parse(value);
   // The route dependencies act for the task's developer (the task's owner); the request is the administrator's, and is recorded as theirs (Task FU2, REPLAYACTOR).
-  const caller: DeveloperCaller = { developerId: task.developerId, sessionId: "replay-admin", amr: task.provider, name: task.developerName, orgId,
-    orgRole: (await readOrgMember(dependencies, orgId, task.developerId))?.role ?? "member" };
+  // The task's owner now (Plan 5 Task 12a): the person who took it over, else its creator.
+  const owner = effectiveTaskOwner(task);
+  const caller: DeveloperCaller = { developerId: owner.developerId, sessionId: "replay-admin", amr: owner.provider, name: owner.name, orgId,
+    orgRole: (await readOrgMember(dependencies, orgId, owner.developerId))?.role ?? "member" };
   const claimed = [identity.claims.name, identity.claims.email].find((claim): claim is string => typeof claim === "string" && claim.trim() !== "");
   const routeDependencies = developerTaskRouteDependencies({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,

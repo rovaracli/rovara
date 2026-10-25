@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { projectMemberKey } from "@agentx/contracts";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, ensureWorkspace, issuer, lazyEnsureWorkspace } from "../support/slack-broker.js";
 
 // Task AUTH2 (finding 2 of the Task AUTH1 review): workspace preparation read a project membership and wrote it back without a condition.
@@ -25,7 +27,7 @@ async function harness() {
     call(broker.handler, { method: "POST", path: "/v1/admin/workspaces/prepare", user, body: { requestId: randomUUID(), projectName: "payments", projectRevision: 1, ownerSubject } });
   const membership = (ownerKey: string): Row | undefined => db.find((row) => row.entityType === "MEMBERSHIP" && row.ownerKey === ownerKey && row.projectName === "payments")[0];
   const plant = (ownerKey: string, row: Partial<Row> = {}): Row => {
-    const planted = { pk: `MEMBER#${ownerKey}`, sk: "PROJECT#payments", entityType: "MEMBERSHIP", ownerKey, projectName: "payments", role: "administrator", grantId: "planted-grant", ...row };
+    const planted = { ...projectMemberKey(TEST_ORG, ownerKey, "payments"), entityType: "MEMBERSHIP", ownerKey, projectName: "payments", role: "administrator", grantId: "planted-grant", ...row };
     db.set(planted);
     return planted;
   };
@@ -43,8 +45,8 @@ async function harness() {
     db.send = async (command) => {
       if (command.constructor.name === "TransactWriteCommand") {
         const items = (command as unknown as { input: { TransactItems: Item[] } }).input.TransactItems;
-        const pk = items.map((item) => item.Put?.Item?.pk ?? item.ConditionCheck?.Key?.pk ?? item.Update?.Key?.pk).find((value): value is string => typeof value === "string" && value.startsWith("MEMBER#"));
-        if (pk !== undefined) { count += 1; act(count, pk.slice("MEMBER#".length)); }
+        const pk = items.map((item) => item.Put?.Item?.pk ?? item.ConditionCheck?.Key?.pk ?? item.Update?.Key?.pk).find((value): value is string => typeof value === "string" && value.includes("MEMBER#"));
+        if (pk !== undefined) { count += 1; act(count, pk.slice(pk.indexOf("MEMBER#") + "MEMBER#".length)); }
       }
       return send(command);
     };

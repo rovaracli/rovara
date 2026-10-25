@@ -431,14 +431,15 @@ async function checkoutPullRequestHeads(
     const hasCommit = async (): Promise<boolean> => (await runIsolatedGit(directory, ["cat-file", "-e", `${head.headSha}^{commit}`], { timeout: 30_000, maxBuffer: 4_096 }).then(() => true, () => false));
     // The repository's own URL, as every other network call of the worker names it (a hardened Git ignores the clone's `origin`).
     try {
-      await runGitWithCredential({ directory, args: ["-C", directory, "fetch", "--no-tags", remoteUrl, head.headSha], credential, timeout: 300_000, maxBuffer: MAX_COMMAND_OUTPUT_BYTES });
+      await runGitWithCredential({ directory, args: ["fetch", "--no-tags", remoteUrl, head.headSha], cwd: directory, credential, timeout: 300_000, maxBuffer: MAX_COMMAND_OUTPUT_BYTES });
     } catch {
       // A server that does not serve a commit by its sha: the pull request's ref is read instead, and must name that commit.
     }
     if (!await hasCommit()) {
       await runGitWithCredential({
         directory,
-        args: ["-C", directory, "fetch", "--no-tags", remoteUrl, `+refs/pull/${String(head.pullRequest)}/head:${ref}`],
+        args: ["fetch", "--no-tags", remoteUrl, `+refs/pull/${String(head.pullRequest)}/head:${ref}`],
+        cwd: directory,
         credential,
         timeout: 300_000,
         maxBuffer: MAX_COMMAND_OUTPUT_BYTES,

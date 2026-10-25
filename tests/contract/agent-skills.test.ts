@@ -58,7 +58,8 @@ describe("issueCapability", () => {
     ["feedbackBundles", ["feedback-bundles"]],
     ["feedbackApproval", ["feedback-approval"]],
     ["chatGptToken", ["chatgpt-token", "chatgpt-status"]],
-    ["candidateExport", ["candidate-export"]],
+    ["candidateExport", ["candidate-export", "candidate-build-source", "baseline-source"]],
+    ["e2eModelBudget", ["e2e-model-budget"]],
     ["workflowE2E", ["e2e-admission", "e2e-evidence"]],
     ["modelAccess", ["model-access"]],
     ["agentSkills", ["agent-skills"]],
@@ -78,7 +79,7 @@ describe("issueCapability", () => {
     });
     expect(claimsOf(all).actions).toEqual([
       "artifacts", "events", "result",
-      "candidate-export", "e2e-admission", "e2e-evidence", "feedback-bundles", "feedback-approval", "chatgpt-token", "chatgpt-status", "model-access",
+      "candidate-export", "candidate-build-source", "baseline-source", "e2e-admission", "e2e-evidence", "feedback-bundles", "feedback-approval", "chatgpt-token", "chatgpt-status", "model-access",
       "pull-request", "pull-request-update", "codebuild",
       "agent-skills",
     ]);

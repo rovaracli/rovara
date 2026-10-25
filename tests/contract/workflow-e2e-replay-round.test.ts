@@ -11,6 +11,7 @@ import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import type { DurableOutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { startTaskWorkflowE2EReplayFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
 import { replayStartItem, requestWorkflowE2EReplay } from "../../packages/broker/src/aws/workflow-e2e-replay.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 // M1.4 Task 4.6b (tests 16 and 17) on the real broker: the operator's request to replay a task's qualified round refuses before a runner is started or anything is recorded, for each of its
 // reasons; and a replay round, whatever its result, changes nothing in the workflow, the qualification, send-back or publication.
@@ -188,7 +189,7 @@ describe("who a replay is recorded under (Task FU2)", () => {
     round.harness.db.set({ ...idle, status: "READY" });
     const store = { documentClient: round.harness.db as never, tableName: "state" };
     expect(await requestWorkflowE2EReplay(store, task as never, { sourceRoundId, attempt: 1, requestedBy: "owner-key-of-the-admin" })).toBe("REQUESTED");
-    const deps = { documentClient: round.harness.db, tableName: "state", now: Date.now, actions: round.harness.actions };
+    const deps = { documentClient: round.harness.db, tableName: "state", now: Date.now, actions: round.harness.actions, orgId: TEST_ORG };
     const admin = { issuer: "https://admin.example", subject: "admin-subject", displayName: "Ada Administrator" };
     const outcome = await startTaskWorkflowE2EReplayFromSystem(deps as never, round.taskId, { sourceRoundId, candidateDigest: task.workflow.candidate.digest },
       { ...base, roundId: replayRoundId, workflowRevision: task.workflow.revision, purpose: "replay", sourceRoundId, attempt: 1 } as never, operationId,

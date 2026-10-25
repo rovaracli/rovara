@@ -296,7 +296,7 @@ const MODEL_FALLBACK_SETTING = { logicalIdPrefix: "WorkerModelFallbackParameter"
  * (DERIVED_BROKER_VARIABLES), so no variable is lifted or verified here; the broker code that derives it ships with the broker unit.
  */
 export const E2E_AGENT_SETTINGS_UNIT = {
-  policies: ["BrokerServiceRoleServiceRoleOrchestrationPolicy4038649D", "SessionsStepsServiceRoleDefaultPolicy9F4B87C9"],
+  policies: ["BrokerServiceRoleServiceRoleIntegrationsPolicy942FF081", "SessionsStepsServiceRoleDefaultPolicy9F4B87C9"],
   settings: ["e2eAgentModel", "modelFallback"],
 } as const satisfies { policies: readonly string[]; settings: ReadonlyArray<keyof typeof WORKER_SETTING_PARAMETERS> };
 

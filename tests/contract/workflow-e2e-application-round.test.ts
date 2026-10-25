@@ -10,6 +10,7 @@ import type { ApplicationGroupEvidence, ObservedApiOutcome } from "../support/e2
 import { MAYA } from "../support/developer-task-broker.js";
 import { apiRowKey, sha, startApplicationRound, type ApplicationRound } from "../support/e2e-application-round-harness.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { orgMemberKey, projectMemberKey, slackBindingKey } from "@agentx/contracts";
 
 // An application round on the real broker: the dispatch builds the admission, the worker's callbacks upload genuinely collected evidence, the broker
 // verifies it independently of the worker at the result callback, and what it decides gates publication exactly as it does for portable rounds.
@@ -708,11 +709,15 @@ describe("current authority at verification (the runtime row, the creator, the s
     expect(proof, "the admission carries the creator's access as it was").toBeDefined();
     const aggregate = await uploadAll(round, await collectAll(round, [PASS]));
     if (proof!.kind === "direct-membership") {
-      const key = { pk: `MEMBER#${proof!.developerId}`, sk: `PROJECT#${proof!.project}` };
+      const key = projectMemberKey(TEST_ORG, proof!.developerId, proof!.project);
       round.harness.db.set({ ...round.harness.db.get(key.pk, key.sk)!, grantId: randomUUID() });
+    } else if (proof!.kind === "org-role") {
+      // An org owner's or admin's role, changed and changed back, reads as new (Rovara Cloud): the member record's stamp moves.
+      const key = orgMemberKey(TEST_ORG, proof!.developerId);
+      round.harness.db.set({ ...round.harness.db.get(key.pk, key.sk)!, roleUpdatedAt: new Date(Date.now() + 5_000).toISOString() });
     } else {
       const bound = (round.admission as { creatorAuthority?: { teamId: string; bindings: Array<{ channelId: string }> } }).creatorAuthority!;
-      const key = { pk: `SLACK_BINDING#${bound.teamId}`, sk: `CHANNEL#${bound.bindings[0]!.channelId}` };
+      const key = slackBindingKey(TEST_ORG, bound.teamId, bound.bindings[0]!.channelId);
       round.harness.db.set({ ...round.harness.db.get(key.pk, key.sk)!, updatedAt: new Date(Date.now() + 5_000).toISOString() });
     }
     await round.finishChecks(aggregate);

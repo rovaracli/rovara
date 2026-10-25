@@ -153,7 +153,11 @@ describe("registering a project", () => {
             transactions.push(items);
             if (failNext) { failNext = false; throw Object.assign(new Error("the table is unavailable"), { name: "InternalServerError" }); }
           }
-        } else if (name === "PutCommand" || name === "UpdateCommand") writes.push(name);
+        } else if (name === "PutCommand" || name === "UpdateCommand") {
+          // The install's org row is ensured on first use of the org (Rovara Cloud), apart from the project's own writes.
+          const item = (command as unknown as { input: { Item?: { entityType?: unknown } } }).input.Item;
+          if (item?.entityType !== "ORG") writes.push(name);
+        }
         return send(command);
       };
       const before = structuredClone(broker.harness.db.find(() => true));

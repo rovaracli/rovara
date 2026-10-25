@@ -21,11 +21,18 @@ type Bucket = { Properties: { LifecycleConfiguration?: { Rules: Rule[] }; Versio
 describe("the retention of workflow screenshots is a rule on the bucket the broker writes them to", () => {
   const controlPlane = Template.fromStack(new ControlPlaneStack(new App(), "RetentionBucketControlPlane", { naming: environmentNaming("live25d") }));
   const buckets = controlPlane.findResources("AWS::S3::Bucket") as Record<string, Bucket>;
-  /** The bucket the broker's ARTIFACT_BUCKET_NAME names: the one it stores screenshots in. */
+  /**
+   * The bucket the broker's ARTIFACT_BUCKET_NAME names: the one it stores screenshots in. A named environment passes the name inside the packed AGENTX_NAMES bag (ENV-ROOM: the
+   * broker's environment is at Lambda's ceiling), so the bucket is the one that bag refers to; the plain variable is read first where an install still passes it.
+   */
   const brokerBucketId = (() => {
     const functions = Object.entries(controlPlane.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>);
     const broker = functions.find(([id]) => /^Broker[0-9A-F]{8}$/.test(id));
-    return (broker?.[1].Properties.Environment?.Variables?.ARTIFACT_BUCKET_NAME as { Ref?: string } | undefined)?.Ref;
+    const variables = broker?.[1].Properties.Environment?.Variables ?? {};
+    const direct = (variables.ARTIFACT_BUCKET_NAME as { Ref?: string } | undefined)?.Ref;
+    if (direct !== undefined) return direct;
+    const packed = JSON.stringify(variables.AGENTX_NAMES ?? null);
+    return Object.keys(buckets).find((id) => packed.includes(`"Ref":"${id}"`) && id.startsWith("Artifacts"));
   })();
 
   it("names the tag once, in the contracts, with the 30-day period of the owner's decision", () => {
@@ -71,7 +78,8 @@ describe("the broker may put the tag on the object it stores", () => {
   type Policy = { Properties: { PolicyDocument: { Statement: Statement[] }; Roles: Array<{ Ref?: string }> } };
   it("holds s3:PutObjectTagging on the artifact bucket, so no new IAM statement is needed", () => {
     const template = Template.fromStack(new ControlPlaneStack(new App(), "RetentionControlPlane", { naming: environmentNaming("live25d") }));
-    const statements = (Object.values(template.findResources("AWS::IAM::Policy")) as Policy[])
+    // The broker's grants are in managed policies of its role at the merged control plane (the role is split to stay under IAM's size limit), or an inline policy where it is not.
+    const statements = ([...Object.values(template.findResources("AWS::IAM::Policy")), ...Object.values(template.findResources("AWS::IAM::ManagedPolicy"))] as Policy[])
       .filter((policy) => policy.Properties.Roles.some((role) => role.Ref?.startsWith("BrokerServiceRole"))).flatMap((policy) => policy.Properties.PolicyDocument.Statement);
     expect(statements.some((statement) => [statement.Action].flat().includes("s3:PutObjectTagging"))).toBe(true);
   });

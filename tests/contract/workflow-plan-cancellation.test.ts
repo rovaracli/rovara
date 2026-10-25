@@ -9,6 +9,7 @@ import { releaseFailedCancelWorkspace } from "../../packages/broker/src/aws/fail
 import { sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";
 import { stopBlocksWorkflowStep, strandedPlanningRun, type StoppedRunOperation, type StoppedRunTask } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
@@ -21,7 +22,8 @@ const operationOf = (harness: Harness, workspaceId: string, mode: string) => ope
 const taskRow = (harness: Harness, taskId: string) => harness.db.get(`DEVTASK#${taskId}`, "META") as Row & { workflow: WorkflowSnapshot; workspaceId: string; ownerKey: string };
 const taskWorkflow = (harness: Harness, taskId: string) => taskRow(harness, taskId).workflow;
 const workspaceRow = (harness: Harness, workspaceId: string) => harness.db.get(`WORKSPACE#${workspaceId}`, "META") as Row;
-const dispatchRows = (harness: Harness) => harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH");
+// An ended operation also leaves a due `operation_end` row (Plan 3 Task 22: the agent engine and the task-end handlers hear of it); these tests are about the workflow dispatch rows.
+const dispatchRows = (harness: Harness) => harness.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.kind !== "operation_end");
 const passingChecks = () => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" });
 
 /** A Quick workflow task whose preparation finished: planning is running (the worker reported RUNNING). */
@@ -425,7 +427,7 @@ const STEPS: Record<string, { name: string; start: () => Promise<StartedStep>; r
     void deliveryIds;
     workflow = collectWorkflowFeedbackBundles(workflow, { bundleRefs: [{ ...metadata, sha256: bundleDigest, objectKey: bundleKey, comments }], threadObservations: [] }, now);
     harness.db.set({ ...task, workflow, updatedAt: now });
-    const routeDeps = { documentClient: harness.db, tableName: "state", actions: harness.actions,
+    const routeDeps = { documentClient: harness.db, tableName: "state", actions: harness.actions, orgId: TEST_ORG,
       checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [] }), projectChannelIds: async () => [], now: () => Date.parse(now) };
     expect(await startTaskWorkflowFeedbackReviewFromWebhook(routeDeps as never, taskId)).toBe(true);
     const critic = operationOf(harness, workspaceId, "FEEDBACK_REVIEW");

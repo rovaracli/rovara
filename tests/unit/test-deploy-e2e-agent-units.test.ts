@@ -127,8 +127,8 @@ describe("the e2e-agent-settings unit", () => {
       // Both settings' ARNs in both policies: 4.10A's worker-e2e-agent-model and 4.10D's worker-model-fallback.
       grants: E2E_AGENT_SETTINGS_UNIT.policies.flatMap((logicalId) => [`/agentx/${ENV}/worker-e2e-agent-model`, `/agentx/${ENV}/worker-model-fallback`].map((parameterName) => ({ logicalId, parameterName }))),
     });
-    // The broker's grants are in a managed policy of its role at head (the role is split to stay under IAM's size limit); the session steps' stay a role policy.
-    expect(E2E_AGENT_SETTINGS_UNIT.policies).toEqual(["BrokerServiceRoleServiceRoleOrchestrationPolicy4038649D", "SessionsStepsServiceRoleDefaultPolicy9F4B87C9"]);
+    // The broker's grants are in a managed policy of its role at head (the role is split to stay under IAM's size limit, and the worker-settings read is in the integrations group); the session steps' stay a role policy.
+    expect(E2E_AGENT_SETTINGS_UNIT.policies).toEqual(["BrokerServiceRoleServiceRoleIntegrationsPolicy942FF081", "SessionsStepsServiceRoleDefaultPolicy9F4B87C9"]);
     expect(changeSet.expect).toEqual({
       action: "Modify", logicalIds: [...E2E_AGENT_SETTINGS_UNIT.policies],
       allowedAttributes: [], allowedAttributesByLogicalId: Object.fromEntries(E2E_AGENT_SETTINGS_UNIT.policies.map((id) => [id, ["Properties.PolicyDocument"]])),

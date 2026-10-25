@@ -4107,6 +4107,8 @@ export async function startTaskWorkflowE2EBaselineFromSystem(
     || admission.purpose !== "baseline" || admission.baseCommitSha === undefined || admission.attempt === undefined || admission.taskId !== taskId
     || admission.workflowRevision !== workflow.revision || admission.roundId.length === 0
     || admission.groupRunIds.length === 0 || new Set(admission.groupRunIds).size !== admission.groupRunIds.length) return "STALE";
+  // Ruling R60 (round 4 merge): a task whose creator was removed starts nothing, the baseline and replay rounds included.
+  await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
@@ -4156,6 +4158,8 @@ export async function startTaskWorkflowE2EReplayFromSystem(
     || admission.purpose !== "replay" || admission.sourceRoundId !== expected.sourceRoundId || admission.attempt === undefined || admission.taskId !== taskId
     || admission.candidateDigest !== expected.candidateDigest || admission.workflowRevision !== workflow.revision || admission.roundId.length === 0
     || admission.groupRunIds.length === 0 || new Set(admission.groupRunIds).size !== admission.groupRunIds.length) return "STALE";
+  // Ruling R60 (round 4 merge): a task whose creator was removed starts nothing, the baseline and replay rounds included.
+  await creatorGuard(deps, task);
   const dispatchAccess = await systemTaskAccess(deps, task);
   const workspace = await deps.actions.workspace(task.workspaceId);
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
