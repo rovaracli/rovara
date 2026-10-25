@@ -94,6 +94,7 @@ it("refuses unsafe action schemes, methods, confirmation destinations and dismis
  for (const button of [
  { action: "open", label: "Unsafe", method: "GET", href: "http://other.example/path" },
  { action: "open", label: "Unsafe", method: "GET", href: "javascript:alert(1)" },
+ { action: "open", label: "Unsafe", method: "GET", href: "https://other.example/s/" + sessionId },
  { action: "confirm", label: "Unsafe", method: "GET", href: "https://other.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" },
  { action: "confirm", label: "Unsafe", method: "POST", href: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" },
  { action: "dismiss", label: "Unsafe", method: "GET", href: "https://cell.example/v1/app/home/cards/failure%3Asecond/dismiss" },
