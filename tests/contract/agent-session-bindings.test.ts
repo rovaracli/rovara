@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { agentSessionKey, sessionSurfaceKey, type SessionBinding } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, sessionBindingKey, sessionSurfaceKey, type SessionBinding } from "../../packages/contracts/src/index.js";
 import { createTaskSessionItems, ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { bindSessionSurface, sessionForSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
@@ -28,7 +28,7 @@ const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error
 function world() {
   const w = sessionWorld();
   const table = { documentClient: w.db, tableName: "state", now: () => w.clock.now };
-  const sessionBindings = (sessionId: string) => w.db.find((item) => typeof item.pk === "string" && item.pk.includes(sessionId) && String(item.sk).startsWith("BINDING#"));
+  const sessionBindings = (sessionId: string) => w.db.find((item) => typeof item.pk === "string" && item.pk.includes("SESSION_BINDING#") && item.pk.includes(sessionId));
   const surfaceItems = () => w.db.find((item) => typeof item.pk === "string" && item.pk.includes("SESSION_SURFACE"));
   return { w, table, sessionBindings, surfaceItems };
 }
@@ -40,7 +40,7 @@ describe("binding a surface to a session", () => {
     const before = w.db.transactions().length;
     await expect(bindSessionSurface(table, { orgId: ORG_A, sessionId, binding: THREAD })).resolves.toBe("bound");
     expect(w.db.transactions()).toHaveLength(before + 1);
-    expect(w.db.get(agentSessionKey(ORG_A, sessionId, "BINDING#slack_thread"))).toMatchObject({ orgId: ORG_A, sessionId, binding: THREAD });
+    expect(w.db.get(sessionBindingKey(ORG_A, sessionId, "slack_thread"))).toMatchObject({ orgId: ORG_A, sessionId, binding: THREAD });
     expect(w.db.get(sessionSurfaceKey(ORG_A, THREAD))).toMatchObject({ orgId: ORG_A, sessionId, kind: "slack_thread" });
   });
 
@@ -86,7 +86,7 @@ describe("binding a surface to a session", () => {
     expect(loser.reason).toMatchObject({ code: "CONFIG_INVALID" });
     const winner = (w.db.get(sessionSurfaceKey(ORG_A, THREAD)) as { sessionId: string }).sessionId;
     expect([a, b]).toContain(winner);
-    expect(w.db.get(agentSessionKey(ORG_A, winner === a ? b : a, "BINDING#slack_thread"))).toBeUndefined();
+    expect(w.db.get(sessionBindingKey(ORG_A, winner === a ? b : a, "slack_thread"))).toBeUndefined();
   });
 
   it("answers a retryable error, not 'follows another session', when a transaction conflict hides the outcome", async () => {
@@ -208,7 +208,7 @@ describe("a task from before sessions that is already shared to a thread", () =>
     const id = await ensureTaskSession(table, full as never, { ownerName: "Priya", title: "Bump the Stripe SDK" });
     expect(id).toMatch(/^ses_/);
     expect(w.db.get(sessionSurfaceKey(ORG_A, THREAD))).toMatchObject({ sessionId: id, kind: "slack_thread" });
-    expect(w.db.get(agentSessionKey(ORG_A, id as never, "BINDING#slack_thread"))).toMatchObject({ binding: THREAD });
+    expect(w.db.get(sessionBindingKey(ORG_A, id as never, "slack_thread"))).toMatchObject({ binding: THREAD });
   });
 });
 
@@ -216,13 +216,13 @@ describe("a task from before sessions that is already shared to a thread", () =>
 
 type Post = (input: { channel: string; threadTs?: string; text: string }) => Promise<{ ts: string }>;
 
-async function notifierWorld(post: Post = async () => ({ ts: NOTIFIED_TS })) {
+async function notifierWorld(post: Post = async () => ({ ts: NOTIFIED_TS }), wrap?: (db: FakeDynamoDb) => { send(command: unknown): Promise<unknown> }) {
   const harness = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
   const stream = recordStream(harness.db);
   const queue: Notice[] = [];
   const logs: Array<Record<string, unknown>> = [];
   const handle = createNotifierHandler({
-    documentClient: harness.db, tableName: "state", enqueue: async (notices) => { queue.push(...notices); }, retryLater: async () => undefined, post,
+    documentClient: wrap?.(harness.db) ?? harness.db, tableName: "state", enqueue: async (notices) => { queue.push(...notices); }, retryLater: async () => undefined, post,
     now: () => Date.now(), log: (entry) => logs.push(entry), deliveryFailed: vi.fn(),
   });
   const pump = async () => {
@@ -251,13 +251,15 @@ describe("a task shared after it started", () => {
     await n.pump();
     expect(meta().share.threadTs).toBe(NOTIFIED_TS);
     expect(surfaceOf(n.db)).toMatchObject({ orgId: TEST_ORG, sessionId, kind: "slack_thread" });
-    expect(n.db.get(agentSessionKey(TEST_ORG, sessionId, "BINDING#slack_thread"))).toMatchObject({ binding: { kind: "slack_thread", threadTs: NOTIFIED_TS } });
+    expect(n.db.get(sessionBindingKey(TEST_ORG, sessionId, "slack_thread"))).toMatchObject({ binding: { kind: "slack_thread", threadTs: NOTIFIED_TS } });
     const recording = n.db.transactions().filter((items) => items.some((entry) => (entry.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "SHARED_TASK"));
     expect(recording, "one transaction records the thread").toHaveLength(1);
     const surface = sessionSurfaceKey(TEST_ORG, { kind: "slack_thread", teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: NOTIFIED_TS });
     const written = recording[0]!.flatMap((entry) => ((entry.Put as { Item?: { pk?: string; sk?: string } } | undefined)?.Item === undefined ? [] : [(entry.Put as { Item: { pk: string; sk: string } }).Item]));
     expect(written.some((item) => item.pk === surface.pk && item.sk === surface.sk)).toBe(true);
-    expect(written.some((item) => item.pk === agentSessionKey(TEST_ORG, sessionId, "BINDING#slack_thread").pk && item.sk === "BINDING#slack_thread")).toBe(true);
+    expect(written.some((item) => item.pk === sessionBindingKey(TEST_ORG, sessionId, "slack_thread").pk && item.sk === "BINDING#slack_thread")).toBe(true);
+    // The notifier's IAM grant limits it by partition key, so nothing it puts may sit in the session's own partition.
+    expect(written.filter((item) => item.pk.includes("AGENT_SESSION#"))).toEqual([]);
   });
 
   it("still records its thread when the thread already follows another session, and says so in the log", async () => {
@@ -274,7 +276,7 @@ describe("a task shared after it started", () => {
     expect(meta().share.threadTs).toBe(NOTIFIED_TS);
     expect(n.db.get(`SHARED_TASK#${SLACK_TEAM}/${SLACK_CHANNEL}/${NOTIFIED_TS}`, "META")).toMatchObject({ taskId });
     expect(surfaceOf(n.db)).toMatchObject({ sessionId: otherId });
-    expect(n.db.get(agentSessionKey(TEST_ORG, meta().sessionId as never, "BINDING#slack_thread"))).toBeUndefined();
+    expect(n.db.get(sessionBindingKey(TEST_ORG, meta().sessionId as never, "slack_thread"))).toBeUndefined();
     expect(n.logs).toContainEqual(expect.objectContaining({ event: "developer_notifier.session_binding_skipped", taskId }));
     expect(JSON.stringify(n.logs.filter((entry) => entry.event === "developer_notifier.session_binding_skipped"))).not.toContain(NOTIFIED_TS);
   });
@@ -301,6 +303,34 @@ describe("a task shared after it started", () => {
     expect(n.logs).toContainEqual(expect.objectContaining({ event: "developer_notifier.session_binding_skipped" }));
   });
 
+  it("binds a session that was given to the task while its thread was being recorded", async () => {
+    // The notifier read the task with no session; the session is attached before its transaction commits. The task's update is conditioned on that, so it is refused,
+    // read again, and the thread is recorded with the binding.
+    let sessionId: string | undefined;
+    let taskId = "";
+    let injected = false;
+    const n = await notifierWorld(undefined, (db) => ({
+      send: async (command: unknown) => {
+        const input = (command as { input?: { TransactItems?: unknown[] } }).input;
+        if (!injected && JSON.stringify(input?.TransactItems ?? []).includes("SHARED_TASK")) {
+          injected = true;
+          db.set({ ...db.get(`DEVTASK#${taskId}`, "META")!, sessionId });
+        }
+        return db.send(command as never);
+      },
+    }));
+    const started = await n.start();
+    taskId = started.taskId;
+    sessionId = started.meta().sessionId!;
+    const { sessionId: _none, ...rest } = n.db.get(`DEVTASK#${taskId}`, "META")!; // eslint-disable-line @typescript-eslint/no-unused-vars -- the task has none when the notifier reads it
+    n.db.set(rest);
+    await n.pump();
+    expect(injected).toBe(true);
+    expect(started.meta().share.threadTs).toBe(NOTIFIED_TS);
+    expect(surfaceOf(n.db)).toMatchObject({ sessionId });
+    expect(n.db.get(sessionBindingKey(TEST_ORG, sessionId as never, "slack_thread"))).toBeDefined();
+  });
+
   it("writes the binding only with the thread: a conflict that cancels the transaction leaves neither", async () => {
     const n = await notifierWorld();
     const { meta } = await n.start();
@@ -309,7 +339,7 @@ describe("a task shared after it started", () => {
     await n.pump();
     expect(meta().share.threadTs).toBeUndefined();
     expect(surfaceOf(n.db)).toBeUndefined();
-    expect(n.db.get(agentSessionKey(TEST_ORG, sessionId, "BINDING#slack_thread"))).toBeUndefined();
+    expect(n.db.get(sessionBindingKey(TEST_ORG, sessionId, "slack_thread"))).toBeUndefined();
   });
 });
 

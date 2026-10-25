@@ -16,6 +16,7 @@ import {
   projectSessionsKey,
   sessionLegSk,
   sharedSessionsKey,
+  sessionBindingKey,
   sessionSurfaceKey,
   type OrgId,
 } from "../../packages/contracts/src/index.js";
@@ -152,7 +153,7 @@ describe("retention: drainEndedSessions", () => {
     return {
       share: put(agentSessionKey(orgId, sessionId, "SHARE#MEMBER#x"), { entityType: "AGENT_SESSION_SHARE", principal: { kind: "member", developerId: "x".repeat(64) }, level: "view" }),
       follower: put(agentSessionKey(orgId, sessionId, "FOLLOWER#x")),
-      binding: put(agentSessionKey(orgId, sessionId, "BINDING#slack_thread"), { binding: { kind: "slack_thread", teamId: "T1", channelId: "C1", threadTs: "1695500000.000100" } }),
+      binding: put(sessionBindingKey(orgId, sessionId, "slack_thread"), { binding: { kind: "slack_thread", teamId: "T1", channelId: "C1", threadTs: "1695500000.000100" } }),
       leg: put(agentSessionKey(orgId, sessionId, sessionLegSk(1))),
       message: put(agentSessionKey(orgId, sessionId, "MESSAGE#msg_0123456789abcdefghij")),
       turn: put(agentSessionKey(orgId, sessionId, "TURN#2026-10-20T08:00:00.000Z#1")),

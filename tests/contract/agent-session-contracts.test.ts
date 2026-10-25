@@ -57,6 +57,7 @@ import {
   sessionEventSk,
   sessionRateKey,
   sessionRequestKey,
+  sessionBindingKey,
   sessionSurfaceKey,
   sharedSessionsKey,
   taskSpendKey,
@@ -594,7 +595,7 @@ describe("session keys", () => {
     ["agentSessionKey MESSAGE", (org) => agentSessionKey(org, SESSION, `MESSAGE#${MESSAGE}`)],
     ["agentSessionKey TURN", (org) => agentSessionKey(org, SESSION, `TURN#${NOW}#1`)],
     ["agentSessionKey EVENT", (org) => agentSessionKey(org, SESSION, sessionEventSk(NOW, event.eventId))],
-    ["agentSessionKey BINDING", (org) => agentSessionKey(org, SESSION, "BINDING#slack_thread")],
+    ["sessionBindingKey", (org) => sessionBindingKey(org, SESSION, "slack_thread")],
     ["agentSessionKey LEG", (org) => agentSessionKey(org, SESSION, "LEG#1")],
     ["liveSessionKey", (org) => liveSessionKey(org, SESSION)],
     ["mySessionsKey", (org) => mySessionsKey(org, DEV, NOW, SESSION)],
@@ -631,6 +632,7 @@ describe("session keys", () => {
     expect(sharedSessionsKey(ORG_A, { kind: "member", developerId: DEV }, SESSION)).toEqual({ pk: `ORG#${ORG_A}#SHARED_SESSIONS#MEMBER#${DEV}`, sk: SESSION });
     expect(sessionRequestKey(ORG_A, DEV, "req-1")).toEqual({ pk: `ORG#${ORG_A}#SESSION_REQUEST#${DEV}`, sk: "req-1" });
     expect(sessionRateKey(ORG_A, SESSION, DEV, "change")).toEqual({ pk: `ORG#${ORG_A}#SESSION_RATE#${SESSION}`, sk: `change#${DEV}` });
+    expect(sessionBindingKey(ORG_A, SESSION, "linear_issue")).toEqual({ pk: `ORG#${ORG_A}#SESSION_BINDING#${SESSION}`, sk: "BINDING#linear_issue" });
     expect(taskSpendKey(ORG_A, TASK).pk).toBe(`ORG#${ORG_A}#TASK_SPENT#${TASK}`);
     expect(deviceKey(ORG_A, DEVICE).pk).toBe(`ORG#${ORG_A}#DEVICE#${DEVICE}`);
     expect(memberDevicesKey(ORG_A, DEV, DEVICE)).toEqual({ pk: `ORG#${ORG_A}#MEMBER_DEVICES#${DEV}`, sk: DEVICE });
