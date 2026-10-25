@@ -148,7 +148,7 @@ it("turns a permitted finished task into the backend's actual agent draft once",
 });
 it("explains a draft made from scratch without guessing that the source method was copied", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ status: "succeeded", you: { ...base.you, actions: ["make_agent"] } }), async () => ({ status: 201, body: { agent: agentProfile().agent, copied: false, reason: "AGENT_NOT_USABLE" } }));
- fireEvent.click(await screen.findByRole("button", { name: "Make this an agent" }));fireEvent.click(screen.getByRole("button", { name: "Create draft" }));
- await screen.findByText("The source workflow couldn't be copied. Your new draft starts from scratch.");expect(screen.getByRole("link", { name: "Inspect draft" }).getAttribute("href")).toBe("/app/agents/" + AGENT_FIXTURE_ID + "/edit");expect(screen.getByRole<HTMLButtonElement>("button", { name: "Create draft" }).disabled).toBe(true);f.close();
+ const navigate = vi.spyOn(f.host, "navigate");fireEvent.click(await screen.findByRole("button", { name: "Make this an agent" }));fireEvent.click(screen.getByRole("button", { name: "Create draft" }));
+ await screen.findByText("The source workflow couldn't be copied. Your new draft starts from scratch.");expect(screen.getByRole("link", { name: "Inspect draft" }).getAttribute("href")).toBe("/app/agents/" + AGENT_FIXTURE_ID + "/edit");expect(screen.getByRole<HTMLButtonElement>("button", { name: "Create draft" }).disabled).toBe(true);expect(navigate).not.toHaveBeenCalled();f.close();
 });
 it("does not offer task-to-method creation without its server capability", async () => { const f = setup();await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(screen.queryByRole("button", { name: "Make this an agent" })).toBeNull();f.close(); });

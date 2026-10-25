@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
+import type { ApiResponse } from "../../packages/ui/src/host.js";
 import { createAgentApi } from "../../packages/ui/src/api/agents.js";
 import { renderAgents } from "./support/agent-render.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -28,8 +29,10 @@ it("preserves project scope without inventing a second scope filter", async () =
 for (const theme of ["light", "dark"] as const) it("has an accessible directory in " + theme, async () => { const f = renderAgents({ theme });await screen.findByRole("link", { name: "Payments Expert" });await expectNoAxeViolations(f.container);f.close(); });
 it("removes a cached private profile title and row after its contextual read is denied", async () => {
  const f = renderAgents();fireEvent.click(await screen.findByRole("link", { name: "Payments Expert" }));await screen.findByRole("dialog", { name: "Payments Expert" });
- f.request.mockResolvedValue({ status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } });await f.query.invalidateQueries({ queryKey: ["agent", "agt_aaaaaaaaaaaaaaaaaaaa"], exact: true });await screen.findByRole("heading", { name: "Not found" });
- expect(screen.queryByRole("dialog", { name: "Payments Expert" })).toBeNull();expect(screen.queryByText("Check refund idempotency.")).toBeNull();fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("link", { name: "Payments Expert" })).toBeNull());f.close();
+ let release: (response: ApiResponse) => void = () => undefined;
+ const pendingList = new Promise<ApiResponse>(resolve => { release = resolve; });
+ f.request.mockImplementation(async request => request.path.startsWith("/v1/app/agents?") ? pendingList : { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } });try { await f.query.invalidateQueries({ queryKey: ["agent", "agt_aaaaaaaaaaaaaaaaaaaa"], exact: true });await screen.findByRole("heading", { name: "Not found" });
+ expect(screen.queryByRole("dialog", { name: "Payments Expert" })).toBeNull();expect(screen.queryByText("Check refund idempotency.")).toBeNull();fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(screen.queryByRole("link", { name: "Payments Expert" })).toBeNull()); } finally { release({ status: 200, body: { agents: [] } });f.close(); }
 });
 it("rejects malformed workflow and project identifiers before transport", () => {
  const f = fakeHost(), api = createAgentApi(f.host);for (const id of ["../agents", "agt_bad", "ses_aaaaaaaaaaaaaaaaaaaa"]) expect(() => api.read(id)).toThrow();expect(() => api.list("all", "payments/other")).toThrow();expect(() => api.spend("agt_aaaaaaaaaaaaaaaaaaaa", "2026-13")).toThrow();expect(f.request).not.toHaveBeenCalled();
@@ -39,3 +42,5 @@ it("keeps newer access values readable without granting any action", async () =>
  const base = agentProfile(), f = fakeHost(async () => ({ status: 200, body: { ...base, agent: { ...base.agent, access: "future_manager" } } })), read = await createAgentApi(f.host).read(base.agent.agentId);
  expect(read.agent.access).toBe("unknown");for (const wanted of ["use", "edit", "manage"] as const) expect(agentAllows(read.agent, wanted)).toBe(false);
 });
+
+it("uses profile permissions even when the retained directory summary had stronger access", async () => { const base = agentProfile(), f = renderAgents({ profile: agentProfile({ agent: { ...base.agent, access: "view" } }) });fireEvent.click(await screen.findByRole("link", { name: "Payments Expert" }));await screen.findByRole("dialog", { name: "Payments Expert" });expect(screen.queryByRole("button", { name: "Review update" })).toBeNull();expect(screen.queryByRole("link", { name: "Edit" })).toBeNull();expect(screen.queryByRole("button", { name: "Share" })).toBeNull();f.close(); });
