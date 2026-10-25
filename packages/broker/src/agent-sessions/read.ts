@@ -32,7 +32,9 @@ import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js"
 import { anchorTargetsOf } from "./anchors.js";
 import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
 import { viewingNow } from "./followers.js";
-import type { SessionShareDependencies } from "./shares.js";
+import type { AuditRuntime } from "../audit/outbox.js";
+import type { ChainControl, SessionControlHost } from "./stop.js";
+import type { SessionTakeOverDependencies } from "./take-over.js";
 
 /** Who reads: `DeveloperCaller` fits. */
 export interface SessionReadCaller extends SessionCaller { orgRole: OrgRole }
@@ -43,9 +45,20 @@ export interface SessionDeciding {
   approvals(caller: SessionReadCaller, session: AgentSessionRecord): Promise<Array<{ approvalId: string; title: string }>>;
   /** Whether the caller may decide this budget request now. */
   spend(caller: SessionReadCaller, spendRequestId: string): Promise<boolean>;
+  /**
+   * `approvals` for many sessions at once (the Live wall asks for a whole page): the caller's decisions are listed once and matched to each session, so the answer is the same as asking
+   * one session at a time, in the reads of one. A session with no decision waiting for the caller is absent from the answer.
+   */
+  approvalsFor?(caller: SessionReadCaller, sessions: readonly AgentSessionRecord[]): Promise<Map<string, Array<{ approvalId: string; title: string }>>>;
 }
 
-export interface SessionReadDependencies extends SessionShareDependencies {
+export interface SessionReadDependencies extends SessionTakeOverDependencies {
+  /** Plan 5 Task 13: Plan 3's cancel, workflow retry and run start for the signed-in person. Without it stop and retry of a task session answer `RUNTIME_UNAVAILABLE`. */
+  control?: SessionControlHost | undefined;
+  /** Plan 5 Task 13, PLAN4: Plan 4's chain cancel and retry with the session actor. Without it a chain session is neither stopped nor retried, and nothing is written. */
+  chainControl?: ChainControl | undefined;
+  /** The Audit Ledger's outbox: a stop or retry adds its pending item to its own transaction. Absent on a legacy install, where nothing is recorded. */
+  audit?: AuditRuntime;
   /** The origin links point at: the broker's issuer origin. */
   origin: string;
   /** The task's own view, built for this caller (the broker binds the task dependencies); `actor` is `owner` only for the session's effective owner. */
@@ -69,7 +82,7 @@ const isAgentXError = (error: unknown) => error instanceof Error && error.name =
 const getItem = async (deps: Pick<SessionReadDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
 
-const approveLink = (deps: Pick<SessionReadDependencies, "origin">, id: string) => `${deps.origin.replace(/\/+$/u, "")}/v1/app/approve/${id}`;
+export const approveLink = (deps: Pick<SessionReadDependencies, "origin">, id: string) => `${deps.origin.replace(/\/+$/u, "")}/v1/app/approve/${id}`;
 
 // ---- the view
 
@@ -184,6 +197,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
 
   const summary = session.summary;
   const status = computed || taskShown === undefined ? summary.status : statusOfTask(taskShown);
+  // A blocked workflow reads as needing a person but can be retried; read live when the summary is not the computed one, and never for a finished task.
+  const workflowBlocked = computed || taskShown === undefined ? summary.workflowBlocked : taskShown.workflow?.state === "BLOCKED" && status !== "succeeded" ? true as const : undefined;
   const step = computed || taskShown === undefined ? summary.step : taskShown.run?.currentStep?.name;
   const runLimitUsd = computed || task === undefined ? summary.runLimitUsd : typeof task.budgetUsd === "number" ? task.budgetUsd : undefined;
   const stopAtUsd = computed || task === undefined ? summary.stopAtUsd
@@ -233,7 +248,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
     followers: session.followerCount,
     viewingNow: await viewingNow(deps, session, deps.now()),
-    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access), ...(canMakeAgent ? ["make_agent" as const] : [])] },
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked }), ...(canMakeAgent ? ["make_agent" as const] : [])] },
     link: sessionLink(deps.origin, session.sessionId),
     bindings: await bindingsOf(deps, session),
     legs: session.legs,
@@ -313,13 +328,13 @@ const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
 // it, change it, or carry it to another list or another person. Any failure is one message that echoes nothing (review m-1).
 
 const CURSOR_VERSION = "v1.";
-const cursorKeyOf = (deps: Pick<SessionReadDependencies, "cursorKey">): Buffer => {
+export const cursorKeyOf = (deps: Pick<SessionReadDependencies, "cursorKey">): Buffer => {
   if (deps.cursorKey === undefined || deps.cursorKey === "") throw agentXError("RUNTIME_UNAVAILABLE", "Sessions can't be listed right now.");
   return createHash("sha256").update(deps.cursorKey, "utf8").digest();
 };
 const cursorContext = (orgId: string, developerId: string, pk: string) => Buffer.from(`${orgId}\n${developerId}\n${pk}`, "utf8");
 
-function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, sk: string): string {
+export function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, sk: string): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", cursorKeyOf(deps), iv);
   cipher.setAAD(cursorContext(caller.orgId, caller.developerId, pk));
@@ -328,7 +343,7 @@ function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: Se
 }
 
 /** The sort key a cursor holds, or `CONFIG_INVALID` for anything this list, this person and this server key didn't give. */
-function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, cursor: string): string {
+export function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, cursor: string): string {
   const key = cursorKeyOf(deps);
   const refuse = () => invalid("cursor: is not one this list gave");
   if (!cursor.startsWith(CURSOR_VERSION)) throw refuse();

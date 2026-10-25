@@ -13,6 +13,7 @@
   "packages/contracts/src/e2e-view.ts",
   "packages/contracts/src/e2e.ts",
   "packages/contracts/src/errors.ts",
+  "packages/contracts/src/home.ts",
   "packages/contracts/src/models.ts",
   "packages/contracts/src/names.ts",
   "packages/contracts/src/org-budget.ts",

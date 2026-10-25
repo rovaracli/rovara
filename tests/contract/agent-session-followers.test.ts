@@ -492,13 +492,13 @@ describe("who is looking now", () => {
     expect((await f.presence(OLA)).viewingNow.map((who) => who.name)).toEqual(["Mia", "Ola"]);
   });
 
-  it("keeps a name in the item that has no control or direction characters, and a missing name reads as Someone", async () => {
+  it("keeps a name in the item that has no control or direction characters, and a missing name reads as a member", async () => {
     const f = world();
     const caller = { ...f.w.caller(ARJUN), name: "Ar‮jun\u0007" };
     await recordPresence(f.deps, caller, f.session.sessionId);
     expect(f.presenceOf(ARJUN)!.name).toBe("Arjun");
     await recordPresence(f.deps, { ...f.w.caller(MIA), name: "‮" }, f.session.sessionId);
-    expect(f.presenceOf(MIA)!.name).toBe("Someone");
+    expect(f.presenceOf(MIA)!.name).toBe("a member");
   });
 });
 

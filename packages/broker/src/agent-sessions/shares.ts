@@ -31,6 +31,7 @@ import {
   OrgRoleSchema,
   type AgentPrincipal,
   type AgentSessionRecord,
+  type ApprovalId,
   type NeedsConfirmation,
   type OrgId,
   type OrgRole,
@@ -243,6 +244,23 @@ async function readRequest(deps: SessionShareDependencies, orgId: OrgId, develop
   return { fingerprint: String(item["fingerprint"]), result: item["result"] };
 }
 
+/**
+ * The `202` answer for a pending change the caller must confirm in a browser: Plan 3's ticketed link for them (`mintConfirmUrl`; the bare link when it can't mint one, since
+ * the page's own sign-in step takes it from there) and the change's words. A take-over answers the same way (Task 12b).
+ */
+export async function confirmationReply(approvals: ApprovalDependencies, caller: ShareCaller, record: { approvalId: ApprovalId; changes: string[] }): Promise<{ status: 202; body: NeedsConfirmation }> {
+  let confirmUrl = confirmUrlFor(approvals, record);
+  if (approvals.mintConfirmUrl !== undefined) {
+    try {
+      confirmUrl = await approvals.mintConfirmUrl({ orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole ?? "member" }, record.approvalId);
+    } catch (error) {
+      // The bare link still works: the page's own sign-in step takes it from there.
+      if (!(error instanceof Error && error.name === "AgentXError")) throw error;
+    }
+  }
+  return { status: 202, body: NeedsConfirmationSchema.parse({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl, changes: record.changes }) };
+}
+
 // ---- PUT /v1/app/sessions/{id}/shares
 
 /**
@@ -268,16 +286,7 @@ export async function putSessionShare(deps: SessionShareDependencies, caller: Sh
     });
     // A replay of a request that was decided since is not waiting any more.
     if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
-    let confirmUrl = confirmUrlFor(approvals, record);
-    if (approvals.mintConfirmUrl !== undefined) {
-      try {
-        confirmUrl = await approvals.mintConfirmUrl({ orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole ?? "member" }, record.approvalId);
-      } catch (error) {
-        // The bare link still works: the page's own sign-in step takes it from there.
-        if (!(error instanceof Error && error.name === "AgentXError")) throw error;
-      }
-    }
-    return { status: 202, body: NeedsConfirmationSchema.parse({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl, changes: record.changes }) };
+    return confirmationReply(approvals, caller, record);
   }
 
   const earlier = await readRequest(deps, caller.orgId, caller.developerId, input.requestId);

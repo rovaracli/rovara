@@ -209,6 +209,8 @@ import {
   taskOwnerLabel,
   taskPointerKey,
   taskShare,
+  isTaskOwner,
+  ownerDisplayName,
   tryEffectiveTaskOwner,
   type DeveloperTaskIndexRecord,
   type DeveloperTaskPointerRecord,
@@ -235,8 +237,8 @@ import type { TaskDocumentKind, TaskDocumentView, TaskFreshness } from "./task-w
 import type { PageCommentInput, PageDecisionInput, PageSuggestionInput, TaskPageState } from "./task-web-api.js";
 import { pageCommentViews, type CommentViewContext, type PageCommentView } from "./plan-page/comments.js";
 import type { PlanAnchor } from "./plan-page/render-plan.js";
-import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
-import { getTaskPeoplePresentation, resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
+import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, taskOpen, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import { getTaskPeoplePresentation, loadTaskPeople, resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 import { getTaskPeople as readTaskPeople, getTaskPeopleCapabilities as readTaskPeopleCapabilities, type TaskPersonCheck } from "../developer/task-people.js";
 import { confirmTaskPeopleProposal as confirmPeopleProposal, getTaskPeopleProposal as readPeopleProposal, getTaskPeopleProposalMetadata as readPeopleProposalMetadata, proposeTaskOwnership, proposeTaskPeopleRole,
   submitSlackTaskOwnership as commitSlackTaskOwnership, submitSlackTaskPeopleRole as commitSlackTaskPeopleRole } from "../developer/task-people-effects.js";
@@ -325,6 +327,14 @@ export interface DeveloperTaskRouteDependencies {
    * up: a start then names no agent, and the task is the plain task it always was, with no recipe stored.
    */
   agentRuns?: AgentRunDependencies;
+  /** Plan 5 Task 12a review (M-3): a developer id read as the member it was merged into (the end of its `mergedInto` chain). A taker merged away since is the owner as the member they became. */
+  resolveMember?: (developerId: string) => Promise<string>;
+  /**
+   * Plan 5 Task 13: set only by `cancelTaskFor` and `retryTaskWorkflowFor` on their own copy of these dependencies, never by a request: the person whose session level the session
+   * route checked just now ("can edit", live). For that person, and only for `retry` and `control` (stop), the task's own rules are not asked (they are not the task's owner);
+   * a retry still needs their project role to start work. Every write is still fenced on the task's People revision.
+   */
+  sessionActor?: { developerId: string };
   /** Plan 5 Task 5: what a session's level needs. With it a person who can view a task's session reads the task page (read only), and a task from before sessions is given one when it is first read in full. */
   agentSessions?: SessionAccessDependencies;
   /** Plan 3, Task 22: the agent-step engine's dependencies (the same object as `agentRuns` where agents are set up); a cancel of a run that waits ends the run through it. */
@@ -588,7 +598,7 @@ export async function planWhyEntries(
   if (task.requestText === undefined) return plannerEntries.map((entry) => ({ text: entry.text, author: PLANNER_WHY_AUTHOR }));
   // The request is its creator's words; a reply from the owner is the owner's now (Plan 5 Task 12a): the person who took the task over, else the creator.
   const requester = ownerLabel(task.developerName);
-  const owner = ownerLabel(tryEffectiveTaskOwner(task)?.name ?? task.developerName);
+  const owner = ownerLabel(ownerDisplayName(task));
   const through = task.threadNotesFedThrough;
   const notes = through === undefined ? []
     : (await readWorkflowThreadNotes(deps, task.taskId, task.threadNotesFedFrom)).filter((note) => note.receivedAt <= through);
@@ -619,7 +629,7 @@ async function refuse(deps: DeveloperTaskRouteDependencies, turns: string, party
 /** The developer's own task (the owner now: whoever took it over, else its creator), or TASK_NOT_FOUND for anyone else and for a malformed ID (FR-036). */
 export async function loadOwnedTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<DeveloperTaskRecord> {
   const task = TASK_ID.test(taskId) ? await get<DeveloperTaskRecord>(deps, taskKey(taskId)) : undefined;
-  if (task === undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId || task.orgId !== caller.orgId) {
+  if (task === undefined || !await isTaskOwner(task, caller.developerId, deps.resolveMember) || task.orgId !== caller.orgId) {
     // A malformed ID is never echoed back: it could be long or carry markup.
     throw agentXError("TASK_NOT_FOUND", TASK_ID.test(taskId) ? `no task ${taskId} of yours` : "that is not a task ID of yours");
   }
@@ -631,6 +641,32 @@ interface AuthorizedTask extends TaskAccess {
   authority: { actorId: string; ownerIds: readonly string[] };
 }
 
+/**
+ * Whether this is the session actor of `cancelTaskFor` or `retryTaskWorkflowFor` asking for an action it was given: stop (`control`), retry, and `work`, which a retry asks for
+ * when it restarts coding (`queueWorkflowCoding`). Only those two functions set `sessionActor`, so `work` is reached only through a retry.
+ */
+function isSessionActor(deps: Pick<DeveloperTaskRouteDependencies, "sessionActor">, caller: DeveloperCaller, action: TaskAction): action is "retry" | "control" | "work" {
+  return deps.sessionActor !== undefined && deps.sessionActor.developerId === caller.developerId && (action === "retry" || action === "control" || action === "work");
+}
+
+/**
+ * The access of the session actor on a task: owner-like for stop and retry, because the session route already checked their level on the session. A retry needs their project
+ * role to start work (the same gate the owner's retry passes). The writes are fenced on the People revision read here, so a change of the task's people in between refuses them.
+ */
+async function sessionActorAccess(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "control" | "work"): Promise<AuthorizedTask> {
+  const notFound = () => agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  if (!TASK_ID.test(taskId)) throw notFound();
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== caller.orgId) throw notFound();
+  if (action === "retry" || action === "work") {
+    if (!taskOpen(task)) throw notFound();
+    await requireProjectWorkRole(deps, task, caller);
+  }
+  const people = await loadTaskPeople(deps, taskId);
+  const actorId = taskOwnerKey(caller.developerId, taskId);
+  return { task, role: "owner", ...(people === undefined ? {} : { peopleRevision: people.revision }), ownerActorIds: [], actorId, authority: { actorId, ownerIds: [] } };
+}
+
 /** Current human authority plus the exact PEOPLE revision every write must retain. */
 async function authorizeTaskAction(
   deps: DeveloperTaskRouteDependencies,
@@ -638,6 +674,7 @@ async function authorizeTaskAction(
   taskId: string,
   action: TaskAction,
 ): Promise<AuthorizedTask> {
+  if (isSessionActor(deps, caller, action)) return sessionActorAccess(deps, caller, taskId, action);
   const access = await resolveTaskAccess(deps, caller, taskId, action);
   const actorId = taskOwnerKey(caller.developerId, taskId);
   return { ...access, actorId, authority: { actorId, ownerIds: access.ownerActorIds } };
@@ -651,6 +688,7 @@ async function authorizeTaskActor(
   action: TaskAction,
   options: { readOnly?: boolean } = {},
 ): Promise<AuthorizedTask> {
+  if (isSessionActor(deps, caller, action)) return sessionActorAccess(deps, caller, taskId, action);
   const access = await authorizeTaskAction(deps, caller, taskId, "read");
   if (!can(access.role, action, access.source)) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   // The same gate resolveTaskAccess applies to its work actions: an answer that only reads a record (the feedback review page) is exempt.
@@ -3292,6 +3330,8 @@ async function queueWorkflowCoding(
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const { workflow } = task;
+  // The same authority this restart asks for once it has committed (below), asked before anything commits: a person who is refused it must not have started a run first.
+  await authorizeTaskAction(deps, caller, task.taskId, "work");
   // Every coding restart here is a human's retry or send-back (rulings R38 and R39): the task's cap window starts anew, unless that skips an approval they may not decide.
   await requireMayGoOn(deps, caller, task);
   const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
@@ -5864,6 +5904,33 @@ async function withCurrentThreadNotes<T>(
       current = fresh;
     }
   }
+}
+
+/** Who acts on a task: its owner under the task's own rules, or (Plan 5) the person whose session level the session route checked. */
+export type TaskActor = { kind: "owner"; caller: DeveloperCaller } | { kind: "session"; caller: DeveloperCaller };
+
+const actingDeps = (deps: DeveloperTaskRouteDependencies, actor: TaskActor): DeveloperTaskRouteDependencies =>
+  actor.kind === "session" ? { ...deps, sessionActor: { developerId: actor.caller.developerId } } : deps;
+
+/**
+ * Stops a task's running work exactly as `POST /v1/dev/tasks/{id}/cancel` does (same path, same fences, same idempotency item), for the owner or for the session actor. Idempotent by
+ * `requestId`: a repeat writes nothing and answers the task as it is.
+ */
+export function cancelTaskFor(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "taskId">, input: { requestId: string; actor: TaskActor }): Promise<{ task: DeveloperTaskView }> {
+  return cancelTask(actingDeps(deps, input.actor), input.actor.caller, task.taskId, { requestId: input.requestId });
+}
+
+/** What a retry from a session tells the coder: the person's own words are not asked for. */
+const SESSION_RETRY_INSTRUCTIONS = "Try this step again.";
+
+/**
+ * Retries a blocked workflow exactly as `POST /v1/dev/tasks/{id}/workflow/retry` does, at the revision the task has now, for the owner or the session actor. A repeat of the request
+ * finds the run it started and starts nothing.
+ */
+export function retryTaskWorkflowFor(deps: DeveloperTaskRouteDependencies, task: Pick<DeveloperTaskRecord, "taskId" | "workflow">, input: { requestId: string; actor: TaskActor }): Promise<{ task: DeveloperTaskView }> {
+  return retryTaskWorkflow(actingDeps(deps, input.actor), input.actor.caller, task.taskId, {
+    requestId: input.requestId, instructions: SESSION_RETRY_INSTRUCTIONS, ...(task.workflow === undefined ? {} : { expectedRevision: task.workflow.revision }),
+  });
 }
 
 /** The payload a cancel's idempotency item holds: a continue or PR with the same requestId conflicts. */

@@ -145,6 +145,29 @@ async function loadPeople(deps: Pick<TaskPeopleDependencies, "documentClient" | 
   return parsed;
 }
 
+/** The task's People list as stored (a consistent read), or undefined when it has none; a list that doesn't parse is refused. */
+export const loadTaskPeople = loadPeople;
+
+/**
+ * The write that goes in a take-over's transaction (Plan 5 Task 12b, 12a review I-2): the taker becomes the task's only owner, so every other `owner` entry (the creator,
+ * a co-owner from before, the middle owner of a chain of take-overs) is lowered to `commenter`, the list is no longer orphaned (the taker owns the task as its current owner),
+ * and the revision moves on. The taker's own entry is left as it is (a taker Slack knows is made an owner entry by the next read). Conditional on the revision `people` was
+ * read at, so a list that changed since fails the transaction rather than being written over. No items when nothing changes.
+ */
+export function takeOverTaskPeopleItems(deps: Pick<TaskPeopleDependencies, "tableName">, task: Pick<DeveloperTaskRecord, "taskId">, people: TaskPeople, to: string): TransactItem[] {
+  const lowered: PersonEntry[] = people.people.map((person) => (person.role === "owner" && person.developerId !== to ? { ...person, role: "commenter" as const } : person));
+  if (!people.orphaned && isDeepStrictEqual(lowered, people.people)) return [];
+  return [{
+    Update: {
+      TableName: deps.tableName, Key: peopleKey(task.taskId),
+      UpdateExpression: "SET #revision = :nextRevision, #orphaned = :orphaned, #people = :people",
+      ConditionExpression: "#revision = :expectedRevision",
+      ExpressionAttributeNames: { "#revision": "revision", "#orphaned": "orphaned", "#people": "people" },
+      ExpressionAttributeValues: { ":nextRevision": people.revision + 1, ":orphaned": false, ":people": lowered, ":expectedRevision": people.revision },
+    },
+  }];
+}
+
 async function personByDeveloper(deps: TaskPeopleDependencies, taskId: string, developerId: string): Promise<{ personId: string; identity: TaskPersonIdentity } | undefined> {
   const reverse = await get(deps, subjectKey(taskId, developerId));
   if (reverse === undefined) return undefined;

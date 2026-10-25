@@ -1,7 +1,7 @@
 // tests/contract/slack-details.test.ts
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -420,6 +420,11 @@ describe("the Details modal's time budget (Slack's 3-second trigger window)", ()
 
 describe("the Details handler on the ingress Lambda's AWS wiring", () => {
   const environment = { ...process.env };
+  beforeEach(() => {
+    // The stored turn is from 2026-09-24 and its details are kept 30 days, so the clock is the test's, never today's: only Date is frozen, an hour after the reply.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(repliedAt + 3_600_000);
+  });
   afterEach(() => {
     process.env = { ...environment };
     vi.useRealTimers();
@@ -589,8 +594,6 @@ describe("the Details handler on the ingress Lambda's AWS wiring", () => {
   });
 
   it("hands views.open what is left of the window after the record read, not slackApi's 2-second default", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(repliedAt + 3_600_000);
     const { handler, slack } = wire("turn-records", 700);
     await handler(signed(payload(), Date.now()));
     const opened = slack.filter((entry) => entry.url === "https://slack.com/api/views.open");

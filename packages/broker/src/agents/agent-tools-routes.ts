@@ -34,7 +34,7 @@ import {
 import { agentGitHubGuard, githubConnector, requestFingerprint, type CatalogCache, type Invocation, type Ledger } from "@agentx/gateway";
 import { callConnector, discoverConnector, type ConnectorContextBase, type ScopeDiscovery } from "../aws/connector-routes.js";
 import type { ResolvedConnector } from "../aws/connector-types.js";
-import { effectiveTaskOwner, inertName } from "../developer/task-records.js";
+import { effectiveTaskOwner, inertName, ownerDisplayName } from "../developer/task-records.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type AgentGitHubScope, type AgentRepositoryLabel, type AgentTokenOptions } from "../github-app.js";
 import { githubAgentToolPermissions, type GitHubAgentTokenPermissions } from "./github-agent-tools.js";
@@ -402,7 +402,7 @@ export async function listAgentTools(deps: AgentToolsDependencies, run: AgentToo
 
 /** The footer a connector adds to the long text of a write: the person and the agent it is for. */
 export function attributionOf(task: DeveloperTaskRecord, agentName: string): string {
-  return `Requested by ${inertName(effectiveTaskOwner(task).name)} via Rovara agent ${inertName(agentName)}`;
+  return `Requested by ${inertName(ownerDisplayName(task))} via Rovara agent ${inertName(agentName)}`;
 }
 
 /** The label listers for this run: GitHub's, the connectors' own through the call path, and whatever the dependencies add or replace. */

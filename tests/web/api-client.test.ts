@@ -7,7 +7,7 @@ import { createBrowserHost, type BrowserWindow } from "../../packages/web/src/br
 import { fakeHost } from "./support/fake-host.js";
 const ORIGIN = "https://cell.example", CSRF = "c".repeat(43);
 const me = (csrf = CSRF) => ({ developer: { id: "a".repeat(64), name: "Maya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [], csrf });
-const empty = { cards: [] };
+const empty = { cards: [], total: 0 };
 function browser(implementation: (input: string, init: RequestInit | undefined) => Promise<Response>) {
  const local = new Map<string, string>(), session = new Map<string, string>();
  const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => implementation(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, init)), assign = vi.fn();
@@ -74,7 +74,7 @@ describe("browser host and shared API client", () => {
   vi.useFakeTimers();let calls = 0;const retry = fakeHost(async () => { if (++calls === 1) throw new Error("private upstream detail");return { status: 200, body: empty }; });const pending = createApiClient(retry.host).send("POST", "/v1/app/agents", { requestId: "original" }, HomeResponseReaderSchema);await vi.advanceTimersByTimeAsync(1000);expect(await pending).toEqual({ kind: "done", value: empty });expect(retry.request.mock.calls.map(([input]) => input.body)).toEqual([{ requestId: "original" }, { requestId: "original" }]);
  });
  it("keeps unknown enums and added fields through the shared reader", async () => {
-  const f = fakeHost(async () => ({ status: 200, body: { cards: [{ cardId: "future", kind: "future-kind", title: "Still readable", at: "2026-10-23T12:00:00Z", future: true }], newField: true } }));const value = await createApiClient(f.host).get("/v1/app/home", HomeResponseReaderSchema);expect(value.cards[0]!.kind).toBe("unknown");expect(value.cards[0]!.future).toBe(true);expect(value.newField).toBe(true);
+  const f = fakeHost(async () => ({ status: 200, body: { cards: [{ cardId: "offer:future", kind: "future-kind", reason: "A newer source.", buttons: [], title: "Still readable", at: "2026-10-23T12:00:00Z", future: true }], total: 1, newField: true } }));const value = await createApiClient(f.host).get("/v1/app/home", HomeResponseReaderSchema);expect(value.cards[0]!.kind).toBe("unknown");expect(value.cards[0]!.future).toBe(true);expect(value.newField).toBe(true);
  });
  it("returns fixed network errors rather than upstream details", async () => {
   const f = fakeHost(async () => { throw new Error("private upstream detail"); });const error = await createApiClient(f.host).send("POST", "/v1/app/agents", {}, HomeResponseReaderSchema).catch((value: unknown) => value);expect(error).toBeInstanceOf(ApiError);expect(String(error)).not.toContain("private upstream detail");

@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleRefSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, type OrgId, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, type WorkflowFeedbackThreadObservation, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, recordWorkflowPullRequestHeadTrees, recordWorkflowPullRequestUpdate, workflowFollowsOnlyMerge, type WorkflowSnapshot, type AuditEventInput, auditPullRequestId } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleRefSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, type OrgId, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, type WorkflowFeedbackThreadObservation, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, recordWorkflowPullRequestHeadTrees, recordWorkflowPullRequestUpdate, workflowFollowsOnlyMerge, type WorkflowSnapshot, type AuditEventInput, auditPullRequestId, projectMonthStatsKey } from "@agentx/contracts";
 import { auditOccurrence, auditPullRequestMerged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
@@ -198,6 +198,43 @@ export const GITHUB_HEAD_LAG_WINDOW_MS = 10 * 60_000;
  * A builder or org lookup that fails is logged and the save goes on without the event. At most 32 events (a workflow's cap on
  * pull requests), so even with a landed-push save (1 + 2 x 32 items) the transaction stays within the 100 items DynamoDB allows.
  */
+/** The pull requests this save moves to MERGED: their record changes from anything else to merged. */
+function newlyMerged<Read extends { pr: { repositoryId: string; number: number; state: string } }>(next: WorkflowSnapshot, reads: ReadonlyArray<Read>): Read[] {
+  return reads.filter(({ pr }) => pr.state !== "MERGED"
+    && next.pullRequests?.some(after => after.repositoryId === pr.repositoryId && after.number === pr.number && after.state === "MERGED") === true);
+}
+
+/**
+ * The project's month count of merged pull requests (Plan 5 Task 16): one more for each pull request this save moves to MERGED, added by the same transaction as the move, so a
+ * redelivered merge (which changes nothing) adds nothing and a save that does not commit counts nothing. The month is the UTC month the merge was found. A task whose org is not known
+ * is not counted (the count is the org's own); a failing lookup is the same, and never stops the save.
+ */
+export async function mergedPullRequestStats(
+  input: ReconcileTaskPullRequestFeedbackInput,
+  task: { orgId?: OrgId | undefined; project: string },
+  taskId: string,
+  next: WorkflowSnapshot,
+  reads: ReadonlyArray<{ pr: { repositoryId: string; number: number; state: string } }>,
+): Promise<TransactItem[]> {
+  const merged = newlyMerged(next, reads);
+  if (merged.length === 0) return [];
+  try {
+    const orgId = task.orgId ?? await input.auditOrgId?.(taskId);
+    if (orgId === undefined) return [];
+    const month = input.now.slice(0, 7);
+    return [{
+      Update: {
+        TableName: input.tableName, Key: projectMonthStatsKey(orgId, task.project, month),
+        UpdateExpression: "SET entityType = :type, orgId = :orgId, #project = :project, #month = :month ADD mergedPullRequests :merged",
+        ExpressionAttributeNames: { "#project": "project", "#month": "month" },
+        ExpressionAttributeValues: { ":type": "PROJECT_SESSION_STATS", ":orgId": orgId, ":project": task.project, ":month": month, ":merged": merged.length },
+      },
+    }];
+  } catch {
+    return [];
+  }
+}
+
 function mergedPullRequestEvents(
   input: ReconcileTaskPullRequestFeedbackInput,
   task: { orgId?: OrgId | undefined },
@@ -206,8 +243,7 @@ function mergedPullRequestEvents(
   reads: ReadonlyArray<{ pr: { repositoryId: string; number: number; state: string }; fullName: string }>,
 ): Promise<AuditEventInput[]> {
   return tryAuditEvents(input, async () => {
-    const merged = reads.filter(({ pr }) => pr.state !== "MERGED"
-      && next.pullRequests?.some(after => after.repositoryId === pr.repositoryId && after.number === pr.number && after.state === "MERGED") === true);
+    const merged = newlyMerged(next, reads);
     if (merged.length === 0) return [];
     const orgId = task.orgId ?? await input.auditOrgId?.(taskId);
     if (orgId === undefined) throw new Error("the task's org is unknown");
@@ -269,7 +305,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       if (next === current) return false;
       const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
       try {
-        await input.saveWorkflow(linked.taskId, current.revision, next, events.flatMap(event => auditPending(input, event)));
+        await input.saveWorkflow(linked.taskId, current.revision, next, [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)]);
         await flushAuditEvents(input, events);
         return true;
       } catch (error) {
@@ -472,7 +508,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
     }
     if (headTrees.length > 0) next = recordWorkflowPullRequestHeadTrees(next, headTrees, input.now);
     const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
-    const extraItems = events.flatMap(event => auditPending(input, event));
+    const extraItems = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)];
     try {
       if (recordedPushes.length > 0) await input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems);
       else await input.saveWorkflow(linked.taskId, current.revision, next, extraItems);

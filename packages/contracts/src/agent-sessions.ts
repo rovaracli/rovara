@@ -34,6 +34,9 @@ export const SESSION_SHARES_MAX = 50;
 export const PRESENCE_HEARTBEAT_SECONDS = 30;
 
 export const LIVE_PAGE_MAX = 100;
+/** The people a Live tile names as looking at a session; viewingNowCount counts them all. */
+export const LIVE_VIEWING_MAX = 5;
+export const LIVE_FILTERS = ["all", "mine", "team", "needs_me", "failed"] as const;
 
 export const HOME_CARDS_MAX = 10;
 
@@ -137,6 +140,11 @@ export const LOCAL_TOOLS = ["rovara", "claude-code", "codex", "gemini-cli", "cur
 export const SESSION_LEVELS = ["view", "use", "edit"] as const;
 export type SessionLevel = (typeof SESSION_LEVELS)[number];
 
+/** The canonical status words for Live tiles (Plan 5 Task 14). */
+export const SESSION_STATUS_WORDS: Record<(typeof SESSION_STATUSES)[number], string> = {
+  starting: "Starting", running: "Running", needs_person: STATUS_WORDS.needs_person, paused: STATUS_WORDS.paused, waiting: STATUS_WORDS.waiting, stopped: STATUS_WORDS.stopped,
+  succeeded: "Succeeded", failed: "Failed", cancelled: "Cancelled",
+};
 export const LEVEL_WORDS = { view: "can view", use: "can use", edit: "can edit" } as const;
 
 /** What a person may do on a session (`sessionActionsFor` in the broker decides who gets which; `make_agent` is added when the person may create agents in the session's project, checked live as the route checks it). */
@@ -188,6 +196,8 @@ export const SessionSummarySchema = z
     step: lineText(SESSION_TITLE_MAX).optional(),
     peek: blockText(SESSION_PEEK_MAX_CHARS).optional(),
     lastRunFailed: z.literal(true).optional(),
+    /** The workflow is BLOCKED and can be retried through the workflow retry. */
+    workflowBlocked: z.literal(true).optional(),
     costUsd: z.number().min(0),
     runLimitUsd: z.number().min(0).optional(),
     stopAtUsd: z.number().min(0).optional(),

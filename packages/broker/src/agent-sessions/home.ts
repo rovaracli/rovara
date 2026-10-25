@@ -1,0 +1,524 @@
+// Home (Plan 5 Task 15): one person's attention cards. `homeCards` asks every registered source for the caller's cards, checks and bounds what they answer, takes out what the caller
+// dismissed, ranks the rest and answers the first `HOME_CARDS_MAX` with the total. A card is built for the caller alone and from what is read now: an approval only for a person who may
+// decide it (its confirm link too), a session only for a person who may view it, plan, pull request and failure cards only for sessions the caller owns now. A link is present only for
+// an action the caller may take, and never carries a ticket. Every read is bounded; a source that throws or is slow is skipped and logged with fixed words, never with what it said.
+import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  HOME_CARDS_MAX, HOME_DISMISSIBLE_KINDS, HOME_DISMISS_DAYS, HOME_FAILURE_DAYS, HOME_NOT_DISMISSIBLE, HOME_REASON_MAX, HomeCardIdSchema, HomeCardSchema, INDEX_EXPIRY_ATTRIBUTE,
+  OrgRoleSchema, SessionIdSchema, agentSessionKey, agentXError, homeDismissedKey, mySessionsKey, openSpendRequestsKey, orgMemberKey, projectAllows, sessionLink,
+  type AgentSessionRecord, type HomeCard, type HomeCardKind, type HomeDismissResponse, type HomeResponse, type OrgRole,
+} from "@agentx/contracts";
+import { changeTitleOf } from "../agents/approval-decide-kind.js";
+import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
+import { listApprovalsFor, mayDecideApproval, shownText } from "../agents/approvals.js";
+import type { AnyApprovalRecord } from "../agents/approvals.js";
+import type { AgentRouteDependencies } from "../agents/routes.js";
+import { getSpendRequest, mayDecideSpendRequest } from "../spend/requests.js";
+import { taskKey } from "../developer/task-records.js";
+import { newSessionRoleMemo, sessionAccessFor, sessionActionsFor, type SessionAccess, type SessionRoleMemo } from "./access.js";
+import { batchGetItems, keyText } from "./live.js";
+import { approveLink, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
+import { sessionFromItem } from "./store.js";
+
+type Item = Record<string, unknown>;
+
+/** What Home needs: the session reads, and Plan 3's approvals core (without it there are no approval or spend cards). */
+export interface HomeDependencies extends SessionReadDependencies {
+  approvals?: (ApprovalDependencies & Partial<AgentRouteDependencies>) | undefined;
+  /** How long one source may take before it is skipped (default `HOME_SOURCE_TIMEOUT_MS`). */
+  homeSourceTimeoutMs?: number | undefined;
+}
+export type HomeCaller = SessionReadCaller;
+
+/**
+ * A card a source answers. `blocksRunningSession` ranks an approval or a budget request above the rest; `occurrence` says which happening of the card this is (a failure's end or summary revision;
+ * default: `at`), so a dismissal hides that happening and not a new one. Home takes both off before answering.
+ */
+export type HomeSourceCard = HomeCard & { blocksRunningSession?: true; occurrence?: string };
+
+/** What one request already learned, shared by the sources so the caller's sessions are read once. */
+export interface HomeContext {
+  readonly orgRole: OrgRole;
+  /** The caller's own sessions that may have a card (a plan to review, a pull request to review, a failure), judged for the caller: they own each now and may view it. */
+  ownSessions(): Promise<readonly OwnSession[]>;
+  /** The sessions among `ids`, read once (a missing one or another org's is absent). */
+  sessionsById(ids: readonly string[]): Promise<Map<string, AgentSessionRecord>>;
+  /** The tasks among `ids`, read once (a missing one or another org's is absent). */
+  tasksById(ids: readonly string[]): Promise<Map<string, Item>>;
+  /** What the caller may do with a session now, or undefined when they may not view it. */
+  accessOf(session: AgentSessionRecord): Promise<SessionAccess | undefined>;
+}
+export interface OwnSession { session: AgentSessionRecord; access: SessionAccess; task: Item | undefined }
+
+/** One place cards come from. Plan 5 registers `approval`, `spend_request`, `plan`, `pull_request` and `failure`; later plans add `question` and `offer`. */
+export interface HomeCardSource {
+  kind: HomeCardKind;
+  list(deps: HomeDependencies, caller: HomeCaller, context: HomeContext): Promise<HomeSourceCard[]>;
+}
+
+export const HOME_SOURCE_TIMEOUT_MS = 2000;
+/** The most cards read from one source; more are cut (and logged), so `total` counts at most this many per source. */
+export const HOME_SOURCE_CARDS_MAX = 100;
+/** The most of the caller's own session-list rows read, and the most sessions among them judged. */
+export const HOME_OWN_SCAN_MAX = 200;
+export const HOME_OWN_JUDGED_MAX = 50;
+/** The most approvals checked for the caller, and the most open budget requests. */
+export const HOME_APPROVALS_MAX = 100;
+export const HOME_SPEND_SCAN_MAX = 100;
+/** The most of a person's dismissals read. */
+export const HOME_DISMISSED_READ_MAX = 300;
+const PAGE = 100;
+const DAY_MS = 86_400_000;
+const FAILURE_WORDS_MAX = 120;
+const SESSION_WORDS_MAX = 80;
+const PROBE_AT = "2000-01-01T00:00:00.000Z";
+const PROBE_ID = "ses_00000000000000000000";
+
+/** The form of an occurrence as a dismissal link carries it and a dismissal row keeps it. */
+const OCCURRENCE_PATTERN = /^[A-Za-z0-9:.+_-]{1,64}$/u;
+const occurrenceOf = (card: HomeSourceCard): string => card.occurrence ?? card.at;
+
+const isAgentXError = (error: unknown): boolean => error instanceof Error && error.name === "AgentXError";
+const text = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
+const logOf = (deps: Pick<HomeDependencies, "log">) => (entry: Record<string, unknown>) => (deps.log ?? ((line: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...line }))))(entry);
+const fit = (prefix: string, rest: string): string => [...`${prefix}${rest}`].slice(0, HOME_REASON_MAX).join("").trimEnd();
+const cut = (value: string, max: number): string => [...value].slice(0, max).join("").trimEnd();
+
+// ---- the registry
+
+const sources: HomeCardSource[] = [];
+
+/** Adds a source of cards. Answers the function that takes it away again (for a test). */
+export function registerHomeCardSource(source: HomeCardSource): () => void {
+  sources.push(source);
+  return () => {
+    const at = sources.indexOf(source);
+    if (at >= 0) sources.splice(at, 1);
+  };
+}
+
+// ---- what a request knows
+
+function contextFor(deps: HomeDependencies, caller: HomeCaller, orgRole: OrgRole): HomeContext {
+  const log = logOf(deps);
+  const memo: SessionRoleMemo = newSessionRoleMemo();
+  const sessions = new Map<string, Promise<AgentSessionRecord | undefined>>();
+  const tasks = new Map<string, Promise<Item | undefined>>();
+  const access = new Map<string, Promise<SessionAccess | undefined>>();
+  let own: Promise<readonly OwnSession[]> | undefined;
+
+  const readInto = async <T>(cache: Map<string, Promise<T | undefined>>, ids: readonly string[], keyOf: (id: string) => { pk: string; sk: string }, build: (item: Item, id: string) => T | undefined) => {
+    const wanted = [...new Set(ids)].filter((id) => !cache.has(id));
+    if (wanted.length > 0) {
+      const read = batchGetItems(deps, wanted.map(keyOf));
+      for (const id of wanted) cache.set(id, read.then((found) => { const item = found.get(keyText(keyOf(id))); return item === undefined ? undefined : build(item, id); }));
+    }
+    const found = new Map<string, T>();
+    for (const id of ids) {
+      const value = await cache.get(id);
+      if (value !== undefined) found.set(id, value);
+    }
+    return found;
+  };
+
+  const context: HomeContext = {
+    orgRole,
+    sessionsById: (ids) => readInto(sessions, ids.filter((id) => SessionIdSchema.safeParse(id).success), (id) => agentSessionKey(caller.orgId, id as never, "META"), (item, id) => {
+      const session = sessionFromItem(item);
+      return session !== undefined && session.orgId === caller.orgId && session.sessionId === id ? session : undefined;
+    }),
+    tasksById: (ids) => readInto(tasks, ids, (id) => taskKey(id), (item) => (item["orgId"] === caller.orgId ? item : undefined)),
+    accessOf: (session) => {
+      const known = access.get(session.sessionId);
+      if (known !== undefined) return known;
+      const judged = (async () => {
+        try {
+          return (await sessionAccessFor(deps, caller, orgRole, session, { memo })).access;
+        } catch (error) {
+          // A role that cannot be read is no access, never a reason to show the session.
+          if (isAgentXError(error)) return undefined;
+          throw error;
+        }
+      })();
+      access.set(session.sessionId, judged);
+      return judged;
+    },
+    ownSessions: () => (own ??= ownSessionsOf(deps, caller, context, log)),
+  };
+  return context;
+}
+
+const withinDays = (instant: string | undefined, nowMs: number, days: number): boolean => instant !== undefined && nowMs - Date.parse(instant) < days * DAY_MS && Date.parse(instant) <= nowMs + DAY_MS;
+
+/** Whether a session can be one of the caller's cards by what its summary says: a plan or pull request waits, or it failed lately. */
+function candidateOf(session: AgentSessionRecord, nowMs: number): boolean {
+  const { summary } = session;
+  const ended = session.endedAt !== undefined;
+  const failure = ended ? summary.status === "failed" && withinDays(session.endedAt, nowMs, HOME_FAILURE_DAYS) : summary.lastRunFailed === true && withinDays(session.updatedAt, nowMs, HOME_FAILURE_DAYS);
+  const waits = !ended && session.kind === "task" && (summary.status === "needs_person" || summary.status === "waiting");
+  return failure || waits;
+}
+
+/** The caller's newest sessions (their list, a fixed number of rows), those that may have a card, judged for the caller: owner now and able to view. */
+async function ownSessionsOf(deps: HomeDependencies, caller: HomeCaller, context: HomeContext, log: (entry: Record<string, unknown>) => void): Promise<readonly OwnSession[]> {
+  const pk = mySessionsKey(caller.orgId, caller.developerId, PROBE_AT, PROBE_ID).pk;
+  const ids: string[] = [];
+  let start: Record<string, unknown> | undefined;
+  let more = false;
+  for (;;) {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": pk }, ConsistentRead: true, ScanIndexForward: false, Limit: PAGE,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const row of page.Items ?? []) {
+      if (ids.length >= HOME_OWN_SCAN_MAX) { more = true; break; }
+      const id = SessionIdSchema.safeParse(row["sessionId"]);
+      if (id.success && row["orgId"] === caller.orgId) ids.push(id.data);
+    }
+    start = page.LastEvaluatedKey;
+    if (more || start === undefined) break;
+  }
+  const nowMs = deps.now();
+  const found = await context.sessionsById(ids);
+  const candidates = ids.flatMap((id) => {
+    const session = found.get(id);
+    return session !== undefined && candidateOf(session, nowMs) ? [session] : [];
+  });
+  if (more || candidates.length > HOME_OWN_JUDGED_MAX) log({ event: "home.sessions_truncated", orgId: caller.orgId });
+  const judged = candidates.slice(0, HOME_OWN_JUDGED_MAX);
+  const tasks = await context.tasksById(judged.flatMap((session) => (session.subject.kind === "task" ? [session.subject.taskId] : [])));
+  const owned: OwnSession[] = [];
+  for (const session of judged) {
+    const access = await context.accessOf(session);
+    if (access === undefined || !access.owner) continue;
+    owned.push({ session, access, task: session.subject.kind === "task" ? tasks.get(session.subject.taskId) : undefined });
+  }
+  return owned;
+}
+
+// ---- small builders
+
+const sessionHref = (deps: HomeDependencies, sessionId: string) => sessionLink(deps.origin.replace(/\/+$/u, ""), sessionId);
+const openSession = (deps: HomeDependencies, sessionId: string, label = "Open session") => ({ label, action: "open" as const, href: sessionHref(deps, sessionId), method: "GET" as const });
+const confirmButton = (deps: HomeDependencies, id: string, label: string) => ({ label, action: "confirm" as const, href: approveLink(deps, id), method: "GET" as const });
+const quoted = (title: string) => `"${cut(shownText(title, 300), SESSION_WORDS_MAX)}"`;
+
+/** A pull request's address when it is a plain `https://github.com/…` one; nothing else is ever a destination. */
+function githubUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "github.com" && url.username === "" && url.password === "" && url.port === "" ? `${url.origin}${url.pathname}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ---- the sources: approvals and budget requests
+
+const WRITE_AGENT_FALLBACK = "An agent";
+
+/** The words that say what an approval is about, who asks, and the session it belongs to (if any). */
+function approvalWords(record: AnyApprovalRecord, task: Item | undefined): { title: string; reason: string; taskId?: string; sessionId?: string } {
+  if (record.kind === "change") {
+    const title = changeTitleOf(record.subject.kind);
+    return { title, reason: fit("A change is waiting for you to approve: ", title) };
+  }
+  if (record.subject.kind === "chain_gate") {
+    const prompt = shownText(record.kind === "step" ? record.prompt : record.summary, 300) || "A decision is waiting";
+    return { title: prompt, reason: fit("A chain run is waiting for you to approve: ", prompt), sessionId: record.subject.chainRunId };
+  }
+  const taskId = record.subject.taskId;
+  const prompt = shownText(record.kind === "write" ? record.summary : record.prompt, 300) || "A decision is waiting";
+  const taskAgent = (task?.["agent"] as { name?: unknown } | undefined)?.name;
+  const named = record.kind === "write" ? record.agent?.name : typeof taskAgent === "string" ? taskAgent : undefined;
+  const agent = (named === undefined ? "" : cut(shownText(named, 80), 60)) || WRITE_AGENT_FALLBACK;
+  const sessionId = text(task?.["sessionId"]);
+  return { title: prompt, reason: fit(`${agent} is waiting for you to approve: `, prompt), taskId, ...(sessionId === undefined ? {} : { sessionId }) };
+}
+
+const approvalSource: HomeCardSource = {
+  kind: "approval",
+  async list(deps, caller, context) {
+    const approvals = deps.approvals;
+    if (approvals === undefined) return [];
+    const asker: ApprovalCaller = { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole };
+    const now = deps.now();
+    // Oldest first, the longest-waiting ones when there are more than are checked.
+    const open = (await listApprovalsFor(approvals, asker, "PENDING")).filter((record) => Date.parse(record.expiresAt) > now).reverse().slice(0, HOME_APPROVALS_MAX);
+    const deciders: AnyApprovalRecord[] = [];
+    for (const record of open) {
+      try {
+        if (await mayDecideApproval(approvals, asker, record)) deciders.push(record);
+      } catch (error) {
+        if (!isAgentXError(error)) throw error;
+      }
+    }
+    const taskIds = deciders.flatMap((record) => (record.kind !== "change" && record.subject.kind === "agent_run" ? [record.subject.taskId] : []));
+    const tasks = await context.tasksById(taskIds);
+    const words = deciders.map((record) => approvalWords(record, record.kind !== "change" && record.subject.kind === "agent_run" ? tasks.get(record.subject.taskId) : undefined));
+    const sessions = await context.sessionsById(words.flatMap((entry) => (entry.sessionId === undefined ? [] : [entry.sessionId])));
+    const cards: HomeSourceCard[] = [];
+    for (const [index, record] of deciders.entries()) {
+      const entry = words[index]!;
+      const session = entry.sessionId === undefined ? undefined : sessions.get(entry.sessionId);
+      const viewable = session !== undefined && await context.accessOf(session) !== undefined;
+      cards.push({
+        cardId: `approval:${record.approvalId}`, kind: "approval", title: entry.title, reason: entry.reason, ...(viewable ? { sessionId: session.sessionId } : {}), at: record.createdAt,
+        buttons: [confirmButton(deps, record.approvalId, "Open"), ...(viewable ? [openSession(deps, session.sessionId)] : [])],
+        ...(session !== undefined && session.endedAt === undefined ? { blocksRunningSession: true as const } : {}),
+      });
+    }
+    return cards;
+  },
+};
+
+/** What a budget request is about when it is not about a session the caller may see. */
+const SPEND_SCOPE_WORDS: Record<string, string> = { run_limit: "A run", max_per_run: "A run", planning: "A run", month: "The monthly budget", owner_cap: "An agent owner's budget" };
+
+const spendSource: HomeCardSource = {
+  kind: "spend_request",
+  async list(deps, caller, context) {
+    const approvals = deps.approvals;
+    if (approvals === undefined) return [];
+    const now = deps.now();
+    const open = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": openSpendRequestsKey(caller.orgId, PROBE_AT, "spr_0").pk }, ConsistentRead: true, Limit: HOME_SPEND_SCAN_MAX,
+    })) as { Items?: Item[] };
+    const decided: Array<NonNullable<Awaited<ReturnType<typeof getSpendRequest>>>> = [];
+    for (const row of (open.Items ?? []).slice(0, HOME_SPEND_SCAN_MAX)) {
+      const id = text(row["spendRequestId"]);
+      if (id === undefined || row["orgId"] !== caller.orgId) continue;
+      const record = await getSpendRequest(approvals, caller.orgId, id);
+      if (record === undefined || record.status !== "PENDING" || Date.parse(record.expiresAt) <= now) continue;
+      if (await mayDecideSpendRequest(approvals, { orgId: caller.orgId, developerId: caller.developerId }, id)) decided.push(record);
+    }
+    const tasks = await context.tasksById(decided.flatMap((record) => (record.taskId === undefined ? [] : [record.taskId])));
+    const sessionIds = decided.flatMap((record) => { const id = record.taskId === undefined ? undefined : text(tasks.get(record.taskId)?.["sessionId"]); return id === undefined ? [] : [id]; });
+    const sessions = await context.sessionsById(sessionIds);
+    const cards: HomeSourceCard[] = [];
+    for (const record of decided) {
+      const sessionId = record.taskId === undefined ? undefined : text(tasks.get(record.taskId)?.["sessionId"]);
+      const session = sessionId === undefined ? undefined : sessions.get(sessionId);
+      const viewable = session !== undefined && await context.accessOf(session) !== undefined;
+      const label = viewable ? quoted(session.title) : SPEND_SCOPE_WORDS[record.kind] ?? "A budget";
+      cards.push({
+        cardId: `spend_request:${record.spendRequestId}`, kind: "spend_request", title: "Budget request", reason: fit(`${label} needs $${String(Number(record.amountUsd.toFixed(2)))} more`, ""), ...(viewable ? { sessionId: session.sessionId } : {}),
+        at: record.createdAt, buttons: [confirmButton(deps, record.spendRequestId, "Decide"), ...(viewable ? [openSession(deps, session.sessionId)] : [])],
+        ...(session !== undefined && session.endedAt === undefined ? { blocksRunningSession: true as const } : {}),
+      });
+    }
+    return cards;
+  },
+};
+
+// ---- the sources: the caller's own sessions
+
+const workflowOf = (own: OwnSession): { stage?: unknown; state?: unknown; pullRequests?: unknown } | undefined => own.task?.["workflow"] as { stage?: unknown; state?: unknown; pullRequests?: unknown } | undefined;
+
+const planSource: HomeCardSource = {
+  kind: "plan",
+  async list(deps, _caller, context) {
+    return (await context.ownSessions()).flatMap((own): HomeSourceCard[] => {
+      const workflow = workflowOf(own);
+      if (own.session.endedAt !== undefined || own.session.summary.status !== "needs_person" || workflow?.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING") return [];
+      const { session } = own;
+      return [{
+        cardId: `plan:${session.sessionId}`, kind: "plan", title: session.title, reason: fit(`Your plan for ${quoted(session.title)} is ready to review`, ""), sessionId: session.sessionId, at: session.updatedAt,
+        buttons: [openSession(deps, session.sessionId, "Review plan")],
+      }];
+    });
+  },
+};
+
+const pullRequestSource: HomeCardSource = {
+  kind: "pull_request",
+  async list(deps, _caller, context) {
+    return (await context.ownSessions()).flatMap((own): HomeSourceCard[] => {
+      const workflow = workflowOf(own);
+      if (own.session.endedAt !== undefined || own.session.summary.status !== "waiting" || workflow?.stage !== "WAIT_FOR_MERGE" || workflow.state !== "WAITING") return [];
+      const { session } = own;
+      const requests = Array.isArray(workflow.pullRequests) ? workflow.pullRequests as Array<{ url?: unknown; state?: unknown }> : [];
+      const url = requests.filter((request) => request.state === "OPEN" || request.state === "UNKNOWN").map((request) => githubUrl(request.url)).find((address) => address !== undefined);
+      return [{
+        cardId: `pull_request:${session.sessionId}`, kind: "pull_request", title: session.title, reason: fit(`Your pull request for ${quoted(session.title)} is ready for review`, ""), sessionId: session.sessionId, at: session.updatedAt,
+        buttons: [url === undefined ? openSession(deps, session.sessionId) : { label: "Open pull request", action: "open" as const, href: url, method: "GET" as const }],
+      }];
+    });
+  },
+};
+
+/** Whether a retry of this session would do something: a failed agent run, a chain run, or a blocked workflow, by someone who may start work in its project. */
+function mayRetry(own: OwnSession): boolean {
+  const { session, access, task } = own;
+  if (!sessionActionsFor(access, session.summary).includes("retry")) return false;
+  if (session.kind === "local" || session.where.kind !== "cloud") return false;
+  const retryable = session.subject.kind === "chain" || task?.["agent"] !== undefined || (session.endedAt === undefined && (task?.["workflow"] as { state?: unknown } | undefined)?.state === "BLOCKED");
+  if (!retryable) return false;
+  return session.project === undefined || (access.projectRole !== undefined && projectAllows(access.projectRole, "start_tasks"));
+}
+
+const failureSource: HomeCardSource = {
+  kind: "failure",
+  async list(deps, _caller, context) {
+    const origin = deps.origin.replace(/\/+$/u, "");
+    return (await context.ownSessions()).flatMap((own): HomeSourceCard[] => {
+      const { session } = own;
+      const failed = session.endedAt !== undefined ? session.summary.status === "failed" : session.summary.lastRunFailed === true;
+      if (!failed) return [];
+      const said = cut(shownText((session.summary.step ?? "").replace(/^Failed:\s*/u, ""), 300), FAILURE_WORDS_MAX) || "it did not finish";
+      const cardId = `failure:${session.sessionId}`;
+      const occurrence = session.endedAt !== undefined ? `ended:${session.endedAt}` : `rev:${String(session.summaryRevision)}`;
+      return [{
+        cardId, kind: "failure", occurrence, title: session.title, reason: fit(`${quoted(session.title)} failed: `, said), sessionId: session.sessionId, at: session.endedAt ?? session.updatedAt,
+        buttons: [
+          openSession(deps, session.sessionId),
+          ...(mayRetry(own) ? [{ label: "Retry", action: "retry" as const, href: `${origin}/v1/app/sessions/${session.sessionId}/retry`, method: "POST" as const }] : []),
+          { label: "Dismiss", action: "dismiss" as const, href: `${origin}/v1/app/home/cards/${encodeURIComponent(cardId)}/dismiss?occurrence=${encodeURIComponent(occurrence)}`, method: "POST" as const },
+        ],
+      }];
+    });
+  },
+};
+
+for (const source of [approvalSource, spendSource, planSource, pullRequestSource, failureSource]) registerHomeCardSource(source);
+
+// ---- reading the cards
+
+class SourceTimeout extends Error {}
+
+async function runSource(source: HomeCardSource, deps: HomeDependencies, caller: HomeCaller, context: HomeContext, log: (entry: Record<string, unknown>) => void): Promise<HomeSourceCard[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const listing = Promise.resolve().then(() => source.list(deps, caller, context));
+    listing.catch(() => undefined); // a source that answers after its time must not be an unhandled rejection
+    const timeout = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SourceTimeout()), deps.homeSourceTimeoutMs ?? HOME_SOURCE_TIMEOUT_MS); });
+    return await Promise.race([listing, timeout]);
+  } catch (error) {
+    log(error instanceof SourceTimeout ? { event: "home.source_failed", source: source.kind, reason: "timeout" } : { event: "home.source_failed", source: source.kind, reason: "error", error: error instanceof Error ? error.name : "unknown" });
+    return [];
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+interface Collected { cards: HomeSourceCard[]; dismissed: ReadonlyMap<string, string> }
+
+async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Collected> {
+  const log = logOf(deps);
+  const member = (await batchGetItems(deps, [orgMemberKey(caller.orgId, caller.developerId)])).values().next().value as Item | undefined;
+  const role = OrgRoleSchema.safeParse(member?.["role"]);
+  if (!role.success) return { cards: [], dismissed: new Map() };
+  const asker: HomeCaller = { ...caller, orgRole: role.data };
+  const context = contextFor(deps, asker, role.data);
+  const answers = await Promise.all([...sources].map(async (source) => ({ source, cards: await runSource(source, deps, asker, context, log) })));
+  const seen = new Set<string>();
+  const cards: HomeSourceCard[] = [];
+  for (const { source, cards: answered } of answers) {
+    if (answered.length > HOME_SOURCE_CARDS_MAX) log({ event: "home.source_truncated", source: source.kind });
+    for (const card of answered.slice(0, HOME_SOURCE_CARDS_MAX)) {
+      const { blocksRunningSession, occurrence, ...shown } = card;
+      const checked = HomeCardSchema.safeParse(shown);
+      if (!checked.success || checked.data.kind !== source.kind || !checked.data.cardId.startsWith(`${source.kind}:`)) {
+        log({ event: "home.card_invalid", source: source.kind, problem: checked.success ? "kind" : checked.error.issues[0]?.path.join(".") ?? "card" });
+        continue;
+      }
+      if (seen.has(checked.data.cardId)) continue;
+      seen.add(checked.data.cardId);
+      const kept = occurrence !== undefined && OCCURRENCE_PATTERN.test(occurrence) ? occurrence : undefined;
+      cards.push({ ...checked.data, ...(blocksRunningSession === true ? { blocksRunningSession } : {}), ...(kept === undefined ? {} : { occurrence: kept }) });
+    }
+  }
+  return { cards, dismissed: await dismissedBy(deps, caller) };
+}
+
+/**
+ * The cards the caller dismissed, each with the occurrence they dismissed, whose dismissal has not run out (the table deletes late). One query, a fixed number of rows at most. A row that names no
+ * occurrence is left out: it hides nothing.
+ */
+async function dismissedBy(deps: HomeDependencies, caller: HomeCaller): Promise<Map<string, string>> {
+  const pk = homeDismissedKey(caller.orgId, caller.developerId, "x:x").pk;
+  const found = new Map<string, string>();
+  const nowSeconds = Math.floor(deps.now() / 1000);
+  let start: Record<string, unknown> | undefined;
+  let read = 0;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": pk }, ConsistentRead: true, Limit: PAGE, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      read += 1;
+      const expires = item[INDEX_EXPIRY_ATTRIBUTE];
+      if (item["orgId"] !== caller.orgId || (typeof expires === "number" && expires <= nowSeconds)) continue;
+      const cardId = HomeCardIdSchema.safeParse(item["cardId"]);
+      const occurrence = item["occurrence"];
+      if (cardId.success && typeof occurrence === "string" && OCCURRENCE_PATTERN.test(occurrence)) found.set(cardId.data, occurrence);
+    }
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined && read < HOME_DISMISSED_READ_MAX);
+  if (start !== undefined) logOf(deps)({ event: "home.dismissals_truncated" });
+  return found;
+}
+
+const isDismissible = (kind: string): boolean => (HOME_DISMISSIBLE_KINDS as readonly string[]).includes(kind);
+
+/** The order cards are shown in: what blocks a running session, a question, a plan, a pull request, other approvals and budget requests, a failure, an offer. */
+function tierOf(card: HomeSourceCard): number {
+  const blocking = card.blocksRunningSession === true && (card.kind === "approval" || card.kind === "spend_request");
+  if (blocking) return 0;
+  switch (card.kind) {
+    case "question": return 1;
+    case "plan": return 2;
+    case "pull_request": return 3;
+    case "approval":
+    case "spend_request": return 4;
+    case "failure": return 5;
+    default: return 6;
+  }
+}
+const ranked = (cards: readonly HomeSourceCard[]): HomeSourceCard[] => [...cards].sort((a, b) => tierOf(a) - tierOf(b) || (a.at < b.at ? -1 : a.at > b.at ? 1 : 0) || (a.cardId < b.cardId ? -1 : a.cardId > b.cardId ? 1 : 0));
+
+/**
+ * `GET /v1/app/home`: the caller's cards, ranked, the first `HOME_CARDS_MAX` of them, and `total`: how many they have (each source read up to `HOME_SOURCE_CARDS_MAX`). A person who is not
+ * in the org has none.
+ */
+export async function homeCards(deps: HomeDependencies, caller: HomeCaller): Promise<HomeResponse> {
+  const { cards, dismissed } = await collect(deps, caller);
+  const shown = ranked(cards.filter((card) => !(isDismissible(card.kind) && dismissed.get(card.cardId) === occurrenceOf(card))));
+  return { cards: shown.slice(0, HOME_CARDS_MAX).map(({ blocksRunningSession: _blocks, occurrence: _occurrence, ...card }) => card), total: shown.length }; // eslint-disable-line @typescript-eslint/no-unused-vars -- the ranking hint and the occurrence are not part of the answer
+}
+
+/**
+ * `POST /v1/app/home/cards/{cardId}/dismiss`: hides one of the caller's failure or offer cards for them, for `HOME_DISMISS_DAYS`. Another kind is `CONFIG_INVALID`. It is idempotent: a
+ * card that is already dismissed, or is not the caller's (or not there any more), answers the same and writes nothing; only a card on the caller's own Home is ever written, in their own partition.
+ */
+export async function dismissHomeCard(deps: HomeDependencies, caller: HomeCaller, rawCardId: string, seen?: string): Promise<HomeDismissResponse> {
+  const parsed = HomeCardIdSchema.safeParse(rawCardId);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", "cardId: is not a card on Home");
+  const cardId = parsed.data;
+  if (!isDismissible(cardId.slice(0, cardId.indexOf(":")))) throw agentXError("CONFIG_INVALID", HOME_NOT_DISMISSIBLE);
+  const answer: HomeDismissResponse = { cardId, dismissed: true };
+  const { cards, dismissed } = await collect(deps, caller);
+  const card = cards.find((candidate) => candidate.cardId === cardId);
+  if (card === undefined) return answer;
+  // The occurrence the person saw (the dismiss link carries it) is the one hidden; a failure that came after they looked stays on Home.
+  if (seen !== undefined && !OCCURRENCE_PATTERN.test(seen)) throw agentXError("CONFIG_INVALID", "occurrence: is not one");
+  const occurrence = seen ?? occurrenceOf(card);
+  if (dismissed.get(cardId) === occurrence) return answer;
+  const nowMs = deps.now();
+  try {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName,
+      Item: {
+        ...homeDismissedKey(caller.orgId, caller.developerId, cardId), entityType: "HOME_DISMISSED", orgId: caller.orgId, developerId: caller.developerId, cardId, occurrence, dismissedAt: new Date(nowMs).toISOString(),
+        [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + HOME_DISMISS_DAYS * 86_400,
+      },
+      ConditionExpression: `attribute_not_exists(pk) OR ${INDEX_EXPIRY_ATTRIBUTE} <= :now OR attribute_not_exists(occurrence) OR occurrence <> :occurrence`,
+      ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000), ":occurrence": occurrence },
+    }));
+  } catch (error) {
+    // A dismissal that landed first is this one's answer too.
+    if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
+  }
+  return answer;
+}

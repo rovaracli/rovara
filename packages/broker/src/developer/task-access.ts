@@ -8,7 +8,7 @@ import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
 import { resolveSessionAccess } from "../agent-sessions/access.js";
 import { AgentSessionStore } from "../agent-sessions/store.js";
-import { effectiveTaskOwner, ownerActorIdOf, taskKey, type DeveloperTaskRecord } from "./task-records.js";
+import { effectiveTaskOwner, isTaskOwner, ownerActorIdOf, taskKey, type DeveloperTaskRecord } from "./task-records.js";
 
 export type { TaskRole } from "./task-people.js";
 export type TaskAction = "read" | "peopleRead" | "comment" | "suggest" | "decide" | "ask" | "peopleManage" | "takeOwnership" | "retry" | "publish" | "feedback" | "close" | "control" | "work";
@@ -107,7 +107,7 @@ export interface TaskAccess {
 const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 type AccessDependencies = Pick<DeveloperTaskRouteDependencies,
-  "documentClient" | "tableName" | "checkAccess" | "channelMember" | "slackTeamId" | "log" | "now" | "taskPeopleConfiguration" | "checkTaskPerson" | "agentSessions">;
+  "documentClient" | "tableName" | "checkAccess" | "channelMember" | "slackTeamId" | "log" | "now" | "taskPeopleConfiguration" | "checkTaskPerson" | "agentSessions" | "resolveMember">;
 
 const log = (deps: Pick<DeveloperTaskRouteDependencies, "log">, entry: Record<string, unknown>) =>
   (deps.log ?? ((line) => console.log(JSON.stringify({ component: "broker", ...line }))))(entry);
@@ -183,7 +183,7 @@ async function resolveTaskRoleByTask(deps: AccessDependencies, caller: Developer
   const owner = effectiveTaskOwner(task);
   const legacyOwners = [ownerActorIdOf(task)];
   const legacyPeopleAction = action === "peopleManage" || action === "takeOwnership";
-  if (owner.developerId === caller.developerId) {
+  if (await isTaskOwner(task, caller.developerId, deps.resolveMember)) {
     if (legacyPeopleAction || (action !== undefined && action !== "read" && action !== "peopleRead" && !taskOpen(task))) throw notFound();
     return { task, role: "owner", ownerActorIds: legacyOwners };
   }

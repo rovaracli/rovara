@@ -6,8 +6,10 @@
 import { describe, expect, it } from "vitest";
 import {
   TASK_OWNER_UNREADABLE_MESSAGE,
+  UNNAMED_MEMBER,
   effectiveTaskOwner,
   ownerActorIdOf,
+  ownerDecisionCounts,
   ownerFenceOf,
   ownerNameOfActor,
   taskOwnerKey,
@@ -72,8 +74,6 @@ describe("the one function that says who owns a task", () => {
     ["an empty developer id", { developerId: "" }],
     ["a blank developer id", { developerId: "   " }],
     ["a developer id that is not a string", { developerId: 7 }],
-    ["no name", { name: undefined }],
-    ["a name that is not a string", { name: 3 }],
     ["a sign-in method nobody knows", { provider: "carrier-pigeon" }],
     ["no sign-in method", { provider: undefined }],
     ["no time", { since: undefined }],
@@ -87,6 +87,23 @@ describe("the one function that says who owns a task", () => {
     expect(refusal(() => ownerActorIdOf(bad))?.code).toBe("TASK_ACCESS_DENIED");
     expect(refusal(() => ownerFenceOf(bad))?.code).toBe("TASK_ACCESS_DENIED");
     expect(tryEffectiveTaskOwner(bad)).toBeUndefined();
+  });
+
+  it.each([
+    ["no name", { name: undefined }],
+    ["a blank name", { name: "   " }],
+    ["an empty name", { name: "" }],
+    ["a name that is not a string", { name: 3 }],
+  ])("keeps a taker with %s as the owner by id and names them with a fixed fallback (the ruling on 12a question 1)", (_name, change) => {
+    const nameless = taken(change);
+    expect(effectiveTaskOwner(nameless)).toEqual({ developerId: MAX, name: UNNAMED_MEMBER, provider: "oidc" });
+    expect(ownerActorIdOf(nameless)).toBe(taskOwnerKey(MAX, TASK_ID));
+    expect(ownerNameOfActor(nameless, taskOwnerKey(MAX, TASK_ID))).toBe(UNNAMED_MEMBER);
+    expect(ownerFenceOf(nameless).values).toEqual({ ":ownerFenceId": MAX, ":ownerFenceSince": SINCE });
+    // The fallback names the person, never the creator, and only the id decides who is the owner.
+    expect(ownerDecisionCounts(nameless, taskOwnerKey(MAX, TASK_ID), "2026-10-25T00:00:00.000Z")).toBe(true);
+    expect(ownerDecisionCounts(nameless, taskOwnerKey(PRIYA, TASK_ID), "2026-10-25T00:00:00.000Z")).toBe(false);
+    expect(UNNAMED_MEMBER).toBe("a member");
   });
 
   it.each([null, "Max", 5, [], [MAX], true])("fails closed on a `currentOwner` that is %j, not a taker", (value) => {

@@ -5,4 +5,4 @@ export function navFixture(overrides: Partial<AppNav> = {}): AppNav {
 }
 const strictMe = AppMeResponseSchema.extend({ developer: AppMeResponseSchema.shape.developer.strict(), org: AppMeResponseSchema.shape.org.strict(), identities: AppMeResponseSchema.shape.identities.element.strict().array() }).strict();
 export function meFixture(overrides: Partial<AppMeResponse> = {}): AppMeResponse { return strictMe.parse({ developer: { id: FIXTURE_DEVELOPER, name: "Priya", orgRole: "member" }, org: { orgId: FIXTURE_ORG, name: "Acme", plan: "team" }, identities: [], ...overrides }); }
-export function homeFixture(overrides: Partial<ReturnType<typeof HomeResponseSchema.parse>> = {}) { return HomeResponseSchema.parse({ cards: [], ...overrides }); }
+export function homeFixture(overrides: Partial<ReturnType<typeof HomeResponseSchema.parse>> = {}) { return HomeResponseSchema.parse({ cards: [], total: overrides.cards?.length ?? 0, ...overrides }); }

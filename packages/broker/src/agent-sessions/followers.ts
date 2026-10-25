@@ -18,6 +18,7 @@ import {
   agentSessionKey,
   agentXError,
   cleanSessionName,
+  livePresenceKey,
   sessionChannel,
   type AgentSessionRecord,
   type OrgId,
@@ -167,6 +168,8 @@ const fresh = (at: unknown, nowMs: number): boolean => {
   // A time that does not read is NaN, and no comparison with NaN holds: the item is not fresh.
   return typeof at === "string" && nowMs - Date.parse(at) < PRESENCE_TTL_SECONDS * 1000;
 };
+/** Whether a heartbeat at `at` still counts at `nowMs`: the table deletes late, so every reader checks the time itself. */
+export const presenceIsFresh = fresh;
 
 /**
  * The people looking at the session now: the presence items whose heartbeat is newer than `PRESENCE_TTL_SECONDS` (the time is checked here, since the table deletes late),
@@ -206,10 +209,22 @@ export async function recordPresence(deps: SessionFollowerDependencies, caller: 
     TableName: deps.tableName,
     Item: {
       ...agentSessionKey(session.orgId, session.sessionId, `${PRESENCE_PREFIX}${caller.developerId}`), entityType: "AGENT_SESSION_PRESENCE", orgId: session.orgId, sessionId: session.sessionId,
-      developerId: caller.developerId, name: cleanSessionName(caller.name) ?? "Someone", at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PRESENCE_TTL_SECONDS,
+      developerId: caller.developerId, name: cleanSessionName(caller.name) ?? "a member", at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PRESENCE_TTL_SECONDS,
     },
     ReturnValues: "ALL_OLD",
   })) as { Attributes?: Item };
+  // The same heartbeat in the org's presence index, which the Live wall reads in one query for every tile. It only shows who is looking, so a write that fails is logged and never fails the heartbeat.
+  try {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName,
+      Item: {
+        ...livePresenceKey(session.orgId, session.sessionId, caller.developerId), entityType: "LIVE_PRESENCE", orgId: session.orgId, sessionId: session.sessionId,
+        developerId: caller.developerId, name: cleanSessionName(caller.name) ?? "a member", at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PRESENCE_TTL_SECONDS,
+      },
+    }));
+  } catch (error) {
+    (deps.log ?? ((entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry }))))({ event: "agent_session.live_presence_not_written", sessionId: session.sessionId, error: errorName(error) });
+  }
   if (!fresh(old.Attributes?.["at"], nowMs)) {
     // The session's own channel only, no feed: a person arriving is not something to catch up on. The revision is the summary's, as the sink's notices carry.
     await publishNotices({ realtime: deps.realtimePublish, now: deps.now, log: deps.log }, [

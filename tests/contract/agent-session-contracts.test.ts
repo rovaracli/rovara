@@ -62,12 +62,9 @@ import {
   sharedSessionsKey,
   taskSpendKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
+import { HomeCardReaderSchema, HomeCardSchema, HomeResponseReaderSchema, HomeResponseSchema } from "../../packages/contracts/src/home.js";
 import { OrgIdSchema } from "../../packages/contracts/src/org-node.js";
 import {
-  HomeCardReaderSchema,
-  HomeCardSchema,
-  HomeResponseReaderSchema,
-  HomeResponseSchema,
   NeedsConfirmationSchema,
   ProjectOverviewReaderSchema,
   ProjectOverviewSchema,
@@ -399,6 +396,8 @@ describe("the session record and its parts", () => {
     expect(parse({ lastRunFailed: true, offline: true, runLimitUsd: 5, stopAtUsd: 4 })).toBe(true);
     expect(parse({ lastRunFailed: false })).toBe(false);
     expect(parse({ offline: false })).toBe(false);
+    expect(parse({ workflowBlocked: true })).toBe(true);
+    expect(parse({ workflowBlocked: false })).toBe(false);
     expect(parse({ surprise: 1 })).toBe(false);
   });
 

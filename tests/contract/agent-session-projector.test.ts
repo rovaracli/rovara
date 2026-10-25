@@ -411,6 +411,60 @@ describe("a plan blocked on its run limit (Task 7a concern 2, Task 7b)", () => {
   });
 });
 
+describe("a blocked workflow carries a flag so the session can offer retry (Task 14 ruling)", () => {
+  it("sets workflowBlocked on a budget-paused task whose workflow is also blocked", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.patchTask(s.taskId, { budgetPause: { scope: { kind: "task" }, at: iso(T0) }, workflow: workflow("IMPLEMENT", "BLOCKED") });
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "paused", workflowBlocked: true });
+    const plain = p.open();
+    p.patchTask(plain.taskId, { budgetPause: { scope: { kind: "task" }, at: iso(T0) } });
+    await p.refresh(plain.sessionId);
+    expect(p.sessionOf(plain.sessionId).summary.status).toBe("paused");
+    expect(p.sessionOf(plain.sessionId).summary.workflowBlocked).toBeUndefined();
+  });
+
+
+  it("sets workflowBlocked while the workflow is BLOCKED, whatever the reason, and clears it when the workflow moves on", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.patchTask(s.taskId, { workflow: workflow("IMPLEMENT", "BLOCKED", { blockReason: "The checks could not run." }) });
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary).toMatchObject({ status: "needs_person", workflowBlocked: true });
+    p.patchTask(s.taskId, { workflow: workflow("IMPLEMENT", "RUNNING") });
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary.workflowBlocked).toBeUndefined();
+    expect("workflowBlocked" in p.sessionOf(s.sessionId).summary).toBe(false);
+  });
+
+  it("does not set it for a plan under review, a plain task or a finished workflow", async () => {
+    const p = projectorWorld();
+    const review = p.open();
+    p.patchTask(review.taskId, { workflow: workflow("PLAN_REVIEW", "WAITING") });
+    await p.refresh(review.sessionId);
+    expect(p.sessionOf(review.sessionId).summary).toMatchObject({ status: "needs_person" });
+    expect(p.sessionOf(review.sessionId).summary.workflowBlocked).toBeUndefined();
+    const plain = p.open();
+    await p.refresh(plain.sessionId);
+    expect(p.sessionOf(plain.sessionId).summary.workflowBlocked).toBeUndefined();
+  });
+
+  it("changes the digest, so the refresh writes it, and an ended session never carries it", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.patchTask(s.taskId, { workflow: workflow("IMPLEMENT", "RUNNING") });
+    await p.refresh(s.sessionId);
+    const before = p.sessionOf(s.sessionId).summary.digest;
+    p.patchTask(s.taskId, { workflow: workflow("IMPLEMENT", "BLOCKED", { blockReason: "x" }) });
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary.digest).not.toBe(before);
+    p.patchTask(s.taskId, { workflow: workflow("MERGED", "COMPLETE") });
+    await p.refresh(s.sessionId);
+    expect(p.sessionOf(s.sessionId).summary.workflowBlocked).toBeUndefined();
+  });
+});
+
 describe("cost, order and the notice sink", () => {
   it("raises costUsd from the per-task counter with one read, and an old record afterwards leaves the newer summary", async () => {
     const p = projectorWorld();

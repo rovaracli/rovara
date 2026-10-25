@@ -304,6 +304,9 @@ export type TaskOwnerSource = Pick<DeveloperTaskRecord, "taskId" | "developerId"
 
 const present = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
 
+/** What shows for a taker whose name was not recorded. Authority never reads the name: it is by id, so a missing name only changes what is displayed. */
+export const UNNAMED_MEMBER = "a member";
+
 /** The task's owner could not be worked out, so nobody is it: every read that carries authority refuses rather than fall back to the creator. */
 export const TASK_OWNER_UNREADABLE_MESSAGE = "Rovara can't tell who owns this task right now, so it did nothing.";
 
@@ -316,10 +319,10 @@ function readCurrentOwner(value: unknown): TaskCurrentOwner | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const taker = value as Record<string, unknown>;
   const provider = DeveloperSignInMethodSchema.safeParse(taker["provider"]);
-  if (!present(taker["developerId"]) || typeof taker["name"] !== "string" || !provider.success || !present(taker["since"]) || !Number.isFinite(Date.parse(taker["since"]))) return undefined;
+  if (!present(taker["developerId"]) || !provider.success || !present(taker["since"]) || !Number.isFinite(Date.parse(taker["since"]))) return undefined;
   if (taker["slackUserId"] !== undefined && !present(taker["slackUserId"])) return undefined;
   return {
-    developerId: taker["developerId"], name: taker["name"], provider: provider.data, since: taker["since"],
+    developerId: taker["developerId"], name: present(taker["name"]) ? taker["name"] : UNNAMED_MEMBER, provider: provider.data, since: taker["since"],
     ...(taker["slackUserId"] === undefined ? {} : { slackUserId: taker["slackUserId"] }),
   };
 }
@@ -364,6 +367,25 @@ export function ownerDecisionCounts(task: TaskOwnerSource, actorId: string, deci
   const creator = taskOwnerKey(task.developerId, task.taskId);
   if (ownerActorIds !== undefined) return ownerActorIds.includes(actorId) || (before && actorId === creator);
   return actorId === (before ? creator : ownerActorIdOf(task));
+}
+
+/** The owner's name for a display: the one recorded, or the fixed `UNNAMED_MEMBER` when none is (or the owner can't be read). Never the creator's name for someone else, never blank. */
+export function ownerDisplayName(task: TaskOwnerSource): string {
+  const name = tryEffectiveTaskOwner(task)?.name;
+  return present(name) ? name : UNNAMED_MEMBER;
+}
+
+/**
+ * Whether `developerId` is the task's owner now. Without a way to follow merges, only the stored id is the owner. With one (`resolveMember`: a developer merged into
+ * another reads as that other), a taker who was merged away since is the owner as the member they became; only the taker is followed, never the creator (the merge
+ * moves the creator's own tasks). An owner that can't be read is nobody.
+ */
+export async function isTaskOwner(task: TaskOwnerSource, developerId: string, resolveMember?: (developerId: string) => Promise<string>): Promise<boolean> {
+  const owner = tryEffectiveTaskOwner(task);
+  if (owner === undefined) return false;
+  if (owner.developerId === developerId) return true;
+  if (resolveMember === undefined || !isTaskTakenOver(task)) return false;
+  return (await resolveMember(owner.developerId)) === (await resolveMember(developerId));
 }
 
 /** `effectiveTaskOwner`, for a read that shows or lists rather than decides: `undefined` when the owner can't be read (nobody is the owner then). */

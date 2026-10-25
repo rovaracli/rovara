@@ -122,13 +122,13 @@ import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeopleCapabilities, getTaskPeopleForPage, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
-import type { SessionShareDependencies } from "../agent-sessions/shares.js";
+import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
@@ -259,7 +259,7 @@ export interface DeveloperRouteDependencies {
    * Plan 5, Task 5: what session levels, shares and reads need. The broker supplies it with `agents` (as `agents.agentSessions`) and on the browser pages
    * (`/s/…`, `/review/…`), which don't carry `agents`. Without it the session routes answer NOT_FOUND and the task page admits nobody on a session level.
    */
-  agentSessions?: SessionShareDependencies;
+  agentSessions?: SessionTakeOverDependencies;
   /**
    * Plan 3 final review (access m-2): what follows a person's project role changing or their grant being removed, on the agents platform (`onProjectMemberChanged`:
    * the agents they were accountable for move when they no longer hold `manage_agents`). Called after the change applied, also on a replay (it is repeatable);
@@ -1463,7 +1463,7 @@ async function startAppRun(
 }
 
 /** What session levels and reads need, from the route dependencies: the broker's own, or those it gave the agent routes. */
-function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionShareDependencies | undefined {
+function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionTakeOverDependencies | undefined {
   return deps.agentSessions ?? deps.agents?.agentSessions;
 }
 
@@ -1482,8 +1482,30 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
         return registered?.definition.repositories.find(item => item.name === repository)?.url;
       },
     } satisfies NonNullable<SessionRouteDependencies["diff"]> }),
+    // Plan 5 Task 13: Plan 3's cancel, workflow retry and run start, bound to this person. They are called only after the session routes read the person's level on the session.
+    control: {
+      cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      startAgentRun: async (request) => {
+        const starter = agentRunStarterOf(deps);
+        if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");
+        return startAgentRun(starter, { ...request, caller });
+      },
+    },
+    ...(deps.audit === undefined ? {} : { audit: deps.audit }),
     taskView: (task, options) => taskView(taskDeps, task, options),
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
+    // Plan 5 Task 16: the project's card, read after the page has checked the person's role in the project.
+    projectPage: async (who, name) => {
+      const [record, meta] = await Promise.all([latestProjectRecord(deps, who.orgId, name), readProjectMeta(deps, who.orgId, name)]);
+      if (record === undefined) return undefined;
+      const summary = await appProjectSummary(deps, name, "viewer", record, meta);
+      const channels = (await bindingsOf(deps, who.orgId)).filter((binding) => binding.projectName === name).map((binding) => binding.channelId);
+      return {
+        name, ...(summary.description === undefined ? {} : { description: summary.description }), status: summary.status, latestRevision: summary.latestRevision, repositories: summary.repositories,
+        setup: summary.setup, channels: [...new Set(channels)].slice(0, 20),
+      };
+    },
     // Plan 5 Task 9: a person arriving on a session is told to its channel through the same API the sink publishes to.
     realtimePublish: realtimeConfigFromEnvironment(),
     // Plan 5 Task 8: the realtime token. Without the sign-in function's signing, or without an events API, the route says live updates are unavailable.
@@ -1562,6 +1584,8 @@ export function developerTaskRouteDependencies(
     tableName: deps.tableName,
     orgId: caller.orgId,
     ...(agentSessions === undefined ? {} : { agentSessions }),
+    // A taker who was merged into another member since is the owner as the member they became (Plan 5 Task 12a review, M-3).
+    resolveMember: (developerId) => survivorOf(projectMembersDepsOf(deps), developerId),
     ...(deps.developer.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
     issuer: deps.developer.issuer,
     actions: deps.tasks!,

@@ -1,6 +1,7 @@
 import type { SessionId } from "./agent-sessions.js";
 import { cleanDisplayName } from "./display-name.js";
 import { z } from "zod";
+import { ApprovalIdSchema } from "./agent.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import type { DeviceIdSchema, SessionMessageIdSchema, SessionEventIdSchema, SessionStatusSchema, LocalToolSchema, SessionEventSchema} from "./agent-sessions.js";
 import { triggerIdPlaceholder, SessionIdSchema, SESSION_KINDS, SESSION_MODES, SESSION_LEVELS, SessionSubjectSchema, SessionWhereSchema, SessionLegSchema, SessionSummarySchema, SessionOwnerSchema, SessionAgentSchema, SessionStartedBySchema, SESSION_LEGS_MAX, lineText, SESSION_TITLE_MAX, CountSchema, InstantSchema } from "./agent-sessions.js";
@@ -164,6 +165,8 @@ export const AgentSessionRecordSchema = z
     summary: SessionSummarySchema,
     summaryRevision: CountSchema,
     revision: CountSchema,
+    /** The approval whose take-over last moved the owner; repeated application is idempotent. */
+    lastTakeOverApprovalId: ApprovalIdSchema.optional(),
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
     endedAt: InstantSchema.optional(),
@@ -226,3 +229,5 @@ export const SessionBindingSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 export type SessionBinding = z.infer<typeof SessionBindingSchema>;
+
+export { LIVE_FILTERS, LIVE_VIEWING_MAX, SESSION_STATUS_WORDS } from "./agent-sessions.js";

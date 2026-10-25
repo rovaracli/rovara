@@ -11,6 +11,7 @@ import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { OMAR, PRIYA, SAM, pagePlan, pageTask } from "../support/page-tasks.js";
+import { attributionOf } from "../../packages/broker/src/agents/agent-tools-routes.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const SINCE = "2026-10-22T11:00:00.000Z";
@@ -306,5 +307,75 @@ describe("the caller the broker's own steps act as for a task", () => {
     const h = await createDeveloperTaskBroker();
     const { ownerCallerOf } = await brokerModule();
     await expect(ownerCallerOf(h.brokerInput as never, task({ currentOwner: { developerId: "" } }), "workflow-dispatch")).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+  });
+});
+
+describe("an owner with no usable name is shown with a fixed label, never the creator's name or a blank (ruling on 12a question 1)", () => {
+  const base = (extra: Record<string, unknown> = {}): DeveloperTaskRecord => ({
+    pk: "DEVTASK#t", sk: "META", entityType: "DEVELOPER_TASK", taskId: "11111111-1111-4111-8111-111111111111", developerId: PRIYA.developerId, developerName: "Priya", provider: "slack",
+    ownerKey: taskOwnerKey(PRIYA.developerId, "11111111-1111-4111-8111-111111111111"), ...extra,
+  } as unknown as DeveloperTaskRecord);
+
+  it("writes the connector footer for a taker with no name as 'a member', and for a blank creator name too, never 'Requested by  via'", () => {
+    expect(attributionOf(base({ currentOwner: { developerId: SAM.developerId, provider: "oidc", since: SINCE } }), "Triage")).toBe("Requested by `a member` via Rovara agent `Triage`");
+    expect(attributionOf(base({ developerName: "  " }), "Triage")).toBe("Requested by `a member` via Rovara agent `Triage`");
+    expect(attributionOf(base(), "Triage")).toBe("Requested by `Priya` via Rovara agent `Triage`");
+  });
+
+  it("credits an owner's reply on a task whose taker can't be read to the fixed label, not to the creator who handed it over", async () => {
+    const fixture = pageTask();
+    const record = fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord;
+    const unreadable = { ...record, currentOwner: { developerId: "" }, requestText: "Retry failed payments", threadNotesFedThrough: "2026-10-22T10:30:00.000Z" } as unknown as DeveloperTaskRecord;
+    fixture.db.set({ pk: `DEVTASK#${fixture.taskId}`, sk: "NOTE#1695500000.000200", entityType: "WORKFLOW_THREAD_NOTE", schemaVersion: 1, taskId: fixture.taskId, slackUserId: SAM.slackUserId, isOwner: true,
+      teamId: "T0PAGE001", channelId: "C0PAGE001", threadTs: "1695500000.000100", messageTs: "1695500000.000200", eventId: "Ev1", text: "Please use the new endpoint", truncated: false, receivedAt: "2026-10-22T10:20:00.000Z", workflowRevision: 1 });
+    const entries = await planWhyEntries(fixture.deps, unreadable, []);
+    expect(entries[0]).toMatchObject({ author: PRIYA.name });
+    expect(entries.slice(1).map((entry) => entry.author)).toEqual(["a member"]);
+  });
+});
+
+describe("a taker who was merged into another member (12a review M-3)", () => {
+  const DUPLICATE = "9".repeat(64);
+  /** Sam's earlier account, merged into Sam: the task was taken over under it. */
+  const takenAsDuplicate = (fixture: ReturnType<typeof pageTask>) => {
+    const record = fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as unknown as DeveloperTaskRecord;
+    fixture.db.set({ ...record, currentOwner: { developerId: DUPLICATE, name: "Sam", provider: "oidc", since: SINCE } });
+  };
+  const withMerge = (fixture: ReturnType<typeof pageTask>) => ({ ...fixture.deps, resolveMember: async (id: string) => (id === DUPLICATE ? SAM.developerId : id) });
+
+  it("is the task's owner on the person's own tasks and on the task page, read as the member they became", async () => {
+    const fixture = pageTask();
+    takenAsDuplicate(fixture);
+    const deps = withMerge(fixture);
+    await expect(loadOwnedTask(deps, SAM, fixture.taskId)).resolves.toMatchObject({ taskId: fixture.taskId });
+    await expect(resolveTaskAccess(deps, SAM, fixture.taskId, "read")).resolves.toMatchObject({ role: "owner" });
+    // Anyone else, the creator included, is still not the owner.
+    expect((await refusal(loadOwnedTask(deps, PRIYA, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
+    expect((await refusal(loadOwnedTask(deps, OMAR, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
+  });
+
+  it("reads exactly as before without a way to follow merges: only the stored id is the owner", async () => {
+    const fixture = pageTask();
+    takenAsDuplicate(fixture);
+    expect((await refusal(loadOwnedTask(fixture.deps, SAM, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
+  });
+});
+
+describe("the merge follow-up (12a review M-3), bounds", () => {
+  it("follows a merge only for a task someone took over: the creator's own tasks are not read through a merge", async () => {
+    const fixture = pageTask();
+    const deps = { ...fixture.deps, resolveMember: async (id: string) => (id === "9".repeat(64) ? PRIYA.developerId : id) };
+    expect((await refusal(loadOwnedTask(deps, { ...SAM, developerId: "9".repeat(64) }, fixture.taskId))).code).toBe("TASK_NOT_FOUND");
+    await expect(loadOwnedTask(deps, PRIYA, fixture.taskId)).resolves.toMatchObject({ taskId: fixture.taskId });
+  });
+
+  it("is wired into the route dependencies from the sign-in records' merge chain", async () => {
+    const { developerTaskRouteDependencies } = await import("../../packages/broker/src/aws/developer-routes.js");
+    const records: Record<string, { mergedInto?: string }> = { ["8".repeat(64)]: { mergedInto: "7".repeat(64) }, ["7".repeat(64)]: {} };
+    const routes = developerTaskRouteDependencies({
+      documentClient: { send: async (command: { input: { Key: { pk: string } } }) => ({ Item: { developerId: "x", ...records[command.input.Key.pk.replace("DEVELOPER#", "")] } }) },
+      tableName: "state", signInTableName: "sign-ins", developer: { issuer: "https://issuer.example/v1/auth" }, now: Date.now,
+    } as never, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", orgRole: "member", developerId: "d", sessionId: "s", amr: "oidc", name: "D" });
+    expect(await routes.resolveMember!("8".repeat(64))).toBe("7".repeat(64));
   });
 });

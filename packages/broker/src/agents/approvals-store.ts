@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { AgentGuardrailsSchema, AgentIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
-import type { SessionShareDependencies } from "../agent-sessions/shares.js";
+import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
@@ -50,8 +50,11 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   startApprovedRun?: (input: { orgId: OrgId; requestId: string; project: string; agent: { agentId: AgentId; version: number }; input: RunInput; origin: WorkOrigin; developerId: string }) => Promise<void>;
   /** Task 22: what the agent-step engine needs of the broker (dispatching a step's operation, the creator and recipe checks, the parts of a task's end). Without it a run cannot go on. */
   agentRuns?: AgentRunHost;
-  /** Plan 5 Task 4: what company-wide session shares need (their rule and handler); without it a `session_share_org` change can't be decided or applied. */
-  agentSessions?: SessionShareDependencies;
+  /**
+   * Plan 5 Tasks 4 and 12b: what company-wide session shares and take-overs need (their rules and handlers): the session store and access, the sign-in store, the payer's
+   * admission, the realtime events API and Plan 4's chain mover. Without it a `session_share_org` or `session_owner` change can't be decided or applied.
+   */
+  agentSessions?: SessionTakeOverDependencies;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -103,9 +106,15 @@ export interface OptOutChangeSubject { kind: "opt_out"; project: string; reposit
  */
 export interface SessionShareOrgSubject { kind: "session_share_org"; sessionId: SessionId; level: SessionLevel }
 
-/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b) and company-wide session shares (Plan 5). */
-export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject;
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject;
+/**
+ * Plan 5 Task 12b: makes `to` the owner of a session, while the session is still at `sessionRevision` (only owner, sharing and leg changes move it, so a follow, a summary
+ * refresh or an event can't make a take-over fail). It applies as the person who decided it, who is `to`, if they may still take the session over.
+ */
+export interface SessionOwnerSubject { kind: "session_owner"; sessionId: SessionId; to: string; sessionRevision: number }
+
+/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5). */
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -277,6 +286,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("session_share_org"), sessionId: SessionIdSchema, level: SessionLevelSchema }).strict(),
+  z.object({ kind: z.literal("session_owner"), sessionId: SessionIdSchema, to: Hex64, sessionRevision: z.number().int().min(1) }).strict(),
   z.object({
     kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
     project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
@@ -530,10 +540,16 @@ export const hasHandlerPhase = (record: AnyApprovalRecord): boolean => record.ki
 export interface ApprovalRunView { project: string; owner: { developerId: string; name: string } }
 
 /** The task a write or step approval is about, read live; undefined when the record names none, it is gone, or it belongs to another org. */
-async function taskOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: StepApprovalRecord | WriteApprovalRecord): Promise<DeveloperTaskRecord | undefined> {
+export async function taskOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: StepApprovalRecord | WriteApprovalRecord): Promise<DeveloperTaskRecord | undefined> {
   const taskId = (record.subject as { taskId?: unknown }).taskId;
   if (typeof taskId !== "string") return undefined;
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
+  let response: { Item?: DeveloperTaskRecord };
+  try {
+    response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
+  } catch {
+    // Who owns the task decides who may decide, so a read that failed answers nobody's yes: it is a transient fault to retry, never a refusal of the person (12a review M-5).
+    throw agentXError("RUNTIME_UNAVAILABLE", "Rovara couldn't read the task just now. Try again in a moment.");
+  }
   return response.Item?.orgId === record.orgId ? response.Item : undefined;
 }
 
