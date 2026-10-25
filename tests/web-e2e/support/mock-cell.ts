@@ -13,6 +13,7 @@ import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf
 import { requireDecideNavigation, csrfTokenFor } from "../../../packages/broker/src/developer/decide-session.js";
 import { confirmPage, CONFIRM_PAGE_HEADERS } from "../../../packages/broker/src/developer/confirm-page.js";
 import { BROWSER_RETURN_TO } from "../../../packages/broker/src/developer/server.js";
+import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
 import { mockCellOrigin, mockCellPort } from "./port.js";
@@ -60,7 +61,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (url.pathname.startsWith("/v1/app/approve/")) {
  try { requireDecideNavigation({ method, path: url.pathname, headers }); } catch { response.writeHead(403, CONFIRM_PAGE_HEADERS);response.end("Open this approval from its link.");return; }
- if (method === "POST") { json(200, { decided: true });return; }
+ if (method === "POST") { const cards = current.home.cards.filter(card => !card.buttons.some(button => button.action === "confirm" && button.href !== undefined && new URL(button.href).pathname === url.pathname));current.home = homeFixture({ cards, total: Math.max(0, current.home.total - (current.home.cards.length - cards.length)) });json(200, { decided: true });return; }
  const page = confirmPage({ title: "Confirm sharing this session", facts: [{ label: "Project", value: "payments" }] }, { approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", csrf: csrfTokenFor(FIXTURE_SESSION) });response.writeHead(page.statusCode, page.headers);response.end(page.body);return;
  }
  if (url.pathname.startsWith("/v1/web/") || url.pathname === "/v1/auth/browser/sign-out") {
