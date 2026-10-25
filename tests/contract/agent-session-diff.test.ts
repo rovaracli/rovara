@@ -85,3 +85,29 @@ it("normalizes copied, changed and unchanged GitHub files without losing the pag
  expect(result.files[0]).toMatchObject({ path: "copied.ts", previousPath: "original.ts", patch: "+safe" });
  expect(result.nextPage).toBe(2);
 });
+
+it("reuses read-only diff tokens across pages but checks the org binding on every read", async () => {
+ const { generateKeyPairSync } = await import("node:crypto");
+ const { GitHubAppCredentialProvider } = await import("../../packages/broker/src/github-app.js");
+ const { agentXError } = await import("@agentx/contracts");
+ const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+ let now = Date.parse("2026-10-24T12:00:00Z"), mints = 0, bindings = 0, bound = true;
+ const provider = new GitHubAppCredentialProvider({ credentialRef: "test", appId: "123", getPrivateKey: async () => key, now: () => now,
+ requireInstallationBound: async () => { bindings++;if (!bound) throw agentXError("GITHUB_NOT_CONNECTED", "not connected"); },
+ fetchImplementation: async (input, init) => {
+ const url = String(input);
+ if (url.endsWith("/installation")) return Response.json({ id: 123, account: { login: "acme" } });
+ if (url.endsWith("/access_tokens")) { mints++;expect(JSON.parse(String(init?.body))).toEqual({ repositories: ["app"], permissions: { contents: "read", pull_requests: "read" } });return Response.json({ token: "fake-test-only", expires_at: "2030-01-01T00:00:00Z" }); }
+ return Response.json([{ filename: "a", status: "modified", additions: 1, deletions: 0 }]);
+ } });
+ await Promise.all([1, 2, 3].map(page => provider.listPullRequestFiles("https://github.com/acme/app", 42, { page }, { orgId: ORG_A })));
+ expect(mints).toBe(1);expect(bindings).toBe(3);
+ bound = false;await expect(provider.listPullRequestFiles("https://github.com/acme/app", 42, { page: 4 }, { orgId: ORG_A })).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });expect(mints).toBe(1);
+ bound = true;now += 300_001;await provider.listPullRequestFiles("https://github.com/acme/app", 42, { page: 5 }, { orgId: ORG_A });expect(mints).toBe(2);
+});
+
+it("checks view access without rebuilding decisions or the full session view for a diff", async () => {
+ const f = setup(), fullView = vi.fn(f.deps.taskView);f.deps.taskView = fullView;
+ await sessionDiff(f.deps, f.w.caller(ARJUN), f.sessionId, { repository: "app", number: 42, page: 1 });
+ expect(fullView).not.toHaveBeenCalled();
+});
