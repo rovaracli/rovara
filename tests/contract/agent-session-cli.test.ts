@@ -192,7 +192,7 @@ describe("agentx session take-over (202 NEEDS_CONFIRMATION)", () => {
   });
 
   it("does not print a link that is not a plain https address, and says what happened", async () => {
-    for (const confirmUrl of [`https://evil.example/v1/app/approve/apr_cccccccccccccccccccc`, "https://x@evil.example/", `${CELL.replace("https://", "https://user:pw@")}/v1/app/approve/x`, `${CELL.replace("https://", "https://user@")}/x`,
+    for (const confirmUrl of [`https://evil.example/v1/app/approve/apr_cccccccccccccccccccc`, "https://x@evil.example/", `${CELL.replace("https://", "https://:pw@")}/x`, `${CELL.replace("https://", "https://user:pw@")}/v1/app/approve/x`, `${CELL.replace("https://", "https://user@")}/x`,
       `${CELL}@evil.example/x`, `${CELL}.evil.example/x`, `${CELL.replace(":443", "")}:8443/x`, "http://evil.example/approve", "https://evil.example/\u202eapprove", "https://evil.example/a b", `https://evil.example/${"a".repeat(2100)}`, "javascript:alert(1)"]) {
       const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/take-over`]: confirmation({ confirmUrl }) });
       expect(await h.run(["session", "take-over", SES]), confirmUrl.slice(0, 30)).not.toBe(0);

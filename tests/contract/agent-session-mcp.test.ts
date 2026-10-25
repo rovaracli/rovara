@@ -278,6 +278,9 @@ describe("links are the control plane's own: https, its origin, no userinfo, who
     ["a longer host", `${CELL}.evil.example/s/${SES}`],
     ["another port", `${CELL}:8443/s/${SES}`],
     ["http", `${CELL.replace("https", "http")}/s/${SES}`],
+    ["a password only", `${CELL.replace("https://", "https://:pw@")}/s/${SES}`],
+    ["a bidi character", `${CELL}/s/${SES}\u202e`],
+    ["a space", `${CELL}/s/${SES} x`],
     ["javascript:", "javascript:alert(1)"],
     ["more than 1,000 characters", `${CELL}/s/${SES}?${"a".repeat(1_000)}`],
   ])("leaves the link and the decision links out for %s", async (_name, bad) => {
