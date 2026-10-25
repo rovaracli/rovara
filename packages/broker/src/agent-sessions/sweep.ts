@@ -111,6 +111,11 @@ export async function sweepAgentSessions(deps: SweepDependencies, now: number, o
         if (outcome === "updated") result.refreshed += 1;
         else result.unchanged += 1;
         await clearPresence(deps, orgId, sessionId);
+        // A move to the cloud that started a task and never linked it (Task 19) is cancelled here once it is old enough.
+        if (deps.recoverHandoffs !== undefined) {
+          const open = await new AgentSessionStore(deps).get(orgId, sessionId);
+          if (open !== undefined) await deps.recoverHandoffs(open);
+        }
       } catch (error) {
         result.failed += 1;
         warn(deps, { event: "agent_session.sweep_refresh_failed", sessionId, error: error instanceof Error ? error.name : "unknown" });
@@ -195,6 +200,8 @@ async function drainSession(deps: SummaryDependencies, work: Item, deadline: num
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
     return true;
   }
+  // The Mac that ended its own session after a move to the cloud was cut off leaves a started task behind: it is cancelled here (Task 19).
+  await deps.recoverHandoffs?.(session);
   // A message to the agent no step took can never be delivered now: it is closed (the end's own refresh does this; this is the backstop, and a failure here is tried again like any drain failure).
   await closeQueuedSteers(deps, session);
   const expires = Math.floor(Date.parse(session.endedAt) / 1000) + SESSION_RETENTION_DAYS * SECONDS_PER_DAY;

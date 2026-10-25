@@ -138,6 +138,8 @@ export interface SummaryDependencies extends TableInput {
   deadline?: number | undefined;
   /** Set by a local session's update that is over the limit on status changes that tell followers: the change is saved and the owner is told as usual, but no follower is (an end still tells them). */
   quiet?: boolean | undefined;
+  /** Task 19: what the session sweep and the retention drain run for a session they visit, to cancel a cloud task a move to the cloud started and never linked (`makeHandoffRecovery`). Never throws. */
+  recoverHandoffs?: ((session: AgentSessionRecord) => Promise<void>) | undefined;
 }
 
 // ---- digest and small helpers

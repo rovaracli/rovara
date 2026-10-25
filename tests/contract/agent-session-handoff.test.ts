@@ -100,7 +100,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     },
     cancelStarted: async (_deps, input) => {
       calls.systemCancels.push({ taskId: input.taskId, requestId: input.requestId });
-      const task = w.taskOf(input.taskId);
+      const task = w.db.get(taskKey(input.taskId)) as Item | undefined;
       if (task !== undefined) w.db.set({ ...task, cancelledBySystem: true });
     },
     pushToBranch: async (_deps, input) => {
@@ -400,9 +400,9 @@ describe("a session on a Mac moves to the cloud", () => {
     const { sessionId } = await w.onMac();
     const input = w.body();
     // The table commits, then the answer is lost.
-    const send = w.deps.documentClient.send;
+    const original = w.deps.documentClient;
     let lose = true;
-    w.deps.documentClient = { send: async (command) => { const reply = await send(command); if (lose && command instanceof TransactWriteCommand && JSON.stringify(command.input).includes("LEG#000002")) { lose = false; throw Object.assign(new Error("timeout"), { name: "TimeoutError" }); } return reply; } };
+    w.deps.documentClient = { send: async (command) => { const reply = await original.send(command); if (lose && command instanceof TransactWriteCommand && JSON.stringify(command.input).includes("LEG#000002")) { lose = false; throw Object.assign(new Error("timeout"), { name: "TimeoutError" }); } return reply; } };
     await expect(w.move(PRIYA, sessionId, input)).resolves.toMatchObject({ session: { where: { kind: "cloud" } } });
     expect(w.calls.cancels).toEqual([]);
     expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: 2 });
@@ -502,7 +502,7 @@ describe("a move to the cloud never loses the session", () => {
     const before = w.db.items.size;
     w.live.startFailure = agentXError("RUNTIME_UNAVAILABLE", "the branch could not be read");
     expect(await code(w.move(PRIYA, sessionId, input))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
-    expect(w.db.items.size).toBe(before);
+    expect(w.db.items.size).toBe(before + 1);
     expect(w.meta(sessionId)).toMatchObject({ kind: "local", where: { kind: "mac", deviceId }, revision: 1 });
     expect(w.commands(deviceId)).toEqual([]);
     w.live.startFailure = undefined;
@@ -672,8 +672,9 @@ describe("a session in the cloud moves to a Mac", () => {
     expect(w.calls.pushes).toEqual([{ orgId: ORG_A, taskId }]);
     expect(reply).toEqual({ repository: "acme/web", branch: "rovara/fix-checkout", headSha: SHA_PUSHED, summary: expect.stringContaining("Bump the Stripe SDK") as string });
     expect(Object.keys(reply).sort()).toEqual(["branch", "headSha", "repository", "summary"]);
+    // The claim moved the revision on once, the move once more.
     expect(w.meta(sessionId)).toMatchObject({
-      kind: "local", subject: { kind: "local", deviceId, tool: "rovara" }, where: { kind: "mac", deviceId, label: "Priya's MacBook" }, owner: { developerId: PRIYA }, revision: 2,
+      kind: "local", subject: { kind: "local", deviceId, tool: "rovara" }, where: { kind: "mac", deviceId, label: "Priya's MacBook" }, owner: { developerId: PRIYA }, revision: 3,
     });
     expect(w.meta(sessionId)).not.toHaveProperty("payer");
     const legs = w.meta(sessionId).legs as Array<Record<string, unknown>>;
@@ -880,7 +881,7 @@ describe("a session in the cloud moves to a Mac", () => {
     const input = w.toMac(deviceId);
     w.live.pushFailure = agentXError("RUNTIME_UNAVAILABLE", "GitHub is unreachable");
     expect(await code(w.move(PRIYA, sessionId, input))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
-    expect(w.meta(sessionId)).toMatchObject({ kind: "task", subject: { taskId }, revision: 1 });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task", subject: { taskId }, revision: 2 });
     expect(w.taskOf(taskId)).toMatchObject({ sessionId });
     expect(w.local(sessionId)).toBeUndefined();
     w.live.pushFailure = undefined;
@@ -897,7 +898,7 @@ describe("a session in the cloud moves to a Mac", () => {
     for (const bad of [{ repository: "acme/web", branch: "rovara/x", headSha: "short" }, { repository: "acme/web", branch: "--force", headSha: SHA }, null, {}]) {
       w.live.push = bad;
       expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
-      expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: 1 });
+      expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: expect.any(Number) as number });
     }
   });
 
@@ -908,7 +909,7 @@ describe("a session in the cloud moves to a Mac", () => {
     const input = w.toMac(deviceId);
     w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
     await expect(w.move(PRIYA, sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
-    expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: 1 });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: 2 });
     expect(w.under(sessionId, "LEG#")).toHaveLength(1);
     expect(w.taskOf(taskId)).toMatchObject({ sessionId });
     expect(w.local(sessionId)).toBeUndefined();
@@ -1086,7 +1087,7 @@ describe("a move that races another write is decided by the table, not by what i
     const deviceId = await w.mac(PRIYA);
     w.race.before = () => { w.db.set({ ...(w.db.get(deviceKey(ORG_A, deviceId)) as Item), revokedAt: iso(T0) }); };
     expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toMatchObject({ code: "NOT_FOUND" });
-    expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: 1 });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: 2 });
     expect(w.local(sessionId)).toBeUndefined();
     expect(w.db.get(deviceSessionKey(ORG_A, deviceId, sessionId))).toBeUndefined();
   });
@@ -1110,7 +1111,7 @@ describe("a move that races another write is decided by the table, not by what i
     expect(reply).toMatchObject({ headSha: SHA_PUSHED });
     expect(w.under(sessionId, "EVENT#").filter((event) => event.type === "handoff")).toHaveLength(1);
     expect(w.under(sessionId, "LEG#")).toHaveLength(2);
-    expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 2 });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 4 });
   });
 });
 
@@ -1214,7 +1215,7 @@ describe("no paid work is left unlinked", () => {
       w.clock.now += 11 * 60_000;
       await sweep(w);
       expect(w.calls.systemCancels).toEqual([]);
-      expect(pendingOf(w, first.sessionId, first.input.requestId)).toBeUndefined();
+      expect(pendingOf(w, first.sessionId, first.input.requestId)).toMatchObject({ state: "abandoned" });
 
       const second = world();
       const linked = await orphaned(second);
@@ -1222,7 +1223,7 @@ describe("no paid work is left unlinked", () => {
       second.clock.now += 11 * 60_000;
       await sweep(second);
       expect(second.calls.systemCancels).toEqual([]);
-      expect(pendingOf(second, linked.sessionId, linked.input.requestId)).toBeUndefined();
+      expect(pendingOf(second, linked.sessionId, linked.input.requestId)).toMatchObject({ state: "abandoned" });
 
       const third = world();
       const foreign = await orphaned(third);
@@ -1230,6 +1231,7 @@ describe("no paid work is left unlinked", () => {
       third.clock.now += 11 * 60_000;
       await sweep(third);
       expect(third.calls.systemCancels).toEqual([]);
+      expect(pendingOf(third, foreign.sessionId, foreign.input.requestId)).toMatchObject({ state: "abandoned" });
     });
   });
 });
@@ -1294,7 +1296,7 @@ describe("one session across many legs", () => {
     // A leg keeps the moment its move ended it.
     expect(legs.map((leg) => leg.endedAt)).toEqual([iso(T0), iso(T0 + 60_000), iso(T0 + 120_000), undefined]);
     expect(legs.filter((leg) => leg.endedAt === undefined)).toHaveLength(1);
-    expect(w.meta(sessionId)).toMatchObject({ sessionId, kind: "task", revision: 4 });
+    expect(w.meta(sessionId)).toMatchObject({ sessionId, kind: "task", revision: 5 });
     expect(w.under(sessionId, "LEG#")).toHaveLength(4);
     expect(w.commands(deviceId)).toHaveLength(2);
   });

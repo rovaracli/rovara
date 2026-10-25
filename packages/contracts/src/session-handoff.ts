@@ -76,6 +76,8 @@ export function handoffRoleLostMessage(project: string): string {
 export const HANDOFF_BUDGET_UNAVAILABLE_MESSAGE = "Rovara couldn't check the budget just now. Try again in a moment.";
 /** RUNTIME_UNAVAILABLE: cloud work starts only after the owner's budget has been checked. */
 export const HANDOFF_BUDGET_NOT_CHECKED_MESSAGE = "Moving a session to the cloud isn't available right now.";
+/** RUNTIME_UNAVAILABLE: another move of the session holds the claim (it is given up after a few minutes). */
+export const HANDOFF_MOVING_MESSAGE = "This session is being moved right now. Try again in a minute.";
 /** RUNTIME_UNAVAILABLE: a move that did not finish and left nothing changed. */
 export const HANDOFF_BUSY_MESSAGE = "This session is busy right now. Try again.";
 /** RUNTIME_UNAVAILABLE: the cloud answered with something a move can't use. */

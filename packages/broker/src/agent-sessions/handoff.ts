@@ -15,7 +15,7 @@
 //     state and entry, drops the followers who can't see a session on a Mac, and writes the event and the request with its answer. A failure before the transaction leaves the session in the
 //     cloud with its task cancelled (nothing is lost: the branch is pushed, and the same request id asks again, which both calls tolerate).
 import { createHash } from "node:crypto";
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   HANDOFF_ALREADY_CLOUD_MESSAGE,
@@ -26,6 +26,7 @@ import {
   HANDOFF_BUDGET_UNAVAILABLE_MESSAGE,
   HANDOFF_BUSY_MESSAGE,
   HANDOFF_CHAIN_MESSAGE,
+  HANDOFF_MOVING_MESSAGE,
   HANDOFF_NOT_READY_MESSAGE,
   HANDOFF_NO_PROJECT_MESSAGE,
   HANDOFF_SUMMARY_MAX_BYTES,
@@ -36,6 +37,7 @@ import {
   INDEX_EXPIRY_ATTRIBUTE,
   LOCAL_OPEN_MAX_MESSAGE,
   LOCAL_OPEN_PER_DEVICE_MAX,
+  ROVARA_CODE_AGENT_ID,
   SESSION_ENDED_MESSAGE,
   SESSION_LEGS_MAX,
   SESSION_RETENTION_DAYS,
@@ -65,7 +67,7 @@ import {
   type SessionView,
 } from "@agentx/contracts";
 import { projectRepository } from "../agents/comment-trigger-optouts.js";
-import { failedIndexes, isTransactionConflict, NOT_EXISTS, type Item, type TransactItem } from "../agents/table-writes.js";
+import { errorName, failedIndexes, isTransactionConflict, NOT_EXISTS, type Item, type TransactItem } from "../agents/table-writes.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { commandableDevice, readLocalState } from "../devices/local-facts.js";
@@ -83,16 +85,23 @@ import { AgentSessionStore, legItems, legsAfterMove, sessionEventItem } from "./
 
 /**
  * Plan 6's seam (H1): moving code. Both calls are made only after this module has checked the owner's authority, the destination's rules and (for a start) the owner's budget.
- * `startOnBranch` starts a cloud task for `owner` (who also pays) on a branch that the Mac pushed, with `input` as the task's request; it must NOT create a session of its own (this module
- * names the session on the task) and must answer the same task for the same `requestId` (a repeat of a move that was cut off finds its task). `pushToBranch` pushes the cancelled
- * task's work to its branch and answers where; it is asked again on a repeat and must tolerate that.
+ * `startOnBranch` starts a cloud task for `owner` (who also pays) on a branch that the Mac pushed, with `input` as the task's request. The task must have EXACTLY the id `taskId` (derived,
+ * so a start that was cut off can be found and cancelled without asking anybody), carry `handoffOf` on its record (the durable marker: a task that has it and no `sessionId` after a few
+ * minutes is cancelled by the session sweep), and must NOT create a session of its own (this module names the session on the task). The same `requestId` answers the same task. A repeat of a
+ * move that failed in a way that cancelled the task gets a new `requestId` and `taskId` (an attempt number is in them). `cancelStarted` cancels a task of this kind with no caller (the
+ * sweep has none); it is idempotent by `requestId`. `pushToBranch` pushes the cancelled task's work to its branch and answers where; it is asked again on a repeat and must tolerate that.
  */
 export interface HandoffRuntime {
   startOnBranch(deps: HandoffDependencies, input: {
     orgId: OrgId; project: string; owner: { developerId: string; name: string }; repository: string; branch: string; headSha: string; input: RunInput;
-    /** Derived from the org, the session and the move's request id: one task per request. */
+    /** Derived from the org, the session, the move's request id and the attempt: one task per attempt. */
     requestId: string;
+    /** The id the task must have. */
+    taskId: string;
+    /** The marker the task must carry. */
+    handoffOf: { sessionId: string; requestId: string };
   }): Promise<{ taskId: string }>;
+  cancelStarted(deps: HandoffDependencies, input: { orgId: OrgId; taskId: string; requestId: string }): Promise<void>;
   pushToBranch(deps: HandoffDependencies, input: { orgId: OrgId; taskId: string }): Promise<{ repository: string; branch: string; headSha: string }>;
 }
 
@@ -130,9 +139,24 @@ function derivedUuid(...parts: string[]): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** The request id the cloud task is started with: every attempt at the same move names the same task, another request names another. */
-export const handoffRunRequestId = (orgId: OrgId, sessionId: string, requestId: string): string => derivedUuid("session-handoff-start", orgId, sessionId, requestId);
-const handoffCancelRequestId = (orgId: OrgId, sessionId: string, requestId: string): string => derivedUuid("session-handoff-cancel", orgId, sessionId, requestId);
+/** The request id and the task id the cloud task is started with: the same attempt at the same move names the same task, another request or another attempt names another. */
+export const handoffRunRequestId = (orgId: OrgId, sessionId: string, requestId: string, attempt: number): string => derivedUuid("session-handoff-start", orgId, sessionId, requestId, String(attempt));
+export const handoffTaskId = (orgId: OrgId, sessionId: string, requestId: string, attempt: number): string => derivedUuid("session-handoff-task", orgId, sessionId, requestId, String(attempt));
+/** The id a cancel for this move is asked with, in the task's own idempotency namespace: not the client's, which could collide with an id the client used on the task page. */
+export const handoffCancelRequestId = (orgId: OrgId, sessionId: string, requestId: string): string => derivedUuid("session-handoff-cancel", orgId, sessionId, requestId);
+
+/** A Rovara Code task, as the broker leaves every task when agents are set up: the built-in agent is on the record. Anything else with an `agent` is an agent-step run. */
+const isAgentStepRun = (task: DeveloperTaskRecord): boolean => task.agent !== undefined && !(task.agent.builtin && task.agent.agentId === ROVARA_CODE_AGENT_ID);
+
+// ---- the pending record of a cloud start (so a task that is never linked is found and cancelled)
+
+const pendingKey = (orgId: OrgId, sessionId: string, requestId: string) => agentSessionKey(orgId, sessionId, `HANDOFF_PENDING#${requestId}`);
+/** How long a started task may stay unlinked before the sweep cancels it, and how soon a repeat of the same request may do it (a move still committing is younger than that). */
+export const HANDOFF_RECOVER_AFTER_MS = 10 * 60_000;
+const REPEAT_ABANDONS_AFTER_MS = 60_000;
+const PENDING_KEEP_SECONDS = 7 * DAY_SECONDS;
+/** How long a claim on a session for a move to a Mac holds. */
+const CLAIM_MS = 5 * 60_000;
 
 function parseBody(body: unknown): HandoffBody {
   const parsed = HandoffBodySchema.safeParse(body);
@@ -183,8 +207,18 @@ export async function handoffSession(deps: HandoffDependencies, caller: ControlC
   if (prior !== undefined) return replayOf(deps, caller, session, input, prior, fingerprint);
   if (session.subject.kind === "chain") throw agentXError("CONFIG_INVALID", HANDOFF_CHAIN_MESSAGE);
   if (deps.handoff === undefined) throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_NOT_READY_MESSAGE);
-  if (isEnded(session)) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
-  return input.to === "cloud" ? toCloud(deps, caller, access, input, fingerprint) : toMac(deps, caller, access, input, fingerprint);
+  if (input.to === "mac") {
+    if (isEnded(session)) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
+    return toMac(deps, caller, access, input, fingerprint);
+  }
+  try {
+    if (isEnded(session)) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
+    return await toCloud(deps, caller, access, input, fingerprint);
+  } catch (error) {
+    // A repeat that is refused now (the Mac ended the session, the role went, the budget has no room) must not leave the task its earlier attempt started running unseen.
+    await abandonStale(deps, session, requestId);
+    throw error;
+  }
 }
 
 /** A repeat of a request that was recorded: its stored answer, and nothing is written. The same id for another action or with another body is a mistake. */
@@ -241,41 +275,77 @@ async function admitOwner(deps: HandoffDependencies, session: AgentSessionRecord
   }
 }
 
+/** What a cloud start is called in the records: the attempt it belongs to and the ids that follow from it. */
+interface Attempt { number: number; taskId: string; runRequestId: string }
+
+/**
+ * Writes the pending record of this attempt BEFORE the task starts: its number, the task id it will have and when it began. A move that was cut off and is asked again resumes the same
+ * attempt (the same task); one whose task was cancelled has its record marked `abandoned` and the next asks start the next attempt, so a cancelled task is never linked.
+ */
+async function beginAttempt(deps: HandoffDependencies, session: AgentSessionRecord, requestId: string, ownerId: string): Promise<Attempt> {
+  const key = pendingKey(session.orgId, session.sessionId, requestId);
+  const earlier = await getItem(deps, key);
+  if (earlier !== undefined && (typeof earlier["attempt"] !== "number" || !Number.isInteger(earlier["attempt"]) || earlier["attempt"] < 1 || earlier["orgId"] !== session.orgId)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BAD_ANSWER_MESSAGE);
+  }
+  const resumed = earlier !== undefined && earlier["state"] === "started" && typeof earlier["startedAt"] === "string";
+  const number = earlier === undefined ? 1 : resumed ? (earlier["attempt"] as number) : (earlier["attempt"] as number) + 1;
+  const attempt: Attempt = {
+    number, taskId: handoffTaskId(session.orgId, session.sessionId, requestId, number), runRequestId: handoffRunRequestId(session.orgId, session.sessionId, requestId, number),
+  };
+  const nowMs = deps.now();
+  await deps.documentClient.send(new PutCommand({
+    TableName: deps.tableName,
+    Item: {
+      ...key, entityType: "AGENT_SESSION_HANDOFF_PENDING", orgId: session.orgId, sessionId: session.sessionId, requestId, attempt: number, taskId: attempt.taskId, state: "started", by: ownerId,
+      startedAt: resumed ? earlier["startedAt"] : isoOf(nowMs), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PENDING_KEEP_SECONDS,
+    },
+  }));
+  return attempt;
+}
+
 async function toCloud(deps: HandoffDependencies, caller: ControlCaller, access: SessionAccess, input: HandoffToCloudBody, fingerprint: string): Promise<HandoffAnswer> {
   const { session } = access;
   const { project, repository } = await checkCloudDestination(deps, caller, access, input);
   const owner = { developerId: caller.developerId, name: nameOrSomeone(caller.name) };
+  const attempt = await beginAttempt(deps, session, input.requestId, caller.developerId);
+  const handoffOf = { sessionId: session.sessionId, requestId: input.requestId };
   const started = await deps.handoff!.startOnBranch(deps, {
     orgId: session.orgId, project, owner, repository, branch: input.branch, headSha: input.headSha,
     input: { text: session.title, context: [{ kind: "text", ref: "handoff", title: RUN_TEXT_HEADING, body: informationFrom(input.summary) }] },
-    requestId: handoffRunRequestId(session.orgId, session.sessionId, input.requestId),
+    requestId: attempt.runRequestId, taskId: attempt.taskId, handoffOf,
   });
-  const taskId = TaskIdSchema.safeParse(started?.taskId);
-  if (!taskId.success) {
+  const answered = TaskIdSchema.safeParse(started?.taskId);
+  if (!answered.success) {
     logOf(deps)({ event: "agent_session.handoff_task_unreadable", sessionId: session.sessionId });
+    // Whatever the runtime made under the id it was given is cancelled; the attempt is over.
+    await abandonStarted(deps, session, input.requestId, attempt, attempt.taskId, await getItem(deps, taskKey(attempt.taskId)));
     throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BAD_ANSWER_MESSAGE);
   }
-  const task = await getItem(deps, taskKey(taskId.data));
-  // The task must be the owner's, on this project, of this org, and have no session: anything else is a runtime that answered wrongly, and the move does not use it.
-  if (task === undefined || task["orgId"] !== session.orgId || task["developerId"] !== caller.developerId || task["project"] !== project || task["sessionId"] !== undefined) {
-    await abandon(deps, session, input.requestId, taskId.data, task);
+  const taskId = answered.data;
+  const task = await getItem(deps, taskKey(taskId));
+  // The task must be the one asked for, the owner's, on this project, of this org, marked as this move's and without a session: anything else is a runtime that answered wrongly, and it is not used.
+  const marker = task?.["handoffOf"] as { sessionId?: unknown; requestId?: unknown } | undefined;
+  if (taskId !== attempt.taskId || task === undefined || task["orgId"] !== session.orgId || task["developerId"] !== caller.developerId || task["project"] !== project || task["sessionId"] !== undefined
+    || marker?.sessionId !== handoffOf.sessionId || marker?.requestId !== handoffOf.requestId) {
+    await abandonStarted(deps, session, input.requestId, attempt, taskId, task);
     throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BAD_ANSWER_MESSAGE);
   }
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+  for (let tries = 1; tries <= ATTEMPTS; tries += 1) {
     const fresh = await currentSession(deps, session);
-    const ours = fresh.subject.kind === "task" && fresh.subject.taskId === taskId.data;
+    const ours = fresh.subject.kind === "task" && fresh.subject.taskId === taskId;
     if (ours) return answerOf(deps, caller, session.sessionId);
     try {
       checkStillMovable(fresh, caller.developerId, "local");
     } catch (error) {
-      await abandon(deps, session, input.requestId, taskId.data, task);
+      await abandonStarted(deps, session, input.requestId, attempt, taskId, task);
       throw error;
     }
     const device = await commandableDevice(deps, fresh);
     const nowMs = deps.now();
     const at = isoOf(nowMs);
     const name = owner.name;
-    const moved = legsAfterMove(fresh.legs, { subject: { kind: "task", taskId: taskId.data }, where: { kind: "cloud" } }, at);
+    const moved = legsAfterMove(fresh.legs, { subject: { kind: "task", taskId }, where: { kind: "cloud" } }, at);
     const command = device === undefined ? undefined : await deviceCommandItems(deps, { orgId: session.orgId, deviceId: device.deviceId, ownerId: fresh.owner.developerId }, {
       kind: "stop", sessionId: session.sessionId, by: { developerId: caller.developerId, name },
     }, nowMs);
@@ -292,7 +362,7 @@ async function toCloud(deps: HandoffDependencies, caller: ControlCaller, access:
             "#kind": "kind", "#subject": "subject", "#where": "where", "#legs": "legs", "#payer": "payer", "#revision": "revision", "#deviceId": "deviceId", "#owner": "owner", "#developerId": "developerId",
           },
           ExpressionAttributeValues: {
-            ":kind": "task", ":subject": { kind: "task", taskId: taskId.data }, ":where": { kind: "cloud" }, ":legs": moved.legs, ":payer": { kind: "member", developerId: caller.developerId }, ":at": at,
+            ":kind": "task", ":subject": { kind: "task", taskId }, ":where": { kind: "cloud" }, ":legs": moved.legs, ":payer": { kind: "member", developerId: caller.developerId }, ":at": at,
             ":one": 1, ":revision": fresh.revision, ":org": session.orgId, ":local": "local", ":device": deviceId, ":owner": caller.developerId,
           },
         },
@@ -301,7 +371,7 @@ async function toCloud(deps: HandoffDependencies, caller: ControlCaller, access:
       // The task names the session (and is the owner's, in this org, and has no session yet).
       {
         Update: {
-          TableName: deps.tableName, Key: taskKey(taskId.data), UpdateExpression: "SET sessionId = :session",
+          TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET sessionId = :session",
           ConditionExpression: "attribute_exists(pk) AND orgId = :org AND developerId = :owner AND attribute_not_exists(sessionId)",
           ExpressionAttributeValues: { ":session": session.sessionId, ":org": session.orgId, ":owner": caller.developerId },
         },
@@ -320,19 +390,28 @@ async function toCloud(deps: HandoffDependencies, caller: ControlCaller, access:
         eventId: sessionEventId("handoff", input.requestId), at, type: "handoff", actor: { kind: "member", developerId: caller.developerId, name }, text: `${name} moved this session to the cloud.`,
       }),
       controlRequestItem(deps, session, input.requestId, { action: "handoff", by: caller.developerId, at, sessionId: session.sessionId, fingerprint }, Math.floor(nowMs / 1000) + REQUEST_KEEP_SECONDS),
+      // The move is recorded: the pending record of the start has done its work.
+      { Delete: { TableName: deps.tableName, Key: pendingKey(session.orgId, session.sessionId, input.requestId) } },
     ];
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
     } catch (error) {
-      // A conflict with another transaction on the same items, or a lost condition: read it all again and decide. Anything else is an outcome the table did not report: nothing is cancelled.
-      if (!isTransactionConflict(error) && failedIndexes(error) === undefined) throw error;
-      if (await recordedOrOurs(deps, caller, session, input.requestId, taskId.data)) return answerOf(deps, caller, session.sessionId);
+      const reported = isTransactionConflict(error) || failedIndexes(error) !== undefined;
+      // Whatever the table said, look: this move (or this very task) may be written already. If the table could not even be read, nothing is cancelled and the sweep decides later.
+      if (await recordedOrOurs(deps, caller, session, input.requestId, taskId)) return answerOf(deps, caller, session.sessionId);
+      if (!reported) {
+        // An outcome the table did not report, and the session is not linked: the task is cancelled so the Mac is the only place the branch is worked in, and nobody pays for unseen work.
+        await abandonStarted(deps, session, input.requestId, attempt, taskId, task);
+        throw error;
+      }
       continue;
     }
     if (command !== undefined && device !== undefined) await announceDeviceCommand(deps, session.orgId, fresh.owner.developerId, device.deviceId, command.seq);
     await afterControl(deps, fresh, caller.developerId, fresh.owner.developerId);
     return answerOf(deps, caller, session.sessionId);
   }
+  // Three conflicts in a row: this is definitive (nothing was written), so the started task is cancelled too.
+  await abandonStarted(deps, session, input.requestId, attempt, taskId, task);
   throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BUSY_MESSAGE);
 }
 
@@ -355,30 +434,133 @@ function checkStillMovable(fresh: AgentSessionRecord, ownerId: string, from: "lo
   if (fresh.legs.length >= SESSION_LEGS_MAX) throw agentXError("CONFIG_INVALID", HANDOFF_TOO_MANY_LEGS_MESSAGE);
 }
 
-/**
- * The cloud task a move started cannot be the session's now (the session ended, moved, changed owner, or the runtime answered a task that isn't usable): it is cancelled so that nothing
- * pays for work nobody sees. Best effort and logged, and the move's own answer is the error that brought us here.
- */
-async function abandon(deps: HandoffDependencies, session: Pick<AgentSessionRecord, "orgId" | "sessionId">, requestId: string, taskId: string, task: Item | undefined): Promise<void> {
+/** Marks this attempt's pending record done (so the next ask starts a new attempt and the sweep leaves it). Best effort. */
+async function markAbandoned(deps: Pick<HandoffDependencies, "documentClient" | "tableName" | "log">, orgId: OrgId, sessionId: string, requestId: string, attempt: number): Promise<void> {
   try {
-    if (deps.control === undefined || task === undefined || task["orgId"] !== session.orgId) {
-      logOf(deps)({ event: "agent_session.handoff_task_not_cancelled", sessionId: session.sessionId, taskId });
-      return;
-    }
-    await deps.control.cancelTask(task as unknown as DeveloperTaskRecord, handoffCancelRequestId(session.orgId, session.sessionId, requestId));
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: pendingKey(orgId, sessionId, requestId), UpdateExpression: "SET #state = :abandoned", ConditionExpression: "attribute_exists(pk) AND attempt = :attempt",
+      ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":abandoned": "abandoned", ":attempt": attempt },
+    }));
   } catch (error) {
-    logOf(deps)({ event: "agent_session.handoff_cancel_failed", sessionId: session.sessionId, taskId, error: error instanceof Error ? error.name : "unknown" });
+    if (errorName(error) !== "ConditionalCheckFailedException") logOf(deps)({ event: "agent_session.handoff_pending_not_marked", sessionId, error: errorName(error) ?? "unknown" });
   }
 }
 
+/**
+ * The cloud task of an attempt cannot be the session's (the session ended, moved or changed owner, the commit kept losing, its outcome is unknown and the session isn't linked, or the runtime answered
+ * a task that isn't usable): it is cancelled, so that nothing pays for work nobody sees, and the attempt is marked done. A cancel that fails leaves the attempt `started`: the session sweep and a
+ * repeat of the request find it again. A task of another org is never touched.
+ */
+async function abandonStarted(deps: HandoffDependencies, session: Pick<AgentSessionRecord, "orgId" | "sessionId">, requestId: string, attempt: Attempt, taskId: string, task: Item | undefined): Promise<void> {
+  try {
+    if (task !== undefined && task["orgId"] === session.orgId) {
+      if (deps.control === undefined) {
+        logOf(deps)({ event: "agent_session.handoff_task_not_cancelled", sessionId: session.sessionId, taskId });
+        return;
+      }
+      await deps.control.cancelTask(task as unknown as DeveloperTaskRecord, handoffCancelRequestId(session.orgId, session.sessionId, requestId));
+    }
+  } catch (error) {
+    logOf(deps)({ event: "agent_session.handoff_cancel_failed", sessionId: session.sessionId, taskId, error: error instanceof Error ? error.name : "unknown" });
+    return;
+  }
+  await markAbandoned(deps, session.orgId, session.sessionId, requestId, attempt.number);
+}
+
+/** A repeat of a request whose earlier attempt left a started, unlinked task and is refused now: that task is cancelled (once it is old enough that its own move can no longer be committing). */
+async function abandonStale(deps: HandoffDependencies, session: AgentSessionRecord, requestId: string): Promise<void> {
+  try {
+    const pending = await getItem(deps, pendingKey(session.orgId, session.sessionId, requestId));
+    if (pending === undefined || pending["state"] !== "started" || pending["orgId"] !== session.orgId || typeof pending["attempt"] !== "number" || typeof pending["taskId"] !== "string" || typeof pending["startedAt"] !== "string") return;
+    if (deps.now() - Date.parse(pending["startedAt"]) < REPEAT_ABANDONS_AFTER_MS) return;
+    if (await readControlRequest(deps, session, requestId) !== undefined) return;
+    const task = await getItem(deps, taskKey(pending["taskId"]));
+    if (task !== undefined && task["sessionId"] !== undefined) return;
+    await abandonStarted(deps, session, requestId, { number: pending["attempt"], taskId: pending["taskId"], runRequestId: "" }, pending["taskId"], task);
+  } catch (error) {
+    logOf(deps)({ event: "agent_session.handoff_stale_not_abandoned", sessionId: session.sessionId, error: errorName(error) ?? "unknown" });
+  }
+}
+
+/**
+ * The session sweep's and the drain's recovery (`SummaryDependencies.recoverHandoffs`): for a session, every started attempt older than `HANDOFF_RECOVER_AFTER_MS` whose move was never recorded
+ * and whose task has no session is cancelled through the runtime (no caller is needed), and the attempt is marked done; an attempt whose move was recorded, or whose task is linked, gone or
+ * another org's, is only cleaned up. Never throws.
+ */
+export function makeHandoffRecovery(deps: HandoffDependencies): (session: AgentSessionRecord) => Promise<void> {
+  return async (session) => {
+    try {
+      const pk = agentSessionKey(session.orgId, session.sessionId, "META").pk;
+      const page = await deps.documentClient.send(new QueryCommand({
+        TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": pk, ":prefix": "HANDOFF_PENDING#" },
+      })) as { Items?: Item[] };
+      for (const pending of page.Items ?? []) {
+        if (pending["orgId"] !== session.orgId || pending["sessionId"] !== session.sessionId || pending["state"] !== "started") continue;
+        const { requestId, taskId, attempt, startedAt } = pending;
+        if (typeof requestId !== "string" || typeof taskId !== "string" || typeof attempt !== "number" || typeof startedAt !== "string") continue;
+        if (deps.now() - Date.parse(startedAt) < HANDOFF_RECOVER_AFTER_MS) continue;
+        const key = { pk: pending["pk"] as string, sk: pending["sk"] as string };
+        const forget = () => deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #state = :done", ConditionExpression: "attribute_exists(pk)", ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":done": "abandoned" } }));
+        try {
+          const task = await getItem(deps, taskKey(taskId));
+          if (await readControlRequest(deps, session, requestId) !== undefined || task === undefined || task["orgId"] !== session.orgId || task["sessionId"] !== undefined) {
+            await forget();
+            continue;
+          }
+          if (deps.handoff === undefined) continue;
+          await deps.handoff.cancelStarted(deps, { orgId: session.orgId, taskId, requestId: handoffCancelRequestId(session.orgId, session.sessionId, requestId) });
+          await forget();
+        } catch (error) {
+          logOf(deps)({ event: "agent_session.handoff_recovery_failed", sessionId: session.sessionId, error: errorName(error) ?? "unknown" });
+        }
+      }
+    } catch (error) {
+      logOf(deps)({ event: "agent_session.handoff_recovery_failed", sessionId: session.sessionId, error: errorName(error) ?? "unknown" });
+    }
+  };
+}
+
 // ---- to a Mac
+
+/**
+ * Takes the session for a move to a Mac: one transaction that sets `moving` and moves the revision on, conditional on the revision, the owner, the task, and the session being open. Another
+ * move's claim that has not run out refuses this one; this request's own claim, or an old one, is taken over. The loop re-reads on a lost condition and decides again (a take-over that landed
+ * first makes the owner check refuse).
+ */
+async function claimMove(deps: HandoffDependencies, caller: ControlCaller, session: AgentSessionRecord, taskId: string, requestId: string): Promise<void> {
+  for (let tries = 1; tries <= ATTEMPTS; tries += 1) {
+    const fresh = await currentSession(deps, session);
+    checkStillMovable(fresh, caller.developerId, "task");
+    if (fresh.subject.kind !== "task" || fresh.subject.taskId !== taskId) throw agentXError("CONFIG_INVALID", HANDOFF_ALREADY_MAC_MESSAGE);
+    const nowMs = deps.now();
+    if (fresh.moving !== undefined && fresh.moving.requestId !== requestId && Date.parse(fresh.moving.until) > nowMs) throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_MOVING_MESSAGE);
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({
+        TransactItems: [{
+          Update: {
+            TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"), UpdateExpression: "SET #moving = :moving, updatedAt = :at ADD #revision :one",
+            ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #revision = :revision AND #kind = :task AND #subject.#kind = :task AND #subject.#taskId = :taskId AND #owner.#developerId = :owner AND attribute_not_exists(endedAt)",
+            ExpressionAttributeNames: { "#moving": "moving", "#revision": "revision", "#kind": "kind", "#subject": "subject", "#taskId": "taskId", "#owner": "owner", "#developerId": "developerId" },
+            ExpressionAttributeValues: {
+              ":moving": { requestId, until: isoOf(nowMs + CLAIM_MS) }, ":at": isoOf(nowMs), ":one": 1, ":revision": fresh.revision, ":org": session.orgId, ":task": "task", ":taskId": taskId, ":owner": caller.developerId,
+            },
+          },
+        }],
+      }));
+      return;
+    } catch (error) {
+      if (!isTransactionConflict(error) && failedIndexes(error) === undefined) throw error;
+    }
+  }
+  throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BUSY_MESSAGE);
+}
 
 async function toMac(deps: HandoffDependencies, caller: ControlCaller, access: SessionAccess, input: HandoffToMacBody, fingerprint: string): Promise<HandoffAnswer> {
   const { session } = access;
   if (session.kind === "local" || session.subject.kind !== "task") throw agentXError("CONFIG_INVALID", HANDOFF_ALREADY_MAC_MESSAGE);
   const task = await taskOfSession(deps, session);
   if (task === undefined) throw agentXError("NOT_FOUND", "session not found");
-  if (task.agent !== undefined) throw agentXError("CONFIG_INVALID", HANDOFF_AGENT_RUN_MESSAGE);
+  if (isAgentStepRun(task)) throw agentXError("CONFIG_INVALID", HANDOFF_AGENT_RUN_MESSAGE);
   if (session.legs.length >= SESSION_LEGS_MAX) throw agentXError("CONFIG_INVALID", HANDOFF_TOO_MANY_LEGS_MESSAGE);
   // The Mac's rules, all before the task is cancelled: the Mac is the owner's own and live, the owner still has a role, the company's rule allows the tool and the project, and there is room.
   const asker = { orgId: session.orgId, developerId: caller.developerId };
@@ -392,8 +574,11 @@ async function toMac(deps: HandoffDependencies, caller: ControlCaller, access: S
   if (await openSessionsOnDevice(deps, session.orgId, input.deviceId, LOCAL_OPEN_PER_DEVICE_MAX) >= LOCAL_OPEN_PER_DEVICE_MAX) throw agentXError("CONFIG_INVALID", LOCAL_OPEN_MAX_MESSAGE);
   if (deps.control === undefined) throw agentXError("RUNTIME_UNAVAILABLE", NOT_AVAILABLE);
 
-  // Cancel, then push: both are tolerant of a repeat, so a move that was cut off is finished by asking again.
-  await deps.control.cancelTask(task, input.requestId);
+  // Claim the session, then cancel, then push (the last two are tolerant of a repeat, so a move that was cut off is finished by asking again). The claim moves the revision on, conditional on the
+  // owner and the task read just now: a take-over decided on the old revision can't land after it (it is refused on the revision), and one that landed before it refuses this move before anything
+  // is cancelled. A stop by someone else that lands after the claim is not held off: the owner's later move wins (the move re-reads, rebuilds and carries on).
+  await claimMove(deps, caller, session, task.taskId, input.requestId);
+  await deps.control.cancelTask(task, handoffCancelRequestId(session.orgId, session.sessionId, input.requestId));
   const pushed = PushedSchema.safeParse(await deps.handoff!.pushToBranch(deps, { orgId: session.orgId, taskId: task.taskId }));
   if (!pushed.success) {
     logOf(deps)({ event: "agent_session.handoff_push_unreadable", sessionId: session.sessionId });
@@ -425,10 +610,10 @@ async function toMac(deps: HandoffDependencies, caller: ControlCaller, access: S
       {
         Update: {
           TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"),
-          UpdateExpression: "SET #kind = :kind, #subject = :subject, #where = :where, #legs = :legs, #followers = :followers, updatedAt = :at REMOVE #payer ADD #revision :one",
+          UpdateExpression: "SET #kind = :kind, #subject = :subject, #where = :where, #legs = :legs, #followers = :followers, updatedAt = :at REMOVE #payer, #moving ADD #revision :one",
           ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #revision = :revision AND #kind = :task AND #subject.#kind = :task AND #subject.#taskId = :taskId AND #owner.#developerId = :owner AND #followers = :seen AND attribute_not_exists(endedAt)",
           ExpressionAttributeNames: {
-            "#kind": "kind", "#subject": "subject", "#where": "where", "#legs": "legs", "#payer": "payer", "#revision": "revision", "#taskId": "taskId", "#owner": "owner", "#developerId": "developerId", "#followers": "followerCount",
+            "#kind": "kind", "#subject": "subject", "#where": "where", "#legs": "legs", "#payer": "payer", "#revision": "revision", "#taskId": "taskId", "#owner": "owner", "#developerId": "developerId", "#followers": "followerCount", "#moving": "moving",
           },
           ExpressionAttributeValues: {
             ":kind": "local", ":subject": after.subject, ":where": after.where, ":legs": moved.legs, ":followers": Math.max(0, fresh.followerCount - dropNow.length), ":seen": fresh.followerCount, ":at": at,

@@ -630,6 +630,7 @@ export type AgentSessionItemSk =
   | `LEG#${string}`
   | `TAKE_OVER_FOLLOW_UP#${string}`
   | `REQUEST#${string}`
+  | `HANDOFF_PENDING#${string}`
   | "RETRIED";
 
 /** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
