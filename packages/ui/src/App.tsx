@@ -1,3 +1,5 @@
+// RULING Q42: the used App entry owns global design CSS even when the library barrel is tree-shaken.
+import "./design/design.css";
 import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import { RouterProvider, type RouteObject } from "react-router";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";

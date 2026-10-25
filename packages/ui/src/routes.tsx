@@ -29,7 +29,7 @@ function Welcome() {
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
  const children: RouteObject[] = [
  { index: true, element: <HomeScreen /> }, { path: "live", lazy: async () => ({ Component: (await import("./screens/live/LiveScreen.js")).LiveScreen }) },
- { path: "projects/:name", element: <Page title="Project" /> }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
+ { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
  { path: "agents", element: <Page title="Agent directory" /> }, { path: "agents/new", element: <Page title="Create an agent" /> },
  { path: "agents/:id", element: <Page title="Agent" /> }, { path: "agents/:id/edit", element: <Page title="Edit agent" /> },
  { path: "onboard", element: <Page title="Onboard a project" /> },

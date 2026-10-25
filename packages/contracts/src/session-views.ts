@@ -91,7 +91,12 @@ function readerOf(schema: z.ZodType): z.ZodType {
       return readerOf(def.innerType as z.ZodType).optional();
     case "union": {
       const options = def.options as z.ZodType[];
-      if (typeof def.discriminator !== "string") return z.union(options.map(readerOf) as unknown as [z.ZodType, z.ZodType]);
+      if (typeof def.discriminator !== "string") {
+        // RULING Q41: an open enum must not swallow a valid sibling ID or another known enum value.
+        const known = options.map(option => defOf(option).type === "enum" ? option : readerOf(option));
+        const fallbacks = options.filter(option => defOf(option).type === "enum").map(readerOf);
+        return z.union([...known, ...fallbacks] as unknown as [z.ZodType, z.ZodType]);
+      }
       const discriminator = def.discriminator;
       const known = options.flatMap((option) => [...((option as unknown as z.ZodObject).shape[discriminator] as unknown as z.ZodLiteral).values]);
       const unknownVariant = z.looseObject({ [discriminator]: z.string().refine((value) => !known.includes(value)).transform((): typeof UNKNOWN => UNKNOWN) });

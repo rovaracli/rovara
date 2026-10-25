@@ -14,5 +14,7 @@
     "zod": "4.6.5",
     "@aws-crypto/sha256-js": "5.2.0"
   },
-  "sideEffects": false
+  "sideEffects": [
+    "./dist/web-init.js"
+  ]
 }

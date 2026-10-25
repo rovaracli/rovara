@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppNavReaderSchema, AppProjectSummarySchema, LIVE_FILTERS, LiveFilterSchema } from "@agentx/contracts/web";
+import { AppNavReaderSchema, ProjectOverviewProjectSchema, LIVE_FILTERS, LiveFilterSchema } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";
@@ -21,7 +21,7 @@ import "./live.css";
 const LABELS = { all: "All", mine: "Mine", team: "Team", needs_me: "Needs me", failed: "Failed" } as const;
 export function LiveScreen() {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createApiClient(host), [host]), [params, setParams] = useSearchParams(), announce = useAnnounce();
- const parsedFilter = LiveFilterSchema.safeParse(params.get("filter")), filter = parsedFilter.success ? parsedFilter.data : "all", parsedProject = AppProjectSummarySchema.shape.name.safeParse(params.get("project")), project = parsedProject.success ? parsedProject.data : undefined;
+ const parsedFilter = LiveFilterSchema.safeParse(params.get("filter")), filter = parsedFilter.success ? parsedFilter.data : "all", parsedProject = ProjectOverviewProjectSchema.shape.name.safeParse(params.get("project")), project = parsedProject.success ? parsedProject.data : undefined;
  const live = useLive(filter, project), nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema) }), ready = live.data !== undefined && !live.isError;
  const [connection, setConnection] = useState("connecting");
  useEffect(() => { if (!ready) return;const invalidator = createNoticeInvalidator(query), realtime = createRealtimeClient(host, { onNotice: notice => invalidator.notice(notice), onStatus: setConnection, onReset: () => invalidator.reset() });realtime.start();return () => { realtime.stop();invalidator.stop(); }; }, [host, query, ready]);
