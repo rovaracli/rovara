@@ -264,18 +264,19 @@ describe("the named TEST proof-only installation gate", () => {
     // name) moved the named and foreign digests; the legacy template has no sign-in stack and none of it, and its digests did not move.
     // Merge of Plans 4 and 5 (chains-sessions-merge): the named and foreign digests were taken again from the synthesized merged template (Plan 4's schedule group, queue and roles beside Plan 5's
     // realtime API and session routes, and the fixed-name roles' lookup grant); the legacy digests did not move.
+    // Plan 5, Task 20: the notifier's role gained two statements (put the session binding and surface items, check the session record), so the named and foreign digests were taken again; legacy has no notifier and did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "caf25e932063b06af208ba6d6ba0c053d91600a3a660d1dca226773526b21cab",
-        withoutRoute: "58f9446f10c1848b79d628457c95c44cd68a93710309dc4e1a7d2971907c71d2",
+        withRoute: "cda8203f215f582531d8e0124052cee7441bdf50c933ca1dfc7fd7befa85a6ff",
+        withoutRoute: "0078f9f438f756936b7834addea02fd5911c56fb18214246ca6d1939a91e960a",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "7bacfdf7fc1f76c167ba128ff174c80b8c1b0bd69d667ac6b5c5e09ec209e37d",
-        withoutRoute: "de127de27e9c50dbeabef4bb4d29a136d3a56db21b3b3b951aa3a29c5aadd662",
+        withRoute: "389f72ea8a3c8fdacfff61f1a22bccc341fd09b9359f6d7ee25e0fa314405e15",
+        withoutRoute: "de91be0011cb3be9bce0568138faaed81f089e1b188955198d321e3fff55cd8c",
       },
       {
         label: "legacy",

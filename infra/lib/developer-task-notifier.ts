@@ -110,6 +110,22 @@ export class DeveloperTaskNotifier extends Construct {
       resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SHARED_TASK#*"] } },
     }));
+    // Plan 5 Task 20: recording a task's thread also binds the thread to the task's session, in the same transaction. Two puts (the session's BINDING item and the
+    // reverse SESSION_SURFACE item) and a check of the session's own record, in an org's own keys; no read, update or delete, and nothing else in a session.
+    const orgPattern = "org_????????????????????";
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:PutItem"],
+      resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#AGENT_SESSION#*`, `ORG#${orgPattern}#SESSION_SURFACE`] } },
+    }));
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:ConditionCheckItem"],
+      resources: [props.state.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#AGENT_SESSION#*`] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
+    }));
     // Spec 025 E13: the notifier reads a change and records its message (dm, dmClaimedAt), by key.
     this.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
