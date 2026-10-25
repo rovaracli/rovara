@@ -342,6 +342,8 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   const starting = derived.status === "STARTING";
   if (task.budgetPause !== undefined) {
     status = "paused";
+    // A blocked workflow can still be retried although the budget paused it (the flag lets the session offer the button).
+    if (workflow?.state === "BLOCKED") workflowBlocked = true;
     step = workflow === undefined ? run?.currentStep?.name : taskPageStep(workflow, false);
   } else if (workflow !== undefined) {
     step = taskPageStep(workflow, false);

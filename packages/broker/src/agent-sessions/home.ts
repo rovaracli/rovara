@@ -208,7 +208,7 @@ function githubUrl(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "github.com" && url.username === "" && url.password === "" && url.port === "" ? value : undefined;
+    return url.protocol === "https:" && url.hostname === "github.com" && url.username === "" && url.password === "" && url.port === "" ? `${url.origin}${url.pathname}` : undefined;
   } catch {
     return undefined;
   }
@@ -245,7 +245,7 @@ const approvalSource: HomeCardSource = {
     const asker: ApprovalCaller = { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole };
     const now = deps.now();
     // Oldest first, the longest-waiting ones when there are more than are checked.
-    const open = (await listApprovalsFor(approvals, asker, "PENDING")).filter((record) => Date.parse(record.expiresAt) > now).reverse().slice(-HOME_APPROVALS_MAX);
+    const open = (await listApprovalsFor(approvals, asker, "PENDING")).filter((record) => Date.parse(record.expiresAt) > now).reverse().slice(0, HOME_APPROVALS_MAX);
     const deciders: AnyApprovalRecord[] = [];
     for (const record of open) {
       try {
@@ -456,6 +456,7 @@ async function dismissedBy(deps: HomeDependencies, caller: HomeCaller): Promise<
     }
     start = page.LastEvaluatedKey;
   } while (start !== undefined && read < HOME_DISMISSED_READ_MAX);
+  if (start !== undefined) logOf(deps)({ event: "home.dismissals_truncated" });
   return found;
 }
 
