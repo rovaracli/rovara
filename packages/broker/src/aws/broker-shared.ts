@@ -333,11 +333,12 @@ export interface WorkflowDispatchRecord {
   taskId: string;
   workflowRevision: number;
   /**
-   * UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
+   * UNDERSTAND (Plan 6, Task 4): Rovara Code version 2 reads the request and the code (a row at a READY revision starts it, a row at the RUNNING revision is its watchdog and
+   * is due only after the step's time limit); PLAN: the plan step starts after Understand. UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
    * has something to do for the task. `operation_end`: a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel
    * sweep), so the broker's recovery sweep blocks its keys and tells the task's end handlers.
    */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "agent_run" | "operation_end";
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "UNDERSTAND" | "PLAN" | "agent_run" | "operation_end";
   /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. */
   candidateDigest: string;
   /** A single internal resume operation warms EC2 before a required E2E round is immutably admitted. */
@@ -406,13 +407,15 @@ export function operationEndDispatchItem(tableName: string, input: { taskId: str
 export const WORKFLOW_NO_CANDIDATE_DIGEST = "0".repeat(64);
 const WORKFLOW_DISPATCH_RETENTION_SECONDS = 7 * 86_400;
 
-export function workflowDispatchItem(tableName: string, taskId: string, workflowRevision: number, kind: WorkflowDispatchRecord["kind"], candidateDigest: string, now: string): TransactItems[number] {
+export function workflowDispatchItem(tableName: string, taskId: string, workflowRevision: number, kind: WorkflowDispatchRecord["kind"], candidateDigest: string, now: string,
+  /** When the sweep may run the row first: by default at once; a watchdog row is due later (`UNDERSTAND`, at the step's time limit). */
+  dueAt: string = now): TransactItems[number] {
   const sk = `${taskId}#${workflowRevision}`;
   const item: WorkflowDispatchRecord = {
     pk: WORKFLOW_DISPATCH_PK, sk, entityType: "WORKFLOW_DISPATCH",
     taskId, workflowRevision, kind, candidateDigest, createdAt: now,
-    attempts: 0, nextAttemptAt: now, dispatchDuePk: WORKFLOW_DISPATCH_PK, dispatchDueSk: `${now}#${sk}`,
-    [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(now) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
+    attempts: 0, nextAttemptAt: dueAt, dispatchDuePk: WORKFLOW_DISPATCH_PK, dispatchDueSk: `${dueAt}#${sk}`,
+    [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
   };
   return { Put: { TableName: tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" } };
 }

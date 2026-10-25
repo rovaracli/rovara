@@ -14,6 +14,15 @@ export const INTENT_ANSWER_MAX_CHARS = 2000;
 export const INTENT_RESTATEMENT_MAX = 500;
 export const INTENT_ANSWER_TEXT_MAX = 4000;
 
+/** How long past `UNDERSTAND_TIMEOUT_MINUTES` the broker waits for a result before it ends a task whose Understand never came back. */
+export const UNDERSTAND_WATCHDOG_GRACE_MINUTES = 2;
+/** What the owner reads when Understand's answer could not be read, after the one more try. */
+export const UNDERSTAND_UNREADABLE_MESSAGE = "I couldn't read my own understanding of this task. Retry it.";
+/** What the owner reads when Understand's time ran out and the task was ended to give its slot back. */
+export const UNDERSTAND_TIMED_OUT_MESSAGE = "I couldn't finish understanding this task in time, so I stopped it. Start it again.";
+/** Said until a question-only intent can end the task as answered. */
+export const UNDERSTAND_ANSWER_PENDING_MESSAGE = "I can answer this without changing any code, but I can't close a task as answered yet. Close this task, or ask for a change.";
+
 export const PLAN_CRITIC_REVISIONS_MAX = 1;
 export const PLAN_CRITIC_POINTS_MAX = 10;
 export const DEFAULT_RUN_MINUTES = { QUICK: { low: 20, high: 45 }, FULL: { low: 60, high: 180 } } as const;
@@ -104,6 +113,29 @@ export const IntentAssessmentSchema = z.discriminatedUnion("kind", [
   }).strict(),
 ]);
 export type IntentAssessment = z.infer<typeof IntentAssessmentSchema>;
+
+/** Question ids, and an option's ids within a question, are each used once: the schema's per-field checks do not say so. */
+export function intentAssessmentDuplicateIds(assessment: IntentAssessment): string[] {
+  if (assessment.kind !== "questions") return [];
+  const problems: string[] = [];
+  if (new Set(assessment.questions.map((question) => question.id)).size !== assessment.questions.length) problems.push("questions: each question id is used once");
+  for (const question of assessment.questions) {
+    if ((question.options ?? []).length !== new Set((question.options ?? []).map((option) => option.id)).size) problems.push(`${question.id}: each option id is used once`);
+  }
+  return problems;
+}
+
+const SIMPLEST_READING = "the simplest reading";
+
+/** The line a question that went unanswered becomes in the plan's assumptions: "I assumed: <question> → <recommended option or the simplest reading>". At most 300 characters; a long question is cut, never what it assumed. */
+export function intentAssumptionLine(question: IntentQuestion): string {
+  const recommended = question.options?.find((option) => option.id === question.recommended)?.label ?? SIMPLEST_READING;
+  const head = "I assumed: ";
+  const tail = ` → ${recommended}`;
+  const line = `${head}${question.text}${tail}`;
+  if (Array.from(line).length <= 300) return line;
+  return `${head}${Array.from(question.text).slice(0, Math.max(0, 300 - head.length - tail.length - 1)).join("")}…${tail}`;
+}
 
 export const IntentAnswerSchema = z
   .object({ questionId: QuestionIdSchema, optionId: OptionIdSchema.optional(), text: z.string().min(1).max(INTENT_ANSWER_MAX_CHARS).optional() })

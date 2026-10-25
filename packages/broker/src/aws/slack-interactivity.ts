@@ -1465,7 +1465,8 @@ export function workflowSlackHandlers(deps: {
         const { taskId, revision } = exitButton(action);
         const plan = action.actionId === "agentx_workflow_retry_plan";
         const workflow = await currentOwnedWorkflow({ ...action, taskId, revision }, plan ? "retry the planning" : "retry the coding",
-          (current) => current.stage === (plan ? "PLAN" : "IMPLEMENT") && current.state === "BLOCKED");
+          // A blocked Understand (Rovara Code version 2) is retried with the same button: the broker's retry restarts the step the task is blocked at.
+          (current) => (plan ? current.stage === "PLAN" || current.stage === "UNDERSTAND" : current.stage === "IMPLEMENT") && current.state === "BLOCKED");
         const input = { taskId, userId: action.userId, thread: action.thread, expectedRevision: workflow.revision, requestId: slackActionRequestId(action),
           selectedOptionalCheckIds: [], step: plan ? "plan" : "coding" };
         if (plan ? deps.retryPlan === undefined : deps.retryImplementation === undefined) throw new Error("retrying this step is not configured");

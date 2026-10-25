@@ -93,6 +93,13 @@ import {
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
+  type IntentAssessment,
+  UNDERSTAND_ARTIFACT_MAX_BYTES,
+  UNDERSTAND_ARTIFACT_NAME,
+  UNDERSTAND_UNREADABLE_MESSAGE,
+  endStuckUnderstand,
+  readIntentArtifact,
+  recordIntentAssessment,
   WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON,
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE,
   WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE,
@@ -448,7 +455,7 @@ import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, typ
 import { runApprovalSweep } from "../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { estimateRun } from "../spend/estimate.js";
-import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
+import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, orgRoleOf, type ProjectMembers } from "../agents/access.js";
@@ -489,7 +496,7 @@ import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
@@ -5861,7 +5868,7 @@ async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId
 async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
   workspace: WorkspaceInstance,
-  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
+  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
@@ -6669,7 +6676,8 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
           tags: mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId, ...(chainTag === undefined ? {} : { chain: chainTag }) }),
           scopes: payment.scopes,
           operationKeyIds: current.modelKeyIds ?? [],
-          planning: current.workflowMode === "PLAN",
+          // Understand spends from the planning limit too (a refusal while it runs pauses with the planning scope).
+          planning: current.workflowMode === "PLAN" || current.workflowMode === "UNDERSTAND",
           ...(testCapUsd === undefined ? {} : { testCapUsd }),
           ...(stepBudgetUsd === undefined ? {} : { stepBudgetUsd }),
           pause: { taskId: task.taskId, key: taskKey(task.taskId), operationId: current.id },
@@ -6897,7 +6905,7 @@ async function acceptTask(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { sharedTask?: boolean; operationId?: string; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
+  options: { sharedTask?: boolean; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
@@ -11989,6 +11997,9 @@ async function putArtifact(
   if (Buffer.byteLength(input.content, "utf8") > MAX_ARTIFACT_BYTES) {
     throw agentXError("CONFIG_INVALID", "artifact exceeds the 5 MB demo limit");
   }
+  if (operation.workflowMode === "UNDERSTAND" && input.name === UNDERSTAND_ARTIFACT_NAME && Buffer.byteLength(input.content, "utf8") > UNDERSTAND_ARTIFACT_MAX_BYTES) {
+    throw agentXError("CONFIG_INVALID", "understanding artifact exceeds the size limit");
+  }
   if (operation.workflowMode === "PLAN" && input.name === "plan.md" && Buffer.byteLength(input.content, "utf8") > WORKFLOW_PLAN_MAX_BYTES) {
     throw agentXError("CONFIG_INVALID", "plan artifact exceeds the workflow plan size limit");
   }
@@ -12736,7 +12747,9 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
     const workflow = task?.workflow;
     const deleteRow = { Delete: { TableName: dependencies.tableName, Key: key, ...sameRow } };
     // The stage and state the row was due in, and the plain reason the owner sees when AgentX gives up on it.
-    const [stage, state, usualReason] = item.kind === "CHECKS"
+    const [stage, state, usualReason] = item.kind === "UNDERSTAND" ? ["UNDERSTAND", "READY", WORKFLOW_BLOCK_REASONS.understandNotStarted] as const
+      : item.kind === "PLAN" ? ["PLAN", "READY", WORKFLOW_BLOCK_REASONS.planNotStarted] as const
+      : item.kind === "CHECKS"
       ? ["VERIFY", "WAITING", exhaustedReason ?? WORKFLOW_BLOCK_REASONS.checksUnconfirmed] as const
       : item.kind === "REVIEW" ? ["REVIEW", "WAITING", WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE] as const
       : item.kind === "IMPLEMENT" ? ["IMPLEMENT", "READY", WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE] as const
@@ -13117,6 +13130,47 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
   }
 }
 
+/**
+ * Plan 6 Task 4: Understand never came back by its time limit (its worker was lost, or its result never reached the broker). The task ends, closed, with the reason, so it gives its
+ * workspace slot back like a task whose plan was rejected; the row goes in the same commit. A task that moved on meanwhile (the result arrived) makes the commit fail its condition: the row is
+ * stale and goes. The release itself is best effort and is tried again by every later result, the recovery sweep and the owner's next start.
+ */
+async function endStuckUnderstanding(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
+  const now = new Date().toISOString();
+  try {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Update: {
+        TableName: dependencies.tableName, Key: taskKey(task.taskId),
+        UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+        ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :understand AND workflow.#state = :running AND attribute_not_exists(closedAt)",
+        ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+        ExpressionAttributeValues: { ":workflow": endStuckUnderstand(task.workflow, now), ":now": now, ":revision": task.workflow.revision, ":understand": "UNDERSTAND", ":running": "RUNNING" },
+      } },
+      { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } },
+    ] }));
+  } catch (error) {
+    if (!isConditional(error)) throw error;
+    await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } }));
+    return "STALE";
+  }
+  console.log(JSON.stringify({ component: "broker", event: "workflow.understand_timed_out", taskId: task.taskId }));
+  await releaseIfFinished(dependencies, task.taskId);
+  return "DISPATCHED";
+}
+
+/** The assessment a finished Understand run saved, read from its artifact and checked here (never taken from the worker's word): undefined when it is missing, too long, not JSON or not valid. */
+async function readUnderstandingArtifact(dependencies: AwsBrokerDependencies, operation: OperationRecord): Promise<IntentAssessment | undefined> {
+  const artifacts = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "ARTIFACT#"))
+    .filter((item) => item.operationId === operation.id && item.name === UNDERSTAND_ARTIFACT_NAME)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const artifact = artifacts.at(-1);
+  if (artifact === undefined || typeof artifact.objectKey !== "string") return undefined;
+  const text = await readObjectText(dependencies, artifact.objectKey, UNDERSTAND_ARTIFACT_MAX_BYTES + 1);
+  if (text === undefined) return undefined;
+  const read = readIntentArtifact(text);
+  return read.ok ? read.assessment : undefined;
+}
+
 async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: AccessPausedWorkflowDispatch): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
   if (item.kind === "agent_run") return runAgentRunDispatch(dependencies, item);
   if (item.kind === "operation_end") return runOperationEndDispatch(dependencies, item);
@@ -13134,7 +13188,10 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     if (item.taskAccessPausedAt !== undefined) return "RETRY";
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
     const workflow = task?.workflow;
-    const due = item.kind === "CHECKS" ? workflow?.stage === "VERIFY" && workflow.state === "WAITING"
+    // Plan 6 Task 4: Understand's row at a READY revision starts it; at the RUNNING revision it is the step's watchdog. The plan step's row starts planning after Understand.
+    const due = item.kind === "UNDERSTAND" ? workflow?.stage === "UNDERSTAND" && (workflow.state === "READY" || workflow.state === "RUNNING")
+      : item.kind === "PLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY"
+      : item.kind === "CHECKS" ? workflow?.stage === "VERIFY" && workflow.state === "WAITING"
       : item.kind === "REVIEW" ? workflow?.stage === "REVIEW" && workflow.state === "WAITING"
       : item.kind === "IMPLEMENT" ? workflow?.stage === "IMPLEMENT" && workflow.state === "READY" && workflow.program !== undefined
       : item.kind === "PUBLISH" || item.kind === "UPDATE" ? workflow?.stage === "PULL_REQUEST" && workflow.state === "READY" : false;
@@ -13142,6 +13199,12 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       || !due || dependencies.developer === undefined) {
       await remove();
       return "STALE";
+    }
+    // The watchdog needs no caller: it is due only after the step's time limit, and then it ends the task if the step never answered. Other work (a result of this task) runs the task's rows at
+    // once, due or not, so a watchdog that is not due yet stays as it is.
+    if (item.kind === "UNDERSTAND" && workflow.state === "RUNNING") {
+      if (Date.now() < Date.parse(item.nextAttemptAt)) return "DISPATCHED";
+      return await endStuckUnderstanding(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     }
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
     const routeDependencies = developerTaskRouteDependencies({
@@ -13163,6 +13226,12 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       outcome = await startWorkflowE2EChecksDispatch(dependencies, routeDependencies, readiness.task, expected, caller);
       // The baseline round holds the workspace: the row stays, and the next pass (or the baseline's own result) tries again.
       if (outcome === "WAITING") return "DISPATCHED";
+    } else if (item.kind === "UNDERSTAND") {
+      outcome = await startTaskWorkflowUnderstandFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision });
+      // The machine is still being prepared: the row stays, and the prepare's result runs it at once.
+      if (outcome === "WAITING") return "DISPATCHED";
+    } else if (item.kind === "PLAN") {
+      outcome = await startTaskWorkflowPlanFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision });
     } else {
       outcome = item.kind === "PUBLISH" || item.kind === "UPDATE"
         ? await startTaskWorkflowPublicationFromSystem(routeDependencies, item.taskId, expected, { taskPageUrl: taskPageUrl(dependencies.developer.issuer, item.taskId) })
@@ -14256,6 +14325,10 @@ async function completedWorkflowItems(
   /** Plan 3, Task 34: what the coding plan that just reached review is expected to cost, committed with it. */
   let runEstimate: RunEstimate | undefined;
   let dropStaleEstimate = false;
+  /** Plan 6 Task 4: Understand chose the Full path for a task that started under the Quick planning limit: the limit goes up with the result, from `seen` to `limit`. */
+  let raisedPlanningLimit: { seen: number; limit: number } | undefined;
+  /** Plan 6 Task 4: the finished Understand's watchdog row goes with its result. */
+  let understandWatchdog: TransactItems = [];
   let e2eAuthorityChecks: Array<Record<string, unknown>> = [];
   if (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS") {
     const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -14612,6 +14685,31 @@ async function completedWorkflowItems(
         next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.feedbackReviewFailed, now);
       }
     }
+  } else if (operation.workflowMode === "UNDERSTAND") {
+    const current = task.workflow;
+    if (current.stage !== "UNDERSTAND") return [];
+    // The answered step's watchdog goes with its result. A step that ended any other way leaves its row to go stale (a cancel's result may carry the step's own update alone).
+    if (terminalStatus === "SUCCEEDED") understandWatchdog = [{ Delete: { TableName: dependencies.tableName, Key: { pk: WORKFLOW_DISPATCH_PK, sk: `${task.taskId}#${current.revision}` } } }];
+    if (terminalStatus !== "SUCCEEDED") {
+      // The step's budget ran out (a spend request is asked for at the end of this result, and its approval retries the step), or its worker could not read its own answer, or the run ended.
+      next = blockWorkflow(current, terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
+        : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
+    } else {
+      // Understand's answer is untrusted, whatever the worker checked: it is read from the saved artifact, bounded, schema-checked and redacted here before it can pick the path or put a question to a person.
+      const assessment = await readUnderstandingArtifact(dependencies, operation);
+      try {
+        if (assessment === undefined) throw new Error("no readable assessment");
+        next = recordIntentAssessment(current, { expectedRevision: current.revision, assessment, now });
+      } catch {
+        next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.understandUnreadable, now);
+      }
+      // Understand chose the Full path for a task admitted under the Quick limit: the planning limit rises to the Full one, in this same commit (bounded: a request's own lower limit still wins).
+      if (next.stage === "PLAN" && next.path === "FULL" && current.path === "QUICK" && task.budgetUsd !== undefined) {
+        const full = planningLimit(await readProjectAi({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, requireOrgId(task.orgId), task.project), "FULL");
+        const limit = Math.max(task.budgetUsd, task.requestedRunLimitUsd === undefined ? full : Math.min(full, task.requestedRunLimitUsd));
+        if (limit > task.budgetUsd) raisedPlanningLimit = { seen: task.budgetUsd, limit };
+      }
+    }
   } else if (task.workflow.stage !== "PLAN") {
     return [];
   } else if (terminalStatus === "SUCCEEDED") {
@@ -14646,7 +14744,9 @@ async function completedWorkflowItems(
   // right after this commit, and the recovery sweep runs it if that is lost.
   // Only a coding or check run makes reviews due: a review run's own result never queues another review.
   // Task 12: both reviews passed, so the draft pull request is due the same way; AgentX opens it with no one asking.
-  const dispatch = operation.workflowMode === "IMPLEMENT" && task.workflow.e2e?.required === true
+  const dispatch = operation.workflowMode === "UNDERSTAND" && next.stage === "PLAN" && next.state === "READY"
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "PLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+    : operation.workflowMode === "IMPLEMENT" && task.workflow.e2e?.required === true
     && next.stage === "VERIFY" && next.state === "WAITING" && next.candidate !== undefined
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CHECKS", next.candidate.digest, now)]
     : (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS")
@@ -14699,10 +14799,11 @@ async function completedWorkflowItems(
     TableName: dependencies.tableName,
     Key: taskKey(task.taskId),
     // A stored plan quoted the replies fed so far; the next plan's window starts after them.
-    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${forget || dropStaleEstimate ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : [])].join(", ")}` : ""}`,
-    ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${graphCancelCondition}${e2eCancelCondition}`,
+    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${raisedPlanningLimit === undefined ? "" : ", budgetUsd = :raisedLimit"}${forget || dropStaleEstimate ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : [])].join(", ")}` : ""}`,
+    ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${raisedPlanningLimit === undefined ? "" : " AND budgetUsd = :seenLimit"}${graphCancelCondition}${e2eCancelCondition}`,
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": task.workflow.revision, ":stage": task.workflow.stage, ":running": "RUNNING",
+      ...(raisedPlanningLimit === undefined ? {} : { ":raisedLimit": raisedPlanningLimit.limit, ":seenLimit": raisedPlanningLimit.seen }),
       ...(planUnreadable === undefined || planUnreadable === null ? {} : { ":unreadable": planUnreadable }),
       ...(planUnreadable === null && task.threadNotesFedThrough !== undefined ? { ":fedFrom": task.threadNotesFedThrough } : {}),
       ...(runEstimate === undefined ? {} : { ":runEstimate": runEstimate }),
@@ -14716,7 +14817,7 @@ async function completedWorkflowItems(
       }),
       ...(e2eCancelAdmission === undefined ? {} : { ":e2eRequired": true, ":e2eRoundId": e2eCancelAdmission.roundId,
         ":e2eCandidateDigest": e2eCancelAdmission.candidateDigest }) },
-  } }, ...dispatch,
+  } }, ...dispatch, ...understandWatchdog,
   ...(evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId: task.taskId, ...evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
   ...(recordedReplies === undefined ? [] : [{ Put: recordedReplies }])];
 }

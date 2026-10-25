@@ -6,6 +6,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SPEND_RESUME_INSTRUCTIONS,
+  UNDERSTAND_TIMEOUT_MINUTES,
+  UNDERSTAND_WATCHDOG_GRACE_MINUTES,
+  startWorkflowPlanAfterUnderstand,
+  startWorkflowUnderstand,
   scopeKey,
   spendRequestKey,
   spendRequestSlotKey,
@@ -281,6 +285,7 @@ import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
+import { understandPrompt } from "../rovara-code/understand.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -915,6 +920,10 @@ async function resumeAccessPausedWorkflowDispatch(
   const expected = { workflowRevision: audit.workflowRevision, candidateDigest: audit.candidateDigest };
   if (audit.kind === "REVIEW") {
     await startTaskWorkflowReviewFromSystem(deps, access.task.taskId, expected, caller);
+  } else if (audit.kind === "UNDERSTAND") {
+    await startTaskWorkflowUnderstandFromSystem(deps, access.task.taskId, { workflowRevision: expected.workflowRevision }, caller);
+  } else if (audit.kind === "PLAN") {
+    await startTaskWorkflowPlanFromSystem(deps, access.task.taskId, { workflowRevision: expected.workflowRevision }, caller);
   } else {
     await startTaskWorkflowPublicationFromSystem(deps, access.task.taskId, expected, {
       ownerRetry: true, ownerAccess: access, ownerActor: caller,
@@ -1928,6 +1937,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     })]),
     putNew(deps.tableName, { pk: `WORKSPACE#${workspaceId}`, sk: `CONVERSATION#${conversationId}`, entityType: "CONVERSATION", id: conversationId, workspaceId, createdAt: receivedAt, updatedAt: receivedAt }),
     putNew(deps.tableName, { ...idempotencyKey, entityType: "IDEMPOTENCY", taskId, payloadHash }),
+    // Plan 6 Task 4: a version 2 task starts by understanding the request, as a dispatch row like every automatic step; it runs once the preparation has ended.
+    ...(understandsFirst ? [workflowDispatchItem(deps.tableName, taskId, 1, "UNDERSTAND", WORKFLOW_NO_CANDIDATE_DIGEST, receivedAt)] : []),
     // R12: the accepted record commits with the start or not at all (ruling F15).
     putNew(turns, turn),
     // Plan 3, Task 15: the frozen recipe, the agent's task index, an agent-step run's state and (for startAgentRun) the run's request item.
@@ -3226,7 +3237,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   // blocked again at a later step, which the same request must not retry a second time.
   const replayed = task.workflow === undefined ? undefined
     : (await deps.actions.operations(task.workspaceId)).find((operation) => operation.requestId === request.requestId
-      && (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "PLAN"));
+      && (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "PLAN" || operation.workflowMode === "UNDERSTAND"));
   if (replayed !== undefined) return { task: await taskView(deps, task, { events: 0, details: false }) };
   // PLANINC-2: planning still RUNNING although its run ended and nothing holds the workspace (a stop recorded before the cancel
   // fix, or a release that never reached the workflow) is blocked first, in one transaction conditional on the same row,
@@ -3249,6 +3260,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     }
   }
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
+  if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
   if (task.workflow === undefined || task.workflow.state !== "BLOCKED" || task.workflow.stage !== "PLAN") {
     throw agentXError("CONFIG_INVALID", "this action can retry blocked planning or coding, or run selected checks for blocked verification or a change ready to publish");
   }
@@ -3290,6 +3302,35 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     return busyOrClosing(deps, task, error);
   }
   const fresh = (await authorizeTaskAction(deps, caller, taskId, "retry")).task;
+  const view = await taskView(deps, fresh, { events: 0, details: false });
+  await syncIndex(deps, fresh, view.status, view.updatedAt);
+  return { task: view };
+}
+
+/**
+ * Plan 6 Task 4: the owner's retry of a blocked Understand (and a spend approval's resume of one that ran out of its planning limit): it runs again with the same labelled prompt. The cap
+ * window is renewed as a planning retry's is.
+ */
+async function retryWorkflowUnderstand(
+  deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: { requestId: string; instructions: string; expectedRevision?: number | undefined },
+): Promise<{ task: DeveloperTaskView }> {
+  const { task } = access;
+  const workflow = task.workflow!;
+  if (request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
+    throw agentXError("IDEMPOTENCY_CONFLICT", "this retry is out of date; refresh the task and try again");
+  }
+  await requireMayGoOn(deps, caller, task);
+  await actionableWorkspace(deps, task);
+  const cap = capWindowUpdate(await capWindowBaseline(deps, task), task);
+  try {
+    await queueWorkflowUnderstand(deps, task, {
+      requestId: request.requestId, access, actor: caller, cap, request: request.instructions, response: "Restarting the understanding step",
+    });
+  } catch (error) {
+    if (isConditional(error)) await authorizeTaskAction(deps, caller, task.taskId, "retry");
+    return busyOrClosing(deps, task, error);
+  }
+  const fresh = (await authorizeTaskAction(deps, caller, task.taskId, "retry")).task;
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
   return { task: view };
@@ -4058,6 +4099,118 @@ export async function startTaskWorkflowImplementationFromSystem(
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
+/** When the watchdog row of an Understand that started at `startedAt` is due: its time limit and a short grace for the result to arrive. */
+export function understandWatchdogDueAt(startedAt: string): string {
+  return new Date(Date.parse(startedAt) + (UNDERSTAND_TIMEOUT_MINUTES + UNDERSTAND_WATCHDOG_GRACE_MINUTES) * 60_000).toISOString();
+}
+
+/**
+ * Plan 6 Task 4: starts (or starts again) the Understand step of a version 2 task: READY (the task's start, or a person's answers) or BLOCKED (the owner's retry) becomes RUNNING, the
+ * model run is accepted, and the step's watchdog row is written, all in the one acceptance transaction. Understand is read-only and is not a recipe step: it runs on the plan step's model.
+ * Thread replies not yet given to a step go with it (inside their own block).
+ */
+async function queueWorkflowUnderstand(
+  deps: DeveloperTaskRouteDependencies,
+  task: DeveloperTaskRecord,
+  input: { requestId: string; access?: TaskAccess | undefined; actor?: DeveloperCaller | undefined; cap?: { clause: string; values: Record<string, number> } | undefined; request: string; response: string },
+): Promise<{ operation: Operation; duplicate: boolean }> {
+  return withCurrentThreadNotes(deps, task, input.requestId, (current, notes) => {
+    const workflow = current.workflow;
+    if (workflow === undefined) throw agentXError("CONFIG_INVALID", "this task has no workflow to understand");
+    const fed = fedThroughUpdate(notes);
+    const receivedAt = iso(deps);
+    const next = startWorkflowUnderstand(workflow, receivedAt);
+    const prompt = understandPrompt({ requestText: current.requestText ?? "", intent: workflow.intent, notes: notes.suffix });
+    return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt }, (operation) => [
+      { Update: {
+        TableName: deps.tableName, Key: taskKey(current.taskId),
+        UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}${input.cap?.clause ?? ""}`,
+        ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :understand AND workflow.#state = :state AND attribute_not_exists(closedAt)${fed.condition}`,
+        ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+        ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":understand": "UNDERSTAND", ":state": workflow.state, ...fed.values, ...(input.cap?.values ?? {}) },
+      } },
+      // The watchdog: if no result comes back by the step's time limit, the dispatch ends the task and gives its workspace slot back.
+      workflowDispatchItem(deps.tableName, current.taskId, next.revision, "UNDERSTAND", WORKFLOW_NO_CANDIDATE_DIGEST, receivedAt, understandWatchdogDueAt(receivedAt)),
+      putNew(turnTable(deps), aiToolTurn({
+        party: input.actor === undefined ? partyOfTask(current) : partyOfTaskActor(current, input.actor), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted",
+        receivedAt, finishedAt: iso(deps), request: input.request, response: `${input.response} as operation ${operation.id}.`, operationId: operation.id,
+      })),
+      ...(input.access === undefined ? [] : [accessFence(deps, input.access)]),
+    ], { sharedTask: current.shared === true, workflowMode: "UNDERSTAND" });
+  });
+}
+
+/**
+ * Plan 6 Task 4: Understand's dispatch, with no one asking. Answers STALE unless the task is open and its version 2 workflow is still at UNDERSTAND/READY at the expected revision, and
+ * WAITING while the workspace is still being prepared (the row stays; the prepare's result runs it at once). The request ID comes from the task and revision, so a recovered or repeated
+ * dispatch is the broker's duplicate of the first. Any other refusal (a busy workspace, a model the company forbids) propagates to the dispatch, which counts it.
+ */
+export async function startTaskWorkflowUnderstandFromSystem(
+  deps: DeveloperTaskRouteDependencies,
+  taskId: string,
+  expected: { workflowRevision: number },
+  actor?: DeveloperCaller,
+): Promise<"STARTED" | "DUPLICATE" | "STALE" | "WAITING"> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  const workflow = task?.workflow;
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.definitionVersion !== "1.1.0"
+    || workflow.revision !== expected.workflowRevision || workflow.stage !== "UNDERSTAND" || workflow.state !== "READY") return "STALE";
+  await creatorGuard(deps, task);
+  const dispatchAccess = await systemTaskAccess(deps, task);
+  const workspace = await deps.actions.workspace(task.workspaceId);
+  if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
+  // The machine is still being set up (or a held start has not begun): Understand runs when it is ready, not before.
+  if (workspace.status === "PREPARING") return "WAITING";
+  const accepted = await queueWorkflowUnderstand(deps, task, {
+    requestId: workflowRequestId("agentx-understand", taskId, workflow.revision), access: dispatchAccess, actor,
+    request: "Understand the request", response: "Reading the request and the code started",
+  });
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
+/**
+ * Plan 6 Task 4: the plan step after Understand, with no one asking (a PLAN dispatch row). PLAN/READY becomes RUNNING and the planning run is accepted in one transaction; its prompt is the
+ * request and what Understand found (the restatement and the assumptions) and the people's answers, each in its own labelled block. The path is the one Understand recorded: a Full task asks
+ * for requirements first.
+ */
+export async function startTaskWorkflowPlanFromSystem(
+  deps: DeveloperTaskRouteDependencies,
+  taskId: string,
+  expected: { workflowRevision: number },
+  actor?: DeveloperCaller,
+): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  const workflow = task?.workflow;
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.definitionVersion !== "1.1.0"
+    || workflow.revision !== expected.workflowRevision || workflow.stage !== "PLAN" || workflow.state !== "READY" || workflow.intent?.assessment?.kind !== "ready") return "STALE";
+  await creatorGuard(deps, task);
+  const dispatchAccess = await systemTaskAccess(deps, task);
+  const workspace = await deps.actions.workspace(task.workspaceId);
+  if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
+  const requestId = workflowRequestId("agentx-plan-after-understand", taskId, workflow.revision);
+  const accepted = await withCurrentThreadNotes(deps, task, requestId, (current, notes) => {
+    const fed = fedThroughUpdate(notes);
+    const receivedAt = iso(deps);
+    const next = startWorkflowPlanAfterUnderstand(current.workflow!, receivedAt);
+    const prompt = understandPrompt({ requestText: current.requestText ?? "", intent: current.workflow!.intent, notes: notes.suffix, forPlan: true });
+    return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId, conversationId: current.conversationId, prompt }, (operation) => [
+      { Update: {
+        TableName: deps.tableName, Key: taskKey(taskId),
+        UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}`,
+        ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :plan AND workflow.#state = :ready AND attribute_not_exists(closedAt)${fed.condition}`,
+        ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+        ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": current.workflow!.revision, ":plan": "PLAN", ":ready": "READY", ...fed.values },
+      } },
+      putNew(turnTable(deps), aiToolTurn({
+        party: actor === undefined ? partyOfTask(current) : partyOfTaskActor(current, actor), turnId: randomUUID(), action: "continue", phase: "accepted", outcome: "accepted",
+        receivedAt, finishedAt: iso(deps), request: "Write the plan", response: `Planning started as operation ${operation.id}.`, operationId: operation.id,
+      })),
+      ...(dispatchAccess === undefined ? [] : [accessFence(deps, dispatchAccess)]),
+    ], { sharedTask: current.shared === true, workflowMode: "PLAN", ...(next.reviewPhase === undefined ? {} : { workflowPhase: next.reviewPhase }) });
+  });
+  return accepted.duplicate ? "DUPLICATE" : "STARTED";
+}
+
 /** Starts a separate server-admitted native CHECKS operation from VERIFY/WAITING. */
 export async function startTaskWorkflowE2EChecksFromSystem(
   deps: DeveloperTaskRouteDependencies,
@@ -4332,7 +4485,8 @@ export function taskPageStep(workflow: WorkflowSnapshot | undefined, closed: boo
   if (workflow?.stage === "MERGED") return "Complete";
   if (closed || workflow === undefined) return "";
   switch (workflow.stage) {
-    case "PLAN": case "PLAN_REVIEW": {
+    // Understand has no step of its own on the page's strip: it reads as the plan's, as older clients read the stage (the document is the Requirements on the Full path).
+    case "UNDERSTAND": case "PLAN": case "PLAN_REVIEW": {
       const name = workflowDocumentName(workflow);
       return name === "coding plan" ? "Coding plan" : name === "design" ? "Design" : "Requirements";
     }
@@ -6274,6 +6428,35 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
       // The same cancel, sent again, committed first.
       if (await repeated()) return current();
       // The prepare's result queued the instructions meanwhile: cancel the running task instead.
+    }
+  }
+  // Plan 6 Task 4: a version 2 task whose Understand (or the plan after it) is queued as a dispatch row has nothing running to cancel, yet the row would start the step later. Cancelling
+  // blocks the step, in the cancel's own transaction, and takes its row away; the owner's Retry starts it again.
+  const queuedStage = !handled && task.workflow?.definitionVersion === "1.1.0" && task.workflow.state === "READY" && (task.workflow.stage === "UNDERSTAND" || task.workflow.stage === "PLAN")
+    ? task.workflow.stage : undefined;
+  if (queuedStage !== undefined && task.workflow !== undefined) {
+    const queued = task.workflow;
+    try {
+      await deps.actions.transact([
+        { Update: {
+          TableName: deps.tableName, Key: taskKey(taskId),
+          UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+          ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :ready AND attribute_not_exists(closedAt)",
+          ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+          ExpressionAttributeValues: { ":workflow": blockWorkflow(queued, stoppedStepReason(queuedStage, "CANCELLED"), receivedAt), ":now": receivedAt, ":revision": queued.revision, ":stage": queuedStage, ":ready": "READY" },
+        } },
+        { Delete: { TableName: deps.tableName, Key: { pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#${queued.revision}` } } },
+        marker,
+        record("Cancelled before the step ran."),
+        accessFence(deps, access),
+      ]);
+      handled = true;
+    } catch (error) {
+      if (!isConditional(error)) throw error;
+      await authorizeTaskAction(deps, caller, taskId, "control");
+      // The same cancel, sent again, committed first.
+      if (await repeated()) return current();
+      // The step started meanwhile: cancel what is running instead.
     }
   }
   if (!handled) {

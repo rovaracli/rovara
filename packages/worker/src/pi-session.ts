@@ -43,7 +43,7 @@ import {
 import type { PiCacheRetention } from "./usage.js";
 
 export type PiThinkingLevel = ThinkingLevel;
-export type PiWorkflowMode = "PLAN" | "IMPLEMENT" | "REVIEW";
+export type PiWorkflowMode = "PLAN" | "IMPLEMENT" | "REVIEW" | "UNDERSTAND";
 
 export interface WorkspaceModelConfiguration {
   provider: string;
@@ -674,6 +674,7 @@ export function piTaskToolCapabilities(mode: PiWorkflowMode): {
   customFileTools: boolean;
   shell: boolean;
 } {
-  if (mode === "PLAN" || mode === "REVIEW") return { tools: ["read", "grep", "find", "ls"], customFileTools: false, shell: false };
+  // Understand reads the project and the request and writes nothing, as planning does.
+  if (mode === "PLAN" || mode === "REVIEW" || mode === "UNDERSTAND") return { tools: ["read", "grep", "find", "ls"], customFileTools: false, shell: false };
   return { tools: ["read", "bash", "edit", "write", "grep", "find", "ls"], customFileTools: true, shell: true };
 }

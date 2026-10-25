@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, StepIdSchema } from "./agent-recipe.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
-import { FixSourceSchema, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, RiskAssessmentSchema, type WorkflowIntent } from "./rovara-code.js";
+import {
+  FixSourceSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema,
+  intentAssessmentDuplicateIds, intentAssumptionLine, UNDERSTAND_UNREADABLE_MESSAGE, type IntentAssessment, type WorkflowIntent,
+} from "./rovara-code.js";
 import { E2EWorkflowProgressSchema, E2EQualifiedRoundSchema, E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { z } from "zod";
 import { ProjectCommandSchema } from "./project.js";
@@ -170,6 +173,15 @@ export const WORKFLOW_BLOCK_REASONS = {
   documentUnverified: "The saved document couldn't be checked, so I stopped. Close this task and start again.",
   /** Plan 3, Task 32: a step ran out of its run's budget and a spend request is open; approving it retries the step. */
   budgetPaused: "Paused: this task needs more AI budget. I've asked for it.",
+  /** Rovara Code version 2: Understand's answer could not be read, even after one more try. */
+  understandUnreadable: UNDERSTAND_UNREADABLE_MESSAGE,
+  /** Rovara Code version 2: the request needs no code change, and closing a task as answered is not available yet. */
+  understandAnswerPending: UNDERSTAND_ANSWER_PENDING_MESSAGE,
+  /** Rovara Code version 2: Understand never came back in time, so the task was ended. */
+  understandTimedOut: UNDERSTAND_TIMED_OUT_MESSAGE,
+  /** Rovara Code version 2: the dispatch could not start Understand, or the plan step after it, within its attempts. */
+  understandNotStarted: "I couldn't start reading your request. Retry it.",
+  planNotStarted: "I couldn't start the plan. Retry planning.",
 } as const;
 
 /** What the coder is told about tests a review-only rerun found regressed (`regressedChecks`). */
@@ -2060,6 +2072,72 @@ export function createWorkflowSnapshot(input: { taskId: string; ownerId: string;
   });
   if (!parsed.success) throw new WorkflowTransitionError("workflow initialization is invalid");
   return parsed.data;
+}
+
+/**
+ * Rovara Code version 2: Understand runs (the first time, again after a person answered, or after a retry): UNDERSTAND/READY or BLOCKED becomes RUNNING. The task must be a 1.1.0 workflow.
+ */
+export function startWorkflowUnderstand(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || (current.state !== "READY" && current.state !== "BLOCKED")) {
+    throw new WorkflowTransitionError("the workflow is not ready to understand the request");
+  }
+  const { blockReason: _blockReason, ...unblocked } = current;
+  void _blockReason;
+  return WorkflowSnapshotSchema.parse({ ...unblocked, revision: current.revision + 1, state: "RUNNING", updatedAt: now });
+}
+
+/** Rovara Code version 2: the plan step runs after Understand: PLAN/READY becomes RUNNING. */
+export function startWorkflowPlanAfterUnderstand(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "PLAN" || current.state !== "READY") throw new WorkflowTransitionError("the workflow is not ready to plan");
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "RUNNING", updatedAt: now });
+}
+
+/**
+ * What Understand found, recorded (`assessment` is the broker's checked, redacted copy of the model's answer; it is checked here once more):
+ * - `ready` goes to PLAN/READY, with the path (a path the request gave wins; a Full path asks for requirements first);
+ * - `questions` wait for a person at UNDERSTAND/WAITING while fewer than UNDERSTAND_ROUNDS_MAX rounds were asked; a round after that is treated as `ready`, each question
+ *   turned into the assumption it would have been answered with;
+ * - `answer` (a question that needs no code change) is the next task's: until then it blocks with a plain reason, and nothing is planned.
+ */
+export function recordIntentAssessment(currentInput: unknown, input: { expectedRevision: number; assessment: unknown; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || current.state !== "RUNNING" || current.intent === undefined) {
+    throw new WorkflowTransitionError("the workflow is not understanding the request");
+  }
+  const parsed = IntentAssessmentSchema.safeParse(input.assessment);
+  if (!parsed.success || intentAssessmentDuplicateIds(parsed.data).length > 0) throw new WorkflowTransitionError("the assessment is invalid");
+  const assessment: IntentAssessment = parsed.data;
+  const intent = current.intent;
+  if (assessment.kind === "answer") return blockWorkflow(current, UNDERSTAND_ANSWER_PENDING_MESSAGE, input.now);
+  if (assessment.kind === "questions" && intent.rounds < UNDERSTAND_ROUNDS_MAX) {
+    return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "WAITING", intent: { ...intent, rounds: intent.rounds + 1, assessment }, updatedAt: input.now });
+  }
+  const ready: Extract<IntentAssessment, { kind: "ready" }> = assessment.kind === "ready" ? assessment
+    : { kind: "ready", path: current.path, restatement: assessment.restatement, assumptions: assessment.questions.map(intentAssumptionLine) };
+  // The request's path (or a hand-off's) wins over Understand's.
+  const path = intent.pathFrom === "understand" ? ready.path : current.path;
+  const { reviewPhase: _reviewPhase, ...withoutPhase } = current;
+  void _reviewPhase;
+  return WorkflowSnapshotSchema.parse({
+    ...withoutPhase, revision: current.revision + 1, stage: "PLAN", state: "READY", path,
+    ...(path === "FULL" ? { reviewPhase: "REQUIREMENTS" as const } : {}),
+    intent: { ...intent, assessment: ready }, updatedAt: input.now,
+  });
+}
+
+/**
+ * Understand never came back (or never started) in time: the task ends, closed, with the reason, so it gives its workspace slot back like a task whose plan was rejected.
+ * Only an UNDERSTAND step that is READY or RUNNING ends this way.
+ */
+export function endStuckUnderstand(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || (current.state !== "READY" && current.state !== "RUNNING")) {
+    throw new WorkflowTransitionError("the workflow is not waiting on Understand");
+  }
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", blockReason: UNDERSTAND_TIMED_OUT_MESSAGE, updatedAt: now });
 }
 
 export function submitWorkflowArtifact(

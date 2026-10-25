@@ -240,18 +240,17 @@ describe("what Understand is asked", () => {
   });
 
   it("gives the plan step what Understand found, inside its own block", () => {
-    const next = record(running(), questions());
+    const next = record(running(), ready());
     const planning = understandPrompt({ requestText: request, intent: next.intent, notes: "", forPlan: true });
     expect(planning).toContain(PLAN_UNDERSTANDING_HEADER);
-    expect(planning).toContain("Change how retries are counted.");
+    expect(planning).toContain("Make the retry flag read the config file.");
+    expect(planning).toContain("- The config file is config/retry.json.");
     expect(planning).toContain(UNDERSTAND_REQUEST_HEADER);
     expect(planning).not.toContain("Do not edit, write or create files");
   });
 });
 
 // ---- the step through the broker
-
-type Reply = { status: number; body: Record<string, unknown> };
 
 async function world(options: { proxy?: boolean; live?: boolean } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
@@ -266,7 +265,7 @@ async function world(options: { proxy?: boolean; live?: boolean } = {}) {
   await store.ensureBuiltinSettings(TEST_ORG, "rovara-code");
   h.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: NOW });
   const start = async (body: Record<string, unknown> = {}, text = "Fix the retry bug"): Promise<{ taskId: string; workspaceId: string }> => {
-    const reply = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text }, ...body }) as Reply;
+    const reply = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text }, ...body });
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
     const taskId = (reply.body.task as { taskId: string }).taskId;
     return { taskId, workspaceId: String(meta(taskId).workspaceId) };
@@ -308,21 +307,26 @@ async function world(options: { proxy?: boolean; live?: boolean } = {}) {
 }
 
 describe("a version 2 task starts by understanding", () => {
-  it("queues Understand as its first run, from the stored (redacted, cut) request, and starts it when the preparation ends: UNDERSTAND/RUNNING, the plan step's settings", async () => {
+  it("writes an Understand dispatch row with the start, waits while the machine is prepared, and runs at once when the preparation ends: UNDERSTAND/RUNNING", async () => {
     const t = await world();
     const token = `ghp_${"a1B2".repeat(9)}`;
     const { taskId, workspaceId } = await t.start({}, `Fix the retry bug, token ${token}`);
-    const pointer = t.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "DEVELOPER_TASK_POINTER")[0] as { pendingPrompt?: string; pendingWorkflowMode?: string };
-    expect(pointer.pendingWorkflowMode).toBe("UNDERSTAND");
-    expect(pointer.pendingPrompt).not.toContain(token);
+    // The request is kept redacted, and no run is queued for the machine's first moment: the step is the dispatch's.
+    expect(t.meta(taskId).requestText).not.toContain(token);
+    const pointer = t.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "DEVELOPER_TASK_POINTER")[0] as { pendingPrompt?: string };
+    expect(pointer.pendingPrompt).toBeUndefined();
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "READY", revision: 1 });
-    expect(t.operations(workspaceId).filter((item) => item.workflowMode !== undefined)).toEqual([]);
+    expect(t.rows().filter((item) => item.kind === "UNDERSTAND")).toEqual([expect.objectContaining({ taskId, workflowRevision: 1, attempts: 0 })]);
+    // The sweep finds the machine still being prepared: nothing starts, nothing is counted against the row.
+    await t.sweep();
+    expect(t.operationOf(workspaceId, "UNDERSTAND")).toBeUndefined();
+    expect(t.rows().filter((item) => item.kind === "UNDERSTAND")).toEqual([expect.objectContaining({ workflowRevision: 1, attempts: 0 })]);
     expect(t.access!.mintKey).not.toHaveBeenCalled();
     await t.finishPrepare(workspaceId);
     const op = t.operationOf(workspaceId, "UNDERSTAND")!;
     expect(op).toMatchObject({ kind: "task", workflowMode: "UNDERSTAND" });
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING", revision: 2 });
-    expect(t.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "DEVELOPER_TASK_POINTER")[0]).not.toHaveProperty("pendingPrompt");
+    expect(t.rows().filter((item) => item.kind === "UNDERSTAND")).toEqual([expect.objectContaining({ workflowRevision: 2 })]);
     expect(t.operationOf(workspaceId, "PLAN")).toBeUndefined();
   });
 
@@ -382,7 +386,8 @@ describe("what Understand answered becomes the next step", () => {
     const workflow = t.meta(run.taskId).workflow;
     expect(workflow).toMatchObject({ stage: "PLAN", state: "READY", path: "QUICK", revision: 3, intent: { assessment: ready() } });
     const row = t.rows().find((item) => item.kind === "PLAN");
-    expect(row).toMatchObject({ taskId: run.taskId, workflowRevision: 3, attempts: 0 });
+    // The broker ran the row right after the commit and found the workspace busy (the fault above): one try is counted, and the row waits.
+    expect(row).toMatchObject({ taskId: run.taskId, workflowRevision: 3, attempts: 1 });
     expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
     t.makeDue(row!);
     await t.sweep();
@@ -480,7 +485,8 @@ describe("what Understand answered becomes the next step", () => {
       const t = await world();
       const run = await t.understanding();
       if ("none" in bad) await t.finish(run.workspaceId, run.operationId, "SUCCEEDED", { result: { workflowMode: "UNDERSTAND" } });
-      else await t.answers(run, undefined, bad.raw);
+      // An artifact over the limit is refused at the callback itself; the run then ends with no readable artifact.
+      else await t.answers(run, undefined, bad.raw).catch(() => t.finish(run.workspaceId, run.operationId, "SUCCEEDED", { result: { workflowMode: "UNDERSTAND" } }));
       expect(t.meta(run.taskId).workflow, JSON.stringify(bad).slice(0, 60)).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: UNDERSTAND_UNREADABLE_MESSAGE });
       expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
     }
@@ -518,7 +524,7 @@ describe("Understand runs as a model step: the plan step's model, the allowed mo
     // A recipe whose plan step names a forbidden model is refused for Understand too, in the Plan step's words.
     const refused = (() => { try { applyAgentStep({ recipe, ref: REF, mode: "UNDERSTAND", guardrails: guardrails({ forbiddenModels: [HAIKU] }), project: "payments", priorOperations: [] }); } catch (error) { return error as { code: string; message: string }; } return undefined; })();
     expect(refused).toMatchObject({ code: "MODEL_NOT_ALLOWED" });
-    expect(refused?.message).toContain("Plan step");
+    expect(refused?.message).toContain("plan step");
   });
 
   it("refuses the whole task start when the company has forbidden the project's model, before Understand runs: the preparation fails with the refusal's words", async () => {
@@ -638,9 +644,10 @@ describe("the owner's ways out of a blocked Understand: Slack and the task page 
     expect(actionIds(message)).toEqual(["agentx_workflow_retry_plan", "agentx_workflow_close"]);
   });
 
-  it("offers only Close task for a run that waits on a budget answer, and says nothing while Understand runs or waits for answers", () => {
+  it("says a budget stop in its own words, and says nothing while Understand waits for answers; while it runs it says it is reading", () => {
     const paused = WorkflowSnapshotSchema.parse({ ...blocked, blockReason: WORKFLOW_BLOCK_REASONS.budgetPaused });
-    expect(actionIds(workflowMessage({ taskId: TASK_ID, workflow: paused }))).toEqual(["agentx_workflow_close"]);
+    expect(workflowMessage({ taskId: TASK_ID, workflow: paused })?.text).toContain(WORKFLOW_BLOCK_REASONS.budgetPaused);
+    expect(workflowMessage({ taskId: TASK_ID, workflow: WorkflowSnapshotSchema.parse({ ...blocked, blockReason: "understanding operation ended cancelled" }) })?.text).toContain("Understanding was stopped before it finished.");
     expect(workflowMessage({ taskId: TASK_ID, workflow: running() })?.text).toMatch(/reading your request/i);
     expect(workflowMessage({ taskId: TASK_ID, workflow: record(running(), questions()) })).toBeUndefined();
   });
@@ -671,6 +678,38 @@ describe("the owner's ways out of a blocked Understand: Slack and the task page 
   });
 });
 
+describe("cancelling before Understand has started", () => {
+  it("blocks the step and takes its row away in the cancel's own commit, so nothing starts when the machine is ready; Retry starts it", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.start();
+    const cancelled = await t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/cancel`, { requestId: randomUUID() });
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: "understanding operation ended cancelled" });
+    expect(t.rows()).toEqual([]);
+    await t.finishPrepare(workspaceId);
+    expect(t.operationOf(workspaceId, "UNDERSTAND")).toBeUndefined();
+    expect(t.access!.mintKey).not.toHaveBeenCalled();
+    // The owner can start it again.
+    const retried = await t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Try again.", expectedRevision: t.meta(taskId).workflow.revision });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(t.operationOf(workspaceId, "UNDERSTAND")).toBeDefined();
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING" });
+  });
+
+  it("a repeated cancel changes nothing more, and a cancel while Understand runs stops that run and blocks the step with the same words", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    const requestId = randomUUID();
+    expect((await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/cancel`, { requestId })).status).toBe(200);
+    const cancelOp = t.operations(run.workspaceId).find((item) => item.kind === "cancel");
+    expect(cancelOp).toBeDefined();
+    await t.finish(run.workspaceId, String(cancelOp!.id), "SUCCEEDED");
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: "understanding operation ended cancelled" });
+    expect((await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/cancel`, { requestId })).status).toBe(200);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ state: "BLOCKED" });
+  });
+});
+
 describe("retrying a blocked Understand", () => {
   it("starts Understand again from the owner's retry, with the same labelled prompt, and writes a new watchdog", async () => {
     const t = await world();
@@ -691,7 +730,7 @@ describe("retrying a blocked Understand", () => {
 describe("version 1 and the production flag are untouched", () => {
   it("with the flag off a version 2 task starts on the plan step as before: a planning run, no Understand, and no Understand row", async () => {
     const t = await world({ live: false });
-    const reply = await t.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Fix the retry bug" }, path: "QUICK" }) as Reply;
+    const reply = await t.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Fix the retry bug" }, path: "QUICK" });
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
     const taskId = (reply.body.task as { taskId: string }).taskId;
     const workspaceId = String(t.meta(taskId).workspaceId);

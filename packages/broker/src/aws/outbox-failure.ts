@@ -80,8 +80,8 @@ export async function failOutboxOperation(
 }
 
 /** Why a workflow step stopped when its run ended FAILED or INTERRUPTED: the reason a failed result records too. */
-export function workflowRunEndedReason(workflowMode: "PLAN" | "IMPLEMENT" | "CHECKS" | "REVIEW", status: string): string {
-  const step = workflowMode === "PLAN" ? "planning" : workflowMode === "CHECKS" ? "verification retry" : workflowMode === "REVIEW" ? "independent review" : "implementation";
+export function workflowRunEndedReason(workflowMode: "UNDERSTAND" | "PLAN" | "IMPLEMENT" | "CHECKS" | "REVIEW", status: string): string {
+  const step = workflowMode === "UNDERSTAND" ? "understanding" : workflowMode === "PLAN" ? "planning" : workflowMode === "CHECKS" ? "verification retry" : workflowMode === "REVIEW" ? "independent review" : "implementation";
   return `${step} operation ended ${status.toLowerCase()}`;
 }
 
@@ -115,7 +115,7 @@ async function blockFailedWorkflowRun(documentClient: Pick<DynamoDBDocumentClien
       if (binding === undefined || workflow.stage !== "WAIT_FOR_MERGE" || workflow.revision !== binding.workflowRevision || workflow.taskId !== binding.taskId
         || workflow.candidate?.digest !== binding.candidateDigest || workflow.feedbackReview?.status !== "COLLECTING") return;
       reason = WORKFLOW_BLOCK_REASONS.feedbackReviewFailed;
-    } else if (mode === "IMPLEMENT" || mode === "CHECKS" || mode === "REVIEW" || (mode === "PLAN" && workflow.stage === "PLAN")) {
+    } else if (mode === "IMPLEMENT" || mode === "CHECKS" || mode === "REVIEW" || (mode === "PLAN" && workflow.stage === "PLAN") || (mode === "UNDERSTAND" && workflow.stage === "UNDERSTAND")) {
       reason = workflowRunEndedReason(mode, "FAILED");
     } else {
       return;

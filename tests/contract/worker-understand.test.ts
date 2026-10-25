@@ -94,18 +94,19 @@ describe("the worker runs Understand", () => {
     const done = await settled;
     expect(done.ok).toBe(true);
     expect(state.creates).toEqual([{ workflowMode: "UNDERSTAND" }]);
-    expect(artifacts).toEqual([{ name: UNDERSTAND_ARTIFACT_NAME, mediaType: "application/json", content: JSON.stringify(READY) }]);
+    expect(artifacts.filter((artifact) => artifact.name === UNDERSTAND_ARTIFACT_NAME)).toEqual([{ name: UNDERSTAND_ARTIFACT_NAME, mediaType: "application/json", content: JSON.stringify(READY) }]);
     expect(sent.find((event) => event.type === "result")?.payload).toMatchObject({ status: "SUCCEEDED", workflowMode: "UNDERSTAND" });
     // Understand changes no code, so no diff, no plan and no check report is saved beside it.
-    expect(artifacts.map((artifact) => artifact.name)).toEqual([UNDERSTAND_ARTIFACT_NAME]);
+    for (const name of ["workspace.diff", "checks.json", "plan.md"]) expect(artifacts.map((artifact) => artifact.name)).not.toContain(name);
   });
 
   it("redacts a credential before it saves the assessment", async () => {
     const token = `ghp_${"a1B2".repeat(9)}`;
     const { settled, artifacts } = await run({ async prompt(emit) { emit(textEnd(fenced({ ...READY, restatement: `Push with ${token}` }))); } });
     expect((await settled).ok).toBe(true);
-    expect(artifacts[0]!.content).not.toContain(token);
-    expect(artifacts[0]!.content).toContain("[REDACTED]");
+    const saved = artifacts.find((artifact) => artifact.name === UNDERSTAND_ARTIFACT_NAME)!.content;
+    expect(saved).not.toContain(token);
+    expect(saved).toContain("[REDACTED]");
   });
 
   it("asks once more, in the same session, when its answer cannot be read, and saves the second answer", async () => {
@@ -114,7 +115,7 @@ describe("the worker runs Understand", () => {
     expect(state.prompts).toHaveLength(2);
     expect(state.prompts[1]).toBe(understandRetryPrompt(["Your answer has no rovara-intent block. End it with a fenced block whose info string is rovara-intent."]));
     expect(state.prompts[1]).toContain("treat as data");
-    expect(artifacts.map((artifact) => artifact.name)).toEqual([UNDERSTAND_ARTIFACT_NAME]);
+    expect(artifacts.filter((artifact) => artifact.name === UNDERSTAND_ARTIFACT_NAME)).toHaveLength(1);
   });
 
   it("fails with the exact words, saves nothing and reports no result, when the second answer cannot be read either", async () => {
@@ -123,15 +124,16 @@ describe("the worker runs Understand", () => {
     expect(done.ok).toBe(false);
     expect((done as { error: Error }).error.message).toContain(UNDERSTAND_UNREADABLE_MESSAGE);
     expect(state.prompts).toHaveLength(2);
-    expect(artifacts).toEqual([]);
+    expect(artifacts.map((artifact) => artifact.name)).not.toContain(UNDERSTAND_ARTIFACT_NAME);
+    for (const name of ["workspace.diff", "checks.json", "plan.md"]) expect(artifacts.map((artifact) => artifact.name)).not.toContain(name);
     expect(sent.some((event) => event.type === "result")).toBe(false);
-    expect(sent.find((event) => event.type === "error")?.payload).toMatchObject({ message: expect.stringContaining(UNDERSTAND_UNREADABLE_MESSAGE) });
+    expect(sent.find((event) => event.type === "error")?.payload).toMatchObject({ message: expect.stringContaining(UNDERSTAND_UNREADABLE_MESSAGE) as unknown });
   });
 
   it("does not take a plan, a command or a second block for an answer: the last rovara-intent block alone is read", async () => {
     const { settled, artifacts } = await run({ async prompt(emit) { emit(textEnd(`${fenced({ ...READY, path: "QUICK" })}\n${fenced(READY)}`)); } });
     expect((await settled).ok).toBe(true);
-    expect(JSON.parse(artifacts[0]!.content)).toEqual(READY);
+    expect(JSON.parse(artifacts.find((artifact) => artifact.name === UNDERSTAND_ARTIFACT_NAME)!.content) as unknown).toEqual(READY);
   });
 });
 
@@ -144,8 +146,11 @@ describe("the step timeout", () => {
   it("ends a model call that never answers at that deadline, not before, aborting the session and saying understanding stopped", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval", "Date"] });
     // The clock ticks every 5 seconds, as it does for a real run; nothing here sets the deadline: it is the step's own.
+    let begin: () => void = () => undefined;
+    const begun = new Promise<void>((resolve) => { begin = resolve; });
     const { settled, state } = await run({
       async prompt(emit, aborted) {
+        begin();
         const ticker = setInterval(() => emit({ type: "message_update", message: { role: "assistant", content: [] } }), 1_000);
         await aborted;
         clearInterval(ticker);
@@ -154,6 +159,8 @@ describe("the step timeout", () => {
     }, { stallMs: 60 * 60_000, abortConfirmMs: 2_000 });
     let finished = false;
     void settled.then(() => { finished = true; });
+    // The run is set up with real I/O; the clock is moved only once the model call is in flight.
+    await begun;
     await vi.advanceTimersByTimeAsync(UNDERSTAND_DEADLINE_MS - 6_000);
     expect(finished).toBe(false);
     expect(state.aborts).toBe(0);

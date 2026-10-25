@@ -807,7 +807,7 @@ async function derivedPause(deps: SpendRequestDependencies, task: DeveloperTaskR
   const runLimit = runLimitOf(task);
   const stop = Math.min(runLimit, task.maxPerRunUsd ?? Infinity);
   if (window < stop - 0.000001) return undefined;
-  const kind = stop < runLimit ? "max_per_run" : refusal.workflowMode === "PLAN" ? "planning" : "task";
+  const kind = stop < runLimit ? "max_per_run" : refusal.workflowMode === "PLAN" || refusal.workflowMode === "UNDERSTAND" ? "planning" : "task";
   return { kind, taskId: task.taskId };
 }
 

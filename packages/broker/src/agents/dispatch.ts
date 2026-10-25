@@ -30,9 +30,10 @@ import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDe
 import type { TaskAgentRef } from "./roster.js";
 
 /** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
-export type DispatchMode = "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW";
+export type DispatchMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW";
 
-const KIND_OF_MODE: Record<DispatchMode, CodingStepKind> = { PLAN: "plan", PLAN_CRITIQUE: "plan_critic", IMPLEMENT: "build", REVIEW: "review", CHECKS: "check", FEEDBACK_REVIEW: "pull_request" };
+// Understand is not a recipe step: it runs with the plan step's model and settings (so a recipe cannot remove the question-asking, and no model is chosen that the plan step could not run).
+const KIND_OF_MODE: Record<DispatchMode, CodingStepKind> = { UNDERSTAND: "plan", PLAN: "plan", PLAN_CRITIQUE: "plan_critic", IMPLEMENT: "build", REVIEW: "review", CHECKS: "check", FEEDBACK_REVIEW: "pull_request" };
 /** What a step is called in a refusal when the recipe has no step of that kind (a program that leaves out its plan still gets the engine's planning pass). */
 const KIND_LABEL: Record<CodingStepKind, string> = { plan: "Plan", plan_critic: "Plan check", build: "Build", check: "Check", review: "Review", pull_request: "Pull request" };
 

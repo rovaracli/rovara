@@ -118,7 +118,7 @@ export function isFeedbackReviewFailure(blockReason: string | undefined): boolea
 }
 
 /** The step a stopped run ran, as the first word of the sentence that says it was stopped (keys: `workflowRunEndedReason`'s step names). */
-const STOPPED_STEP_NAME: Readonly<Record<string, string>> = { planning: "Planning", implementation: "Coding", "verification retry": "Checking", "independent review": "Reviewing" };
+const STOPPED_STEP_NAME: Readonly<Record<string, string>> = { understanding: "Understanding", planning: "Planning", implementation: "Coding", "verification retry": "Checking", "independent review": "Reviewing" };
 
 /** The broker's own reason a step stopped, in words the owner can act on; any other reason is internal. */
 export function plainBlockReason(blockReason: string | undefined): string {
@@ -127,7 +127,7 @@ export function plainBlockReason(blockReason: string | undefined): string {
   const reworded = REWORDED_REASONS.get(blockReason);
   if (reworded !== undefined) return slackText(reworded);
   // PLANINC-2: a stop the owner asked for (cancelled, or interrupted when the stop could not be delivered) says so and what to do; only a failed run is unexpected.
-  const stopped = /^(planning|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/.exec(blockReason);
+  const stopped = /^(understanding|planning|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/.exec(blockReason);
   if (stopped !== null) return `${STOPPED_STEP_NAME[stopped[1]!]!} was stopped before it finished. Choose Retry to run it again.`;
   if (/operation ended (failed|interrupted|cancelled)$/.test(blockReason)) return "The run stopped unexpectedly.";
   if (/ was invalid, incomplete, or stale$/.test(blockReason)) return "The result couldn't be trusted, so nothing moved forward.";
@@ -726,6 +726,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
   const checksAndReviewsPassed = reviewOnly ? "Reviews passed (no automated check applied)." : "Checks and reviews passed.";
   if (context.publishFailure !== undefined && workflow.stage === "PULL_REQUEST") return publishFailed(context, exits, context.publishFailure);
   switch (`${workflow.stage}/${workflow.state}`) {
+    // Rovara Code version 2: Understand reads the request and the code first. Its questions are asked by their own message; while it waits for answers nothing is said here.
+    case "UNDERSTAND/RUNNING": return plain("Reading your request and the code before I plan. I'll ask a question here if I need one; nothing changes in the code until you approve a plan.");
+    case "UNDERSTAND/BLOCKED": return { text: `I couldn't finish understanding this task. ${plainBlockReason(workflow.blockReason)}`, buttons: [exits.button("agentx_workflow_retry_plan", "Retry understanding"), exits.close] };
     case "PLAN/RUNNING": return plain(planRunning(context));
     case "PLAN/BLOCKED": return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.planUnreadable
       ? `AgentX couldn't read the ${workflowDocumentName(workflow)} it wrote.`
@@ -776,7 +779,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     }
     // A custom sequence with no pull request step ran every step: its changes stay in the workspace, and only closing the task gives it back.
     case "CLOSED/COMPLETE": return plain(workflow.outcome === "REJECTED" ? "Closed without changes."
-      : workflow.outcome === "PASSED" ? SEQUENCE_FINISHED_TEXT : "This task is closed.");
+      : workflow.outcome === "PASSED" ? SEQUENCE_FINISHED_TEXT
+      // A version 2 task whose Understand never came back in time was ended, and says why.
+      : workflow.outcome === "CLOSED" && workflow.blockReason === WORKFLOW_BLOCK_REASONS.understandTimedOut ? WORKFLOW_BLOCK_REASONS.understandTimedOut : "This task is closed.");
     default: return undefined;
   }
 }

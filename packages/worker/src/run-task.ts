@@ -1,10 +1,11 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { AGENTX_PREAMBLE_VERSION, AGENT_WORKER_OUTDATED, PLAN_DOCUMENT_INFO_STRING, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
+import { AGENTX_PREAMBLE_VERSION, AGENT_WORKER_OUTDATED, PLAN_DOCUMENT_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
 import { checkCodeCitations, sameCitedRanges, withCorrectedRanges } from "./plan-citations.js";
+import { UNDERSTAND_DEADLINE_MS, settleUnderstanding } from "./understand.js";
 import {
   createDevcontainerCli,
   devcontainerBashOperations,
@@ -67,7 +68,7 @@ export interface TaskInvocationResult {
   reopened: boolean;
   /** Spec 051 FR-007: AgentX's check of the agent's work, with outputs cut to fit (compactCheckReport). */
   checks?: CheckReport;
-  workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW";
+  workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND";
   /** Worker-reported Git object identities; the broker recomputes and stores the canonical digest. */
   workflowCandidateRepositories?: Array<{ repositoryId: string; commitSha: string; treeSha: string }>;
   /** Fixed worker export, uploaded on its separate capability before the model-visible terminal result. */
@@ -172,9 +173,9 @@ async function runTask(
   if (workflowDependencies !== undefined && invocation.payload.workflowMode !== "IMPLEMENT") {
     throw agentXError("CONFIG_INVALID", "ordered work requires implementation mode");
   }
-  // Rovara Code v2's Understand and plan-critic runs come with the worker features that carry them ("task.workflowUnderstand", "task.workflowPlanCritique"); this
-  // build lists neither, so a run asking for one is refused, never run as another mode.
-  if (invocation.payload.workflowMode === "UNDERSTAND" || invocation.payload.workflowMode === "PLAN_CRITIQUE") {
+  // Rovara Code v2's plan-critic run comes with the worker feature that carries it ("task.workflowPlanCritique"); this build does not list it, so a run asking for one is
+  // refused, never run as another mode. (Understand is "task.workflowUnderstand", which this build lists.)
+  if (invocation.payload.workflowMode === "PLAN_CRITIQUE") {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   const approval = invocation.payload.workflowFeedbackApproval;
@@ -508,6 +509,8 @@ async function runTask(
   const verificationStop = new AbortController();
   const readiness = invocation.payload.readiness;
   const planning = invocation.payload.workflowMode === "PLAN";
+  // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
+  const understanding = invocation.payload.workflowMode === "UNDERSTAND";
   const reviewing = invocation.payload.workflowMode === "REVIEW";
   let graphFinalItemReady = workflowDependencies === undefined;
   const recorder = new CommandRecorder({
@@ -578,7 +581,7 @@ async function runTask(
         conversationId,
         sessionFile: registered.sessionFile,
         onDiagnostic,
-        extensionFactories: planning || reviewing ? [] : [verification],
+        extensionFactories: planning || reviewing || understanding ? [] : [verification],
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -590,7 +593,7 @@ async function runTask(
     session = await createWorkspacePiSession(
       {
         rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: invocation.payload.workflowMode ?? "IMPLEMENT", conversationId, onDiagnostic,
-        extensionFactories: planning || reviewing ? [] : [verification],
+        extensionFactories: planning || reviewing || understanding ? [] : [verification],
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -613,9 +616,9 @@ async function runTask(
   const abortConfirmMs = limits.abortConfirmMs ?? PLANNING_ABORT_CONFIRM_MS;
   // A planning run has one wall-clock deadline (the first prompt and the format retry share it) and a no-activity limit; the other modes only get the heartbeat-free attempt counter.
   const monitor = new ModelCallMonitor({
-    ...(planning ? { deadlineMs: limits.deadlineMs ?? planningDeadlineMs(), stallMs: stallLimitMs } : {}),
-    // A coding turn spends long stretches inside tools that send no event, so only planning says "still waiting".
-    ...(planning ? {} : { maxHeartbeats: 0 }),
+    ...(planning || understanding ? { deadlineMs: limits.deadlineMs ?? (understanding ? UNDERSTAND_DEADLINE_MS : planningDeadlineMs()), stallMs: stallLimitMs } : {}),
+    // A coding turn spends long stretches inside tools that send no event, so only planning (and understanding) says "still waiting".
+    ...(planning || understanding ? {} : { maxHeartbeats: 0 }),
     ...(limits.heartbeatMs === undefined ? {} : { heartbeatMs: limits.heartbeatMs }),
     ...(limits.tickMs === undefined ? {} : { tickMs: limits.tickMs }),
     onHeartbeat: (payload) => { void emit("progress", payload); },
@@ -633,9 +636,11 @@ async function runTask(
       ? `the model did not finish within ${info.limitMs >= 60_000 ? `${Math.round(info.limitMs / 60_000)} min` : `${Math.round(info.limitMs / 1_000)} s`}`
       : `the model sent nothing for ${Math.round(info.limitMs / 1_000)} s`;
     const where = `model call ${info.attempt}`;
+    const step = understanding ? "understanding" : "planning";
+    const retry = understanding ? "Retry it." : "Retry planning.";
     return abortUnconfirmed
-      ? agentXError("OPERATION_INTERRUPTED", `planning stopped: ${spent} (${where}) and did not stop when asked. Retry planning.`)
-      : agentXError("RUNTIME_UNAVAILABLE", `planning stopped: ${spent} (${where}). Retry planning.`);
+      ? agentXError("OPERATION_INTERRUPTED", `${step} stopped: ${spent} (${where}) and did not stop when asked. ${retry}`)
+      : agentXError("RUNTIME_UNAVAILABLE", `${step} stopped: ${spent} (${where}). ${retry}`);
   };
   async function handleExpiry(info: ModelCallExpiryInfo): Promise<void> {
     // A cancel or the loop guard's stop, once chosen, decides the outcome; the deadline never overrides them.
@@ -863,7 +868,7 @@ async function runTask(
         }
         return withStepTimeout(stepHandle, left, () => session.prompt(text), stepLimitMs);
       };
-      if (planning) monitor.start();
+      if (planning || understanding) monitor.start();
       const promptAndSettle = async (text: string) => {
         // The deadline can pass between two prompts (the format retry): the run is already over.
         if (expiry !== undefined && loopStop === undefined && dependencies.cancellationController?.isCancelled(invocation.operationId) !== true) throw expiryFailure(expiry);
@@ -1007,6 +1012,16 @@ async function runTask(
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN" };
+      } else if (understanding) {
+        // One fenced `rovara-intent` block; an answer that cannot be read is asked for once more in this session, and then the run fails with fixed words.
+        const assessment = await settleUnderstanding(finalText, async (again) => { await promptAndSettle(again); return finalText; });
+        // The model is done: a deadline that passes while the answer is saved must not report a stop on a run that then succeeds.
+        monitor.stop();
+        await dependencies.artifactSink({ name: UNDERSTAND_ARTIFACT_NAME, mediaType: "application/json", content: JSON.stringify(assessment) });
+        await publishEvidence();
+        outcome = "SUCCEEDED";
+        await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "UNDERSTAND" });
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "UNDERSTAND" };
       } else if (reviewing) {
         const repositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
         const beforeReview = createCandidateManifest(await readCandidateRepositories(repositories));
@@ -1187,7 +1202,7 @@ async function runTask(
           await reportUnsaved("test-and-tool-evidence.json");
         }
       }
-      if (!planning && !checksAttempted) {
+      if (!planning && !understanding && !checksAttempted) {
         try {
           await publishChecks();
         } catch (artifactError) {
@@ -1195,7 +1210,7 @@ async function runTask(
           await reportUnsaved("checks.json");
         }
       }
-      if (!planning && !diffAttempted && outcome !== "CANCELLED") {
+      if (!planning && !understanding && !diffAttempted && outcome !== "CANCELLED") {
         try {
           await publishWorkspaceDiff(dependencies.rootPath, dependencies.artifactSink);
         } catch (artifactError) {
@@ -1205,7 +1220,7 @@ async function runTask(
       }
     }
 
-    if (!planning) await restoreHistory();
+    if (!planning && !understanding) await restoreHistory();
     await flushDiagnostics().catch(() => undefined);
 
     let telemetryFailure = evidenceFailure;
