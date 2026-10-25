@@ -53,6 +53,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     starts: [] as Array<Record<string, unknown>>, pushes: [] as Array<Record<string, unknown>>, cancels: [] as Array<{ taskId: string; requestId: string }>,
     admissions: [] as Array<{ payer: unknown; project: string; agentId: string; path: string }>, order: [] as string[],
     /** The session as the cancel found it: the claim (revision and marker) must be in place before anything is cancelled. */
+    linkTries: 0,
     atCancel: [] as Array<{ revision: unknown; moving: unknown; owner: unknown }>, systemCancels: [] as Array<{ taskId: string; requestId: string }>,
   };
   const live = {
@@ -81,6 +82,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
         race.beforeClaim = undefined;
         await run();
       }
+      if (command instanceof TransactWriteCommand && JSON.stringify(command.input).includes("LEG#000002")) calls.linkTries += 1;
       if (command instanceof TransactWriteCommand && race.before !== undefined && JSON.stringify(command.input).includes("LEG#0000")) {
         const run = race.before;
         race.before = undefined;
@@ -1205,6 +1207,45 @@ describe("no paid work is left unlinked", () => {
     expect(w.meta(sessionId).subject).toMatchObject({ taskId: w.calls.starts[0]!["taskId"] });
   });
 
+  it("a newer attempt's record is not overwritten by an older one's write: the write is conditional on the record it read, so it resumes the newer attempt", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    const input = w.body();
+    // Attempt 1 is cancelled (unknown outcome); then, between a repeat's read and its write, another copy of the request has begun attempt 5.
+    w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
+    await expect(w.move(PRIYA, sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
+    expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "abandoned", attempt: 1 });
+    w.race.beforePending = () => {
+      w.db.set({ ...agentSessionKey(ORG_A, sessionId, `HANDOFF_PENDING#${input.requestId}`), entityType: "AGENT_SESSION_HANDOFF_PENDING", orgId: ORG_A, sessionId, requestId: input.requestId, attempt: 5, taskId: handoffTaskId(ORG_A, sessionId, input.requestId, 5), state: "started", by: PRIYA, startedAt: iso(T0) });
+    };
+    await w.move(PRIYA, sessionId, input);
+    expect(w.calls.starts[1]!["taskId"]).toBe(handoffTaskId(ORG_A, sessionId, input.requestId, 5));
+  });
+
+  it("an attempt that was replaced by a newer one is not cancelled by the older one's failure", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    const input = w.body();
+    const newer = handoffTaskId(ORG_A, sessionId, input.requestId, 2);
+    w.race.before = () => {
+      w.db.set({ ...agentSessionKey(ORG_A, sessionId, `HANDOFF_PENDING#${input.requestId}`), entityType: "AGENT_SESSION_HANDOFF_PENDING", orgId: ORG_A, sessionId, requestId: input.requestId, attempt: 2, taskId: newer, state: "started", by: PRIYA, startedAt: iso(T0) });
+    };
+    expect(await code(w.move(PRIYA, sessionId, input))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
+    expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ attempt: 2, state: "started" });
+    expect(w.calls.systemCancels).toEqual([]);
+    // Attempt 1's own task is still cancelled by the caller's cancel only if it is still its attempt: here the record moved on, so the older task is left to the newer attempt's rules.
+    expect(w.calls.cancels.every((call) => call.taskId !== newer)).toBe(true);
+  });
+
+  it("a task the runtime made under another id is cancelled only if it is marked as this very move's", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    w.live.wrongTaskId = true;
+    w.live.marker = { sessionId, requestId: randomUUID() };
+    expect(await code(w.move(PRIYA, sessionId, w.body()))).toMatchObject({ code: RUNTIME_UNAVAILABLE });
+    expect(w.calls.cancels).toEqual([]);
+  });
+
   it("a cancel that failed leaves the attempt 'cancelling': a repeat finishes that cancel first and then starts the next attempt; it never resumes a task that was being cancelled", async () => {
     const w = world();
     const { sessionId } = await w.onMac();
@@ -1392,10 +1433,25 @@ describe("no paid work is left unlinked", () => {
       expect(await code(w.move(PRIYA, sessionId, input))).toEqual({ code: RUNTIME_UNAVAILABLE, message: "This session is busy right now. Try again." });
       expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 1 });
       expect(w.under(sessionId, "LEG#")).toHaveLength(1);
+      // Refused at once, not retried to exhaustion.
+      expect(w.calls.linkTries).toBe(1);
       const task = w.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]!;
       expect(task).not.toHaveProperty("sessionId");
       expect(w.calls.cancels).toHaveLength(1);
       expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "abandoned" });
+    });
+
+    it("the sweep without a runtime to ask cancels nothing and forgets nothing: the attempt waits", async () => {
+      const w = world();
+      const { sessionId, input } = await orphaned(w);
+      w.clock.now += 11 * 60_000;
+      const quiet = makeHandoffRecovery({ ...w.deps, handoff: undefined });
+      const session = (await new AgentSessionStore(w.deps).get(ORG_A, sessionId))!;
+      expect(await quiet(session)).toBe("pending");
+      expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "cancelling" });
+      expect(w.calls.systemCancels).toEqual([]);
+      expect(await recovery(w)(session)).toBe("clear");
+      expect(w.calls.systemCancels).toHaveLength(1);
     });
 
     it("a missing task record is not forgotten: the runtime is asked to cancel it by its derived id each time, and only a long wait proves it was never made", async () => {
