@@ -180,11 +180,11 @@ describe("agentx_comment_on_session and agentx_tell_session_agent", () => {
   });
 
   it("tells the agent with a fresh request id for each call", async () => {
-    const tellSessionAgent = vi.fn(async () => message("steer", { state: "queued", at: "2026-10-24T09:06:00.000Z" }));
+    const tellSessionAgent = vi.fn<ControlPlaneClient["tellSessionAgent"]>(async () => message("steer", { state: "queued", at: "2026-10-24T09:06:00.000Z" }));
     const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
     const mcp = await connect({ tellSessionAgent }, () => ids.shift()!);
     for (let n = 0; n < 2; n += 1) await mcp.callTool({ name: "agentx_tell_session_agent", arguments: { session_id: SES, text: "Keep it small" } });
-    expect(tellSessionAgent.mock.calls.map((call) => (call[1] as { requestId: string }).requestId)).toEqual(["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]);
+    expect(tellSessionAgent.mock.calls.map((call) => call[1].requestId)).toEqual(["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]);
   });
 
   it("tells the agent, and says whether the message was queued or delivered", async () => {
@@ -245,7 +245,7 @@ describe("agentx_stop_session", () => {
   });
 
   it("a second stop after the session was continued is a new request, not the first one's stored outcome", async () => {
-    const stopSession = vi.fn(async () => sessionView({ status: "stopped" }));
+    const stopSession = vi.fn<ControlPlaneClient["stopSession"]>(async () => sessionView({ status: "stopped" }));
     const made = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
     const queue = [...made];
     const mcp = await connect({ stopSession }, () => queue.shift()!);
