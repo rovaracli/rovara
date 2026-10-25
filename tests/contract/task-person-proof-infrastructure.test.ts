@@ -273,18 +273,19 @@ describe("the named TEST proof-only installation gate", () => {
     // (the workflow flag and the launch template stay out of the hash, as before). The legacy digests did not move: its broker is given its variables whole.
     // ENV-ROOM review fix: the named and foreign digests were taken again after Ec2WorkerLaunchTemplateId gained its AllowedPattern (named environments only); the legacy digests did not move.
     // Plan 5, Task 20: the notifier's role gained two statements (put the session binding and surface items, check the session record), so the named and foreign digests were taken again; legacy has no notifier and did not move.
+    // Staging 0.4.3 fix: the broker's `rt` name is the DNS prefix of the events API's HTTP host (Fn::Select of Fn::Split of Dns.Http), not the API's id, so the named and foreign digests were taken again; legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "b136c4a42428af893e64cda4acf550a1d95f56704662b1f1c2e3a1905bcb4007",
-        withoutRoute: "f793025f4f8b11aab72241b5e492bbdb8ce7861821c899bf2ed202929e5b1a68",
+        withRoute: "bba0a3a0a8296fe2b25684df5d9a3168add7e5c67a0e05da72e192bb380f5d86",
+        withoutRoute: "fe178e220ed5133fce244685b5da5d80a9e6fe1fcf0a4260a38590712388942e",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "468ff8e934a789dd7c762060b644d6b153b1c7f68a0cfcf9a6eda3dc655d0ed6",
-        withoutRoute: "e5add4f41e16e012435d071a6b1126102a577ccd7be772b6b31a106520f30c9c",
+        withRoute: "ad6b638ff30d6a6358069b31811729a87bf201db74ad7eeb2a67c1163259b601",
+        withoutRoute: "efc9e487f320c118ed456b7a8c9d28f65ca17efd581b797f8c53a3415008d4db",
       },
       {
         label: "legacy",

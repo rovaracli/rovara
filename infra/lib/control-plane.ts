@@ -1125,7 +1125,7 @@ export class ControlPlaneStack extends Stack {
       });
       signInFunction = developerSignIn.signInFunction;
       // Plan 5, Task 8: change notices over an AppSync Events API. The broker and the outbox publisher publish to its one namespace; clients subscribe with a short-lived token
-      // the authorizer checks (it may read the token key's public half and nothing more). The broker gets the API's id in its names and builds the endpoint from it
+      // the authorizer checks (it may read the token key's public half and nothing more). The broker gets the DNS prefix of the API's hosts (not its id: that host does not exist) in its names and builds the endpoint from it
       // (its variables are held to 4 KB); the outbox publisher gets the endpoint whole.
       const realtime = new RealtimeEvents(this, "Realtime", {
         env: naming.env, state, tokenKey: developerSignIn.tokenKey, allowPublicKeyRead: (role) => developerSignIn.allowPublicKeyRead(role),
@@ -1133,7 +1133,7 @@ export class ControlPlaneStack extends Stack {
       realtime.grantPublish(broker);
       realtime.grantPublish(outboxPublisher);
       outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
-      BrokerNames.of(broker).add("realtimeApi", realtime.api.apiId);
+      BrokerNames.of(broker).add("realtimeApi", realtime.dnsPrefix);
       if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,

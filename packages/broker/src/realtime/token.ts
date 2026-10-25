@@ -62,7 +62,7 @@ export async function verifyRealtimeToken(publicKey: () => Promise<PublicSigning
   }
 }
 
-/** The events API's websocket address for its HTTP one: `https://<id>.appsync-api.<region>…/event` becomes `wss://<id>.appsync-realtime-api.<region>…/event/realtime`. */
+/** The events API's websocket address for its HTTP one: `https://<dns prefix>.appsync-api.<region>…/event` becomes `wss://<dns prefix>.appsync-realtime-api.<region>…/event/realtime`. */
 export function realtimeSocketEndpoint(httpEndpoint: string): string {
   const url = new URL(httpEndpoint);
   return `wss://${url.host.replace(".appsync-api.", ".appsync-realtime-api.")}${url.pathname.replace(/\/+$/u, "")}/realtime`;

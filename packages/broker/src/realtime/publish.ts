@@ -71,7 +71,7 @@ export interface AwsCredentials { accessKeyId: string; secretAccessKey: string; 
 
 /** Where to post and as whom. `credentials` is read for each batch (a Lambda's are in its environment and rotate). */
 export interface RealtimeConfig {
-  /** `https://<api id>.appsync-api.<region>.amazonaws.com/event` */
+  /** `https://<dns prefix>.appsync-api.<region>.amazonaws.com/event` */
   endpoint: string;
   region: string;
   credentials: () => Promise<AwsCredentials>;

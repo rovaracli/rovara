@@ -7,8 +7,10 @@ import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, BROKER_NAMES } from "../../packages/contracts/src/index.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
+import { realtimeSocketEndpoint } from "../../packages/broker/src/realtime/token.js";
 import { defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
-import { DEPLOY_PARAMETER_VALUES, LAMBDA_ENVIRONMENT_LIMIT_BYTES, lambdaEnvironments, type Template as ResolvableTemplate } from "../support/lambda-environment-size.js";
+import { APPSYNC_API_ID, APPSYNC_DNS_PREFIX, DEPLOY_PARAMETER_VALUES, LAMBDA_ENVIRONMENT_LIMIT_BYTES, LAMBDA_RESOLVER_REGION, lambdaEnvironments, type Template as ResolvableTemplate } from "../support/lambda-environment-size.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -138,13 +140,13 @@ describe("the broker", () => {
     expect(statementsOf(integrations).filter((statement) => actionsOf(statement).some((action) => action.startsWith("appsync:")))).toHaveLength(1);
   });
 
-  it("is given the API's id in its names, builds the endpoint from it, and stays under 4 KB of variables on every environment name", () => {
+  it("is given the API's DNS prefix in its names, builds the endpoint from it, and stays under 4 KB of variables on every environment name", () => {
     expect(BROKER_NAMES.realtimeApi).toEqual({ code: "rt", variable: "REALTIME_HTTP_ENDPOINT", kind: "eventApiEndpoint" });
     const [apiId] = ofType(named, "AWS::AppSync::Api")[0]!;
     const [, broker] = ofType(named, "AWS::Lambda::Function").find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))!;
     const variables = (broker.Properties.Environment as { Variables: Json }).Variables;
     expect(JSON.stringify(variables.AGENTX_NAMES)).toMatch(/[",]rt=/);
-    expect(JSON.stringify(variables.AGENTX_NAMES)).toContain(apiId);
+    expect(JSON.stringify(variables.AGENTX_NAMES)).toContain(`"${apiId}","Dns.Http"`);
     expect(variables.REALTIME_HTTP_ENDPOINT).toBeUndefined();
     for (const env of ["staging", "a1234567890123456789"]) {
       const stack = buildAgentXApp({ agentxEnv: env, agentxCloud: true }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((s) => s.stackName === `agentx-${env}-control-plane`)!;
@@ -152,6 +154,24 @@ describe("the broker", () => {
       expect(found.bytes, env).toBeLessThanOrEqual(LAMBDA_ENVIRONMENT_LIMIT_BYTES);
     }
   }, 300_000);
+
+  it("is given the DNS prefix of the API's HTTP host (Dns.Http), not its id, so the endpoint it builds and the socket address it answers with are hosts that exist (staging 0.4.3)", () => {
+    const [apiLogicalId] = ofType(named, "AWS::AppSync::Api")[0]!;
+    const [, broker] = ofType(named, "AWS::Lambda::Function").find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))!;
+    const raw = JSON.stringify((broker.Properties.Environment as { Variables: Json }).Variables.AGENTX_NAMES);
+    // The template takes the prefix from the attribute the Events API publishes its host in, and never from the API's id.
+    expect(raw).toContain(`"Fn::GetAtt":["${apiLogicalId}","Dns.Http"]`);
+    expect(raw).not.toContain(`"${apiLogicalId}","ApiId"`);
+    const found = lambdaEnvironments(named, { env: "staging", stackName: namedStack.stackName, parameterValues: DEPLOY_PARAMETER_VALUES }).find((entry) => /^Broker[0-9A-F]{8}$/.test(entry.logicalId))!;
+    const environment: MutableEnvironment = { AWS_REGION: LAMBDA_RESOLVER_REGION, AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging", AGENTX_NAMES: found.variables.AGENTX_NAMES };
+    hydrateBrokerEnvironment(environment);
+    expect(APPSYNC_DNS_PREFIX).not.toBe(APPSYNC_API_ID);
+    expect(environment.REALTIME_HTTP_ENDPOINT).toBe(`https://${APPSYNC_DNS_PREFIX}.appsync-api.${LAMBDA_RESOLVER_REGION}.amazonaws.com/event`);
+    expect(realtimeSocketEndpoint(environment.REALTIME_HTTP_ENDPOINT!)).toBe(`wss://${APPSYNC_DNS_PREFIX}.appsync-realtime-api.${LAMBDA_RESOLVER_REGION}.amazonaws.com/event/realtime`);
+    // The outbox publisher's host, which was always right, is the same host the broker now publishes to.
+    const publisher = lambdaEnvironments(named, { env: "staging", stackName: namedStack.stackName, parameterValues: DEPLOY_PARAMETER_VALUES }).find((entry) => /^OutboxPublisher[0-9A-F]{8}$/.test(entry.logicalId))!;
+    expect(publisher.variables.REALTIME_HTTP_ENDPOINT).toBe(environment.REALTIME_HTTP_ENDPOINT);
+  });
 
   it("gives the outbox publisher the API's whole HTTP endpoint", () => {
     const [, publisher] = ofType(named, "AWS::Lambda::Function").find(([id]) => /^OutboxPublisher[0-9A-F]{8}$/.test(id))!;
