@@ -1284,18 +1284,17 @@ describe("no paid work is left unlinked", () => {
     expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "abandoned" });
   });
 
-  it("a repeat that comes at once does not cancel a move that may still be committing", async () => {
+  it("a repeat that comes at once does not cancel a move that may still be committing (a started attempt younger than a minute)", async () => {
     const w = world();
     const { sessionId, deviceId } = await w.onMac();
     const input = w.body();
-    w.live.cancelFailure = agentXError("WORKSPACE_BUSY", "busy");
-    w.db.injectFault({ command: "TransactWriteCommand", match: (tx) => JSON.stringify(tx).includes("LEG#000002"), error: { name: "InternalServerError" } });
-    await expect(w.move(PRIYA, sessionId, input)).rejects.toMatchObject({ name: "InternalServerError" });
+    w.live.dieAfterCreate = true;
+    await expect(w.move(PRIYA, sessionId, input)).rejects.toThrow("died");
     await recordLocalUpdate({ ...w.deps }, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "succeeded" });
-    w.calls.cancels.length = 0;
     w.clock.now += 5_000;
     expect(await code(w.move(PRIYA, sessionId, input))).toMatchObject({ code: "SESSION_ENDED" });
     expect(w.calls.cancels).toEqual([]);
+    expect(pendingOf(w, sessionId, input.requestId)).toMatchObject({ state: "started" });
   });
 
   describe("the session sweep", () => {

@@ -154,6 +154,8 @@ const pendingKey = (orgId: OrgId, sessionId: string, requestId: string) => agent
 /** How long a started task may stay unlinked before the sweep cancels it, and how soon a repeat of the same request may do it (a move still committing is younger than that). */
 export const HANDOFF_RECOVER_AFTER_MS = 10 * 60_000;
 const REPEAT_ABANDONS_AFTER_MS = 60_000;
+/** A task with no record is let go only after this long: a runtime can write its record late. */
+const MISSING_TASK_PROOF_MS = 60 * 60_000;
 const PENDING_KEEP_SECONDS = 7 * DAY_SECONDS;
 /** How long a claim on a session for a move to a Mac holds. */
 const CLAIM_MS = 5 * 60_000;
@@ -278,30 +280,57 @@ async function admitOwner(deps: HandoffDependencies, session: AgentSessionRecord
 /** What a cloud start is called in the records: the attempt it belongs to and the ids that follow from it. */
 interface Attempt { number: number; taskId: string; runRequestId: string }
 
+/** The pending record of a cloud start, read with its parts checked. */
+interface Pending { requestId: string; attempt: number; taskId: string; state: "started" | "cancelling" | "abandoned"; startedAt: string }
+
+function readPending(item: Item | undefined, session: Pick<AgentSessionRecord, "orgId" | "sessionId">): Pending | undefined {
+  if (item === undefined || item["orgId"] !== session.orgId || item["sessionId"] !== session.sessionId) return undefined;
+  const { requestId, attempt, taskId, state, startedAt } = item;
+  if (typeof requestId !== "string" || typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 1 || typeof taskId !== "string" || typeof startedAt !== "string") return undefined;
+  if (state !== "started" && state !== "cancelling" && state !== "abandoned") return undefined;
+  return { requestId, attempt, taskId, state, startedAt };
+}
+
 /**
- * Writes the pending record of this attempt BEFORE the task starts: its number, the task id it will have and when it began. A move that was cut off and is asked again resumes the same
- * attempt (the same task); one whose task was cancelled has its record marked `abandoned` and the next asks start the next attempt, so a cancelled task is never linked.
+ * Writes the pending record of this attempt BEFORE the task starts: its number, the task id it will have and when it began. The write is conditional on the record this call read (or on there
+ * being none), so two copies of one request can't both start an attempt: the later one reads again and finds the record of the newer. A move that was cut off and is asked again resumes the same
+ * attempt (the same task, the first start time); an attempt whose cancel is still unfinished (`cancelling`) is finished first, and one that was cancelled (`abandoned`) is followed by the next
+ * attempt, so a task that was cancelled is never linked and one request id never has two live tasks.
  */
 async function beginAttempt(deps: HandoffDependencies, session: AgentSessionRecord, requestId: string, ownerId: string): Promise<Attempt> {
   const key = pendingKey(session.orgId, session.sessionId, requestId);
-  const earlier = await getItem(deps, key);
-  if (earlier !== undefined && (typeof earlier["attempt"] !== "number" || !Number.isInteger(earlier["attempt"]) || earlier["attempt"] < 1 || earlier["orgId"] !== session.orgId)) {
-    throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BAD_ANSWER_MESSAGE);
+  for (let tries = 1; tries <= ATTEMPTS; tries += 1) {
+    const item = await getItem(deps, key);
+    const earlier = readPending(item, session);
+    if (item !== undefined && earlier === undefined) throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BAD_ANSWER_MESSAGE);
+    if (earlier?.state === "cancelling") {
+      // The cancel of the earlier attempt did not finish: it does now, before anything new starts.
+      if (await cancelAttempt(deps, session, earlier, 0) === "waiting") throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BUSY_MESSAGE);
+      continue;
+    }
+    const resumed = earlier?.state === "started";
+    const number = earlier === undefined ? 1 : resumed ? earlier.attempt : earlier.attempt + 1;
+    const attempt: Attempt = {
+      number, taskId: handoffTaskId(session.orgId, session.sessionId, requestId, number), runRequestId: handoffRunRequestId(session.orgId, session.sessionId, requestId, number),
+    };
+    const nowMs = deps.now();
+    try {
+      await deps.documentClient.send(new PutCommand({
+        TableName: deps.tableName,
+        Item: {
+          ...key, entityType: "AGENT_SESSION_HANDOFF_PENDING", orgId: session.orgId, sessionId: session.sessionId, requestId, attempt: number, taskId: attempt.taskId, state: "started", by: ownerId,
+          startedAt: resumed ? earlier.startedAt : isoOf(nowMs), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PENDING_KEEP_SECONDS,
+        },
+        ...(earlier === undefined
+          ? { ConditionExpression: "attribute_not_exists(pk)" }
+          : { ConditionExpression: "attempt = :seen AND #state = :seenState", ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":seen": earlier.attempt, ":seenState": earlier.state } }),
+      }));
+      return attempt;
+    } catch (error) {
+      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+    }
   }
-  const resumed = earlier !== undefined && earlier["state"] === "started" && typeof earlier["startedAt"] === "string";
-  const number = earlier === undefined ? 1 : resumed ? (earlier["attempt"] as number) : (earlier["attempt"] as number) + 1;
-  const attempt: Attempt = {
-    number, taskId: handoffTaskId(session.orgId, session.sessionId, requestId, number), runRequestId: handoffRunRequestId(session.orgId, session.sessionId, requestId, number),
-  };
-  const nowMs = deps.now();
-  await deps.documentClient.send(new PutCommand({
-    TableName: deps.tableName,
-    Item: {
-      ...key, entityType: "AGENT_SESSION_HANDOFF_PENDING", orgId: session.orgId, sessionId: session.sessionId, requestId, attempt: number, taskId: attempt.taskId, state: "started", by: ownerId,
-      startedAt: resumed ? earlier["startedAt"] : isoOf(nowMs), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + PENDING_KEEP_SECONDS,
-    },
-  }));
-  return attempt;
+  throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BUSY_MESSAGE);
 }
 
 async function toCloud(deps: HandoffDependencies, caller: ControlCaller, access: SessionAccess, input: HandoffToCloudBody, fingerprint: string): Promise<HandoffAnswer> {
@@ -391,7 +420,13 @@ async function toCloud(deps: HandoffDependencies, caller: ControlCaller, access:
       }),
       controlRequestItem(deps, session, input.requestId, { action: "handoff", by: caller.developerId, at, sessionId: session.sessionId, fingerprint }, Math.floor(nowMs / 1000) + REQUEST_KEEP_SECONDS),
       // The move is recorded: the pending record of the start has done its work.
-      { Delete: { TableName: deps.tableName, Key: pendingKey(session.orgId, session.sessionId, input.requestId) } },
+      // Only while the attempt is still `started`: a cancel that claimed it first (the sweep, a refused repeat) makes this whole link fail, and a link that wins deletes the record the cancel needs.
+      {
+        Delete: {
+          TableName: deps.tableName, Key: pendingKey(session.orgId, session.sessionId, input.requestId), ConditionExpression: "attribute_exists(pk) AND #state = :started AND attempt = :attempt",
+          ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":started": "started", ":attempt": attempt.number },
+        },
+      },
     ];
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
@@ -399,6 +434,12 @@ async function toCloud(deps: HandoffDependencies, caller: ControlCaller, access:
       const reported = isTransactionConflict(error) || failedIndexes(error) !== undefined;
       // Whatever the table said, look: this move (or this very task) may be written already. If the table could not even be read, nothing is cancelled and the sweep decides later.
       if (await recordedOrOurs(deps, caller, session, input.requestId, taskId)) return answerOf(deps, caller, session.sessionId);
+      // The cancel won (the sweep or a refused repeat claimed this attempt): the link is refused whole and the task is cancelled; there is nothing to try again.
+      const claimed = readPending(await getItem(deps, pendingKey(session.orgId, session.sessionId, input.requestId)), session);
+      if (claimed === undefined || claimed.attempt !== attempt.number || claimed.state !== "started") {
+        await abandonStarted(deps, session, input.requestId, attempt, taskId, task);
+        throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_BUSY_MESSAGE);
+      }
       if (!reported) {
         // An outcome the table did not report, and the session is not linked: the task is cancelled so the Mac is the only place the branch is worked in, and nobody pays for unseen work.
         await abandonStarted(deps, session, input.requestId, attempt, taskId, task);
@@ -447,76 +488,121 @@ async function markAbandoned(deps: Pick<HandoffDependencies, "documentClient" | 
 }
 
 /**
- * The cloud task of an attempt cannot be the session's (the session ended, moved or changed owner, the commit kept losing, its outcome is unknown and the session isn't linked, or the runtime answered
- * a task that isn't usable): it is cancelled, so that nothing pays for work nobody sees, and the attempt is marked done. A cancel that fails leaves the attempt `started`: the session sweep and a
- * repeat of the request find it again. A task of another org is never touched.
+ * Takes the right to cancel an attempt: `started` (or an unfinished `cancelling`) becomes `cancelling`, conditional on the attempt. From then on the link refuses (its transaction needs `started`),
+ * so a link and a cancel can't both happen: either the link deleted the record first and this finds nothing (false: nothing is cancelled), or this wins and the link is refused.
  */
-async function abandonStarted(deps: HandoffDependencies, session: Pick<AgentSessionRecord, "orgId" | "sessionId">, requestId: string, attempt: Attempt, taskId: string, task: Item | undefined): Promise<void> {
+async function claimCancel(deps: Pick<HandoffDependencies, "documentClient" | "tableName">, session: Pick<AgentSessionRecord, "orgId" | "sessionId">, p: Pending): Promise<boolean> {
   try {
-    if (task !== undefined && task["orgId"] === session.orgId) {
-      if (deps.control === undefined) {
-        logOf(deps)({ event: "agent_session.handoff_task_not_cancelled", sessionId: session.sessionId, taskId });
-        return;
-      }
-      await deps.control.cancelTask(task as unknown as DeveloperTaskRecord, handoffCancelRequestId(session.orgId, session.sessionId, requestId));
-    }
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: pendingKey(session.orgId, session.sessionId, p.requestId), UpdateExpression: "SET #state = :cancelling",
+      ConditionExpression: "attribute_exists(pk) AND attempt = :attempt AND (#state = :started OR #state = :cancelling)", ExpressionAttributeNames: { "#state": "state" },
+      ExpressionAttributeValues: { ":cancelling": "cancelling", ":started": "started", ":attempt": p.attempt },
+    }));
+    return true;
   } catch (error) {
-    logOf(deps)({ event: "agent_session.handoff_cancel_failed", sessionId: session.sessionId, taskId, error: error instanceof Error ? error.name : "unknown" });
-    return;
+    if (errorName(error) === "ConditionalCheckFailedException") return false;
+    throw error;
   }
-  await markAbandoned(deps, session.orgId, session.sessionId, requestId, attempt.number);
 }
 
-/** A repeat of a request whose earlier attempt left a started, unlinked task and is refused now: that task is cancelled (once it is old enough that its own move can no longer be committing). */
+/**
+ * Cancels the task of an attempt, safely against its link. `done`: cancelled and marked. `linked`: nothing to cancel (the move is recorded, the record is gone because the link deleted it, or the task is
+ * the session's). `waiting`: not yet (a `started` attempt younger than `minAgeMs`, which may still be committing), or the cancel could not be done now; the record stays for the next look.
+ * The cancel goes through the caller's own (`deps.control`) when there is one, else through the runtime (the sweep has no caller). A task with no record yet is asked of the runtime by its derived
+ * id and the attempt kept, since a runtime may write the record late; only an hour proves it was never made.
+ */
+async function cancelAttempt(deps: HandoffDependencies, session: Pick<AgentSessionRecord, "orgId" | "sessionId">, p: Pending, minAgeMs: number): Promise<"done" | "waiting" | "linked"> {
+  if (p.state === "abandoned") return "done";
+  const nowMs = deps.now();
+  if (p.state === "started" && nowMs - Date.parse(p.startedAt) < minAgeMs) return "waiting";
+  if (await readControlRequest(deps, session, p.requestId) !== undefined) {
+    await markAbandoned(deps, session.orgId, session.sessionId, p.requestId, p.attempt);
+    return "linked";
+  }
+  if (!await claimCancel(deps, session, p)) return "linked";
+  const cancelId = handoffCancelRequestId(session.orgId, session.sessionId, p.requestId);
+  const task = await getItem(deps, taskKey(p.taskId));
+  if (task !== undefined && (task["orgId"] !== session.orgId || task["sessionId"] === session.sessionId)) {
+    await markAbandoned(deps, session.orgId, session.sessionId, p.requestId, p.attempt);
+    return "linked";
+  }
+  try {
+    if (task === undefined) {
+      await deps.handoff?.cancelStarted(deps, { orgId: session.orgId, taskId: p.taskId, requestId: cancelId });
+      if (nowMs - Date.parse(p.startedAt) < MISSING_TASK_PROOF_MS) return "waiting";
+    } else if (deps.control !== undefined) {
+      await deps.control.cancelTask(task as unknown as DeveloperTaskRecord, cancelId);
+    } else if (deps.handoff !== undefined) {
+      await deps.handoff.cancelStarted(deps, { orgId: session.orgId, taskId: p.taskId, requestId: cancelId });
+    } else {
+      return "waiting";
+    }
+  } catch (error) {
+    logOf(deps)({ event: "agent_session.handoff_cancel_failed", sessionId: session.sessionId, taskId: p.taskId, error: errorName(error) ?? "unknown" });
+    return "waiting";
+  }
+  await markAbandoned(deps, session.orgId, session.sessionId, p.requestId, p.attempt);
+  return "done";
+}
+
+/**
+ * The cloud task of an attempt cannot be the session's (the session ended, moved or changed owner, the commit kept losing, its outcome is unknown and the session isn't linked, or the runtime answered
+ * a task that isn't usable): it is cancelled, so that nothing pays for work nobody sees. A cancel that cannot be done now leaves the attempt `cancelling`: the session sweep, the drain and a repeat of
+ * the request finish it. A task the runtime made under another id than the one asked for is cancelled too, if it is marked as this move's.
+ */
+async function abandonStarted(deps: HandoffDependencies, session: Pick<AgentSessionRecord, "orgId" | "sessionId">, requestId: string, attempt: Attempt, answeredTaskId: string, answered: Item | undefined): Promise<void> {
+  try {
+    const marker = answered?.["handoffOf"] as { sessionId?: unknown; requestId?: unknown } | undefined;
+    if (answeredTaskId !== attempt.taskId && answered !== undefined && answered["orgId"] === session.orgId && marker?.sessionId === session.sessionId && marker.requestId === requestId && deps.control !== undefined) {
+      await deps.control.cancelTask(answered as unknown as DeveloperTaskRecord, handoffCancelRequestId(session.orgId, session.sessionId, requestId));
+    }
+    const p = readPending(await getItem(deps, pendingKey(session.orgId, session.sessionId, requestId)), session);
+    if (p !== undefined && p.attempt === attempt.number) await cancelAttempt(deps, session, p, 0);
+  } catch (error) {
+    logOf(deps)({ event: "agent_session.handoff_cancel_failed", sessionId: session.sessionId, taskId: answeredTaskId, error: errorName(error) ?? "unknown" });
+  }
+}
+
+/** A repeat of a request whose earlier attempt left a started, unlinked task and is refused now: that task is cancelled (once it is old enough that its own move can no longer be committing, or at once if its cancel was already begun). */
 async function abandonStale(deps: HandoffDependencies, session: AgentSessionRecord, requestId: string): Promise<void> {
   try {
-    const pending = await getItem(deps, pendingKey(session.orgId, session.sessionId, requestId));
-    if (pending === undefined || pending["state"] !== "started" || pending["orgId"] !== session.orgId || typeof pending["attempt"] !== "number" || typeof pending["taskId"] !== "string" || typeof pending["startedAt"] !== "string") return;
-    if (deps.now() - Date.parse(pending["startedAt"]) < REPEAT_ABANDONS_AFTER_MS) return;
-    if (await readControlRequest(deps, session, requestId) !== undefined) return;
-    const task = await getItem(deps, taskKey(pending["taskId"]));
-    if (task !== undefined && task["sessionId"] !== undefined) return;
-    await abandonStarted(deps, session, requestId, { number: pending["attempt"], taskId: pending["taskId"], runRequestId: "" }, pending["taskId"], task);
+    const p = readPending(await getItem(deps, pendingKey(session.orgId, session.sessionId, requestId)), session);
+    if (p !== undefined) await cancelAttempt(deps, session, p, REPEAT_ABANDONS_AFTER_MS);
   } catch (error) {
     logOf(deps)({ event: "agent_session.handoff_stale_not_abandoned", sessionId: session.sessionId, error: errorName(error) ?? "unknown" });
   }
 }
 
 /**
- * The session sweep's and the drain's recovery (`SummaryDependencies.recoverHandoffs`): for a session, every started attempt older than `HANDOFF_RECOVER_AFTER_MS` whose move was never recorded
- * and whose task has no session is cancelled through the runtime (no caller is needed), and the attempt is marked done; an attempt whose move was recorded, or whose task is linked, gone or
- * another org's, is only cleaned up. Never throws.
+ * The session sweep's and the drain's recovery (`SummaryDependencies.recoverHandoffs`): every attempt of the session that is `started` for longer than `HANDOFF_RECOVER_AFTER_MS`, or `cancelling`, is
+ * cancelled through the runtime (no caller is needed) unless its move was recorded or its task is linked, with the same claim a link must beat. It answers `pending` while an attempt is left
+ * (too young, or its cancel not yet done), so the drain keeps the ended session's work item until every attempt is linked or cancelled. Never throws.
  */
-export function makeHandoffRecovery(deps: HandoffDependencies): (session: AgentSessionRecord) => Promise<void> {
+export function makeHandoffRecovery(deps: HandoffDependencies): (session: AgentSessionRecord) => Promise<"clear" | "pending"> {
+  // The sweep has no signed-in person: the cancel goes through the runtime.
+  const system: HandoffDependencies = { ...deps, control: undefined };
   return async (session) => {
+    let left = false;
     try {
       const pk = agentSessionKey(session.orgId, session.sessionId, "META").pk;
-      const page = await deps.documentClient.send(new QueryCommand({
-        TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": pk, ":prefix": "HANDOFF_PENDING#" },
+      const page = await system.documentClient.send(new QueryCommand({
+        TableName: system.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": pk, ":prefix": "HANDOFF_PENDING#" },
       })) as { Items?: Item[] };
-      for (const pending of page.Items ?? []) {
-        if (pending["orgId"] !== session.orgId || pending["sessionId"] !== session.sessionId || pending["state"] !== "started") continue;
-        const { requestId, taskId, attempt, startedAt } = pending;
-        if (typeof requestId !== "string" || typeof taskId !== "string" || typeof attempt !== "number" || typeof startedAt !== "string") continue;
-        if (deps.now() - Date.parse(startedAt) < HANDOFF_RECOVER_AFTER_MS) continue;
-        const key = { pk: pending["pk"] as string, sk: pending["sk"] as string };
-        const forget = () => deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET #state = :done", ConditionExpression: "attribute_exists(pk)", ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":done": "abandoned" } }));
+      for (const item of page.Items ?? []) {
+        const p = readPending(item, session);
+        if (p === undefined || p.state === "abandoned") continue;
         try {
-          const task = await getItem(deps, taskKey(taskId));
-          if (await readControlRequest(deps, session, requestId) !== undefined || task === undefined || task["orgId"] !== session.orgId || task["sessionId"] !== undefined) {
-            await forget();
-            continue;
-          }
-          if (deps.handoff === undefined) continue;
-          await deps.handoff.cancelStarted(deps, { orgId: session.orgId, taskId, requestId: handoffCancelRequestId(session.orgId, session.sessionId, requestId) });
-          await forget();
+          if (await cancelAttempt(system, session, p, HANDOFF_RECOVER_AFTER_MS) === "waiting") left = true;
         } catch (error) {
-          logOf(deps)({ event: "agent_session.handoff_recovery_failed", sessionId: session.sessionId, error: errorName(error) ?? "unknown" });
+          left = true;
+          logOf(system)({ event: "agent_session.handoff_recovery_failed", sessionId: session.sessionId, error: errorName(error) ?? "unknown" });
         }
       }
     } catch (error) {
-      logOf(deps)({ event: "agent_session.handoff_recovery_failed", sessionId: session.sessionId, error: errorName(error) ?? "unknown" });
+      left = true;
+      logOf(system)({ event: "agent_session.handoff_recovery_failed", sessionId: session.sessionId, error: errorName(error) ?? "unknown" });
     }
+    return left ? "pending" : "clear";
   };
 }
 

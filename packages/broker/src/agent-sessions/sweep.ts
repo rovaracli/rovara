@@ -29,6 +29,8 @@ export { ENDED_DRAIN_CURSOR_KEY };
 
 type Item = Record<string, unknown>;
 export const DRAIN_BUDGET_MS = 8_000;
+/** How long an ended session's work item waits for a started move to the cloud to be linked or cancelled. */
+const HANDOFF_WAIT_MAX_MS = 24 * 3_600_000;
 const DRAIN_PAGE = 100;
 const SECONDS_PER_DAY = 86_400;
 const OPEN_LIST = "OPEN_AGENT_SESSIONS";
@@ -184,8 +186,8 @@ async function stampIndexItems(deps: SummaryDependencies, session: AgentSessionR
   }
 }
 
-/** One session's drain from its saved place. True when it finished. */
-async function drainSession(deps: SummaryDependencies, work: Item, deadline: number): Promise<boolean> {
+/** One session's drain from its saved place: `done` when it finished, `more` when it has more to do, `waiting` when only a started move to the cloud (Task 19) is left, which the work item must outlive. */
+async function drainSession(deps: SummaryDependencies, work: Item, deadline: number): Promise<"done" | "more" | "waiting"> {
   const orgId = text(work["orgId"]);
   const sessionId = text(work["sessionId"]);
   const key = { pk: work["pk"] as string, sk: work["sk"] as string };
@@ -193,15 +195,13 @@ async function drainSession(deps: SummaryDependencies, work: Item, deadline: num
     warn(deps, { event: "agent_session.drain_org_mismatch", key: key.sk.slice(0, 80) });
     // Nothing to do for it, and it must not be read again: it names an org its key does not.
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
-    return true;
+    return "done";
   }
   const session = await new AgentSessionStore(deps).get(orgId, sessionId);
   if (session?.endedAt === undefined) {
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
-    return true;
+    return "done";
   }
-  // The Mac that ended its own session after a move to the cloud was cut off leaves a started task behind: it is cancelled here (Task 19).
-  await deps.recoverHandoffs?.(session);
   // A message to the agent no step took can never be delivered now: it is closed (the end's own refresh does this; this is the backstop, and a failure here is tried again like any drain failure).
   await closeQueuedSteers(deps, session);
   const expires = Math.floor(Date.parse(session.endedAt) / 1000) + SESSION_RETENTION_DAYS * SECONDS_PER_DAY;
@@ -222,11 +222,14 @@ async function drainSession(deps: SummaryDependencies, work: Item, deadline: num
     } catch (error) {
       if (!conditionFailed(error)) throw error;
     }
-    if (cursor.prefix < PREFIXES.length && deps.now() >= deadline) return false;
+    if (cursor.prefix < PREFIXES.length && deps.now() >= deadline) return "more";
   }
   await stampIndexItems(deps, session, expires);
+  // A Mac that ended its own session after a move to the cloud was cut off leaves a started task behind (Task 19). Once the session has left the open list nothing else visits it, so the work item
+  // stays until every attempt is linked or cancelled (an attempt younger than its window is cancelled by a later run), for at most a day.
+  if (deps.recoverHandoffs !== undefined && await deps.recoverHandoffs(session) === "pending" && deps.now() - Date.parse(session.endedAt) < HANDOFF_WAIT_MAX_MS) return "waiting";
   await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
-  return true;
+  return "done";
 }
 
 const dayAfter = (day: string) => new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000).toISOString().slice(0, 10);
@@ -289,8 +292,15 @@ export async function drainEndedSessions(deps: SummaryDependencies, now: number,
         if (typeof work["failures"] === "number" && work["failures"] >= DRAIN_ITEM_TRIES) continue;
         try {
           // A session with more to do stays (with its place saved) for the next run; the others are finished and their work item is gone.
-          if (!await drainSession(deps, work, deadline)) return { drained, pending: true };
-          drained += 1;
+          const outcome = await drainSession(deps, work, deadline);
+          if (outcome === "more") return { drained, pending: true };
+          if (outcome === "waiting") {
+            // Kept for a later run: the saved day stays here until it is done, and the others are still drained.
+            retrying = true;
+            failed = true;
+          } else {
+            drained += 1;
+          }
         } catch (error) {
           warn(deps, { event: "agent_session.drain_failed", error: error instanceof Error ? error.name : "unknown" });
           if (!await recordDrainFailure(deps, work)) retrying = true;
