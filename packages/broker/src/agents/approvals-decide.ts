@@ -290,11 +290,11 @@ export interface ApprovalSweepReport {
 }
 
 /** Ends a PENDING record whose time has run out (conditional on it still being PENDING), freeing its place in its step, then tells its handler. */
-async function expireOne(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<AnyApprovalRecord | undefined> {
+async function expireOne(deps: ApprovalDependencies, record: AnyApprovalRecord, closed?: { reason: string }): Promise<AnyApprovalRecord | undefined> {
   const now = deps.now();
   const handler = hasHandlerPhase(record);
   const dueAt = iso(now + RETRY_MS);
-  const fields = { status: "EXPIRED" as const, handlerDone: !handler, ...(handler ? { handlerClaimedAt: iso(now), handlerDueAt: dueAt } : {}) };
+  const fields = { status: "EXPIRED" as const, handlerDone: !handler, ...(handler ? { handlerClaimedAt: iso(now), handlerDueAt: dueAt } : {}), ...(closed === undefined ? {} : { closedBy: "system" as const, closedReason: closed.reason, closedAt: iso(now) }) };
   const events = await tryAuditEvents(deps, () => [auditApprovalExpired({
     orgId: record.orgId, actor: auditActorOf("system"), occurredAt: iso(now), occurrence: record.approvalId, approvalId: record.approvalId, kind: record.kind, subjectKind: record.subject.kind,
   })]);
@@ -318,6 +318,16 @@ export async function expireApprovalNow(deps: ApprovalDependencies, record: AnyA
   const current = await getAnyApproval(deps, record.orgId, record.approvalId);
   if (current === undefined || current.status !== "PENDING") return false;
   return await expireOne(deps, current) !== undefined;
+}
+
+/**
+ * Ends a PENDING record now because nobody who could decide it is left (Plan 5 Task 21, review M-5): as its time running out does, with the reason on the record (`closedBy`
+ * "system", `closedReason`, `closedAt`) for the person who asked to read. Its handler is told by the sweep. Never a decision. False when it was no longer PENDING.
+ */
+export async function expireApprovalWithReason(deps: ApprovalDependencies, record: AnyApprovalRecord, reason: string): Promise<boolean> {
+  const current = await getAnyApproval(deps, record.orgId, record.approvalId);
+  if (current === undefined || current.status !== "PENDING") return false;
+  return await expireOne(deps, current, { reason }) !== undefined;
 }
 
 /** Drives a record that stayed EXECUTING past the retry time again: claimed by a conditional update of `executingAt`, so two sweeps never both run it. */

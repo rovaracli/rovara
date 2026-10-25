@@ -2,13 +2,16 @@
 // APPROVER# items and the run owner of PENDING approvals; a removal re-routes them to the successor. Conditional, repeatable, audited as `approval.rerouted`.
 // `approvals.ts` re-exports it.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ApprovalIdSchema, INDEX_EXPIRY_ATTRIBUTE, approvalKey, approverIndexKey, canonicalJson, type ApprovalId, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, INDEX_EXPIRY_ATTRIBUTE, approvalKey, approverIndexKey, canonicalJson, orgPk, type ApprovalId, type AuditEventInput, type OrgId } from "@agentx/contracts";
 import { auditApprovalRerouted, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { checkTime, registerMemberMover, type LifecycleDeps } from "./lifecycle.js";
-import { type ApprovalStoreDependencies, type ApproverSpec, type TransactItem, commitOrLost, getAnyApproval, indexExpiryOf, iso, listedFor } from "./approvals-store.js";
+import { writeChanges } from "../realtime/changes.js";
+import { expireApprovalWithReason } from "./approvals-decide.js";
+import { orgRoleOf } from "./access.js";
+import { type AnyApprovalRecord, type ApprovalDependencies, type ApprovalStoreDependencies, type ApproverSpec, type TransactItem, commitOrLost, getAnyApproval, indexExpiryOf, iso, listedFor, mayDecideApproval } from "./approvals-store.js";
 
 // ---- the movers (Task 11's hand-off)
 
@@ -31,9 +34,18 @@ async function moveOne(context: MoveContext, approvalId: ApprovalId): Promise<vo
     const spec = record.approvers;
     const currentOwner = record.kind === "change" ? undefined : record.owner;
     const ownerIsFrom = currentOwner !== undefined && currentOwner.developerId === from;
-    const approvers: ApproverSpec = spec.kind === "ids"
+    let approvers: ApproverSpec = spec.kind === "ids"
       ? { kind: "ids", ids: swapped(spec.ids, from, to) }
       : { kind: "rule", rule: spec.rule, candidates: mode === "merged" || ownerIsFrom ? swapped(spec.candidates, from, to) : swapped(spec.candidates, from, undefined) };
+    // A removal that leaves no one the rule lets decide: someone it does is listed, or the approval ends with the reason and the person it was for is told (Re-check R-1). Never decided.
+    if (mode === "removed" && approvers.kind === "rule") {
+      const settled = await settleRuleApprovers(deps, orgId, record, approvers, from);
+      if (settled === undefined) {
+        if (await endForNoDecider(deps, record, from)) return;
+        continue;
+      }
+      approvers = settled;
+    }
     let owner: { developerId: string; name: string } | undefined;
     if (currentOwner !== undefined && ownerIsFrom) {
       const successor = mode === "removed" ? await deps.signInStore.getDeveloper(to) : undefined;
@@ -187,8 +199,127 @@ export async function moveTaskApprovalsToOwner(
   return moved;
 }
 
+// ---- the last owner left (Plan 5 Task 21, review M-5)
+
+/** What the person who asked reads on an approval that was closed because nobody who could decide it is left. */
+export const APPROVER_LEFT_REASON = "Everyone who could decide this has left your organization, so it was closed without a decision. Ask again if it is still needed.";
+
+/** The person an approval is for, who is told when it is closed: the one who asked a change, or the owner of the run a write or step waits for. */
+const requesterOf = (record: AnyApprovalRecord): string | undefined => (record.kind === "change" ? record.requestedBy : record.owner?.developerId);
+
+/**
+ * A rule-kind approval whose leaver was dropped from the candidates (Re-check R-1): the approvers it keeps are the candidates the rule lets decide now (read live, as a decision would);
+ * when none is left, the org's owners and then its admins are looked at, and the first the rule lets decide are listed (listing adds no authority: the rule decides, live). Answers the
+ * approvers to store, or undefined when nobody the rule lets decide is left. A list of ids names its people on purpose and is never widened here.
+ */
+async function settleRuleApprovers(deps: LifecycleDeps, orgId: OrgId, record: AnyApprovalRecord, approvers: Extract<ApproverSpec, { kind: "rule" }>, from: string): Promise<ApproverSpec | undefined> {
+  const approvalDeps = deps as unknown as ApprovalDependencies;
+  const mayDecide = async (developerId: string, spec: ApproverSpec): Promise<boolean> => {
+    const orgRole = await orgRoleOf(deps, orgId, developerId);
+    return orgRole !== undefined && await mayDecideApproval(approvalDeps, { orgId, developerId, orgRole }, { ...record, approvers: spec });
+  };
+  for (const id of approvers.candidates.slice(0, SETTLE_LOOK_MAX)) {
+    if (id !== from && await mayDecide(id, approvers)) return approvers;
+  }
+  const members: Array<{ developerId: string; role: string; joinedAt: string }> = [];
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": orgPk(orgId), ":prefix": "MEMBER#" }, ConsistentRead: true,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Array<{ developerId?: unknown; role?: unknown; joinedAt?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      if ((item.role === "owner" || item.role === "admin") && typeof item.developerId === "string" && item.developerId !== from) members.push({ developerId: item.developerId, role: item.role, joinedAt: String(item.joinedAt) });
+    }
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
+  members.sort((a, b) => (a.role === b.role ? 0 : a.role === "owner" ? -1 : 1) || a.joinedAt.localeCompare(b.joinedAt) || a.developerId.localeCompare(b.developerId));
+  for (const member of members.slice(0, SETTLE_LOOK_MAX)) {
+    checkTime(deps);
+    const widened: ApproverSpec = { kind: "rule", rule: approvers.rule, candidates: [...new Set([...approvers.candidates, member.developerId])] };
+    if (await mayDecide(member.developerId, widened)) return widened;
+  }
+  return undefined;
+}
+
+/** How many people one settling looks at (candidates, then owners and admins). */
+const SETTLE_LOOK_MAX = 10;
+
+/** Ends a PENDING approval nobody can decide any more, with the reason on it, and tells the person it was for (never the one who left). False when it was no longer PENDING. */
+async function endForNoDecider(deps: LifecycleDeps, record: AnyApprovalRecord, from: string): Promise<boolean> {
+  if (!await expireApprovalWithReason(deps as unknown as ApprovalDependencies, record, APPROVER_LEFT_REASON)) return false;
+  const asker = requesterOf(record);
+  if (asker !== undefined && asker !== from) await tellRequester(deps, record.orgId, asker);
+  return true;
+}
+
+/**
+ * `from` left an org that has no owner to hand anything to. Every PENDING approval that lists them is re-routed to the approvers who are left (their name and `APPROVER#` item go,
+ * nothing else changes), or, when no one else is named to decide it, ended as expired with `APPROVER_LEFT_REASON` and the person it was for is told (a `home.changed` change notice,
+ * ids only). It is never approved or declined for anyone. Conditional on the record still being PENDING and unmoved since it was read; repeatable.
+ */
+async function orphanApprovals(deps: LifecycleDeps, orgId: OrgId, from: string): Promise<void> {
+  for (const approvalId of await listedApprovalIds(deps, orgId, from)) {
+    checkTime(deps);
+    for (let tried = 0; tried < 3; tried += 1) {
+      const record = await getAnyApproval(deps, orgId, approvalId);
+      const indexDrop: TransactItem = { Delete: { TableName: deps.tableName, Key: approverIndexKey(orgId, from, approvalId) } };
+      if (record === undefined || record.status !== "PENDING") {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [indexDrop] }));
+        break;
+      }
+      const spec = record.approvers;
+      let approvers: ApproverSpec = spec.kind === "ids" ? { kind: "ids", ids: swapped(spec.ids, from, undefined) } : { kind: "rule", rule: spec.rule, candidates: swapped(spec.candidates, from, undefined) };
+      const settled = approvers.kind === "rule" ? await settleRuleApprovers(deps, orgId, record, approvers, from) : approvers.ids.length === 0 ? undefined : approvers;
+      if (settled === undefined) {
+        if (await endForNoDecider(deps, record, from)) break;
+        continue;
+      }
+      approvers = settled;
+      const named = approvers.kind === "ids" ? approvers.ids : approvers.candidates;
+      if (canonicalJson(approvers) === canonicalJson(spec)) {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [indexDrop] }));
+        break;
+      }
+      const stored = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: approvalKey(orgId, approvalId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+      const moveRevision = stored.Item?.["moveRevision"];
+      const movedAt = iso(deps.now());
+      const events: AuditEventInput[] = await tryAuditEvents(deps, () => [auditApprovalRerouted({
+        orgId, actor: auditActorOf("system"), occurredAt: movedAt, occurrence: auditOccurrence(approvalId, String((typeof moveRevision === "number" ? moveRevision : 0) + 1)),
+        approvalId, kind: record.kind, mode: "removed", from, to: named[0]!,
+      })]);
+      const items: TransactItem[] = [
+        {
+          Update: {
+            TableName: deps.tableName, Key: approvalKey(orgId, approvalId),
+            UpdateExpression: "SET #approvers = :approvers, #rev = if_not_exists(#rev, :zero) + :one, #movedBy = :movedBy, #movedAt = :movedAt",
+            ConditionExpression: typeof moveRevision === "number" ? "#status = :pending AND #rev = :seen" : "#status = :pending AND attribute_not_exists(#rev)",
+            ExpressionAttributeNames: { "#status": "status", "#approvers": "approvers", "#rev": "moveRevision", "#movedBy": "movedBy", "#movedAt": "movedAt" },
+            ExpressionAttributeValues: { ":pending": "PENDING", ":approvers": approvers, ":zero": 0, ":one": 1, ":movedBy": "system", ":movedAt": movedAt, ...(typeof moveRevision === "number" ? { ":seen": moveRevision } : {}) },
+          },
+        },
+        indexDrop,
+        ...events.flatMap((event) => auditPending(deps, event)),
+      ];
+      if (await commitOrLost(deps, items)) {
+        await flushAuditEvents(deps, events);
+        break;
+      }
+      if (tried === 2) throw new Error("approval_move_conflict");
+    }
+  }
+}
+
+/** Tells a person that something they asked for changed: a `home.changed` notice in their feed (ids and numbers only). Never throws: the record carries the reason. */
+async function tellRequester(deps: LifecycleDeps, orgId: OrgId, developerId: string): Promise<void> {
+  await writeChanges({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.log === undefined ? {} : { log: (entry: Record<string, unknown>) => { const { event, ...rest } = entry; deps.log!(typeof event === "string" ? event : "approval.requester_not_told", rest); } }) }, orgId, [
+    { developerId, notice: { type: "home.changed", revision: 0 }, at: iso(deps.now()) },
+  ]);
+}
+
 registerMemberMover({
   name: "approvals",
   merged: (deps, { orgId, survivorId, duplicateId }) => moveApprovals(deps, orgId, duplicateId, survivorId, "merged"),
   removed: (deps, { orgId, developerId, successorId }) => moveApprovals(deps, orgId, developerId, successorId, "removed"),
+  orphaned: (deps, { orgId, developerId }) => orphanApprovals(deps, orgId, developerId),
 });

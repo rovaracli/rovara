@@ -135,6 +135,8 @@ import { chainRunPortsFor, type ChainRunPorts, type ChainRunnerDependencies } fr
 import { chainControlFor, chainSessionReads, chainSteerReadsFor } from "../chains/session-seam.js";
 import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
+import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
+import { stopSession } from "../agent-sessions/stop.js";
 import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
@@ -145,6 +147,9 @@ import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
 import { getTaskE2EArtifact } from "./task-e2e-artifact.js";
+
+/** How long the close spends asking running sessions to stop; the rest are stopped by the model-key mint and the dispatch guard. */
+const CLOSE_STOP_BUDGET_MS = 8_000;
 
 export interface DeveloperApiConfiguration {
   issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean }; slackTeamId?: string;
@@ -218,7 +223,7 @@ export interface DeveloperRouteDependencies {
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
-  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void> };
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void> };
   /**
    * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a
    * replay; a failure is logged and never undoes or fails the archive. Absent where agents are not set up.
@@ -2084,6 +2089,19 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
     const clearHooks = deps.closeOrgHooks?.clearHooks ?? (eventHooks === undefined ? undefined : (orgId: OrgId) => clearOrgHooks({ store: eventHooks.store, secrets: eventHooks.secrets }, orgId));
     const modelSources = deps.agents?.modelSources;
     const releaseModelSources = deps.closeOrgHooks?.releaseModelSources ?? (modelSources === undefined ? undefined : (orgId: OrgId) => releaseOrgModelSources(modelSources, orgId));
+    // Plan 5 Task 21: the org's sessions go with it (live index, work entries, devices, change feeds; the rest expires in 30 days).
+    // Plan 5 Task 21 review M-6: running work is asked to stop through the session stop (the task's own cancel, idempotent by a request id derived from the session), as the person who is leaving.
+    const stopWork = deps.closeOrgHooks?.stopWork ?? (async (orgId: OrgId) => {
+      let sessionDeps: SessionRouteDependencies;
+      try {
+        sessionDeps = sessionReadDependencies(deps, caller);
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "agent_session.close_stop_unavailable", orgId, error: error instanceof Error ? error.name : "unknown" }));
+        return;
+      }
+      await stopOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, deadline: deps.now() + CLOSE_STOP_BUDGET_MS }, orgId, async (sessionId, requestId) => { await stopSession(sessionDeps, caller, sessionId, { requestId }); });
+    });
+    const clearSessions = deps.closeOrgHooks?.clearSessions ?? ((orgId: OrgId) => closeOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId));
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)),
       // Plan 3 Task 12, PF11: the org's connection secrets are scheduled for deletion with the org.
@@ -2094,6 +2112,8 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       ...(clearHooks === undefined ? {} : { clearHooks }),
       // The org's company AI sources leave the model proxy with it, vendor keys included (Task 24b).
       ...(releaseModelSources === undefined ? {} : { releaseModelSources }),
+      clearSessions,
+      stopWork,
       emails,
       by: { kind: "member", id: caller.developerId },
     });

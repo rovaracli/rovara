@@ -33,6 +33,8 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/take-over.ts", "payerOfSession", "money", ".developerId"],
   ["agent-sessions/take-over.ts", "registerSessionTakeOverApprovals", "money", ".developerId"],
   ["agent-sessions/take-over.ts", "taskItems", "index", ".developerId*2"],
+  // a merge (Plan 5 Task 21): whether a person's task-list row is a taker's copy, which moves with them (it asks the owner functions)
+  ["developer/task-records.ts", "holdsTaskByTakeOver", "index", ".developerId"],
   ["spend/payer.ts", "paymentOfTask", "money", ".developerId*2", ".startedBy"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],

@@ -198,8 +198,8 @@ export async function recheckBuiltinTriggers(deps: Deps, orgId: OrgId): Promise<
 
 // ---- when a member leaves or is merged
 
-/** The members of the org with this role in the org, by when they joined (the first owner is who takes over what nobody else can). */
-async function orgOwners(deps: Deps, orgId: OrgId, except: string): Promise<string[]> {
+/** The members of the org with this role, by when they joined (the first owner is who takes over what nobody else can). */
+async function orgMembersWithRole(deps: Deps, orgId: OrgId, role: "owner" | "admin", except: string): Promise<string[]> {
   const found: Array<{ developerId: string; joinedAt: string }> = [];
   let start: Record<string, unknown> | undefined;
   do {
@@ -208,12 +208,17 @@ async function orgOwners(deps: Deps, orgId: OrgId, except: string): Promise<stri
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
     })) as { Items?: Array<{ developerId?: unknown; role?: unknown; joinedAt?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
     for (const item of page.Items ?? []) {
-      if (item.role === "owner" && typeof item.developerId === "string" && item.developerId !== except) found.push({ developerId: item.developerId, joinedAt: String(item.joinedAt) });
+      if (item.role === role && typeof item.developerId === "string" && item.developerId !== except) found.push({ developerId: item.developerId, joinedAt: String(item.joinedAt) });
     }
     start = page.LastEvaluatedKey;
   } while (start !== undefined);
-  return found.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt) || a.developerId.localeCompare(b.developerId)).map((owner) => owner.developerId);
+  return found.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt) || a.developerId.localeCompare(b.developerId)).map((member) => member.developerId);
 }
+
+const orgOwners = (deps: Deps, orgId: OrgId, except: string): Promise<string[]> => orgMembersWithRole(deps, orgId, "owner", except);
+
+/** How many org admins are told when a trigger is turned off in an org with no owner left: the longest-standing ones. */
+const ADMINS_TOLD_MAX = 5;
 
 /** The maintainers of the project, in the order the project lists them, grants first, who could be asked to take a trigger. */
 async function projectMaintainers(deps: Deps, orgId: OrgId, project: string): Promise<string[]> {
@@ -252,7 +257,10 @@ export async function onTriggerOwnersRemoved(deps: Deps, input: { orgId: OrgId; 
     for (let attempt = 0, trigger: TriggerRecord | undefined = listed; attempt < MAX_RETRIES && trigger !== undefined && trigger.createdBy === developerId; attempt += 1) {
       const successor = await successorOf(deps, trigger, developerId);
       if (successor === undefined) {
-        const tell = [...await projectMaintainers(deps, orgId, trigger.project), ...await orgOwners(deps, orgId, developerId)];
+        const [maintainers, owners] = [await projectMaintainers(deps, orgId, trigger.project), await orgOwners(deps, orgId, developerId)];
+        // With no owner left (the last one is the one who left) the org's admins are the people to tell: nobody else could turn the trigger back on or give it away.
+        const tell = [...maintainers, ...(owners.length > 0 ? owners : (await orgMembersWithRole(deps, orgId, "admin", developerId)).slice(0, ADMINS_TOLD_MAX))];
+        if (tell.length === 0 && trigger.enabled) log(deps, "trigger.no_one_to_tell", { orgId, triggerId: trigger.triggerId });
         await disableTrigger(deps, trigger, [{ path: "", message: "no remaining member could own this trigger" }], { alsoTell: tell });
         // The creator is the one who left: the trigger stays listed under them until someone qualifying is found, which a later merge or removal pass can still do.
         break;
@@ -301,6 +309,8 @@ export function registerTriggerMovers(): () => void {
     name: "triggers",
     merged: async (deps, { orgId, survivorId, duplicateId }) => { if ((deps as Deps).triggers !== undefined) await onTriggerOwnersMerged(deps as Deps, { orgId, survivorId, duplicateId }); },
     removed: async (deps, { orgId, developerId }) => { if ((deps as Deps).triggers !== undefined) await onTriggerOwnersRemoved(deps as Deps, { orgId, developerId }); },
+    // The org has no owner to hand anything to: the triggers they created still go through the same check, and what nobody can own is turned off with an admin told.
+    orphaned: async (deps, { orgId, developerId }) => { if ((deps as Deps).triggers !== undefined) await onTriggerOwnersRemoved(deps as Deps, { orgId, developerId }); },
   });
 }
 

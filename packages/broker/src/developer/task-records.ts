@@ -367,6 +367,24 @@ export function takenOverSince(task: TaskOwnerSource): string | undefined {
 }
 
 /**
+ * A merge hands the duplicate's hold on a task to the survivor (Plan 5 Task 21), through the same `currentOwner` a take-over uses, so every authority read follows the survivor and the
+ * creator's own fields, the principal and the earlier decisions stay as history: a taker's record with the person changed and the take-over's `since` kept; or, for a task the
+ * duplicate created and nobody took over, a new record that begins at `at`. Undefined when the duplicate does not hold the task (someone else took it over, the taker can't be read, or it
+ * is another person's), so a merge never touches a task it does not own.
+ */
+export function currentOwnerAfterMerge(task: TaskOwnerSource, duplicateId: string, survivor: TaskOwner, at: string): TaskCurrentOwner | undefined {
+  const person = { developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) };
+  if (!isTaskTakenOver(task)) return tryEffectiveTaskOwner(task)?.developerId === duplicateId ? { ...person, since: at } : undefined;
+  const taker = readCurrentOwner(task.currentOwner);
+  return taker === undefined || taker.developerId !== duplicateId ? undefined : { ...person, since: taker.since };
+}
+
+/** Whether `developerId` holds the task by a take-over (it is theirs now and they did not create it): their task-list row is a copy of the creator's, which moves with them. */
+export function holdsTaskByTakeOver(task: TaskOwnerSource, developerId: string): boolean {
+  return isTaskTakenOver(task) && tryEffectiveTaskOwner(task)?.developerId === developerId && task.developerId !== developerId;
+}
+
+/**
  * Whether an owner's decision (made by `actorId` at `decidedAt`, the time stored with it) still counts as the task owner's now: the owner's actor id counts; so does the
  * creator's, when the decision was made before someone took the task over (never judged by the time it is acted on); `ownerActorIds` (the task's People owners, when it
  * has any) count as well. A taker's decision from before they took the task over does not.
