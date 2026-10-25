@@ -44,3 +44,8 @@ it("accepts a real broker ticket URL and refuses every alternate query shape", (
  expect(isConfirmUrl(confirmUrlWithTicket(origin, "apr_aaaaaaaaaaaaaaaaaaaa", ticket), origin)).toBe(true);
  for (const suffix of ["#", "?", "?ticket=", "?ticket=" + "a".repeat(42), "?ticket=" + "a".repeat(44), "?ticket=" + ticket + "&ticket=" + ticket, "?other=" + ticket, "?ticket=" + ticket + "&other=x", "?ticket=" + ticket + "#details", "?ticket=" + ticket + "#", "?%74icket=" + ticket, "?ticket=%61" + "a".repeat(42), "?ticket=" + ticket + "&"]) expect(isConfirmUrl(path + suffix, origin)).toBe(false);
 });
+
+it("preserves an ordered plan's starting number", () => {
+ const ui = renderUi(h(SafeMarkdown, { markdown: "4. Fourth action\n5. Fifth action" }));
+ expect(screen.getByRole("list").getAttribute("start")).toBe("4");ui.unmount();
+});

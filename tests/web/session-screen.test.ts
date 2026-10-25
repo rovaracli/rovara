@@ -64,7 +64,7 @@ it("opens a real changed-file discussion without replacing the work and restores
  const heading = await screen.findByRole("heading", { name: "Fix duplicate refunds" });
  fireEvent.mouseDown(await screen.findByRole("tab", { name: "Changes" }), { button: 0, ctrlKey: false });
  const source = screen.getByRole<HTMLButtonElement>("button", { name: "Comment on src/refund.ts" });source.focus();fireEvent.click(source);
- await screen.findByRole("dialog", { name: "Discussion of this file" });expect(heading.isConnected).toBe(true);
+ await screen.findByRole("dialog", { name: "Discussion of this file" });expect(heading.isConnected).toBe(true);expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Comment" }));
  expect(screen.queryByRole("button", { name: "Message the agent" })).toBeNull();
  fireEvent.change(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }), { target: { value: "Check the refund key here" } });fireEvent.click(screen.getByRole("button", { name: "Send comment" }));
  await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.method === "POST" && request.path.endsWith("/messages"))).toBe(true));
