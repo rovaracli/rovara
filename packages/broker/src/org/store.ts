@@ -11,6 +11,7 @@ import {
   LAST_OWNER_MESSAGE,
   builtinSettingsKey,
   currentBuiltinVersion,
+  ROVARA_CODE_V2_FOR_NEW_ORGS,
   developerOrgKey,
   githubInstallationKey,
   memberGrantsPk,
@@ -73,6 +74,8 @@ export interface OrgStoreInput {
   tableName: string;
   now: () => number;
   newOrgId?: () => OrgId;
+  /** Pin a new org to Rovara Code version 2 (default `ROVARA_CODE_V2_FOR_NEW_ORGS`, off until Task 8). */
+  rovaraCodeV2ForNewOrgs?: boolean;
   /** Where a removed member's agents go (Task 11). Absent on an install with no agents: no marker is written and nothing is called. */
   memberRemoval?: MemberRemovalHook;
   /** The Audit Ledger's outbox (Task 18). Absent on a legacy install: nothing is recorded and no pending item is written. */
@@ -207,8 +210,8 @@ export class OrgStore {
         this.put(orgMetaKey(orgId), "ORG", org as unknown as Item),
         ...this.membershipItems({ orgId, developerId: input.developerId, role: "owner", email: input.email, joinedAt }),
         ...this.pendingFor(event),
-        // Plan 6: a new org runs Rovara Code version 2 from its first task, as an explicit pin. An org with no settings item (created before) stays on version 1 until an admin adopts 2.
-        this.put(builtinSettingsKey(orgId, "rovara-code"), "BUILTIN_AGENT_SETTINGS", { pinnedVersion: currentBuiltinVersion("rovara-code"), updatedBy: input.developerId, updatedAt: joinedAt }),
+        // Plan 6: when the flag is on, a new org runs Rovara Code version 2 from its first task, as an explicit pin. Otherwise (and for an org with no settings item) it stays on version 1 until an admin adopts 2.
+        ...((this.input.rovaraCodeV2ForNewOrgs ?? ROVARA_CODE_V2_FOR_NEW_ORGS) ? [this.put(builtinSettingsKey(orgId, "rovara-code"), "BUILTIN_AGENT_SETTINGS", { pinnedVersion: currentBuiltinVersion("rovara-code"), updatedBy: input.developerId, updatedAt: joinedAt })] : []),
       ],
       (failed) => (failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined),
     );
