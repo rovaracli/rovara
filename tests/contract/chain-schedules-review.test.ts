@@ -239,6 +239,37 @@ describe("two fires of the same slot at once spend one count of each cap", () =>
   });
 });
 
+// ---- Task 28 review: a fire that finds another fire's live claim on its first read backs off
+
+describe("a fire that finds another fire's live claim of its own slot spends nothing", () => {
+  const counts = (s: ReturnType<typeof setup>, triggerId: string) => ({
+    hour: (s.v.db.get(triggerRateKey(ORG_A, triggerId, new Date(s.v.clock.now).toISOString().slice(0, 13))) as { count?: number } | undefined)?.count ?? 0,
+    day: (s.v.db.get(orgAutonomousKey(ORG_A, new Date(s.v.clock.now).toISOString().slice(0, 10))) as { count?: number } | undefined)?.count ?? 0,
+  });
+
+  it("answers a duplicate for an agent trigger, spends no cap count and starts nothing, where a chain's run identity would have covered it", async () => {
+    const s = setup();
+    const slot = s.iso(-5_000);
+    const { trigger } = await agentTrigger(s.v);
+    // Another fire of this slot took the claim a second ago and is starting the task: this fire reads it on its very first read.
+    const current = (await s.v.triggers.get(ORG_A, trigger.triggerId))!;
+    await s.v.triggers.update({ trigger: current, patch: { startClaim: { slot, at: s.iso(-1_000) } } });
+    expect(await s.fire(trigger.triggerId, slot)).toMatchObject({ outcome: "duplicate", reason: "start_in_progress" });
+    expect(s.v.starts).toHaveLength(0);
+    expect(counts(s, trigger.triggerId)).toEqual({ hour: 0, day: 0 });
+  });
+
+  it("still takes over a claim of its slot that is old enough to be a start that was cut short", async () => {
+    const s = setup();
+    const slot = s.iso(-5_000);
+    const { trigger } = await agentTrigger(s.v);
+    const current = (await s.v.triggers.get(ORG_A, trigger.triggerId))!;
+    await s.v.triggers.update({ trigger: current, patch: { startClaim: { slot, at: s.iso(-MINUTE) } } });
+    expect((await s.fire(trigger.triggerId, slot)).outcome).toBe("started");
+    expect(counts(s, trigger.triggerId)).toEqual({ hour: 1, day: 1 });
+  });
+});
+
 // ---- M-2: an open task without an end stops counting after the longest run
 
 describe("M-2: a task with no end record does not block the trigger for ever", () => {
