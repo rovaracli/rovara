@@ -1103,4 +1103,20 @@ describe("Slack work at the broker", () => {
     near((h.db.get(spendCounterKey(TEST_ORG, NOW_MONTH, "PROJECT#payments")) as { committedUsd?: number }).committedUsd, 8);
     expect((h.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`) as { modelKeyIds?: string[] }).modelKeyIds).toHaveLength(1);
   });
+
+  it("mints no key for a thread's operation once the org is closed (Re-check R-2 of Task 21)", async () => {
+    const h = await install();
+    const workspace = await ensureWorkspace(h.handler, THREAD, SLACK_USER);
+    const workspaceId = workspace.body.workspaceId as string;
+    markReady(h.db, workspaceId);
+    const conversation = await serviceCall(h.handler, THREAD, SLACK_USER, "POST", `/v1/service/workspaces/${workspaceId}/conversations`, {});
+    const conversationId = (conversation.body.conversation as { id: string }).id;
+    const task = await serviceCall(h.handler, THREAD, SLACK_USER, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId, prompt: "test it" });
+    const operationId = (task.body.operation as { id: string }).id;
+    const capability = ((h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation) as { callbackCapability: string }).callbackCapability;
+    h.db.set({ ...(h.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>), pk: orgMetaKey(TEST_ORG).pk, sk: orgMetaKey(TEST_ORG).sk, closedAt: "2026-10-24T12:00:00.000Z" });
+    const reply = await call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    expect(reply.status).toBe(403);
+    expect(h.access.mintKey).not.toHaveBeenCalled();
+  });
 });
