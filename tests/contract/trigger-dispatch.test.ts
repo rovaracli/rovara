@@ -212,6 +212,16 @@ describe("the agent target", () => {
     expect(await activity(v, trigger.triggerId)).toMatchObject([{ outcome: "started", taskId: "task-1" }]);
   });
 
+  // Plan 5 (N6), a binding hand-off to Plan 4's dispatch: a run no person started names the trigger that started it, so its session says so.
+  it("passes the trigger to Plan 3's run start, so the run's session names the event trigger as its starter", async () => {
+    const { v, dispatch } = setup();
+    await v.builtinBudget("code-reviewer");
+    const trigger = await v.seed({ target: BUILTIN, createdBy: DANA });
+    await dispatch(prEvent());
+    expect(v.starts[0]!.trigger).toEqual({ kind: "event", triggerId: trigger.triggerId });
+    expect(v.starts[0]!.startedBy).toBeUndefined();
+  });
+
   it("owns the run of a built-in by the maintainer who turned the trigger on, of a project's agent by its accountable maintainer, and of a member's agent by the member", async () => {
     const { v, dispatch } = setup();
     await v.builtinBudget("code-reviewer");

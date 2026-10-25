@@ -212,6 +212,8 @@ describe("a fire starts one run at most", () => {
       input: { text: "Do your scheduled job." },
     });
     expect(s.v.starts[0]!.input).not.toHaveProperty("context");
+    // Plan 5 (N6): the run names the schedule trigger that started it, so its session does.
+    expect(s.v.starts[0]!.trigger).toEqual({ kind: "schedule", triggerId: trigger.triggerId });
     expect(await s.v.triggers.get(ORG_A, trigger.triggerId)).toMatchObject({ lastTaskId: answer.taskId });
     expect((await s.fire(trigger.triggerId, s.iso(-1_000))).outcome).toBe("duplicate");
     expect(s.v.tasks.size).toBe(1);
