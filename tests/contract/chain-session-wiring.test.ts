@@ -117,4 +117,21 @@ describe("a chain run as a session, through the real broker", () => {
     expect(ids((await call(OMAR, "GET", "/v1/app/projects/payments/overview")).body, "running")).toEqual([runId]);
     expect((await call(MAYA, "GET", "/v1/app/home")).status).toBe(200);
   });
+  it("retries on the chain's CURRENT published version, not the old run's version", async () => {
+    const { h, call, startedRun } = await setup();
+    const { chainId, runId } = await startedRun();
+    const run = h.db.find((item) => item.entityType === "CHAIN_RUN" && item.runId === runId)[0]!;
+    expect(run.chainVersion).toBe(1);
+    h.db.set({ ...run, status: "failed", endedAt: "2026-10-24T08:05:00.000Z", failure: { code: "STEP_FAILED", text: "it failed" } });
+    const session = h.db.get(agentSessionKey(TEST_ORG, runId, "META").pk, "META") as Record<string, unknown>;
+    h.db.set({ ...session, summary: { ...(session.summary as object), status: "failed" } });
+    const changed = { ...ONE_STEP, steps: [{ ...ONE_STEP.steps[0]!, name: "Look into it again" }] };
+    const draft = await call(MAYA, "GET", `/v1/app/chains/${chainId}/draft`);
+    const saved = await call(MAYA, "PUT", `/v1/app/chains/${chainId}/draft`, { expectedRevision: (draft.body.draft as { revision: number }).revision, definition: changed });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    const published = await call(MAYA, "POST", `/v1/app/chains/${chainId}/publish`, { expectedDraftRevision: (saved.body.draft as { revision: number }).revision });
+    expect(published.status, JSON.stringify(published.body)).toBe(200);
+    expect((await call(MAYA, "POST", `/v1/app/sessions/${runId}/retry`, {})).status).toBe(200);
+    expect(h.db.find((item) => item.entityType === "CHAIN_RUN" && item.runId !== runId)[0]).toMatchObject({ chainVersion: 2 });
+  });
 });

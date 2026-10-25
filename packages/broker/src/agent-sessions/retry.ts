@@ -2,7 +2,7 @@
 //   - the caller needs "can edit" on the session and a project role that starts work (read now, as the owner's retry reads it);
 //   - a Rovara Code task whose workflow is BLOCKED goes on in the SAME session through Plan 3's workflow retry (the same run continues, so its payer keeps paying: the budget that is
 //     checked is that payer's, and Plan 3's own approval gate still refuses a retry that would skip an approval the person may not decide);
-//   - a failed or cancelled agent-step run, or a failed chain run, starts a NEW run of the same agent version (or chain version) and input, started by the retrier, who owns the
+//   - a failed or cancelled agent-step run, or a failed chain run, starts a NEW run of the same agent version and input (a chain run: the chain's CURRENT published version, with the old run's input), started by the retrier, who owns the
 //     new session and pays for it when the payer is a person. The run's request id is derived from the old session, so however many times it is asked for, Plan 3's start makes one run,
 //     and the retry is linked (`retryOf`, the old session's `retried` event, the one-time `RETRIED` mark) in ONE transaction that a repeat of the request completes if it was lost;
 //   - a failed plain (CLI) task is continued by its owner where it started; a session on a Mac is retried there; anything else has nothing to retry.

@@ -46,7 +46,7 @@ export interface SessionControlHost {
 
 /**
  * Plan 4's chain lifecycle as far as a session needs it, called with the internal session actor after Plan 5's own level check (Plan 4, M2): `cancelChainRun` ends the run (its
- * gate approval closes with it) and `retryChainRun` starts a new run of the same chain version and input (`startChainRun` applies Plan 4's `use` rule) and answers the new run's session.
+ * gate approval closes with it) and `retryChainRun` starts a new run of the chain's CURRENT published version (not the old run's) with the old run's input (`startChainRun` applies Plan 4's `use` rule) and answers the new run's session.
  */
 // Plan 4's side is `chainControlFor` (chains/session-seam.ts), built for each request. `orgId` is the session's own org, so a chain run of another org is never touched (Plan 4's hand-off from Task 10).
 export interface ChainControl {
