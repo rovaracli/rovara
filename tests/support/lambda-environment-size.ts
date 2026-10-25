@@ -140,6 +140,9 @@ class Resolver {
       case "AWS::KMS::Key.Arn": return `arn:aws:kms:${REGION}:${ACCOUNT}:key/${UUID}`;
       case "AWS::ElasticLoadBalancingV2::LoadBalancer.DNSName": return `internal-${"n".repeat(32)}-1234567890.${REGION}.elb.amazonaws.com`;
       case "AWS::Cognito::UserPool.Arn": return `arn:aws:cognito-idp:${REGION}:${ACCOUNT}:userpool/${REGION}_AbCdEfGhI`;
+      // An AppSync Events API's id is 26 lowercase letters and digits (Plan 5 Task 8).
+      case "AWS::AppSync::Api.ApiId": return "abcdefghijklmnopqrstuvwxyz";
+      case "AWS::AppSync::Api.Dns.Http": return `abcdefghijklmnopqrstuvwxyz.appsync-api.${REGION}.amazonaws.com`;
       case "AWS::ApiGatewayV2::Api.ApiEndpoint": return `https://abcdefghij.execute-api.${REGION}.amazonaws.com`;
       default: break;
     }

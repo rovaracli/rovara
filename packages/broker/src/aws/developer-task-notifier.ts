@@ -17,7 +17,7 @@ import { loadWorkflowDocument } from "../developer/plan-artifacts.js";
 import { readStream, type Notice, type StreamRecord } from "../developer/notifications.js";
 import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
 import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
-import { deriveTaskStatus, failureCategory, plannerRepliesKey, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type OperationFacts, type TaskShare } from "../developer/task-records.js";
+import { deriveTaskStatus, failureCategory, plannerRepliesKey, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type OperationFacts, type TaskShare } from "../developer/task-records.js";
 import { isConditional } from "./broker-shared.js";
 import { requiredEnvironment } from "./lambda.js";
 import { parseSlackSecrets } from "./slack-ingress.js";
@@ -422,7 +422,7 @@ async function updateWorkflowApprovalCard(deps: NotifierDependencies, task: Deve
   try {
     await deps.update({ channel: marker.postedChannelId, ts: marker.postedTs, text, blocks: [
       ...slackSectionTexts(text).map((section) => ({ type: "section", text: { type: "mrkdwn", text: section } })),
-      { type: "context", elements: [{ type: "mrkdwn", text: decisionStatusLine(decision, task.slackUserId) }] },
+      { type: "context", elements: [{ type: "mrkdwn", text: decisionStatusLine(decision, tryEffectiveTaskOwner(task)?.slackUserId) }] },
     ] });
   } catch (error) {
     if (passingSlackError(error)) throw error;
@@ -850,7 +850,7 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
   const page = taskPageUrl(deps, task.taskId);
   // A reopened pull request is said once per reopening (its step's revision), even though its merge step was said before.
   const reopened = reopenedPullRequests !== undefined && workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING";
-  const context: WorkflowMessageContext = { taskId: task.taskId, ownerSlackUserId: task.slackUserId, workflow, peopleEnabled: deps.peopleChangesEnabled === true,
+  const context: WorkflowMessageContext = { taskId: task.taskId, ownerSlackUserId: tryEffectiveTaskOwner(task)?.slackUserId, workflow, peopleEnabled: deps.peopleChangesEnabled === true,
     ...(page === undefined ? {} : { findingsUrl: `${page}#findings`, taskPageUrl: page }), ...(reopened ? { pullRequestReopened: reopenedPullRequests } : {}),
     // Plan 3, Task 34: what the coding plan is expected to cost, kept on the task when the plan reached review.
     ...(task.runEstimate === undefined ? {} : { runEstimate: task.runEstimate, agentName: task.agent?.name ?? "Rovara Code" }) };
@@ -919,7 +919,7 @@ async function replyText(deps: NotifierDependencies, task: DeveloperTaskRecord &
         // A workflow task's steps are said by its workflow notices, never as "the task ended" with the model's words.
         // The one exception: AgentX's own draft pull request did not open, and the owner retries it from this post.
         if (ended.kind !== "publish" || ended.status === "SUCCEEDED" || !workflowPublicationRetryable(workflow)) return undefined;
-        const message = workflowMessage({ taskId: task.taskId, ownerSlackUserId: task.slackUserId, workflow, publishFailure: {
+        const message = workflowMessage({ taskId: task.taskId, ownerSlackUserId: tryEffectiveTaskOwner(task)?.slackUserId, workflow, publishFailure: {
           category: failureCategory(ended.kind, ended.status, ended.error),
           codeChanged: ended.error?.includes(WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE) === true,
         } });

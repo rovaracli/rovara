@@ -20,6 +20,7 @@ import {
   ResolvedRecipeSchema,
   ResultContractSchema,
   RunInputSchema,
+  SessionTriggerSchema,
   WORK_ORIGINS,
   WorkflowProgramSchema,
   agentTasksKey,
@@ -40,6 +41,7 @@ import {
   type ResultContract,
   type RunCheckout,
   type RunInput,
+  type SessionTrigger,
   type WorkOrigin,
   type WorkflowProgram,
 } from "@agentx/contracts";
@@ -94,6 +96,11 @@ export interface AgentRunRequest {
   /** The facts a Linear or offered run's payer is named from (trusted, see `payer`). */
   payerFacts?: PayerFacts;
   chain?: { chainRunId: string; stepId: string };
+  /**
+   * Plan 5 (N6): what started a run no person started, taken from a trusted trigger record (Plan 4's dispatch), never from a client body. It names
+   * the session's starter; a request with a `startedBy` has none.
+   */
+  trigger?: SessionTrigger;
   /** A cap on this run: the smaller of it and the run limit applies, and 0 starts the run paused. */
   runLimitUsd?: number;
   /** Agent-step recipes only. */
@@ -121,6 +128,8 @@ export interface RunStartOptions {
   payerFromRules?: boolean;
   payerFacts?: PayerFacts;
   chain?: { chainRunId: string; stepId: string };
+  /** Plan 5 (N6): what started a run no person started (see `AgentRunRequest.trigger`). */
+  trigger?: SessionTrigger;
   runLimitUsd?: number;
   resultContract?: ResultContract;
   /** The owner OK'd an older, less safe version for this run (`AgentRunRequest.versionApproved`). */
@@ -155,8 +164,9 @@ const AgentRunRequestShape = z.object({
     acceptedBy: z.object({ developerId: Hex64 }).strict().optional(),
   }).strict().optional(),
   chain: z.object({ chainRunId: z.string().min(1).max(200), stepId: z.string().min(1).max(200) }).strict().optional(),
+  trigger: SessionTriggerSchema.optional(),
   runLimitUsd: z.number().finite().min(0).optional(),
-}).passthrough();
+}).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 
@@ -384,6 +394,8 @@ export function runStartItems(table: TableInput, input: {
   prepared: PreparedRun;
   /** `startAgentRun`'s request: its item is written with the run, so a repeat of the request is answered from it. */
   request?: { requestId: string; fingerprint: string };
+  /** Plan 5: the run's session, remembered on the request item so a repeat answers the same one. */
+  sessionId?: string;
 }): TransactItem[] {
   const { prepared } = input;
   const nowSeconds = Math.floor(table.now() / 1000);
@@ -421,7 +433,7 @@ export function runStartItems(table: TableInput, input: {
         TableName: table.tableName,
         Item: {
           ...runRequestKey(input.orgId, input.request.requestId), entityType: "RUN_REQUEST", orgId: input.orgId, taskId: input.taskId, developerId: input.developerId,
-          fingerprint: input.request.fingerprint, payer: prepared.payer, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused,
+          fingerprint: input.request.fingerprint, ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }), payer: prepared.payer, runLimitUsd: prepared.runLimitUsd, stopAtUsd: prepared.stopAtUsd, paused: prepared.paused,
           at: new Date(table.now()).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: expires,
         },
         // An expired item the TTL has not removed yet is as good as gone.
@@ -448,7 +460,7 @@ export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "
 }
 
 /** The request item of a run, if one is there and has not expired. */
-export async function readRunRequest(deps: Pick<TableInput, "documentClient" | "tableName" | "now">, orgId: OrgId, requestId: string): Promise<{ taskId: string; fingerprint: string; payer?: Payer; result: AgentRunResult } | undefined> {
+export async function readRunRequest(deps: Pick<TableInput, "documentClient" | "tableName" | "now">, orgId: OrgId, requestId: string): Promise<{ taskId: string; fingerprint: string; payer?: Payer; sessionId?: string; result: AgentRunResult } | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: runRequestKey(orgId, requestId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
   const item = response.Item;
   if (item === undefined || item.orgId !== orgId) return undefined;
@@ -457,7 +469,8 @@ export async function readRunRequest(deps: Pick<TableInput, "documentClient" | "
   const { taskId, fingerprint, runLimitUsd, stopAtUsd, paused } = item;
   if (typeof taskId !== "string" || typeof fingerprint !== "string" || typeof runLimitUsd !== "number" || typeof stopAtUsd !== "number" || typeof paused !== "boolean") return undefined;
   const payer = PayerSchema.safeParse(item["payer"]);
-  return { taskId, fingerprint, ...(payer.success ? { payer: payer.data } : {}), result: { taskId, runLimitUsd, stopAtUsd, paused } };
+  const sessionId = typeof item["sessionId"] === "string" ? item["sessionId"] : undefined;
+  return { taskId, fingerprint, ...(payer.success ? { payer: payer.data } : {}), ...(sessionId === undefined ? {} : { sessionId }), result: { taskId, runLimitUsd, stopAtUsd, paused } };
 }
 
 /**
@@ -468,6 +481,8 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
   return sha256({
     project: request.project, agent: request.agent, input: request.input, origin: request.origin, owner: request.owner, startedBy: request.startedBy ?? null,
     payer: request.payer ?? null, payerFacts: request.payerFacts ?? null, chain: request.chain ?? null, runLimitUsd: request.runLimitUsd ?? null, resultContract: request.resultContract ?? null,
+    // Only when there is one, so a request stored before triggers existed keeps the fingerprint it was stored with.
+    ...(request.trigger === undefined ? {} : { trigger: request.trigger }),
   });
 }
 
@@ -517,6 +532,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(request.payerFacts === undefined ? {} : { payerFacts: request.payerFacts }),
     ...(request.startedBy === undefined ? {} : { startedBy: request.startedBy }),
     ...(request.chain === undefined ? {} : { chain: request.chain }),
+    ...(request.trigger === undefined ? {} : { trigger: request.trigger }),
     ...(request.runLimitUsd === undefined ? {} : { runLimitUsd: request.runLimitUsd }),
     ...(request.resultContract === undefined ? {} : { resultContract: request.resultContract }),
     ...(request.versionApproved === true ? { versionApproved: true as const } : {}),

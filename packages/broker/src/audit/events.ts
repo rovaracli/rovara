@@ -215,6 +215,29 @@ export function auditOwnerChanged(input: AuditBuilderBase & { scope: "agent" | "
   return build(input.scope === "agent" ? "agent.owner_changed" : "chain.owner_changed", input, { kind: input.scope, id: input.targetId }, { field: input.field });
 }
 
+/**
+ * `occurrence`: the approval id. A session changed owner by a confirmed take-over (Plan 5 Task 12b): the actor is the taker, the target the session, `related` the previous
+ * owner and the task or chain run, and the facts say what kind of session it is and whether who pays moved with it. Never a name or a title.
+ */
+export function auditSessionOwnerChanged(input: AuditBuilderBase & { sessionId: string; sessionKind: string; payerMoved: boolean }): AuditEventInput {
+  return build("session.owner_changed", input, { kind: "session", id: input.sessionId }, { sessionKind: input.sessionKind, payerMoved: input.payerMoved });
+}
+
+/**
+ * `occurrence`: the request id. A person stopped a session (Plan 5 Task 13): the target is the session, `related` the task or chain run, and the fact is what kind of session it is.
+ */
+export function auditSessionStopped(input: AuditBuilderBase & { sessionId: string; sessionKind: string }): AuditEventInput {
+  return build("session.stopped", input, { kind: "session", id: input.sessionId }, { sessionKind: input.sessionKind });
+}
+
+/**
+ * `occurrence`: the request id. A person retried a session (Plan 5 Task 13): `branch` says whether the same workflow went on (`workflow`) or a new run or chain run was started
+ * (`new_run`, `new_chain_run`); `related` holds the task or run and, for a new run, the new session.
+ */
+export function auditSessionRetried(input: AuditBuilderBase & { sessionId: string; sessionKind: string; branch: "workflow" | "new_run" | "new_chain_run" }): AuditEventInput {
+  return build("session.retried", input, { kind: "session", id: input.sessionId }, { sessionKind: input.sessionKind, branch: input.branch });
+}
+
 /** `occurrence`: the store's `EVENT#` sort key. `scope` picks `agent.published` or `chain.published`. */
 export function auditPublished(input: AuditBuilderBase & { scope: "agent" | "chain"; targetId: string; version: number; safety: string }): AuditEventInput {
   return build(input.scope === "agent" ? "agent.published" : "chain.published", input, { kind: input.scope, id: input.targetId }, { version: input.version, safety: input.safety });

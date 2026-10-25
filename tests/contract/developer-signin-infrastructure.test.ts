@@ -138,13 +138,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(authorizers.map((properties) => properties.Name)).toEqual(["agentx-jwt"]);
   });
 
-  it("routes /v1/dev/* and /review/* to the broker without JWT, keeps /v1/auth/* on DeveloperIdentity, and leaves ANY /{proxy+} protected", () => {
+  it("routes /v1/dev/* and /review/* and /s/* to the broker without JWT, keeps /v1/auth/* on DeveloperIdentity, and leaves ANY /{proxy+} protected", () => {
     const routes = Object.fromEntries(ofType(named, "AWS::ApiGatewayV2::Route").map(([, resource]) => [resource.Properties.RouteKey as string, resource.Properties]));
     const authorizerId = (name: string) => ({ Ref: ofType(named, "AWS::ApiGatewayV2::Authorizer").find(([, r]) => r.Properties.Name === name)![0] });
     expect(routes["ANY /v1/dev/{proxy+}"]).toMatchObject({ AuthorizationType: "NONE", Target: routes["ANY /{proxy+}"]!.Target });
     expect(routes["ANY /v1/dev/{proxy+}"]!.AuthorizerId).toBeUndefined();
     expect(routes["ANY /review/{proxy+}"]).toMatchObject({ AuthorizationType: "NONE", Target: routes["ANY /{proxy+}"]!.Target });
     expect(routes["ANY /review/{proxy+}"]!.AuthorizerId).toBeUndefined();
+    // Plan 5: a session's link, `/s/<sessionId>`, is a browser page like the review pages: the broker's integration, no JWT.
+    expect(routes["ANY /s/{proxy+}"]).toMatchObject({ AuthorizationType: "NONE", Target: routes["ANY /{proxy+}"]!.Target });
+    expect(routes["ANY /s/{proxy+}"]!.AuthorizerId).toBeUndefined();
     expect(routes["ANY /{proxy+}"]).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: authorizerId("agentx-jwt") });
     const auth = routes["ANY /v1/auth/{proxy+}"]!;
     expect(auth.AuthorizationType).toBe("NONE");
@@ -159,17 +162,22 @@ describe("developer sign-in infrastructure (named environments)", () => {
     const [keyId, key] = keys[0]!;
     expect(key.Properties.KeyUsage).toBe("SIGN_VERIFY");
     const denies = (key.Properties.KeyPolicy as { Statement: Statement[] }).Statement.filter((statement) => statement.Effect === "Deny");
-    expect(denies).toHaveLength(1);
-    const deny = denies[0]!;
-    expect(deny).toMatchObject({ Sid: "SignAndGetPublicKeyOnlyAsDeveloperIdentity", Principal: { AWS: "*" }, Resource: "*" });
-    expect(actionsOf(deny).sort()).toEqual(["kms:GetPublicKey", "kms:Sign"]);
-    const exempt = (deny.Condition as { ArnNotEquals: Record<string, unknown> }).ArnNotEquals["aws:PrincipalArn"] as { "Fn::GetAtt": [string, string] };
+    // Signing is the sign-in function's alone. Reading the public half is its and one more role's (Plan 5 Task 8: the realtime authorizer, which verifies tokens with it).
+    expect(denies).toHaveLength(2);
+    const sign = denies.find((statement) => statement.Sid === "SignOnlyAsDeveloperIdentity")!;
+    expect(sign).toMatchObject({ Principal: { AWS: "*" }, Resource: "*" });
+    expect(actionsOf(sign)).toEqual(["kms:Sign"]);
+    const exempt = (sign.Condition as { ArnNotEquals: Record<string, unknown> }).ArnNotEquals["aws:PrincipalArn"] as { "Fn::GetAtt": [string, string] };
     expect(withoutHash(exempt["Fn::GetAtt"][0])).toBe("DeveloperSignInFunctionServiceRole");
     expect(exempt["Fn::GetAtt"][1]).toBe("Arn");
-    // The only identity policies that grant kms:Sign or kms:GetPublicKey on this key (by name or pattern) are DeveloperIdentity's.
-    for (const action of ["kms:Sign", "kms:GetPublicKey"]) {
-      expect(rolesThatMay(named, action, keyId, SAMPLE_KEY_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
-    }
+    const read = denies.find((statement) => statement.Sid === "GetPublicKeyOnlyAsDeveloperIdentityAndTokenVerifiers")!;
+    expect(read).toMatchObject({ Principal: { AWS: "*" }, Resource: "*" });
+    expect(actionsOf(read)).toEqual(["kms:GetPublicKey"]);
+    const readers = (read.Condition as { ArnNotEquals: Record<string, unknown> }).ArnNotEquals["aws:PrincipalArn"] as Array<{ "Fn::GetAtt": [string, string] }>;
+    expect(readers.map((reader) => withoutHash(reader["Fn::GetAtt"][0]))).toEqual(["DeveloperSignInFunctionServiceRole", "RealtimeAuthorizerServiceRole"]);
+    // The only identity policies that grant kms:Sign on this key (by name or pattern) are DeveloperIdentity's; kms:GetPublicKey, also the authorizer's.
+    expect(rolesThatMay(named, "kms:Sign", keyId, SAMPLE_KEY_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
+    expect(rolesThatMay(named, "kms:GetPublicKey", keyId, SAMPLE_KEY_ARN)).toEqual(["DeveloperSignInFunctionServiceRole", "RealtimeAuthorizerServiceRole"]);
     const aliases = ofType(named, "AWS::KMS::Alias").map(([, resource]) => resource.Properties);
     expect(aliases.find((alias) => alias.AliasName === "alias/agentx/staging/developer-tokens")).toMatchObject({ TargetKeyId: { "Fn::GetAtt": [keyId, "Arn"] } });
   });
@@ -315,6 +323,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
       "ANY /v1/dev/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /v1/app/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "ANY /review/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
+      "ANY /s/{proxy+}": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post.
       "GET /v1/github/install/callback": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
       "POST /v1/github/install/confirm": { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 20 },
@@ -328,6 +337,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(dependsOn).toContain(routeId("ANY /v1/dev/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /v1/app/{proxy+}"));
     expect(dependsOn).toContain(routeId("ANY /review/{proxy+}"));
+    expect(dependsOn).toContain(routeId("ANY /s/{proxy+}"));
     expect(dependsOn).toContain(routeId("GET /v1/github/install/callback"));
     expect(dependsOn).toContain(routeId("POST /v1/github/install/confirm"));
     expect(dependsOn).toContain(routeId("POST /v1/hooks/{source}/{hookId}"));

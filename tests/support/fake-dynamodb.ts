@@ -119,6 +119,7 @@ export class FakeDynamoDb {
   readonly refusals: Array<{ command: string; message: string }> = [];
   /** Constructor names of every command sent, in order (spec 025 A3: no route scans). */
   private readonly sent: string[] = [];
+  private readonly transactionLog: Array<Array<Record<string, unknown>>> = [];
 
   private readonly faults: InjectedFault[] = [];
 
@@ -129,6 +130,11 @@ export class FakeDynamoDb {
 
   commandNames(): string[] {
     return [...this.sent];
+  }
+
+  /** The entries of each `TransactWriteCommand` sent, in order, one array per transaction (copies; a cancelled transaction is listed too). */
+  transactions(): Array<Array<Record<string, unknown>>> {
+    return this.transactionLog.map((entries) => structuredClone(entries));
   }
 
   /** Removes one item without a stream record, as seeding does. */
@@ -161,6 +167,7 @@ export class FakeDynamoDb {
 
   send = async (command: Command): Promise<unknown> => {
     this.sent.push(command.constructor.name);
+    if (command.constructor.name === "TransactWriteCommand") this.transactionLog.push(structuredClone((command.input.TransactItems ?? []) as Array<Record<string, unknown>>));
     // DynamoDB checks a request's expression attributes before it does anything else, each transaction entry on its own.
     try {
       if (this.validateExpressions) {
@@ -353,6 +360,15 @@ export class FakeDynamoDb {
         ? inRange
         : inRange.filter((item) => compareKeys(item.sk as string, String(start.sk)) * (input.ScanIndexForward === false ? -1 : 1) > 0);
       return after.map((item) => this.readClone(item));
+    }
+    // The changes feed's "after this cursor" range (Plan 5 Task 8): `pk = :pk AND sk > :from`, oldest first.
+    const afterCursor = /^pk = :pk AND sk > (:[a-zA-Z]+)$/.exec(String(input.KeyConditionExpression));
+    if (afterCursor) {
+      const bound = values[afterCursor[1]!] as string;
+      const found = this.find((item) => item.pk === values[":pk"] && compareKeys(item.sk as string, bound) > 0)
+        .sort((left, right) => compareKeys(left.sk as string, right.sk as string));
+      const start = input.ExclusiveStartKey as { sk?: unknown } | undefined;
+      return (start === undefined ? found : found.filter((item) => compareKeys(item.sk as string, String(start.sk)) > 0)).map((item) => this.readClone(item));
     }
     // The stuck-setup sweep's "older than" range (spec 025 C17).
     const before = /^pk = :pk AND sk < (:[a-zA-Z]+)$/.exec(String(input.KeyConditionExpression));

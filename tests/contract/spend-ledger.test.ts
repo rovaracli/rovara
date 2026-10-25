@@ -29,6 +29,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
+import { taskSpendKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 skipLambdaBundling();
 
@@ -184,6 +185,32 @@ describe("settleKey", () => {
     expect(await settleKey(t.deps(), t.orgId, key.keyId)).toMatchObject({ deltaUsd: 0.8, settledUsd: 2 });
     near(t.counter("ORG")?.spentUsd, 2);
     expect(t.ledger().map((line) => line.usd)).toEqual([1.2, 0.8]);
+  });
+
+  it("adds each settle's spend to the task's own counter in the same transaction, once, and nothing for a key with no task (Plan 5 Task 7a)", async () => {
+    const t = setup();
+    const key = t.input();
+    await registerKey(t.deps(), key);
+    t.spend(key, 1.2);
+    await settleKey(t.deps(), t.orgId, key.keyId);
+    const counter = () => t.db.get(taskSpendKey(t.orgId, String(key.tags.taskId))) as { settledUsd?: number; orgId?: string } | undefined;
+    near(counter()?.settledUsd, 1.2);
+    expect(counter()?.orgId).toBe(t.orgId);
+    t.spend(key, 2);
+    await settleKey(t.deps(), t.orgId, key.keyId);
+    near(counter()?.settledUsd, 2);
+    // A second settle, and two at once, add nothing more.
+    await settleKey(t.deps(), t.orgId, key.keyId);
+    await Promise.all([settleKey(t.deps(), t.orgId, key.keyId), settleKey(t.deps(), t.orgId, key.keyId)]);
+    near(counter()?.settledUsd, 2);
+    // A key of Slack-thread work has no task and counts on no task counter.
+    const bare = t.input({ tags: { ...key.tags, taskId: undefined } });
+    await registerKey(t.deps(), bare);
+    t.spend(bare, 1);
+    await settleKey(t.deps(), t.orgId, bare.keyId);
+    expect(t.db.find((item) => String(item.pk).includes("TASK_SPENT#"))).toHaveLength(1);
+    // Another org's key counts on its own org's counter only.
+    expect(t.db.get(taskSpendKey(OTHER_ORG, String(key.tags.taskId)))).toBeUndefined();
   });
 
   it("adds once when two settles of one key run at the same time", async () => {

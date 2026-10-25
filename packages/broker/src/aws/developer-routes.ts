@@ -63,6 +63,8 @@ import {
   type DeveloperWorkspacesResponse,
   type EndDeveloperSessionsRequest,
   type EndDeveloperSessionsResponse,
+  type RealtimeTokenAnswer,
+  type RealtimeTokenRequest,
   type UnlinkIdentityRequest,
   type UnlinkIdentityResponse,
   type StartIdentityLinkRequest,
@@ -121,15 +123,18 @@ import { commitSetupCheck, setupCheckLimitMessage, setupCheckReplay, setupStateO
 import type { DeveloperTaskActions } from "./developer-task-actions.js";
 import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
-  confirmTaskPeopleProposal, getTaskPeople, getTaskPeopleCapabilities, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
+  confirmTaskPeopleProposal, getTaskPeopleCapabilities, getTaskPeopleForPage, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  CLOSED_TASK, cancelTask, getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  CLOSED_TASK, cancelTask, cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskPageUrl, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { isChainRoute, routeChainRequest } from "../chains/routes.js";
 import { chainRunPortsFor } from "../chains/runner.js";
 import { chainViewPortsFor } from "../chains/view-ports.js";
+import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
+import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
+import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
@@ -167,6 +172,10 @@ export interface DeveloperApiConfiguration {
   slackAuthCheck?: () => Promise<SlackAuthCheckResponse>;
   /** Spec 025 E9: an admin ends a developer's sign-in sessions, through DeveloperIdentity (the broker only reads the sign-in table). */
   endDeveloperSessions?: (request: EndDeveloperSessionsRequest) => Promise<EndDeveloperSessionsResponse>;
+  /** Plan 5 Task 8: the realtime events API's HTTP endpoint, when the install has one (`REALTIME_HTTP_ENDPOINT`). */
+  realtimeEndpoint?: string | undefined;
+  /** Plan 5 Task 8: a realtime token for a signed-in person, signed by DeveloperIdentity (the broker holds no signing right). Without it `POST /v1/app/realtime/token` is unavailable. */
+  realtimeToken?: (request: RealtimeTokenRequest) => Promise<RealtimeTokenAnswer>;
   /** Plan 2, Task 8: a person unlinks one of their own sign-in methods, through DeveloperIdentity (the broker only reads the sign-in table). */
   unlinkIdentity?: (request: UnlinkIdentityRequest) => Promise<UnlinkIdentityResponse>;
   /** Plan 2, Task 8b: a person starts adding a sign-in method they removed earlier back, through DeveloperIdentity (it owns the sign-in table's writes). */
@@ -252,6 +261,11 @@ export interface DeveloperRouteDependencies {
   /** Plan 3, Task 7: what the agent routes (`/v1/app/agents*` and the other Plan 3 paths) need. Without it they answer NOT_FOUND. */
   agents?: AgentRouteDependencies;
   /**
+   * Plan 5, Task 5: what session levels, shares and reads need. The broker supplies it with `agents` (as `agents.agentSessions`) and on the browser pages
+   * (`/s/…`, `/review/…`), which don't carry `agents`. Without it the session routes answer NOT_FOUND and the task page admits nobody on a session level.
+   */
+  agentSessions?: SessionTakeOverDependencies;
+  /**
    * Plan 3 final review (access m-2): what follows a person's project role changing or their grant being removed, on the agents platform (`onProjectMemberChanged`:
    * the agents they were accountable for move when they no longer hold `manage_agents`). Called after the change applied, also on a replay (it is repeatable);
    * a failure is logged and never undoes or fails the change. Absent where agents are not set up.
@@ -287,7 +301,7 @@ type IdentityRefusal = typeof SLACK_UNAVAILABLE | { ok: false; error: "invalid_r
  */
 async function identityInvoke<T>(
   invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>,
-  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest,
+  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
   readReply: (reply: Record<string, unknown>) => T | undefined,
   event: string,
 ): Promise<T | IdentityRefusal> {
@@ -438,6 +452,15 @@ export function endDeveloperSessionsThroughLambda(invoke: (payload: Uint8Array) 
     }, "developer.end_sessions");
     if (answer.ok || answer.error === "not_found" || answer.error === "invalid_request") return answer;
     return { ok: false, error: "unavailable" };
+  };
+}
+
+/** Plan 5 Task 8: asks DeveloperIdentity to sign a realtime token. Any failure is `unavailable` (the route answers that), after one `developer.realtime_token_failed` log line. */
+export function realtimeTokenThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: RealtimeTokenRequest) => Promise<RealtimeTokenAnswer> {
+  return async (request) => {
+    const answer = await identityInvoke(invoke, request, (reply): RealtimeTokenAnswer | undefined =>
+      (reply.ok === true && typeof reply.token === "string" && typeof reply.expiresAt === "string" ? { ok: true, token: reply.token, expiresAt: reply.expiresAt } : undefined), "developer.realtime_token");
+    return answer.ok ? answer : { ok: false, error: answer.error === "invalid_request" ? "invalid_request" : "unavailable" };
   };
 }
 
@@ -1454,6 +1477,47 @@ async function startAppRun(
   return { task: await taskView(taskDeps, await loadOwnedTask(taskDeps, caller, started.taskId), { events: 0, details: false }) };
 }
 
+/** What session levels and reads need, from the route dependencies: the broker's own, or those it gave the agent routes. */
+function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionTakeOverDependencies | undefined {
+  return deps.agentSessions ?? deps.agents?.agentSessions;
+}
+
+/** The session routes' dependencies for one caller: the task view is built with that caller's task dependencies, so the task's own rules apply inside the session. */
+function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: DeveloperCaller): SessionRouteDependencies {
+  const sessions = sessionDependenciesOf(deps);
+  if (sessions === undefined || deps.tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
+  const taskDeps = developerTaskRouteDependencies(deps, caller);
+  const mint = deps.developer.realtimeToken;
+  return {
+    ...sessions, origin: new URL(deps.developer.issuer).origin,
+    // Plan 5 Task 13: Plan 3's cancel, workflow retry and run start, bound to this person. They are called only after the session routes read the person's level on the session.
+    control: {
+      cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      startAgentRun: async (request) => {
+        const starter = agentRunStarterOf(deps);
+        if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");
+        return startAgentRun(starter, { ...request, caller });
+      },
+    },
+    ...(deps.audit === undefined ? {} : { audit: deps.audit }),
+    taskView: (task, options) => taskView(taskDeps, task, options),
+    ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
+    // Plan 5 Task 9: a person arriving on a session is told to its channel through the same API the sink publishes to.
+    realtimePublish: realtimeConfigFromEnvironment(),
+    // Plan 5 Task 8: the realtime token. Without the sign-in function's signing, or without an events API, the route says live updates are unavailable.
+    realtime: {
+      endpoint: deps.developer.realtimeEndpoint,
+      projectsOf: async (caller) => (await projectMembersOf(deps).projectsOf(caller.orgId, { developerId: caller.developerId, orgRole: caller.orgRole })).map((entry) => entry.project),
+      mint: async (request) => {
+        const answer = mint === undefined ? undefined : await mint(request);
+        if (answer === undefined || !answer.ok) throw agentXError("RUNTIME_UNAVAILABLE", "Live updates aren't available right now.");
+        return { token: answer.token, expiresAt: answer.expiresAt };
+      },
+    },
+  };
+}
+
 export function developerTaskRouteDependencies(
   deps: DeveloperRouteDependencies,
   caller: DeveloperCaller,
@@ -1511,10 +1575,14 @@ export function developerTaskRouteDependencies(
     };
   };
   const agents = deps.agents;
+  const agentSessions = sessionDependenciesOf(deps);
   return {
     documentClient: deps.documentClient,
     tableName: deps.tableName,
     orgId: caller.orgId,
+    ...(agentSessions === undefined ? {} : { agentSessions }),
+    // A taker who was merged into another member since is the owner as the member they became (Plan 5 Task 12a review, M-3).
+    resolveMember: (developerId) => survivorOf(projectMembersDepsOf(deps), developerId),
     ...(deps.developer.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
     issuer: deps.developer.issuer,
     actions: deps.tasks!,
@@ -1603,6 +1671,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isAuditViewPath(url.pathname)) {
     return createAuditViewPage({ origin: new URL(deps.developer.issuer).origin, authenticateSession, ledger: deps.auditLedger })(request, url);
   }
+  // Plan 5, Task 5: a session's link, for a signed-in browser. Until the web app, a task session's goes to the task's page.
+  if (isSessionLinkPath(url.pathname)) {
+    if (deps.tasks === undefined || sessionDependenciesOf(deps) === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
+    return sessionRedirect({
+      authenticateSession, origin: new URL(deps.developer.issuer).origin, taskPageUrl,
+      read: (caller) => sessionReadDependencies(deps, caller),
+    }, request, url);
+  }
   if (url.pathname.startsWith("/review/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
     // Task 18: the read-only task page and its "moved on" check; every other /review/ path is the PR-feedback review.
@@ -1613,7 +1689,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
         authenticateSession,
         getTaskDocumentView: (caller, taskId) => getTaskDocumentView(routeDeps(caller), caller, taskId),
         getTaskFreshness: (caller, taskId) => getTaskFreshness(routeDeps(caller), caller, taskId),
-        getTaskPeople: (caller, taskId) => getTaskPeople(routeDeps(caller), caller, taskId),
+        getTaskPeople: (caller, taskId) => getTaskPeopleForPage(routeDeps(caller), caller, taskId),
         getTaskPeopleRequest: (caller, taskId, requestId) => getTaskPeopleProposal(routeDeps(caller), caller, taskId, requestId),
         getTaskPeopleProposalMetadata: (caller, taskId, requestId) => getTaskPeopleProposalMetadata(routeDeps(caller), caller, taskId, requestId),
         getTaskPersonName: (caller, taskId, personId) => getTaskPersonPresentationName(routeDeps(caller), taskId, personId),
@@ -1628,7 +1704,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           deleteComment: (caller, taskId, input) => deletePageComment(routeDeps(caller), caller, taskId, input),
           setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
           decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
-          getPeople: (caller, taskId) => getTaskPeople(routeDeps(caller), caller, taskId),
+          getPeople: (caller, taskId) => getTaskPeopleForPage(routeDeps(caller), caller, taskId),
           proposePeopleRole: (caller, taskId, input) => proposeTaskPeopleRoleForPage(routeDeps(caller), caller, taskId, input),
           proposeOwnership: (caller, taskId, input) => proposeTaskOwnershipForPage(routeDeps(caller), caller, taskId, input),
           getPeopleRequest: (caller, taskId, requestId) => getTaskPeopleProposal(routeDeps(caller), caller, taskId, requestId),
@@ -1665,6 +1741,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     });
     return routeChainRequest({ ...agentDeps, chains: deps.agents.chains, chainView, ...(starter === undefined ? {} : { chainRuns: chainRunPortsFor(starter, admission) }) }, caller, request, url);
   }
+  // Plan 5, Task 5: `/v1/app/sessions*`.
+  if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");

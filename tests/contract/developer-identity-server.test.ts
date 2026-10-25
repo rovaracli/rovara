@@ -163,6 +163,20 @@ describe("browser sign-in for an AgentX feedback review", () => {
     }
   });
 
+  it("signs in for a session's link (Plan 5), for a real session id only", async () => {
+    const h = identityHarness({ slackUsers: [maya] });
+    for (const id of ["ses_0123456789abcdefghij", "crn_0123456789abcdefghij"]) {
+      const good = await h.http(httpEvent("GET", `/v1/auth/browser/authorize?return_to=${encodeURIComponent(`/s/${id}`)}`));
+      expect(good.statusCode, id).toBe(302);
+      expect(new URL(good.headers.location!).origin).toBe("https://slack.com");
+    }
+    for (const returnTo of ["/s/ses_0123456789abcdefghi", "/s/ses_0123456789abcdefghijk", "/s/abc_0123456789abcdefghij", "/s/ses_0123456789abcdefghij/x", "/s/ses_0123456789abcdefghij?a=1",
+      "//s/ses_0123456789abcdefghij", "/s/../v1/admin", "/s/SES_0123456789ABCDEFGHIJ"]) {
+      const refused = await h.http(httpEvent("GET", `/v1/auth/browser/authorize?return_to=${encodeURIComponent(returnTo)}`));
+      expect(refused.statusCode, returnTo).toBe(400);
+    }
+  });
+
   it("sets an opaque secure 30-day session cookie only after state and PKCE-bound Slack sign-in", async () => {
     const h = identityHarness({ slackUsers: [maya] });
     const start = await h.http(httpEvent("GET", `/v1/auth/browser/authorize?return_to=${encodeURIComponent(reviewPath)}`));

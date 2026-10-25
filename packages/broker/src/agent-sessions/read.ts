@@ -1,0 +1,429 @@
+// Reading a session (Plan 5 Task 5): its view, its lists and the task of one of its chain steps. Every read goes through `requireSessionLevel`, so
+// a session the caller can't view is `NOT_FOUND` and its existence never leaks; what the caller may not see inside it (a decision they can't make,
+// a step's task without a project role) is left out, never shown as an error.
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import {
+  AGENT_SESSION_CONTRACT_VERSION,
+  AGENTX_NAME_PATTERN,
+  LIVE_INDEX_SCAN_MAX,
+  LIVE_PAGE_MAX,
+  SessionBindingSchema,
+  SessionIdSchema,
+  agentSessionKey,
+  agentXError,
+  cleanSessionName,
+  mySessionsKey,
+  projectAllows,
+  projectSessionsKey,
+  sessionLink,
+  sharedSessionsKey,
+  type AgentSessionRecord,
+  type DeveloperTaskView,
+  type OrgRole,
+  type SessionBinding,
+  type SessionLevel,
+  type SessionList,
+  type SessionStatus,
+  type SessionTile,
+  type SessionView,
+} from "@agentx/contracts";
+import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { anchorTargetsOf } from "./anchors.js";
+import { newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
+import { viewingNow } from "./followers.js";
+import type { AuditRuntime } from "../audit/outbox.js";
+import type { ChainControl, SessionControlHost } from "./stop.js";
+import type { SessionTakeOverDependencies } from "./take-over.js";
+
+/** Who reads: `DeveloperCaller` fits. */
+export interface SessionReadCaller extends SessionCaller { orgRole: OrgRole }
+
+/** What the people who may decide something may be shown, answered live by the approvals and spend code the broker holds. */
+export interface SessionDeciding {
+  /** The caller's own pending decisions on this session, with the words that name each (never what is being approved: the confirmation page shows that). */
+  approvals(caller: SessionReadCaller, session: AgentSessionRecord): Promise<Array<{ approvalId: string; title: string }>>;
+  /** Whether the caller may decide this budget request now. */
+  spend(caller: SessionReadCaller, spendRequestId: string): Promise<boolean>;
+}
+
+export interface SessionReadDependencies extends SessionTakeOverDependencies {
+  /** Plan 5 Task 13: Plan 3's cancel, workflow retry and run start for the signed-in person. Without it stop and retry of a task session answer `RUNTIME_UNAVAILABLE`. */
+  control?: SessionControlHost | undefined;
+  /** Plan 5 Task 13, PLAN4: Plan 4's chain cancel and retry with the session actor. Without it a chain session is neither stopped nor retried, and nothing is written. */
+  chainControl?: ChainControl | undefined;
+  /** The Audit Ledger's outbox: a stop or retry adds its pending item to its own transaction. Absent on a legacy install, where nothing is recorded. */
+  audit?: AuditRuntime;
+  /** The origin links point at: the broker's issuer origin. */
+  origin: string;
+  /** The task's own view, built for this caller (the broker binds the task dependencies); `actor` is `owner` only for the session's effective owner. */
+  taskView(task: DeveloperTaskRecord, options: { events: number; details: boolean; actor: "owner" | "viewer" }): Promise<DeveloperTaskView>;
+  /** Without it no approval or budget link is shown to anyone. */
+  deciding?: SessionDeciding;
+  /** Task 10c: whether the person may create an agent in a project now (Plan 3's own check, read live). Without it no one is offered `make_agent`. */
+  mayMakeAgent?: (caller: SessionReadCaller, project: string) => Promise<boolean>;
+}
+
+type Item = Record<string, unknown>;
+const NOT_FOUND = () => agentXError("NOT_FOUND", "session not found");
+const UNAVAILABLE = () => agentXError("RUNTIME_UNAVAILABLE", "This session can't be shown right now.");
+/** The level of an access that `requireSessionLevel` let through: never "none" (that is NOT_FOUND there). */
+const levelOf = (access: SessionAccess): SessionLevel => {
+  if (access.level === "none") throw NOT_FOUND();
+  return access.level;
+};
+const isAgentXError = (error: unknown) => error instanceof Error && error.name === "AgentXError";
+
+const getItem = async (deps: Pick<SessionReadDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
+  ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
+
+const approveLink = (deps: Pick<SessionReadDependencies, "origin">, id: string) => `${deps.origin.replace(/\/+$/u, "")}/v1/app/approve/${id}`;
+
+// ---- the view
+
+/** The task of a task session, when it is the session's own (a task of another org is not). */
+async function taskOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<DeveloperTaskRecord> {
+  if (session.subject.kind !== "task") throw NOT_FOUND();
+  const task = (await getItem(deps, taskKey(session.subject.taskId))) as DeveloperTaskRecord | undefined;
+  if (task === undefined || task.orgId !== session.orgId) throw NOT_FOUND();
+  return task;
+}
+
+/** Where a task is, in a session's words: used until the projector has computed the session's own summary (Task 7a). */
+function statusOfTask(view: DeveloperTaskView): SessionStatus {
+  switch (view.status) {
+    case "SUCCEEDED":
+    case "CLOSED":
+      return "succeeded";
+    case "FAILED":
+    case "INTERRUPTED":
+      return "failed";
+    case "CANCELLED":
+      return "cancelled";
+    default:
+      break;
+  }
+  if (view.paused !== undefined) return "paused";
+  if (view.status === "STARTING") return "starting";
+  if (view.run?.state === "WAITING_FOR_APPROVAL") return "needs_person";
+  if (view.workflow?.state === "WAITING") return "waiting";
+  return "running";
+}
+
+async function nameOf(deps: SessionReadDependencies, developerId: string): Promise<string | undefined> {
+  try {
+    const record = await deps.signInStore.getDeveloper(developerId);
+    return record === undefined ? undefined : cleanSessionName(record.displayName);
+  } catch {
+    return undefined;
+  }
+}
+
+async function payerOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<{ kind: "member" | "project" | "agent" | "chain"; name: string }> {
+  const payer = session.payer ?? { kind: "member" as const, developerId: session.owner.developerId };
+  if (payer.kind === "project") return { kind: "project", name: payer.project };
+  // Plan 4: a chain that pays for the runs its triggers start. The chain's own name is not on the session header, so the view names the chain by its id.
+  if (payer.kind === "chain") return { kind: "chain", name: payer.chainId };
+  if (payer.kind === "agent") return { kind: "agent", name: session.agent?.agentId === payer.agentId ? session.agent.name : payer.agentId };
+  return { kind: "member", name: payer.developerId === session.owner.developerId ? session.owner.name : await nameOf(deps, payer.developerId) ?? "A teammate" };
+}
+
+function bindingLink(binding: SessionBinding): { kind: SessionBinding["kind"]; url: string } {
+  if (binding.kind === "linear_issue") return { kind: "linear_issue", url: binding.url };
+  return { kind: "slack_thread", url: `https://app.slack.com/client/${binding.teamId}/${binding.channelId}/thread/${binding.channelId}-${binding.threadTs}` };
+}
+
+async function bindingsOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<Array<{ kind: SessionBinding["kind"]; url: string }>> {
+  const found: Array<{ kind: SessionBinding["kind"]; url: string }> = [];
+  for (const kind of ["slack_thread", "linear_issue"] as const) {
+    const item = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `BINDING#${kind}`));
+    const parsed = SessionBindingSchema.safeParse(item?.["binding"]);
+    if (parsed.success && parsed.data.kind === kind) found.push(bindingLink(parsed.data));
+  }
+  return found;
+}
+
+/** The caller's own decisions on this session; a failure to read them leaves them out. */
+async function decisionsOf(deps: SessionReadDependencies, caller: SessionReadCaller, session: AgentSessionRecord): Promise<Array<{ approvalId: string; title: string }>> {
+  if (deps.deciding === undefined) return [];
+  try {
+    return await deps.deciding.approvals(caller, session);
+  } catch (error) {
+    if (isAgentXError(error)) return [];
+    throw error;
+  }
+}
+
+/** The task's own view with the links of decisions the caller can't make taken out of it (the text of what waits stays). */
+function withoutForeignLinks(view: DeveloperTaskView, mine: ReadonlySet<string>): DeveloperTaskView {
+  if (view.run === undefined) return view;
+  const pendingApprovals = view.run.pendingApprovals.map((entry) => {
+    if (entry.confirmUrl === undefined || mine.has(entry.approvalId)) return entry;
+    const { confirmUrl: _link, ...rest } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- taken out on purpose
+    return rest;
+  });
+  return { ...view, run: { ...view.run, pendingApprovals } };
+}
+
+/**
+ * One person's reading of one session: the header, its cost, what they may do and the work itself. `NOT_FOUND` for another org and for a caller
+ * with no level. Status and step come from the stored summary once the projector has computed one (its revision is above the start's), and
+ * from the task until then.
+ */
+export async function sessionView(deps: SessionReadDependencies, caller: SessionReadCaller, sessionId: string): Promise<SessionView> {
+  const access = await requireSessionLevel(deps, caller, sessionId, "view", "view it");
+  const { session } = access;
+  const computed = session.summaryRevision > 1;
+  const mine = await decisionsOf(deps, caller, session);
+  const mineIds = new Set(mine.map((entry) => entry.approvalId));
+
+  let body: SessionView["body"];
+  let task: DeveloperTaskRecord | undefined;
+  let taskShown: DeveloperTaskView | undefined;
+  if (session.subject.kind === "task") {
+    task = await taskOf(deps, session);
+    taskShown = withoutForeignLinks(await deps.taskView(task, { events: 20, details: true, actor: access.owner ? "owner" : "viewer" }), mineIds);
+    body = { kind: "task", task: taskShown };
+  } else if (session.subject.kind === "chain") {
+    if (deps.chain === undefined) throw UNAVAILABLE();
+    const chain = await deps.chain.runView({ kind: "session", developerId: caller.developerId }, session.subject.chainRunId);
+    body = { kind: "chain", chain: typeof chain === "object" && chain !== null ? chain as Record<string, unknown> : {} };
+  } else {
+    body = { kind: "local", tool: session.subject.tool };
+  }
+
+  const summary = session.summary;
+  const status = computed || taskShown === undefined ? summary.status : statusOfTask(taskShown);
+  const step = computed || taskShown === undefined ? summary.step : taskShown.run?.currentStep?.name;
+  const runLimitUsd = computed || task === undefined ? summary.runLimitUsd : typeof task.budgetUsd === "number" ? task.budgetUsd : undefined;
+  const stopAtUsd = computed || task === undefined ? summary.stopAtUsd
+    : runLimitUsd === undefined ? task.maxPerRunUsd : Math.min(runLimitUsd, task.maxPerRunUsd ?? runLimitUsd);
+  const pausedView = taskShown?.paused;
+  let paused: SessionView["cost"]["paused"];
+  if (pausedView !== undefined) {
+    const spendRequestId = pausedView.spendRequestId;
+    const mayDecide = spendRequestId !== undefined && deps.deciding !== undefined && await deps.deciding.spend(caller, spendRequestId).catch((error: unknown) => {
+      if (isAgentXError(error)) return false;
+      throw error;
+    });
+    paused = {
+      scope: pausedView.scope["kind"] ?? "budget",
+      ...(spendRequestId === undefined ? {} : { spendRequestId }),
+      ...(mayDecide === true && spendRequestId !== undefined ? { confirmUrl: approveLink(deps, spendRequestId) } : {}),
+    };
+  }
+
+  const followerItem = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `FOLLOWER#${caller.developerId}`));
+  // Make this an agent (Task 10c): offered to a person who may create agents in the session's project, asked of the same check the route makes, with the org role read from their record. A task session only.
+  const canMakeAgent = deps.mayMakeAgent !== undefined && session.kind === "task" && session.project !== undefined && await deps.mayMakeAgent({ orgId: caller.orgId, developerId: caller.developerId, orgRole: access.orgRole }, session.project);
+  // The parts a comment can be pinned to, from the very view shown (Task 10b).
+  const anchors = taskShown === undefined ? [] : anchorTargetsOf(taskShown);
+  return {
+    contractVersion: AGENT_SESSION_CONTRACT_VERSION,
+    sessionId: session.sessionId,
+    kind: session.kind,
+    mode: session.mode,
+    title: session.title,
+    ...(session.project === undefined ? {} : { project: session.project }),
+    ...(session.agent === undefined ? {} : { agent: session.agent }),
+    owner: access.effectiveOwner,
+    startedBy: session.startedBy,
+    where: session.where.kind === "cloud" ? { kind: "cloud" } : { kind: "mac", label: session.where.label, offline: summary.offline === true },
+    status,
+    ...(step === undefined ? {} : { step }),
+    ...(summary.peek === undefined ? {} : { peek: summary.peek }),
+    ...(summary.lastRunFailed === undefined ? {} : { lastRunFailed: summary.lastRunFailed }),
+    cost: {
+      spentUsd: summary.costUsd,
+      ...(runLimitUsd === undefined ? {} : { runLimitUsd }),
+      ...(stopAtUsd === undefined ? {} : { stopAtUsd }),
+      payer: await payerOf(deps, session),
+      ...(paused === undefined ? {} : { paused }),
+    },
+    approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
+    followers: session.followerCount,
+    viewingNow: await viewingNow(deps, session, deps.now()),
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access), ...(canMakeAgent ? ["make_agent" as const] : [])] },
+    link: sessionLink(deps.origin, session.sessionId),
+    bindings: await bindingsOf(deps, session),
+    legs: session.legs,
+    ...(session.retryOf === undefined ? {} : { retryOf: session.retryOf }),
+    ...(anchors.length === 0 ? {} : { anchors }),
+    revision: session.revision,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }),
+    body,
+  };
+}
+
+// ---- a chain step's task
+
+/**
+ * `GET /v1/app/sessions/{id}/sections/{seq}/task` [view], chain sessions only. A caller with no project role that holds `start_tasks` on the chain's
+ * project gets `NOT_FOUND`, whatever their level on the session (answer 7, I9): Plan 4's own check is the same one, kept when its reads are wired.
+ */
+export async function sessionStepTask(deps: SessionReadDependencies, caller: SessionReadCaller, sessionId: string, seq: number): Promise<{ task: DeveloperTaskView }> {
+  const access = await requireSessionLevel(deps, caller, sessionId, "view", "view it");
+  const { session } = access;
+  if (session.subject.kind !== "chain" || !Number.isInteger(seq) || seq < 1 || seq > 9999) throw NOT_FOUND();
+  if (session.project === undefined) throw NOT_FOUND();
+  let role: Awaited<ReturnType<SessionReadDependencies["projectMembers"]["roleOf"]>>;
+  try {
+    role = await deps.projectMembers.roleOf(session.orgId, session.project, { developerId: caller.developerId, orgRole: access.orgRole });
+  } catch (error) {
+    if (isAgentXError(error)) throw error;
+    throw agentXError("RUNTIME_UNAVAILABLE", "Your role in this project could not be checked; try again in a moment.");
+  }
+  if (role === undefined || !projectAllows(role, "start_tasks")) throw NOT_FOUND();
+  if (deps.chain === undefined) throw UNAVAILABLE();
+  return { task: await deps.chain.stepTask({ kind: "session", developerId: caller.developerId }, session.subject.chainRunId, seq) };
+}
+
+// ---- the lists
+
+export interface SessionListQuery {
+  owner?: "me" | undefined;
+  project?: string | undefined;
+  shared?: "me" | undefined;
+  status?: "open" | "ended" | undefined;
+  cursor?: string | undefined;
+  /** Rows per page: 1 to 100, default 50. */
+  limit?: number | undefined;
+}
+
+const DEFAULT_PAGE = 50;
+const PROBE_ID = "ses_00000000000000000000";
+const PROBE_AT = "2000-01-01T00:00:00.000Z";
+
+function tileOf(session: AgentSessionRecord, level: SessionTile["level"], owner: SessionTile["owner"]): SessionTile {
+  return {
+    contractVersion: AGENT_SESSION_CONTRACT_VERSION,
+    sessionId: session.sessionId,
+    kind: session.kind,
+    title: session.title,
+    ...(session.project === undefined ? {} : { project: session.project }),
+    ...(session.agent === undefined ? {} : { agent: session.agent }),
+    owner,
+    where: session.where,
+    level,
+    revision: session.revision,
+    summary: session.summary,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }),
+  };
+}
+
+const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
+
+// ---- the cursor
+// A cursor is the sort key of the last row a list scanned, which may be a session the caller can't see (when the scan cap stops the loop). So it is
+// sealed (AES-256-GCM under the server's cursor key) and bound to the org, the person and the list it was given for: nobody can read the key out of
+// it, change it, or carry it to another list or another person. Any failure is one message that echoes nothing (review m-1).
+
+const CURSOR_VERSION = "v1.";
+const cursorKeyOf = (deps: Pick<SessionReadDependencies, "cursorKey">): Buffer => {
+  if (deps.cursorKey === undefined || deps.cursorKey === "") throw agentXError("RUNTIME_UNAVAILABLE", "Sessions can't be listed right now.");
+  return createHash("sha256").update(deps.cursorKey, "utf8").digest();
+};
+const cursorContext = (orgId: string, developerId: string, pk: string) => Buffer.from(`${orgId}\n${developerId}\n${pk}`, "utf8");
+
+function sealCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, sk: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", cursorKeyOf(deps), iv);
+  cipher.setAAD(cursorContext(caller.orgId, caller.developerId, pk));
+  const sealed = Buffer.concat([cipher.update(sk, "utf8"), cipher.final()]);
+  return `${CURSOR_VERSION}${Buffer.concat([iv, sealed, cipher.getAuthTag()]).toString("base64url")}`;
+}
+
+/** The sort key a cursor holds, or `CONFIG_INVALID` for anything this list, this person and this server key didn't give. */
+function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, caller: SessionCaller, pk: string, cursor: string): string {
+  const key = cursorKeyOf(deps);
+  const refuse = () => invalid("cursor: is not one this list gave");
+  if (!cursor.startsWith(CURSOR_VERSION)) throw refuse();
+  const body = cursor.slice(CURSOR_VERSION.length);
+  const bytes = Buffer.from(body, "base64url");
+  if (bytes.toString("base64url") !== body || bytes.length < 12 + 16 + 1) throw refuse(); // not the one spelling this list writes
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
+    decipher.setAAD(cursorContext(caller.orgId, caller.developerId, pk));
+    decipher.setAuthTag(bytes.subarray(bytes.length - 16));
+    const sk = Buffer.concat([decipher.update(bytes.subarray(12, bytes.length - 16)), decipher.final()]).toString("utf8");
+    return sk;
+  } catch {
+    throw refuse();
+  }
+}
+
+/**
+ * `GET /v1/app/sessions?owner=me|project=<p>|shared=me&status=open|ended&cursor=`: one of the three indexes, newest first, each row read again with the
+ * caller's level and dropped when they have none (an index row says only that a session once belonged there). The project index is the caller's
+ * org's. `next` is opaque.
+ */
+export async function listSessions(deps: SessionReadDependencies, caller: SessionReadCaller, query: SessionListQuery): Promise<SessionList> {
+  const chosen = [query.owner !== undefined, query.project !== undefined, query.shared !== undefined].filter(Boolean).length;
+  if (chosen !== 1) throw invalid("Choose one of owner, project or shared.");
+  if (query.owner !== undefined && query.owner !== "me") throw invalid("owner: must be me");
+  if (query.shared !== undefined && query.shared !== "me") throw invalid("shared: must be me");
+  if (query.project !== undefined && !AGENTX_NAME_PATTERN.test(query.project)) throw invalid("project: is not a project name");
+  if (query.status !== undefined && query.status !== "open" && query.status !== "ended") throw invalid("status: must be open or ended");
+  const limit = query.limit ?? DEFAULT_PAGE;
+  if (!Number.isInteger(limit) || limit < 1 || limit > LIVE_PAGE_MAX) throw invalid(`limit: must be a whole number from 1 to ${String(LIVE_PAGE_MAX)}`);
+
+  const { orgId } = caller;
+  const pk = query.project !== undefined ? projectSessionsKey(orgId, query.project, PROBE_AT, PROBE_ID).pk
+    : query.shared !== undefined ? sharedSessionsKey(orgId, { kind: "member", developerId: caller.developerId }, PROBE_ID).pk
+      : mySessionsKey(orgId, caller.developerId, PROBE_AT, PROBE_ID).pk;
+  cursorKeyOf(deps); // a list that can't seal its cursor doesn't start
+  const memo = newSessionRoleMemo(); // the caller's role on each project, asked once for the whole request (review m-2)
+  let start: Record<string, unknown> | undefined;
+  if (query.cursor !== undefined) {
+    start = { pk, sk: openCursor(deps, caller, pk, query.cursor) };
+  }
+
+  const tiles: SessionTile[] = [];
+  let lastSk: string | undefined;
+  let scanned = 0;
+  for (;;) {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": pk }, ConsistentRead: true, ScanIndexForward: false, Limit: 100,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    const rows = page.Items ?? [];
+    for (const row of rows) {
+      if (tiles.length >= limit || scanned >= LIVE_INDEX_SCAN_MAX) {
+        return { sessions: tiles, ...(lastSk === undefined ? {} : { next: sealCursor(deps, caller, pk, lastSk) }) };
+      }
+      scanned += 1;
+      if (typeof row["sk"] === "string") lastSk = row["sk"];
+      const id = SessionIdSchema.safeParse(row["sessionId"]);
+      if (!id.success || row["orgId"] !== orgId) continue;
+      let access: SessionAccess;
+      try {
+        access = await requireSessionLevel(deps, caller, id.data, "view", "view it", { memo });
+      } catch (error) {
+        if (isAgentXError(error)) continue;
+        throw error;
+      }
+      const ended = access.session.endedAt !== undefined;
+      if ((query.status === "open" && ended) || (query.status === "ended" && !ended)) continue;
+      tiles.push(tileOf(access.session, levelOf(access), access.effectiveOwner));
+    }
+    start = page.LastEvaluatedKey;
+    if (start === undefined) return { sessions: tiles };
+  }
+}
+
+// ---- the link
+
+/** What `/s/<id>` leads to for someone who may view the session: the task page of a task session, else a few facts about it. */
+export type SessionLinkTarget =
+  | { kind: "task"; taskId: string }
+  | { kind: "summary"; title: string; status: SessionStatus; owner: string };
+
+export async function sessionLinkTarget(deps: SessionReadDependencies, caller: SessionReadCaller, sessionId: string): Promise<SessionLinkTarget> {
+  const { session } = await requireSessionLevel(deps, caller, sessionId, "view", "view it");
+  if (session.subject.kind === "task") return { kind: "task", taskId: (await taskOf(deps, session)).taskId };
+  return { kind: "summary", title: session.title, status: session.summary.status, owner: session.owner.name };
+}

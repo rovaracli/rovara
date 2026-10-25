@@ -40,6 +40,7 @@ import type { Construct } from "constructs";
 import { HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
+import { RealtimeEvents } from "./realtime.js";
 import { TaskPersonProof } from "./task-person-proof.js";
 import { DeveloperTaskNotifier } from "./developer-task-notifier.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
@@ -954,6 +955,20 @@ export class ControlPlaneStack extends Stack {
           retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
         },
       });
+      // Plan 5, Task 7a: every 5 minutes the session sweep refreshes the open sessions from a saved cursor and the retention drain gives ended sessions' items
+      // their expiry. Its own schedule, not a settlement job: the settlement run's seconds (`SETTLEMENT_BUDGETS_MS`) are all given to money and audit jobs.
+      // Named environments only, on the same role as the schedules above; the broker already reads and writes the State table.
+      new scheduler.CfnSchedule(this, "AgentSessionSweepSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(5 minutes)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.session-sweep" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
     }
     // Plan 4 Task 9: every 5 minutes the chain sweep looks at the chain runs that are due (a step that ran out of time, a callback or a decision the run did not hear, an ending
     // left half done). Named environments only, as the chains' own routes are; it runs through the same role as the other recovery schedules and needs no new grant.
@@ -1097,6 +1112,16 @@ export class ControlPlaneStack extends Stack {
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       signInFunction = developerSignIn.signInFunction;
+      // Plan 5, Task 8: change notices over an AppSync Events API. The broker and the outbox publisher publish to its one namespace; clients subscribe with a short-lived token
+      // the authorizer checks (it may read the token key's public half and nothing more). The broker gets the API's id in its names and builds the endpoint from it
+      // (its variables are held to 4 KB); the outbox publisher gets the endpoint whole.
+      const realtime = new RealtimeEvents(this, "Realtime", {
+        env: naming.env, state, tokenKey: developerSignIn.tokenKey, allowPublicKeyRead: (role) => developerSignIn.allowPublicKeyRead(role),
+      });
+      realtime.grantPublish(broker);
+      realtime.grantPublish(outboxPublisher);
+      outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
+      BrokerNames.of(broker).add("realtimeApi", realtime.api.apiId);
       if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,

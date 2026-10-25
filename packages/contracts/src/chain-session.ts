@@ -8,6 +8,7 @@ import { AgentIdSchema } from "./agent.js";
 import { ChainIdSchema, ChainRunIdSchema, ChainRunStatusSchema, StepAttemptStatusSchema, StepLinkSchema, TriggerIdSchema } from "./chains.js";
 import { DeveloperTaskViewSchema } from "./developer-tasks.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
+import { forwardReader } from "./forward-reader.js";
 
 export const CHAIN_SESSION_CONTRACT_VERSION = 1 as const;
 
@@ -144,60 +145,6 @@ export const ChainRunListSchema = z.object({ runs: z.array(ChainRunSummarySchema
 export type ChainRunList = z.infer<typeof ChainRunListSchema>;
 
 // ---- what clients read
-
-const UNKNOWN = "unknown" as const;
-
-/** An enum read so that a value a newer server added is `"unknown"` instead of a failed parse. */
-export function openEnum<const T extends readonly [string, ...string[]]>(values: T): z.ZodType<T[number] | typeof UNKNOWN> {
-  return z.enum(values).catch(UNKNOWN as never);
-}
-
-/** What a reader gives for a strict type: objects keep unknown fields, and a string-literal union may read as "unknown". */
-export type ForwardReader<T> = T extends string
-  ? string extends T ? T : T | typeof UNKNOWN
-  : T extends readonly (infer Item)[]
-    ? Array<ForwardReader<Item>>
-    : T extends object
-      ? { [Key in keyof T]: ForwardReader<T[Key]> } & { [other: string]: unknown }
-      : T;
-
-type Def = { type: string } & Record<string, unknown>;
-const defOf = (schema: z.ZodType): Def => (schema as unknown as { _zod: { def: Def } })._zod.def;
-
-/**
- * The reader of a strict schema: every object keeps unknown fields (`looseObject`), every enum is an `openEnum`, a variant of a discriminated union that the
- * schema does not know reads as `{ kind: "unknown", …its other fields }`, and everything else is rebuilt around the same pieces. Length and pattern rules on
- * plain values are kept.
- */
-function readerOf(schema: z.ZodType): z.ZodType {
-  const def = defOf(schema);
-  switch (def.type) {
-    case "object": {
-      const shape: Record<string, z.ZodType> = (schema as unknown as z.ZodObject).shape;
-      return z.looseObject(Object.fromEntries(Object.entries(shape).map(([key, field]) => [key, readerOf(field)])));
-    }
-    case "enum":
-      return openEnum((schema as unknown as z.ZodEnum).options as unknown as readonly [string, ...string[]]);
-    case "array":
-      return z.array(readerOf(def.element as z.ZodType));
-    case "optional":
-      return readerOf(def.innerType as z.ZodType).optional();
-    case "union": {
-      const options = def.options as z.ZodType[];
-      if (typeof def.discriminator !== "string") return z.union(options.map(readerOf) as unknown as [z.ZodType, z.ZodType]);
-      const discriminator = def.discriminator;
-      const known = options.flatMap((option) => [...((option as unknown as z.ZodObject).shape[discriminator] as unknown as z.ZodLiteral).values]);
-      const unknownVariant = z.looseObject({ [discriminator]: z.string().refine((value) => !known.includes(value)).transform((): typeof UNKNOWN => UNKNOWN) });
-      return z.union([...options.map(readerOf), unknownVariant] as unknown as [z.ZodType, z.ZodType]);
-    }
-    default:
-      return schema;
-  }
-}
-
-function forwardReader<S extends z.ZodType>(schema: S): z.ZodType<ForwardReader<z.output<S>>> {
-  return readerOf(schema) as z.ZodType<ForwardReader<z.output<S>>>;
-}
 
 export const ChainRunViewReaderSchema = forwardReader(ChainRunViewSchema);
 export const ChainRunSectionReaderSchema = forwardReader(ChainRunSectionSchema);

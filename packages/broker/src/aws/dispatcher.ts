@@ -15,7 +15,7 @@ import { ProjectSetupSessionManager, SessionManager, workspaceBinding } from "./
 import { admitProjectSetupRuntime, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "./project-setup-runtime-catalog.js";
 import { guardTaskDispatch, isTaskDispatchGuardRetryError } from "./task-dispatch-access.js";
 import { createTaskAuthorityAdmission } from "./task-authority-admission.js";
-import { createTaskPersonRuntime, type TaskPersonDeveloperRecordProjection, type TaskPersonRuntimePorts } from "./task-person-runtime.js";
+import { createTaskPersonRuntime, stateAuthorityWitnessForDispatch, type TaskPersonDeveloperRecordProjection, type TaskPersonRuntimePorts } from "./task-person-runtime.js";
 import { taskPersonProofThroughLambda } from "./task-person-proof-transport.js";
 
 const DEFAULT_MAX_DISPATCH_ATTEMPTS = 5;
@@ -456,7 +456,7 @@ const taskDispatchGuard = (record: DurableOutboxRecord, context?: { remainingTim
     admission,
     ...(context === undefined ? {} : { remainingTimeMs: context.remainingTimeMs }),
     ...(checkTaskPerson === undefined ? {} : { checkTaskPerson }),
-    ...(personRuntime === undefined ? {} : { stateAuthorityWitnessForOwnerActor: (task, ownerActorId) => personRuntime.stateAuthorityWitnessForOwnerActor(task, ownerActorId) }),
+    ...(personRuntime === undefined ? {} : { stateAuthorityWitnessForOwnerActor: (task, ownerActorId) => stateAuthorityWitnessForDispatch(personRuntime, task, ownerActorId) }),
   }, record);
 };
 

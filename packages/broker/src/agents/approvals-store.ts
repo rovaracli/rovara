@@ -4,7 +4,9 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
+import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
+import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
 import { WRITE_APPROVAL_TTL_MS } from "./approval-ttl.js";
 import { auditApprovalRequested } from "../audit/events.js";
@@ -61,6 +63,11 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   startApprovedRun?: (input: { orgId: OrgId; requestId: string; project: string; agent: { agentId: AgentId; version: number }; input: RunInput; origin: WorkOrigin; developerId: string }) => Promise<void>;
   /** Task 22: what the agent-step engine needs of the broker (dispatching a step's operation, the creator and recipe checks, the parts of a task's end). Without it a run cannot go on. */
   agentRuns?: AgentRunHost;
+  /**
+   * Plan 5 Tasks 4 and 12b: what company-wide session shares and take-overs need (their rules and handlers): the session store and access, the sign-in store, the payer's
+   * admission, the realtime events API and Plan 4's chain mover. Without it a `session_share_org` or `session_owner` change can't be decided or applied.
+   */
+  agentSessions?: SessionTakeOverDependencies;
 }
 
 /** The part of the dependencies the record's own writes need. */
@@ -106,8 +113,20 @@ export interface ConnectorWidenSubject { kind: "connector_widen"; project: strin
  */
 export interface OptOutChangeSubject { kind: "opt_out"; project: string; repository: string; expectedDigest: string; files: string[]; reason: string }
 
-/** The kinds of change that are not about an agent itself: connector widenings (Task 13) and comment-trigger opt-outs (Task 14b). */
-export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject;
+/**
+ * Plan 5 Task 4: makes everyone in the company able to see a session at `level` (a share with the whole company needs the sharer's fresh sign-in, like
+ * handing over its ownership). It applies as the person who decided it, if they may still share the session.
+ */
+export interface SessionShareOrgSubject { kind: "session_share_org"; sessionId: SessionId; level: SessionLevel }
+
+/**
+ * Plan 5 Task 12b: makes `to` the owner of a session, while the session is still at `sessionRevision` (only owner, sharing and leg changes move it, so a follow, a summary
+ * refresh or an event can't make a take-over fail). It applies as the person who decided it, who is `to`, if they may still take the session over.
+ */
+export interface SessionOwnerSubject { kind: "session_owner"; sessionId: SessionId; to: string; sessionRevision: number }
+
+/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5). */
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
 
 /** Plan 4 Task 4: a chain's publish or rollback that makes something less safe, bound to the draft revision and digest (or the version) that was shown. */
 export type ChainChangeSubject =
@@ -122,7 +141,7 @@ export type ChainChangeSubject =
  */
 export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string; triggerRevision: number };
 
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -328,6 +347,8 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     kind: z.literal("chain_share"), chainId: ChainIdSchema, expectedSharesRevision: z.number().int(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
+  z.object({ kind: z.literal("session_share_org"), sessionId: SessionIdSchema, level: SessionLevelSchema }).strict(),
+  z.object({ kind: z.literal("session_owner"), sessionId: SessionIdSchema, to: Hex64, sessionRevision: z.number().int().min(1) }).strict(),
   z.object({
     kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
     project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
@@ -584,26 +605,52 @@ export const hasHandlerPhase = (record: AnyApprovalRecord): boolean => record.ki
 
 export interface ApprovalRunView { project: string; owner: { developerId: string; name: string } }
 
-/**
- * The project and the person a write or step approval is about. A step the creator didn't annotate takes them from its task. Undefined when they
- * can't be told (a change record, a chain gate without them): a rule that needs them then refuses.
- */
-export async function runOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: AnyApprovalRecord): Promise<ApprovalRunView | undefined> {
-  if (record.kind === "write") return { project: record.project, owner: record.owner };
-  if (record.kind !== "step") return undefined;
-  if (record.project !== undefined && record.owner !== undefined) return { project: record.project, owner: record.owner };
-  if (record.subject.kind !== "agent_run") return undefined;
+/** The task a write or step approval is about, read live; undefined when the record names none, it is gone, or it belongs to another org. */
+export async function taskOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: StepApprovalRecord | WriteApprovalRecord): Promise<DeveloperTaskRecord | undefined> {
   const taskId = (record.subject as { taskId?: unknown }).taskId;
   if (typeof taskId !== "string") return undefined;
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true })) as { Item?: { orgId?: unknown; project?: unknown; developerId?: unknown; developerName?: unknown } };
-  const task = response.Item;
-  if (task?.orgId !== record.orgId || typeof task.project !== "string" || typeof task.developerId !== "string") return undefined;
-  return { project: record.project ?? task.project, owner: record.owner ?? { developerId: task.developerId, name: typeof task.developerName === "string" ? task.developerName : "the task owner" } };
+  let response: { Item?: DeveloperTaskRecord };
+  try {
+    response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
+  } catch {
+    // Who owns the task decides who may decide, so a read that failed answers nobody's yes: it is a transient fault to retry, never a refusal of the person (12a review M-5).
+    throw agentXError("RUNTIME_UNAVAILABLE", "Rovara couldn't read the task just now. Try again in a moment.");
+  }
+  return response.Item?.orgId === record.orgId ? response.Item : undefined;
 }
 
-/** What the person who can't decide is told. */
-export function forbiddenText(record: AnyApprovalRecord): string {
-  return record.kind === "write" ? `Only ${record.owner.name} or a project maintainer can decide this.` : "You can't decide this.";
+/**
+ * The person a write or step approval is about, read live: the task's effective owner (Plan 5 Task 12a) when someone took the task over, since the person who took it
+ * over decides what it does, and otherwise the owner the record stored (a task nobody took over, a task that is gone); the stored one stays as history. A step the
+ * creator didn't annotate takes its owner from the task. Undefined when the task was taken over and its owner can't be read: nobody is the owner then.
+ */
+function ownerOfRun(task: DeveloperTaskRecord | undefined, stored: ApprovalRunView["owner"] | undefined): ApprovalRunView["owner"] | undefined {
+  if (task === undefined) return stored;
+  if (stored !== undefined && !isTaskTakenOver(task)) return stored;
+  const owner = tryEffectiveTaskOwner(task);
+  return owner === undefined ? undefined : { developerId: owner.developerId, name: owner.name };
+}
+
+/**
+ * The project and the person a write or step approval is about. A step the creator didn't annotate takes them from its task; a task someone took over names its
+ * taker (`ownerOfRun`). Undefined when they can't be told (a change record, a chain gate without them): a rule that needs them then refuses.
+ */
+export async function runOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: AnyApprovalRecord): Promise<ApprovalRunView | undefined> {
+  if (record.kind === "write") {
+    const owner = ownerOfRun(await taskOfApproval(deps, record), record.owner);
+    return owner === undefined ? undefined : { project: record.project, owner };
+  }
+  if (record.kind !== "step") return undefined;
+  if (record.subject.kind !== "agent_run") return record.project !== undefined && record.owner !== undefined ? { project: record.project, owner: record.owner } : undefined;
+  const task = await taskOfApproval(deps, record);
+  const owner = ownerOfRun(task, record.owner);
+  const project = record.project ?? (typeof task?.project === "string" ? task.project : undefined);
+  return project === undefined || owner === undefined ? undefined : { project, owner };
+}
+
+/** What the person who can't decide is told; `ownerName` is the run's owner as `runOfApproval` names them now. */
+export function forbiddenText(record: AnyApprovalRecord, ownerName?: string): string {
+  return record.kind === "write" ? `Only ${ownerName ?? record.owner.name} or a project maintainer can decide this.` : "You can't decide this.";
 }
 
 /** Whether `caller` may decide `record` now: the registered rule says yes, or they are listed and still hold `start_tasks` on the project. Everything is read live. */

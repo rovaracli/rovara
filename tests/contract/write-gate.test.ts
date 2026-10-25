@@ -1879,3 +1879,142 @@ describe("the wiring fix round", () => {
   });
 });
 
+
+describe("after a take-over (Plan 5 Task 12a)", () => {
+  const SINCE = "2026-10-22T08:30:00.000Z";
+  const taken = (developerId: string, name: string) => ({ currentOwner: { developerId, name, provider: "oidc", since: SINCE } });
+
+  it("an approval asked before the take-over is the taker's to decide: the creator is refused naming the taker, and the call is run as the taker's request", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.task(taken(CARA, "Cara"));
+    expect(await code(w.approve(ALICE, id))).toEqual({ code: "FORBIDDEN", message: "Only Cara or a project maintainer can decide this." });
+    expect((await w.write(id)).status).toBe("PENDING");
+    expect(await w.approve(CARA, id)).toEqual({ status: "APPROVED_DONE" });
+    // The run's owner reaches the connector as the requester, and what the record stored stays as history.
+    expect(w.vendor.state.vendorCalls[0]).toMatchObject({ requestedBy: CARA, ownerKey: OWNER_KEY });
+    expect((await w.write(id)).owner).toEqual({ developerId: ALICE, name: "Alice" });
+  });
+
+  it("keeps the owner the member movers wrote on the record when nobody took the task over: the stored owner is the owner until a take-over", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    // A merge moved the approval's owner from Alice to Cara; the task still names Alice as its creator and nobody took it over.
+    const stored = w.db.get(approvalKey(ORG_A, id))!;
+    w.db.set({ ...stored, owner: { developerId: CARA, name: "Cara" } });
+    expect(await code(w.approve(ALICE, id))).toEqual({ code: "FORBIDDEN", message: "Only Cara or a project maintainer can decide this." });
+    expect(await w.approve(CARA, id)).toEqual({ status: "APPROVED_DONE" });
+  });
+
+  it("a maintainer may still decide it, as before", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.task(taken(CARA, "Cara"));
+    expect(await w.approve(BOB, id)).toEqual({ status: "APPROVED_DONE" });
+    expect(w.vendor.state.vendorCalls[0]).toMatchObject({ requestedBy: CARA });
+  });
+
+  it("is shown to the taker as the owner of the run: they can see the approval, and the creator who handed it over cannot", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    const get = (who: AgentCaller) => routeApprovalRequest(w.deps, who, { method: "GET", path: `/v1/app/approvals/${id}`, headers: {}, requestId: "r1", query: {} } as never, new URL(`https://cell.example.com/v1/app/approvals/${id}`));
+    // Before: the stored owner, Alice, sees it and Cara (a contributor) does not.
+    expect(await get(w.caller(ALICE))).toMatchObject({ approval: { approvalId: id } });
+    expect(await code(get(w.caller(CARA)))).toMatchObject({ code: "NOT_FOUND" });
+    w.task(taken(CARA, "Cara"));
+    expect(await get(w.caller(CARA))).toMatchObject({ approval: { approvalId: id } });
+    expect(await code(get(w.caller(ALICE)))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("keeps running an approved write after the creator who handed the task over was removed, and ends the task naming the taker when the taker was removed", async () => {
+    const creatorGone = world();
+    const first = await creatorGone.waiting(1);
+    creatorGone.task(taken(CARA, "Cara"));
+    creatorGone.db.delete(orgMemberKey(ORG_A, ALICE));
+    creatorGone.db.set({ ...orgRemovedKey(ORG_A, ALICE), entityType: "ORG_REMOVED", orgId: ORG_A, developerId: ALICE });
+    expect(await creatorGone.approve(BOB, first)).toEqual({ status: "APPROVED_DONE" });
+    expect(creatorGone.db.get(taskKey(TASK))?.outcome).toBeUndefined();
+
+    const takerGone = world();
+    const second = await takerGone.waiting(1);
+    takerGone.task(taken(CARA, "Cara"));
+    takerGone.db.delete(orgMemberKey(ORG_A, CARA));
+    takerGone.db.set({ ...orgRemovedKey(ORG_A, CARA), entityType: "ORG_REMOVED", orgId: ORG_A, developerId: CARA });
+    expect(await takerGone.approve(BOB, second)).toEqual({ status: "APPROVED_FAILED" });
+    expect((await takerGone.write(second)).failure).toContain("Cara is no longer a member");
+    expect(takerGone.db.get(taskKey(TASK))).toMatchObject({ outcome: "creator_removed" });
+    expect(takerGone.vendor.state.vendorCalls).toEqual([]);
+  });
+
+  it("a taker with no recorded name still decides by id: the page names them with the fixed label, and the creator is refused naming no one by name (ruling on 12a question 1)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.task({ currentOwner: { developerId: CARA, provider: "oidc", since: SINCE } });
+    expect(await code(w.approve(ALICE, id))).toEqual({ code: "FORBIDDEN", message: "Only a member or a project maintainer can decide this." });
+    expect((await w.write(id)).status).toBe("PENDING");
+    expect(await w.approve(CARA, id)).toEqual({ status: "APPROVED_DONE" });
+    expect(w.vendor.state.vendorCalls[0]).toMatchObject({ requestedBy: CARA });
+  });
+
+  it("fences a decision on the owner it was judged under: a take-over that commits between the check and the claim refuses the creator and leaves the approval pending (12a review M-4)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    let flipped = false;
+    const racing = { ...w.deps, documentClient: { async send(command: unknown) {
+      if (!flipped && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { flipped = true; w.task(taken(CARA, "Cara")); }
+      return w.db.send(command as never);
+    } } };
+    expect(await code(decideApproval(racing, w.caller(ALICE), id, { requestId: REQ(910), decision: "APPROVE" }))).toEqual({ code: "FORBIDDEN", message: "Only Cara or a project maintainer can decide this." });
+    expect(flipped).toBe(true);
+    expect((await w.write(id)).status).toBe("PENDING");
+    expect(w.vendor.state.vendorCalls).toEqual([]);
+  });
+
+  it("lets a maintainer's decision stand through that race: it is judged again under the new owner and then applies as the taker's request (12a review M-4)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    let flipped = false;
+    const racing = { ...w.deps, documentClient: { async send(command: unknown) {
+      if (!flipped && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { flipped = true; w.task(taken(CARA, "Cara")); }
+      return w.db.send(command as never);
+    } } };
+    expect(await decideApproval(racing, w.caller(BOB), id, { requestId: REQ(911), decision: "APPROVE" })).toEqual({ status: "APPROVED_DONE" });
+    expect(flipped).toBe(true);
+    expect(w.vendor.state.vendorCalls[0]).toMatchObject({ requestedBy: CARA });
+  });
+
+  it("answers a retryable code, not a refusal, when the task can't be read while judging who may decide, and decides nothing (12a review M-5)", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { pk?: string } | undefined)?.pk === `DEVTASK#${TASK}`, error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
+    expect(await code(w.approve(ALICE, id))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((await w.write(id)).status).toBe("PENDING");
+    // The read comes back: the same person decides, and it runs once.
+    expect(await w.approve(ALICE, id)).toEqual({ status: "APPROVED_DONE" });
+    expect(w.vendor.state.vendorCalls).toHaveLength(1);
+  });
+
+  it("gives up after a few owner changes in a row, with a retryable fault, leaving the approval pending", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    let flips = 0;
+    const racing = { ...w.deps, documentClient: { async send(command: unknown) {
+      if ((command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { flips += 1; w.task(taken(flips % 2 === 0 ? CARA : DANA, "Someone")); }
+      return w.db.send(command as never);
+    } } };
+    expect(await code(decideApproval(racing, w.caller(BOB), id, { requestId: REQ(912), decision: "APPROVE" }))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(flips).toBe(4);
+    expect((await w.write(id)).status).toBe("PENDING");
+  });
+
+  it("a task whose taker can't be read decides nothing: nobody may decide, the creator who handed it over is not named, and nothing runs", async () => {
+    const w = world();
+    const id = await w.waiting(1);
+    w.task({ currentOwner: { developerId: CARA } });
+    for (const who of [ALICE, BOB]) {
+      expect(await code(w.approve(who, id))).toEqual({ code: "FORBIDDEN", message: "Only the task owner or a project maintainer can decide this." });
+    }
+    expect((await w.write(id)).status).toBe("PENDING");
+    expect(w.vendor.state.vendorCalls).toEqual([]);
+  });
+});

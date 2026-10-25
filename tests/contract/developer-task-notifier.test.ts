@@ -9,7 +9,7 @@ import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
 import { cachedSlackPoster, createNotifierHandler, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
-import { MAYA, createDeveloperTaskBroker, recordStream } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, recordStream } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { StrictSlackWeb, visibleSlackText } from "../support/strict-slack.js";
@@ -805,6 +805,34 @@ describe("the shared thread (FR-032, US3 scenario 1)", () => {
     expect(h.updates[0]?.blocks.at(-1)).toEqual({ type: "context", elements: [{ type: "mrkdwn", text: `Approved by <@${MAYA.slackUserId}>.` }] });
     expect(JSON.stringify(h.updates[0]?.blocks)).not.toContain("agentx_workflow_");
     expect(h.posts.at(-1)!.text).toBe(`Coding plan approved by <@${MAYA.slackUserId}>. Writing the code now; then I'll run 1 check.`);
+  });
+
+  it("mentions the person who took the task over, not the creator, on the card their decision updates (Plan 5 Task 12a)", async () => {
+    const plan = "# Plan\nAdd a retry regression test.";
+    const h = await notifierHarness({ shareToChannel: true, workflow: true, workflowPath: "QUICK" }, {
+      readArtifact: async () => plan,
+      createPlanCanvas: async () => ({ canvasId: "F12345678", permalink: "https://acme.slack.com/docs/T123/F12345678" }),
+    });
+    const workflowRecord = h.db.get(`DEVTASK#${h.taskId}`, "META") as Record<string, unknown> & { workflow: Record<string, unknown> };
+    const requiredCheck = { id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } };
+    h.db.set({ ...workflowRecord, workflow: { ...workflowRecord.workflow, checkPolicy: { required: [requiredCheck], optional: [], selectedOptionalIds: [] } } });
+    await h.pump();
+    await h.finish(h.workspaceId, h.active(), "SUCCEEDED");
+    await h.pump();
+    await finishPlanningWithMarkdown(h, h.workspaceId, h.active(), plan);
+    await h.pump();
+    const saved = h.db.get(`DEVTASK#${h.taskId}`, "META") as Record<string, unknown> & { workflow: { revision: number; artifacts: Array<{ sha256: string }> } };
+    // Omar, who has a Slack user of his own, takes the task over from Maya and approves the plan.
+    const OMAR_SLACK = "U0OMAR00001";
+    grantProject(h.db, OMAR, "payments");
+    h.db.set({ ...saved, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: OMAR.provider, slackUserId: OMAR_SLACK, since: new Date().toISOString() } });
+    const decision = await h.dev(OMAR, "POST", `/v1/dev/tasks/${h.taskId}/workflow/decision`, {
+      requestId: randomUUID(), expectedRevision: saved.workflow.revision, decision: "APPROVE", reason: "Looks good.", artifactDigest: saved.workflow.artifacts.at(-1)?.sha256,
+    });
+    expect(decision.status, JSON.stringify(decision.body)).toBe(200);
+    await h.pump();
+    expect(h.updates[0]?.blocks.at(-1)).toEqual({ type: "context", elements: [{ type: "mrkdwn", text: `Approved by <@${OMAR_SLACK}>.` }] });
+    expect(JSON.stringify(h.updates[0]?.blocks)).not.toContain(MAYA.slackUserId);
   });
 
   it("still posts the next step when editing the previous approval card fails", async () => {

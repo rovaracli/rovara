@@ -3,6 +3,8 @@
 import { createHash } from "node:crypto";
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
+  DeveloperSignInMethodSchema,
+  agentXError,
   inertName,
   AiToolTurnRecordSchema,
   DEVELOPER_EVENT_TEXT_MAX,
@@ -85,6 +87,11 @@ export interface DeveloperTaskRecord {
   createdAt: string;
   updatedAt: string;
   closedAt?: string;
+  /**
+   * Plan 5 Task 12a: set when someone other than the creator took the task over (Task 12b writes it). From then on the taker is the task's owner for every read that
+   * carries authority (see `effectiveTaskOwner`); the creator's own fields stay as history, and `ownerKey` (the task's principal) never changes.
+   */
+  currentOwner?: TaskCurrentOwner;
   /** Ruling R60: set when the task's creator was removed from the org; the task dispatches and publishes nothing more. */
   outcome?: "creator_removed";
   /** The sentence the task ended with (`<name> is no longer a member of <org>, so Rovara stopped this task.`) and when. */
@@ -163,6 +170,8 @@ export interface DeveloperTaskRecord {
   runEstimate?: RunEstimate;
   /** Plan 3, Task 34: the run limit a start asked for (`runLimitUsd` of `startAgentRun`); approving the plan accepts no more than it. */
   requestedRunLimitUsd?: number;
+  /** Plan 5, Task 2: the session this task is the subject of, created in the task's start transaction. A chain step's task has none (its chain run is the session). */
+  sessionId?: string;
   /** Plan 3, Task 34: when the run's cost was written for the estimates (`recordRunCost`), so a run is counted once. */
   runCostRecordedAt?: string;
 }
@@ -285,6 +294,138 @@ export const taskOwnerSubject = (developerId: string, taskId: string): string =>
 /** FR-017: the same function as ownerKeyForSubject, so every workspace handler accepts it. */
 export function taskOwnerKey(developerId: string, taskId: string): string {
   return createHash("sha256").update(DEVELOPER_TASK_OWNER_ISSUER).update("\0").update(taskOwnerSubject(developerId, taskId)).digest("hex");
+}
+
+// ---- the effective owner (Plan 5 Task 12a)
+
+/** Who owns a task now: the creator's own fields, or the taker's once the task was taken over. */
+export interface TaskOwner { developerId: string; name: string; slackUserId?: string; provider: DeveloperSignInMethod }
+/** The taker, as `currentOwner` stores them, and when they took the task over. */
+export interface TaskCurrentOwner extends TaskOwner { since: string }
+/** What the owner functions read of a task: its creator's fields and its `currentOwner`. A `DeveloperTaskRecord` fits, and so does a stored row read as one. */
+export type TaskOwnerSource = Pick<DeveloperTaskRecord, "taskId" | "developerId" | "developerName" | "provider" | "slackUserId" | "currentOwner">;
+
+const present = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
+
+/** What shows for a taker whose name was not recorded. Authority never reads the name: it is by id, so a missing name only changes what is displayed. */
+export const UNNAMED_MEMBER = "a member";
+
+/** The task's owner could not be worked out, so nobody is it: every read that carries authority refuses rather than fall back to the creator. */
+export const TASK_OWNER_UNREADABLE_MESSAGE = "Rovara can't tell who owns this task right now, so it did nothing.";
+
+function unreadableOwner(): Error {
+  return agentXError("TASK_ACCESS_DENIED", TASK_OWNER_UNREADABLE_MESSAGE);
+}
+
+/** The stored taker, or undefined for anything that is not exactly one (a missing or empty id, an unknown sign-in method, no usable time, a Slack id that is not a string). */
+function readCurrentOwner(value: unknown): TaskCurrentOwner | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const taker = value as Record<string, unknown>;
+  const provider = DeveloperSignInMethodSchema.safeParse(taker["provider"]);
+  if (!present(taker["developerId"]) || !provider.success || !present(taker["since"]) || !Number.isFinite(Date.parse(taker["since"]))) return undefined;
+  if (taker["slackUserId"] !== undefined && !present(taker["slackUserId"])) return undefined;
+  return {
+    developerId: taker["developerId"], name: present(taker["name"]) ? taker["name"] : UNNAMED_MEMBER, provider: provider.data, since: taker["since"],
+    ...(taker["slackUserId"] === undefined ? {} : { slackUserId: taker["slackUserId"] }),
+  };
+}
+
+/**
+ * The only place that says who owns a task now: its `currentOwner` once someone took it over, else its creator. Read the task live (a consistent read) and call this
+ * on that record; never remember the answer across calls. Fails closed: a `currentOwner` that is present but not a whole taker, or a task with no creator, throws
+ * `TASK_ACCESS_DENIED` (never the creator, who handed the task over).
+ */
+export function effectiveTaskOwner(task: TaskOwnerSource): TaskOwner {
+  if (Object.hasOwn(task, "currentOwner") && task.currentOwner !== undefined) {
+    const taker = readCurrentOwner(task.currentOwner);
+    if (taker === undefined) throw unreadableOwner();
+    const { since: _since, ...owner } = taker; // eslint-disable-line @typescript-eslint/no-unused-vars
+    return owner;
+  }
+  if (!present(task.developerId) || typeof task.developerName !== "string") throw unreadableOwner();
+  return { developerId: task.developerId, name: task.developerName, provider: task.provider, ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }) };
+}
+
+/**
+ * Whether someone other than the creator took the task over: its `currentOwner` is there, whether or not it can be read (a taken-over task whose taker can't be
+ * read is never read as the creator's, and `effectiveTaskOwner` is what refuses it).
+ */
+export function isTaskTakenOver(task: TaskOwnerSource): boolean {
+  return Object.hasOwn(task, "currentOwner") && task.currentOwner !== undefined;
+}
+
+/** When the task was taken over (the taker's `since`), or undefined for a task nobody took over or whose taker can't be read. */
+export function takenOverSince(task: TaskOwnerSource): string | undefined {
+  return isTaskTakenOver(task) ? readCurrentOwner(task.currentOwner)?.since : undefined;
+}
+
+/**
+ * Whether an owner's decision (made by `actorId` at `decidedAt`, the time stored with it) still counts as the task owner's now: the owner's actor id counts; so does the
+ * creator's, when the decision was made before someone took the task over (never judged by the time it is acted on); `ownerActorIds` (the task's People owners, when it
+ * has any) count as well. A taker's decision from before they took the task over does not.
+ */
+export function ownerDecisionCounts(task: TaskOwnerSource, actorId: string, decidedAt: string, ownerActorIds?: readonly string[]): boolean {
+  const takenAt = takenOverSince(task);
+  const before = takenAt !== undefined && Date.parse(decidedAt) < Date.parse(takenAt);
+  const creator = taskOwnerKey(task.developerId, task.taskId);
+  if (ownerActorIds !== undefined) return ownerActorIds.includes(actorId) || (before && actorId === creator);
+  return actorId === (before ? creator : ownerActorIdOf(task));
+}
+
+/** The owner's name for a display: the one recorded, or the fixed `UNNAMED_MEMBER` when none is (or the owner can't be read). Never the creator's name for someone else, never blank. */
+export function ownerDisplayName(task: TaskOwnerSource): string {
+  const name = tryEffectiveTaskOwner(task)?.name;
+  return present(name) ? name : UNNAMED_MEMBER;
+}
+
+/**
+ * Whether `developerId` is the task's owner now. Without a way to follow merges, only the stored id is the owner. With one (`resolveMember`: a developer merged into
+ * another reads as that other), a taker who was merged away since is the owner as the member they became; only the taker is followed, never the creator (the merge
+ * moves the creator's own tasks). An owner that can't be read is nobody.
+ */
+export async function isTaskOwner(task: TaskOwnerSource, developerId: string, resolveMember?: (developerId: string) => Promise<string>): Promise<boolean> {
+  const owner = tryEffectiveTaskOwner(task);
+  if (owner === undefined) return false;
+  if (owner.developerId === developerId) return true;
+  if (resolveMember === undefined || !isTaskTakenOver(task)) return false;
+  return (await resolveMember(owner.developerId)) === (await resolveMember(developerId));
+}
+
+/** `effectiveTaskOwner`, for a read that shows or lists rather than decides: `undefined` when the owner can't be read (nobody is the owner then). */
+export function tryEffectiveTaskOwner(task: TaskOwnerSource): TaskOwner | undefined {
+  try {
+    return effectiveTaskOwner(task);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The owner's actor id: what an actor is compared with when the code asks "is this the owner?". Before a take-over it is the task's `ownerKey`; after one it names the taker. */
+export function ownerActorIdOf(task: TaskOwnerSource): string {
+  return taskOwnerKey(effectiveTaskOwner(task).developerId, task.taskId);
+}
+
+/**
+ * The name an earlier decision or message shows for an actor: the creator's for the creator's actor id (`task.ownerKey`), the taker's for the current owner's, so a
+ * decision made before a take-over still reads as the creator's. `undefined` for any other actor.
+ */
+export function ownerNameOfActor(task: TaskOwnerSource, actorId: string): string | undefined {
+  if (actorId === taskOwnerKey(task.developerId, task.taskId)) return task.developerName;
+  return tryEffectiveTaskOwner(task) !== undefined && actorId === ownerActorIdOf(task) ? effectiveTaskOwner(task).name : undefined;
+}
+
+/**
+ * The condition a write puts on the task row so it holds only while the owner it was decided for is still the owner: no `currentOwner` for an untaken task, else
+ * the taker and the time they took it. Names and values carry the `owner` prefix, so they join any other condition on the row.
+ */
+export function ownerFenceOf(task: TaskOwnerSource): { expression: string; names: Record<string, string>; values: Record<string, unknown> } {
+  const owner = effectiveTaskOwner(task);
+  if (task.currentOwner === undefined) return { expression: "attribute_not_exists(#ownerFence)", names: { "#ownerFence": "currentOwner" }, values: {} };
+  return {
+    expression: "#ownerFence.#ownerFenceId = :ownerFenceId AND #ownerFence.#ownerFenceSince = :ownerFenceSince",
+    names: { "#ownerFence": "currentOwner", "#ownerFenceId": "developerId", "#ownerFenceSince": "since" },
+    values: { ":ownerFenceId": owner.developerId, ":ownerFenceSince": task.currentOwner.since },
+  };
 }
 
 export interface OperationFacts { id: string; kind: string; status: string; error?: string | undefined; createdAt: string; updatedAt?: string | undefined; fence?: number | undefined }

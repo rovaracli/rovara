@@ -4,6 +4,8 @@ import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import type { StreamRecord } from "../developer/notifications.js";
+import { projectSessions } from "../agent-sessions/projector.js";
+import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { INDEX_DEFAULT_BUDGET_MS, byDeadline, indexActivity, putCountedUsage } from "./activity-index.js";
 import { requiredEnvironment, type DurableOutboxRecord } from "./lambda.js";
 
@@ -18,6 +20,21 @@ export interface PublisherContext {
 
 /** A4: time kept back from the Lambda's remaining time, so the index ends before the timeout. */
 export const INDEX_SAFETY_MARGIN_MS = 5_000;
+
+type IndexRun = (records: readonly StreamRecord[], options?: { deadline: number }) => Promise<unknown>;
+
+/**
+ * Runs the activity index and the session projector together under the same deadline. Either failing is logged by name and never fails the batch, and one
+ * never waits on or hides the other (Plan 5 Task 7a).
+ */
+export function indexTogether(indexes: { activity: IndexRun; sessions: IndexRun }): IndexRun {
+  return async (records, options) => {
+    const [activity, sessions] = await Promise.allSettled([indexes.activity(records, options), indexes.sessions(records, options)]);
+    const name = (reason: unknown) => (reason instanceof Error ? reason.name : "unknown");
+    if (activity.status === "rejected") console.log(JSON.stringify({ component: "outbox-publisher", event: "activity_index.write_failed", error: name(activity.reason) }));
+    if (sessions.status === "rejected") console.log(JSON.stringify({ component: "outbox-publisher", event: "session_projector.failed", error: name(sessions.reason) }));
+  };
+}
 
 export function createOutboxPublisherHandler(dependencies: {
   send: (record: DurableOutboxRecord) => Promise<void>;
@@ -60,6 +77,10 @@ const awsClientConfiguration = process.env.AWS_REGION === undefined ? {} : { reg
 const sqs = new SQSClient(awsClientConfiguration);
 const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration));
 
+// Plan 5 Task 8: a session's change the projector commits becomes each person's feed and a notice on the events API (REALTIME_HTTP_ENDPOINT, where there is one).
+// A chain session's followers can't be judged here (Plan 4's readers are the broker's), so none is told from this function until Plan 4 supplies them.
+installRealtimeSink({ realtime: realtimeConfigFromEnvironment() });
+
 export const handler = createOutboxPublisherHandler({
   async send(record) {
     await sqs.send(new SendMessageCommand({ QueueUrl: required(queueUrl, "DISPATCH_QUEUE_URL"), MessageBody: JSON.stringify(record) }));
@@ -82,7 +103,8 @@ export const handler = createOutboxPublisherHandler({
       if (!(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error;
     }
   },
-  index: (records, options) => indexActivity(records, {
+  index: indexTogether({
+  activity: (records, options) => indexActivity(records, {
     // A4: the SDK has no default request timeout; the index's signal aborts a hung request.
     get: async (key, requestOptions) => ((await documentClient.send(new GetCommand({ TableName: required(tableName, "STATE_TABLE_NAME"), Key: key, ConsistentRead: true }), abortOptions(requestOptions?.signal))) as { Item?: Record<string, unknown> }).Item,
     put: async (item, requestOptions) => {
@@ -95,6 +117,8 @@ export const handler = createOutboxPublisherHandler({
     // Plan 3 Task 30: a ChatGPT-plan task's tokens are counted with its usage row, once.
     putCounting: (item, counter, requestOptions) => putCountedUsage(documentClient, required(tableName, "STATE_TABLE_NAME"), item, counter, abortOptions(requestOptions?.signal)),
   }, (entry) => console.log(JSON.stringify({ component: "outbox-publisher", ...entry })), options?.deadline ?? Date.now() + INDEX_DEFAULT_BUDGET_MS, installOrgIdFromEnvironment()),
+  sessions: (records, options) => projectSessions(records, { documentClient, tableName: required(tableName, "STATE_TABLE_NAME"), now: Date.now }, { deadline: options?.deadline ?? Date.now() + INDEX_DEFAULT_BUDGET_MS }),
+  }),
 });
 
 /** The SDK's per-request options: the index's abort signal, when it gave one. */

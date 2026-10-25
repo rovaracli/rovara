@@ -7,6 +7,7 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
+import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
@@ -84,6 +85,9 @@ async function setup(options: { proxy?: boolean; brokerExtra?: Record<string, un
     ...(options.readyChecks === true ? { register: false } : {}),
     brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...options.brokerExtra },
   });
+  // Plan 5 Task 7b: a broker with agents registers the sessions' end and pause handlers. These tests are Plan 3's contract for the handlers it is given (who is told, in what
+  // order, how many), and some of them are about nobody listening, so they run without that pair (agent-session-task-end-broker.test.ts covers it with the real broker).
+  unregisterAgentSessionTaskHandlers();
   if (options.readyChecks === true) await registerSlackProject(h.handler, { readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }] });
   if (access !== undefined) {
     access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
@@ -545,6 +549,22 @@ describe("an approval step", () => {
     expect(t.runItem(run.taskId)).toMatchObject({ state: "WAITING_FOR_APPROVAL", cursor: 1, steps: [{ status: "done" }, { id: "gate", status: "waiting", approvalIds: [record.approvalId] }, { status: "pending" }] });
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
     expect((await t.view(MAYA, run.taskId)).run.pendingApprovals).toEqual([expect.objectContaining({ kind: "step", text: "Send the report to customers?" })]);
+  });
+
+  it("asks the person who took the task over, not the creator, as the run's owner (Plan 5 Task 12a)", async () => {
+    const t = await setup();
+    const agentId = await t.agentOf(WITH_GATE);
+    const run = await t.start(agentId);
+    await run.finishPrepare();
+    // Omar takes the task over before the draft step ends.
+    t.db.set({ ...t.db.get(`DEVTASK#${run.taskId}`, "META")!, currentOwner: { developerId: OMAR.developerId, name: OMAR.name, provider: OMAR.provider, since: "2026-10-22T11:00:00.000Z" } });
+    await t.finishStep(run, t.stepOps(run.workspaceId)[0]!.id, "The draft.");
+    const deps = t.routeDeps();
+    const [approvalId] = t.runItem(run.taskId)!.steps[1]!.approvalIds;
+    const record = (await getAnyApproval(deps, TEST_ORG, approvalId as never)) as StepApprovalRecord;
+    expect(record.owner).toEqual({ developerId: OMAR.developerId, name: OMAR.name });
+    expect(record.approvers.kind === "rule" && record.approvers.candidates).toContain(OMAR.developerId);
+    expect(record.approvers.kind === "rule" && record.approvers.candidates).not.toContain(MAYA.developerId);
   });
 
   it("goes on to the next step when it is approved, handing it the earlier reports", async () => {

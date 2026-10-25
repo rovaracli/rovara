@@ -241,6 +241,7 @@ describe("the named TEST proof-only installation gate", () => {
     // (legacy-templates snapshot, +45 lines, additions only), so the legacy digests moved with them; the legacy broker policy is unchanged.
     // Plan 3, Task 22: the notifier's stream filter also takes AGENT_REPORT_POST items (one more value in an existing filter), so the named and foreign
     // digests moved with it; the legacy template has no notifier and is unchanged.
+    // Plan 5, Task 5: the sign-in stack's `ANY /s/{proxy+}` route (a session's link) moved the named and foreign digests; legacy has no sign-in stack.
     // Plan 3 final fix wave (review C1): a named environment's broker is given its generated names in one variable (AGENTX_NAMES), not whole, and derives
     // what its environment name decides, so Lambda's 4 KB limit on its variables holds; the named and foreign digests moved with it (the broker's
     // variables only, and the connector secrets role's one Deny); the legacy digests did not move, which is the check that its broker is untouched.
@@ -258,6 +259,9 @@ describe("the named TEST proof-only installation gate", () => {
     // Merge of Plan 2's final fix wave into Plan 3: the install-request reminder schedule and metric filter are now created on cloud installs only, so the
     // legacy template lost them again and its digests are back to their values before Plan 2 (the legacy-templates snapshot lost the same 45 lines); the
     // named and foreign digests were regenerated for the merged template (Plan 2's cloud-only schedule and the reconciler's StartExecution grant on top of Plan 3).
+    // Merge of Plan 3 into Plan 5: the named and foreign digests were regenerated again for the merged template (Plan 5's `ANY /s/{proxy+}` route on top of the above).
+    // Plan 5, Task 8: the realtime events API (its API, namespace, authorizer, the authorizer's and publishers' grants, the token key's split deny and the broker's one more
+    // name) moved the named and foreign digests; the legacy template has no sign-in stack and none of it, and its digests did not move.
     const digestCases = [
       {
         label: "named",

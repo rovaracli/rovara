@@ -6,7 +6,9 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, agentXError, isBuiltinAgentId, type AuditProof, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, LEVEL_WORDS, agentXError, isBuiltinAgentId, type AuditProof, type OrgId } from "@agentx/contracts";
+import { AgentSessionStore } from "../agent-sessions/store.js";
+import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import { approverRefusalFor } from "./approvals-store.js";
@@ -30,6 +32,8 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
       case "agent_manager": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
       case "chain_publish": return "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin";
       case "project_settings": return "a maintainer of this project";
+      case "session_share_org": return "the person who asked, while they can still share the session";
+      case "session_take_over": return "the person who asked, while they can still take the session over";
       default: return (await approverRefusalFor(deps, record))?.who ?? "the people it was asked of";
     }
   }
@@ -58,6 +62,8 @@ const TITLES: Record<string, string> = {
   trigger_enable: "Turn on a trigger",
   connector_widen: "Let a project's connector make changes",
   opt_out: "Let agents comment in a repository whose workflows act on comments",
+  session_share_org: "Share a session with everyone",
+  session_owner: "Take over a session",
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
 };
 
@@ -127,7 +133,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
-  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable") {
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner") {
     facts.push(...await agentChangeFacts(deps, record.orgId, subject));
   }
   if (subject.kind === "opt_out") {
@@ -141,6 +147,12 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
     if (chain !== undefined) facts.push(fact("Chain", shownText(chain.name, NAME_MAX)));
     if (subject.kind === "chain_rollback") facts.push(fact("Version", String(subject.version)));
   }
+  if (subject.kind === "session_share_org") {
+    // The title is the session's own (redacted when it was stored); a session that can't be read is named by its id.
+    const session = deps.agentSessions === undefined ? undefined : await new AgentSessionStore(deps.agentSessions).get(record.orgId, subject.sessionId).catch(() => undefined);
+    facts.push(fact("Session", session === undefined ? subject.sessionId : shownText(session.title, NAME_MAX * 3)), fact("Everyone in your company", LEVEL_WORDS[subject.level]));
+  }
+  if (subject.kind === "session_owner") facts.push(...await takeOverFacts(deps.agentSessions, record));
   facts.push(expires);
   return { title: TITLES[subject.kind] ?? "Confirm a change", facts, paragraphs: record.changes };
 }

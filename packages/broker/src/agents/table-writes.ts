@@ -49,6 +49,17 @@ export function failedIndexes(error: unknown): Set<number> | undefined {
   return failed;
 }
 
+/**
+ * Whether a failed write lost only to another transaction touching the same items right now: the whole-call `TransactionConflictException`, or a cancellation
+ * with a `TransactionConflict` reason. Nothing was written, no condition failed (`failedIndexes` is empty), and the same write can be tried again.
+ */
+export function isTransactionConflict(error: unknown): boolean {
+  if (errorName(error) === "TransactionConflictException") return true;
+  if (errorName(error) !== "TransactionCanceledException") return false;
+  const reasons = (error as { CancellationReasons?: unknown }).CancellationReasons;
+  return Array.isArray(reasons) && reasons.some((reason: { Code?: string } | undefined) => reason?.Code === "TransactionConflict");
+}
+
 export function strip<T extends Item>(item: T): Omit<T, "pk" | "sk" | "entityType"> {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
   const { pk: _pk, sk: _sk, entityType: _type, ...rest } = item;

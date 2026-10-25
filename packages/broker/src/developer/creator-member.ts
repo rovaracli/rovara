@@ -6,7 +6,8 @@
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, agentXError, orgMemberKey, orgMetaKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
 import { hasTaskEndHandlers, onTaskEnded } from "../agents/task-end.js";
-import { taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "./task-records.js";
+import { leaveTaskEndRow } from "../aws/task-end-row.js";
+import { effectiveTaskOwner, ownerFenceOf, taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "./task-records.js";
 
 export interface CreatorCheckDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -27,46 +28,63 @@ async function readConsistent<T>(deps: CreatorCheckDependencies, key: { pk: stri
 }
 
 /**
- * Refuses (TASK_ACCESS_DENIED) when the task's creator is no longer a member of the task's org, and records `creator_removed` on the
- * task. Does nothing for a legacy task with no org. Call it first: before `acceptTask`, before minting a token, before any access check.
+ * Refuses (TASK_ACCESS_DENIED) when the task's owner is no longer a member of the task's org, and records `creator_removed` on the
+ * task. The owner is the effective one (Plan 5 Task 12a): the person who took the task over, else its creator; the removal message names them, and a task whose owner
+ * can't be read refuses too. Does nothing for a legacy task with no org. Call it first: before `acceptTask`, before minting a token, before any access check.
+ * The record is written only while that owner still owns the task: a take-over that lands first makes this call check the new owner instead.
  */
-export async function requireCreatorStillMember(deps: CreatorCheckDependencies, task: DeveloperTaskRecord): Promise<void> {
+export function requireCreatorStillMember(deps: CreatorCheckDependencies, task: DeveloperTaskRecord): Promise<void> {
+  return checkOwnerStillMember(deps, task, 0);
+}
+
+async function checkOwnerStillMember(deps: CreatorCheckDependencies, task: DeveloperTaskRecord, takeOversSeen: number): Promise<void> {
+  const owner = effectiveTaskOwner(task);
   const stored = OrgIdSchema.safeParse(task.orgId);
   const orgId = stored.success ? stored.data : deps.orgOf === undefined ? deps.orgId : await deps.orgOf(task);
   if (orgId === undefined) return;
-  if (await readConsistent(deps, orgMemberKey(orgId, task.developerId)) !== undefined) return;
+  if (await readConsistent(deps, orgMemberKey(orgId, owner.developerId)) !== undefined) return;
   // No member record is not enough: a Slack user who has not signed in yet has none and is not removed. Removal leaves a tombstone.
-  if (await readConsistent(deps, orgRemovedKey(orgId, task.developerId)) === undefined) return;
+  if (await readConsistent(deps, orgRemovedKey(orgId, owner.developerId)) === undefined) return;
   const org = await readConsistent<{ name?: unknown }>(deps, orgMetaKey(orgId));
-  const message = creatorRemovedMessage(task.developerName, typeof org?.name === "string" ? org.name : "the organization");
+  const message = creatorRemovedMessage(owner.name, typeof org?.name === "string" ? org.name : "the organization");
+  const fence = ownerFenceOf(task);
   try {
     // First removal wins: a repeat leaves the reason and time of the first.
     await deps.documentClient.send(new UpdateCommand({
       TableName: deps.tableName, Key: taskKey(task.taskId),
       UpdateExpression: "SET #outcome = :outcome, outcomeReason = :reason, outcomeAt = :at",
-      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(#outcome)",
-      ExpressionAttributeNames: { "#outcome": "outcome" },
-      ExpressionAttributeValues: { ":outcome": "creator_removed", ":reason": message, ":at": new Date((deps.now ?? Date.now)()).toISOString() },
+      ConditionExpression: `attribute_exists(pk) AND attribute_not_exists(#outcome) AND ${fence.expression}`,
+      ExpressionAttributeNames: { "#outcome": "outcome", ...fence.names },
+      ExpressionAttributeValues: { ":outcome": "creator_removed", ":reason": message, ":at": new Date((deps.now ?? Date.now)()).toISOString(), ...fence.values },
     }));
     await tellRemoved(deps, task);
   } catch (error) {
     if ((error instanceof Error ? error.name : undefined) !== "ConditionalCheckFailedException") throw error;
+    // Either an earlier call recorded the removal, or the task changed hands since it was read: read it again to tell which.
+    const fresh = await readConsistent<DeveloperTaskRecord>(deps, taskKey(task.taskId));
+    if (fresh !== undefined && fresh.outcome === undefined && takeOversSeen < 3) return checkOwnerStillMember(deps, fresh, takeOversSeen + 1);
+    // Already recorded by an earlier call: its telling may not have finished, so this call takes it up (told once: Plan 3's TASK_END record, and no row if it was told).
+    await tellRemoved(deps, task);
   }
   throw agentXError("TASK_ACCESS_DENIED", message);
 }
 
 /**
  * The task ended because its creator was removed (G7): the end handlers hear it, once. An agent-step run's end is told by its engine, which ends the run
- * right after this check refuses. Never throws: the end is recorded already, and the handlers are told again by the next call that reaches the task's end.
+ * right after this check refuses. Never throws: the end is recorded already. An end that is not finished (a handler threw, or another call is telling it) leaves
+ * a recovery row (Plan 5 Task 7b, the Task 22 hand-off) that the sweep tells it from, and the next call that reaches the task's end takes it up too.
  */
 async function tellRemoved(deps: CreatorCheckDependencies, task: DeveloperTaskRecord): Promise<void> {
   if (!hasTaskEndHandlers()) return;
+  let told: "in_progress" | "failed" | undefined;
   try {
     if (task.agent !== undefined && await readConsistent(deps, taskAgentRunKey(task.taskId)) !== undefined) return;
-    await onTaskEnded({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now ?? Date.now }, task, "creator_removed");
+    if (await onTaskEnded({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now ?? Date.now }, task, "creator_removed") === "in_progress") told = "in_progress";
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "task_end.not_told", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    told = "failed";
   }
+  if (told !== undefined) await leaveTaskEndRow(deps, task, "creator_removed", told);
 }
 
 /**

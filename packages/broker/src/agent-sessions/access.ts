@@ -1,0 +1,371 @@
+// Who may do what with a session (Plan 5 Task 4). The level is the highest of the ways a person can hold one, read live each time:
+//   - owning it: `edit`;
+//   - a task session's project: the caller's own grant row (a maintainer grant `edit`, any other grant `view`), an org owner's or admin's role (`view`, and
+//     they may stop it), or, off the read-only path, a role the project's Slack channel gives (`view`);
+//   - a chain session: the readers Plan 4 names (`view`) and a maintainer grant (`edit`);
+//   - a local session: none of the above. Only its owner and the people it was shared with see it (owner answer 2);
+//   - the shares on the session: a person, a project the caller has a role on, or the whole company;
+//   - the task's Task People list (`commenter` is `use`, `viewer` is `view`, `owner` is `edit` until the task has been taken over).
+// A project viewer (not the owner) can only watch, whatever shares say; a Task People `denied` entry takes everything but an org admin's `view`.
+// Another org's session, or no level at all, is `NOT_FOUND`, so a session's existence never leaks.
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { z } from "zod";
+import {
+  AgentPrincipalSchema,
+  OrgRoleSchema,
+  SessionIdSchema,
+  SessionLevelSchema,
+  agentSessionKey,
+  agentXError,
+  atLeast,
+  cleanSessionName,
+  orgMemberKey,
+  projectMemberKey,
+  sessionLevelRequiredMessage,
+  sessionViewerOnlyMessage,
+  type AgentPrincipal,
+  type AgentSessionRecord,
+  type OrgId,
+  type OrgRole,
+  type DeveloperTaskView,
+  type ProjectRole,
+  type SessionAction,
+  type SessionLevel,
+} from "@agentx/contracts";
+import type { ProjectMembers } from "../agents/access.js";
+import { grantRoleOf } from "../developer/project-roles.js";
+import { UNNAMED_MEMBER, effectiveTaskOwner, isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { AgentSessionStore } from "./store.js";
+
+/** Who asks Plan 4 for a chain's view: the internal session actor Plan 5 passes after its own level check (Plan 4, M2). No route, header or body can set it. */
+export interface ChainSessionActor { kind: "session"; developerId: string }
+
+/**
+ * Plan 4's chain reads, injected where Plan 4 is merged: `chainRunView` and `chainStepTask` called with the session actor. `stepTask` keeps its own
+ * project-role requirement; Plan 5 checks the same one first, so the answer is the same without Plan 4's. Until they are supplied a chain session's
+ * body and step tasks answer `RUNTIME_UNAVAILABLE`.
+ */
+export interface ChainSessionReads {
+  runView(actor: ChainSessionActor, runId: string): Promise<unknown>;
+  stepTask(actor: ChainSessionActor, runId: string, seq: number): Promise<DeveloperTaskView>;
+}
+
+/**
+ * `projectMembers` for a reader that only ever takes the read-only path (the realtime authorizer and sink): it asks nobody, and says so loudly if anything asks,
+ * so a code path that reaches Slack from there fails closed instead of making a call.
+ */
+export const NO_SLACK_PROJECT_MEMBERS: Pick<ProjectMembers, "roleOf"> = {
+  roleOf: async () => { throw new Error("the read-only path asks no one"); },
+};
+
+export interface SessionAccessDependencies {
+  documentClient: { send(command: unknown): Promise<unknown> };
+  tableName: string;
+  now: () => number;
+  /** Only `roleOf` is used, and only off the read-only path: it may ask Slack whether the project's channel gives the caller a role. */
+  projectMembers: Pick<ProjectMembers, "roleOf">;
+  /** Plan 4's readers of a chain run (the starter, the run's owner, `view` on the chain and the project, org owners and admins). Without it only the owner and shares see a chain session. */
+  chainReadAccess?: (caller: { orgId: OrgId; developerId: string }, session: AgentSessionRecord) => Promise<boolean>;
+  /** Plan 4's chain reads (see `ChainSessionReads`). */
+  chain?: ChainSessionReads;
+  /** The server secret that seals a session list's cursor (hex, derived by the broker from its signing key). Without it a list can't give a cursor, so it answers `RUNTIME_UNAVAILABLE`. */
+  cursorKey?: string;
+}
+
+/** Who is asking: `DeveloperCaller` fits. Their org role is read from the org's member record, never taken from here. */
+export interface SessionCaller { orgId: OrgId; developerId: string }
+
+export interface SessionAccess {
+  session: AgentSessionRecord;
+  level: "none" | SessionLevel;
+  /** Whether the caller is the effective owner. */
+  owner: boolean;
+  /** Who the effective owner is, named for a header or a "ask <name>" message: the taker once the task was taken over (their name as the task records it), else the session's own owner. */
+  effectiveOwner: { developerId: string; name: string };
+  projectRole?: ProjectRole;
+  /** An org owner or admin, on a task or chain session: they may stop it (`view` plus Stop). */
+  orgAdmin: boolean;
+  /** The caller's role in the org, read from their member record with the rest of the access. */
+  orgRole: OrgRole;
+}
+
+export type { SessionAction };
+
+/** What one request already learned of the caller's roles, so a list of many sessions asks the project channel once per project, not once per row (review m-2). */
+export interface SessionRoleMemo {
+  roles: Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined }>>;
+  shareRoles: Map<string, Promise<ProjectRole | undefined>>;
+}
+export const newSessionRoleMemo = (): SessionRoleMemo => ({ roles: new Map(), shareRoles: new Map() });
+
+export interface SessionAccessOptions {
+  /** The realtime authorizer's path: grant rows, shares and the Task People item are read directly, and no Slack call is made. */
+  readOnlyPath?: true;
+  /** One caller's role lookups, shared by the reads of one request. Never share it between callers (it holds only their roles, keyed by project). */
+  memo?: SessionRoleMemo;
+}
+
+const NOT_FOUND = () => agentXError("NOT_FOUND", "session not found");
+const RANK: Record<"none" | SessionLevel, number> = { none: 0, view: 1, use: 2, edit: 3 };
+const best = (a: "none" | SessionLevel, b: "none" | SessionLevel) => (RANK[a] >= RANK[b] ? a : b);
+const isAdminRole = (role: OrgRole) => role === "owner" || role === "admin";
+
+type Item = Record<string, unknown>;
+const getItem = async (deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
+  ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
+
+// ---- the shares on a session
+
+const ShareRowSchema = z.object({
+  principal: AgentPrincipalSchema,
+  level: SessionLevelSchema,
+  sharedBy: z.object({ developerId: z.string(), name: z.string() }).passthrough(),
+  sharedAt: z.string(),
+}).passthrough();
+export interface SessionShareRow { principal: AgentPrincipal; level: SessionLevel; sharedBy: { developerId: string; name: string }; sharedAt: string }
+
+/** Every share on a session (at most `SESSION_SHARES_MAX`, but a read doesn't count on that), skipping an item that doesn't parse. */
+export async function readSessionShares(deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, orgId: OrgId, sessionId: string): Promise<SessionShareRow[]> {
+  const rows: SessionShareRow[] = [];
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true,
+      ExpressionAttributeValues: { ":pk": agentSessionKey(orgId, sessionId, "META").pk, ":prefix": "SHARE#" },
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      const row = ShareRowSchema.safeParse(item);
+      if (row.success) rows.push({ principal: row.data.principal, level: row.data.level, sharedBy: { developerId: row.data.sharedBy.developerId, name: row.data.sharedBy.name }, sharedAt: row.data.sharedAt });
+    }
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
+  return rows;
+}
+
+// ---- Task People, read without Slack
+
+const PEOPLE_ROLES = new Set(["owner", "commenter", "viewer", "denied"]);
+export type PeopleRole = "owner" | "commenter" | "viewer" | "denied";
+
+/**
+ * Where a follower stands now, judged on the read-only path (no Slack call): their level on the session, `lost` when the check positively says they have no access (they left
+ * the company, a Task People entry denies them, or nothing that could give access exists), or `unknown` when they have none that the read-only path can see but the project's
+ * Slack channel, which it does not ask, could still give them. Only `lost` is a reason to delete a follow.
+ */
+export async function followerStanding(deps: SessionAccessDependencies, caller: SessionCaller, session: AgentSessionRecord): Promise<SessionLevel | "lost" | "unknown"> {
+  const member = await getItem(deps, orgMemberKey(caller.orgId, caller.developerId));
+  const role = OrgRoleSchema.safeParse(member?.["role"]);
+  if (!role.success) return "lost";
+  const computed = await compute(deps, caller, role.data, session, { readOnlyPath: true });
+  if (computed.level !== "none") return computed.level;
+  return computed.undecided ? "unknown" : "lost";
+}
+
+/**
+ * The task's people list as roles by developer: `undefined` when the task has none, "unreadable" for a list that doesn't parse (which counts as a denial for
+ * everyone). A person listed twice keeps their last entry.
+ */
+export async function readTaskPeople(deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, taskId: string): Promise<Map<string, PeopleRole> | "unreadable" | undefined> {
+  const item = await getItem(deps, { pk: `DEVTASK#${taskId}`, sk: "PEOPLE" });
+  if (item === undefined) return undefined;
+  const people = item["people"];
+  if (item["schemaVersion"] !== 1 || !Array.isArray(people)) return "unreadable";
+  const roles = new Map<string, PeopleRole>();
+  for (const entry of people as unknown[]) {
+    const person = entry as { developerId?: unknown; role?: unknown } | null;
+    if (typeof person !== "object" || person === null || typeof person.developerId !== "string" || typeof person.role !== "string" || !PEOPLE_ROLES.has(person.role)) return "unreadable";
+    roles.set(person.developerId, person.role as PeopleRole);
+  }
+  return roles;
+}
+
+/** The caller's entry in the task's people list: undefined for none, "unreadable" for a list that doesn't parse (which counts as a denial). */
+async function peopleRoleOf(deps: SessionAccessDependencies, taskId: string, developerId: string): Promise<PeopleRole | "unreadable" | undefined> {
+  const roles = await readTaskPeople(deps, taskId);
+  return roles === undefined || roles === "unreadable" ? roles : roles.get(developerId);
+}
+
+// ---- the effective owner
+
+/**
+ * The person who owns the session now, as `effectiveTaskOwner` says (Plan 5 Task 12a): the task's current owner once someone took it over, else the task's creator. A
+ * session of no task (a local one, a chain's) has its own owner. Throws `TASK_ACCESS_DENIED` when the task's owner can't be read: nobody owns it then, so no one gets an
+ * owner's access (never the session's first owner, who may have handed the session over).
+ */
+function effectiveOwnerNamed(session: AgentSessionRecord, taskItem: Item | undefined): { developerId: string; name: string } {
+  // A session's own owner is the task's creator until the task is taken over, and a take-over moves the session and the task together.
+  if (taskItem === undefined || !isTaskTakenOver(taskItem as unknown as DeveloperTaskRecord)) return session.owner;
+  const owner = effectiveTaskOwner(taskItem as unknown as DeveloperTaskRecord);
+  if (owner.developerId === session.owner.developerId) return session.owner;
+  return { developerId: owner.developerId, name: cleanSessionName(owner.name) ?? UNNAMED_MEMBER };
+}
+
+/** The id of `effectiveOwnerNamed`: access and the share notice read it. */
+export function effectiveOwnerId(session: AgentSessionRecord, taskItem: Item | undefined): string {
+  return effectiveOwnerNamed(session, taskItem).developerId;
+}
+
+/** `effectiveOwnerId`, reading the task of a task session (a task of another org is no task). */
+export async function effectiveOwnerOf(deps: Pick<SessionAccessDependencies, "documentClient" | "tableName">, session: AgentSessionRecord): Promise<string> {
+  if (session.subject.kind !== "task") return session.owner.developerId;
+  const found = await getItem(deps, taskKey(session.subject.taskId));
+  return effectiveOwnerId(session, found?.["orgId"] === session.orgId ? found : undefined);
+}
+
+// ---- the level
+
+interface Computed { level: "none" | SessionLevel; /** The read-only path left out a project's Slack channel that could have changed a `none` level. */ undecided: boolean; owner: boolean; effectiveOwner: { developerId: string; name: string }; projectRole: ProjectRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
+
+async function compute(deps: SessionAccessDependencies, caller: SessionCaller, orgRole: OrgRole, session: AgentSessionRecord, options: SessionAccessOptions): Promise<Computed> {
+  const { orgId } = caller;
+  const readOnly = options.readOnlyPath === true;
+  const isAdmin = isAdminRole(orgRole);
+  const roles = options.memo?.roles ?? new Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined }>>();
+  const shareRoles = options.memo?.shareRoles ?? new Map<string, Promise<ProjectRole | undefined>>();
+  /** The caller's role on a project: their own grant row, an org owner's or admin's maintainership, or (off the read-only path) the project's channel. */
+  const roleOn = (project: string) => {
+    const known = roles.get(project);
+    if (known !== undefined) return known;
+    const read = (async () => {
+      const grant = grantRoleOf(await getItem(deps, projectMemberKey(orgId, caller.developerId, project)));
+      // An org owner or admin is a maintainer of every project whatever grant they hold; the grant only decides between `edit` and `view` (m-1).
+      if (isAdmin) return { grant, effective: "maintainer" as ProjectRole };
+      if (grant !== undefined) return { grant, effective: grant };
+      if (readOnly) return { grant, effective: undefined };
+      return { grant, effective: await deps.projectMembers.roleOf(orgId, project, { developerId: caller.developerId, orgRole }) };
+    })();
+    roles.set(project, read);
+    return read;
+  };
+
+  /**
+   * The caller's role on a project for a share to it: their own grant row, or (off the read-only path) the project's Slack channel. An org owner's or
+   * admin's maintainership does not count, so a project share never reaches an admin who isn't in the project (answer 2, I5, m7).
+   */
+  const shareRoleOn = (project: string): Promise<ProjectRole | undefined> => {
+    const known = shareRoles.get(project);
+    if (known !== undefined) return known;
+    const read = (async () => {
+      const { grant, effective } = await roleOn(project);
+      const role = await (async () => {
+        if (!isAdmin) return effective;
+        if (grant !== undefined || readOnly) return grant;
+        return deps.projectMembers.roleOf(orgId, project, { developerId: caller.developerId, orgRole: "member" });
+      })();
+      // On the read-only path no grant means the project's Slack channel was not asked, and it could have made them a member of the project.
+      if (readOnly && role === undefined) slackNotAsked = true;
+      return role;
+    })();
+    shareRoles.set(project, read);
+    return read;
+  };
+
+  // The task, for a task session. A task of another org is not this session's task (m15), and counts as no task.
+  let taskItem: Item | undefined;
+  if (session.subject.kind === "task") {
+    const found = await getItem(deps, taskKey(session.subject.taskId));
+    if (found?.["orgId"] === session.orgId) taskItem = found;
+  }
+  let slackNotAsked = false;
+  const effectiveOwner = effectiveOwnerNamed(session, taskItem);
+  const owner = caller.developerId === effectiveOwner.developerId;
+
+  const projectRole = session.project === undefined ? undefined : (await roleOn(session.project)).effective;
+  const grantRole = session.project === undefined ? undefined : (await roleOn(session.project)).grant;
+  const orgAdmin = isAdmin && session.kind !== "local";
+
+  let level: "none" | SessionLevel = owner ? "edit" : "none";
+  if (session.kind === "task" && session.project !== undefined) {
+    if (grantRole === "maintainer") level = best(level, "edit");
+    else if (projectRole !== undefined) level = best(level, "view");
+    else if (readOnly) slackNotAsked = true;
+  } else if (session.kind === "chain") {
+    if (deps.chainReadAccess !== undefined && await deps.chainReadAccess({ orgId, developerId: caller.developerId }, session)) level = best(level, "view");
+    if (grantRole === "maintainer") level = best(level, "edit");
+  }
+
+  for (const share of await readSessionShares(deps, orgId, session.sessionId)) {
+    const principal = share.principal;
+    const applies = principal.kind === "org"
+      || (principal.kind === "member" && principal.developerId === caller.developerId)
+      || (principal.kind === "project" && await shareRoleOn(principal.project) !== undefined);
+    if (applies) level = best(level, share.level);
+  }
+
+  let denied = false;
+  if (taskItem !== undefined && session.subject.kind === "task") {
+    const entry = await peopleRoleOf(deps, session.subject.taskId, caller.developerId);
+    if (entry === "denied" || entry === "unreadable") { level = orgAdmin ? "view" : "none"; denied = true; }
+    else if (entry === "owner") level = best(level, taskItem !== undefined && isTaskTakenOver(taskItem as unknown as DeveloperTaskRecord) ? "none" : "edit");
+    else if (entry === "commenter") level = best(level, "use");
+    else if (entry === "viewer") level = best(level, "view");
+  }
+
+  // A project viewer who isn't the owner only watches, whatever a share or a people entry says.
+  if (!owner && projectRole === "viewer" && RANK[level] > RANK.view) level = "view";
+  return { level, undecided: level === "none" && slackNotAsked && !denied, owner, effectiveOwner, projectRole, orgAdmin, orgRole };
+}
+
+/**
+ * What the caller may do with the session. `NOT_FOUND` for an id that isn't a session of the caller's org, a caller who isn't a current member of
+ * it, and a caller with no level at all. The caller's org role is read from the member record each time, never from the token.
+ */
+export async function resolveSessionAccess(deps: SessionAccessDependencies, caller: SessionCaller, sessionId: string, options: SessionAccessOptions = {}): Promise<SessionAccess> {
+  const id = SessionIdSchema.safeParse(sessionId);
+  if (!id.success) throw NOT_FOUND();
+  const session = await new AgentSessionStore(deps).get(caller.orgId, id.data);
+  if (session === undefined) throw NOT_FOUND();
+  const member = await getItem(deps, orgMemberKey(caller.orgId, caller.developerId));
+  const role = OrgRoleSchema.safeParse(member?.["role"]);
+  if (!role.success) throw NOT_FOUND();
+  return finish(session, await compute(deps, caller, role.data, session, options));
+}
+
+/** The level of a person already known to be a member (a follower's re-check). The read-only path unless `options` say otherwise; a follower the Slack channel covers needs the full one. */
+export async function sessionLevelOf(deps: SessionAccessDependencies, caller: SessionCaller, session: AgentSessionRecord, options: SessionAccessOptions = { readOnlyPath: true }): Promise<"none" | SessionLevel> {
+  const member = await getItem(deps, orgMemberKey(caller.orgId, caller.developerId));
+  const role = OrgRoleSchema.safeParse(member?.["role"]);
+  if (!role.success) return "none";
+  return (await compute(deps, caller, role.data, session, options)).level;
+}
+
+function finish(session: AgentSessionRecord, computed: Computed): SessionAccess {
+  if (computed.level === "none") throw NOT_FOUND();
+  return { session, level: computed.level, owner: computed.owner, effectiveOwner: computed.effectiveOwner, orgAdmin: computed.orgAdmin, orgRole: computed.orgRole, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }) };
+}
+
+export interface RequireOptions extends SessionAccessOptions {
+  /** The action is a comment: a project viewer is refused even though it needs only `view`. */
+  comment?: true;
+  /** An org owner or admin may do this (Stop) although their level is only `view`. */
+  orgAdminMay?: true;
+}
+
+/**
+ * The access, if the caller holds `needed` on the session. `action` completes "to <action>" ("stop it"). A project viewer who isn't the owner is
+ * refused comments and every `use` and `edit` action with the viewer message. Short of the level (but at least `view`) is `SESSION_LEVEL_REQUIRED`
+ * with what is needed and whom to ask; no level is `NOT_FOUND`.
+ */
+export async function requireSessionLevel(deps: SessionAccessDependencies, caller: SessionCaller, sessionId: string, needed: SessionLevel, action: string, options: RequireOptions = {}): Promise<SessionAccess> {
+  const access = await resolveSessionAccess(deps, caller, sessionId, options);
+  if (!access.owner && access.projectRole === "viewer" && (needed !== "view" || options.comment === true)) {
+    throw agentXError("SESSION_LEVEL_REQUIRED", sessionViewerOnlyMessage(access.session.project ?? "this project"));
+  }
+  if (options.orgAdminMay === true && access.orgAdmin) return access;
+  if (!atLeast(access.level, needed)) throw agentXError("SESSION_LEVEL_REQUIRED", sessionLevelRequiredMessage(needed, action, access.effectiveOwner.name));
+  return access;
+}
+
+/** What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, retries, takes over and shares. Handing off is the owner's. */
+export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }): SessionAction[] {
+  if (access.level === "none") return [];
+  if (!access.owner && access.projectRole === "viewer") return ["watch"];
+  const actions: SessionAction[] = ["watch", "comment"];
+  if (atLeast(access.level, "use")) actions.push("steer");
+  if (atLeast(access.level, "edit")) actions.push("stop", "retry", "take_over", "share");
+  if (access.orgAdmin && !actions.includes("stop")) actions.push("stop");
+  if (access.owner) actions.push("handoff");
+  return actions;
+}
+

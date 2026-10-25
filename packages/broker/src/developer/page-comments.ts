@@ -17,7 +17,7 @@ import { plainName } from "../aws/task-web.js";
 import { loadWorkflowDocument, type LoadedDocument } from "./plan-artifacts.js";
 import { can, taskOpen, type TaskAccess } from "./task-access.js";
 import { taskAccessFence } from "./task-people.js";
-import { plannerRepliesKey, taskKey, type DeveloperTaskRecord } from "./task-records.js";
+import { plannerRepliesKey, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "./task-records.js";
 
 type CommentDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "now" | "log">;
 type TableDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">;
@@ -660,7 +660,7 @@ export async function queueCommentAnswer(
   let answering: TaskComment | undefined;
   try {
     const share = task.share;
-    const userId = caller.slackUserId ?? task.slackUserId;
+    const userId = caller.slackUserId ?? tryEffectiveTaskOwner(task)?.slackUserId;
     const threadTs = share?.threadTs;
     const shared = share === undefined || threadTs === undefined ? undefined
       : await getItem(deps, sharedTaskKey({ teamId: share.teamId, channelId: share.channelId, threadTs }));

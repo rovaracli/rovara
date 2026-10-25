@@ -7,8 +7,9 @@ import { auditApprovalDecided, auditApprovalExpired, auditWriteExecuted } from "
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, decisionProofOf } from "../audit/plan3-hooks.js";
+import { ownerFenceOf, taskKey, tryEffectiveTaskOwner } from "../developer/task-records.js";
 import { sameMember } from "./lifecycle.js";
-import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, shownText, stripCode, updateRecord, withFields } from "./approvals-store.js";
+import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runOfApproval, shownText, stripCode, taskOfApproval, updateRecord, withFields } from "./approvals-store.js";
 
 // ---- deciding
 
@@ -185,14 +186,18 @@ async function drive(deps: ApprovalDependencies, record: AnyApprovalRecord, exec
  * must satisfy the record's approvers now (`FORBIDDEN`), and it must still be PENDING (`APPROVAL_CLOSED`). The claim is one conditional transaction,
  * so of two decisions at once exactly one wins.
  */
-export async function runApprovalDecision(deps: ApprovalDependencies, caller: ApprovalCaller, record: AnyApprovalRecord, rawBody: unknown, executor?: Executor): Promise<{ status: ApprovalStatus }> {
+export async function runApprovalDecision(deps: ApprovalDependencies, caller: ApprovalCaller, record: AnyApprovalRecord, rawBody: unknown, executor?: Executor, attempt = 0): Promise<{ status: ApprovalStatus }> {
   const body = parseDecideBody(rawBody);
   if (record.status !== "PENDING" && record.decisionRequestId === body.requestId && record.decidedBy !== undefined && await sameMember(deps, record.orgId, record.decidedBy, caller.developerId)) {
     return { status: record.status };
   }
+  // The task is read BEFORE the check, and the claim is conditional on its owner being the one read here: a take-over that commits after this read fails the claim, so a
+  // decision judged under the old owner never lands under the new one (12a review M-4). The check reads the task again, and is the one that decides.
+  const fenceTask = record.kind === "change" ? undefined : await taskOfApproval(deps, record);
+  const fence = fenceTask === undefined || tryEffectiveTaskOwner(fenceTask) === undefined ? undefined : { task: fenceTask, ...ownerFenceOf(fenceTask) };
   if (!await mayDecideApproval(deps, caller, record)) {
     const refusal = await approverRefusalFor(deps, record);
-    throw agentXError(refusal?.code ?? "FORBIDDEN", refusal?.text ?? forbiddenText(record));
+    throw agentXError(refusal?.code ?? "FORBIDDEN", refusal?.text ?? forbiddenText(record, (await runOfApproval(deps, record))?.owner.name ?? "the task owner"));
   }
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   // The sweep ends an approval whose time ran out only when it reaches it; until then the record is still PENDING, but it can no longer be decided (re-check N1).
@@ -222,13 +227,46 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
     ...approverDrops(deps, record),
     ...events.flatMap((event) => auditPending(deps, event)),
   ];
-  if (!await commitOrLost(deps, items)) throw agentXError("APPROVAL_CLOSED", "this request was already decided");
+  if (fence !== undefined) {
+    items.push({
+      ConditionCheck: {
+        TableName: deps.tableName, Key: taskKey(fence.task.taskId), ConditionExpression: `attribute_exists(pk) AND ${fence.expression}`, ExpressionAttributeNames: fence.names,
+        ...(Object.keys(fence.values).length === 0 ? {} : { ExpressionAttributeValues: fence.values }),
+      },
+    });
+  }
+  const claimed = await claim(deps, items, fence === undefined ? undefined : items.length - 1);
+  if (claimed === "owner_changed") {
+    // The owner changed between the check and the claim. Judge again under the new owner (the record is read again), a few times at most.
+    const fresh = await getAnyApproval(deps, record.orgId, record.approvalId);
+    if (fresh === undefined || fresh.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
+    if (attempt >= OWNER_CHANGE_TRIES) throw agentXError("RUNTIME_UNAVAILABLE", "The task's owner keeps changing. Try again in a moment.");
+    return runApprovalDecision(deps, caller, fresh, rawBody, executor, attempt + 1);
+  }
+  if (claimed === "lost") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   await flushAuditEvents(deps, events);
 
-  const claimed = withFields(record, fields);
-  if (status === "EXECUTING") return drive(deps, claimed, run!);
-  if (handler) await tellHandler(deps, claimed);
+  const decided = withFields(record, fields);
+  if (status === "EXECUTING") return drive(deps, decided, run!);
+  if (handler) await tellHandler(deps, decided);
   return { status };
+}
+
+/** How many times a decision is judged again when the task's owner changes under it. */
+const OWNER_CHANGE_TRIES = 3;
+
+/** Commits the claim: `lost` when the record is no longer pending, `owner_changed` when only the owner fence (the item at `fenceAt`) failed. */
+async function claim(deps: ApprovalDependencies, items: TransactItem[], fenceAt: number | undefined): Promise<"claimed" | "lost" | "owner_changed"> {
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    return "claimed";
+  } catch (error) {
+    if (errorNameOf(error) !== "TransactionCanceledException") throw error;
+    const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
+    if (reasons?.[0]?.Code === "ConditionalCheckFailed") return "lost";
+    if (fenceAt !== undefined && reasons?.[fenceAt]?.Code === "ConditionalCheckFailed") return "owner_changed";
+    throw error;
+  }
 }
 
 /** Decides an approval of any kind as `caller` (a write goes through the write driver, a step through the rule or the id check and then its subject's handler, a change through its handler). */

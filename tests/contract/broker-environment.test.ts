@@ -40,6 +40,7 @@ const NAMES = {
   deleterStateMachine: "agentx-staging-control-plane-SessionsDeleterB48741EA-1A2B3C4D5E6F7",
   cloudUserPool: "us-west-2_AbCdEfGhI",
   signInApi: "abcdefghij",
+  realtimeApi: "klmnopqrst",
   dispatchDeadLetters: "agentx-staging-control-plane-DispatchDeadLetterQueue3E30F4B8-1A2B3C4D5E6F7",
   slackRequestDeadLetters: "agentx-staging-control-plane-SlackDeadLetterQueue8D1F2C3B-1A2B3C4D5E6F7",
   developerNoticeDeadLetters: "agentx-staging-control-plane-DeveloperTaskNotifierDeadLetters5A6B7C8D-1A2B3C4D5E6F7",
@@ -101,6 +102,8 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
     // The sign-in issuers are built from the pool's and the API's ids, to the text the control plane has always passed.
     expect(env.DEVELOPER_CLOUD_ISSUER).toBe("https://cognito-idp.us-west-2.amazonaws.com/us-west-2_AbCdEfGhI");
     expect(env.DEVELOPER_TOKEN_ISSUER).toBe("https://abcdefghij.execute-api.us-west-2.amazonaws.com/v1/auth");
+    // Plan 5 Task 8: the events API's HTTP endpoint is built from its id.
+    expect(env.REALTIME_HTTP_ENDPOINT).toBe("https://klmnopqrst.appsync-api.us-west-2.amazonaws.com/event");
     // The dead-letter queues are listed for the health route as `{ label: URL }`, by the labels the route has always shown.
     expect(JSON.parse(env.HEALTH_DEAD_LETTER_QUEUES!)).toStrictEqual({
       dispatch: `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.dispatchDeadLetters}`,

@@ -4,7 +4,7 @@ import type { DurableOutboxRecord } from "./lambda.js";
 import { taskOpen } from "../developer/task-access.js";
 import { effectiveProjectRole } from "../developer/project-roles.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
-import { taskKey, taskOwnerKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, ownerFenceOf, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
 import type { TaskAuthorityAdmission } from "./task-authority-admission.js";
 
@@ -57,6 +57,19 @@ function conditional(error: unknown): boolean {
   return error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
 }
 
+/**
+ * The task row's condition for a pause: still this workspace's and open, and owned by the owner the pause was decided for (Plan 5 Task 12a). A task whose owner cannot be
+ * read has no owner to fence on: it is paused on the workspace and open alone, since that unreadable owner is the very reason for the pause.
+ */
+function parkTaskCondition(task: DeveloperTaskRecord, workspaceId: string): { ConditionExpression: string; ExpressionAttributeNames?: Record<string, string>; ExpressionAttributeValues: Record<string, unknown> } {
+  const fence = tryEffectiveTaskOwner(task) === undefined ? undefined : ownerFenceOf(task);
+  return {
+    ConditionExpression: `workspaceId = :workspaceId AND attribute_not_exists(closedAt)${fence === undefined ? "" : ` AND ${fence.expression}`}`,
+    ...(fence === undefined ? {} : { ExpressionAttributeNames: fence.names }),
+    ExpressionAttributeValues: { ":workspaceId": workspaceId, ...(fence?.values ?? {}) },
+  };
+}
+
 async function park(
   deps: TaskDispatchAccessDependencies,
   record: DurableOutboxRecord,
@@ -85,7 +98,7 @@ async function park(
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
-      ConditionExpression: "workspaceId = :workspaceId AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":workspaceId": record.workspaceId },
+      ...parkTaskCondition(task, record.workspaceId),
     } },
     { ConditionCheck: {
       TableName: deps.tableName, Key: { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" },
@@ -126,13 +139,16 @@ async function allowedStillCurrent(
   authorityWitness?: ProjectAuthorityWitness & { taskId: string; developerId: string; project: string },
 ): Promise<boolean> {
   const workflow = task.workflow;
+  // The final fence also holds the task to the owner it was judged for: a take-over between the read and this write fails the fence (Plan 5 Task 12a).
+  const fence = ownerFenceOf(task);
   const taskCondition = workflow === undefined
-    ? { ConditionExpression: "workspaceId = :workspaceId AND attribute_not_exists(closedAt) AND attribute_not_exists(workflow)",
-      ExpressionAttributeValues: { ":workspaceId": record.workspaceId } }
-    : { ConditionExpression: "workspaceId = :workspaceId AND attribute_not_exists(closedAt) AND workflow.#revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND workflow.#stage <> :closed AND workflow.#stage <> :merged AND workflow.#state <> :complete",
-      ExpressionAttributeNames: { "#revision": "revision", "#stage": "stage", "#state": "state" },
+    ? { ConditionExpression: `workspaceId = :workspaceId AND attribute_not_exists(closedAt) AND attribute_not_exists(workflow) AND ${fence.expression}`,
+      ExpressionAttributeNames: fence.names,
+      ExpressionAttributeValues: { ":workspaceId": record.workspaceId, ...fence.values } }
+    : { ConditionExpression: `workspaceId = :workspaceId AND attribute_not_exists(closedAt) AND workflow.#revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND workflow.#stage <> :closed AND workflow.#stage <> :merged AND workflow.#state <> :complete AND ${fence.expression}`,
+      ExpressionAttributeNames: { "#revision": "revision", "#stage": "stage", "#state": "state", ...fence.names },
       ExpressionAttributeValues: { ":workspaceId": record.workspaceId, ":revision": workflow.revision, ":stage": workflow.stage, ":state": workflow.state,
-        ":closed": "CLOSED", ":merged": "MERGED", ":complete": "COMPLETE" } };
+        ":closed": "CLOSED", ":merged": "MERGED", ":complete": "COMPLETE", ...fence.values } };
   const peopleCondition = peopleRevision === undefined
     ? { ConditionExpression: "attribute_not_exists(pk)" }
     : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": peopleRevision } };
@@ -258,21 +274,31 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
     if (!taskOpen(task) || task.workflow?.state === "COMPLETE") {
       throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch is no longer open");
     }
-    const access = await resolveTaskDispatchPeople(guardDeps, task);
-    // Plan 2, Task 21: a task with no People sidecar is the creator's alone, and a creator who holds the viewer role in its project starts no work
-    // on it. (A task with a sidecar is judged by its owners above: an owner who is a project viewer is no authority.)
-    if (access === undefined && await creatorIsProjectViewer(guardDeps, task)) {
+    // Plan 5 Task 12a: a task whose owner can't be read has no one to judge by: it pauses, never falls back to its creator.
+    if (tryEffectiveTaskOwner(task) === undefined) {
       if (deps.remainingTimeMs !== undefined && deps.remainingTimeMs() <= TASK_PAUSE_RESERVE_MS) {
         throw agentXError("RUNTIME_UNAVAILABLE", "task access pause reserve is unavailable");
       }
-      await park(guardDeps, record, pointer, task, undefined, "PROJECT_VIEWER");
+      const sidecar = await get<{ revision?: unknown }>(guardDeps, { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE" });
+      await park(guardDeps, record, pointer, task, sidecar === undefined ? undefined : Number(sidecar.revision), "OWNERLESS");
+      return "PARKED";
+    }
+    const access = await resolveTaskDispatchPeople(guardDeps, task);
+    // Plan 2, Task 21: a task with no People sidecar is its owner's alone, and an owner who holds the viewer role in its project starts no work on it. A task with a
+    // sidecar is judged by its owners above (an owner who is a project viewer is no authority), except that the person who took a task over is its owner whatever the
+    // sidecar says, so theirs is read here (Plan 5 Task 12a).
+    if ((access === undefined || (isTaskTakenOver(task) && access.status === "ALLOWED")) && await creatorIsProjectViewer(guardDeps, task)) {
+      if (deps.remainingTimeMs !== undefined && deps.remainingTimeMs() <= TASK_PAUSE_RESERVE_MS) {
+        throw agentXError("RUNTIME_UNAVAILABLE", "task access pause reserve is unavailable");
+      }
+      await park(guardDeps, record, pointer, task, access?.peopleRevision, "PROJECT_VIEWER");
       return "PARKED";
     }
     if (access === undefined || access.status === "ALLOWED") {
       let witness: (ProjectAuthorityWitness & { taskId: string; developerId: string; project: string }) | undefined;
       if (access?.status === "ALLOWED" && deps.stateAuthorityWitnessForOwnerActor !== undefined) {
         const ownerActorId = access.ownerActorIds[0];
-        if (ownerActorId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch authority witness is unavailable");
+        if (ownerActorId === undefined || (isTaskTakenOver(task) && ownerActorId !== ownerActorIdOf(task))) throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch authority witness is unavailable");
         try {
           witness = await deps.stateAuthorityWitnessForOwnerActor(task, ownerActorId);
         } catch {
@@ -301,19 +327,20 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
 }
 
 /**
- * Whether the task's creator is, now, a project viewer: the effective project role (their org role first, so an owner or admin who still holds
- * an old viewer row maintains every project, then their grant), read live in the task's own org. Same rule as `checkProjectAccess`.
+ * Whether the task's owner (the effective one: the person who took it over, else its creator) is, now, a project viewer: the effective project role (their org role first,
+ * so an owner or admin who still holds an old viewer row maintains every project, then their grant), read live in the task's own org. Same rule as `checkProjectAccess`.
  */
 async function creatorIsProjectViewer(deps: TaskDispatchAccessDependencies, task: DeveloperTaskRecord): Promise<boolean> {
   const named = OrgIdSchema.safeParse((task as unknown as Record<string, unknown>).orgId);
   const orgId = named.success ? named.data : deps.orgId;
   if (orgId === undefined) return false;
+  const { developerId } = effectiveTaskOwner(task);
   const [grant, member] = await Promise.all([
-    get<{ role?: unknown; projectRole?: unknown }>(deps, projectMemberKey(orgId, task.developerId, task.project)),
-    get<{ role?: unknown }>(deps, orgMemberKey(orgId, task.developerId)),
+    get<{ role?: unknown; projectRole?: unknown }>(deps, projectMemberKey(orgId, developerId, task.project)),
+    get<{ role?: unknown }>(deps, orgMemberKey(orgId, developerId)),
   ]);
   const orgRole = OrgRoleSchema.safeParse(member?.role);
-  return effectiveProjectRole({ developerId: task.developerId, orgRole: orgRole.success ? orgRole.data : "member" }, grant, false) === "viewer";
+  return effectiveProjectRole({ developerId, orgRole: orgRole.success ? orgRole.data : "member" }, grant, false) === "viewer";
 }
 
 /** Marks only an incomplete core authority decision so the dispatcher retries the same durable operation. */

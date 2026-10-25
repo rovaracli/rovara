@@ -342,14 +342,18 @@ export function agentRunDispatchItem(tableName: string, input: { taskId: string;
 }
 
 /** A task has one `operation_end` row at a time: the latest operation that ended where only a row could tell the broker (Task 22 review, I2). */
-export const operationEndDispatchKey = (taskId: string) => ({ pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#end` } as const);
+export const operationEndDispatchKey = (taskId: string, endOf?: TaskEndRowKind) =>
+  ({ pk: WORKFLOW_DISPATCH_PK, sk: endOf === "workflow" || endOf === "creator_removed" ? `${taskId}#end#${endOf}` : `${taskId}#end` } as const);
 
 /**
- * `endOf: "closed"` (Plan 3, M-6 m-2) is the row of a closed plain task whose `closed` end was not finished: the sweep tells that end, whatever operation `operationId`
- * names (it is not looked up).
+ * `endOf` (Plan 3, M-6 m-2; Plan 5 Task 7b) is the row of a task whose own end was not finished, as against an operation's: `"closed"` for a closed plain task, `"workflow"`
+ * for a workflow task that merged or closed, `"creator_removed"` for a task whose creator was removed. The sweep tells that end from the task, whatever operation
+ * `operationId` names (it is not looked up). A `workflow` or `creator_removed` row has a key of its own, so it never replaces an operation's row (which holds the
+ * pending block of that operation's keys); Plan 3's `closed` row still shares the operation's key (`#end`) and can replace it (Plan 5 Task 8 report).
  */
-export function operationEndDispatchItem(tableName: string, input: { taskId: string; orgId: string; workspaceId: string; operationId: string; now: string; dueAt?: string; endOf?: "closed" }): TransactItems[number] {
-  const key = operationEndDispatchKey(input.taskId);
+export type TaskEndRowKind = "closed" | "workflow" | "creator_removed";
+export function operationEndDispatchItem(tableName: string, input: { taskId: string; orgId: string; workspaceId: string; operationId: string; now: string; dueAt?: string; endOf?: TaskEndRowKind }): TransactItems[number] {
+  const key = operationEndDispatchKey(input.taskId, input.endOf);
   const dueAt = input.dueAt ?? input.now;
   // The agent-step engine's row with its own key and kind (one builder keeps the due-time index keys and the expiry backstop the same for every row).
   const base = agentRunDispatchItem(tableName, { taskId: input.taskId, orgId: input.orgId, revision: 0, dueAt, now: input.now }) as { Put: { Item: Record<string, unknown> } };

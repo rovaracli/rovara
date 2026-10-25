@@ -30,7 +30,7 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, centsOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
-import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { effectiveTaskOwner, isTaskTakenOver, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TaskOwnerSource } from "../developer/task-records.js";
 import { effectiveLimits, readSpendPolicy, readSpendPolicyWithRevision } from "./settings.js";
 import { cleanUsd, readTopUp } from "./top-ups.js";
 
@@ -503,6 +503,16 @@ async function mayDecideNow(deps: SpendRequestDependencies, caller: Pick<AgentCa
   return answer(true);
 }
 
+/**
+ * Whether `caller` may decide the request now: it exists in their org, is still PENDING and not past its time, and they are one of its approvers
+ * (read live). For a session's view, which shows the budget link only to the people who can use it. A request that isn't there, or another org's, is false.
+ */
+export async function mayDecideSpendRequest(deps: SpendRequestDependencies, caller: Pick<AgentCaller, "orgId" | "developerId">, spendRequestId: string): Promise<boolean> {
+  const record = await getSpendRequest(deps, caller.orgId, spendRequestId);
+  if (record === undefined || record.status !== "PENDING" || Date.parse(record.expiresAt) <= deps.now()) return false;
+  return (await mayDecideNow(deps, caller, record)).allowed;
+}
+
 // ---- making a request
 
 export interface CreateSpendRequestInput {
@@ -647,7 +657,7 @@ function createRunLimitRequest(
 ) {
   return createSpendRequest(deps, {
     orgId: request.orgId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, amountUsd: request.amountUsd, newLimitUsd: request.newLimitUsd,
-    reason: request.reason, requestedBy: request.requestedBy, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId }, resume: "implement",
+    reason: request.reason, requestedBy: request.requestedBy, requestedFor: { developerId: isTaskTakenOver(task) ? effectiveTaskOwner(task).developerId : task.startedBy?.developerId ?? effectiveTaskOwner(task).developerId }, resume: "implement",
     // Its own slot: an open `run_limit` request that resumes nothing (the follow-up after a max-per-run raise) must not answer for the plan, since approving it would not start coding.
     subject: planRunLimitSubject(task.taskId),
     ...(extraItems === undefined ? {} : { extraItems: () => extraItems }),
@@ -674,7 +684,7 @@ async function askRunLimitAgain(deps: SpendRequestDependencies, caller: AgentCal
   }
   const task = await readTask(deps, caller.orgId, taskId);
   const me = await resolveSurvivor(deps, caller.orgId, caller.developerId);
-  if (task === undefined || await resolveSurvivor(deps, caller.orgId, task.developerId) !== me) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
+  if (task === undefined || tryEffectiveTaskOwner(task) === undefined || await resolveSurvivor(deps, caller.orgId, effectiveTaskOwner(task).developerId) !== me) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
   const mark: RequestMark = {
     orgId: caller.orgId, developerId: caller.developerId, requestId: parsed.data.requestId,
     fingerprint: createHash("sha256").update(JSON.stringify(["ask-run-limit", taskId])).digest("hex"),
@@ -847,7 +857,7 @@ async function askPausedTask(
     return undefined;
   }
   const limit = runLimitOf(task);
-  const requestedFor = { developerId: task.startedBy?.developerId ?? task.developerId };
+  const requestedFor = { developerId: isTaskTakenOver(task) ? effectiveTaskOwner(task).developerId : task.startedBy?.developerId ?? effectiveTaskOwner(task).developerId };
   const input: Omit<CreateSpendRequestInput, "reason"> & { message: (approvers: SpendApprovers, amountUsd: number) => string } = scope.kind === "max_per_run"
     ? (() => {
       const max = task.maxPerRunUsd ?? limit;
@@ -914,7 +924,7 @@ async function requestForMonth(deps: SpendRequestDependencies, task: DeveloperTa
   const amountUsd = suggestedMonthTopUpUsd(limit);
   const made = await createSpendRequest(deps, {
     orgId, kind: "month", scope, subject: monthSubject(month, scope, "system"), amountUsd, newLimitUsd: cleanUsd(limit + amountUsd),
-    requestedBy: { kind: "system" }, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId },
+    requestedBy: { kind: "system" }, requestedFor: { developerId: isTaskTakenOver(task) ? effectiveTaskOwner(task).developerId : task.startedBy?.developerId ?? effectiveTaskOwner(task).developerId },
     reason: (approvers, amount) => monthMessage(scope, task, approvers, amount),
     extraItems: (record) => [taskEventItem(deps, task, record.createdAt, `spr${record.spendRequestId}`, record.reason)],
   });
@@ -1255,7 +1265,7 @@ function followUpRunLimit(task: DeveloperTaskRecord, limitUsd: number): Omit<Cre
   const amountUsd = suggestedTopUpUsd(limitUsd);
   return {
     orgId: task.orgId as OrgId, kind: "run_limit", scope: { kind: "task", taskId: task.taskId }, taskId: task.taskId, amountUsd, newLimitUsd: cleanUsd(limitUsd + amountUsd),
-    requestedBy: { kind: "system" }, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId }, resume: "continue",
+    requestedBy: { kind: "system" }, requestedFor: { developerId: isTaskTakenOver(task) ? effectiveTaskOwner(task).developerId : task.startedBy?.developerId ?? effectiveTaskOwner(task).developerId }, resume: "continue",
   };
 }
 
@@ -1660,8 +1670,11 @@ const memberLeft = (error: unknown): boolean => MEMBER_LEFT_CODES.has(String((er
 
 /** Whether a task's creator is really gone from its org: no member record, and the removal's tombstone is there (the check R60's `requireCreatorStillMember` makes). */
 async function creatorGone(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName">, orgId: OrgId, task: DeveloperTaskRecord): Promise<boolean> {
-  if (await getItem(deps, orgMemberKey(orgId, task.developerId)) !== undefined) return false;
-  return await getItem(deps, orgRemovedKey(orgId, task.developerId)) !== undefined;
+  // The owner now (Plan 5 Task 12a): the person who took the task over, else its creator. A task whose owner can't be read is gone for no one here: nothing is dropped.
+  const owner = tryEffectiveTaskOwner(task);
+  if (owner === undefined) return false;
+  if (await getItem(deps, orgMemberKey(orgId, owner.developerId)) !== undefined) return false;
+  return await getItem(deps, orgRemovedKey(orgId, owner.developerId)) !== undefined;
 }
 
 /** Drops a month resume that can never go on (fix round 2, minor 1), audited as the system's `spend_request.resume_dropped` in the same transaction. */
@@ -1915,7 +1928,7 @@ export async function withdrawTaskSpendRequests(deps: SpendRequestDependencies, 
  * Rovara Code task keeps R38). A pause that is a month's budget, a test's cap or a run held at its start is not a window: nothing here.
  */
 export async function pausedTaskGate(
-  deps: SpendRequestDependencies, caller: Pick<AgentCaller, "orgId" | "developerId">, task: Pick<DeveloperTaskRecord, "orgId" | "taskId" | "budgetPause" | "agent" | "budgetUsd" | "maxPerRunUsd" | "startedBy" | "developerId" | "payer">,
+  deps: SpendRequestDependencies, caller: Pick<AgentCaller, "orgId" | "developerId">, task: Pick<DeveloperTaskRecord, "orgId" | "taskId" | "budgetPause" | "agent" | "budgetUsd" | "maxPerRunUsd" | "startedBy" | "developerId" | "payer"> & TaskOwnerSource,
 ): Promise<{ allowed: true } | { allowed: false; who: string }> {
   const pause = task.budgetPause;
   const kind = pause === undefined || pause.firstDispatch !== undefined ? undefined : REQUEST_KIND_OF_PAUSE[pause.scope.kind];
@@ -1932,7 +1945,7 @@ export async function pausedTaskGate(
     const amountUsd = suggestedTopUpUsd(kind === "max_per_run" ? max : limit);
     const newLimitUsd = kind === "max_per_run" ? cleanUsd(max + amountUsd) : kind === "planning" ? amountUsd : cleanUsd(limit + amountUsd);
     record = {
-      orgId, kind, scope: pause.scope, taskId: task.taskId, amountUsd, newLimitUsd, requestedBy: { kind: "system" }, requestedFor: { developerId: task.startedBy?.developerId ?? task.developerId },
+      orgId, kind, scope: pause.scope, taskId: task.taskId, amountUsd, newLimitUsd, requestedBy: { kind: "system" }, requestedFor: { developerId: isTaskTakenOver(task) ? effectiveTaskOwner(task).developerId : task.startedBy?.developerId ?? effectiveTaskOwner(task).developerId },
     } as SpendRequestRecord;
   }
   const may = await mayDecideNow(deps, caller, record);
@@ -2226,7 +2239,8 @@ async function maySee(deps: SpendRequestDependencies, caller: AgentCaller, recor
   const me = await resolveSurvivor(deps, caller.orgId, caller.developerId);
   if (record.requestedBy.kind === "member" && await resolveSurvivor(deps, caller.orgId, record.requestedBy.developerId) === me) return true;
   const task = await readTask(deps, record.orgId, record.taskId);
-  return task !== undefined && await resolveSurvivor(deps, caller.orgId, task.developerId) === me;
+  const owner = task === undefined ? undefined : tryEffectiveTaskOwner(task);
+  return owner !== undefined && await resolveSurvivor(deps, caller.orgId, owner.developerId) === me;
 }
 
 /**
