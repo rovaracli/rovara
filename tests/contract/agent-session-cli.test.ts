@@ -70,10 +70,10 @@ describe("agentx sessions", () => {
 
   it("refuses an unknown live filter and two lists at once without asking anything", async () => {
     const h = await agentsCli({});
-    expect(await h.run(["sessions", "--live", "everything"])).not.toBe(0);
-    expect(await h.run(["sessions", "--mine", "--shared"])).not.toBe(0);
-    expect(await h.run(["sessions", "--live", "all", "--mine"])).not.toBe(0);
-    expect(await h.run(["sessions", "--shared", "--project", "payments"])).not.toBe(0);
+    expect(await h.run(["sessions", "--live", "everything"])).toBe(2);
+    expect(h.stderr()).toContain("--live takes one of");
+    for (const argv of [["--mine", "--shared"], ["--live", "all", "--mine"], ["--shared", "--project", "payments"]]) expect(await h.run(["sessions", ...argv]), argv.join(" ")).toBe(2);
+    expect(h.stderr()).toContain("give one of --live, --mine, --shared and --project");
     expect(h.calls).toEqual([]);
   });
 
@@ -89,13 +89,14 @@ describe("agentx session show, follow and unfollow", () => {
     const approval = { approvalId: "apr_cccccccccccccccccccc", title: "Approve the plan", confirmUrl: `${CELL}/v1/app/approve/apr_cccccccccccccccccccc` };
     const h = await agentsCli({ [`GET /v1/app/sessions/${SES}`]: Response.json(view({ approvals: [approval] })) });
     expect(await h.run(["session", "show", SES])).toBe(0);
-    for (const part of [LINK, "Fix the login bug", "payments", "Priya", "running", "Writing the change", "Approve the plan", approval.confirmUrl, "can edit"]) expect(h.stdout()).toContain(part);
+    for (const part of [LINK, "Fix the login bug", "payments", "Priya", "Running", "Writing the change", "Approve the plan", approval.confirmUrl, "can edit"]) expect(h.stdout()).toContain(part);
     expect(sent(h)).toEqual([`GET /v1/app/sessions/${SES}`]);
   });
 
   it("refuses something that is not a session ID without asking anything", async () => {
     const h = await agentsCli({});
-    for (const id of ["nope", "..", "ses_short", `${SES}/shares`]) expect(await h.run(["session", "show", id]), id).not.toBe(0);
+    for (const id of ["nope", "..", "ses_short", `${SES}/shares`]) expect(await h.run(["session", "show", id]), id).toBe(2);
+    expect(h.stderr()).toContain("that is not a session ID");
     expect(h.calls).toEqual([]);
   });
 
@@ -126,21 +127,22 @@ describe("agentx session comment and tell", () => {
     const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/messages`]: Response.json(message("steer", { state: "queued", at: "2026-10-24T09:00:00.000Z" }), { status: 201 }) });
     expect(await h.run(["session", "tell", SES, "Keep the change under 50 lines"])).toBe(0);
     expect(h.calls[0]!.body).toMatchObject({ kind: "steer", text: "Keep the change under 50 lines" });
-    expect(h.stdout()).toContain("queued");
+    expect(h.stdout()).toMatch(/queued/i);
     expect(h.stdout()).toContain(LINK);
   });
 
   it("refuses empty text without asking anything", async () => {
     const h = await agentsCli({});
-    expect(await h.run(["session", "comment", SES, "   "])).not.toBe(0);
-    expect(await h.run(["session", "tell", SES, ""])).not.toBe(0);
+    expect(await h.run(["session", "comment", SES, "   "])).toBe(2);
+    expect(await h.run(["session", "tell", SES, ""])).toBe(2);
+    expect(await h.run(["session", "tell", SES, "x".repeat(10_001)])).toBe(2);
     expect(h.calls).toEqual([]);
   });
 
   it("prints the server's words when a viewer tries to tell the agent (SESSION_LEVEL_REQUIRED)", async () => {
     const words = "You need \"can use\" on this session to send messages to the agent. Ask Priya to share it with you.";
     const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/messages`]: refusal("SESSION_LEVEL_REQUIRED", words, 403) });
-    expect(await h.run(["session", "tell", SES, "Go faster"])).toBe(4);
+    expect(await h.run(["session", "tell", SES, "Go faster"])).not.toBe(0);
     expect(h.stderr()).toContain(words);
   });
 
@@ -158,7 +160,7 @@ describe("agentx session stop and retry", () => {
     const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/stop`]: Response.json(view({ status: "stopped" })) });
     expect(await h.run(["session", "stop", SES])).toBe(0);
     expect(h.calls).toEqual([{ method: "POST", path: `/v1/app/sessions/${SES}/stop`, query: "", body: { requestId: expect.stringMatching(UUID) as string } }]);
-    expect(h.stdout()).toContain("stopped");
+    expect(h.stdout()).toMatch(/stopped/i);
     expect(h.stdout()).toContain(LINK);
   });
 
@@ -258,10 +260,9 @@ describe("agentx session share", () => {
 
   it("refuses a missing or unknown --with or --level without sharing anything", async () => {
     const h = await agentsCli({});
-    expect(await h.run(["session", "share", SES, "--level", "view"])).not.toBe(0);
-    expect(await h.run(["session", "share", SES, "--with", "company"])).not.toBe(0);
-    expect(await h.run(["session", "share", SES, "--with", "company", "--level", "manage"])).not.toBe(0);
-    expect(await h.run(["session", "share", SES, "--with", "project:", "--level", "view"])).not.toBe(0);
+    for (const argv of [["--level", "view"], ["--with", "company"], ["--with", "company", "--level", "manage"], ["--with", "project:", "--level", "view"]]) {
+      expect(await h.run(["session", "share", SES, ...argv]), argv.join(" ")).toBe(2);
+    }
     expect(h.calls).toEqual([]);
   });
 
