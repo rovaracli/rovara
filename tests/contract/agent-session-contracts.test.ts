@@ -399,6 +399,8 @@ describe("the session record and its parts", () => {
     expect(parse({ lastRunFailed: true, offline: true, runLimitUsd: 5, stopAtUsd: 4 })).toBe(true);
     expect(parse({ lastRunFailed: false })).toBe(false);
     expect(parse({ offline: false })).toBe(false);
+    expect(parse({ workflowBlocked: true })).toBe(true);
+    expect(parse({ workflowBlocked: false })).toBe(false);
     expect(parse({ surprise: 1 })).toBe(false);
   });
 

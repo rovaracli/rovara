@@ -300,6 +300,18 @@ describe("sessionActionsFor", () => {
     expect(actions("use", {}, "failed")).not.toContain("retry");
   });
 
+  it("offers retry for a blocked workflow too, only at edit and only when the summary says it is blocked (Task 14 ruling)", () => {
+    const blocked = (level: "none" | "view" | "use" | "edit", extra: { owner?: boolean; projectRole?: "viewer" | "contributor" | "maintainer" } = {}, flagged = true) =>
+      sessionActionsFor({ level, owner: extra.owner ?? false, orgAdmin: false, ...(extra.projectRole === undefined ? {} : { projectRole: extra.projectRole }) }, { status: "needs_person", ...(flagged ? { workflowBlocked: true as const } : {}) });
+    expect(blocked("edit")).toContain("retry");
+    expect(blocked("edit")).toEqual(["watch", "comment", "steer", "stop", "retry", "take_over", "share"]);
+    expect(blocked("edit", {}, false)).not.toContain("retry");
+    expect(blocked("use")).not.toContain("retry");
+    expect(blocked("view")).not.toContain("retry");
+    expect(blocked("edit", { projectRole: "viewer" })).toEqual(["watch"]);
+    expect(blocked("edit", { owner: true, projectRole: "viewer" })).toContain("retry");
+  });
+
   it("gives a project viewer who isn't the owner only watching, and an owner who is a viewer everything", () => {
     expect(actions("use", { projectRole: "viewer" })).toEqual(["watch"]);
     expect(actions("edit", { projectRole: "viewer" })).toEqual(["watch"]);

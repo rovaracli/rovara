@@ -28,7 +28,7 @@ const HOUR = 3_600_000;
 const hex = (digit: string) => digit.repeat(64);
 
 interface Seed {
-  kind?: "task" | "chain" | "local"; owner?: string; project?: string | null; status?: SessionStatus; endedAgoHours?: number; needs?: string[]; pending?: number; lastRunFailed?: boolean;
+  kind?: "task" | "chain" | "local"; owner?: string; project?: string | null; status?: SessionStatus; endedAgoHours?: number; needs?: string[]; pending?: number; lastRunFailed?: boolean; workflowBlocked?: boolean;
   step?: string; peek?: string; cost?: number; createdAt?: string; title?: string; people?: Array<{ developerId: string; role: "owner" | "commenter" | "viewer" | "denied" }>; currentOwner?: string;
   orgId?: OrgId; startedBy?: string; tile?: boolean;
 }
@@ -53,7 +53,7 @@ function world() {
     const { endedAt: _unused, ...open } = meta; // eslint-disable-line @typescript-eslint/no-unused-vars -- the seed's own end is replaced
     const endedAt = ended ? iso(T0 - o.endedAgoHours! * HOUR) : undefined;
     const summary = {
-      status, ...(o.step === undefined ? {} : { step: o.step }), ...(o.peek === undefined ? {} : { peek: o.peek }), ...(o.lastRunFailed === true ? { lastRunFailed: true } : {}),
+      status, ...(o.step === undefined ? {} : { step: o.step }), ...(o.peek === undefined ? {} : { peek: o.peek }), ...(o.lastRunFailed === true ? { lastRunFailed: true } : {}), ...(o.workflowBlocked === true ? { workflowBlocked: true } : {}),
       costUsd: o.cost ?? 0, needsPeople: o.needs ?? [], pendingApprovals: o.pending ?? 0, digest: "d".repeat(64), computedAt: updatedAt,
     };
     const record = {
@@ -249,6 +249,18 @@ describe("the actions a tile offers are the caller's own", () => {
     const tile = (await w.live(MAX, { filter: "failed" })).tiles.find((entry) => entry.sessionId === s3.sessionId)!;
     expect(tile.actions).toEqual(expect.arrayContaining(["stop", "retry", "take_over"]));
     expect((await w.live(ARJUN, { filter: "failed" })).tiles[0]!.actions).toEqual(["watch", "comment"]);
+  });
+
+  it("offers retry on a session whose workflow is blocked (it shows as needing a person), to an editor and nobody below (Task 14 ruling)", async () => {
+    const w = world();
+    const blocked = w.seed({ status: "needs_person", needs: [PRIYA], workflowBlocked: true });
+    const waiting = w.seed({ status: "needs_person", needs: [PRIYA] });
+    const actionsOf = async (who: string, sessionId: string) => (await w.live(who, { filter: "all" })).tiles.find((tile) => tile.sessionId === sessionId)!.actions;
+    expect(await actionsOf(MAX, blocked.sessionId)).toEqual(expect.arrayContaining(["stop", "retry", "take_over"]));
+    expect(await actionsOf(PRIYA, blocked.sessionId)).toContain("retry");
+    expect(await actionsOf(MAX, waiting.sessionId)).not.toContain("retry");
+    expect(await actionsOf(ARJUN, blocked.sessionId)).toEqual(["watch", "comment"]);
+    expect(await actionsOf(MIA, blocked.sessionId)).toEqual(["watch"]);
   });
 
   it("names the people who follow: the owner always, a follower by their item, nobody else", async () => {
