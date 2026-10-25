@@ -164,6 +164,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/events.ts", "packages/broker/src/agent-sessions/summary.ts", "packages/broker/src/agent-sessions/sweep.ts",
       // Plan 5, Task 9: a follower item expires with its ended session, and a presence item (who is looking now) expires in minutes (followers.ts writes both).
       "packages/broker/src/agent-sessions/followers.ts",
+      // Plan 5, Task 14 review: the Live wall leaves out a presence row whose own expiry has passed (live.ts reads it; the table deletes late).
+      "packages/broker/src/agent-sessions/live.ts",
       // Plan 5, Task 10: a session's comments, its per-hour comment rate item, its message count and its request items (replay keys) expire on it (messages.ts
       // writes them, drops a comment the table hasn't deleted yet, and replays a request only while its item lives).
       "packages/broker/src/agent-sessions/messages.ts",
