@@ -181,6 +181,8 @@ export interface DeveloperTaskRecord {
   sessionId?: string;
   /** Plan 3, Task 34: when the run's cost was written for the estimates (`recordRunCost`), so a run is counted once. */
   runCostRecordedAt?: string;
+  /** Plan 6 Task 7: when this version 2 task's duration was written for the next time estimate (`recordTaskDuration`), so a task is counted once. */
+  durationRecordedAt?: string;
 }
 
 /** C1: a shared task's thread, as the task record keeps it. */

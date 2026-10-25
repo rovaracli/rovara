@@ -450,6 +450,55 @@ export function planClaimCount(plan: PlanDocument): number {
   return claimsDepthFirst(plan.claims).length;
 }
 
+// ---- the parts a Rovara Code version 2 coding plan must have (Plan 6 Task 7)
+
+export const PLAN_MISSING_CHANGE = "The plan must say what changes.";
+export const PLAN_MISSING_FILES = "The plan must say which files change.";
+export const PLAN_MISSING_TESTS = "The plan must say how the change will be tested.";
+
+/**
+ * What a version 2 coding plan's prompt adds, and the marker the worker looks for to hold the planner's answer to the same rule (the worker asks once more when a part is
+ * missing; the broker blocks the plan when it still is). Requirements and design documents are not coding plans and are not asked for it.
+ */
+export const PLAN_PARTS_SENTENCE = "A coding plan must name three things: what changes (the claims), which files change (cite each in a `code` or `sketch` item, or name it in the claim), and how the change will be tested (a claim that says which test proves it, or a proposed check).";
+
+/** Whether a planner's prompt asks for the three parts of a version 2 coding plan. */
+export const asksForPlanParts = (prompt: string): boolean => prompt.includes(PLAN_PARTS_SENTENCE);
+
+/** A file name with an extension, or a path with a folder: how a claim names a file in words. */
+const FILE_NAMED = /(?:[\w.-]+\/[\w./-]+|\b[\w-]+\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|cs|swift|json|ya?ml|toml|md|sql|css|scss|html|sh)\b)/u;
+/** A claim that is about testing. */
+const TEST_WORDED = /\b(?:tests?|tested|testing|specs?|coverage|asserts?|assertions?)\b/iu;
+
+/**
+ * The parts of a coding plan that are missing, in the words to ask for them: the change (at least one claim), the files (a `code` or `sketch` item on some claim, or a file named
+ * in a claim's words) and how it will be tested (a claim that says test, or a proposed check). Empty for a plan that has all three.
+ */
+export function planMissingParts(plan: PlanDocument, extra: { checksProposed?: boolean } = {}): string[] {
+  const claims = claimsDepthFirst(plan.claims);
+  const missing: string[] = [];
+  if (claims.length === 0) missing.push(PLAN_MISSING_CHANGE);
+  if (!claims.some((claim) => (claim.evidence ?? []).some((item) => item.kind === "code" || item.kind === "sketch") || FILE_NAMED.test(claim.text))) missing.push(PLAN_MISSING_FILES);
+  if (!claims.some((claim) => TEST_WORDED.test(claim.text)) && (plan.checks?.proposed.length ?? 0) === 0 && extra.checksProposed !== true) missing.push(PLAN_MISSING_TESTS);
+  return missing;
+}
+
+/**
+ * Whether a planner's answer proposes at least one check in its `checks` member, read without validating them. The worker reads a plan without the checks input (it does not
+ * know the repositories' check rules), so it asks `planMissingParts` with this; the broker validates the checks and counts only the ones that hold.
+ */
+export function planAnswerProposesChecks(answer: string): boolean {
+  const block = lastFencedBlock(answer, PLAN_DOCUMENT_INFO_STRING);
+  if (typeof block !== "string") return false;
+  try {
+    const json: unknown = JSON.parse(block);
+    const checks = isRecord(json) ? json["checks"] : undefined;
+    return isRecord(checks) && Array.isArray(checks["checks"]) && checks["checks"].length > 0;
+  } catch {
+    return false;
+  }
+}
+
 const SUMMARY_LINE_MAX_CHARS = 160;
 const KIND_TITLES: Record<PlanDocumentKind, string> = { requirements: "Requirements", design: "Design", plan: "Coding plan" };
 

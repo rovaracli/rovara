@@ -57,6 +57,7 @@ import {
   type StandingFailure,
   submitWorkflowArtifact,
   parsePlanDocument,
+  planMissingParts,
   parseCommentAnswers,
   commentRefInAuthor,
   commentIdInAuthor,
@@ -363,6 +364,7 @@ import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, 
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
 import { deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
@@ -5945,7 +5947,9 @@ async function taskOperationParts(
     : undefined;
   // Recorded so the broker can refuse a v2 plan from a run that was never asked for one (Ruling AW).
   if (input.workflowMode === "PLAN" && offersApplicationE2EPlan(e2ePlanningContext)) operation.workflowE2EPlanVersion = 2;
+  const requiredParts = codingPlan && input.workflowMode === "PLAN" && input.legacyTask !== true && await codingPlanRequiresParts(dependencies, workspace.id);
   const documentInstructions = planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true,
+    ...(requiredParts ? { requiredParts: true } : {}),
     ...(workBreakdownContext === undefined ? {} : { workBreakdownContext }),
     ...(e2ePlanningContext === undefined ? {} : { e2ePlanningContext }),
     ...(input.retiredClaimIds === undefined ? {} : { retired: input.retiredClaimIds }) });
@@ -6045,6 +6049,13 @@ async function codingPlanChecksInstructions(dependencies: AwsBrokerDependencies,
   if (task.workflow?.checkPolicy === undefined) return "";
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   return planChecksInstructions(project.definition.repositories.map((repository) => repository.path), task.workflow?.checkPolicy?.required ?? []);
+}
+
+/** Plan 6 Task 7: whether the workspace's task is a Rovara Code version 2 task, whose coding plan must name what changes, which files and how it is tested. */
+async function codingPlanRequiresParts(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<boolean> {
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
+  const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  return task?.workflow?.definitionVersion === "1.1.0";
 }
 
 /** Bind planner guidance to the task's starting project revision; never consult the latest project here. */
@@ -14729,10 +14740,19 @@ async function completedWorkflowItems(
 async function planRunEstimate(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }): Promise<RunEstimate | undefined> {
   if (dependencies.modelAccess === undefined || task.orgId === undefined) return undefined;
   try {
-    return await estimateRun(
+    const cost = await estimateRun(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, ...(dependencies.cloud === true ? { cloud: true } : {}), now: Date.now },
       { orgId: task.orgId, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, path: task.workflow.path, ...(task.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: task.maxPerRunUsd }) },
     );
+    // Plan 6 Task 7: a version 2 plan also carries how long to a pull request. Version 1 estimates stay as recorded.
+    if (task.workflow.definitionVersion !== "1.1.0") return cost;
+    // A history that can't be read leaves out the time and nothing else: the cost estimate (and the run limit it gives) is not held back by it.
+    const minutes = await estimateDuration({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, { orgId: task.orgId, project: task.project, path: task.workflow.path })
+      .catch((error: unknown) => {
+        console.log(JSON.stringify({ component: "broker", event: "duration_estimate.unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" }));
+        return undefined;
+      });
+    return minutes === undefined ? cost : { ...cost, minutes };
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "run_estimate.unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" }));
     return undefined;
@@ -14795,6 +14815,11 @@ async function storePlanAnswer(
     } } : {}),
   });
   if (!parsed.ok) return unreadable(parsed.errors);
+  // Plan 6 Task 7: a version 2 coding plan names what changes, which files and how it is tested. The worker asked once more when a part was missing; a plan still missing one is unreadable.
+  if (workflow.definitionVersion === "1.1.0" && artifactType === "plan") {
+    const missing = planMissingParts(parsed.plan);
+    if (missing.length > 0) return unreadable(missing);
+  }
   // Defense in depth with the worker's own check: a version 2 intent is stored only from a run that negotiated it.
   if (parsed.plan.e2e?.schemaVersion === 2 && !applicationPlanNegotiated) {
     return unreadable(["the plan: e2e schemaVersion 2 was not offered for this planning step; use the schemaVersion 1 portable intent, or leave e2e out"]);
@@ -15398,6 +15423,10 @@ async function recordTerminalResult(
     await startPlanEvidenceJobs(dependencies, evidenceJobs);
     await attachInlineEvidence(dependencies, inlineEvidence);
     await writeAllPlannerReplies(dependencies, plannerReplies);
+  }
+  // Plan 6 Task 7: the pull request just opened (the task now waits for the merge): a version 2 task's duration is written for the next time estimate. Best effort, never fails the result.
+  if (recordedStatus === terminalStatus && terminalStatus === "SUCCEEDED" && operation.kind === "publish" && taskPointer !== undefined) {
+    await noteDurationAtPullRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, taskPointer.taskId, now);
   }
   // #213: a prepare that did not succeed leaves the workspace PREPARATION_FAILED, which stops
   // counting toward the workspace limits now; the release logs, and never fails the callback.
