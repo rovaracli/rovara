@@ -22,3 +22,6 @@ it("refuses a missing entry or unreadable static dependency instead of passing a
 it("never follows an asset path outside the built app", () => {
  const directory = fixture();writeFileSync(join(directory, ".vite/manifest.json"), JSON.stringify({ main: { file: "../outside.js", isEntry: true } }));expect(() => initialJavaScriptGzipBytes(directory)).toThrow();
 });
+it("keeps the actual built application within the complete startup budget", () => {
+ expect(() => checkWebBundleBudget("packages/web/dist/app")).not.toThrow();
+});
