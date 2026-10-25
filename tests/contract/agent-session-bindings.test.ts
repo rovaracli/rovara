@@ -108,6 +108,10 @@ describe("binding a surface to a session", () => {
     expect(await code(bindSessionSurface(table, { orgId: ORG_A, sessionId: b, binding: THREAD }))).toEqual({ code: "NOT_FOUND", message: "session not found" });
     expect(await code(bindSessionSurface(table, { orgId: ORG_A, sessionId: "ses_zzzzzzzzzzzzzzzzzzzz", binding: THREAD }))).toEqual({ code: "NOT_FOUND", message: "session not found" });
     expect((await code(bindSessionSurface(table, { orgId: ORG_A, sessionId: ended, binding: THREAD })))?.code).toBe("SESSION_ENDED");
+    // A record under org A's key that says it is org B's (a corrupted row) is not A's session either.
+    const odd = w.seedSession().sessionId;
+    w.db.set({ ...w.db.get(agentSessionKey(ORG_A, odd, "META"))!, orgId: ORG_B });
+    expect(await code(bindSessionSurface(table, { orgId: ORG_A, sessionId: odd, binding: THREAD }))).toEqual({ code: "NOT_FOUND", message: "session not found" });
     expect(surfaceItems()).toEqual([]);
   });
 
