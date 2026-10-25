@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
+import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -13,18 +14,19 @@ import { fakeHost } from "./support/fake-host.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
 import { navFixture } from "./support/fixtures.js";
 import { sessionFixture, messageFixture, taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
-function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor?: string, initialSession = sessionFixture()) {
+function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor?: string, initialSession = sessionFixture(), actionReply?: (request: ApiRequest) => Promise<ApiResponse>) {
  let session = initialSession, messages = initialMessages;
  const f = fakeHost(async request => {
  if (request.path.split("?", 1)[0]!.endsWith("/messages")) { if (request.method === "POST") { messages = [messageFixture()];return { status: 200, body: messages[0] }; }return { status: 200, body: { messages: request.path.includes("?after=") ? [] : messages, ...(cursor === undefined ? {} : { next: cursor }) } }; }
  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
  if (request.path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
  if (request.path.endsWith("/follow")) { session = sessionFixture({ you: { ...session.you, following: true } });return { status: 200, body: { following: true } }; }
+ if (request.method === "POST" && /\/(stop|retry|take-over)$/.test(request.path) && actionReply) return actionReply(request);
  return { status: 200, body: { session } };
  });
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
- return { ...f, ...ui, query, setSession(next: ReturnType<typeof sessionFixture>) { session = next; }, close() { ui.unmount();router.dispose();query.clear(); } };
+ return { ...f, ...ui, query, router, setSession(next: ReturnType<typeof sessionFixture>) { session = next; }, close() { ui.unmount();router.dispose();query.clear(); } };
 }
 it("opens conversation on demand, keeps the task in place and restores the opener focus", async () => {
  const f = setup(), heading = await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(document.activeElement).toBe(heading);expect(screen.queryByRole("textbox", { name: "Comment" })).toBeNull();const opener = screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" });opener.focus();fireEvent.click(opener);expect(await screen.findByRole("dialog", { name: "Conversation" })).toBeTruthy();expect(heading.isConnected).toBe(true);fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Close dialog" }));await waitFor(() => expect(document.activeElement).toBe(opener));f.close();
@@ -77,7 +79,7 @@ it("hides an anchored discussion and cached target when its part disappears", as
  const f = setup([messageFixture({ anchor, anchorState: "current", text: "A permitted comment" })], undefined, workspaceFixture({ anchors: [anchor] }));
  await screen.findByRole("heading", { name: "Fix duplicate refunds" });fireEvent.mouseDown(screen.getByRole("tab", { name: "Changes" }), { button: 0, ctrlKey: false });fireEvent.click(screen.getByRole("button", { name: "Comment on src/refund.ts" }));await screen.findByText("A permitted comment");
  f.setSession(workspaceFixture({ anchors: [], revision: 2, updatedAt: "2026-10-23T13:00:00.000Z", body: { kind: "task", task: taskFixture({ changedFiles: [] }) } }));
- await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID], exact: true });await screen.findByText("That part of this session is no longer available.");
+ await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID] });await screen.findByText("That part of this session is no longer available.");
  expect(screen.queryByText("A permitted comment")).toBeNull();expect(screen.queryByText("src/refund.ts")).toBeNull();expect(screen.queryByRole("textbox", { name: "Comment" })).toBeNull();f.close();
 });
 
@@ -90,16 +92,47 @@ it("replaces inaccessible cached session details with the common NotFound screen
 
 it("offers stop from the session header only when the server permits it", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["stop"] } }));
- fireEvent.click(await screen.findByRole("button", { name: "Stop", exact: true }));
- expect(await screen.findByRole("dialog", { name: "Stop this session?" })).toBeTruthy();
+ const stop = await screen.findByRole("button", { name: "Stop" });
  expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
- expect(screen.queryByRole("button", { name: "Share", exact: true })).toBeNull();
+ expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+ fireEvent.click(stop);expect(await screen.findByRole("dialog", { name: "Stop this session?" })).toBeTruthy();
  fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
  expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/stop"))).toBe(false);f.close();
 });
 it("offers retry and takeover independently from the session capability list", async () => {
  const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["retry", "take_over"] } }));
- expect(await screen.findByRole("button", { name: "Retry", exact: true })).toBeTruthy();
+ expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
  expect(screen.getByRole("button", { name: "Take over" })).toBeTruthy();
- expect(screen.queryByRole("button", { name: "Stop", exact: true })).toBeNull();f.close();
+ expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();f.close();
+});
+
+it("keeps a header takeover pending until ownership arrives in a real session read", async () => {
+ const base = sessionFixture(), initial = sessionFixture({ you: { ...base.you, owner: false, actions: ["take_over"] } });
+ const f = setup([], undefined, initial, async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["You will own this session."] } }));
+ fireEvent.click(await screen.findByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");
+ fireEvent.click(screen.getByRole("button", { name: "Open confirmation" }));expect(f.host.openExternal).toHaveBeenCalledTimes(1);
+ const owned = sessionFixture({ revision: 2, you: { ...base.you, owner: true, actions: ["watch"] } });
+ await act(() => f.query.setQueryData(["session", SESSION_FIXTURE_ID], owned));expect(screen.queryByText("You now own this session.")).toBeNull();
+ f.setSession(owned);await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID] });await screen.findByText("You now own this session.");f.close();
+});
+it("retries the header session once and navigates to the returned session", async () => {
+ const base = sessionFixture(), returned = "ses_bbbbbbbbbbbbbbbbbbbb", f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["retry"] } }), async () => ({ status: 200, body: { session: sessionFixture({ sessionId: returned }) } }));
+ const retry = await screen.findByRole("button", { name: "Retry" });act(() => { retry.click();retry.click(); });
+ await waitFor(() => expect(f.host.navigate).toHaveBeenCalledWith("/s/" + returned));
+ expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/retry"))).toHaveLength(1);f.close();
+});
+it("posts stop only after explicit confirmation and refreshes the session", async () => {
+ const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, actions: ["stop"] } }), async () => ({ status: 200, body: { session: sessionFixture() } }));
+ fireEvent.click(await screen.findByRole("button", { name: "Stop" }));expect(screen.getByText("Payments expert stops after its current step.")).toBeTruthy();
+ expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/stop"))).toBe(false);
+ fireEvent.click(screen.getByRole("button", { name: "Stop session" }));fireEvent.click(screen.getByRole("button", { name: "Stop session" }));await screen.findByText("Stop requested.");
+ expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/stop"))).toHaveLength(1);f.close();
+});
+
+it("does not carry a pending takeover into a different already-cached session", async () => {
+ const base = sessionFixture(), f = setup([], undefined, sessionFixture({ you: { ...base.you, owner: false, actions: ["take_over"] } }), async () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa", changes: ["You will own this session."] } }));
+ fireEvent.click(await screen.findByRole("button", { name: "Take over" }));await screen.findByText("Waiting for you to confirm in your browser");
+ const next = sessionFixture({ sessionId: "ses_bbbbbbbbbbbbbbbbbbbb", title: "Another task", you: { ...base.you, actions: ["watch"] } });f.setSession(next);f.query.setQueryData(["session", next.sessionId], next);
+ await act(() => f.router.navigate("/app/sessions/" + next.sessionId));await screen.findByRole("heading", { name: "Another task" });
+ expect(screen.queryByText("Waiting for you to confirm in your browser")).toBeNull();expect((screen.getByRole("button", { name: "Follow" }) as HTMLButtonElement).disabled).toBe(false);f.close();
 });
