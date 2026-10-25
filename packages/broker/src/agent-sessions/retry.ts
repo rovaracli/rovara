@@ -219,7 +219,7 @@ async function retryChain(deps: SessionReadDependencies, caller: ControlCaller, 
   const { session } = access;
   if (session.subject.kind !== "chain") throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY);
   if (session.summary.status !== "failed") throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY);
-  // PLAN4: until Plan 4's lifecycle is wired a chain run is not retried, and nothing is written.
+  // Without Plan 4's chain control (no chain runs in this deployment) a chain run is not retried, and nothing is written.
   if (deps.chainControl === undefined) throw agentXError("RUNTIME_UNAVAILABLE", CHAIN_RETRY_UNAVAILABLE);
   const marked = await getItem(deps, retriedKey(session.orgId, session.sessionId));
   if (marked !== undefined) {
@@ -227,7 +227,7 @@ async function retryChain(deps: SessionReadDependencies, caller: ControlCaller, 
     throw agentXError("CONFIG_INVALID", ALREADY_RETRIED);
   }
   // Plan 4 starts the run (and applies the chain's `use` rule) under the derived id, so a session is retried into one chain run.
-  const started = await deps.chainControl.retry({ kind: "session", developerId: caller.developerId }, session.subject.chainRunId, retryRunRequestId(session.orgId, session.sessionId));
+  const started = await deps.chainControl.retry(session.orgId, { kind: "session", developerId: caller.developerId }, session.subject.chainRunId, retryRunRequestId(session.orgId, session.sessionId));
   return link(deps, caller, access, { requestId, newSessionId: started.sessionId, related: [session.subject.chainRunId, started.sessionId], branch: "new_chain_run" });
 }
 

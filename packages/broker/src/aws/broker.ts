@@ -418,6 +418,8 @@ import type { ChainTriggerHooks } from "../chains/routes.js";
 import { registerChainRunner } from "../chains/index.js";
 import { sweepChainRuns } from "../chains/lifecycle.js";
 import { chainRunPortsFor, chainRunSpendReader, type ChainRunnerDependencies } from "../chains/runner.js";
+import type { ChainRouteDependencies } from "../chains/routes.js";
+import { chainOwnerMoverFor, chainReadAccessFor, chainSessionSource } from "../chains/session-seam.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { slackReplyAuthor } from "../agent-sessions/events.js";
 import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.js";
@@ -1103,7 +1105,9 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: () => Date.now(), projectMembers, signInStore,
     // Seals the list cursor (review m-1): derived from the signing key under its own label, so no other use of the key can open or forge one.
     cursorKey: createHmac("sha256", dependencies.callbackSigningKey).update("agentx:session-list-cursor:v1").digest("hex"),
-    chainReadAccess: agents.sessions?.chainReadAccess ?? (async () => false),
+    // Plan 4's readers of a chain run (the starter, the run's owner, `view` on the chain and the project, org owners and admins); a deployment may bring its own. The chain reads of a
+    // session body, a message, a stop and a retry are not here: they are made for each request, with the org of the person asking (developer-routes `sessionReadDependencies`).
+    chainReadAccess: agents.sessions?.chainReadAccess ?? chainReadAccessFor(routeDependencies as ChainRouteDependencies),
     ...(agents.sessions?.chain === undefined ? {} : { chain: agents.sessions.chain }),
     // Plan 5 Task 12b: a take-over asks Plan 3's admission for the person who would pay from now on, tells the previous owner and the followers through the events API,
     // and moves a chain run's owner through Plan 4's mover when it is supplied.
@@ -1116,7 +1120,8 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
       },
     }),
     ...(realtimeConfigFromEnvironment() === undefined ? {} : { realtimePublish: realtimeConfigFromEnvironment()! }),
-    ...(agents.sessions?.chainOwner === undefined ? {} : { chainOwner: agents.sessions.chainOwner }),
+    // Plan 4's move of a chain run's owner and payer to the person who took its session over.
+    chainOwner: agents.sessions?.chainOwner ?? chainOwnerMoverFor(routeDependencies as ChainRouteDependencies),
   };
   // Plan 3, Task 32: what an approved spend request does with its task (the owner's resume, continue-as-task) and what a task's keys have spent.
   routeDependencies.spendRequests = spendRequestHostOf(dependencies, tasks, routeDependencies);
@@ -1638,7 +1643,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   // (sessions begin there); a broker without them registers nothing, so Plan 3's "nobody listens" behaviour is unchanged. Plan 4's chain and Task 18's device reads are given
   // here when those land (the sweep's event passes them the same way).
   if (agents !== undefined) {
-    registerAgentSessionTaskHandlers();
+    registerAgentSessionTaskHandlers({ chains: chainSessionSource(agents as ChainRouteDependencies) });
     // Plan 5, Task 8: what a session's change turns into: each person's feed, and a notice on the events API where there is one. Plan 4's chain readers judge a chain session's followers.
     installRealtimeSink({ realtime: realtimeConfigFromEnvironment(), chainReadAccess: agents.agentSessions?.chainReadAccess });
   }
@@ -1691,12 +1696,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       }
     }
     // Plan 5, Task 7a: every 5 minutes, the session sweep (refreshes the open sessions from a saved cursor) and then the retention drain. Each has its own deadline
-    // and a failure of one never stops the other. Plan 4's chain reads and Task 18's device reads are wired here when those land.
+    // and a failure of one never stops the other. Plan 4's chain reads are wired here; Task 18's device reads are given when that lands.
     if (isSessionSweepEvent(event)) {
       const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
       const outcome: Record<string, unknown> = {};
       const startedAt = Date.now();
-      try { outcome.sweep = await sweepAgentSessions(table, Date.now()); }
+      // A chain run's session is refreshed from Plan 4's run (its status, step, cost and who a gate waits for); the device reads of a local session are Task 18's.
+      try { outcome.sweep = await sweepAgentSessions({ ...table, ...(agents === undefined ? {} : { chains: chainSessionSource(agents as ChainRouteDependencies) }) }, Date.now()); }
       catch (error) { console.log(JSON.stringify({ component: "broker", event: "agent_session.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.sweep = "failed"; }
       // The function's timeout is 30 seconds: the drain gets what is left of 25 (a refresh or a page of updates that has started may run a second or two over).
       try { outcome.drain = await drainEndedSessions(table, Date.now(), { budgetMs: Math.max(0, SESSION_EVENT_BUDGET_MS - (Date.now() - startedAt)) }); }

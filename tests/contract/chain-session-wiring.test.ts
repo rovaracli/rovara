@@ -1,6 +1,6 @@
 // Merge of Plan 4 and Plan 5: a chain run is read, steered, stopped and retried as a session through the real broker, on Plan 4's own code, with the org of the request.
 // Each seam Plan 5 left for Plan 4 (`ChainSessionReads`, `ChainSteerReads`, `ChainControl`, `chainReadAccess`) answers here instead of RUNTIME_UNAVAILABLE.
-// A chain run's session record is written by Plan 5 Task 3 (not built yet), so these tests write it the way that task will.
+// The run's session is written with the run (Plan 5 Task 3).
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SessionViewSchema } from "../../packages/contracts/src/session-views.js";
@@ -35,15 +35,6 @@ async function setup() {
     const started = await call(MAYA, "POST", `/v1/app/chains/${chainId}/runs`, { project: "payments", input: "Why did checkout fail?" });
     expect(started.status, JSON.stringify(started.body)).toBe(202);
     const runId = (started.body.run as { runId: string }).runId;
-    // The session of the run, as Plan 5 Task 3 writes it with the run: `sessionId` is the run's own id.
-    const createdAt = "2026-10-24T08:00:00.000Z";
-    h.db.set({
-      ...agentSessionKey(TEST_ORG, runId, "META"), entityType: "AGENT_SESSION", orgId: TEST_ORG, sessionId: runId, kind: "chain", mode: "delegate",
-      subject: { kind: "chain", chainRunId: runId }, legs: [], where: { kind: "cloud" }, project: "payments", title: "Look into it: Why did checkout fail?",
-      owner: { developerId: MAYA.developerId, name: MAYA.name }, startedBy: { kind: "member", developerId: MAYA.developerId }, origin: "app", payer: { kind: "member", developerId: MAYA.developerId },
-      followerCount: 0, summaryRevision: 1, revision: 1, createdAt, updatedAt: createdAt,
-      summary: { status: "running", costUsd: 0, needsPeople: [], pendingApprovals: 0, digest: "d".repeat(64), computedAt: createdAt },
-    });
     return { chainId, runId };
   };
   return { h, members, call, startedRun };

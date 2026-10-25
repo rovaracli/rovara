@@ -33,6 +33,7 @@ import { auditActorOf } from "../audit/plan3-hooks.js";
 import { taskAgentRunKey } from "../developer/task-records.js";
 import { chainAccess } from "./access.js";
 import { neutralText } from "./run-events.js";
+import type { ChainSessionActor } from "./view.js";
 import {
   advanceChainRun, attemptKey, designOf, errorName, getItem, isTerminalStatus, iso, lostRace, moveAttempt, moveRun, onStepTaskEnded, readChainRun, readStepAttempt, readStepAttempts,
   stepOf, stepRequestId, transact, update, type ChainRunFailure, type ChainRunRecord, type Deps, type EndStatus, type StepAttemptRecord,
@@ -249,10 +250,12 @@ async function endAndFinish(
 const CancelInputSchema = z.object({ requestId: z.string().uuid() }).strict();
 
 /** Who may stop a run, read now: the starter, whoever holds `manage` on the chain, a maintainer of the project, an org owner or admin. Someone with no part in the run is told it isn't there. */
-async function requireMayCancel(deps: Deps, caller: AgentCaller, run: ChainRunRecord): Promise<AgentCaller> {
+async function requireMayCancel(deps: Deps, caller: AgentCaller, run: ChainRunRecord, actor?: ChainSessionActor): Promise<AgentCaller> {
   const orgRole = await orgRoleOf(deps, caller.orgId, caller.developerId);
   if (orgRole === undefined) throw runNotFound();
   const live: AgentCaller = { ...caller, orgRole };
+  // Plan 5 stops a chain session for a person it has judged (`edit` on the session, or an org owner or admin); the actor takes the place of this rule only, and is the caller themselves.
+  if (actor !== undefined && actor.developerId === caller.developerId) return live;
   const member = await resolveMember(deps, run.orgId, caller.developerId);
   const role = await deps.projectMembers.roleOf(run.orgId, run.project, { developerId: member, orgRole });
   const chain = await deps.chains.get(run.orgId, run.chainId);
@@ -268,15 +271,16 @@ async function requireMayCancel(deps: Deps, caller: AgentCaller, run: ChainRunRe
  * version, its latest attempt and its event in one transaction, with the request's own item), then the current task is asked to stop (Plan 3's cancel, as the run's owner), a
  * gate's pending approval is closed, and the chain's place is given back once. A run that has ended answers `CHAIN_RUN_CLOSED`; the same request again answers the stored
  * outcome (and finishes what the first could not). A later end of the task, or decision of the gate, changes nothing.
+ * `options.actor` is Plan 5's internal session actor (never set from a route): the session's own level check has been made, so it takes the place of the rule above and nothing else.
  */
-export async function cancelChainRun(deps: Deps, caller: AgentCaller, runId: string, input: { requestId: string }): Promise<ChainRunRecord> {
+export async function cancelChainRun(deps: Deps, caller: AgentCaller, runId: string, input: { requestId: string }, options: { actor?: ChainSessionActor } = {}): Promise<ChainRunRecord> {
   const id = ChainRunIdSchema.safeParse(runId);
   if (!id.success) throw runNotFound();
   const parsed = CancelInputSchema.safeParse(input);
   if (!parsed.success) throw agentXError("CONFIG_INVALID", `requestId: ${parsed.error.issues[0]?.message ?? "is not valid"}`);
   const run = await readChainRun(deps, caller.orgId, id.data);
   if (run === undefined) throw runNotFound();
-  const live = await requireMayCancel(deps, caller, run);
+  const live = await requireMayCancel(deps, caller, run, options.actor);
   const { mark, replay } = await markRequest(deps, live, "chain-run-cancel", run.runId, parsed.data);
   if (replay !== undefined) return finishedCancel(deps, run);
   if (isTerminalStatus(run.status)) throw agentXError("CHAIN_RUN_CLOSED", CHAIN_RUN_CLOSED_MESSAGE);

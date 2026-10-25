@@ -48,10 +48,10 @@ export interface SessionControlHost {
  * Plan 4's chain lifecycle as far as a session needs it, called with the internal session actor after Plan 5's own level check (Plan 4, M2): `cancelChainRun` ends the run (its
  * gate approval closes with it) and `retryChainRun` starts a new run of the same chain version and input (`startChainRun` applies Plan 4's `use` rule) and answers the new run's session.
  */
-// PLAN4: supplied by Plan 4's chain lifecycle (`cancelChainRun`, `startChainRun`) when the branches meet.
+// Plan 4's side is `chainControlFor` (chains/session-seam.ts), built for each request. `orgId` is the session's own org, so a chain run of another org is never touched (Plan 4's hand-off from Task 10).
 export interface ChainControl {
-  cancel(actor: ChainSessionActor, chainRunId: string, requestId: string): Promise<void>;
-  retry(actor: ChainSessionActor, chainRunId: string, requestId: string): Promise<{ sessionId: string }>;
+  cancel(orgId: OrgId, actor: ChainSessionActor, chainRunId: string, requestId: string): Promise<void>;
+  retry(orgId: OrgId, actor: ChainSessionActor, chainRunId: string, requestId: string): Promise<{ sessionId: string }>;
 }
 
 /** Who acts: `DeveloperCaller` fits. */
@@ -160,10 +160,10 @@ export async function stopSession(deps: SessionReadDependencies, caller: Control
 
   let related: string;
   if (session.subject.kind === "chain") {
-    // PLAN4: until Plan 4's lifecycle is wired a chain run is not stopped, and nothing is written.
+    // Without Plan 4's chain control (no chain runs in this deployment) a chain run is not stopped, and nothing is written.
     if (deps.chainControl === undefined) throw agentXError("RUNTIME_UNAVAILABLE", CHAIN_STOP_UNAVAILABLE);
     related = session.subject.chainRunId;
-    await deps.chainControl.cancel({ kind: "session", developerId: caller.developerId }, related, input.requestId);
+    await deps.chainControl.cancel(session.orgId, { kind: "session", developerId: caller.developerId }, related, input.requestId);
   } else if (session.subject.kind === "task") {
     if (deps.control === undefined) throw agentXError("RUNTIME_UNAVAILABLE", NOT_AVAILABLE);
     const task = await taskOfSession(deps, session);

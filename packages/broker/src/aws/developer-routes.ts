@@ -129,8 +129,9 @@ import {
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
-import { isChainRoute, routeChainRequest } from "../chains/routes.js";
-import { chainRunPortsFor } from "../chains/runner.js";
+import { isChainRoute, routeChainRequest, type ChainRouteDependencies } from "../chains/routes.js";
+import { chainRunPortsFor, type ChainRunPorts, type ChainRunnerDependencies } from "../chains/runner.js";
+import { chainControlFor, chainSessionReads, chainSteerReadsFor } from "../chains/session-seam.js";
 import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
@@ -1477,6 +1478,24 @@ async function startAppRun(
   return { task: await taskView(taskDeps, await loadOwnedTask(taskDeps, caller, started.taskId), { events: 0, details: false }) };
 }
 
+/**
+ * Plan 4's chain dependencies for one caller: the agent routes' own, the chain store, the run view's ports (built over the task layer for this caller, so the task's own rules apply
+ * inside a run's view) and, where Plan 3's run start is held, the runner's ports. The chain routes and the chain reads of a session are made from this, once per request: a chain read
+ * is bound to the org of the request, never to one fixed when the broker was built. Undefined where chains are not set up.
+ */
+function chainRouteDependenciesFor(deps: DeveloperRouteDependencies, caller: DeveloperCaller): (ChainRouteDependencies & { chainRuns?: ChainRunPorts }) | undefined {
+  if (deps.agents?.chains === undefined) return undefined;
+  // The chain runner starts each step through Plan 3's run start, which this API holds (the task start); a test may bring its own.
+  const starter = deps.agents.chainRuns === undefined ? agentRunStarterOf(deps) : undefined;
+  const admission = deps.modelAccess === undefined ? undefined : { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: deps.now, cloud: deps.cloud === true };
+  const agentDeps = deps.agents;
+  const chainView = agentDeps.chainView ?? chainViewPortsFor({
+    approvals: agentDeps, keySpend: deps.modelAccess === undefined ? undefined : (keyIds) => deps.modelAccess!.keySpend(keyIds),
+    taskView: (task) => taskView(developerTaskRouteDependencies(deps, caller), task, { events: 20, details: true, actor: "viewer" }),
+  });
+  return { ...agentDeps, chains: deps.agents.chains, chainView, ...(starter === undefined ? {} : { chainRuns: chainRunPortsFor(starter, admission) }) };
+}
+
 /** What session levels and reads need, from the route dependencies: the broker's own, or those it gave the agent routes. */
 function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionTakeOverDependencies | undefined {
   return deps.agentSessions ?? deps.agents?.agentSessions;
@@ -1488,8 +1507,15 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
   if (sessions === undefined || deps.tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
   const taskDeps = developerTaskRouteDependencies(deps, caller);
   const mint = deps.developer.realtimeToken;
+  // Plan 4's chain reads, messages, stop and retry, made for this request: the reads need the org of the person asking, which the broker doesn't have when it is built.
+  const chainDeps = chainRouteDependenciesFor(deps, caller);
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
+    ...(chainDeps === undefined ? {} : {
+      chain: chainSessionReads(chainDeps, caller.orgId),
+      chainSteer: chainSteerReadsFor(chainDeps),
+      ...(chainDeps.chainRuns === undefined ? {} : { chainControl: chainControlFor(chainDeps as ChainRunnerDependencies) }),
+    }),
     // Plan 5 Task 13: Plan 3's cancel, workflow retry and run start, bound to this person. They are called only after the session routes read the person's level on the session.
     control: {
       cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
@@ -1730,16 +1756,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Plan 4's chains (`/v1/app/chains*`, `/v1/app/chain-runs*`), beside Plan 3's agents.
   if (isChainRoute(url.pathname)) {
-    if (deps.agents?.chains === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
-    // The chain runner starts each step through Plan 3's run start, which this API holds (the task start); a test may bring its own.
-    const starter = deps.agents.chainRuns === undefined ? agentRunStarterOf(deps) : undefined;
-    const admission = deps.modelAccess === undefined ? undefined : { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: deps.now, cloud: deps.cloud === true };
-    const agentDeps = deps.agents;
-    const chainView = agentDeps.chainView ?? chainViewPortsFor({
-      approvals: agentDeps, keySpend: deps.modelAccess === undefined ? undefined : (keyIds) => deps.modelAccess!.keySpend(keyIds),
-      taskView: (task) => taskView(developerTaskRouteDependencies(deps, caller), task, { events: 20, details: true, actor: "viewer" }),
-    });
-    return routeChainRequest({ ...agentDeps, chains: deps.agents.chains, chainView, ...(starter === undefined ? {} : { chainRuns: chainRunPortsFor(starter, admission) }) }, caller, request, url);
+    const chainDeps = chainRouteDependenciesFor(deps, caller);
+    if (chainDeps === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
+    return routeChainRequest(chainDeps, caller, request, url);
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
