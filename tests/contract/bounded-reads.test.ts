@@ -65,20 +65,33 @@ describe("the project page's bounded reads", () => {
     expect(loggedEvents(log)).not.toContain("project_page.bindings_truncated");
   });
 
-  it("looks at no more than PROJECT_ROSTER_LIST_MAX entries of a roster and says so in the log when it cut", async () => {
+  const rosterWithAgents = async (extra: number) => {
     const { h, call } = await setup();
-    const ids = Array.from({ length: PROJECT_ROSTER_LIST_MAX + 7 }, (_, n) => `agt_${String(n).padStart(20, "0")}`);
+    const ids = Array.from({ length: PROJECT_ROSTER_LIST_MAX + extra }, (_, n) => `agt_${String(n).padStart(20, "0")}`);
     for (const agentId of ids) h.db.set({ ...projectAgentKey(TEST_ORG, "payments", agentId), entityType: "PROJECT_AGENT", agentId, addedBy: MAYA.developerId, addedAt: "2026-10-24T00:00:00.000Z" });
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const reads = vi.spyOn(h.db, "send");
-    const listed = await call(MAYA, "GET", "/v1/app/projects/payments/agents");
-    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
-    expect(loggedEvents(log)).toContain("roster.list_truncated");
-    const agentReads = reads.mock.calls.filter(([command]) => {
+    const agentReads = () => reads.mock.calls.filter(([command]) => {
       const key = (command as { input?: { Key?: { pk?: string; sk?: string } } }).input?.Key;
       return key?.sk === "META" && String(key.pk).includes("AGENT#agt_");
-    });
-    expect(agentReads.length).toBeLessThanOrEqual(PROJECT_ROSTER_LIST_MAX);
+    }).length;
+    return { call, log, agentReads, ids };
+  };
+
+  it("looks at no more than PROJECT_ROSTER_LIST_MAX entries of a roster for the project page and says so in the log when it cut", async () => {
+    const { call, log, agentReads } = await rosterWithAgents(7);
+    const overview = await call(MAYA, "GET", "/v1/app/projects/payments/overview");
+    expect(overview.status, JSON.stringify(overview.body)).toBe(200);
+    expect(loggedEvents(log)).toContain("roster.list_truncated");
+    expect(agentReads()).toBeLessThanOrEqual(PROJECT_ROSTER_LIST_MAX);
+  });
+
+  it("does not cut the roster the public roster route lists (Round 2 review M-1)", async () => {
+    const { call, log, agentReads, ids } = await rosterWithAgents(7);
+    const listed = await call(MAYA, "GET", "/v1/app/projects/payments/agents");
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(loggedEvents(log)).not.toContain("roster.list_truncated");
+    expect(agentReads()).toBe(ids.length);
   });
 
   it("does not log a cut for a short roster", async () => {
