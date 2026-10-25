@@ -119,8 +119,8 @@ async function memberRole(deps: SessionShareDependencies, orgId: OrgId, develope
   return role.success ? role.data : undefined;
 }
 
-/** Refuses a principal that isn't in the company, and a `use` or `edit` share to a project viewer of the session's project (m8). */
-async function checkPrincipal(deps: SessionShareDependencies, orgId: OrgId, session: AgentSessionRecord, principal: AgentPrincipal, level: SessionLevel): Promise<void> {
+/** Refuses a principal that isn't in the company, and a `use` or `edit` share to a project viewer of the session's project (m8). A local session's registration checks its first shares the same way (Task 18). */
+export async function checkPrincipal(deps: SessionShareDependencies, orgId: OrgId, session: Pick<AgentSessionRecord, "project">, principal: AgentPrincipal, level: SessionLevel): Promise<void> {
   if (principal.kind === "member") {
     const role = await memberRole(deps, orgId, principal.developerId);
     // The words never name the person: an id from another company must not reveal who it is.

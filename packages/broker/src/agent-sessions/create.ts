@@ -10,16 +10,21 @@ import {
   liveSessionKey,
   mySessionsKey,
   openAgentSessionKey,
+  principalKey,
   projectSessionsKey,
   redactText,
   sessionEventId,
   sessionLegSk,
+  sharedSessionsKey,
+  type AgentPrincipal,
   type AgentSessionRecord,
+  type LocalTool,
   type OrgId,
   type Payer,
   type SessionTrigger,
   type SessionEvent,
   type SessionLeg,
+  type SessionLevel,
   type WorkOrigin,
 } from "@agentx/contracts";
 import { putNew, type TableInput, type TransactItem } from "../agents/table-writes.js";
@@ -202,6 +207,72 @@ export function createChainSessionItems(table: TableInput, input: ChainSessionIn
       orgId, sessionId, kind: "chain", project: input.project, ownerId: input.owner.developerId, status: "starting", createdAt: input.now, updatedAt: input.now,
     }),
     putNew(table, openAgentSessionKey(orgId, sessionId), "OPEN_AGENT_SESSION", { orgId, sessionId }),
+  ];
+}
+
+
+// ---- a session on a Mac (Plan 5 Task 18)
+
+/** How a tool is named in a session's words. */
+export const LOCAL_TOOL_WORDS: Record<LocalTool, string> = { rovara: "Rovara", "claude-code": "Claude Code", codex: "Codex", "gemini-cli": "Gemini CLI", "cursor-cli": "Cursor" };
+
+export interface LocalSessionInput {
+  orgId: OrgId;
+  sessionId: string;
+  deviceId: string;
+  /** The device's label as the device record holds it now. */
+  deviceLabel: string;
+  tool: LocalTool;
+  project?: string | undefined;
+  /** Already through `inertTaskTitle`. */
+  title: string;
+  owner: { developerId: string; name: string };
+  /** When the work began on the Mac (the leg's start; the caller keeps it from the future). */
+  startedAt: string;
+  /** The people, projects or company the owner shares it with: checked by the caller. */
+  shares: ReadonlyArray<{ principal: AgentPrincipal; level: SessionLevel }>;
+  /** The registration's time (an instant): the session, its event, its index entries and its shares are stamped with it. */
+  now: string;
+}
+
+/**
+ * The items of a new local session: the `META` header (kind "local", status "running", revision 1, no payer: the Mac pays for itself), its first leg on the device, the `started` event,
+ * the entry that lists it for its owner, its project (when it names one, for rules and budgets only), the live wall and the sweep, and each share with its "shared with me" entry.
+ * Each is written only if absent. The session's `LOCAL` state and the device's entry for it are the caller's (`registerLocalSession`).
+ */
+export function createLocalSessionItems(table: TableInput, input: LocalSessionInput): TransactItem[] {
+  const owner = cleanSessionName(input.owner.name) ?? "Someone";
+  const label = cleanSessionName(input.deviceLabel) ?? "a Mac";
+  const title = sessionTitle(input.title);
+  const subject = { kind: "local" as const, deviceId: input.deviceId, tool: input.tool };
+  const where = { kind: "mac" as const, deviceId: input.deviceId, label: input.deviceLabel };
+  const leg: SessionLeg = { seq: 1, subject, where, startedAt: input.startedAt };
+  const summary = { status: "running" as const, costUsd: 0, needsPeople: [], pendingApprovals: 0, digest: sha256("running"), computedAt: input.now };
+  const record = AgentSessionRecordSchema.parse({
+    orgId: input.orgId, sessionId: input.sessionId, kind: "local", mode: "delegate", subject, legs: [leg], where, ...(input.project === undefined ? {} : { project: input.project }), title,
+    owner: { developerId: input.owner.developerId, name: owner }, startedBy: { kind: "local" }, origin: "local", followerCount: 0, summary, summaryRevision: 1, revision: 1,
+    createdAt: input.now, updatedAt: input.now,
+  } satisfies Record<string, unknown>);
+  const { orgId, sessionId } = record;
+  const event: SessionEvent = {
+    eventId: sessionEventId("started", sessionId), at: input.now, type: "started", actor: { kind: "member", developerId: input.owner.developerId, name: owner },
+    text: `${owner} started ${LOCAL_TOOL_WORDS[input.tool]} on ${label}: ${title}`,
+  };
+  const sharedBy = { developerId: input.owner.developerId, name: owner };
+  return [
+    putNew(table, agentSessionKey(orgId, sessionId, "META"), "AGENT_SESSION", { ...record }),
+    putNew(table, agentSessionKey(orgId, sessionId, sessionLegSk(leg.seq)), "AGENT_SESSION_LEG", { orgId, sessionId, ...leg }),
+    sessionEventItem(table, { orgId, sessionId }, event),
+    putNew(table, mySessionsKey(orgId, input.owner.developerId, input.now, sessionId), "MY_SESSION", { orgId, sessionId, developerId: input.owner.developerId, createdAt: input.now }),
+    ...(input.project === undefined ? [] : [putNew(table, projectSessionsKey(orgId, input.project, input.now, sessionId), "PROJECT_SESSION", { orgId, sessionId, project: input.project, createdAt: input.now })]),
+    putNew(table, liveSessionKey(orgId, sessionId), "LIVE_SESSION", {
+      orgId, sessionId, kind: "local", ...(input.project === undefined ? {} : { project: input.project }), ownerId: input.owner.developerId, status: "running", createdAt: input.now, updatedAt: input.now,
+    }),
+    putNew(table, openAgentSessionKey(orgId, sessionId), "OPEN_AGENT_SESSION", { orgId, sessionId }),
+    ...input.shares.flatMap(({ principal, level }) => [
+      putNew(table, agentSessionKey(orgId, sessionId, `SHARE#${principalKey(principal)}`), "AGENT_SESSION_SHARE", { orgId, sessionId, principal, level, sharedBy, sharedAt: input.now }),
+      putNew(table, sharedSessionsKey(orgId, principal, sessionId), "SHARED_SESSION", { orgId, sessionId, principal, level, sharedAt: input.now }),
+    ]),
   ];
 }
 

@@ -46,6 +46,7 @@ import { getAnyApproval } from "../agents/approvals-store.js";
 import { agentRunView } from "../agents/run-engine.js";
 import { failedIndexes, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { monthSlots, taskPageStep } from "../aws/developer-tasks.js";
+import { localSessionSource } from "../devices/local-facts.js";
 import { deriveTaskStatus, recentTaskEvents, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type OperationFacts, type StoredEvent } from "../developer/task-records.js";
 import { notifySessionChange } from "./notice-sink.js";
 import { settleSteerDeliveriesFor } from "./steer.js";
@@ -418,8 +419,8 @@ async function chainState(deps: SummaryDependencies, session: AgentSessionRecord
 }
 
 async function localState(deps: SummaryDependencies, session: AgentSessionRecord): Promise<Computed | undefined> {
-  if (deps.local === undefined) return undefined;
-  const facts = checkedFacts(deps, session, "local", LocalFactsSchema, await deps.local.read(session));
+  // A session on a Mac reads what its device last said from the session's own `LOCAL` item (Task 18), unless a caller supplies another source.
+  const facts = checkedFacts(deps, session, "local", LocalFactsSchema, await (deps.local ?? localSessionSource(deps)).read(session));
   if (facts === undefined) return undefined;
   const now = deps.now();
   const over = (ENDED_SESSION_STATUSES as readonly string[]).includes(facts.status);

@@ -19,12 +19,14 @@ import {
   type SessionView,
 } from "@agentx/contracts";
 import type { AgentRunRequest, AgentRunResult } from "../agents/runs.js";
-import { failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
+import { failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditSessionStopped } from "../audit/events.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { MAC_NOT_AVAILABLE_MESSAGE, commandableDevice } from "../devices/local-facts.js";
+import { announceDeviceCommand, deviceCommandItems } from "../devices/local-sessions.js";
 import { requireSessionLevel, type ChainSessionActor, type SessionAccess } from "./access.js";
 import { sessionView, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import { tell } from "./take-over.js";
@@ -60,6 +62,7 @@ export type ControlCaller = SessionReadCaller & { name: string };
 const BodySchema = z.object({ requestId: z.string().uuid() }).strict();
 export const NOT_AVAILABLE = "Stopping a session isn't available right now.";
 export const CHAIN_STOP_UNAVAILABLE = "Stopping a chain run isn't available right now.";
+/** A task session recorded as running on a Mac (a hand-off's second leg, before Task 19) is not stopped here: only a local session is, through its device. */
 export const MAC_STOP_UNAVAILABLE = "Stopping a session on a Mac isn't available yet.";
 const NOT_READABLE = "This session can't be read right now.";
 
@@ -156,7 +159,9 @@ export async function stopSession(deps: SessionReadDependencies, caller: Control
     return answerOf(deps, caller, session.sessionId);
   }
   if (isEnded(session)) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
-  if (session.kind === "local" || session.where.kind !== "cloud") throw agentXError("RUNTIME_UNAVAILABLE", MAC_STOP_UNAVAILABLE);
+  // A session on a Mac is stopped by telling its device (Task 18).
+  if (session.kind === "local") return stopLocalSession(deps, caller, access, input.requestId);
+  if (session.where.kind !== "cloud") throw agentXError("RUNTIME_UNAVAILABLE", MAC_STOP_UNAVAILABLE);
 
   let related: string;
   if (session.subject.kind === "chain") {
@@ -202,4 +207,59 @@ export async function stopSession(deps: SessionReadDependencies, caller: Control
   await flushAuditEvents(deps, events);
   await afterControl(deps, session, caller.developerId, access.effectiveOwner.developerId);
   return answerOf(deps, caller, session.sessionId);
+}
+
+// ---- a session on a Mac
+
+const STOP_ATTEMPTS = 3;
+const BUSY = "This session is busy right now. Try again.";
+
+/**
+ * Stops a local session: a `stop` command for its device, the request item (so a repeat adds no second command), the `stopped` event and the audit item, in ONE transaction. The
+ * session's own state is what the Mac reports next (it stops, and says so), so the session stays as it is until then. The device must be the owner's and live, else nothing is written.
+ */
+async function stopLocalSession(deps: SessionReadDependencies, caller: ControlCaller, access: SessionAccess, requestId: string): Promise<{ session: SessionView }> {
+  const { session } = access;
+  const orgId = session.orgId;
+  for (let attempt = 1; attempt <= STOP_ATTEMPTS; attempt += 1) {
+    const device = await commandableDevice(deps, session);
+    if (device === undefined) throw agentXError("RUNTIME_UNAVAILABLE", MAC_NOT_AVAILABLE_MESSAGE);
+    const nowMs = deps.now();
+    const at = isoOf(nowMs);
+    const name = nameOrSomeone(caller.name);
+    const command = await deviceCommandItems(deps, { orgId, deviceId: device.deviceId, ownerId: session.owner.developerId }, {
+      kind: "stop", sessionId: session.sessionId, by: { developerId: caller.developerId, name },
+    }, nowMs);
+    const events = await tryAuditEvents(deps, () => [auditSessionStopped({
+      orgId, actor: auditActorOf(caller.developerId), occurredAt: at, occurrence: requestId, related: [device.deviceId], sessionId: session.sessionId, sessionKind: session.kind,
+    })]);
+    const items: TransactItem[] = [
+      ...command.items,
+      controlRequestItem(deps, session, requestId, { action: "stop", by: caller.developerId, at, sessionId: session.sessionId }, Math.floor(nowMs / 1000) + 30 * 86_400),
+      sessionEventItem(deps, { orgId, sessionId: session.sessionId }, {
+        eventId: sessionEventId("stopped", requestId), at, type: "stopped", actor: { kind: "member", developerId: caller.developerId, name }, text: `${name} stopped this session.`,
+      }),
+      ...events.flatMap((event) => auditPending(deps, event)),
+    ];
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    } catch (error) {
+      if (isTransactionConflict(error)) continue;
+      const failed = failedIndexes(error);
+      if (failed === undefined || failed.size === 0) throw error;
+      // The same request was recorded by another call at the same moment: its answer is this one's.
+      const recorded = await readControlRequest(deps, session, requestId);
+      if (recorded !== undefined) {
+        repeatOf(recorded, "stop", caller.developerId);
+        return answerOf(deps, caller, session.sessionId);
+      }
+      // The device's count or the device itself moved: read them again.
+      continue;
+    }
+    await flushAuditEvents(deps, events);
+    await announceDeviceCommand(deps, orgId, session.owner.developerId, device.deviceId, command.seq);
+    await afterControl(deps, session, caller.developerId, access.effectiveOwner.developerId);
+    return answerOf(deps, caller, session.sessionId);
+  }
+  throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
 }

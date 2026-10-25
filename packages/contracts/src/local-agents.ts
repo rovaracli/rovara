@@ -11,10 +11,10 @@ import {
   LOCAL_TURN_MAX_CHARS,
   LOCAL_UPDATE_TURNS_MAX,
   LocalToolSchema,
-  SESSION_STATUSES,
   SessionIdSchema,
   SessionLevelSchema,
   SessionMessageIdSchema,
+  type SESSION_STATUSES,
 } from "./agent-sessions.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { OrgIdSchema } from "./org.js";
@@ -169,6 +169,8 @@ export const DeviceCommandViewSchema = z
     sessionId: SessionIdSchema,
     messageId: SessionMessageIdSchema.optional(),
     text: z.string().optional(),
+    /** Who sent the steer or the stop, by name (information for the Mac to show; it grants nothing). */
+    from: z.string().max(200).optional(),
     at: InstantText,
   })
   .strict();

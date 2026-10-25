@@ -50,6 +50,7 @@ import { taskKey } from "../developer/task-records.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
 import { anchorKey, anchorTargetsFor, anchoredOn, presentMessages, withoutExcerpt, type AnchorDependencies } from "./anchors.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
+import { announceDeviceCommand, deviceCommandItems } from "../devices/local-sessions.js";
 import { planSteer, queuedSteersItem, steerNotDeliveredEvent, type SteerDependencies } from "./steer.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
@@ -316,7 +317,7 @@ export async function sendSessionMessage(
     const message = SessionMessageSchema.parse({
       messageId: newMessageId(nowMs, caller.developerId, input.requestId), sessionId: session.sessionId, kind: input.kind, source, author: { developerId: caller.developerId, name }, text, createdAt: isoOf(nowMs), rev: 1,
       ...(anchor === undefined ? {} : { anchor }), ...(threadId === undefined ? {} : { threadId }),
-      ...(plan === undefined ? {} : { delivery: plan.kind === "note" ? { state: "queued", at: isoOf(nowMs) } : { state: "not_delivered", at: isoOf(nowMs), reason: plan.reason } }),
+      ...(plan === undefined ? {} : { delivery: plan.kind === "note" || plan.kind === "device" ? { state: "queued", at: isoOf(nowMs) } : { state: "not_delivered", at: isoOf(nowMs), reason: plan.reason } }),
     });
     const events = [sessionEventItem(deps, session, steer
       ? { eventId: sessionEventId("steer", message.messageId), at: message.createdAt, type: "steer", actor: { kind: "member", developerId: caller.developerId, name }, source, messageId: message.messageId, text: `${name} sent ${session.agent?.name ?? "the agent"} a message.` }
@@ -354,6 +355,15 @@ export async function sendSessionMessage(
       if (note.outcome === "refused") continue; // the plan read the task a moment ago: read it again
       noteItems = [place(note.items[0]), place(note.items[1]), place(queuedSteersItem(deps, session, 1, nowMs))];
     }
+    // A message to a session on a Mac is a command for its device (Task 18), written with the message, the queue's count and the device's own count of commands.
+    let deviceSeq: number | undefined;
+    if (plan?.kind === "device") {
+      const command = await deviceCommandItems(deps, { orgId: session.orgId, deviceId: plan.deviceId, ownerId: session.owner.developerId }, {
+        kind: "steer", sessionId: session.sessionId, messageId: message.messageId, text, by: { developerId: caller.developerId, name },
+      }, nowMs);
+      deviceSeq = command.seq;
+      noteItems = [...command.items.map((item) => place(item)), place(queuedSteersItem(deps, session, 1, nowMs))];
+    }
     const EVENT = base.length;
     try {
       try {
@@ -389,6 +399,7 @@ export async function sendSessionMessage(
       throw error;
     }
     await tellSession(deps, session);
+    if (plan?.kind === "device" && deviceSeq !== undefined) await announceDeviceCommand(deps, session.orgId, session.owner.developerId, plan.deviceId, deviceSeq);
     // A pinned comment answers with its state: the part was read for this write, so it is not read again.
     return (await presentMessages(deps, session, access, [message], anchorInput === undefined ? undefined : targets))[0]!;
   }

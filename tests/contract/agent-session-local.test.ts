@@ -133,6 +133,16 @@ describe("registering a local session", () => {
     expect((await w.liveFor(OLA)).tiles.map((tile) => tile.sessionId)).not.toContain(sessionId);
     expect(await code(w.view(MAX, sessionId))).toMatchObject({ code: "NOT_FOUND" });
     expect(await code(w.view(OLA, sessionId))).toMatchObject({ code: "NOT_FOUND" });
+    // Nor in the lists: the project's, "mine" and "shared with me".
+    const listed = async (who: string, query: string, orgRole: OrgRole = "member") => {
+      const path = `/v1/app/sessions${query}`;
+      const reply = await routeAgentSessionRequest(w.read, { ...w.caller(who), orgRole }, { method: "GET", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`)) as { sessions: Array<{ sessionId: string }> };
+      return reply.sessions.map((entry) => entry.sessionId);
+    };
+    expect(await listed(MAX, "?project=web")).not.toContain(sessionId);
+    expect(await listed(OLA, "?project=web", "admin")).not.toContain(sessionId);
+    expect(await listed(ARJUN, "?shared=me")).toContain(sessionId);
+    expect(await listed(PRIYA, "?owner=me")).toContain(sessionId);
     expect((await w.view(ARJUN, sessionId)).you).toMatchObject({ level: "view", owner: false });
     expect((await w.view(PRIYA, sessionId)).you).toMatchObject({ level: "edit", owner: true });
   });
@@ -174,7 +184,7 @@ describe("registering a local session", () => {
     expect(eleven).toHaveLength(11);
     expect(await code(w.register(PRIYA, deviceId, { shares: eleven }))).toEqual({ code: "CONFIG_INVALID", message: TOO_MANY });
     expect(w.writes()).toBe(before);
-    await expect(w.register(PRIYA, deviceId, { shares: eleven.slice(0, 10) })).resolves.toMatchObject({ sessionId: expect.stringMatching(/^ses_/) });
+    await expect(w.register(PRIYA, deviceId, { shares: eleven.slice(0, 10) })).resolves.toMatchObject({ sessionId: expect.stringMatching(/^ses_/) as string });
   });
 
   it("refuses what is not a person or project of the company, the owner themself, a repeat, and the whole company (that needs the confirmation page), all before writing", async () => {
@@ -463,7 +473,8 @@ describe("messages and stops for a session on a Mac", () => {
     await w.stop(ARJUN, sessionId);
     const poll = await w.commandPoll(PRIYA, deviceId);
     expect(poll.commands.map((command) => ({ seq: command.seq, kind: command.kind, sessionId: command.sessionId }))).toEqual([{ seq: 1, kind: "steer", sessionId }, { seq: 2, kind: "stop", sessionId }]);
-    expect(poll.commands[0]).toMatchObject({ messageId: message.messageId, text: "use the staging database" });
+    expect(poll.commands[0]).toMatchObject({ messageId: message.messageId, text: "use the staging database", from: "Arjun" });
+    expect(poll.commands[1]).toMatchObject({ kind: "stop", from: "Arjun" });
     expect(poll.next).toBe(2);
     expect((await w.commandPoll(PRIYA, deviceId, 1)).commands.map((command) => command.seq)).toEqual([2]);
     expect((await w.commandPoll(PRIYA, deviceId, 2)).commands).toEqual([]);
@@ -507,10 +518,13 @@ describe("messages and stops for a session on a Mac", () => {
     const w = world();
     const { sessionId, deviceId } = await w.started();
     const requestId = randomUUID();
-    const before = w.writes();
     const reply = await w.stop(PRIYA, sessionId, requestId);
     expect(reply.session.sessionId).toBe(sessionId);
-    expect(w.writes()).toBe(before + 1);
+    // The command, the request item and the stopped event are one transaction (the summary refresh after it is another).
+    const together = w.db.transactions().filter((tx) => JSON.stringify(tx).includes('"DEVICE_COMMAND"'));
+    expect(together).toHaveLength(1);
+    expect(JSON.stringify(together[0])).toContain("AGENT_SESSION_REQUEST");
+    expect(JSON.stringify(together[0])).toContain('"stopped"');
     expect(w.events(sessionId).some((event) => event.type === "stopped")).toBe(true);
     await w.stop(PRIYA, sessionId, requestId);
     expect(w.commands(deviceId)).toHaveLength(1);

@@ -10,6 +10,7 @@ import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { SESSION_COOKIE, escapeHtml, parseCookie, safeResponse, signInLocation, type WebResponse } from "../aws/web-session.js";
 import { randomBytes } from "node:crypto";
+import { recordLocalUpdate, registerLocalSession } from "../devices/local-sessions.js";
 import { readSessionEvents } from "./events.js";
 import { mayCreateAgentIn, makeAgentFromSession } from "./make-agent.js";
 import { followSession, recordPresence, unfollowSession } from "./followers.js";
@@ -46,6 +47,8 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
 export type SessionRouteCaller = DeveloperCaller;
 
 const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry))?)?$/;
+const LOCAL_REGISTER_PATH = "/v1/app/sessions/local";
+const LOCAL_UPDATE_PATH = /^\/v1\/app\/sessions\/([^/]+)\/local\/updates$/;
 const CHANGES_PATH = "/v1/app/changes";
 const LIVE_PATH = "/v1/app/live";
 const PROJECT_OVERVIEW_PATH = /^\/v1\/app\/projects\/([^/]+)\/overview$/;
@@ -188,6 +191,17 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     }
     const seen = url.searchParams.get("occurrence");
     return dismissHomeCard(home, caller, cardId, seen === null ? undefined : seen);
+  }
+  // Task 18: a Mac registers a local session and posts its updates. Both are the signed-in person's own device acting for them.
+  if (url.pathname === LOCAL_REGISTER_PATH) {
+    if (request.method !== "POST") throw notFound();
+    const registered = await registerLocalSession({ ...read, realtimePublish: deps.realtimePublish }, caller, jsonBody(request));
+    return new StatusReply(201, { session: await sessionView(read, caller, registered.sessionId) });
+  }
+  const localUpdate = LOCAL_UPDATE_PATH.exec(url.pathname);
+  if (localUpdate !== null) {
+    if (request.method !== "POST") throw notFound();
+    return recordLocalUpdate({ ...read, realtimePublish: deps.realtimePublish }, caller, localUpdate[1]!, jsonBody(request));
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();
