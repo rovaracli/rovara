@@ -277,7 +277,10 @@ export function taskPersonProofRoleName(env: string): string {
  * complete: tests/contract/role-paths.test.ts compares it with the synthesized templates.
  */
 export function fixedNameEnvironmentRoleNames(env: string): string[] {
-  return [connectorSecretsRoleName(env), ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : [])];
+  return [
+    connectorSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
+    ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : []),
+  ];
 }
 
 /**
