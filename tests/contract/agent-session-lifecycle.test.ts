@@ -111,6 +111,8 @@ describe("a member is removed", () => {
     const others = w.session({ owner: PRIYA, followers: [ARJUN, MIA, MAX] });
     const shared = w.session({ owner: PRIYA, followers: [ARJUN] });
     const quiet = w.session({ owner: PRIYA, followers: [MIA] });
+    // A session everyone on the project sees: Arjun follows it with no share and no presence, so only the live index leads to it.
+    const open = w.session({ owner: PRIYA, followers: [ARJUN, MIA] });
     w.share(ORG_A, others.sessionId, ARJUN, "edit");
     w.share(ORG_A, others.sessionId, MIA, "view");
     w.share(ORG_A, shared.sessionId, ARJUN, "use");
@@ -123,12 +125,14 @@ describe("a member is removed", () => {
     w.share(ORG_B, theirs.sessionId, BO, "view");
     w.device(ORG_B, BO, DEVICE_C);
     w.db.delete(orgMemberKey(ORG_A, ARJUN));
-    return { w, mine, others, shared, quiet, theirs };
+    return { w, mine, others, shared, quiet, open, theirs };
   };
 
   it("deletes their follows (counting them off), presence and shares with their index rows, and leaves everyone else's", async () => {
-    const { w, others, shared, quiet, theirs } = setup();
+    const { w, others, shared, quiet, open, theirs } = setup();
     await onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ARJUN, by: PRIYA });
+    expect(w.followers(ORG_A, open.sessionId)).toEqual([MIA]);
+    expect(w.count(ORG_A, open.sessionId)).toBe(1);
     expect(w.followers(ORG_A, others.sessionId)).toEqual([MAX, MIA].sort());
     expect(w.count(ORG_A, others.sessionId)).toBe(2);
     expect(w.followers(ORG_A, shared.sessionId)).toEqual([]);
@@ -190,6 +194,8 @@ describe("a member is removed", () => {
     expect(w.get(deviceKey(ORG_A, DEVICE_A as never))!["revokedAt"]).toBeDefined();
     expect(w.lines.map((line) => line.event)).toContain("member_removed.no_successor");
     const after = w.snapshot();
+    // A later run changes nothing: a device revoked once keeps the time it was revoked.
+    w.clock.now += 3_600_000;
     await onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ARJUN, by: PRIYA });
     expect(w.snapshot()).toBe(after);
   });
@@ -297,6 +303,44 @@ describe("two members are merged", () => {
     expect(w.get(taskIndexKey(PRIYA, takenByZed.createdAt, takenByZed.taskId))).toBeDefined();
     expect(w.taskOf(zedsOwn.taskId).currentOwner).toBeUndefined();
     expect(w.get(taskIndexKey(ZED, zedsOwn.createdAt, zedsOwn.taskId))).toBeDefined();
+  });
+
+  it("leaves a session alone whose owner is someone else now (a take-over since), and only drops the duplicate's stale row", async () => {
+    const { w, followed } = setup();
+    w.db.set({ ...mySessionsKey(ORG_A, ZED, followed.createdAt, followed.sessionId), entityType: "MY_SESSION", orgId: ORG_A, sessionId: followed.sessionId, developerId: ZED, createdAt: followed.createdAt });
+    const before = structuredClone(w.get(agentSessionKey(ORG_A, followed.sessionId, "META")));
+    await merge(w);
+    expect((w.get(agentSessionKey(ORG_A, followed.sessionId, "META")))!["owner"]).toEqual((before as Item)["owner"]);
+    expect(w.get(mySessionsKey(ORG_A, ZED, followed.createdAt, followed.sessionId))).toBeUndefined();
+    expect(w.get(mySessionsKey(ORG_A, ARJUN, followed.createdAt, followed.sessionId))).toBeUndefined();
+  });
+
+  it("reads the session again after a lost race, and moves it", async () => {
+    const { w, zedsOwn } = setup();
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }, { Code: "None" }, { Code: "None" }] }, times: 1 });
+    await merge(w);
+    expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["owner"]).toMatchObject({ developerId: ARJUN });
+    expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["revision"]).toBe(2);
+  });
+
+  it("gives up with a retryable refusal when the session keeps changing, and the marker stays", async () => {
+    const { w, zedsOwn } = setup();
+    w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }] }, times: 50 });
+    expect(await code(merge(w))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["owner"]).toMatchObject({ developerId: ZED });
+  });
+
+  it("does not hand on a task whose current owner is someone else, and keeps the creator's own list row when the creator took it back", async () => {
+    const { w, takenByZed, zedsOwn } = setup();
+    // A task Zed's session names but Priya owns now (a stale state a take-over left): its owner stays Priya.
+    w.db.set({ ...w.taskOf(takenByZed.taskId), currentOwner: { developerId: PRIYA, name: "Priya", provider: "oidc", since: "2026-10-22T08:30:00.000Z" } });
+    // A task Zed created and took back: the creator's row stays as history, the current owner moves.
+    w.db.set({ ...w.taskOf(zedsOwn.taskId), developerId: ZED, developerName: "Zed", currentOwner: { developerId: ZED, name: "Zed", provider: "oidc", since: "2026-10-22T08:30:00.000Z" } });
+    await merge(w);
+    expect(w.taskOf(takenByZed.taskId).currentOwner).toMatchObject({ developerId: PRIYA, name: "Priya" });
+    expect(w.taskOf(zedsOwn.taskId).currentOwner).toMatchObject({ developerId: ARJUN, name: "Arjun", since: "2026-10-22T08:30:00.000Z" });
+    expect(w.get(taskIndexKey(ZED, zedsOwn.createdAt, zedsOwn.taskId))).toBeDefined();
+    expect(w.get(taskIndexKey(ARJUN, zedsOwn.createdAt, zedsOwn.taskId))).toBeUndefined();
   });
 
   it("moves the duplicate's devices to the survivor", async () => {
@@ -418,7 +462,10 @@ describe("an org is closed", () => {
     w.db.set({ ...changesKey(ORG_B, BO, CREATED_AT, 1), entityType: "CHANGE_NOTICE", orgId: ORG_B, type: "session_shared", sessionId: b.sessionId });
     w.db.set({ ...endedSessionWorkKey(day, ORG_B, b.sessionId), entityType: "ENDED_AGENT_SESSION", orgId: ORG_B, sessionId: b.sessionId });
     w.db.set({ ...openAgentSessionKey(ORG_B, b.sessionId), entityType: "OPEN_AGENT_SESSION", orgId: ORG_B, sessionId: b.sessionId });
-    w.db.set({ pk: "ENDED_DRAIN_CURSOR", sk: "META", entityType: "ENDED_DRAIN_CURSOR", day });
+    // An entry the drain has not reached yet, two days back, of each org.
+    w.db.set({ ...endedSessionWorkKey("2026-10-20", ORG_A, "ses_cccccccccccccccccccc"), entityType: "ENDED_AGENT_SESSION", orgId: ORG_A, sessionId: "ses_cccccccccccccccccccc" });
+    w.db.set({ ...endedSessionWorkKey("2026-10-20", ORG_B, "ses_dddddddddddddddddddd"), entityType: "ENDED_AGENT_SESSION", orgId: ORG_B, sessionId: "ses_dddddddddddddddddddd" });
+    w.db.set({ pk: "ENDED_DRAIN_CURSOR", sk: "META", entityType: "ENDED_DRAIN_CURSOR", day: "2026-10-20" });
     return { w, a, ended, b };
   };
   const rowsOf = (w: World, orgId: OrgId) => JSON.stringify(w.db.find((item) => String(item.pk).includes(orgId) || String(item.sk).includes(orgId)));
@@ -434,6 +481,8 @@ describe("an org is closed", () => {
     expect(w.get(openAgentSessionKey(ORG_A, ended.sessionId as never))).toBeUndefined();
     expect(w.get(endedSessionWorkKey("2026-10-22", ORG_A, a.sessionId as never))).toBeUndefined();
     expect(w.get(endedSessionWorkKey("2026-10-22", ORG_A, ended.sessionId as never))).toBeUndefined();
+    expect(w.get(endedSessionWorkKey("2026-10-20", ORG_A, "ses_cccccccccccccccccccc"))).toBeUndefined();
+    expect(w.get(endedSessionWorkKey("2026-10-20", ORG_B, "ses_dddddddddddddddddddd"))).toBeDefined();
     expect(rowsOf(w, ORG_B)).toBe(theirs);
     expect(w.get(openAgentSessionKey(ORG_B, b.sessionId as never))).toBeDefined();
     expect(w.get(endedSessionWorkKey("2026-10-22", ORG_B, b.sessionId as never))).toBeDefined();

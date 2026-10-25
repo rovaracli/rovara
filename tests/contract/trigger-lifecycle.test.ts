@@ -204,6 +204,21 @@ describe("the last owner leaves", () => {
     expect((await v.notices(VIV)).filter((text) => text.includes("turned off"))).toEqual([]);
   });
 
+  it("tells at most the five longest-standing admins", async () => {
+    const v = setupTriggerWorld();
+    const { trigger } = await unownable(v, OWNER);
+    const admins = ["a1", "b2", "c3", "d4", "e5", "f6", "a7"].map((pair) => pair.repeat(32));
+    admins.forEach((developerId, index) => {
+      v.db.set({ ...orgMemberKey(ORG_A, developerId), entityType: "ORG_MEMBER", orgId: ORG_A, developerId, role: "admin", joinedAt: `2026-09-0${String(index + 1)}T00:00:00.000Z` });
+    });
+    await removal(v, OWNER);
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false });
+    const told = await Promise.all(admins.map(async (id) => (await v.notices(id)).filter((text) => text.includes("turned off")).length));
+    // DANA (joined 2026-10-01) is after all seven: the first five by joining are told.
+    expect(told).toEqual([1, 1, 1, 1, 1, 0, 0]);
+    expect((await v.notices(DANA)).filter((text) => text.includes("turned off"))).toEqual([]);
+  });
+
   it("hands a trigger to a maintainer who can own it, as for any removal, and says so", async () => {
     const v = setupTriggerWorld();
     const chain = await v.budgetedChain();
