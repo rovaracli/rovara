@@ -237,6 +237,7 @@ export const SessionListSchema = z.object({ sessions: z.array(SessionTileSchema)
 export type SessionList = z.infer<typeof SessionListSchema>;
 export const SessionListReaderSchema = forwardReader(SessionListSchema);
 
+export const DeveloperTaskViewReaderSchema = forwardReader(DeveloperTaskViewSchema);
 export const SessionEventReaderSchema = forwardReader(SessionEventSchema);
 export const SessionMessageReaderSchema = forwardReader(SessionMessageSchema);
 

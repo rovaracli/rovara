@@ -5,7 +5,7 @@ import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
+import { AgentXError, errorStatus, RealtimeTokenResponseSchema, userChannel, projectChannel, SessionViewSchema, SessionMessageSchema, SessionMessagePageSchema, SessionShareSchema, AgentPrincipalSchema, SessionMakeAgentBodySchema, AppOrgMembersResponseSchema } from "@agentx/contracts";
 import { createAppHandler } from "../../../packages/web/src/server/handler.js";
 import { authenticateWebRequest, webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 import type { DeveloperRouteDependencies } from "../../../packages/broker/src/aws/developer-routes.js";
@@ -70,7 +70,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (current.session !== undefined) {
  const session = current.session, path = "/v1/web/sessions/" + session.sessionId;
  if (url.pathname === path && method === "GET") { json(200, { session });return; }
- if (url.pathname === path + "/messages" && method === "GET") { json(200, { messages: current.messages ?? [] });return; }
+ if (url.pathname === path + "/messages" && method === "GET") {
+ const anchor = url.searchParams.get("anchor"), visible = anchor === null || session.anchors?.some(part => part.target + ":" + part.targetId === anchor) === true;
+ const messages = visible ? (current.messages ?? []).filter(message => anchor === null || (message.anchor !== undefined && "targetId" in message.anchor && message.anchor.target + ":" + message.anchor.targetId === anchor)) : [];
+ json(200, SessionMessagePageSchema.parse({ messages }));return;
+ }
  if (url.pathname === path + "/events" && method === "GET") { json(200, { events: [] });return; }
  if (url.pathname === path + "/presence" && method === "POST") { json(200, { viewingNow: session.viewingNow });return; }
  if (url.pathname === path + "/follow" && (method === "POST" || method === "DELETE")) { const following = method === "POST";current.session = SessionViewSchema.parse({ ...session, you: { ...session.you, following } });json(200, { following });return; }
@@ -80,7 +84,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  const input = JSON.parse(body) as Record<string, unknown>, requestId = SessionMakeAgentBodySchema.shape.requestId.parse(input.requestId);
  if (method === "POST") {
  const message = SessionMessageSchema.parse({ messageId: "msg_" + String((current.messages?.length ?? 0) + 1).padStart(20, "a"), sessionId: session.sessionId, kind: input.kind, source: "app", author: { developerId: FIXTURE_DEVELOPER, name: "Priya" }, text: input.text, rev: 1, createdAt: new Date().toISOString(), ...(input.anchor === undefined ? {} : { anchor: input.anchor, anchorState: "current" }), ...(input.threadId === undefined ? {} : { threadId: input.threadId }) });
- current.messages = [...current.messages ?? [], message];evidence.body = { requestId, kind: message.kind };json(200, message);return;
+ current.messages = [...current.messages ?? [], message];evidence.body = { requestId, kind: message.kind, ...(message.anchor !== undefined && "targetId" in message.anchor ? { anchor: { target: message.anchor.target, targetId: message.anchor.targetId, revision: message.anchor.revision } } : {}) };json(200, message);return;
  }
  const principal = AgentPrincipalSchema.parse(input.principal), share = SessionShareSchema.parse({ principal, level: input.level, sharedBy: { developerId: FIXTURE_DEVELOPER, name: "Priya" }, sharedAt: new Date().toISOString() });current.shares = [...current.shares ?? [], share];evidence.body = { requestId, principal, level: share.level };json(200, { share });return;
  }

@@ -27,3 +27,6 @@ export { SessionMessageIdSchema, SessionAnchorInputSchema, type SessionAnchorInp
 export { DeveloperTaskViewSchema } from "./developer-tasks.js";
 
 export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
+
+export { DeveloperTaskViewReaderSchema } from "./session-views.js";
+export { SessionAnchorRefSchema } from "./agent-sessions.js";

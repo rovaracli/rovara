@@ -11,8 +11,8 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
-function setup(session = fixture(), hash = "", onComment = vi.fn()) {
- const f = fakeHost();const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session: SessionViewReaderSchema.parse(session), onComment })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID + hash] });
+function setup(value: unknown = fixture(), hash = "", onComment = vi.fn()) {
+ const session = SessionViewReaderSchema.parse(value), f = fakeHost();const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session: SessionViewReaderSchema.parse(session), onComment })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID + hash] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(RouterProvider, { router }) }));
  return { ...ui, ...f, router, onComment, close() { ui.unmount();router.dispose(); } };
 }
@@ -70,7 +70,7 @@ for (const theme of ["light", "dark"] as const) it("keeps the workspace accessib
 it("attaches discussion only to the real plan paragraph supplied by the server", async () => {
  const anchor = { target: "plan_block" as const, targetId: "p2", revision: "v1" };
  const f = setup(fixture({ anchors: [anchor] }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
- const source = screen.getByRole("button", { name: "Comment on plan paragraph 2" });fireEvent.click(source);expect(f.onComment).toHaveBeenCalledExactlyOnceWith(anchor, source);
+ const source = screen.getByRole("button", { name: "Comment on plan paragraph 2" });expect(screen.getByText("Check the idempotency key.").parentElement?.contains(source)).toBe(true);fireEvent.click(source);expect(f.onComment).toHaveBeenCalledExactlyOnceWith(anchor, source);
  expect(screen.queryByRole("button", { name: "Comment on plan paragraph 1" })).toBeNull();f.close();
 });
 it("makes hidden direction controls visible in plan text without executing markup", async () => {
@@ -81,4 +81,38 @@ it("does not turn a visible evidence anchor into permission to comment", () => {
  const anchor = { target: "change_file" as const, targetId: "acme/payments:src/refund.ts", revision: "+12-3" };
  const f = setup(fixture({ anchors: [anchor], you: { level: "view", owner: false, following: false, actions: ["watch"] } }), "#changes");
  expect(screen.queryByRole("button", { name: "Comment on src/refund.ts" })).toBeNull();f.close();
+});
+
+it("retains readable evidence for a newer workflow state without granting plan approval", async () => {
+ const base = fixture();if (base.body.kind !== "task") throw new Error("Wrong fixture kind");
+ const f = setup({ ...base, body: { kind: "task", task: { ...base.body.task, workflow: { ...workflow(), state: "NEW_BACKEND_STATE" } } } }, "#plan");
+ await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.getByText("Status unavailable")).toBeTruthy();expect(screen.queryByRole("button", { name: "Review and approve the plan" })).toBeNull();f.close();
+});
+it("does not offer approval while the owner's plan is still running", async () => {
+ const f = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: { ...workflow(), state: "RUNNING" } }) } }), "#plan");
+ await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.queryByRole("button", { name: "Review and approve the plan" })).toBeNull();f.close();
+});
+it("qualifies old check receipts instead of treating them as verified current code", () => {
+ const task = taskFixture({ workflow: { ...workflow(), verification: { candidateDigest: "b".repeat(64), producer: "check-runner", environmentId: "fixture-worker", recordedAt: "2026-10-23T12:00:00.000Z", results: [{ checkId: "unit", status: "PASS" }] } } });
+ const f = setup(fixture({ body: { kind: "task", task } }), "#tests");expect(screen.getByRole("heading", { name: "Earlier check results" })).toBeTruthy();expect(screen.getByText("These checks have not been matched to the current code.")).toBeTruthy();expect(screen.getByText("Passed")).toBeTruthy();f.close();
+});
+it("refuses plan attachment points whose revision doesn't match the displayed artifact", async () => {
+ const f = setup(fixture({ anchors: [{ target: "plan_block", targetId: "p2", revision: "v2" }] }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.queryByRole("button", { name: "Comment on plan paragraph 2" })).toBeNull();f.close();
+});
+
+it("keeps approval off an implementation step waiting for a different decision", async () => {
+ const task = taskFixture({ workflow: { ...workflow(), stage: "IMPLEMENT", state: "WAITING" } });const f = setup(fixture({ body: { kind: "task", task } }), "#plan");
+ await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.queryByRole("button", { name: "Review and approve the plan" })).toBeNull();f.close();
+});
+it("never reuses a different file's authoritative anchor", () => {
+ const f = setup(fixture({ anchors: [{ target: "change_file", targetId: "acme/payments:README.md", revision: "+12-3" }] }), "#changes");expect(screen.queryByRole("button", { name: "Comment on src/refund.ts" })).toBeNull();f.close();
+});
+it("does not confuse a plan paragraph id with an identically named recipe step", () => {
+ const task = taskFixture({ run: { state: "RUNNING", steps: [{ id: "p2", name: "Inspect", status: "running" }], pendingApprovals: [] } });
+ const f = setup(fixture({ body: { kind: "task", task }, anchors: [{ target: "plan_block", targetId: "p2", revision: "v1" }] }));expect(screen.queryByRole("button", { name: "Comment on Inspect" })).toBeNull();f.close();
+});
+it("keeps a multiline paragraph together when attaching its actual id", async () => {
+ const task = taskFixture({ workflow: { ...workflow(), planContent: "# Refund investigation\n\nCheck the key.\nThen inspect the retry." } });
+ const f = setup(fixture({ body: { kind: "task", task }, anchors: [{ target: "plan_block", targetId: "p2", revision: "v1" }] }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ const source = screen.getByRole("button", { name: "Comment on plan paragraph 2" });expect(source.closest(".rv-annotated-block")?.textContent).toContain("Then inspect the retry.");f.close();
 });
