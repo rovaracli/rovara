@@ -5,7 +5,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
-import { DEVELOPER_TOOLS, createAgentXMcpServer, httpControlPlaneClient, type ControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
+import { DEVELOPER_TOOLS, createAgentXMcpServer, httpControlPlaneClient, type ControlPlaneClient, type SessionListRead, type SessionMessageRead, type SessionViewRead, type ToolContext } from "../../packages/mcp/src/index.js";
 
 const SES = "ses_aaaaaaaaaaaaaaaaaaaa";
 const SES2 = "ses_bbbbbbbbbbbbbbbbbbbb";
@@ -17,22 +17,24 @@ const structured = (result: unknown) => (result as { structuredContent?: Record<
 const text = (result: unknown) => (result as { content?: Array<{ text: string }> }).content?.[0]?.text ?? "";
 const isError = (result: unknown) => (result as { isError?: boolean }).isError === true;
 
-const sessionView = (extra: Record<string, unknown> = {}) => ({
+const sessionView = (extra: Record<string, unknown> = {}): SessionViewRead => ({
   contractVersion: 1, sessionId: SES, kind: "task", mode: "delegate", title: "Fix the login bug", project: "payments", owner: { developerId: DEV, name: "Priya" },
   startedBy: { kind: "member", developerId: DEV }, where: { kind: "cloud" }, status: "running", step: "Writing the change", peek: "Reading auth.ts", lastRunFailed: undefined,
   cost: { spentUsd: 1.25, payer: { kind: "member", name: "Priya" } }, approvals: [], followers: 1, viewingNow: [],
   you: { level: "use", owner: false, following: false, actions: ["watch", "comment", "steer"] }, link: LINK, bindings: [], legs: [], revision: 3,
   createdAt: "2026-10-24T09:00:00.000Z", updatedAt: "2026-10-24T09:05:00.000Z", body: { kind: "local", tool: "codex" }, ...extra,
-});
+}) as unknown as SessionViewRead;
 const tileOf = (sessionId: string, title: string) => ({
   contractVersion: 1, sessionId, kind: "task", title, project: "payments", owner: { developerId: DEV, name: "Priya" }, where: { kind: "cloud" }, level: "use", revision: 2,
   summary: { status: "running", step: "Coding", costUsd: 0.5, needsPeople: [], pendingApprovals: 0, digest: "d", computedAt: "2026-10-24T09:05:00.000Z" },
   createdAt: "2026-10-24T09:00:00.000Z", updatedAt: "2026-10-24T09:05:00.000Z",
 });
-const message = (kind: "comment" | "steer", delivery?: Record<string, unknown>) => ({
+const message = (kind: "comment" | "steer", delivery?: Record<string, unknown>): SessionMessageRead => ({
   messageId: "msg_aaaaaaaaaaaaaaaaaaaa", sessionId: SES, kind, source: "app", author: { developerId: DEV, name: "Priya" }, text: "hello", createdAt: "2026-10-24T09:06:00.000Z", rev: 1,
   ...(delivery === undefined ? {} : { delivery }),
-});
+}) as unknown as SessionMessageRead;
+/** A page of the list, as the client reads it. */
+const listOf = (sessions: unknown[], next?: string): SessionListRead => ({ sessions, ...(next === undefined ? {} : { next }) }) as unknown as SessionListRead;
 
 async function connect(client: Partial<ControlPlaneClient>, newRequestId = () => REQ) {
   const context = (name: string | undefined): ToolContext => ({
@@ -52,7 +54,7 @@ async function connect(client: Partial<ControlPlaneClient>, newRequestId = () =>
 async function overHttp(answer: (url: URL, init: RequestInit | undefined) => Response) {
   const calls: Array<{ method: string; path: string; query: string; body: unknown }> = [];
   const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
-    const url = new URL(String(input));
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     calls.push({ method: init?.method ?? "GET", path: url.pathname, query: url.search, body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined });
     return answer(url, init);
   });
@@ -92,11 +94,11 @@ describe("the session tools in the list", () => {
 
 describe("agentx_list_sessions", () => {
   it("lists the caller's own sessions by default, or a project's, or those shared with them", async () => {
-    const listSessions = vi.fn(async () => ({ sessions: [tileOf(SES, "Fix the login bug"), tileOf(SES2, "Add a retry")] }));
+    const listSessions = vi.fn(async () => listOf([tileOf(SES, "Fix the login bug"), tileOf(SES2, "Add a retry")]));
     const mcp = await connect({ listSessions });
     const result = await mcp.callTool({ name: "agentx_list_sessions", arguments: {} });
     expect(listSessions).toHaveBeenLastCalledWith({ owner: "me" });
-    expect(structured(result)).toMatchObject({ sessions: [{ session_id: SES, title: "Fix the login bug", project: "payments", owner: "Priya", status: "running", step: "Coding", cost_usd: 0.5, your_level: "use" }, { session_id: SES2 }] });
+    expect(structured(result)).toMatchObject({ sessions: [{ id: SES, title: "Fix the login bug", project: "payments", owner: "Priya", status: "running", step: "Coding", cost_usd: 0.5, your_level: "use" }, { id: SES2 }] });
     expect(text(result)).toContain(SES);
     await mcp.callTool({ name: "agentx_list_sessions", arguments: { project: "payments" } });
     expect(listSessions).toHaveBeenLastCalledWith({ project: "payments" });
@@ -115,7 +117,7 @@ describe("agentx_list_sessions", () => {
   });
 
   it("says when there is more, and when there is nothing", async () => {
-    const mcp = await connect({ listSessions: vi.fn(async () => ({ sessions: [], next: "sealed.cursor" })) });
+    const mcp = await connect({ listSessions: vi.fn(async () => listOf([], "sealed.cursor")) });
     const result = await mcp.callTool({ name: "agentx_list_sessions", arguments: {} });
     expect(structured(result)).toMatchObject({ sessions: [], next_cursor: "sealed.cursor" });
     expect(text(result)).toMatch(/no sessions/i);
@@ -136,7 +138,7 @@ describe("agentx_get_session", () => {
     const result = await (await connect({ getSession })).callTool({ name: "agentx_get_session", arguments: { session_id: SES } });
     expect(getSession).toHaveBeenCalledWith(SES);
     expect(structured(result)).toMatchObject({
-      session_id: SES, title: "Fix the login bug", link: LINK, project: "payments", owner: "Priya", status: "running", step: "Writing the change", latest: "Reading auth.ts",
+      id: SES, title: "Fix the login bug", link: LINK, project: "payments", owner: "Priya", status: "running", step: "Writing the change", latest: "Reading auth.ts",
       cost: { spent_usd: 1.25 }, you: { level: "use", owner: false, actions: ["watch", "comment", "steer"] },
       approvals: [{ title: "Approve the plan", confirm_url: approval.confirmUrl }],
     });
@@ -172,7 +174,7 @@ describe("agentx_comment_on_session and agentx_tell_session_agent", () => {
     await mcp.callTool({ name: "agentx_comment_on_session", arguments: { session_id: SES, text: "Looks good" } });
     expect(commentOnSession).toHaveBeenNthCalledWith(1, SES, { requestId: "11111111-1111-4111-8111-111111111111", text: "Looks good" });
     expect(commentOnSession).toHaveBeenNthCalledWith(2, SES, { requestId: "11111111-1111-4111-8111-111111111111", text: "Looks good" });
-    expect(structured(first)).toMatchObject({ session_id: SES, message_id: "msg_aaaaaaaaaaaaaaaaaaaa", kind: "comment" });
+    expect(structured(first)).toMatchObject({ on_session: SES, message_id: "msg_aaaaaaaaaaaaaaaaaaaa", kind: "comment" });
   });
 
   it("tells the agent, and says whether the message was queued or delivered", async () => {
@@ -229,7 +231,7 @@ describe("agentx_stop_session", () => {
     const stopSession = vi.fn(async () => sessionView({ status: "stopped" }));
     const result = await (await connect({ stopSession })).callTool({ name: "agentx_stop_session", arguments: { session_id: SES } });
     expect(stopSession).toHaveBeenCalledWith(SES, REQ);
-    expect(structured(result)).toMatchObject({ session_id: SES, status: "stopped", link: LINK });
+    expect(structured(result)).toMatchObject({ id: SES, status: "stopped", link: LINK });
   });
 
   it("reaches POST /v1/app/sessions/{id}/stop with only a request id", async () => {
@@ -240,13 +242,13 @@ describe("agentx_stop_session", () => {
 });
 
 describe("what the server wrote is made safe before it reaches the model", () => {
-  const evil = `\u001b[2Jred‮​ agxr_${"b".repeat(43)}`;
+  const evil = `\u001b[2Jred\u202e\u200b agxr_${"b".repeat(43)}`;
   const dirty = (value: string) => ["\u001b", "agxr_"].some((bad) => value.includes(bad));
 
   it("cleans the title, step, owner and link of a session and the titles of a list", async () => {
     const mcp = await connect({
       getSession: vi.fn(async () => sessionView({ title: evil, step: evil, peek: evil, owner: { developerId: DEV, name: evil }, project: "payments" })),
-      listSessions: vi.fn(async () => ({ sessions: [tileOf(SES, evil)] })),
+      listSessions: vi.fn(async () => listOf([tileOf(SES, evil)])),
     });
     for (const call of [{ name: "agentx_get_session", arguments: { session_id: SES } }, { name: "agentx_list_sessions", arguments: {} }]) {
       const result = await mcp.callTool(call);

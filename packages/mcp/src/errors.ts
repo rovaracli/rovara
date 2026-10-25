@@ -10,6 +10,8 @@ export const TOOL_ERROR_CODES = [
   "TRIAL_LOCKED", "BUDGET_REACHED", "MACHINE_TIME_REACHED",
   // A run of an older version of an agent that is less safe than the one that runs now: nothing started, the agent's owner OKs it on the confirmation page.
   "OWNER_APPROVAL_NEEDED",
+  // Sessions (Plan 5): the session is not there for this person, or the server refused the action in its own words (too low a share, the session has ended, it runs on a Mac).
+  "SESSION_NOT_FOUND", "SESSION_REFUSED",
 ] as const;
 export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
 
@@ -46,6 +48,8 @@ export const NEXT_STEPS: Record<ToolErrorCode, string> = {
   BUDGET_REACHED: "ask an AgentX admin to raise the monthly AI budget",
   MACHINE_TIME_REACHED: MACHINE_TIME_STEP,
   OWNER_APPROVAL_NEEDED: "give the person the link in the message to pass to the agent's owner; the run starts once the owner approves it on that page. You cannot approve it",
+  SESSION_NOT_FOUND: "run agentx_list_sessions to see the sessions you can see",
+  SESSION_REFUSED: "nothing was changed; tell the person what the message says, and do not try to get around it",
 };
 /** BUDGET_REACHED's next steps: whose budget is used up decides who can raise it. */
 const MEMBER_BUDGET_STEP = "ask an AgentX admin to raise your monthly AI budget";
@@ -105,6 +109,14 @@ export function isMeaningfulCode(code: string | undefined): boolean {
   return code !== undefined && (PASSED_THROUGH.has(code) || code === "TRIAL_LOCKED" || code === "MACHINE_TIME_EXCEEDED" || code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || BUSY.has(code) || INVALID.has(code) || code === "AUTH_REQUIRED");
 }
 
+/**
+ * Sessions: broker codes that refuse an action on a session the person can see (a share too low for it, a session that has ended or runs on a Mac,
+ * a local tool the company has not allowed). The server's own words are the answer, and the tool never retries.
+ */
+const SESSION_REFUSALS = new Set<string>(["SESSION_LEVEL_REQUIRED", "LOCAL_AGENT_NOT_ALLOWED", "SESSION_ENDED", "SESSION_ON_MAC"]);
+/** What the session routes say, word for word, for a session that is not there or not visible (the two look the same on purpose). */
+const SESSION_NOT_FOUND_TEXT = "session not found";
+
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Ruling F16: the placeholder "<your AgentX URL>" is kept whole. Built from CLI_PACKAGE_NAME so it
 // matches the sign-in command the CLI writes.
@@ -132,6 +144,8 @@ export function toolErrorFromResponse(status: number, value: unknown, signInComm
   if (code === "MACHINE_TIME_EXCEEDED") return new ToolError("MACHINE_TIME_REACHED", message, MACHINE_TIME_STEP);
   if (code === "ORG_BUDGET_EXCEEDED") return new ToolError("BUDGET_REACHED", message, ORG_BUDGET_STEP);
   if (code === "BUDGET_EXCEEDED") return new ToolError("BUDGET_REACHED", message, message.startsWith(TASK_BUDGET_EXCEEDED_PREFIX) ? TASK_BUDGET_STEP : MEMBER_BUDGET_STEP);
+  if (code !== undefined && SESSION_REFUSALS.has(code)) return new ToolError("SESSION_REFUSED", message);
+  if (status === 404 && code === "NOT_FOUND" && error?.message === SESSION_NOT_FOUND_TEXT) return new ToolError("SESSION_NOT_FOUND", message);
   if (code !== undefined && PASSED_THROUGH.has(code)) return new ToolError(code as ToolErrorCode, message, OWN_STEPS.get(`${code}:${message}`));
   if (code !== undefined && BUSY.has(code)) return new ToolError("TASK_BUSY", message, busyStep);
   if (code !== undefined && INVALID.has(code)) return new ToolError("INVALID_REQUEST", message);

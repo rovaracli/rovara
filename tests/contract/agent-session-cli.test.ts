@@ -192,7 +192,7 @@ describe("agentx session take-over (202 NEEDS_CONFIRMATION)", () => {
   });
 
   it("does not print a link that is not a plain https address, and says what happened", async () => {
-    for (const confirmUrl of ["http://evil.example/approve", "https://evil.example/‮approve", "https://evil.example/a b", `https://evil.example/${"a".repeat(2100)}`, "javascript:alert(1)"]) {
+    for (const confirmUrl of ["http://evil.example/approve", "https://evil.example/\u202eapprove", "https://evil.example/a b", `https://evil.example/${"a".repeat(2100)}`, "javascript:alert(1)"]) {
       const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/take-over`]: confirmation({ confirmUrl }) });
       expect(await h.run(["session", "take-over", SES]), confirmUrl.slice(0, 30)).not.toBe(0);
       expect(h.stdout(), confirmUrl.slice(0, 30)).not.toContain("Confirm this in your browser");
@@ -201,10 +201,10 @@ describe("agentx session take-over (202 NEEDS_CONFIRMATION)", () => {
   });
 
   it("makes the changes the server lists safe to print", async () => {
-    const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/take-over`]: confirmation({ changes: ["Mia\u001b[2J‮ becomes the owner", `leaked agxr_${"a".repeat(43)}`] }) });
+    const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/take-over`]: confirmation({ changes: ["Mia\u001b[2J\u202e becomes the owner", `leaked agxr_${"a".repeat(43)}`] }) });
     expect(await h.run(["session", "take-over", SES])).toBe(0);
     expect(h.stdout()).not.toContain("\u001b");
-    expect(h.stdout()).not.toContain("‮");
+    expect(h.stdout()).not.toContain("\u202e");
     expect(h.stdout()).not.toContain("agxr_");
   });
 
@@ -299,15 +299,15 @@ describe("agentx home", () => {
 
 describe("what the server wrote is made safe before it is printed", () => {
   it("neutralises control, bidi and token-shaped text in a session's title, step, peek and owner", async () => {
-    const evil = `\u001b[31mred‮​ agxr_${"b".repeat(43)}`;
+    const evil = `\u001b[31mred\u202e\u200b agxr_${"b".repeat(43)}`;
     const h = await agentsCli({ [`GET /v1/app/sessions/${SES}`]: Response.json(view({ title: evil, step: evil, peek: evil, owner: { developerId: DEV, name: evil }, link: `${CELL}/s/${SES}\u001b[2J` })) });
     expect(await h.run(["session", "show", SES])).toBe(0);
-    for (const bad of ["\u001b", "‮", "​", "agxr_"]) expect(h.stdout(), JSON.stringify(bad)).not.toContain(bad);
+    for (const bad of ["\u001b", "\u202e", "\u200b", "agxr_"]) expect(h.stdout(), JSON.stringify(bad)).not.toContain(bad);
     expect(h.stdout()).toContain("[U+202E]");
   });
 
   it("neutralises the same in the lists and in Home", async () => {
-    const evil = "bad\u001b[2J‮title";
+    const evil = "bad\u001b[2J\u202etitle";
     const h = await agentsCli({
       "GET /v1/app/sessions?owner=me": Response.json({ sessions: [tile(SES, evil)] }),
       "GET /v1/app/live?filter=all": Response.json({ tiles: [liveTile(SES, evil, { statusWords: evil })] }),
@@ -315,14 +315,14 @@ describe("what the server wrote is made safe before it is printed", () => {
     });
     for (const argv of [["sessions"], ["sessions", "--live", "all"], ["home"]]) expect(await h.run(argv)).toBe(0);
     expect(h.stdout()).not.toContain("\u001b");
-    expect(h.stdout()).not.toContain("‮");
+    expect(h.stdout()).not.toContain("\u202e");
   });
 
   it("neutralises the words of a refusal", async () => {
-    const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/stop`]: refusal("SESSION_LEVEL_REQUIRED", `You need edit\u001b[2J‮ agxr_${"c".repeat(43)}`, 403) });
+    const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/stop`]: refusal("SESSION_LEVEL_REQUIRED", `You need edit\u001b[2J\u202e agxr_${"c".repeat(43)}`, 403) });
     expect(await h.run(["session", "stop", SES])).not.toBe(0);
     expect(h.stderr()).not.toContain("\u001b");
-    expect(h.stderr()).not.toContain("‮");
+    expect(h.stderr()).not.toContain("\u202e");
     expect(h.stderr()).not.toContain("agxr_");
   });
 });
