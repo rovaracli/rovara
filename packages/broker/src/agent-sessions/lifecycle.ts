@@ -37,6 +37,7 @@ import {
   sessionSurfaceKey,
   sharedSessionsKey,
   type AgentPrincipal,
+  type DeveloperSignInMethod,
   type OrgId,
   type SessionBinding,
   type SessionLevel,
@@ -44,7 +45,7 @@ import {
 import { checkTime, registerMemberMover } from "../agents/lifecycle.js";
 import { errorName, failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
-import { UNNAMED_MEMBER, effectiveTaskOwner, ownerFenceOf, taskIndexKey, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { UNNAMED_MEMBER, currentOwnerAfterMerge, holdsTaskByTakeOver, ownerFenceOf, taskIndexKey, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { removeFollower } from "./followers.js";
 import { batchGetItems, keyText } from "./live.js";
 import { ENDED_DRAIN_CURSOR_KEY } from "./summary.js";
@@ -232,7 +233,7 @@ async function revokeDevices(deps: SessionLifecycleDeps, orgId: OrgId, developer
 
 // ---- two members are merged
 
-interface Survivor { developerId: string; name: string; provider: string; slackUserId?: string }
+interface Survivor { developerId: string; name: string; provider: DeveloperSignInMethod; slackUserId?: string }
 
 async function survivorOf(deps: SessionLifecycleDeps, developerId: string): Promise<Survivor> {
   const record = deps.signInStore === undefined ? undefined : await deps.signInStore.getDeveloper(developerId);
@@ -276,24 +277,24 @@ async function moveOwnedSessions(deps: SessionLifecycleDeps, orgId: OrgId, dupli
 }
 
 async function moveOwnedSession(deps: SessionLifecycleDeps, orgId: OrgId, duplicateId: string, survivor: Survivor, sessionId: string, row: Item): Promise<void> {
-  const metaKey = agentSessionKey(orgId, sessionId, "META");
+  const headerKey = agentSessionKey(orgId, sessionId, "META");
   const rowKey = { pk: String(row["pk"]), sk: String(row["sk"]) };
   const createdAt = String(row["createdAt"]);
   for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
-    const meta = await getItem(deps, metaKey);
-    const owner = isRecord(meta?.["owner"]) ? meta["owner"] : undefined;
+    const header = await getItem(deps, headerKey);
+    const owner = isRecord(header?.["owner"]) ? header["owner"] : undefined;
     // Not theirs any more (a take-over, or an earlier run moved it): only the stale row is left to go.
-    if (meta === undefined || meta["orgId"] !== orgId || owner?.["developerId"] !== duplicateId || typeof meta["revision"] !== "number") {
+    if (header === undefined || header["orgId"] !== orgId || owner?.["developerId"] !== duplicateId || typeof header["revision"] !== "number") {
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: rowKey }));
       return;
     }
-    const revision = meta["revision"];
+    const revision = header["revision"];
     const at = isoOf(deps.now());
     const newOwner = { developerId: survivor.developerId, name: survivor.name };
     const items: TransactItem[] = [
       {
         Update: {
-          TableName: deps.tableName, Key: metaKey, UpdateExpression: "SET #owner = :owner, updatedAt = :at ADD #revision :one",
+          TableName: deps.tableName, Key: headerKey, UpdateExpression: "SET #owner = :owner, updatedAt = :at ADD #revision :one",
           ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #owner.developerId = :duplicate AND #revision = :revision",
           ExpressionAttributeNames: { "#owner": "owner", "#revision": "revision" },
           ExpressionAttributeValues: { ":owner": newOwner, ":at": at, ":one": 1, ":org": orgId, ":duplicate": duplicateId, ":revision": revision },
@@ -311,7 +312,7 @@ async function moveOwnedSession(deps: SessionLifecycleDeps, orgId: OrgId, duplic
         },
       });
     }
-    const subject = isRecord(meta["subject"]) ? meta["subject"] : undefined;
+    const subject = isRecord(header["subject"]) ? header["subject"] : undefined;
     if (subject?.["kind"] === "task" && typeof subject["taskId"] === "string") items.push(...await taskItems(deps, orgId, subject["taskId"], duplicateId, survivor, at));
     if (await transact(deps, items)) return;
   }
@@ -321,20 +322,27 @@ async function moveOwnedSession(deps: SessionLifecycleDeps, orgId: OrgId, duplic
 /** The task's current owner, when the duplicate is it, and the taker's task-list row (a creator's row stays as history). */
 async function taskItems(deps: SessionLifecycleDeps, orgId: OrgId, taskId: string, duplicateId: string, survivor: Survivor, at: string): Promise<TransactItem[]> {
   const found = await getItem(deps, taskKey(taskId));
-  if (found === undefined || found["orgId"] !== orgId || !isRecord(found["currentOwner"]) || found["currentOwner"]["developerId"] !== duplicateId) return [];
+  if (found === undefined || found["orgId"] !== orgId) return [];
   const task = found as unknown as DeveloperTaskRecord & Item;
+  let handedOn: ReturnType<typeof currentOwnerAfterMerge>;
+  try {
+    handedOn = currentOwnerAfterMerge(task, duplicateId, { developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) });
+  } catch (error) {
+    // A task whose owner can't be read is nobody's to hand on: it is left as it is and the merge goes on with the rest.
+    log(deps, "agent_session.lifecycle_task_owner_unreadable", { orgId, taskId, error: errorName(error) ?? "unknown" });
+    return [];
+  }
+  if (handedOn === undefined) return [];
   const fence = ownerFenceOf(task);
-  const { slackUserId: _gone, ...kept } = task.currentOwner as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the duplicate's Slack link is not the survivor's
-  const currentOwner = { ...kept, developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) };
   const items: TransactItem[] = [{
     Update: {
       TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET currentOwner = :currentOwner, updatedAt = :at",
       ConditionExpression: `attribute_exists(pk) AND orgId = :org AND ${fence.expression}`, ExpressionAttributeNames: fence.names,
-      ExpressionAttributeValues: { ...fence.values, ":currentOwner": currentOwner, ":at": at, ":org": orgId },
+      ExpressionAttributeValues: { ...fence.values, ":currentOwner": handedOn, ":at": at, ":org": orgId },
     },
   }];
-  // The row of a task someone took over: it was copied for the taker, so it moves with them. The creator's own row is history and stays.
-  if (typeof task.createdAt === "string" && effectiveTaskOwner(task).developerId === duplicateId && task.developerId !== duplicateId) {
+  // The row of a task someone took over was copied for the taker, so it moves with them. The creator's own row is history and stays.
+  if (typeof task.createdAt === "string" && holdsTaskByTakeOver(task, duplicateId)) {
     const row = await getItem(deps, taskIndexKey(duplicateId, task.createdAt, taskId));
     if (row !== undefined) {
       items.push({ Delete: { TableName: deps.tableName, Key: taskIndexKey(duplicateId, task.createdAt, taskId) } });
@@ -367,14 +375,14 @@ async function moveShare(deps: SessionLifecycleDeps, orgId: OrgId, sessionId: st
   const oldShare = agentSessionKey(orgId, sessionId, `${SHARE_PREFIX}MEMBER#${from.developerId}`);
   const newShare = agentSessionKey(orgId, sessionId, `${SHARE_PREFIX}MEMBER#${to.developerId}`);
   for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
-    const [dup, own, meta] = await Promise.all([getItem(deps, oldShare), getItem(deps, newShare), getItem(deps, agentSessionKey(orgId, sessionId, "META"))]);
+    const [dup, own, header] = await Promise.all([getItem(deps, oldShare), getItem(deps, newShare), getItem(deps, agentSessionKey(orgId, sessionId, "META"))]);
     const dupLevel = text(dup?.["level"]) as SessionLevel | undefined;
     // The share is gone already (an earlier run moved it, or it was removed), or no longer reads: the index row alone is left to delete.
     if (dup === undefined || dup["orgId"] !== orgId || dupLevel === undefined || LEVEL_RANK[dupLevel] === undefined) {
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: sharedSessionsKey(orgId, from, sessionId) }));
       return;
     }
-    const survivorOwns = isRecord(meta?.["owner"]) && meta["owner"]["developerId"] === to.developerId;
+    const survivorOwns = isRecord(header?.["owner"]) && header["owner"]["developerId"] === to.developerId;
     // The share the duplicate had is still what was read when it goes (a share changed since is read again).
     const dropped: TransactItem[] = [
       { Delete: { TableName: deps.tableName, Key: oldShare, ConditionExpression: "attribute_exists(pk) AND #level = :dupLevel", ExpressionAttributeNames: { "#level": "level" }, ExpressionAttributeValues: { ":dupLevel": dupLevel } } },
@@ -417,11 +425,11 @@ async function moveFollow(deps: SessionLifecycleDeps, orgId: OrgId, sessionId: s
   const oldKey = agentSessionKey(orgId, sessionId, `${FOLLOWER_PREFIX}${duplicateId}`);
   const newKey = agentSessionKey(orgId, sessionId, `${FOLLOWER_PREFIX}${survivorId}`);
   for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
-    const [dup, own, meta] = await Promise.all([getItem(deps, oldKey), getItem(deps, newKey), getItem(deps, agentSessionKey(orgId, sessionId, "META"))]);
+    const [dup, own, header] = await Promise.all([getItem(deps, oldKey), getItem(deps, newKey), getItem(deps, agentSessionKey(orgId, sessionId, "META"))]);
     if (dup === undefined) return;
     // The session's owner follows without an item (Task 9): a follow of the survivor's own session is only dropped.
-    const survivorOwns = isRecord(meta?.["owner"]) && meta["owner"]["developerId"] === survivorId;
-    if (own !== undefined || survivorOwns || meta === undefined) {
+    const survivorOwns = isRecord(header?.["owner"]) && header["owner"]["developerId"] === survivorId;
+    if (own !== undefined || survivorOwns || header === undefined) {
       await removeFollower(deps, { orgId, sessionId }, duplicateId);
       return;
     }
@@ -564,7 +572,7 @@ async function stampSession(deps: SessionLifecycleDeps, orgId: OrgId, sessionId:
       try { index.push(sessionSurfaceKey(orgId, item["binding"] as unknown as SessionBinding)); } catch { /* a binding that does not read has no surface row to find */ }
     }
   });
-  const found = meta as Item | undefined;
+  const found = meta;
   if (found !== undefined) {
     const createdAt = text(found["createdAt"]);
     const ownerId = isRecord(found["owner"]) ? text(found["owner"]["developerId"]) : undefined;

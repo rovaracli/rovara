@@ -79,9 +79,9 @@ function world() {
     w.db.set({ ...sharedSessionsKey(orgId, principal, sessionId), entityType: "SHARED_SESSION", orgId, sessionId, principal, level, sharedAt: "2026-10-22T08:10:00.000Z" });
   };
   const device = (orgId: OrgId, developerId: string, deviceId: string) => {
-    w.db.set({ ...deviceKey(orgId, deviceId as never), entityType: "DEVICE", orgId, deviceId, developerId, label: "A MacBook", platform: "mac", createdAt: CREATED_AT, lastSeenAt: CREATED_AT });
-    w.db.set({ ...memberDevicesKey(orgId, developerId, deviceId as never), entityType: "MEMBER_DEVICE", orgId, deviceId, developerId });
-    w.db.set({ ...deviceCommandKey(orgId, deviceId as never, 1), entityType: "DEVICE_COMMAND", orgId, deviceId, command: "stop" });
+    w.db.set({ ...deviceKey(orgId, deviceId), entityType: "DEVICE", orgId, deviceId, developerId, label: "A MacBook", platform: "mac", createdAt: CREATED_AT, lastSeenAt: CREATED_AT });
+    w.db.set({ ...memberDevicesKey(orgId, developerId, deviceId), entityType: "MEMBER_DEVICE", orgId, deviceId, developerId });
+    w.db.set({ ...deviceCommandKey(orgId, deviceId, 1), entityType: "DEVICE_COMMAND", orgId, deviceId, command: "stop" });
   };
   const followers = (orgId: OrgId, sessionId: string) => w.db.find((item) => item.pk === agentSessionKey(orgId, sessionId, "META").pk && String(item.sk).startsWith("FOLLOWER#")).map((item) => String(item.sk).slice("FOLLOWER#".length)).sort();
   const shares = (orgId: OrgId, sessionId: string) => w.db.find((item) => item.pk === agentSessionKey(orgId, sessionId, "META").pk && String(item.sk).startsWith("SHARE#")).map((item) => `${String(item.sk).slice("SHARE#".length)}=${String(item.level)}`).sort();
@@ -150,7 +150,7 @@ describe("a member is removed", () => {
   it("revokes their devices and no one else's", async () => {
     const { w } = setup();
     await onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ARJUN, by: PRIYA });
-    const revoked = w.get(deviceKey(ORG_A, DEVICE_A as never))!;
+    const revoked = w.get(deviceKey(ORG_A, DEVICE_A))!;
     expect(revoked["revokedAt"]).toBe(new Date(T0).toISOString());
     expect(typeof revoked["indexExpiresAt"]).toBe("number");
     expect(w.get(deviceKey(ORG_A, DEVICE_B as never))!["revokedAt"]).toBeUndefined();
@@ -207,7 +207,7 @@ describe("a member is removed", () => {
   it("refuses an id that is not a member id or an org id (nothing is read for it)", async () => {
     const w = world();
     expect(await code(onSessionMemberRemoved(w.deps, { orgId: ORG_A, developerId: "not-an-id" }))).toMatchObject({ code: "CONFIG_INVALID" });
-    expect(await code(onSessionMemberRemoved(w.deps, { orgId: "nope" as OrgId, developerId: ARJUN }))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(onSessionMemberRemoved(w.deps, { orgId: "nope", developerId: ARJUN }))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(w.db.commandNames()).toEqual([]);
   });
 
@@ -384,9 +384,9 @@ describe("a project is archived", () => {
     const wall = await liveSessions({
       documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
       taskView: async () => ({}) as never, deciding: { approvals: async () => [], spend: async () => false, approvalsFor: async () => new Map() },
-    } as never, w.caller(PRIYA), {});
+    }, w.caller(PRIYA), {});
     expect(wall.tiles.map((tile) => tile.sessionId)).toEqual([running.sessionId]);
-    expect(await code(requireNewWorkAllowed({ documentClient: w.db, tableName: "state" } as never, ORG_A, "web", "contributor", "task"))).toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(await code(requireNewWorkAllowed({ documentClient: w.db, tableName: "state" }, ORG_A, "web", "contributor", "task"))).toMatchObject({ code: "PROJECT_ARCHIVED" });
   });
 });
 
@@ -403,8 +403,8 @@ describe("an org is closed", () => {
     const day = "2026-10-22";
     for (const [orgId, session] of [[ORG_A, a], [ORG_A, ended], [ORG_B, undefined]] as const) {
       const sessionId = session?.sessionId ?? "ses_bbbbbbbbbbbbbbbbbbbb";
-      w.db.set({ ...openAgentSessionKey(orgId, sessionId as never), entityType: "OPEN_AGENT_SESSION", orgId, sessionId });
-      w.db.set({ ...endedSessionWorkKey(day, orgId, sessionId as never), entityType: "ENDED_AGENT_SESSION", orgId, sessionId });
+      w.db.set({ ...openAgentSessionKey(orgId, sessionId), entityType: "OPEN_AGENT_SESSION", orgId, sessionId });
+      w.db.set({ ...endedSessionWorkKey(day, orgId, sessionId), entityType: "ENDED_AGENT_SESSION", orgId, sessionId });
     }
     for (const developerId of [PRIYA, ARJUN]) {
       w.db.set({ ...changesKey(ORG_A, developerId, CREATED_AT, 1), entityType: "CHANGE_NOTICE", orgId: ORG_A, type: "session_shared", sessionId: a.sessionId });
@@ -416,8 +416,8 @@ describe("an org is closed", () => {
     w.share(ORG_B, b.sessionId, BO, "view");
     w.device(ORG_B, BO, DEVICE_C);
     w.db.set({ ...changesKey(ORG_B, BO, CREATED_AT, 1), entityType: "CHANGE_NOTICE", orgId: ORG_B, type: "session_shared", sessionId: b.sessionId });
-    w.db.set({ ...endedSessionWorkKey(day, ORG_B, b.sessionId as never), entityType: "ENDED_AGENT_SESSION", orgId: ORG_B, sessionId: b.sessionId });
-    w.db.set({ ...openAgentSessionKey(ORG_B, b.sessionId as never), entityType: "OPEN_AGENT_SESSION", orgId: ORG_B, sessionId: b.sessionId });
+    w.db.set({ ...endedSessionWorkKey(day, ORG_B, b.sessionId), entityType: "ENDED_AGENT_SESSION", orgId: ORG_B, sessionId: b.sessionId });
+    w.db.set({ ...openAgentSessionKey(ORG_B, b.sessionId), entityType: "OPEN_AGENT_SESSION", orgId: ORG_B, sessionId: b.sessionId });
     w.db.set({ pk: "ENDED_DRAIN_CURSOR", sk: "META", entityType: "ENDED_DRAIN_CURSOR", day });
     return { w, a, ended, b };
   };
@@ -450,7 +450,7 @@ describe("an org is closed", () => {
       expect(w.get(mySessionsKey(ORG_A, session.owner, session.createdAt, session.sessionId))!["indexExpiresAt"]).toBe(EXPIRES);
       expect(w.get(projectSessionsKey(ORG_A, "web", session.createdAt, session.sessionId))!["indexExpiresAt"]).toBe(EXPIRES);
     }
-    expect(w.get(agentSessionKey(ORG_A, a.sessionId, "FOLLOWER#" + ARJUN))!["indexExpiresAt"]).toBe(EXPIRES);
+    expect(w.get(agentSessionKey(ORG_A, a.sessionId, `FOLLOWER#${ARJUN}`))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(agentSessionKey(ORG_A, a.sessionId, `SHARE#MEMBER#${MIA}`))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(sharedSessionsKey(ORG_A, { kind: "member", developerId: MIA }, a.sessionId))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(projectMonthStatsKey(ORG_A, "web", "2026-10"))!["indexExpiresAt"]).toBe(EXPIRES);
@@ -486,7 +486,7 @@ describe("an org is closed", () => {
 
   it("refuses an id that is not an org id", async () => {
     const w = world();
-    expect(await code(clearOrgSessions(w.deps, "org_*" as OrgId))).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(clearOrgSessions(w.deps, "org_*"))).toMatchObject({ code: "CONFIG_INVALID" });
     expect(w.db.commandNames()).toEqual([]);
   });
 });

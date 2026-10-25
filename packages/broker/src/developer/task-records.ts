@@ -360,6 +360,21 @@ export function takenOverSince(task: TaskOwnerSource): string | undefined {
 }
 
 /**
+ * A merge hands a taker's record to the survivor (Plan 5 Task 21): the task's `currentOwner` with the person changed, the take-over's `since` kept. Undefined when the duplicate is not
+ * the task's current owner (a task nobody took over, one someone else took, or a taker who can't be read), so a merge never touches a task it does not own.
+ */
+export function currentOwnerAfterMerge(task: TaskOwnerSource, duplicateId: string, survivor: TaskOwner): TaskCurrentOwner | undefined {
+  const taker = isTaskTakenOver(task) ? readCurrentOwner(task.currentOwner) : undefined;
+  if (taker === undefined || taker.developerId !== duplicateId) return undefined;
+  return { developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, since: taker.since, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) };
+}
+
+/** Whether `developerId` holds the task by a take-over (it is theirs now and they did not create it): their task-list row is a copy of the creator's, which moves with them. */
+export function holdsTaskByTakeOver(task: TaskOwnerSource, developerId: string): boolean {
+  return isTaskTakenOver(task) && tryEffectiveTaskOwner(task)?.developerId === developerId && task.developerId !== developerId;
+}
+
+/**
  * Whether an owner's decision (made by `actorId` at `decidedAt`, the time stored with it) still counts as the task owner's now: the owner's actor id counts; so does the
  * creator's, when the decision was made before someone took the task over (never judged by the time it is acted on); `ownerActorIds` (the task's People owners, when it
  * has any) count as well. A taker's decision from before they took the task over does not.

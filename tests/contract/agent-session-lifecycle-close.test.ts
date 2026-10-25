@@ -35,12 +35,12 @@ async function company() {
     });
     h.db.set({ ...agentSessionKey(orgId, sessionId, "EVENT#2026-10-22T08:00:00.000Z#evt_1"), entityType: "AGENT_SESSION_EVENT", orgId, text: "started" });
     h.db.set({ ...liveSessionKey(orgId, sessionId), entityType: "LIVE_SESSION", orgId, sessionId });
-    h.db.set({ ...openAgentSessionKey(orgId, sessionId as never), entityType: "OPEN_AGENT_SESSION", orgId, sessionId });
-    h.db.set({ ...endedSessionWorkKey(DAY, orgId, sessionId as never), entityType: "ENDED_AGENT_SESSION", orgId, sessionId });
-    h.db.set({ ...mySessionsKey(orgId, owner, AT, sessionId as never), entityType: "MY_SESSION", orgId, sessionId, developerId: owner, createdAt: AT });
-    h.db.set({ ...projectSessionsKey(orgId, "payments", AT, sessionId as never), entityType: "PROJECT_SESSION", orgId, sessionId, project: "payments", createdAt: AT });
-    h.db.set({ ...deviceKey(orgId, deviceId as never), entityType: "DEVICE", orgId, deviceId, developerId: owner });
-    h.db.set({ ...memberDevicesKey(orgId, owner, deviceId as never), entityType: "MEMBER_DEVICE", orgId, deviceId, developerId: owner });
+    h.db.set({ ...openAgentSessionKey(orgId, sessionId), entityType: "OPEN_AGENT_SESSION", orgId, sessionId });
+    h.db.set({ ...endedSessionWorkKey(DAY, orgId, sessionId), entityType: "ENDED_AGENT_SESSION", orgId, sessionId });
+    h.db.set({ ...mySessionsKey(orgId, owner, AT, sessionId), entityType: "MY_SESSION", orgId, sessionId, developerId: owner, createdAt: AT });
+    h.db.set({ ...projectSessionsKey(orgId, "payments", AT, sessionId), entityType: "PROJECT_SESSION", orgId, sessionId, project: "payments", createdAt: AT });
+    h.db.set({ ...deviceKey(orgId, deviceId), entityType: "DEVICE", orgId, deviceId, developerId: owner });
+    h.db.set({ ...memberDevicesKey(orgId, owner, deviceId), entityType: "MEMBER_DEVICE", orgId, deviceId, developerId: owner });
     h.db.set({ ...changesKey(orgId, owner, AT, 1), entityType: "CHANGE_NOTICE", orgId, type: "session_shared", sessionId });
     return { sessionId, deviceId };
   };
@@ -60,7 +60,7 @@ describe("closing an org with sessions", () => {
     expect(h.db.get(deviceKey(TEST_ORG, mine.deviceId as never))).toBeUndefined();
     expect(h.db.get(memberDevicesKey(TEST_ORG, MAYA.developerId, mine.deviceId as never))).toBeUndefined();
     expect(h.db.get(changesKey(TEST_ORG, MAYA.developerId, AT, 1))).toBeUndefined();
-    for (const key of [agentSessionKey(TEST_ORG, mine.sessionId, "META"), agentSessionKey(TEST_ORG, mine.sessionId, "EVENT#2026-10-22T08:00:00.000Z#evt_1"), mySessionsKey(TEST_ORG, MAYA.developerId, AT, mine.sessionId as never), projectSessionsKey(TEST_ORG, "payments", AT, mine.sessionId as never)]) {
+    for (const key of [agentSessionKey(TEST_ORG, mine.sessionId, "META"), agentSessionKey(TEST_ORG, mine.sessionId, "EVENT#2026-10-22T08:00:00.000Z#evt_1"), mySessionsKey(TEST_ORG, MAYA.developerId, AT, mine.sessionId), projectSessionsKey(TEST_ORG, "payments", AT, mine.sessionId)]) {
       const expires = h.db.get(key)?.["indexExpiresAt"];
       expect(typeof expires, key.sk).toBe("number");
       expect(Number(expires) - Math.floor(Date.now() / 1000)).toBeGreaterThan(29 * 86_400);
