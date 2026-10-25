@@ -4899,6 +4899,9 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE", pullRequests: [{ state: "MERGED", headSha: "d".repeat(40) }] });
   });
 
+  const mergedCount = (harness: { db: { find(predicate: (item: Record<string, unknown>) => boolean): Array<Record<string, unknown>> } }) =>
+    harness.db.find((item) => item.entityType === "PROJECT_SESSION_STATS").reduce((sum, item) => sum + Number(item.mergedPullRequests ?? 0), 0);
+
   it("records the pushed fix when GitHub merged it before its result was recorded", async () => {
     // GitHub's webhook first: the pull request's record names the pushed commit, on the fix's reviewed tree.
     {
@@ -4911,6 +4914,8 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       expect(merged).toMatchObject({ stage: "MERGED", state: "COMPLETE", pullRequests: [{ state: "MERGED", headSha: PUSHED, headTreeSha: FIX_TREE, candidateDigest: t.fix.digest }] });
       await t.harness.finish(t.workspaceId, maintain.id, "SUCCEEDED", appendResult(maintain));
       expect(taskWorkflow(t.harness, t.taskId)).toEqual(merged);
+      // The merge is counted once (Plan 5 Task 16's month count): by the webhook's save, and not again by the result that finds it merged.
+      expect(mergedCount(t.harness)).toBe(1);
     }
     // The result first: it records the fix and the merge together.
     {
@@ -4921,6 +4926,10 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       await t.harness.finish(t.workspaceId, maintain.id, "SUCCEEDED", appendResult(maintain));
       expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE", pullRequests: [{ state: "MERGED", headSha: PUSHED, candidateDigest: t.fix.digest }] });
       expect(t.harness.db.get("GITHUB_PR#example/demo", "PR#0000000042")).toMatchObject({ candidateDigest: t.fix.digest });
+      // The merge this path records is counted too, once, in the same save (a replay of the result changes nothing and counts nothing).
+      expect(mergedCount(t.harness)).toBe(1);
+      await t.harness.finish(t.workspaceId, maintain.id, "SUCCEEDED", appendResult(maintain));
+      expect(mergedCount(t.harness)).toBe(1);
     }
   });
 
