@@ -436,6 +436,17 @@ describe("what Understand answered becomes the next step", () => {
     expect(t.access!.mintKey.mock.calls.at(-1)![0].maxBudgetUsd).toBe(6);
   });
 
+  it("raises the planning limit no higher than a lower limit the start asked for, and not at all when that is not higher than the limit the task has", async () => {
+    for (const [requested, expected] of [[2, 2], [4, 4], [100, 6]] as const) {
+      const t = await world();
+      const run = await t.understanding();
+      const task = t.meta(run.taskId);
+      t.db.set({ ...task, requestedRunLimitUsd: requested });
+      await t.answers(run, ready({ path: "FULL" }));
+      expect(t.meta(run.taskId).budgetUsd, `requested ${String(requested)}`).toBe(expected);
+    }
+  });
+
   it("a Quick path given in the request wins over Understand's Full: the limit stays 2 and no phase is asked for", async () => {
     const t = await world();
     const run = await t.understanding({ path: "QUICK" });
@@ -563,12 +574,17 @@ describe("an Understand that never comes back gives its workspace slot back", ()
     expect(UNDERSTAND_TIMEOUT_MINUTES).toBe(10);
   });
 
-  it("leaves a task alone while it is not yet due, even when something else runs the task's rows", async () => {
+  it("leaves a task alone while it is not yet due, even when a result of the task runs its rows at once (a cancel that failed to stop it)", async () => {
     const t = await world();
     const run = await t.understanding();
-    // A result of another operation of this task runs its rows at once, due or not: this one is not due, so nothing happens.
     await t.sweep();
     expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING" });
+    // A result of another operation of this task runs the task's rows whether they are due or not: a cancel whose delivery failed leaves Understand running.
+    expect((await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/cancel`, { requestId: randomUUID() })).status).toBe(200);
+    const cancelOp = t.operations(run.workspaceId).find((item) => item.kind === "cancel")!;
+    await t.finish(run.workspaceId, String(cancelOp.id), "FAILED", { error: "the worker could not be reached" });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING" });
+    expect(t.meta(run.taskId).closedAt).toBeUndefined();
     expect(t.rows().filter((item) => item.kind === "UNDERSTAND")).toHaveLength(1);
   });
 
@@ -727,6 +743,10 @@ describe("retrying a blocked Understand", () => {
     await t.finish(run.workspaceId, run.operationId, "FAILED", { error: UNDERSTAND_UNREADABLE_MESSAGE });
     const blocked = t.meta(run.taskId).workflow;
     expect(blocked).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED" });
+    // A retry from a screen that has gone stale is refused, and starts nothing.
+    const stale = await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Try again.", expectedRevision: blocked.revision - 1 });
+    expect(stale.status).toBe(409);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ state: "BLOCKED" });
     const retried = await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Try again.", expectedRevision: blocked.revision });
     expect(retried.status, JSON.stringify(retried.body)).toBe(200);
     expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING", revision: blocked.revision + 1 });

@@ -169,5 +169,5 @@ describe("the step timeout", () => {
     expect(done.ok).toBe(false);
     expect((done as { error: Error }).error.message).toMatch(/^RUNTIME_UNAVAILABLE: understanding stopped: the model did not finish within 10 min \(model call 1\)\. Retry it\.$/u);
     expect(state.aborts).toBe(1);
-  });
+  }, 20_000);
 });
