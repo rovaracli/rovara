@@ -170,7 +170,8 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     } catch {
       throw agentXError("CONFIG_INVALID", "cardId: is not a card on Home");
     }
-    return dismissHomeCard(home, caller, cardId);
+    const seen = url.searchParams.get("occurrence");
+    return dismissHomeCard(home, caller, cardId, seen === null ? undefined : seen);
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();

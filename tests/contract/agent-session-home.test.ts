@@ -252,7 +252,7 @@ describe("the ranking, the page and the total (the plan's fourteen cards)", () =
     const answer = await w.home(PRIYA);
     const text = JSON.stringify(answer);
     expect(text).not.toMatch(/ticket/iu);
-    for (const card of answer.cards) for (const button of card.buttons) if (button.href !== undefined) expect(button.href, `${card.cardId} ${button.label}`).not.toMatch(/[?#]/u);
+    for (const card of answer.cards) for (const button of card.buttons) if (button.href !== undefined) expect(button.href, `${card.cardId} ${button.label}`).not.toMatch(button.action === "dismiss" ? /#|\?(?!occurrence=[^&]+$)/u : /[?#]/u);
     expect(text).not.toContain("SECRET-ARGUMENT");
     for (const card of answer.cards.filter((entry) => entry.kind === "approval")) {
       expect(card.buttons.find((button) => button.href?.includes("/v1/app/approve/"))).toMatchObject({ label: "Open", action: "confirm", method: "GET" });
@@ -470,7 +470,7 @@ describe("plan, pull request and failure cards", () => {
     expect(card!.buttons).toEqual([
       { label: "Open session", action: "open", href: `${CELL}/s/${session.sessionId}`, method: "GET" },
       { label: "Retry", action: "retry", href: `${CELL}/v1/app/sessions/${session.sessionId}/retry`, method: "POST" },
-      { label: "Dismiss", action: "dismiss", href: `${CELL}/v1/app/home/cards/${encodeURIComponent(`failure:${session.sessionId}`)}/dismiss`, method: "POST" },
+      { label: "Dismiss", action: "dismiss", href: `${CELL}/v1/app/home/cards/${encodeURIComponent(`failure:${session.sessionId}`)}/dismiss?occurrence=${encodeURIComponent(`ended:${(w.db.get(agentSessionKey(ORG_A, session.sessionId, "META")) as Item)["endedAt"] as string}`)}`, method: "POST" },
     ]);
   });
 

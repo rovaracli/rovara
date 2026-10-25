@@ -30,8 +30,11 @@ export interface HomeDependencies extends SessionReadDependencies {
 }
 export type HomeCaller = SessionReadCaller;
 
-/** A card a source answers. `blocksRunningSession` ranks an approval or a budget request above the rest; Home takes it off before answering. */
-export type HomeSourceCard = HomeCard & { blocksRunningSession?: true };
+/**
+ * A card a source answers. `blocksRunningSession` ranks an approval or a budget request above the rest; `occurrence` says which happening of the card this is (a failure's end or summary revision;
+ * default: `at`), so a dismissal hides that happening and not a new one. Home takes both off before answering.
+ */
+export type HomeSourceCard = HomeCard & { blocksRunningSession?: true; occurrence?: string };
 
 /** What one request already learned, shared by the sources so the caller's sessions are read once. */
 export interface HomeContext {
@@ -70,6 +73,10 @@ const FAILURE_WORDS_MAX = 120;
 const SESSION_WORDS_MAX = 80;
 const PROBE_AT = "2000-01-01T00:00:00.000Z";
 const PROBE_ID = "ses_00000000000000000000";
+
+/** The form of an occurrence as a dismissal link carries it and a dismissal row keeps it. */
+const OCCURRENCE_PATTERN = /^[A-Za-z0-9:.+_-]{1,64}$/u;
+const occurrenceOf = (card: HomeSourceCard): string => card.occurrence ?? card.at;
 
 const isAgentXError = (error: unknown): boolean => error instanceof Error && error.name === "AgentXError";
 const text = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
@@ -361,12 +368,13 @@ const failureSource: HomeCardSource = {
       if (!failed) return [];
       const said = cut(shownText((session.summary.step ?? "").replace(/^Failed:\s*/u, ""), 300), FAILURE_WORDS_MAX) || "it did not finish";
       const cardId = `failure:${session.sessionId}`;
+      const occurrence = session.endedAt !== undefined ? `ended:${session.endedAt}` : `rev:${String(session.summaryRevision)}`;
       return [{
-        cardId, kind: "failure", title: session.title, reason: fit(`${quoted(session.title)} failed: `, said), sessionId: session.sessionId, at: session.endedAt ?? session.updatedAt,
+        cardId, kind: "failure", occurrence, title: session.title, reason: fit(`${quoted(session.title)} failed: `, said), sessionId: session.sessionId, at: session.endedAt ?? session.updatedAt,
         buttons: [
           openSession(deps, session.sessionId),
           ...(mayRetry(own) ? [{ label: "Retry", action: "retry" as const, href: `${origin}/v1/app/sessions/${session.sessionId}/retry`, method: "POST" as const }] : []),
-          { label: "Dismiss", action: "dismiss" as const, href: `${origin}/v1/app/home/cards/${encodeURIComponent(cardId)}/dismiss`, method: "POST" as const },
+          { label: "Dismiss", action: "dismiss" as const, href: `${origin}/v1/app/home/cards/${encodeURIComponent(cardId)}/dismiss?occurrence=${encodeURIComponent(occurrence)}`, method: "POST" as const },
         ],
       }];
     });
@@ -394,13 +402,13 @@ async function runSource(source: HomeCardSource, deps: HomeDependencies, caller:
   }
 }
 
-interface Collected { cards: HomeSourceCard[]; dismissed: ReadonlySet<string> }
+interface Collected { cards: HomeSourceCard[]; dismissed: ReadonlyMap<string, string> }
 
 async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Collected> {
   const log = logOf(deps);
   const member = (await batchGetItems(deps, [orgMemberKey(caller.orgId, caller.developerId)])).values().next().value as Item | undefined;
   const role = OrgRoleSchema.safeParse(member?.["role"]);
-  if (!role.success) return { cards: [], dismissed: new Set() };
+  if (!role.success) return { cards: [], dismissed: new Map() };
   const asker: HomeCaller = { ...caller, orgRole: role.data };
   const context = contextFor(deps, asker, role.data);
   const answers = await Promise.all([...sources].map(async (source) => ({ source, cards: await runSource(source, deps, asker, context, log) })));
@@ -409,7 +417,7 @@ async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Coll
   for (const { source, cards: answered } of answers) {
     if (answered.length > HOME_SOURCE_CARDS_MAX) log({ event: "home.source_truncated", source: source.kind });
     for (const card of answered.slice(0, HOME_SOURCE_CARDS_MAX)) {
-      const { blocksRunningSession, ...shown } = card;
+      const { blocksRunningSession, occurrence, ...shown } = card;
       const checked = HomeCardSchema.safeParse(shown);
       if (!checked.success || checked.data.kind !== source.kind || !checked.data.cardId.startsWith(`${source.kind}:`)) {
         log({ event: "home.card_invalid", source: source.kind, problem: checked.success ? "kind" : checked.error.issues[0]?.path.join(".") ?? "card" });
@@ -417,16 +425,20 @@ async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Coll
       }
       if (seen.has(checked.data.cardId)) continue;
       seen.add(checked.data.cardId);
-      cards.push({ ...checked.data, ...(blocksRunningSession === true ? { blocksRunningSession } : {}) });
+      const kept = occurrence !== undefined && OCCURRENCE_PATTERN.test(occurrence) ? occurrence : undefined;
+      cards.push({ ...checked.data, ...(blocksRunningSession === true ? { blocksRunningSession } : {}), ...(kept === undefined ? {} : { occurrence: kept }) });
     }
   }
   return { cards, dismissed: await dismissedBy(deps, caller) };
 }
 
-/** The cards the caller dismissed, whose dismissal has not run out (the table deletes late). One query, a fixed number of rows at most. */
-async function dismissedBy(deps: HomeDependencies, caller: HomeCaller): Promise<Set<string>> {
+/**
+ * The cards the caller dismissed, each with the occurrence they dismissed, whose dismissal has not run out (the table deletes late). One query, a fixed number of rows at most. A row that names no
+ * occurrence is left out: it hides nothing.
+ */
+async function dismissedBy(deps: HomeDependencies, caller: HomeCaller): Promise<Map<string, string>> {
   const pk = homeDismissedKey(caller.orgId, caller.developerId, "x:x").pk;
-  const found = new Set<string>();
+  const found = new Map<string, string>();
   const nowSeconds = Math.floor(deps.now() / 1000);
   let start: Record<string, unknown> | undefined;
   let read = 0;
@@ -439,7 +451,8 @@ async function dismissedBy(deps: HomeDependencies, caller: HomeCaller): Promise<
       const expires = item[INDEX_EXPIRY_ATTRIBUTE];
       if (item["orgId"] !== caller.orgId || (typeof expires === "number" && expires <= nowSeconds)) continue;
       const cardId = HomeCardIdSchema.safeParse(item["cardId"]);
-      if (cardId.success) found.add(cardId.data);
+      const occurrence = item["occurrence"];
+      if (cardId.success && typeof occurrence === "string" && OCCURRENCE_PATTERN.test(occurrence)) found.set(cardId.data, occurrence);
     }
     start = page.LastEvaluatedKey;
   } while (start !== undefined && read < HOME_DISMISSED_READ_MAX);
@@ -470,32 +483,37 @@ const ranked = (cards: readonly HomeSourceCard[]): HomeSourceCard[] => [...cards
  */
 export async function homeCards(deps: HomeDependencies, caller: HomeCaller): Promise<HomeResponse> {
   const { cards, dismissed } = await collect(deps, caller);
-  const shown = ranked(cards.filter((card) => !(isDismissible(card.kind) && dismissed.has(card.cardId))));
-  return { cards: shown.slice(0, HOME_CARDS_MAX).map(({ blocksRunningSession: _blocks, ...card }) => card), total: shown.length }; // eslint-disable-line @typescript-eslint/no-unused-vars -- the ranking hint is not part of the answer
+  const shown = ranked(cards.filter((card) => !(isDismissible(card.kind) && dismissed.get(card.cardId) === occurrenceOf(card))));
+  return { cards: shown.slice(0, HOME_CARDS_MAX).map(({ blocksRunningSession: _blocks, occurrence: _occurrence, ...card }) => card), total: shown.length }; // eslint-disable-line @typescript-eslint/no-unused-vars -- the ranking hint and the occurrence are not part of the answer
 }
 
 /**
  * `POST /v1/app/home/cards/{cardId}/dismiss`: hides one of the caller's failure or offer cards for them, for `HOME_DISMISS_DAYS`. Another kind is `CONFIG_INVALID`. It is idempotent: a
  * card that is already dismissed, or is not the caller's (or not there any more), answers the same and writes nothing; only a card on the caller's own Home is ever written, in their own partition.
  */
-export async function dismissHomeCard(deps: HomeDependencies, caller: HomeCaller, rawCardId: string): Promise<HomeDismissResponse> {
+export async function dismissHomeCard(deps: HomeDependencies, caller: HomeCaller, rawCardId: string, seen?: string): Promise<HomeDismissResponse> {
   const parsed = HomeCardIdSchema.safeParse(rawCardId);
   if (!parsed.success) throw agentXError("CONFIG_INVALID", "cardId: is not a card on Home");
   const cardId = parsed.data;
   if (!isDismissible(cardId.slice(0, cardId.indexOf(":")))) throw agentXError("CONFIG_INVALID", HOME_NOT_DISMISSIBLE);
   const answer: HomeDismissResponse = { cardId, dismissed: true };
   const { cards, dismissed } = await collect(deps, caller);
-  if (dismissed.has(cardId) || !cards.some((card) => card.cardId === cardId)) return answer;
+  const card = cards.find((candidate) => candidate.cardId === cardId);
+  if (card === undefined) return answer;
+  // The occurrence the person saw (the dismiss link carries it) is the one hidden; a failure that came after they looked stays on Home.
+  if (seen !== undefined && !OCCURRENCE_PATTERN.test(seen)) throw agentXError("CONFIG_INVALID", "occurrence: is not one");
+  const occurrence = seen ?? occurrenceOf(card);
+  if (dismissed.get(cardId) === occurrence) return answer;
   const nowMs = deps.now();
   try {
     await deps.documentClient.send(new PutCommand({
       TableName: deps.tableName,
       Item: {
-        ...homeDismissedKey(caller.orgId, caller.developerId, cardId), entityType: "HOME_DISMISSED", orgId: caller.orgId, developerId: caller.developerId, cardId, dismissedAt: new Date(nowMs).toISOString(),
+        ...homeDismissedKey(caller.orgId, caller.developerId, cardId), entityType: "HOME_DISMISSED", orgId: caller.orgId, developerId: caller.developerId, cardId, occurrence, dismissedAt: new Date(nowMs).toISOString(),
         [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + HOME_DISMISS_DAYS * 86_400,
       },
-      ConditionExpression: `attribute_not_exists(pk) OR ${INDEX_EXPIRY_ATTRIBUTE} <= :now`,
-      ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000) },
+      ConditionExpression: `attribute_not_exists(pk) OR ${INDEX_EXPIRY_ATTRIBUTE} <= :now OR attribute_not_exists(occurrence) OR occurrence <> :occurrence`,
+      ExpressionAttributeValues: { ":now": Math.floor(nowMs / 1000), ":occurrence": occurrence },
     }));
   } catch (error) {
     // A dismissal that landed first is this one's answer too.
