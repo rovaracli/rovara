@@ -1,3 +1,4 @@
+import { AppTrialSchema } from "./app-nav.js";
 import { z } from "zod";
 import { OrgRoleSchema } from "./org.js";
 import { forwardReader } from "./session-views.js";
@@ -25,7 +26,7 @@ export const AppMeResponseSchema = z.object({
     email: z.string().optional(),
     orgRole: OrgRoleSchema,
   }),
-  org: z.object({ orgId: z.string(), name: z.string(), plan: z.string() }),
+  org: z.object({ orgId: z.string(), name: z.string(), plan: z.string(), trial: AppTrialSchema.optional(), nameIsDefault: z.boolean().optional() }),
   identities: z.array(LinkedIdentitySchema),
 });
 export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;

@@ -1,3 +1,10 @@
+import { navigationReadCache } from "../app-nav/read-cache.js";
+import { APP_NAV_CACHE_MS, appNav, orgTrial, type AppNavDependencies } from "../app-nav/nav.js";
+import { navigationLive } from "../agent-sessions/live.js";
+import { homeCards } from "../agent-sessions/home.js";
+import { listSessions } from "../agent-sessions/read.js";
+import { listRoster } from "../agents/roster.js";
+import { listVisibleAgents } from "../agents/access.js";
 // Spec 025 FR-009, FR-013, FR-014 and FR-016: GET projects, and the project access check the task
 // routes use. /v1/dev/* has no API Gateway authorizer (D17): the broker verifies the developer
 // access token itself, then checks the environment, the method and the sign-in session on every
@@ -127,7 +134,7 @@ import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
-import { isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
+import { decidingOf, isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
@@ -1726,6 +1733,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
+  if (request.method === "GET" && url.pathname === "/v1/app/nav") return getAppNavigation(deps, caller);
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {
     const me = await getAppMe(deps, caller);
@@ -1817,6 +1825,45 @@ async function createProject(deps: DeveloperRouteDependencies, caller: Developer
   return new StatusReply(created.duplicate ? 200 : 201, created);
 }
 
+/** Per-cell, per-person immutable source adapters keep the five-second appNav cache warm across route dependency objects. Authentication still precedes every call. */
+const navigationAdapters = new WeakMap<object, Map<string, { at: number; deps: AppNavDependencies; release: () => void }>>();
+async function getAppNavigation(deps: DeveloperRouteDependencies, caller: DeveloperCaller) {
+ if (deps.agents === undefined || deps.orgs === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Navigation is temporarily unavailable. Try again shortly.");
+ const agents = deps.agents, orgs = deps.orgs;
+ const features = process.env.WEB_FEATURES ?? "";
+ const key = [deps.tableName, deps.developer.issuer, caller.orgId, caller.developerId, caller.orgRole, features].join("#");
+ let adapters = navigationAdapters.get(deps.documentClient);
+ if (adapters === undefined) { adapters = new Map();navigationAdapters.set(deps.documentClient, adapters); }
+ let cached = adapters.get(key);
+ if (cached === undefined || cached.at + APP_NAV_CACHE_MS <= deps.now()) {
+  // RULING Q38: reuse canonical sources and their partitioned access reads; coalesce identical reads, never replace visibility policy.
+  const cache = navigationReadCache(deps.documentClient);
+  const cachedDeps = { ...deps, documentClient: cache.documentClient };
+  const members = projectMembersOf(cachedDeps);
+  const cachedAgents = { ...agents, documentClient: cache.documentClient, store: cache.store(agents.store), projectMembers: members };
+  const sessionReads = { ...sessionReadDependencies(cachedDeps, caller), documentClient: cache.documentClient, projectMembers: members };
+  const reads = { ...sessionReads, approvals: cachedAgents, deciding: sessionReads.deciding ?? decidingOf(cachedAgents) };
+  let wall: ReturnType<typeof navigationLive> | undefined;
+  const live = () => wall ??= navigationLive(reads, caller);
+  const sources: NonNullable<AppNavDependencies["sources"]> = {
+   projects: async () => (await members.projectsOf(caller.orgId, caller)).map(project => ({ name: project.project })),
+   rosters: async (_who, names) => (await mapLimit(names, REVISION_READS_AT_ONCE, async project => (await listRoster(cachedAgents, caller, project)).filter(agent => !agent.disabled && agent.status === "active").map(agent => ({ project, agentId: agent.agentId, name: agent.name })))).flat(),
+   live: async () => (await live()).map(tile => ({ sessionId: tile.sessionId, ...(tile.project === undefined ? {} : { project: tile.project }), ...(tile.agent === undefined ? {} : { agentId: tile.agent.agentId }), running: true, needsYou: tile.needsYou })),
+   home: async () => homeCards(reads, caller),
+   sharedAgents: async () => (await listVisibleAgents(cachedAgents, caller, "shared")).map(agent => ({ agentId: agent.agentId, name: agent.name })),
+   sharedSessions: async () => (await listSessions(reads, caller, { shared: "me", status: "open", limit: 10 })).sessions.map(session => ({ sessionId: session.sessionId, title: session.title, ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }) })),
+   org: async () => { const org = await orgs.getOrg(caller.orgId);if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");return org; },
+  };
+  // PLAN8: local-agent product capabilities are not part of this web launch.
+  cached = { at: deps.now(), deps: { sources, now: deps.now, webFeatures: features, localAgents: false }, release: cache.release };
+  adapters.delete(key);adapters.set(key, cached);
+  if (adapters.size > 256) { const first = adapters.keys().next().value;if (first !== undefined) adapters.delete(first); }
+ }
+ try { return await appNav(cached.deps, caller); }
+ catch (error) { if (adapters.get(key) === cached) adapters.delete(key);throw error; }
+ finally { cached.release(); }
+}
+
 /** `GET /v1/app/me`: the caller, their org, and every sign-in method linked to them. Never the providers' issuers or subjects. */
 async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<AppMeResponse> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
@@ -1825,7 +1872,7 @@ async function getAppMe(deps: DeveloperRouteDependencies, caller: DeveloperCalle
   const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
   return {
     developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole },
-    org: { orgId: org.orgId, name: org.name, plan: org.plan },
+    org: { orgId: org.orgId, name: org.name, plan: org.plan, nameIsDefault: org.nameIsDefault ?? org.createdBy !== "system", ...(orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
     identities: await store.identitiesOf(caller.developerId),
   };
 }

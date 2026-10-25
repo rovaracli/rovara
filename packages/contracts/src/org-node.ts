@@ -16,6 +16,10 @@ export interface OrgRecord {
   plan: "trial" | "team";
   /** When connecting GitHub unlocked this trial org (epoch milliseconds); absent while it is locked. Only a `trial` org is ever locked. */
   trialUnlockedAt?: number;
+  /** A GitHub connection could not unlock this trial because its account had already claimed another trial. */
+  trialGithubUsedAt?: number;
+  /** False after an explicit organization rename; absent on initial organization records. */
+  nameIsDefault?: boolean;
   /** The GitHub account whose connection unlocked the trial; it can unlock no other org. */
   trialGithubUserId?: string;
   /** When the org was closed (its sole owner left, or the race org of a duplicate sign-in was retired); a closed org takes no new members. */

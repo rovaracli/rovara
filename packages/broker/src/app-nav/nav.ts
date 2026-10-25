@@ -1,4 +1,4 @@
-import { AppNavSchema, agentXError, type AppNav, type OrgId, type OrgRole } from "@agentx/contracts";
+import { AppNavSchema, agentXError, type AppNav, type OrgId, type OrgRole, type OrgRecord } from "@agentx/contracts";
 export const APP_NAV_CACHE_MS = 5000;
 const CACHE_ENTRIES_MAX = 256;
 export interface NavCaller { orgId: OrgId; developerId: string; name: string; orgRole: OrgRole }
@@ -18,6 +18,10 @@ export interface AppNavSources {
 export interface AppNavDependencies { sources?: AppNavSources; now: () => number; webFeatures: string; localAgents: boolean }
 interface Cached { expiresAt: number; role: OrgRole; value: Promise<AppNav> }
 const caches = new WeakMap<AppNavDependencies, Map<string, Cached>>();
+export function orgTrial(org: Pick<OrgRecord, "plan"> & Partial<Pick<OrgRecord, "createdBy" | "trialUnlockedAt" | "trialGithubUsedAt">>): AppNav["org"]["trial"] {
+ if (org.plan !== "trial" || org.createdBy === "system") return undefined;
+ return { state: org.trialUnlockedAt !== undefined ? "unlocked" : org.trialGithubUsedAt !== undefined ? "github_used" : "locked" };
+}
 export function appNav(deps: AppNavDependencies, caller: NavCaller): Promise<AppNav> {
  if (deps.sources === undefined) return Promise.reject(agentXError("RUNTIME_UNAVAILABLE", "Navigation is temporarily unavailable. Try again shortly."));
  let cache = caches.get(deps);if (cache === undefined) { cache = new Map();caches.set(deps, cache); }
@@ -31,7 +35,7 @@ export function appNav(deps: AppNavDependencies, caller: NavCaller): Promise<App
  const features = new Set(deps.webFeatures.split(",").map(value => value.trim()));
  return AppNavSchema.parse({
  me: { developerId: caller.developerId, name: caller.name, orgRole: caller.orgRole },
- org: { name: org.name, ...(org.plan === "trial" && org.createdBy !== "system" ? { trial: { state: org.trialUnlockedAt !== undefined ? "unlocked" : org.trialGithubUsedAt !== undefined ? "github_used" : "locked" } } : {}) },
+ org: { name: org.name, ...(orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
  homeCount: home.total,
  projects: names.map(name => ({ name, agents: rosters.filter(agent => agent.project === name).map(agent => ({ agentId: agent.agentId, name: agent.name, running: live.filter(session => session.project === name && session.agentId === agent.agentId && session.running).length, needsYou: live.filter(session => session.project === name && session.agentId === agent.agentId && session.needsYou).length })) })),
  shared: { agents: sharedAgents.slice(0, 20).map(agent => ({ agentId: agent.agentId, name: agent.name })), sessions: sharedSessions.filter(session => session.endedAt === undefined).slice(0, 10).map(session => ({ sessionId: session.sessionId, title: session.title })) },

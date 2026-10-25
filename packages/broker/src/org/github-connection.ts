@@ -345,7 +345,14 @@ export async function confirmGithubConnect(
   try {
     await deps.unlockTrial({ orgId: state.orgId, githubUserId: pending.githubUserId });
   } catch (error) {
-    if ((error as { code?: unknown }).code === "TRIAL_GITHUB_USED") return { outcome: "connected_trial_used", ...names };
+    if ((error as { code?: unknown }).code === "TRIAL_GITHUB_USED") {
+      await deps.documentClient.send(new UpdateCommand({
+        TableName: deps.tableName, Key: orgMetaKey(state.orgId),
+        UpdateExpression: "SET trialGithubUsedAt = if_not_exists(trialGithubUsedAt, :now)",
+        ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":now": deps.now() },
+      }));
+      return { outcome: "connected_trial_used", ...names };
+    }
     log(deps, { event: "github.connect_trial_unlock_failed", orgId: state.orgId, error: errorName(error) });
   }
   return { outcome: "connected", ...names };
