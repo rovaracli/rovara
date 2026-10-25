@@ -494,7 +494,7 @@ export class GitHubAppCredentialProvider {
   async listPullRequestFiles(repositoryUrl: string, number: number, options: { page: number }, scope: GitHubTokenScope): Promise<{ files: Array<GitHubPullRequestChangedFile & { previous_filename?: string }>; nextPage?: number }> {
     if (!Number.isSafeInteger(number) || number < 1 || !Number.isSafeInteger(options.page) || options.page < 1 || options.page > 10_000) throw agentXError("CONFIG_INVALID", "Invalid diff page.");
     const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
-    const token = await this.createInstallationToken(repository, { pull_requests: "read", contents: "read" }, scope);
+    const token = await this.diffTokenFor(repository, scope);
     const response = await this.fetchImplementation(
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}/files?per_page=100&page=${options.page}`,
       { headers: { ...githubHeaders(token), accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(8_000), redirect: "error" },
@@ -805,6 +805,17 @@ export class GitHubAppCredentialProvider {
     const token = this.createInstallationToken(repository, { contents: "read" }, scope);
     this.readTokens.set(key, { token, expiresAt: this.now() + READ_TOKEN_REUSE_MS });
     token.catch(() => { if (this.readTokens.get(key)?.token === token) this.readTokens.delete(key); });
+    return token;
+  }
+
+  /** Reuse only the two diff read permissions; installed() checks the live org binding before every call. */
+  private diffTokenFor(repository: InstalledRepository, scope: GitHubTokenScope): Promise<string> {
+    const key = `${repository.installationId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}:contents=read,pull_requests=read`;
+    const cached = this.readTokens.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.token;
+    const token = this.createInstallationToken(repository, { contents: "read", pull_requests: "read" }, scope);
+    this.readTokens.set(key, { token, expiresAt: this.now() + READ_TOKEN_REUSE_MS });
+    void token.catch(() => { if (this.readTokens.get(key)?.token === token) this.readTokens.delete(key); });
     return token;
   }
 

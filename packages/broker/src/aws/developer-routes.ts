@@ -1484,6 +1484,7 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
     ...sessions, origin: new URL(deps.developer.issuer).origin,
     ...(deps.sessionDiffFiles === undefined ? {} : { diff: {
       files: deps.sessionDiffFiles,
+      pullRequests: workspaceId => taskDeps.actions.pullRequests(workspaceId),
       repository: async (orgId, project, revision, repository) => {
         const registered = await deps.tasks!.projectRevision(orgId, project, revision);
         return registered?.definition.repositories.find(item => item.name === repository)?.url;

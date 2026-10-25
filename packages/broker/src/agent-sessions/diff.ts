@@ -1,20 +1,26 @@
-import { DIFF_FILES_PAGE_MAX, DIFF_PATCH_MAX_BYTES, SessionDiffSchema, agentXError, redactText, type OrgId, type SessionDiff } from "@agentx/contracts";
-import { sessionView, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { requireSessionLevel } from "./access.js";
+import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { DIFF_FILES_PAGE_MAX, DIFF_PATCH_MAX_BYTES, SessionDiffSchema, agentXError, redactText, type OrgId, type SessionDiff, type DeveloperTaskView } from "@agentx/contracts";
+import { type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 export interface SessionDiffDependencies extends SessionReadDependencies {
  diff?: {
+  pullRequests(workspaceId: string): Promise<NonNullable<DeveloperTaskView["pullRequests"]>>;
   repository(orgId: OrgId, project: string, revision: number, repository: string): Promise<string | undefined>;
   files(repositoryUrl: string, number: number, options: { page: number }, scope: { orgId: OrgId }): Promise<{ files: Array<{ filename: string; status: string; previous_filename?: string; additions: number; deletions: number; patch?: string }>; nextPage?: number }>;
  };
 }
 const missing = () => agentXError("NOT_FOUND", "diff not found");
 export async function sessionDiff(deps: SessionDiffDependencies, caller: SessionReadCaller, sessionId: string, query: { repository: string; number: number; page: number }): Promise<SessionDiff> {
- const session = await sessionView(deps, caller, sessionId);
+ const { session } = await requireSessionLevel(deps, caller, sessionId, "view", "view it");
  if (deps.diff === undefined || session.project === undefined || !Number.isSafeInteger(query.number) || query.number < 1 || !Number.isSafeInteger(query.page) || query.page < 1 || query.page > 10_000) throw missing();
  // RULING Q36: unspecified upstream omission has no guessed binary/size reason.
  // PLAN4: chain PR enumeration needs the owning readable-section contract; never guess a step task.
- if (session.body?.kind !== "task") throw missing();
- const task = session.body.task;
- const pr = task.pullRequests?.find(item => item.repository === query.repository && item.number === query.number);
+ if (session.subject.kind !== "task") throw missing();
+ const result = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(session.subject.taskId), ConsistentRead: true }));
+ const task = result.Item as DeveloperTaskRecord | undefined;
+ if (task === undefined || task.orgId !== caller.orgId || task.taskId !== session.subject.taskId || task.project !== session.project) throw missing();
+ const pr = (await deps.diff.pullRequests(task.workspaceId)).find(item => item.repository === query.repository && item.number === query.number);
  if (pr === undefined) throw missing();
  const repository = await deps.diff.repository(caller.orgId, session.project, task.startingRevision, query.repository);
  if (repository === undefined) throw missing();

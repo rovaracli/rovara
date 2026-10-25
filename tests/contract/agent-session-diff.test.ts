@@ -3,13 +3,14 @@ import { DeveloperTaskViewSchema } from "@agentx/contracts";
 import { sessionDiff, type SessionDiffDependencies } from "../../packages/broker/src/agent-sessions/diff.js";
 import { ARJUN, BO, CELL, ORG_A, ORG_B, PRIYA, sessionWorld } from "../support/agent-session-world.js";
 function setup() {
- const w = sessionWorld(), { sessionId } = w.seedSession();
+ const w = sessionWorld(), { sessionId, taskId } = w.seedSession();
+ const taskKey = { pk: "DEVTASK#" + taskId, sk: "META" };w.db.set({ ...w.db.get(taskKey)!, startingRevision: 1 });
  w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "view");
  const files = vi.fn(async () => ({ files: [{ filename: "src/a.ts", status: "modified", additions: 1, deletions: 0, patch: "+ghp_" + "x".repeat(36) }], nextPage: 2 }));
  const repository = vi.fn(async (): Promise<string | undefined> => "https://github.com/acme/app");
  const deps: SessionDiffDependencies = { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL,
  taskView: async task => DeveloperTaskViewSchema.parse({ taskId: task.taskId, project: task.project, title: "Fix", status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:00:00.000Z", events: [], pullRequests: [{ repository: "app", number: 42, url: "https://github.com/acme/app/pull/42", state: "open" }] }),
- diff: { repository, files } };
+ diff: { repository, files, pullRequests: async () => [{ repository: "app", number: 42, url: "https://github.com/acme/app/pull/42", state: "open" }] } };
  return { w, sessionId, deps, files, repository };
 }
 it("allows an explicit view share and redacts token text", async () => {
