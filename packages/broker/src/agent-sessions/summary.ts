@@ -189,6 +189,7 @@ interface Parts {
   step?: string | undefined;
   peek?: string | undefined;
   lastRunFailed?: true | undefined;
+  workflowBlocked?: true | undefined;
   costUsd: number;
   runLimitUsd?: number | undefined;
   stopAtUsd?: number | undefined;
@@ -204,6 +205,7 @@ function assemble(parts: Parts, now: number): SessionSummary {
     ...(parts.step === undefined ? {} : { step: parts.step }),
     ...(parts.peek === undefined ? {} : { peek: parts.peek }),
     ...(parts.lastRunFailed === undefined ? {} : { lastRunFailed: parts.lastRunFailed }),
+    ...(parts.workflowBlocked === undefined ? {} : { workflowBlocked: parts.workflowBlocked }),
     costUsd: cleanUsd(parts.costUsd),
     ...(parts.runLimitUsd === undefined ? {} : { runLimitUsd: parts.runLimitUsd }),
     ...(parts.stopAtUsd === undefined ? {} : { stopAtUsd: parts.stopAtUsd }),
@@ -336,12 +338,15 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   let status: SessionStatus;
   let step: string | undefined;
   let lastRunFailed: true | undefined;
+  let workflowBlocked: true | undefined;
   const starting = derived.status === "STARTING";
   if (task.budgetPause !== undefined) {
     status = "paused";
     step = workflow === undefined ? run?.currentStep?.name : taskPageStep(workflow, false);
   } else if (workflow !== undefined) {
     step = taskPageStep(workflow, false);
+    // A blocked workflow can be retried (Plan 3's workflow retry), although it reads as needing a person: the flag lets the session offer the button.
+    if (workflow.state === "BLOCKED") workflowBlocked = true;
     // Only a stage that waits on a person is not running: a plan under review needs its owner, a blocked task needs someone, a pull request waits to be merged. The checks and
     // reviews also sit in WAITING between runs, but nobody is needed for them.
     if ((workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") || workflow.state === "BLOCKED") status = "needs_person";
@@ -378,7 +383,7 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     log(deps, { event: "agent_session.peek_unreadable", sessionId: session.sessionId, error: error instanceof Error ? error.name : "unknown" });
     return session.summary.peek;
   });
-  return { summary: assemble({ status, step: step === undefined ? undefined : stepText(step), peek, lastRunFailed, needsPeople, pendingApprovals: waitingOn.count, ...costs }, now) };
+  return { summary: assemble({ status, step: step === undefined ? undefined : stepText(step), peek, lastRunFailed, workflowBlocked, needsPeople, pendingApprovals: waitingOn.count, ...costs }, now) };
 }
 
 /** Checks what a seam returned: its shape, and that it is this session's org's. Anything else is logged and read as "nothing to say" (the summary stays as it was). */

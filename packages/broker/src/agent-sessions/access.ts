@@ -389,21 +389,23 @@ export async function requireSessionLevel(deps: SessionAccessDependencies, calle
   return access;
 }
 
-/** The statuses a session can be retried from: the run failed or was cancelled. (A workflow blocked on a failed step shows as needing a person, and is retried through its own page.) */
+/** The statuses a session can be retried from: the run failed or was cancelled. (A blocked workflow shows as needing a person; its summary says `workflowBlocked`, which also offers retry.) */
 const RETRYABLE: readonly SessionStatus[] = ["failed", "cancelled"];
+/** A blocked workflow reads as needing a person, or as paused when the task's budget also paused it; a stale flag on any other status offers nothing. */
+const BLOCKED_STATUSES: readonly SessionStatus[] = ["needs_person", "paused"];
 
 /**
  * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over and shares, and retries a session that failed or was
- * cancelled (`state` is the session's status now). Handing off is the owner's.
+ * cancelled, or whose workflow is blocked (`state` is the session's summary now). Handing off is the owner's.
  */
-export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus }): SessionAction[] {
+export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined }): SessionAction[] {
   if (access.level === "none") return [];
   if (!access.owner && access.projectRole === "viewer") return ["watch"];
   const actions: SessionAction[] = ["watch", "comment"];
   if (atLeast(access.level, "use")) actions.push("steer");
   if (atLeast(access.level, "edit")) {
     actions.push("stop");
-    if (RETRYABLE.includes(state.status)) actions.push("retry");
+    if (RETRYABLE.includes(state.status) || (state.workflowBlocked === true && BLOCKED_STATUSES.includes(state.status))) actions.push("retry");
     actions.push("take_over", "share");
   }
   if (access.orgAdmin && !actions.includes("stop")) actions.push("stop");

@@ -197,6 +197,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
 
   const summary = session.summary;
   const status = computed || taskShown === undefined ? summary.status : statusOfTask(taskShown);
+  // A blocked workflow reads as needing a person but can be retried; read live when the summary is not the computed one, and never for a finished task.
+  const workflowBlocked = computed || taskShown === undefined ? summary.workflowBlocked : taskShown.workflow?.state === "BLOCKED" && status !== "succeeded" ? true as const : undefined;
   const step = computed || taskShown === undefined ? summary.step : taskShown.run?.currentStep?.name;
   const runLimitUsd = computed || task === undefined ? summary.runLimitUsd : typeof task.budgetUsd === "number" ? task.budgetUsd : undefined;
   const stopAtUsd = computed || task === undefined ? summary.stopAtUsd
@@ -246,7 +248,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
     followers: session.followerCount,
     viewingNow: await viewingNow(deps, session, deps.now()),
-    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status }), ...(canMakeAgent ? ["make_agent" as const] : [])] },
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked }), ...(canMakeAgent ? ["make_agent" as const] : [])] },
     link: sessionLink(deps.origin, session.sessionId),
     bindings: await bindingsOf(deps, session),
     legs: session.legs,

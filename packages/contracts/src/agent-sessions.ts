@@ -229,6 +229,8 @@ export const SessionSummarySchema = z
     step: lineText(SESSION_TITLE_MAX).optional(),
     peek: blockText(SESSION_PEEK_MAX_CHARS).optional(),
     lastRunFailed: z.literal(true).optional(),
+    /** The task's workflow is `BLOCKED` (it shows as `needs_person`): the session can be retried through Plan 3's workflow retry. Absent in summaries written before this existed. */
+    workflowBlocked: z.literal(true).optional(),
     costUsd: z.number().min(0),
     runLimitUsd: z.number().min(0).optional(),
     stopAtUsd: z.number().min(0).optional(),

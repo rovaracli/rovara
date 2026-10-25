@@ -310,6 +310,10 @@ describe("sessionActionsFor", () => {
     expect(blocked("view")).not.toContain("retry");
     expect(blocked("edit", { projectRole: "viewer" })).toEqual(["watch"]);
     expect(blocked("edit", { owner: true, projectRole: "viewer" })).toContain("retry");
+    // A stale flag on a session that is running or finished offers nothing; a paused one (budget pause on a blocked workflow) does.
+    const flaggedAt = (status: SessionStatus) => sessionActionsFor({ level: "edit", owner: false, orgAdmin: false }, { status, workflowBlocked: true });
+    for (const status of ["starting", "running", "waiting", "stopped", "succeeded"] as const) expect(flaggedAt(status), status).not.toContain("retry");
+    expect(flaggedAt("paused")).toContain("retry");
   });
 
   it("gives a project viewer who isn't the owner only watching, and an owner who is a viewer everything", () => {
