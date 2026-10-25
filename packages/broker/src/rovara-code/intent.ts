@@ -79,6 +79,7 @@ export async function startCodeIntent(deps: CodeIntentDependencies, caller: Deve
   };
   const started = await startAgentRun(deps.starter, run);
   const task = await deps.ownedTask(caller, started.taskId);
+  // A start by a person always has a session (`startTask` creates it in the same transaction), so this is a guard on the type, not a state.
   if (task.sessionId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the task started without a session");
   return { task, sessionId: task.sessionId, sessionUrl: task.sessionUrl ?? sessionLink(deps.origin, SessionIdSchema.parse(task.sessionId)) };
 }

@@ -440,7 +440,7 @@ describe("a deployment where agents are not set up", () => {
     const reply = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Fix it" } });
     expect(reply.status).toBe(404);
     expect(h.db.find((item) => item.entityType === "DEVELOPER_TASK")).toEqual([]);
-    const refused = await refusal(createCodeIntentStarter(h.brokerInput as never)!(TEST_ORG, MAYA.developerId, { requestId: randomUUID(), project: "payments", input: { text: "Fix it" }, source: "app", path: "QUICK" }));
+    const refused = await refusal(createCodeIntentStarter(h.brokerInput as never)(TEST_ORG, MAYA.developerId, { requestId: randomUUID(), project: "payments", input: { text: "Fix it" }, source: "app", path: "QUICK" }));
     expect(refused?.code).toBe("RUNTIME_UNAVAILABLE");
   });
 

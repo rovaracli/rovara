@@ -1803,8 +1803,6 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // Plan 5, Task 2: every run is a session, created in this start transaction. A chain step's task is not (its chain run is the session), and a
   // run no person started and no trigger names has no starter to record, so it has none either.
   const sessionStartedBy = prepared === undefined ? undefined : sessionStarterFor({ trigger: run?.trigger, startedBy, chain: prepared.chain });
-  // A Rovara Code intent answers with its session, so one that would start without it is refused before anything is saved.
-  if (run?.codeIntent !== undefined && sessionStartedBy === undefined) return refused(agentXError("RUNTIME_UNAVAILABLE", "this start can't be followed in a session here"));
   const sessionId = sessionStartedBy === undefined ? undefined : newPrefixedId("ses");
   // When another member started the run on the owner's behalf, the session's first event names them; a name that can't be read is left out, never an error.
   const starterName = sessionStartedBy?.kind === "member" && sessionStartedBy.developerId !== caller.developerId
