@@ -8,6 +8,7 @@ import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } fr
 import { githubWorkflowPullRequestKey, type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type GitHubPullRequestFeedback } from "../github-app.js";
 import { isConditional } from "./broker-shared.js";
+import { failedIndexes, isTransactionConflict } from "../agents/table-writes.js";
 import type { InstallationCreatedPayload } from "../org/github-install-requests.js";
 import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { feedbackReopenedMeasure, type FeedbackReviewMeasure } from "../developer/feedback-review-measures.js";
@@ -282,6 +283,27 @@ function mergedPullRequestEvents(
   });
 }
 
+/** How many times a save that lost only to another transaction on the same items (a hot item such as the project's month count) is tried again before it fails. */
+export const WORKFLOW_SAVE_CONFLICT_RETRIES = 3;
+
+/**
+ * Runs a workflow save, and again (up to `WORKFLOW_SAVE_CONFLICT_RETRIES` more times, after a short, growing pause) when it failed only because another transaction held one of its items right
+ * now: the whole-call `TransactionConflictException`, or a cancellation whose reasons hold a `TransactionConflict` and no failed condition. Nothing was written then, and the same save
+ * is tried again as it is, without reading GitHub again. A failed condition is the caller's compare-and-set and is not retried here; the last conflict is thrown.
+ */
+async function saveRetryingConflicts(save: () => Promise<void>): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await save();
+      return;
+    } catch (error) {
+      const conflictOnly = isTransactionConflict(error) && (failedIndexes(error)?.size ?? 0) === 0;
+      if (!conflictOnly || attempt >= WORKFLOW_SAVE_CONFLICT_RETRIES) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+    }
+  }
+}
+
 /** Event payloads are hints only. Recollect all linked PRs on every CAS retry. */
 export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullRequestFeedbackInput): Promise<boolean> {
   const linked = await findLinkedGithubWorkflowPullRequest(input);
@@ -332,7 +354,8 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       if (next === current) return false;
       const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
       try {
-        await input.saveWorkflow(linked.taskId, current.revision, next, [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)]);
+        const items = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)];
+        await saveRetryingConflicts(() => input.saveWorkflow(linked.taskId, current.revision, next, items));
         await flushAuditEvents(input, events);
         return true;
       } catch (error) {
@@ -537,8 +560,9 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
     const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
     const extraItems = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)];
     try {
-      if (recordedPushes.length > 0) await input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems);
-      else await input.saveWorkflow(linked.taskId, current.revision, next, extraItems);
+      await saveRetryingConflicts(() => recordedPushes.length > 0
+        ? input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems)
+        : input.saveWorkflow(linked.taskId, current.revision, next, extraItems));
       await flushAuditEvents(input, events);
       if (reopenedFeedback) {
         const measure = feedbackReopenedMeasure(input.now);
