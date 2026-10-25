@@ -96,4 +96,25 @@ describe("a chain run as a session, through the real broker", () => {
     expect(runs).toHaveLength(2);
     expect(runs.find((item) => item.runId !== runId)).toMatchObject({ status: "running", input: "Why did checkout fail?", project: "payments", startedBy: { kind: "member", developerId: MAYA.developerId } });
   });
+  it("puts the chain run on Live and on the project overview for those who read it (per org, by the chain's rule), and on nobody else's wall", async () => {
+    const { members, call, startedRun } = await setup();
+    const { chainId, runId } = await startedRun();
+    const ids = (body: Record<string, unknown>, field: string) => (body[field] as Array<{ sessionId: string; kind: string }>).filter((tile) => tile.kind === "chain").map((tile) => tile.sessionId);
+    const live = await call(MAYA, "GET", "/v1/app/live");
+    expect(live.status, JSON.stringify(live.body)).toBe(200);
+    expect(ids(live.body, "tiles")).toEqual([runId]);
+    const mine = await call(MAYA, "GET", "/v1/app/live?filter=mine");
+    expect(ids(mine.body, "tiles")).toEqual([runId]);
+    const overview = await call(MAYA, "GET", "/v1/app/projects/payments/overview");
+    expect(overview.status, JSON.stringify(overview.body)).toBe(200);
+    expect(ids(overview.body, "running")).toEqual([runId]);
+    // A project viewer who is not on the chain does not see it; one the chain was shared with does.
+    members.grant(TEST_ORG, "payments", OMAR.developerId, "viewer");
+    expect(ids((await call(OMAR, "GET", "/v1/app/live")).body, "tiles")).toEqual([]);
+    expect(ids((await call(OMAR, "GET", "/v1/app/projects/payments/overview")).body, "running")).toEqual([]);
+    expect((await call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [{ principal: { kind: "member", developerId: OMAR.developerId }, level: "view" }] })).status).toBe(200);
+    expect(ids((await call(OMAR, "GET", "/v1/app/live")).body, "tiles")).toEqual([runId]);
+    expect(ids((await call(OMAR, "GET", "/v1/app/projects/payments/overview")).body, "running")).toEqual([runId]);
+    expect((await call(MAYA, "GET", "/v1/app/home")).status).toBe(200);
+  });
 });
