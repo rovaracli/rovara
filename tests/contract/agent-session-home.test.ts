@@ -387,6 +387,19 @@ describe("spend request cards", () => {
     expect(await w.ids(OLA)).toEqual([]);
   });
 
+  it("names nothing of the session when the person who decides may not view it: the scope's words, no session, no link to it", async () => {
+    const w = world();
+    // A session with no project is seen by its owner and the people it is shared with: an org admin who decides the request does not see it.
+    const hidden = w.own({ owner: MAX, title: "Secret plan", minute: 3, project: null });
+    spendRequest(w, { taskId: hidden.taskId });
+    const [card] = (await w.home(OLA)).cards;
+    expect(card).toMatchObject({ kind: "spend_request", reason: "An agent owner's budget needs $12.5 more" });
+    expect(card).not.toHaveProperty("sessionId");
+    expect(labels(card!)).toEqual(["Decide"]);
+    expect(JSON.stringify(card)).not.toContain("Secret plan");
+    expect(JSON.stringify(card)).not.toContain(hidden.sessionId);
+  });
+
   it("names the session when the request is for a task the person may view, and ranks it first only then", async () => {
     const w = world();
     const session = w.own({ owner: MAX, title: "Fix login", minute: 3 });
@@ -415,7 +428,7 @@ describe("plan, pull request and failure cards", () => {
   });
 
   it("offers only a web address on GitHub as the pull request's destination, and the session otherwise", async () => {
-    for (const url of ["javascript:alert(1)", "http://github.com/acme/web/pull/7", "https://evil.example.com/acme/web/pull/7", "https://github.com.evil.example.com/pull/7"]) {
+    for (const url of ["javascript:alert(1)", "http://github.com/acme/web/pull/7", "https://evil.example.com/acme/web/pull/7", "https://github.com.evil.example.com/pull/7", "https://user:secret@github.com/acme/web/pull/7", "https://github.com:8443/acme/web/pull/7", "not a url"]) {
       const w = world();
       const pr = w.pullRequest({ pullRequests: [{ repositoryId: "r1", number: 7, url, candidateDigest: sha("c"), required: true, state: "OPEN" }] });
       const [card] = (await w.home(PRIYA)).cards;
@@ -579,6 +592,15 @@ describe("dismissing", () => {
     expect(await w.dismiss(ARJUN, `failure:${failure.sessionId}`)).toEqual({ cardId: `failure:${failure.sessionId}`, dismissed: true });
     expect(await w.dismiss(MAX, `failure:${failure.sessionId}`)).toEqual({ cardId: `failure:${failure.sessionId}`, dismissed: true });
     expect(w.db.find((item) => item.entityType === "HOME_DISMISSED")).toEqual([]);
+    expect(await w.ids(PRIYA)).toEqual([`failure:${failure.sessionId}`]);
+  });
+
+  it("does not let a dismissal row that names another org, or one that is not a card, hide anything", async () => {
+    const w = world();
+    const failure = w.failed({});
+    const key = homeDismissedKey(ORG_A, PRIYA, `failure:${failure.sessionId}`);
+    w.db.set({ ...key, entityType: "HOME_DISMISSED", orgId: ORG_B, developerId: PRIYA, cardId: `failure:${failure.sessionId}`, dismissedAt: iso(T0), indexExpiresAt: Math.floor(T0 / 1000) + 1000 });
+    w.db.set({ ...homeDismissedKey(ORG_A, PRIYA, "junk"), entityType: "HOME_DISMISSED", orgId: ORG_A, developerId: PRIYA, cardId: "junk", dismissedAt: iso(T0) });
     expect(await w.ids(PRIYA)).toEqual([`failure:${failure.sessionId}`]);
   });
 
