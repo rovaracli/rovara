@@ -14,6 +14,8 @@ export function homeAction(card: ReadHomeCard, button: ReadButton, origin: strin
  const known = HomeCardSchema.shape.kind.safeParse(card.kind).success;
  if (!known && action !== "open") return undefined;
  const url = new URL(href), sameOrigin = url.origin === new URL(origin).origin;
+ // RULING Q39: controller requires same-origin absolute links for Open too.
+ if (!sameOrigin) return undefined;
  if (action === "open" && method === "GET") {
   const path = href.slice(url.origin.length);
   return { kind: sameOrigin && safeAppPath(path) ? "internal" : "external", href: sameOrigin && safeAppPath(path) ? path : href, label };
