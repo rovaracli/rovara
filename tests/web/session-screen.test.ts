@@ -12,11 +12,11 @@ import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
 import { navFixture } from "./support/fixtures.js";
-import { sessionFixture, messageFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
+import { sessionFixture, messageFixture, taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor?: string, initialSession = sessionFixture()) {
  let session = initialSession, messages = initialMessages;
  const f = fakeHost(async request => {
- if (request.path.split("?", 1)[0]!.endsWith("/messages")) { if (request.method === "POST") { messages = [messageFixture()];return { status: 200, body: messages[0] }; }return { status: 200, body: { messages: request.path.includes("?") ? [] : messages, ...(cursor === undefined ? {} : { next: cursor }) } }; }
+ if (request.path.split("?", 1)[0]!.endsWith("/messages")) { if (request.method === "POST") { messages = [messageFixture()];return { status: 200, body: messages[0] }; }return { status: 200, body: { messages: request.path.includes("?after=") ? [] : messages, ...(cursor === undefined ? {} : { next: cursor }) } }; }
  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
  if (request.path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
  if (request.path.endsWith("/follow")) { session = sessionFixture({ you: { ...session.you, following: true } });return { status: 200, body: { following: true } }; }
@@ -24,7 +24,7 @@ function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor
  });
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
- return { ...f, ...ui, query, close() { ui.unmount();router.dispose();query.clear(); } };
+ return { ...f, ...ui, query, setSession(next: ReturnType<typeof sessionFixture>) { session = next; }, close() { ui.unmount();router.dispose();query.clear(); } };
 }
 it("opens conversation on demand, keeps the task in place and restores the opener focus", async () => {
  const f = setup(), heading = await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(document.activeElement).toBe(heading);expect(screen.queryByRole("textbox", { name: "Comment" })).toBeNull();const opener = screen.getByRole<HTMLButtonElement>("button", { name: "Conversation" });opener.focus();fireEvent.click(opener);expect(await screen.findByRole("dialog", { name: "Conversation" })).toBeTruthy();expect(heading.isConnected).toBe(true);fireEvent.click(screen.getByRole<HTMLButtonElement>("button", { name: "Close dialog" }));await waitFor(() => expect(document.activeElement).toBe(opener));f.close();
@@ -70,4 +70,13 @@ it("opens a real changed-file discussion without replacing the work and restores
  await waitFor(() => expect(f.request.mock.calls.some(([request]) => request.method === "POST" && request.path.endsWith("/messages"))).toBe(true));
  expect(f.request.mock.calls.find(([request]) => request.method === "POST" && request.path.endsWith("/messages"))?.[0].body).toMatchObject({ kind: "comment", anchor });
  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));await waitFor(() => expect(document.activeElement).toBe(source));f.close();
+});
+
+it("hides an anchored discussion and cached target when its part disappears", async () => {
+ const anchor = { target: "change_file" as const, targetId: "acme/payments:src/refund.ts", revision: "+12-3" };
+ const f = setup([messageFixture({ anchor, anchorState: "current", text: "A permitted comment" })], undefined, workspaceFixture({ anchors: [anchor] }));
+ await screen.findByRole("heading", { name: "Fix duplicate refunds" });fireEvent.mouseDown(screen.getByRole("tab", { name: "Changes" }), { button: 0, ctrlKey: false });fireEvent.click(screen.getByRole("button", { name: "Comment on src/refund.ts" }));await screen.findByText("A permitted comment");
+ f.setSession(workspaceFixture({ anchors: [], revision: 2, updatedAt: "2026-10-23T13:00:00.000Z", body: { kind: "task", task: taskFixture({ changedFiles: [] }) } }));
+ await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID], exact: true });await screen.findByText("That part of this session is no longer available.");
+ expect(screen.queryByText("A permitted comment")).toBeNull();expect(screen.queryByText("src/refund.ts")).toBeNull();expect(screen.queryByRole("textbox", { name: "Comment" })).toBeNull();f.close();
 });

@@ -43,7 +43,7 @@ it("marks only the server's current pipeline stage", () => {
 });
 it("shows agent-step reports as text and no Plan tab without a plan", () => {
  const task = taskFixture({ run: { state: "RUNNING", currentStep: { id: "investigate", name: "Investigate" }, steps: [{ id: "investigate", name: "Investigate", status: "running", report: "<img src=x onerror=alert(1)>" }], pendingApprovals: [] } });
- const f = setup(fixture({ body: { kind: "task", task } }));expect(screen.queryByRole("tab", { name: "Plan" })).toBeNull();expect(screen.getByText("<img src=x onerror=alert(1)>")).toBeTruthy();expect(f.container.querySelector("img")).toBeNull();f.close();
+ const f = setup(fixture({ body: { kind: "task", task } }));expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Pipeline"]);expect(screen.queryByRole("tab", { name: "Plan" })).toBeNull();expect(screen.getByText("<img src=x onerror=alert(1)>")).toBeTruthy();expect(f.container.querySelector("img")).toBeNull();f.close();
 });
 it("shows structured test evidence while never rendering stored HTML", () => {
  const f = setup(fixture(), "#tests");expect(screen.getByText("No executed evidence yet")).toBeTruthy();expect(screen.getByText("Refund retries have not run")).toBeTruthy();expect(screen.queryByText("Passed")).toBeNull();expect(f.container.querySelector("script")).toBeNull();f.close();
@@ -57,7 +57,7 @@ it("links pull requests only to safe GitHub HTTPS URLs", () => {
 });
 it("uses only the server-provided anchor when discussing a changed file", () => {
  const anchor = { target: "change_file" as const, targetId: "acme/payments:src/refund.ts", revision: "+12-3" };
- const f = setup(fixture({ anchors: [anchor] }), "#changes");fireEvent.click(screen.getByRole("button", { name: "Comment on src/refund.ts" }));expect(f.onComment).toHaveBeenCalledExactlyOnceWith(anchor);f.close();
+ const f = setup(fixture({ anchors: [anchor] }), "#changes");const source = screen.getByRole("button", { name: "Comment on src/refund.ts" });fireEvent.click(source);expect(f.onComment).toHaveBeenCalledExactlyOnceWith(anchor, source);f.close();
  const other = setup(fixture(), "#changes");expect(screen.queryByRole("button", { name: "Comment on src/refund.ts" })).toBeNull();other.close();
 });
 it("keeps the missing chain contract as an explicit safe seam", () => {
@@ -65,4 +65,20 @@ it("keeps the missing chain contract as an explicit safe seam", () => {
 });
 for (const theme of ["light", "dark"] as const) it("keeps the workspace accessible in " + theme, async () => {
  const f = setup(fixture(), "#changes");document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
+});
+
+it("attaches discussion only to the real plan paragraph supplied by the server", async () => {
+ const anchor = { target: "plan_block" as const, targetId: "p2", revision: "v1" };
+ const f = setup(fixture({ anchors: [anchor] }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ const source = screen.getByRole("button", { name: "Comment on plan paragraph 2" });fireEvent.click(source);expect(f.onComment).toHaveBeenCalledExactlyOnceWith(anchor, source);
+ expect(screen.queryByRole("button", { name: "Comment on plan paragraph 1" })).toBeNull();f.close();
+});
+it("makes hidden direction controls visible in plan text without executing markup", async () => {
+ const task = taskFixture({ workflow: { ...workflow(), planContent: "# Inspect evidence\n\nRefund\u202Epayment" } });
+ const f = setup(fixture({ body: { kind: "task", task } }), "#plan");expect(await screen.findByText("Refund[U+202E]payment")).toBeTruthy();f.close();
+});
+it("does not turn a visible evidence anchor into permission to comment", () => {
+ const anchor = { target: "change_file" as const, targetId: "acme/payments:src/refund.ts", revision: "+12-3" };
+ const f = setup(fixture({ anchors: [anchor], you: { level: "view", owner: false, following: false, actions: ["watch"] } }), "#changes");
+ expect(screen.queryByRole("button", { name: "Comment on src/refund.ts" })).toBeNull();f.close();
 });
