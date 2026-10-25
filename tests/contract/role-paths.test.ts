@@ -8,6 +8,7 @@
 // agentx-staging-connector-secrets"), and so is the rollback's delete. So each fixed-name role needs its exact
 // path-less ARN named, for the read and delete actions only, in the deploy role and in the boundary it carries.
 import { Stack } from "aws-cdk-lib";
+import { brokerRoleName, chainScheduleRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/contracts";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -112,8 +113,13 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
   });
 
   it("have exactly the fixed names this test knows, so a new fixed-name role cannot slip past the deploy role", () => {
+    // Plan 3 gave three roles fixed names (the broker's, the model proxy's task role and the model access probe's: the default boundary names them in AssumeOrgRoles) and Plan 4 the
+    // scheduler's invoke role, which the broker passes to the scheduler by an ARN built from the environment; each needs the path-less grant of the lookup statement.
     expect(fixedNameRoles().map((role) => role.name).sort()).toEqual(
-      [`agentx-${env}-connector-secrets`, ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : [])].sort(),
+      [
+        `agentx-${env}-connector-secrets`, brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
+        ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : []),
+      ].sort(),
     );
     expect(fixedNameEnvironmentRoleNames(env).sort()).toEqual(fixedNameRoles().map((role) => role.name).sort());
   });
