@@ -1,3 +1,4 @@
+import { serverPageCss } from "@agentx/design-tokens";
 // Plan 2, Task 13: the pages a person sees at the end of "agentx github connect": GitHub sends their browser to the callback, and the
 // callback answers with one of these. Every value that came from GitHub or from a name a person chose is escaped; the policy allows
 // only this page's own style and a form back to the same origin. Nothing here is a secret: the confirmation token travels in a cookie.
@@ -74,7 +75,7 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
   }
 }
 
-const STYLE = ":root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:36rem;margin:0 auto;padding:clamp(1rem,4vw,2.5rem);line-height:1.55}h1{line-height:1.2;font-size:1.5rem}code{padding:.15rem .4rem;border:1px solid #888;border-radius:.35rem;overflow-wrap:anywhere}button{font:inherit;padding:.65rem 1rem;margin:.35rem .5rem .35rem 0;border-radius:.35rem;cursor:pointer}button:focus{outline:3px solid #478cff;outline-offset:2px}";
+const STYLE = serverPageCss() + "h1{line-height:1.2;font-size:var(--rv-font-xxl)}code{padding:.15rem .4rem;border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);overflow-wrap:anywhere}button{margin:.35rem .5rem .35rem 0;background:var(--rv-bg-raised);color:var(--rv-text)}main{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg)}";
 
 /**
  * One page, as a private response (no store, a nonce-only policy). The referrer policy is `same-origin`, not `no-referrer`: with

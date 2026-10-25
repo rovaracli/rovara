@@ -1,3 +1,4 @@
+import { serverPageCss } from "@agentx/design-tokens";
 import { withDecideIsolation } from "./confirm-page.js";
 import { SessionIdSchema } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
@@ -161,9 +162,9 @@ const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? 
 function page(statusCode: number, title: string, paragraphs: string[], links: Array<{ href: string; label: string }> = [], refreshTo?: string): HttpResult {
   const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title>`
     + (refreshTo === undefined ? "" : `<meta http-equiv="refresh" content="0;url=${escape(refreshTo)}">`)
-    + `<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5}a.method{display:block;margin:.75rem 0;padding:.75rem 1rem;border:1px solid #888;border-radius:.5rem;text-decoration:none;color:inherit}</style></head>`
-    + `<body><main><h1>${escape(title)}</h1>${paragraphs.map((p) => `<p>${escape(p)}</p>`).join("")}`
-    + `${links.map((link) => `<a class="method" href="${escape(link.href)}">${escape(link.label)}</a>`).join("")}</main></body></html>`;
+    + `<style>${serverPageCss()}h1{line-height:1.2;margin:0 0 1.5rem}.rv-wordmark{font-weight:650;margin:0 0 1.5rem}.rv-server-card{padding:clamp(1rem,4vw,2rem);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised)}p{overflow-wrap:anywhere}a.method{display:flex;align-items:center;min-height:44px;margin:1rem 0;padding:.75rem 1rem;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);text-decoration:none;color:var(--rv-accent-text)}</style></head>`
+    + `<body><main><p class="rv-wordmark">Rovara</p><section class="rv-server-card"><h1>${escape(title)}</h1>${paragraphs.map((p) => `<p>${escape(p)}</p>`).join("")}`
+    + `${links.map((link) => `<a class="method" href="${escape(link.href)}">${escape(link.label)}</a>`).join("")}</section></main></body></html>`;
   return { statusCode, headers: { ...HTML_HEADERS }, body };
 }
 

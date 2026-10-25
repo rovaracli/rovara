@@ -1,3 +1,4 @@
+import { taskPageFixture,TASK_PAGE_FIXTURE_ID } from "./task-page-fixture.js";
 import { joinDonePage } from "../../../packages/broker/src/developer/join-page.js";
 import { escapeHtml } from "../../../packages/broker/src/aws/web-session.js";
 import { AppProjectDetailSchema,CreateProjectBodySchema,CloudProjectCreatedResponseSchema,RenameOrganizationBodySchema,RenameOrganizationResponseSchema,GithubConnectResponseSchema,GithubInstallationsResponseSchema,GithubRepositoriesResponseSchema,ProjectSettingsBodySchema,ProjectSettingsResponseSchema,ProjectSetupCheckBodySchema,ProjectSetupCheckResponseSchema,ProjectRosterAddedResponseSchema } from "@agentx/contracts";
@@ -34,6 +35,7 @@ if (!existsSync(key) || !existsSync(cert)) {
 let current = scenario("shell"), revoked = false, expired = false, refusedSignIn = false;
 let onboardingConnected=false;
 let onboardingProject:ReturnType<typeof AppProjectDetailSchema.parse>|undefined;
+const taskPage=taskPageFixture(origin);
 const requests: Array<{ method: string; path: string; body?: unknown }> = [];
 const unavailable = async (): Promise<never> => { throw new Error("Mock operation is not configured."); };
 const deps: DeveloperRouteDependencies = {
@@ -53,13 +55,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  const url = new URL(request.url ?? "/", origin), method = request.method ?? "GET", headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(",") : value]));
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
- if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);onboardingConnected=false;onboardingProject=undefined;revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);taskPage.reset();onboardingConnected=false;onboardingProject=undefined;revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/agent-state" && method === "POST" && current.agent !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.agent = AgentProfileResponseSchema.parse({ ...current.agent, agent: { ...current.agent.agent, ...changes } });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/requests") { json(200, requests);return; }
  const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
+ if(url.pathname.startsWith("/review/"+TASK_PAGE_FIXTURE_ID+"/task")){
+ let body:string|undefined;if(method==="POST"){body="";for await(const chunk of request)body+=String(chunk);evidence.body=JSON.parse(body) as unknown;}
+ const result=await taskPage.web({method,path:url.pathname,headers,requestId:"mock-task-page",...(body===undefined?{}:{body})},url);response.writeHead(result.statusCode,result.headers);response.end(result.body);return;
+ }
  if (url.pathname === "/__mock/invite") { response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>Join Acme</title></head><body><main><h1>Join Acme on Rovara</h1><a href="/v1/auth/browser/authorize?return_to=%2Fapp%2Fwelcome%3Fjoined%3D1">Join Acme</a></main></body></html>');return; }
  if (url.pathname === "/__mock/join-done") { const page=joinDonePage({outcome:"joined",orgName:"Acme",role:"member",invitedOrgName:"Acme",inviterName:"Maya",codeChallenge:"test-fixture",expiresAt:0},origin);response.writeHead(200,CONFIRM_PAGE_HEADERS);response.end('<!doctype html><html lang="en"><head><title>'+escapeHtml(page.title)+'</title></head><body><main><h1>'+escapeHtml(page.title)+'</h1>'+page.paragraphs.map(line=>'<p>'+escapeHtml(line)+'</p>').join('')+(page.links??[]).map(link=>'<a href="'+escapeHtml(link.href)+'">'+escapeHtml(link.label)+'</a>').join('')+'</main></body></html>');return; }
  if (url.pathname === "/v1/auth/browser/authorize") {
