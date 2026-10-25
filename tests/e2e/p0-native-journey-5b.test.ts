@@ -105,6 +105,18 @@ const gitBlob = (cwd: string, revision: string, path: string): Buffer | undefine
   return gitBytes(cwd, "show", `${revision}:${path}`);
 };
 
+/**
+ * The worker's candidate repository as production prepares it: a plain clone with a real `.git` directory (the worker refuses a
+ * `.git` file such as `git worktree add` leaves), on its own branch at the task's pinned base, committing as the fixture.
+ */
+const cloneWorkerRepository = (source: string, target: string, branch: string, commitSha: string): void => {
+  execFileSync("git", ["clone", "--quiet", "--no-checkout", source, target], { stdio: "ignore" });
+  gitConfig(target, "user.name", "P0 fixture");
+  gitConfig(target, "user.email", "p0-fixture@example.test");
+  execFileSync("git", ["-C", target, "checkout", "--quiet", "-b", branch, commitSha], { stdio: "ignore" });
+};
+const gitConfig = (cwd: string, key: string, value: string): void => { execFileSync("git", ["-C", cwd, "config", key, value], { stdio: "ignore" }); };
+
 describe("P0 normal project onboarding journey", () => {
   it("discovers and presents source-backed setup from ordinary addProject without injected setup authority", async () => {
     const evidenceRoot = process.env.CONTAINED_FOUNDATION_EVIDENCE_DIR;
@@ -517,6 +529,7 @@ describe("P0 normal project onboarding journey", () => {
     const projectLifecycle = createProjectSetupDispatchLifecycle({ documentClient: broker.db as never, tableName: "state" });
     const projectSetupSessions = new ProjectSetupSessionManager({ documentClient: broker.db as never, tableName: "state" });
     const delivery = createEc2Delivery({
+      applicationPlanNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => { throw new Error("setup delivery must not access WORKSPACE sessions"); } },
       binding: async () => { throw new Error("setup delivery must not read WORKSPACE runtime binding"); },
       projectSetupSessions,
@@ -875,8 +888,8 @@ describe("P0 normal project onboarding journey", () => {
     const workerWorkspace = join(root, "actual-worker-workspace");
     const workerRepository = join(workerWorkspace, "repo", "ordinary-orders");
     await mkdir(join(workerWorkspace, "repo"), { recursive: true });
-    git(repositoryRoot, "worktree", "add", "--quiet", "-b", `codex/p0-worker-${randomUUID()}`, workerRepository, commitSha);
-    git(workerRepository, "remote", "add", "origin", "https://github.com/acme/ordinary-orders.git");
+    cloneWorkerRepository(repositoryRoot, workerRepository, `codex/p0-worker-${randomUUID()}`, commitSha);
+    git(workerRepository, "remote", "set-url", "origin", "https://github.com/acme/ordinary-orders.git");
     await mkdir(join(workerWorkspace, ".agentx"), { recursive: true, mode: 0o700 });
     await writeFile(join(workerWorkspace, ".agentx", "preparation-manifest.json"), `${JSON.stringify({
       schemaVersion: 2, projectName: "ordinary-orders", projectRevision: implementInvocation.projectRevision,
@@ -1126,7 +1139,7 @@ describe("P0 normal project onboarding journey", () => {
       artifactId: currentPlanArtifact?.id, artifactSha256: currentPlanArtifact?.sha256,
       graphDigest: workflowApproval?.graphDigest, graphRunId: workflowApproval?.runId,
       workflowRevision: workflowApproval?.workflowRevision, actorId: workflowApproval?.actorId })));
-    const featureApprovalBinding = approvedCanonicalPlan?.e2e && currentPlanArtifact
+    const featureApprovalBinding = approvedCanonicalPlan?.e2e?.schemaVersion === 1 && currentPlanArtifact
       ? deriveE2EFeaturePortableApprovalBinding({ intent: approvedCanonicalPlan.e2e, snapshot: actualSnapshot,
         artifactId: currentPlanArtifact.id, artifactSha256: currentPlanArtifact.sha256, planDigest: approvedPlanDigest }) : undefined;
     expect(featureApprovalBinding?.operations, "the final committed candidate export must resolve every Owner-approved portable selector").toHaveLength(4);
@@ -1167,6 +1180,7 @@ describe("P0 normal project onboarding journey", () => {
       finally { admission.close(); }
     };
     const checksDelivery = createEc2Delivery({
+      applicationPlanNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding,
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
@@ -1203,7 +1217,7 @@ describe("P0 normal project onboarding journey", () => {
       await broker.db.send(new UpdateCommand({ TableName: "state", Key: { pk: `OUTBOX#${id}`, sk: "OUTBOX" },
         UpdateExpression: "SET #status = :queued", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":queued": "QUEUED" } }));
     } });
-    const readinessDelivery = createEc2Delivery({ sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
+    const readinessDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding, sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
       post: async () => { throw new Error("internal E2E readiness must never POST to the worker"); },
       guardTaskDispatch: checksTaskGuard, validateWorkflowE2EReadiness: createWorkflowE2EReadinessValidator({ documentClient: broker.db as never, tableName: "state" }),
@@ -1496,7 +1510,7 @@ describe("P0 normal project onboarding journey", () => {
           workflowE2EEvidenceRoot: evidenceRootForWorker, workflowE2ERuntimeRoot: process.cwd() }),
       }, { onTerminal: async (result, invocation) => postWorkerTerminalResult(retryChecksCallbacks, result, invocation), retrySleep: async () => undefined },
       { publicKey: workerKeys.publicKey, workspaceId: featureWorkspaceId, generation: 1 });
-      const retryChecksDelivery = createEc2Delivery({ sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
+      const retryChecksDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
         binding: async () => runtimeBinding, sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
         post: async (_url, init) => { const response = await handleWorkerRequest(new Request("http://worker/invocations", { method: "POST",
           headers: { authorization: init.authorization, "content-type": "application/json" }, body: init.body }), retryChecksWorkerState);
@@ -1668,6 +1682,7 @@ describe("P0 normal project onboarding journey", () => {
     }, { onTerminal: async (result, invocation) => postWorkerTerminalResult(reviewCallbacks, result, invocation), retrySleep: async () => undefined },
     { publicKey: workerKeys.publicKey, workspaceId: featureWorkspaceId, generation: 1 });
     const reviewDelivery = createEc2Delivery({
+      applicationPlanNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding,
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
@@ -1759,6 +1774,7 @@ describe("P0 normal project onboarding journey", () => {
       finally { admission.close(); }
     };
     const publishDelivery = createEc2Delivery({
+      applicationPlanNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding,
       sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
@@ -2308,7 +2324,7 @@ describe("P0 normal project onboarding journey", () => {
     const browserWorkerRoot = join(root, "browser-required-worker-workspace");
     const browserWorkerRepository = join(browserWorkerRoot, "repo", "ordinary-orders");
     await mkdir(join(browserWorkerRoot, "repo"), { recursive: true });
-    git(repositoryRoot, "worktree", "add", "--quiet", "-b", `codex/p0-browser-worker-${randomUUID()}`, browserWorkerRepository, commitSha);
+    cloneWorkerRepository(repositoryRoot, browserWorkerRepository, `codex/p0-browser-worker-${randomUUID()}`, commitSha);
     git(browserWorkerRepository, "remote", "set-url", "origin", "https://github.com/acme/ordinary-orders.git");
     await mkdir(join(browserWorkerRoot, ".agentx"), { recursive: true, mode: 0o700 });
     await writeFile(join(browserWorkerRoot, ".agentx", "preparation-manifest.json"), `${JSON.stringify({ schemaVersion: 2,
@@ -2397,7 +2413,7 @@ describe("P0 normal project onboarding journey", () => {
       await postWorkerTerminalResult(terminalCallbacks, result, invocation);
     }, retrySleep: async () => undefined },
     { publicKey: workerKeys.publicKey, workspaceId: browserWorkspaceId, generation: 1 });
-    const browserChecksDelivery = createEc2Delivery({ sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
+    const browserChecksDelivery = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, sessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },
       binding: async () => runtimeBinding, sign: async (message) => cryptoSign("sha256", message, workerKeys.privateKey),
       post: async (_url, init) => { const response = await handleWorkerRequest(new Request("http://worker/invocations", { method: "POST",
         headers: { authorization: init.authorization, "content-type": "application/json" }, body: init.body }), browserChecksWorker);
@@ -2988,7 +3004,7 @@ describe("P0 setup proposal broker authority", () => {
     const workspaceSession = vi.fn(async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }));
     const workspaceBinding = vi.fn(async () => ({ deploymentMode: "ec2-ebs" as const, launchTemplateId: "lt-0123456789abcdef0",
       subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB: 20, volumeType: "gp3" as const }));
-    const deliver = createEc2Delivery({ sessions: { ensureSession: workspaceSession }, binding: workspaceBinding,
+    const deliver = createEc2Delivery({ applicationPlanNotNegotiated: async () => undefined, sessions: { ensureSession: workspaceSession }, binding: workspaceBinding,
       sign: async () => new Uint8Array(), post: async () => ({ status: 200, body: "{}" }), progress: async () => undefined,
       guardProjectSetupDispatch: async () => "ALLOWED" });
     await expect(deliver({ id: randomUUID(), entityType: "OUTBOX", status: "QUEUED", operationId, workspaceId,
@@ -3011,6 +3027,7 @@ describe("P0 setup proposal broker authority", () => {
       .mockResolvedValueOnce("PARKED");
     const post = vi.fn(async () => ({ status: 200, body: "{}" }));
     const delivery = createEc2Delivery({
+      applicationPlanNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => { throw new Error("setup must not use workspace sessions"); } },
       binding: async () => { throw new Error("setup must not load workspace binding"); },
       projectSetupSessions: { ensureSession: async () => ({ ready: true as const, generation: 1, privateIp: "127.0.0.1" }) },

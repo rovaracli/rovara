@@ -70,8 +70,8 @@ document.addEventListener("visibilitychange",function(){if(!document.hidden&&Dat
 })();`;
 
 /** Colours are custom properties with a dark set; nothing scrolls the page sideways at 360 px (code blocks and tables scroll inside themselves). */
-export const TASK_PAGE_STYLE = String.raw`:root{color-scheme:light dark;--bg:#fff;--fg:#1b1f24;--muted:#57606a;--line:#d0d7de;--panel:#f6f8fa;--focus:#0969da;--ok:#1a7f37;--warn:#9a6700;font-family:system-ui,sans-serif}
-@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9da7b3;--line:#30363d;--panel:#161b22;--focus:#58a6ff;--ok:#3fb950;--warn:#d29922}}
+export const TASK_PAGE_STYLE = String.raw`:root{color-scheme:light dark;--bg:#fff;--fg:#1b1f24;--muted:#57606a;--line:#d0d7de;--panel:#f6f8fa;--focus:#0969da;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;font-family:system-ui,sans-serif}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9da7b3;--line:#30363d;--panel:#161b22;--focus:#58a6ff;--ok:#3fb950;--warn:#d29922;--bad:#ff7b72}}
 *{box-sizing:border-box}
 body{margin:0 auto;max-width:52rem;padding:clamp(1rem,4vw,2.5rem);line-height:1.55;background:var(--bg);color:var(--fg);overflow-wrap:anywhere}
 h1,h2,h3,h4{line-height:1.2}h1{margin:.2rem 0 .5rem}
@@ -143,6 +143,11 @@ main>section,.kind{border-top:1px solid var(--line);padding:.5rem 0}
 .checks table{display:block;overflow-x:auto;border-collapse:collapse}
 .checks th,.checks td{border:1px solid var(--line);padding:.2rem .5rem;text-align:left;word-break:normal;overflow-wrap:normal;white-space:nowrap}
 .checks th.check-label,.checks td.check-label{white-space:normal;overflow-wrap:break-word}
+.e2e-rows{display:block;overflow-x:auto;border-collapse:collapse}
+.e2e-rows th,.e2e-rows td{border:1px solid var(--line);padding:.2rem .5rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+.e2e-rows tr[data-status="FAILED"] td:nth-child(2){color:var(--bad);font-weight:600}
+.e2e-rows tr[data-status="PASSED"] td:nth-child(2){color:var(--ok)}
+.e2e-rows tr[data-status="UNKNOWN"] td:nth-child(2){color:var(--warn)}
 .flash{outline:3px solid var(--focus);outline-offset:2px;background:var(--panel)}
 .history{padding-left:1.2rem}
 .history time{color:var(--muted);font-size:.85rem}
@@ -226,6 +231,9 @@ export const TASK_PAGE_DECIDING_COPY = {
   submitOther: "Approve and continue",
   send: "Send",
   needOne: "Include at least one comment or write a note.",
+  retrying: "Retrying…",
+  retried: "Retried. AgentX is checking the plan against the runtime again.",
+  retryOwnerOnly: "Only the task owner can retry these checks.",
   sending: "Sending…",
   sent: "Sent. AgentX is on the next step.",
   changed: "This task changed. Refresh the page and try again.",
@@ -317,6 +325,7 @@ var revision=Number(data.revision)||0;
 var commentSeq=Number(data.commentSeq)||0;
 var canComment=data.canComment===true,canDecide=data.canDecide===true,canSuggest=data.canSuggest===true,canAsk=data.canAsk===true&&data.askAvailable!==false;
 var canRead=data.canRead===undefined?true:data.canRead===true,canManagePeople=data.canManagePeople===true,canTakeOwnership=data.canTakeOwnership===true;
+var canRetry=data.canRetry===true;
 var hasProjection=false,peopleRevision=null,accessGeneration=0;
 function validProjection(state){
   var keys=["canRead","canComment","canSuggest","canDecide","canAsk","canManagePeople","canTakeOwnership"];
@@ -368,6 +377,8 @@ function openAround(node){for(var up=node;up;up=up.parentElement){if(up.tagName=
 function applyCurrentAccess(){
   var controls=document.querySelectorAll(".comment-open,.reply-open,.comment-edit,.comment-delete,.suggest,#decide-next,#decide-approve,#decide-request-changes,#decide-submit");
   var radios=document.querySelectorAll("input");
+  var retryNode=document.getElementById("retry-application");
+  if(retryNode&&!canRead){retryNode.disabled=true;retryNode.hidden=true;}
   for(var i=0;i<controls.length;i++){
     var node=controls[i],nodeId=node.getAttribute("id")||"",nodeName=node.getAttribute("name")||"",allowed=node.classList&&node.classList.contains("suggest")?canSuggest:(nodeId.indexOf("decide-")===0||nodeName.indexOf("answer-")===0)?canDecide:canComment;
     node.disabled=!allowed;
@@ -418,6 +429,7 @@ function stopAccess(clearAllDrafts){
 function canPost(path,body){
   if(stopped||!canRead)return false;
   if(path==="decision")return canDecide;
+  if(path==="retry")return canRetry;
   if(path==="suggestions")return canSuggest;
   if(path==="comments"||path.indexOf("comments/")===0)return canComment&&!(body&&body.ask===true&&!canAsk);
   if(path==="people/role")return canManagePeople;
@@ -441,7 +453,7 @@ function call(method,path,body,retried){
       if(method==="POST"&&answer.status===403&&answer.body.error==="request_refused"&&!retried){
         return readState().then(function(state){return state&&requestGeneration===accessGeneration&&canPost(path,body)?call(method,path,body,true):{status:403,body:{error:"request_refused"}};});
       }
-      if(peoplePath(path)&&((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404)&&!retried){
+      if((peoplePath(path)||path==="retry")&&((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404)&&!retried){
         return readState().then(function(){return answer;});
       }
       if((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404)stopAccess(false);
@@ -1198,6 +1210,30 @@ function submit(){
     sending=false;el("decide-submit").disabled=false;
     fail(said(answer),answer.status===409);
   },function(){if(generation!==accessGeneration){sending=false;return;}sending=false;el("decide-submit").disabled=false;fail(COPY.unavailable,false);});
+}
+
+/* ---------- Retrying a blocked browser and API round ---------- */
+var retryButton=el("retry-application"),retryId=null,retrying=false;
+function retryFail(text){var node=el("retry-error");if(node){node.textContent=text;node.hidden=false;}var status=el("retry-status");if(status)status.textContent="";retrying=false;if(retryButton)retryButton.disabled=false;}
+if(retryButton&&canRetry){
+  retryButton.hidden=false;
+  retryButton.addEventListener("click",function(){
+    if(retrying||stopped||!canRead)return;
+    /* The same press again keeps its ID, so the broker treats it as a replay. */
+    if(retryId===null)retryId=uuid();
+    retrying=true;retryButton.disabled=true;
+    var failure=el("retry-error");if(failure)failure.hidden=true;
+    var status=el("retry-status");if(status)status.textContent=COPY.retrying;
+    var generation=accessGeneration;
+    call("POST","retry",{requestId:retryId,expectedRevision:revision}).then(function(answer){
+      /* The owner's refusal: not a lost task, so the page stays and says so, whatever else the state read just changed. */
+      if(answer.status===403&&answer.body.error!=="request_refused"){canRetry=false;retryButton.hidden=true;retryFail(COPY.retryOwnerOnly);return;}
+      if(generation!==accessGeneration){retrying=false;return;}
+      if(answer.status===200){if(status)status.textContent=COPY.retried;location.reload();return;}
+      if(answer.status===409)retryId=null;
+      retryFail(said(answer));
+    },function(){if(generation!==accessGeneration){retrying=false;return;}retryFail(COPY.unavailable);});
+  });
 }
 
 /* ---------- People changes: server-made proposals and explicit confirmation ---------- */

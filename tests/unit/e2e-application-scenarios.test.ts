@@ -68,7 +68,7 @@ function qualifiedApiRuntime(profileId: string, now: number) {
   const capabilities = E2ERuntimeCapabilityDescriptorSchema.parse({ schemaVersion: "e2e-runtime-capabilities/v1", profileId,
     kind: "api", host: { os: "linux", arch: "x64" }, engine: { name: "api-supervisor", version: "1.0.0", spiVersion: 1 },
     runtimeManifestDigest: "f".repeat(64), supportedSteps: ["request"], supportedAssertions: ["http-status"], evidenceScopes: ["runtime"],
-    networkPolicyDigest: "1".repeat(64), protocols: ["http"] });
+    networkPolicyDigest: "1".repeat(64), protocols: ["http"], mocks: ["source-backed-api-fixtures/v1"] });
   const binding = { deploymentMode: "ec2-ebs" as const, launchTemplateId: "lt-0123456789abcdef",
     subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0123456789abcdef" }], volumeSizeGiB: 32, volumeType: "gp3" as const };
   const runnerEnvironment = { ci: true as const, trustNoticeShown: false as const, os: "linux 6.8.0", arch: "x64", runtime: "node v22.23.2" };
@@ -430,7 +430,8 @@ describe("application scenario compilation", () => {
     const admissionGroups = [...mapping.mappings, ...appAdmissions].sort((left, right) => left.outerBinding.groupId.localeCompare(right.outerBinding.groupId));
     const admissionBody = { schemaVersion: "workflow-e2e-application-admission/v1" as const, taskId: binding.taskId,
       operationId: binding.operationId, operationFence: binding.operationFence, workflowRevision: binding.workflowRevision,
-      candidateDigest: candidate.digest, sourceSnapshot: sourceWire, intent: selectionInput.intent, intentDigest: selectionInput.intentDigest,
+      candidateDigest: candidate.digest, candidateCommitSha: snapshot.commitSha, candidateTreeSha: snapshot.treeSha,
+      sourceSnapshot: sourceWire, intent: selectionInput.intent, intentDigest: selectionInput.intentDigest,
       selectionInput: { ...selectionInput, sourceSnapshot: sourceWire }, applicationApprovalBinding,
       applicationBindings: [...applicationBindings].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => ({ key, value })),
       runtimeBindings: [...runtimeBindings].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => ({ key, value })),

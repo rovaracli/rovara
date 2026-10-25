@@ -207,6 +207,8 @@ describe("hydrateBrokerEnvironment: what an environment's name decides", () => {
       AGENTX_METRICS_NAMESPACE: environmentMetricsNamespace("staging"),
       AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID: environmentProjectSetupRuntimeCatalogId("staging"),
       AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: environmentE2eFeatureRuntimeCatalogId("staging"),
+      // M1.4 PREFIXGAP, derived here and not passed (ENV-ROOM): where the installation's worker settings are.
+      AGENTX_E2E_AGENT_SETTINGS_PREFIX: environmentSettingsPrefix("staging"),
     });
     expect([env.CONNECTOR_SECRET_PREFIX, env.SWEBENCH_SETTINGS_PREFIX, env.AGENTX_ALARM_PREFIX, env.AGENTX_METRICS_NAMESPACE]).toEqual(["agentx/staging/connectors/", "/agentx/staging/", "agentx-staging-", "AgentX/staging"]);
     expect([env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID, env.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID]).toEqual(["agentx-staging-project-setup-runtime-v1", "agentx-staging-e2e-mock-runtime-v1"]);

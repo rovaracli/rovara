@@ -1,7 +1,7 @@
 // What the planner is asked for: one agentx-plan block, and the document it is changing shown as data.
 import { PLAN_DOCUMENT_INFO_STRING, commentRefInAuthor, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, canonicalPlanJson, parsePlanDocument } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
-import { asksForCodeAnchors, planChecksInstructions, planDocumentInstructions, withoutCodeAnchorText } from "../../packages/broker/src/aws/broker-shared.js";
+import { asksForApplicationPlan, asksForCodeAnchors, planChecksInstructions, planDocumentInstructions, withoutApplicationPlanText, withoutCodeAnchorText } from "../../packages/broker/src/aws/broker-shared.js";
 import { planDocument } from "../support/plan-documents.js";
 import type { FeatureE2EPlanningContext } from "../../packages/broker/src/e2e/feature-plan-planning-context.js";
 
@@ -115,7 +115,7 @@ describe("planDocumentInstructions", () => {
       portableOperations: [{ operationId: "op-render", applicationId: "ordinary-orders", requestedTargetIds: ["web-1"],
         packageExportSubpath: ".", moduleSpecifier: "./src/index.mjs", callableSelectors: [{ selector: { kind: "named", exportName: "renderOrders" } }],
         sourceRefs: [{ path: "src/index.mjs", sha256: "1".repeat(64) }] }],
-      mockFixtures: [{ componentId: "api-schema-orders", requestedTargetId: "web-1", operationId: "listOrders", sourcePath: "fixtures/orders-mocks.json",
+      mockFixtures: [{ componentId: "api-schema-orders", requestedTargetIds: ["web-1"], operationId: "listOrders", sourcePath: "fixtures/orders-mocks.json",
         sourceSha256: "d".repeat(64), contractPath: "openapi.json", contractSha256: "f".repeat(64), method: "GET", path: "/orders",
         inputSelector: { kind: "query", name: "mode" }, callableMappings: [],
         variants: [{ id: "success", inputValue: "success", status: 200, response: { orders: [{ name: "Sample order" }] } }] }],
@@ -131,12 +131,84 @@ describe("planDocumentInstructions", () => {
     expect(codingPlan).toContain('"callableMappings":[]');
     expect(codingPlan).toContain("the fixture is an unlinked schema hint only");
     expect(codingPlan).toContain("The model's `e2e` member is an untrusted proposal");
+    // PLANCTX: a mock is listed once with its targets, and the planner is told to write one reference per target; a context with no mock does not say it.
+    expect(codingPlan).toContain("each `mockFixtureRefs` entry names exactly one of those targets as its `requestedTargetId`");
+    expect(planDocumentInstructions({ kind: "plan", path: "FULL", e2ePlanningContext: { ...context, mockFixtures: [] } })).not.toContain("requestedTargetIds`; each `mockFixtureRefs`");
     const unavailable = planDocumentInstructions({ kind: "plan", path: "FULL", e2ePlanningContext: { status: "unknown", reason: "prepared-source capture failed" } });
     expect(unavailable).toContain("prepared-source capture failed");
     expect(unavailable).toContain("Do not invent target, operation, fixture, account, or source IDs");
     expect(unavailable).toContain("omit `e2e` until source-backed references are available");
     expect(planDocumentInstructions({ kind: "plan", path: "FULL" })).not.toContain("E2EFeaturePlanIntent");
     expect(planDocumentInstructions({ kind: "design", path: "FULL", e2ePlanningContext: context })).not.toContain("E2EFeaturePlanIntent");
+  });
+});
+
+describe("the application E2E plan in the planner prompt", () => {
+  const sourceRefs = [{ path: "package.json", sha256: "1".repeat(64) }];
+  const base: FeatureE2EPlanningContext = {
+    status: "available",
+    source: { origin: "approved-setup", commitSha: "a".repeat(40), treeSha: "b".repeat(40), candidateDigest: "c".repeat(64),
+      preparedCommitStatus: "UNKNOWN", preparedCommitSha: null, currentCheckoutUnverified: true },
+    baselineScenarioIds: [],
+    targets: [{ targetId: "web-1", applicationId: "orders", kind: "web", accountProfileId: "synthetic" }],
+    runtimeRefs: [{ targetId: "web-1", applicationId: "orders", recipeDigest: "2".repeat(64), sourceRefs, runtimeProfileId: "linux-arm64-web-api-v1", accountProfileId: "synthetic" }],
+    unavailableTargetRefs: [], portableOperations: [], mockFixtures: [],
+    accountContextRefs: [{ applicationId: "orders", profileId: "synthetic", sourcePath: "package.json", sourceSha256: "1".repeat(64) }],
+  };
+  const offered: FeatureE2EPlanningContext = { ...base, unavailableReasons: [],
+    runtimeAccountRefs: [{ applicationId: "orders", profileId: "synthetic", revision: 1, definitionDigest: "3".repeat(64) }],
+    executableKinds: [{ kind: "web", steps: ["navigate", "fill", "click", "choose-file"], assertions: ["text", "visible", "csv"] }] };
+  const notReady: FeatureE2EPlanningContext = { ...base, unavailableReasons: [{ targetId: "web-1", reason: "runtime-not-ready" }], runtimeAccountRefs: [], executableKinds: [],
+    unavailableTargetRefs: [{ targetId: "web-1", applicationId: "orders", accountProfileId: "synthetic", sourceRefs }] };
+
+  it("asks for the v2 application intent only when the context offers executable kinds, and documents its fields", () => {
+    const text = planDocumentInstructions({ kind: "plan", path: "QUICK", e2ePlanningContext: offered });
+    expect(text).toContain("e2e?: WorkflowFeatureE2EIntent;");
+    expect(text).toContain("schemaVersion: 2");
+    for (const member of ["applicationRuntimeRefs", "runtimeAccountRefs", "unavailableTargetRefs", "recipeDigest", "definitionDigest"]) expect(text).toContain(member);
+    expect(text).toContain("navigate, fill, click, choose-file");
+    expect(asksForApplicationPlan(text)).toBe(true);
+    // The portable form stays described, for a plan that proposes only portable scenarios.
+    expect(text).toContain("E2EFeaturePlanIntent has exactly these members");
+  });
+
+  it("keeps the v1 prompt for a context that offers no executable kind", () => {
+    for (const context of [base, notReady]) {
+      const text = planDocumentInstructions({ kind: "plan", path: "QUICK", e2ePlanningContext: context });
+      expect(text).toContain("e2e?: E2EFeaturePlanIntent;");
+      expect(text).not.toContain("WorkflowFeatureE2EIntent");
+      expect(text).not.toContain("applicationRuntimeRefs");
+      expect(text).not.toContain("schemaVersion 2");
+      expect(asksForApplicationPlan(text)).toBe(false);
+    }
+  });
+
+  it("gives an older worker the portable-only prompt: the same text as asking for no application plan", () => {
+    const text = planDocumentInstructions({ kind: "plan", path: "QUICK", e2ePlanningContext: offered });
+    const portableOnly = planDocumentInstructions({ kind: "plan", path: "QUICK", e2ePlanningContext: offered, applicationPlans: false });
+    expect(withoutApplicationPlanText(text)).toBe(portableOnly);
+    expect(portableOnly).toContain("e2e?: E2EFeaturePlanIntent;");
+    expect(portableOnly).toContain("Use only the schemaVersion 1 portable intent");
+    expect(portableOnly).not.toContain("applicationRuntimeRefs: {");
+    expect(portableOnly).not.toContain("schemaVersion: 2");
+    expect(portableOnly).not.toContain("navigate, fill, click, choose-file");
+    expect(asksForApplicationPlan(portableOnly)).toBe(false);
+    // Anything that never offered an application plan is left exactly as it was.
+    for (const plain of [planDocumentInstructions({ kind: "plan", path: "QUICK" }), planDocumentInstructions({ kind: "plan", path: "FULL", e2ePlanningContext: base })]) {
+      expect(withoutApplicationPlanText(plain)).toBe(plain);
+    }
+  });
+
+  it("composes with the anchor-line downgrade in either order", () => {
+    const anchored = planDocumentInstructions({ kind: "plan", path: "QUICK", anchors: true, e2ePlanningContext: offered });
+    const plain = planDocumentInstructions({ kind: "plan", path: "QUICK", e2ePlanningContext: offered, applicationPlans: false });
+    expect(withoutApplicationPlanText(withoutCodeAnchorText(anchored))).toBe(plain);
+    expect(withoutCodeAnchorText(withoutApplicationPlanText(anchored))).toBe(plain);
+  });
+
+  it("tells the planner the exact account references to copy", () => {
+    const text = planDocumentInstructions({ kind: "plan", path: "QUICK", e2ePlanningContext: offered });
+    expect(text).toContain('"runtimeAccountRefs":[{"applicationId":"orders","profileId":"synthetic","revision":1,"definitionDigest":"' + "3".repeat(64) + '"}]');
   });
 });
 

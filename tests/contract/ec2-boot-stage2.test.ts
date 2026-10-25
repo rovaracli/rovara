@@ -17,8 +17,11 @@ const stage1 = read("packages/worker/ec2/boot.sh");
 const stage2 = read("packages/worker/ec2/boot-stage2.sh");
 const legacy = read("packages/worker/ec2/boot-legacy.sh");
 
-/** boot.sh at the commit this plan's branch started from (308a2cf8, the start-of-plan merge of origin/mainline). */
-export const BOOT_SH_AT_BRANCH_BASE_SHA256 = "b54a0b0b0dabf8b19afc5737425392bfb37fe684a8bd68b06dd94f38570cefe2";
+/**
+ * boot-legacy.sh: boot.sh as it stood on this plan's branch before the split (308a2cf8, the start-of-plan merge of origin/mainline), brought forward by each merge of origin/mainline.
+ * Round 4 (mainline 46973735): re-taken after the three-way merge of mainline's boot.sh changes into it (kernel pin, MODEL3 worker environment, qualification diagnostics).
+ */
+export const BOOT_SH_AT_BRANCH_BASE_SHA256 = "a731533fe3cd7bca59455befabed6d9f1747022b005a3a1db4e8bf8f5c4c19e1";
 
 /** Constants only the moved functions use: their declarations moved with them, and nothing else in the script changed. */
 const MOVED_DECLARATIONS = [

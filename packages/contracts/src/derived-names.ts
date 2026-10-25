@@ -46,6 +46,8 @@ export type DerivedBrokerVariable =
 export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
   { variable: "CONNECTOR_SECRET_PREFIX", kind: "text", value: environmentConnectorSecretPrefix },
   { variable: "SWEBENCH_SETTINGS_PREFIX", kind: "text", value: environmentSettingsPrefix },
+  // M1.4 Task 4.10 (PREFIXGAP): where the installation's worker settings are, so the AI navigation route can be derived. Mainline passed it as a variable; here the broker builds it from the environment's name (ENV-ROOM).
+  { variable: "AGENTX_E2E_AGENT_SETTINGS_PREFIX", kind: "text", value: environmentSettingsPrefix },
   { variable: "AGENTX_ALARM_PREFIX", kind: "text", value: environmentAlarmPrefix },
   { variable: "AGENTX_METRICS_NAMESPACE", kind: "text", value: environmentMetricsNamespace },
   { variable: "AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID", kind: "text", value: environmentProjectSetupRuntimeCatalogId },

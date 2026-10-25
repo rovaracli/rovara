@@ -9,9 +9,11 @@ import { publishWorkspace } from "./publish.js";
 import { maintainPullRequest } from "./maintain-pull-request.js";
 import { WorkerCancellationController } from "./cancel.js";
 import { inspectWorkspaceForClose } from "./close-workspace.js";
-import { createWorkerServerState, startWorkerServer } from "./server.js";
+import { advertisedInvocationFeatures, createWorkerServerState, startWorkerServer } from "./server.js";
+import { consoleWorkerLog, logWorkerStarted } from "./worker-log.js";
 import { invokeAuthenticationFromEnvironment } from "./invoke-auth.js";
-import { resolveTaskSessionModel } from "./task-model.js";
+import { modelFallbackReporter, resolveTaskSessionModel } from "./task-model.js";
+import { createDefaultPiSessionAdapter } from "./pi-session.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
 import { lazyModelProxy, modelAccessSource } from "./model-access.js";
 import { agentSkillsSource } from "./agent-step.js";
@@ -20,6 +22,7 @@ import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
 import { executeWorkerCancelInvocation } from "./cancel-invocation.js";
 import { removeLeftoverTaskSandboxes, taskShellSelection } from "./task-sandbox.js";
+import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
 
 const rootPath = process.env.AGENTX_WORKSPACE_ROOT ?? "/mnt/workspace";
 const port = Number.parseInt(process.env.PORT ?? "8080", 10);
@@ -51,6 +54,8 @@ const projectSetupRuntime = createReadinessGatedProjectSetupRuntime(containedRun
   evidenceRoot: requiredEnvironment("CONTAINED_FOUNDATION_EVIDENCE_DIR"),
   controlPlaneUrl: requiredEnvironment("AGENTX_CONTROL_PLANE_URL"),
 }));
+const applicationChecks = createApplicationChecksFeatureMonitor({ environment: process.env });
+applicationChecks.start();
 const journal = new OperationJournal(rootPath);
 const cancellationController = new WorkerCancellationController();
 const state = createWorkerServerState(
@@ -58,6 +63,8 @@ const state = createWorkerServerState(
   {
     invocationFeatures: projectSetupRuntime.invocationFeatures,
     invocationFeatureDiagnostics: projectSetupRuntime.invocationFeatureDiagnostics,
+    // Application CHECKS are listed on /ping only while this worker can run them, from the last background check (never a Docker call per ping).
+    ...applicationChecks.executor,
     async execute(invocation: WorkerInvocation): Promise<unknown> {
       if (invocation.kind === "project-setup-smoke") {
         return projectSetupRuntime.execute(invocation);
@@ -100,7 +107,8 @@ const state = createWorkerServerState(
         return runTaskInvocation(invocation, {
           rootPath,
           model: session.model,
-          ...(session.piAdapter === undefined ? {} : { piAdapter: session.piAdapter }),
+          // MODEL3: a missing provider key that sent the task to the chosen fallback model is told to the task page, once, as a progress event.
+          piAdapter: session.piAdapter ?? createDefaultPiSessionAdapter({ onModelFallback: modelFallbackReporter(callbacks.eventSink) }),
           ...callbacks,
           // The operation's skills snapshot, asked for only when the invocation's agentStep names skills.
           agentSkills: agentSkillsSource({ controlPlaneUrl, capability: invocation.callbackCapability }),
@@ -109,6 +117,8 @@ const state = createWorkerServerState(
           ...(invocation.payload.workflowE2EAdmission === undefined ? {} : {
             workflowE2EEvidenceRoot: requiredEnvironment("CONTAINED_FOUNDATION_EVIDENCE_DIR"),
             workflowE2ERuntimeRoot: process.cwd(),
+            // Built only when an application admission asks for it, so a worker without EXECUTOR_IMAGE still runs portable rounds.
+            workflowE2EApplicationRuntime: () => createWorkflowE2EApplicationRuntime(process.env),
           }),
           cancellationController,
         });
@@ -145,6 +155,7 @@ const state = createWorkerServerState(
     },
   },
   {
+    log: consoleWorkerLog,
     async onTerminal(result, invocation) {
       if (invocation.kind === "project-setup-smoke") {
         const controlPlaneUrl = requiredEnvironment("AGENTX_CONTROL_PLANE_URL");
@@ -161,6 +172,12 @@ const state = createWorkerServerState(
   invokeAuthentication,
 );
 
+// Always, whatever the runtime state: without it a quiet worker's CloudWatch stream is empty and looks like a broken pipeline.
+logWorkerStarted(consoleWorkerLog, {
+  env: process.env,
+  containedRuntime: containedRuntimeReadiness,
+  invocationFeatures: advertisedInvocationFeatures(state).features,
+});
 startWorkerServer(state, { port });
 
 function requiredEnvironment(name: string): string {

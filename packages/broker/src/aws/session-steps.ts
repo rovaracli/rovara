@@ -5,7 +5,7 @@ import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, agentXError, ec2WorkerUserData } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, agentXError, chunkParameterNames, ec2WorkerUserData } from "@agentx/contracts";
 import { requiredEnvironment } from "./lambda.js";
 import { SessionManager, computeMeteringFromEnvironment } from "./sessions.js";
 
@@ -57,6 +57,8 @@ export interface WorkerSettings {
   openaiSecretArn?: string;
   /** A named environment's model proxy; its workers call models through it (Task 14). */
   modelProxyUrl?: string;
+  /** MODEL3: the chosen Bedrock fallback model, when one was chosen (`none` and an absent setting both leave it out). */
+  modelFallback?: string;
 }
 
 export interface SessionStepsDependencies {
@@ -156,6 +158,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           ...(settings.anthropicSecretArn ? { anthropicSecretArn: settings.anthropicSecretArn } : {}),
           ...(settings.openaiSecretArn ? { openaiSecretArn: settings.openaiSecretArn } : {}),
           ...(settings.modelProxyUrl ? { modelProxyUrl: settings.modelProxyUrl } : {}),
+          ...(settings.modelFallback ? { modelFallback: settings.modelFallback } : {}),
           // A named environment is the one that requires a model proxy; the legacy deployment's launch says nothing.
           ...(dependencies.modelProxyRequired ? { environmentKind: "named" as const } : {}),
           logGroupName: dependencies.logGroupName,
@@ -226,8 +229,12 @@ export const handler = createSessionStepsHandler({
       ...WORKER_SETTING_PARAMETERS,
       ...(modelProxyRequired ? { modelProxyUrl: MODEL_PROXY_URL_PARAMETER, bootStage2Sha256: BOOT_STAGE2_SHA256_PARAMETER } : {}),
     }).map(([key, name]) => [key, `${prefix}${name}`])) as Record<keyof typeof WORKER_SETTING_PARAMETERS | "modelProxyUrl" | "bootStage2Sha256", string>;
-    const response = await ssm.send(new GetParametersCommand({ Names: Object.values(names) }));
-    const values = new Map((response.Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
+    // GetParameters takes at most ten names, and the worker settings are more than ten.
+    const values = new Map<string | undefined, string | undefined>();
+    for (const chunk of chunkParameterNames(Object.values(names))) {
+      const response = await ssm.send(new GetParametersCommand({ Names: chunk }));
+      for (const parameter of response.Parameters ?? []) values.set(parameter.Name, parameter.Value);
+    }
     const setting = (key: keyof typeof WORKER_SETTING_PARAMETERS) => {
       const value = values.get(names[key]);
       if (!value) throw new Error(`SSM parameter ${names[key]} is missing`);
@@ -240,7 +247,10 @@ export const handler = createSessionStepsHandler({
       const value = values.get(names[key]);
       return value && value !== "none" ? { [key]: value } : {};
     };
-    return { ...optional("openRouterSecretArn"), ...optional("openRouterProviders"), ...optional("anthropicSecretArn"), ...optional("openaiSecretArn"), ...optional("modelProxyUrl"), ...optional("bootStage2Sha256"), ...optional("executorImage"), workerImage: setting("workerImage"), modelProvider: setting("modelProvider"), modelId: setting("modelId"), promptCacheRetention };
+    // The fallback is a choice: only an id of the setting's alphabet travels to the worker; "none", absent and anything else leave it out (the worker then fails by name).
+    const fallback = values.get(names.modelFallback)?.trim();
+    const modelFallback = fallback !== undefined && fallback !== MODEL_FALLBACK_NONE && MODEL_FALLBACK_PATTERN.test(fallback) ? { modelFallback: fallback } : {};
+    return { ...modelFallback, ...optional("openRouterSecretArn"), ...optional("openRouterProviders"), ...optional("anthropicSecretArn"), ...optional("openaiSecretArn"), ...optional("modelProxyUrl"), ...optional("bootStage2Sha256"), ...optional("executorImage"), workerImage: setting("workerImage"), modelProvider: setting("modelProvider"), modelId: setting("modelId"), promptCacheRetention };
   },
   invokePublicKey() {
     // The key never changes, so one read per container.

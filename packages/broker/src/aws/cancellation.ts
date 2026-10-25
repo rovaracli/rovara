@@ -3,6 +3,8 @@
 // No module-level state and no environment reads, so the reconciler can load it without the broker's.
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import type { StoredBaselineSource } from "./baseline-source.js";
+import type { StoredCandidateBuildSource } from "./candidate-build-source.js";
 import {
   OperationSchema,
   agentXError,
@@ -65,9 +67,15 @@ export interface OperationRecord extends Operation {
   chatgptThread?: { teamId: string; channelId: string; threadTs: string };
   workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | undefined;
   candidateSourceRef?: { key: string; sha256: string; byteLength: number; candidateDigest: string };
+  /** The build source manifest the worker exported for that candidate, or why there is none (see StoredCandidateBuildSourceSchema); absent when the worker sent nothing. */
+  candidateBuildSource?: StoredCandidateBuildSource;
+  /** M1.3 Task 3.7b: the unchanged code (the task's base commit) the worker exported beside the candidate for the baseline round, or why there is none; absent when the worker sent nothing. */
+  baselineSource?: StoredBaselineSource;
   workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string } | undefined;
   /** A PR feedback review started by a broker that gives the critic only the owner's notes for its round (absent: an earlier release's run). */
   feedbackNotesScoped?: true;
+  /** A planning run that was asked for the schema-v2 application plan (absent: it was not, so a v2 plan from it is refused). */
+  workflowE2EPlanVersion?: 2;
   publication?: {
     repository: string;
     repositoryUrl: string;
@@ -124,7 +132,7 @@ export interface CallbackClaims {
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "e2e-admission" | "e2e-evidence" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-access" | "agent-skills" | "agent-tools">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-access" | "agent-skills" | "agent-tools">;
   expiresAt: number;
 }
 
@@ -234,6 +242,8 @@ export interface CapabilityOptions {
   chatGptToken?: boolean;
   candidateExport?: boolean;
   workflowE2E?: boolean;
+  /** M1.4 Task 4.3a: charge the project's day budget for AI navigation steps (`POST .../e2e-model-budget`); granted only to a round whose admission has such steps. */
+  e2eModelBudget?: boolean;
   /** Ruling R29: ask for the key the operation calls models with, where the deployment has a model proxy. */
   modelAccess?: boolean;
   /** Plan 3 Task 9: read the skills of the operation's task snapshot (`GET /v1/internal/agent-skills`). */
@@ -257,10 +267,14 @@ export function issueCapability(
       "artifacts",
       "events",
       "result",
-      ...(options.candidateExport === true ? ["candidate-export" as const] : []),
+      ...(options.candidateExport === true ? ["candidate-export" as const, "candidate-build-source" as const, "baseline-source" as const] : []),
       ...(options.workflowE2E === true ? ["e2e-admission" as const, "e2e-evidence" as const] : []),
+      // M1.4 Task 4.3a: only a round whose admission has AI navigation steps charges the project's day budget.
+      ...(options.e2eModelBudget === true ? ["e2e-model-budget" as const] : []),
       ...(options.feedbackBundles === true ? ["feedback-bundles" as const] : []),
       ...(options.feedbackApproval === true ? ["feedback-approval" as const] : []),
+      // #341: only a task that runs on its owner's ChatGPT plan may ask for the owner's access token.
+      // #342: and tell the control plane why it stopped using that plan.
       ...(options.chatGptToken === true ? ["chatgpt-token" as const, "chatgpt-status" as const] : []),
       ...(options.modelAccess === true ? ["model-access" as const] : []),
       ...(options.pullRequest === true

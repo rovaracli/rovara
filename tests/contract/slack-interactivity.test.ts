@@ -507,6 +507,37 @@ describe("Slack native workflow review controls", () => {
     expect(submitted).toContainEqual(expect.objectContaining({ taskId, userId: other, expectedRevision: workflow.revision }));
   });
 
+  describe("a failed fresh task authorization", () => {
+    const pressWith = (authorize: () => Promise<void>) => {
+      const handlers = workflowSlackHandlers({ loadTask: async () => task, authorize, openView: async () => undefined, submit: async () => undefined });
+      const press: SlackBlockAction = { actionId: "agentx_workflow_approve", value: JSON.stringify({ taskId, revision: workflow.revision, digest, decision: "APPROVE" }),
+        userId: other, userTeamId: thread.teamId, workspaceTeamId: thread.teamId, enterpriseId: "", userEnterpriseId: "", requestStartedAt: nowSeconds * 1_000,
+        thread, messageTs: "1695500001.000002", messageText: "plan", responseUrl: "https://hooks.slack.com/actions/T0BSHLLUGBD/1/abc", triggerId: "1.2.3" };
+      return () => handlers.handleAction(press);
+    };
+    const refused = (code?: string) => async () => { throw Object.assign(new Error("task authorization refused"), code === undefined ? {} : { code }); };
+
+    it.each(["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "PROJECT_ACCESS_DENIED"])("tells a member the task owner decides when the broker answers %s", async (code) => {
+      await expect(pressWith(refused(code))()).rejects.toThrow("Only the task owner can approve this step.");
+    });
+
+    it("says tasks are not turned on for the project, not that only the owner can act, when the broker answers PROJECT_TASKS_DISABLED", async () => {
+      const said = await pressWith(refused("PROJECT_TASKS_DISABLED"))().then(() => "", (error: unknown) => (error as Error).message);
+      expect(said).toBe("AgentX tasks aren't turned on for this project. Ask an AgentX admin to turn them on.");
+    });
+
+    it.each(["INTERNAL_ERROR", "RUNTIME_UNAVAILABLE", undefined])("does not blame the member for a %s failure: it asks them to try again, and logs the code", async (code) => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      try {
+        const press = pressWith(refused(code));
+        await expect(press()).rejects.toThrow("Something went wrong; try again in a minute.");
+        await expect(press()).rejects.not.toThrow(/task owner/);
+        expect(log.mock.calls.map(([line]) => JSON.parse(String(line)) as unknown)).toContainEqual(expect.objectContaining({
+          component: "slack-interactivity", event: "workflow.authorize_failed", action: "decide", code: code ?? "UNKNOWN" }));
+      } finally { log.mockRestore(); }
+    });
+  });
+
   it("submits optional checks in one canonical order so a reordered resubmission is the same decision", async () => {
     const now = new Date(nowSeconds * 1_000).toISOString();
     const twoOptional = submitWorkflowArtifact(createWorkflowSnapshot({ taskId, ownerId: "b".repeat(64), now, checkPolicy: {
@@ -673,6 +704,28 @@ describe("Slack native workflow review controls", () => {
       loaded = { ...task, workflow: { ...reviewBlocked, reviews: [review("CRITIC", "PASS", [{ text: "old", origin: "PRE_EXISTING" }])] } };
       await expect(handlers.handleAction(press("agentx_workflow_send_back", { taskId, revision: reviewBlocked.revision }))).rejects.toThrow(/out of date/);
       expect(sent).toHaveLength(2);
+    });
+
+    it("RUN-2: routes Send back for a browser and API round the app could not build, and refuses it for a code that is not the candidate's, a stale card and another member", async () => {
+      const e2e = { contractDigest: "1".repeat(64), policyDigest: "2".repeat(64), bundleDigest: "3".repeat(64), executionPlanDigest: "4".repeat(64), required: true,
+        currentRoundId: "44444444-4444-4444-8444-444444444444", currentGroupRunIds: ["44444444-4444-4444-8444-444444444444"], resultRefs: [] };
+      const checkPolicy = { required: [{ id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } }], optional: [], selectedOptionalIds: [] };
+      const blockedOn = (code: string) => WorkflowSnapshotSchema.parse({ ...reviewBlocked, stage: "VERIFY", reviews: [], checkPolicy, e2e,
+        blockReason: `admitted E2E evidence is incomplete or unknown (group-1: ${code})` });
+      let loaded: Record<string, unknown> = { ...task, workflow: blockedOn("build-failed") };
+      const sent: Array<Record<string, unknown>> = [];
+      const handlers = workflowSlackHandlers({ loadTask: async () => loaded, openView: async () => undefined, submit: async () => undefined, sendBack: async (input) => { sent.push(input); } });
+      const built = blockedOn("build-failed");
+      await handlers.handleAction(press("agentx_workflow_send_back", { taskId, revision: built.revision }));
+      expect(sent).toEqual([{ taskId, userId: requester, thread, expectedRevision: built.revision, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown }]);
+      await expect(handlers.handleAction(press("agentx_workflow_send_back", { taskId, revision: built.revision - 1 }))).rejects.toThrow(/out of date/);
+      await expect(handlers.handleAction(press("agentx_workflow_send_back", { taskId, revision: built.revision }, other))).rejects.toThrow(/Only/);
+      // A card left over from before: the task now reads an infrastructure code, or has moved on, so the press is refused and nothing is sent.
+      loaded = { ...task, workflow: blockedOn("executor-failed") };
+      await expect(handlers.handleAction(press("agentx_workflow_send_back", { taskId, revision: built.revision }))).rejects.toThrow(/out of date/);
+      loaded = { ...task, workflow: { ...built, stage: "IMPLEMENT", state: "RUNNING", blockReason: undefined } };
+      await expect(handlers.handleAction(press("agentx_workflow_send_back", { taskId, revision: built.revision }))).rejects.toThrow(/out of date/);
+      expect(sent).toHaveLength(1);
     });
 
     it("retries blocked planning and blocked coding for the owner at the exact revision", async () => {

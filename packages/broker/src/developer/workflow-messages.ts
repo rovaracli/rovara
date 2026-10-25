@@ -3,10 +3,11 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  isRunLimitBlockReason, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, type RunEstimate, type WorkflowSnapshot,
+  isRunLimitBlockReason, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
+import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
-import { E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON } from "./task-records.js";
+import { isE2EPlanCorrectionBlockReason } from "./task-records.js";
 
 export interface WorkflowMessageContext {
   taskId: string;
@@ -116,12 +117,18 @@ export function isFeedbackReviewFailure(blockReason: string | undefined): boolea
   return blockReason !== undefined && (blockReason === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed || REWORDED_REASONS.get(blockReason) === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed);
 }
 
+/** The step a stopped run ran, as the first word of the sentence that says it was stopped (keys: `workflowRunEndedReason`'s step names). */
+const STOPPED_STEP_NAME: Readonly<Record<string, string>> = { planning: "Planning", implementation: "Coding", "verification retry": "Checking", "independent review": "Reviewing" };
+
 /** The broker's own reason a step stopped, in words the owner can act on; any other reason is internal. */
 export function plainBlockReason(blockReason: string | undefined): string {
   if (blockReason === undefined) return GENERIC_REASON;
-  if (blockReason === E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON) return slackText(blockReason);
+  if (isE2EPlanCorrectionBlockReason(blockReason)) return slackText(blockReason);
   const reworded = REWORDED_REASONS.get(blockReason);
   if (reworded !== undefined) return slackText(reworded);
+  // PLANINC-2: a stop the owner asked for (cancelled, or interrupted when the stop could not be delivered) says so and what to do; only a failed run is unexpected.
+  const stopped = /^(planning|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/.exec(blockReason);
+  if (stopped !== null) return `${STOPPED_STEP_NAME[stopped[1]!]!} was stopped before it finished. Choose Retry to run it again.`;
   if (/operation ended (failed|interrupted|cancelled)$/.test(blockReason)) return "The run stopped unexpectedly.";
   if (/ was invalid, incomplete, or stale$/.test(blockReason)) return "The result couldn't be trusted, so nothing moved forward.";
   return PLAIN_REASONS.has(blockReason) ? slackText(blockReason) : GENERIC_REASON;
@@ -283,7 +290,9 @@ function exitButtons(context: WorkflowMessageContext) {
     resolveFindings: (): Button[] => workflow.candidate === undefined ? []
       : [button("agentx_workflow_resolve_findings", "Resolve findings", { primary: true, value: JSON.stringify({ taskId, revision: workflow.revision, candidateDigest: workflow.candidate.digest }) })],
     close: button("agentx_workflow_close", "Close task"),
-    retryChecks: (label = "Choose checks and retry"): Button[] => checksConfigured(workflow) ? [button("agentx_workflow_retry_checks", label)] : [],
+    // A required browser and API round can be retried with no project check to choose: the retry re-admits the approved round (`workflowReadmitsApplicationRound`).
+    retryChecks: (label = "Choose checks and retry"): Button[] => checksConfigured(workflow) || workflowReadmitsApplicationRound(workflow)
+      ? [button("agentx_workflow_retry_checks", checksConfigured(workflow) ? label : "Retry checks")] : [],
     retryReviews: (): Button[] => checkedAndPassing(workflow)
       ? [button("agentx_workflow_retry_reviews", "Retry reviews", { value: JSON.stringify({ taskId, revision: workflow.revision, candidateDigest: workflow.candidate?.digest }) })] : [],
     retryPublish: button("agentx_workflow_retry_publish", "Retry opening the pull request"),
@@ -350,7 +359,7 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
   const { workflow, structured } = context;
   const name = workflowDocumentName(workflow);
   const document = workflow.artifacts.filter((artifact) => artifact.type === workflowDocumentType(workflow)).at(-1);
-  const needsE2ECorrection = workflow.blockReason === E2E_PLAN_REFERENCE_INVALID_BLOCK_REASON;
+  const needsE2ECorrection = isE2EPlanCorrectionBlockReason(workflow.blockReason);
   const header = needsE2ECorrection
     ? `*${capitalized(name)}${document === undefined ? "" : ` v${document.version}`} needs changes before approval.* ${plainBlockReason(workflow.blockReason)}`
     : `*${capitalized(name)}${document === undefined ? "" : ` v${document.version}`} is ready for your approval.* ${workflow.candidate === undefined ? "No code has changed yet." : "The existing candidate is retained while this plan is reviewed."}`;
@@ -378,7 +387,11 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     }
   } else if (answered !== undefined && answered.total > 0) tail.push(`AgentX answered ${answered.answered} of ${plural(answered.total, "comment")} from v${answered.fromVersion}.`);
   if (context.runEstimate !== undefined && workflowDocumentType(workflow) === "plan") tail.push(...runEstimateLines(context.runEstimate, context.agentName ?? "Rovara Code"));
-  const unlinked = `I couldn't link the full ${name}; ask an AgentX admin to check the task page.`;
+  // The owner can always reach the plan: when the document could not be shown or linked, the task page is, and an
+  // administrator is named only when no task page exists at all.
+  const unlinked = context.taskPageUrl === undefined
+    ? `I couldn't link the full ${name}; ask an AgentX admin to check the task page.`
+    : `I couldn't show the plan summary here. ${link(context.taskPageUrl, "Open the task page to read the plan")}`;
   if (structured === undefined) {
     // A Markdown document: its first lines, and where the whole text reads.
     const lines = [header];
@@ -479,8 +492,17 @@ function verifyBlocked(context: WorkflowMessageContext, exits: ReturnType<typeof
   }
   if (workflow.e2e?.required === true && workflow.e2e.currentRoundId !== undefined
     && workflow.blockReason?.startsWith("admitted E2E evidence is incomplete or unknown") === true) {
+    // RUN-2: when every group ended with a code that has a fixed sentence, say why in those sentences (each distinct one once, three at most, then how many more), and offer Send back where the candidate
+    // is the cause (`workflowSendBackOffered`). Any reason that is not exactly `group: code` keeps the one fixed text: nothing the worker said is ever repeated.
+    const codes = [...new Set(workflowApplicationEvidenceCodes(workflow.blockReason) ?? [])];
+    const sentences = codes.map((code) => E2E_OWNER_SENTENCES.groupSentence(code));
+    if (codes.length > 0 && sentences.every((sentence) => sentence !== undefined)) {
+      const more = sentences.length - 3;
+      return { text: `The required browser and API checks could not finish. ${sentences.slice(0, 3).join(" ")}${more > 0 ? ` And ${more} more.` : ""} Nothing was sent to GitHub.`,
+        buttons: [...exits.sendBack(), ...exits.retryChecks(), exits.close] };
+    }
     return { text: "The required E2E evidence is incomplete or unavailable. Some required runtime checks may not have run. Nothing was sent to GitHub.",
-      buttons: [...exits.retryChecks(), exits.close] };
+      buttons: [...exits.sendBack(), ...exits.retryChecks(), exits.close] };
   }
   // Review only: no check runs, so the way on is coding again, or a check the owner chooses when the project has one.
   if (workflowIsReviewOnly(workflow.checkPolicy)) {

@@ -123,7 +123,7 @@ import { admitMachineTime, admitTrial } from "../org/trial.js";
 import { commitSetupCheck, setupCheckLimitMessage, setupCheckReplay, setupStateOf, type SetupCheckDependencies } from "../org/project-setup-check.js";
 import type { DeveloperTaskActions } from "./developer-task-actions.js";
 import {
-  createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
+  createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, retryApplicationRoundOnPage, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeopleCapabilities, getTaskPeopleForPage, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
   CLOSED_TASK, cancelTask, cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskPageUrl, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
@@ -144,6 +144,7 @@ import { pausedTaskGate, requestForPausedTask, withdrawTaskSpendRequests } from 
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
+import { getTaskE2EArtifact } from "./task-e2e-artifact.js";
 
 export interface DeveloperApiConfiguration {
   issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean }; slackTeamId?: string;
@@ -201,6 +202,11 @@ export interface DeveloperRouteDependencies {
   /** Builds E2E projections only from the task's current server-owned admission and evidence references. */
   workflowE2EPresentation?: DeveloperTaskRouteDependencies["workflowE2EPresentation"];
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
+  workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
+  workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
+  startWorkflowE2EBaseline?: DeveloperTaskRouteDependencies["startWorkflowE2EBaseline"];
+  /** Checks a plan's application E2E intent when the owner approves it. */
+  validateWorkflowE2EApplicationPlan?: DeveloperTaskRouteDependencies["validateWorkflowE2EApplicationPlan"];
   registeredRepositoryIdentity?: DeveloperTaskRouteDependencies["registeredRepositoryIdentity"];
   /** Plan 2, Task 15: the check that an org's GitHub connection still reaches a project's repositories (cloud installs). */
   requireRepositoriesConnected?: DeveloperTaskRouteDependencies["requireRepositoriesConnected"];
@@ -1638,6 +1644,10 @@ export function developerTaskRouteDependencies(
     ...(deps.cloud === true ? { cloud: true } : {}),
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
+    ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),
+    ...(deps.workflowE2EArtifact === undefined ? {} : { workflowE2EArtifact: deps.workflowE2EArtifact }),
+    ...(deps.startWorkflowE2EBaseline === undefined ? {} : { startWorkflowE2EBaseline: deps.startWorkflowE2EBaseline }),
+    ...(deps.validateWorkflowE2EApplicationPlan === undefined ? {} : { validateWorkflowE2EApplicationPlan: deps.validateWorkflowE2EApplicationPlan }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
     ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task), pausedTaskGate: (who, task: DeveloperTaskRecord) => pausedTaskGate(agents, who, task) }),
@@ -1752,6 +1762,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           deleteComment: (caller, taskId, input) => deletePageComment(routeDeps(caller), caller, taskId, input),
           setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
           decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
+          retryApplicationRound: (caller, taskId, input) => retryApplicationRoundOnPage(routeDeps(caller), caller, taskId, input),
+          readE2EArtifact: (caller, taskId, sha256) => getTaskE2EArtifact(routeDeps(caller), caller, taskId, sha256),
           getPeople: (caller, taskId) => getTaskPeopleForPage(routeDeps(caller), caller, taskId),
           proposePeopleRole: (caller, taskId, input) => proposeTaskPeopleRoleForPage(routeDeps(caller), caller, taskId, input),
           proposeOwnership: (caller, taskId, input) => proposeTaskOwnershipForPage(routeDeps(caller), caller, taskId, input),

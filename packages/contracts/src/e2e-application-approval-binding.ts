@@ -3,7 +3,7 @@ import { canonicalJson } from "./canonical-json.js";
 import { E2EApplicationApprovalBindingSchema, E2EApplicationPlanIntentSchema, PlanApprovalRefSchema, e2eApplicationApprovalBindingDigest,
   type E2EApplicationApprovalBinding, type E2EApplicationPlanIntent, type SourceRef } from "./e2e-application.js";
 import { e2eApplicationMetadataSourcePaths, e2eApplicationMetadataSourceRefs } from "./e2e-application-metadata.js";
-import { inspectE2ERepository } from "./e2e-catalog.js";
+import { e2eTargetSourceIdentity, inspectE2EApplicationRepository, isE2EPlaceholderRuntimeProfileId, isE2EQualifiedRuntimeProfileId, withE2EAnonymousTargets } from "./e2e-catalog.js";
 import { E2EAppRecipeSchema, E2ESetupProposalSchema, type E2EAppRecipe, type E2ESetupProposal } from "./e2e.js";
 import { verifyE2ESourceSnapshot, type E2ESourceSnapshot } from "./e2e-source.js";
 
@@ -16,9 +16,9 @@ function parsedRecipe(recipe: unknown, applicationId: string): E2EAppRecipe {
   return parsed;
 }
 
-function assertSnapshot(snapshot: E2ESourceSnapshot): ReturnType<typeof inspectE2ERepository> {
+function assertSnapshot(snapshot: E2ESourceSnapshot): ReturnType<typeof inspectE2EApplicationRepository> {
   verifyE2ESourceSnapshot(snapshot, snapshot.candidate);
-  return inspectE2ERepository(snapshot, snapshot.candidate);
+  return inspectE2EApplicationRepository(snapshot, snapshot.candidate);
 }
 
 function sameRefs(left: readonly SourceRef[], right: readonly SourceRef[]): boolean {
@@ -51,7 +51,8 @@ export function deriveE2EApplicationApprovalBinding(input: {
   const applicationById = new Map(discovered.inspection.applications.map((application) => [application.applicationId, application]));
   const targetById = new Map(discovered.inspection.proposedTargets.map((target) => [target.targetId, target]));
   const setupApplications = new Map(setupProposal.applications.map((application) => [application.applicationId, application]));
-  const setupTargets = new Map(setupProposal.targets.map((target) => [target.targetId, target]));
+  // The setup proposal holds the base targets; their implicit signed-out variants are derived from them, as discovery derives the source ones.
+  const setupTargets = new Map(withE2EAnonymousTargets(setupProposal.targets, discovered.anonymous).map((target) => [target.targetId, target]));
   const applicationIds = [...new Set(intent.applicationRuntimeRefs.map((ref) => ref.applicationId))].sort();
   const applications: E2EApplicationApprovalBinding["applications"] = [];
 
@@ -79,8 +80,14 @@ export function deriveE2EApplicationApprovalBinding(input: {
     const appApproval = applications.find((application) => application.applicationId === ref.applicationId);
     if (!sourceApplication || !priorApplication || !sourceTarget || !priorTarget || !appApproval
       || sourceTarget.applicationId !== ref.applicationId || priorTarget.applicationId !== ref.applicationId
-      || canonicalJson(sourceTarget) !== canonicalJson(priorTarget)) {
+      || canonicalJson(e2eTargetSourceIdentity(sourceTarget)) !== canonicalJson(e2eTargetSourceIdentity(priorTarget))) {
       throw new Error(`application runtime target ${ref.targetId} differs from the source-derived and setup-approved target identity`);
+    }
+    // A web/API target approved against a qualified runtime profile can only be assigned to that profile, and a ref can name a qualified profile
+    // only for a target approved on it (a placeholder-approved target stays unavailable).
+    if (ref.runtimeProfileId !== priorTarget.runtimeProfileId
+      && (!isE2EPlaceholderRuntimeProfileId(priorTarget.runtimeProfileId) || isE2EQualifiedRuntimeProfileId(ref.runtimeProfileId))) {
+      throw new Error(`application runtime target ${ref.targetId} runtime profile differs from its setup-approved runtime profile`);
     }
     if (ref.accountProfileId !== sourceTarget.accountProfileId) {
       throw new Error(`application runtime target ${ref.targetId} account profile differs from its source-derived and setup-approved assignment`);
