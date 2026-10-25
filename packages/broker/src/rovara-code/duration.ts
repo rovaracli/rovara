@@ -26,8 +26,8 @@ const DURATION_KEPT_SECONDS = 365 * 24 * 60 * 60;
 const RECORD_ATTEMPTS_MAX = 4;
 const FIVE = 5;
 
-/** `minutes` rounded up to five, never less than five and never more than the bound. */
-const roundUpToFive = (minutes: number): number => Math.min(RUN_MINUTES_MAX, Math.max(FIVE, Math.ceil(minutes / FIVE) * FIVE));
+/** `minutes` (above zero) rounded up to five, so never less than five, and never more than the bound. */
+const roundUpToFive = (minutes: number): number => Math.min(RUN_MINUTES_MAX, Math.ceil(minutes / FIVE) * FIVE);
 
 /** The `percent`th percentile by nearest rank: the `ceil(percent × n / 100)`-th smallest. Whole percents keep the product exact. */
 function nearestRank(sorted: readonly number[], percent: number): number {
@@ -37,11 +37,11 @@ function nearestRank(sorted: readonly number[], percent: number): number {
 
 const isMinutes = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
 
-/** The durations a history item holds, newest first: the newest `DURATION_HISTORY_SIZE` valid ones, each no more than the bound. A stored value that is not a positive number is left out. */
+/** The durations a history item holds, newest first: the newest `DURATION_HISTORY_SIZE` valid ones. A stored value that is not a positive number is left out; a value above the bound is bounded when it is rounded. */
 function durationsOf(item: Item | undefined): number[] {
   const stored = item?.["durations"];
   if (!Array.isArray(stored)) return [];
-  return stored.filter(isMinutes).slice(0, DURATION_HISTORY_SIZE).map((minutes) => Math.min(RUN_MINUTES_MAX, minutes));
+  return stored.filter(isMinutes).slice(0, DURATION_HISTORY_SIZE);
 }
 
 async function readHistory(deps: DurationDependencies, orgId: OrgId, project: string, path: DurationPath): Promise<Item | undefined> {
