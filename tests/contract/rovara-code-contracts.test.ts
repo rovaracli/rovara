@@ -27,6 +27,7 @@ import { mergeTrackingDecisionDigest } from "../../packages/contracts/src/rovara
 import {
   WorkflowSnapshotReaderSchema,
   WorkflowSnapshotSchema,
+  WorkflowPathSchema,
   WorkflowStageSchema,
   createWorkflowSnapshot,
 } from "../../packages/contracts/src/task-workflow.js";
@@ -137,6 +138,11 @@ describe("limits", () => {
     const sources = Array.from({ length: 10 }, (_, line) => ({ repository: "payments", path: "src/a.ts", line: line + 1 }));
     expect(IntentAssessmentSchema.safeParse({ kind: "answer", restatement: "x", answer: "It retries.", sources }).success).toBe(true);
     expect(IntentAssessmentSchema.safeParse({ kind: "answer", restatement: "x", answer: "It retries.", sources: [...sources, sources[0]] }).success).toBe(false);
+  });
+
+  it("takes the same two paths as the workflow", () => {
+    for (const path of WorkflowPathSchema.options) expect(IntentAssessmentSchema.safeParse({ kind: "ready", path, restatement: "x", assumptions: [] }).success).toBe(true);
+    expect(IntentAssessmentSchema.safeParse({ kind: "ready", path: "SLOW", restatement: "x", assumptions: [] }).success).toBe(false);
   });
 
   it("reads an intent record with rounds, who answered and from where", () => {
