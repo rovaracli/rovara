@@ -696,8 +696,6 @@ const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 export const WEB_ROUTE_KEY = "ANY /v1/web/{proxy+}";
 const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
-/** A session's link (Plan 5, Task 5), served to a browser like the review pages. Its API Gateway route (`ANY /s/{proxy+}`) is in the infrastructure; the web app (Plan 7) adds the page. */
-const SESSION_LINK_ROUTE_KEY = "ANY /s/{proxy+}";
 
 /** The install's environment name: what its single org (ruling R3) and the default org resolver derive from. */
 function brokerEnvironmentName(dependencies: Pick<AwsBrokerDependencies, "environmentName" | "developer">): string {
@@ -1743,11 +1741,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // the broker through the authorizer-free /v1/dev route (D17), so it must never be resolved.
       if (DOT_SEGMENT.test(event.rawPath ?? "/")) throw agentXError("NOT_FOUND", "route not found");
       const url = new URL(request.path, "https://agentx.invalid");
+      // Shared links belong exclusively to the web shell, including stale broker route events.
+      if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");
       // The browser page uses its own opaque revocable session cookie and reauthorizes each
       // request. Only API Gateway's exact public review route may reach this branch.
       // The audit page (`/v1/app/audit/view`) is a browser page of the same kind: its own session cookie, no API Gateway authorizer.
-      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || event.routeKey === SESSION_LINK_ROUTE_KEY || isAuditViewPath(url.pathname)) {
-        if (!(url.pathname.startsWith("/review/") || (event.routeKey === SESSION_LINK_ROUTE_KEY && url.pathname.startsWith("/s/")) || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
+      if (event.routeKey === FEEDBACK_REVIEW_ROUTE_KEY || isAuditViewPath(url.pathname)) {
+        if (!(url.pathname.startsWith("/review/") || isAuditViewPath(url.pathname)) || !dependencies.developer) throw agentXError("NOT_FOUND", "route not found");
         return await routeDeveloperRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),

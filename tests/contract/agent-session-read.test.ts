@@ -929,10 +929,11 @@ describe("the link /s/<id>", () => {
     const { taskId, sessionId } = await t.start();
     await t.share(MAYA, sessionId, OMAR);
     const link = await t.browser(`/s/${sessionId}`, OMAR);
-    expect(link.status, link.body).toBe(302);
-    expect(link.headers.location).toBe(`${ORIGIN}/review/${taskId}/task`);
+    expect(link.status).toBe(404);
+    expect(link.headers.location).toBeUndefined();
     const page = await t.browser(`/review/${taskId}/task`, OMAR);
     expect(page.status, page.body.slice(0, 300)).toBe(200);
+    expect(page.body).toContain(`href="/s/${sessionId}">Open this session in Rovara</a>`);
     const state = await t.browser(`/review/${taskId}/task/api/state`, OMAR);
     expect(state.status, state.body).toBe(200);
     expect(JSON.parse(state.body)).toMatchObject({ canRead: true, canComment: false, canSuggest: false, canDecide: false, canAsk: false, canTakeOwnership: false, canManagePeople: false });
@@ -958,7 +959,7 @@ describe("the link /s/<id>", () => {
     const real = await t.browser(`/s/${sessionId}`, BOB);
     const fake = await t.browser("/s/ses_00000000000000000000", BOB);
     expect(real.status).toBe(404);
-    expect(real.body.replace(/nonce="[^"]+"/g, "")).toBe(fake.body.replace(/nonce="[^"]+"/g, ""));
+    expect(bodyOf({ body: JSON.parse(real.body) as Record<string, unknown> })).toEqual(bodyOf({ body: JSON.parse(fake.body) as Record<string, unknown> }));
   });
 
   it("opens the task page and its poll to a session viewer outside the channel when the task has a People list, with no People data (review I-1)", async () => {
@@ -971,10 +972,11 @@ describe("the link /s/<id>", () => {
     });
     await t.share(MAYA, sessionId, OMAR);
     const link = await t.browser(`/s/${sessionId}`, OMAR);
-    expect(link.status, link.body).toBe(302);
-    expect(link.headers.location).toBe(`${ORIGIN}/review/${taskId}/task`);
+    expect(link.status).toBe(404);
+    expect(link.headers.location).toBeUndefined();
     const page = await t.browser(`/review/${taskId}/task`, OMAR);
     expect(page.status, page.body.slice(0, 300)).toBe(200);
+    expect(page.body).toContain(`href="/s/${sessionId}">Open this session in Rovara</a>`);
     expect(page.body).not.toContain("Quentin Peoplesworth");
     const state = await t.browser(`/review/${taskId}/task/api/state`, OMAR);
     expect(state.status, state.body).toBe(200);
@@ -991,26 +993,26 @@ describe("the link /s/<id>", () => {
     expect((await t.browser(`/review/${taskId}/task/api/state`, ZOE)).status).toBeGreaterThanOrEqual(400);
   });
 
-  it("sends a person who isn't signed in to sign in, and a malformed id nowhere", async () => {
+  it("leaves signed-out and malformed shared links exclusively to the web shell", async () => {
     const t = await setup();
     const { sessionId } = await t.start();
     const anonymous = await t.browser(`/s/${sessionId}`, MAYA, { cookie: false });
-    expect(anonymous.status).toBe(302);
-    expect(anonymous.headers.location).toBe(`/v1/auth/browser/authorize?return_to=${encodeURIComponent(`/s/${sessionId}`)}`);
+    expect(anonymous.status).toBe(404);
+    expect(anonymous.headers.location).toBeUndefined();
     expect((await t.browser("/s/not-a-session", MAYA)).status).toBe(404);
-    expect((await t.browser(`/s/${sessionId}`, MAYA, { method: "POST" })).status).toBe(405);
+    expect((await t.browser(`/s/${sessionId}`, MAYA, { method: "POST" })).status).toBe(404);
     expect((await t.browser(`/s/${sessionId}x`, MAYA)).status).toBe(404);
   });
 
-  it("sends the owner to their own task page as before", async () => {
+  it("leaves owner shared links to the web shell and preserves the task page", async () => {
     const t = await setup();
     const { taskId, sessionId } = await t.start();
     const own = await t.browser(`/s/${sessionId}`, MAYA);
-    expect(own.headers.location).toBe(`${ORIGIN}/review/${taskId}/task`);
+    expect(own.status).toBe(404);expect(own.headers.location).toBeUndefined();
     expect((await t.browser(`/review/${taskId}/task`, MAYA)).status).toBe(200);
   });
 
-  it("answers a local session with a small page that names its title, status and owner, and escapes them", async () => {
+  it("never serves local-session facts from the retired broker link", async () => {
     const t = await setup();
     const sessionId = "ses_0123456789abcdefghij";
     t.db.set({
@@ -1021,10 +1023,9 @@ describe("the link /s/<id>", () => {
       summary: { status: "running", costUsd: 0, needsPeople: [], pendingApprovals: 0, digest: "d".repeat(64), computedAt: "2026-10-22T08:00:00.000Z" },
     });
     const page = await t.browser(`/s/${sessionId}`, MAYA);
-    expect(page.status, page.body).toBe(200);
-    expect(page.body).toContain("Fix &lt;b&gt;it&lt;/b&gt;");
-    expect(page.body).toContain("Maya &lt;i&gt;Chen&lt;/i&gt;");
-    expect(page.body).toContain("running");
+    expect(page.status).toBe(404);
+    expect(page.body).not.toContain("Fix &lt;b&gt;it&lt;/b&gt;");
+    expect(page.body).not.toContain("Maya &lt;i&gt;Chen&lt;/i&gt;");
     expect(page.body).not.toContain("<b>it</b>");
     expect((await t.browser(`/s/${sessionId}`, OMAR)).status).toBe(404);
   });

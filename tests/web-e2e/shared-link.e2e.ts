@@ -17,6 +17,7 @@ test("ends a refused sign-in once without returning to the shared link", async (
 test("shows the same NotFound for an inaccessible session without leaking its title", async ({ page, context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "workspace" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
  await mockRealtime(page);await page.goto("/s/ses_bbbbbbbbbbbbbbbbbbbb");await expect(page.getByRole("heading", { name: "Not found", exact: true })).toBeVisible();await expect(page.getByText("We couldn't find that. It may not exist, or it hasn't been shared with you.", { exact: true })).toBeVisible();await expect(page.getByRole("heading", { name: "Fix duplicate refunds" })).toHaveCount(0);
+ const reads = await (await request.get("/__mock/requests")).json() as Array<{ path: string }>;expect(reads.some(row => row.path === "/v1/web/sessions/ses_bbbbbbbbbbbbbbbbbbbb")).toBe(true);
 });
 test("opens the shared task and its conversation on a phone with nothing to install", async ({ page, context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "workspace" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);

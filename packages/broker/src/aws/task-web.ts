@@ -3,7 +3,7 @@
 // requests and its history. GET only, no forms, and one small script (by nonce) that opens and scrolls to a deep
 // link and, while the page is open, asks this origin's `/task/status` whether the task moved on. Every value is escaped; model and reviewer text is plain text in the page, so a link in it is never a link.
 import { randomBytes } from "node:crypto";
-import { redactText, taskGraphDigest, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
+import { SessionIdSchema, redactText, taskGraphDigest, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
 import type { TaskRole } from "../developer/task-access.js";
 import type { TaskPeopleView } from "../developer/task-people.js";
 import type { DeveloperCaller } from "./developer-routes.js";
@@ -27,6 +27,7 @@ export type TaskDocumentEntry =
 
 export interface TaskDocumentView {
   taskId: string;
+  sessionId?: string;
   /** The time the page was read (epoch milliseconds), so a document stored a moment ago can say its code is still loading. */
   now?: number;
   title: string;
@@ -435,6 +436,7 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     + `<button type="button" id="moved-on-refresh">Refresh</button></div>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>AgentX task · ${escapeHtml(view.title)}</title>`
     + `<style nonce="${nonce}">${TASK_PAGE_STYLE}</style></head><body>${movedOn}`
+    + (SessionIdSchema.safeParse(view.sessionId).success ? `<p><a href="/s/${escapeHtml(view.sessionId!)}">Open this session in Rovara</a></p>` : "")
     + `<header><h1>${escapeHtml(view.title)}</h1><p class="muted">${role}</p>${progressStrip(view, { checks: checks !== undefined && checks !== "" })}`
     + `<p><strong>${escapeHtml(view.status)}</strong></p><p>Next: ${escapeHtml(view.nextStep)}</p>${slackOnly}</header>`
     + `<main>${unverified}${documents}${noDocuments}`

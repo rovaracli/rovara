@@ -122,12 +122,12 @@ import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeopleCapabilities, getTaskPeopleForPage, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskPageUrl, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  getWorkflowFeedbackReview, loadOwnedTask, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
-import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
+import { isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionShareDependencies } from "../agent-sessions/shares.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
@@ -1650,14 +1650,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isAuditViewPath(url.pathname)) {
     return createAuditViewPage({ origin: new URL(deps.developer.issuer).origin, authenticateSession, ledger: deps.auditLedger })(request, url);
   }
-  // Plan 5, Task 5: a session's link, for a signed-in browser. Until the web app, a task session's goes to the task's page.
-  if (isSessionLinkPath(url.pathname)) {
-    if (deps.tasks === undefined || sessionDependenciesOf(deps) === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
-    return sessionRedirect({
-      authenticateSession, origin: new URL(deps.developer.issuer).origin, taskPageUrl,
-      read: (caller) => sessionReadDependencies(deps, caller),
-    }, request, url);
-  }
+  // RULING Q37: Plan 7 Task 14 shared links are served exclusively by WebAppFunction.
+  if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");
   if (url.pathname.startsWith("/review/")) {
     if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
     // Task 18: the read-only task page and its "moved on" check; every other /review/ path is the PR-feedback review.

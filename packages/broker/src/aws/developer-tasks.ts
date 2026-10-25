@@ -4498,7 +4498,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     }
   }
   return {
-    taskId, now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task)),
+    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task)),
     path: workflow?.path ?? "QUICK", revision: workflow?.revision ?? 0, stage: taskPageStep(workflow, task.closedAt !== undefined), role: owner ? "owner" : "reader",
     documents, ...(unverified.length === 0 ? {} : { unverified }), checks, checksRan: results.length > 0, ...(checksNote === undefined ? {} : { checksNote }), findings,
     ...(acceptedFindings.length === 0 ? {} : { acceptedFindings }),

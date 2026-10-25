@@ -40,5 +40,5 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  if (features.chains) children.push({ path: "chains/*", element: <Page title="Chains" /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });
  children.push({ path: "*", element: <NotFound /> });
- return [{ path: "/app/signup", element: <Signup />, errorElement: <RouteError /> }, { path: "/app/welcome", element: <Welcome />, errorElement: <RouteError /> }, { path: "/app/signed-out", element: <SignedOut />, errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];
+ return [{ path: "/s/:id", element: <AppShell />, errorElement: <RouteError />, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) }] }, { path: "/app/signup", element: <Signup />, errorElement: <RouteError /> }, { path: "/app/welcome", element: <Welcome />, errorElement: <RouteError /> }, { path: "/app/signed-out", element: <SignedOut />, errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];
 }

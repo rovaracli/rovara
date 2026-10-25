@@ -85,5 +85,5 @@ it("replaces inaccessible cached session details with the common NotFound screen
  const f = setup();await screen.findByRole("heading", { name: "Fix duplicate refunds" });
  f.request.mockResolvedValue({ status: 404, body: { error: { code: "NOT_FOUND", message: "not found" } } });
  await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID] });
- expect(await screen.findByRole("heading", { name: "Not found", exact: true })).toBeTruthy();expect(screen.queryByRole("heading", { name: "Fix duplicate refunds" })).toBeNull();expect(screen.queryByRole("button", { name: "Conversation", exact: true })).toBeNull();f.close();
+ expect(await screen.findByRole("heading", { name: "Not found" })).toBeTruthy();expect(screen.queryByRole("heading", { name: "Fix duplicate refunds" })).toBeNull();expect(screen.queryByRole("button", { name: "Conversation" })).toBeNull();f.close();
 });

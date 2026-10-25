@@ -8,6 +8,7 @@ import { useAppHost } from "../../host.js";
 import { PRESENCE_HEARTBEAT_SECONDS } from "../../constants.js";
 import { createRealtimeClient } from "../../realtime/client.js";
 import { createNoticeInvalidator } from "../../realtime/invalidate.js";
+import { NotFound } from "../../shell/NotFound.js";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
 import { Skeleton } from "../../design/Skeleton.js";
@@ -51,6 +52,7 @@ export function SessionScreen() {
  async function remove(messageId: string, rev: number) { const result = await api.deleteMessage(id, messageId, rev);if (result.kind !== "done") throw new ApiError(409, "PENDING", "This change is waiting for confirmation.");await query.invalidateQueries({ queryKey: ["session", id, "messages"] }); }
 
  if (read.isPending) return <section><h1 tabIndex={-1}>Session</h1><Skeleton label="Loading the session" /></section>;
+ if (read.error instanceof ApiError && read.error.status === 404) return <NotFound />;
  if (session === undefined) return <section><h1 tabIndex={-1}>Session unavailable</h1><p role="alert"><VisibleText text={read.error instanceof ApiError ? read.error.message : "Couldn't load this session. Try again."} /></p><Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
  const agent = session.agent?.name ?? "The agent", nav = query.getQueryData<ReadAppNav>(["nav"]), orgName = nav?.org.name ?? "your company";
  return <section ref={root} className="rv-session"><SessionHeader session={session} busy={busy} onAction={action => { if (action === "watch") void follow(); }} shareControl={<ShareDialog id={id} orgName={orgName} />} /><MoneyBanners session={session} />{error && <p role="alert"><VisibleText text={error} /></p>}{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
