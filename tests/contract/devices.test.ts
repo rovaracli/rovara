@@ -10,6 +10,7 @@ import {
   deviceKey,
   memberDevicesKey,
   orgSettingsKey,
+  type LocalAgentPolicy,
   type OrgId,
   type OrgRole,
 } from "@agentx/contracts";
@@ -27,7 +28,7 @@ type World = ReturnType<typeof world>;
 
 const TOOL_TEXT = (tool: string) => `${tool} isn't allowed in your company. Ask an admin to allow it.`;
 const PROJECT_TEXT = (project: string) => `Local agents aren't allowed on ${project}. Ask an admin to allow them.`;
-const FULL = { allowed: true, tools: [...LOCAL_TOOLS], projects: "all" as const };
+const FULL: LocalAgentPolicy = { allowed: true, tools: [...LOCAL_TOOLS], projects: "all" };
 const CONFLICT_TEXT = "Someone else changed your company's rules for local agents. Reload them and make your change again.";
 
 function world() {
@@ -37,18 +38,25 @@ function world() {
   const call = (caller: DeveloperCaller, method: string, path: string, body?: unknown, using: DeviceRouteDependencies = deps) => routeDeviceRequest(
     using, caller, { method, path, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(`${CELL}${path}`),
   ) as Promise<{ statusCode?: number; body?: Record<string, unknown> } & Record<string, unknown>>;
-  const body = (reply: { statusCode?: number; body?: Record<string, unknown> } & Record<string, unknown>) => (reply.statusCode === undefined ? reply : reply.body!) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const body = (reply: { statusCode?: number; body?: Record<string, unknown> } & Record<string, unknown>): Record<string, unknown> => (reply.statusCode === undefined ? reply : reply.body!);
+  const deviceOf = (reply: { statusCode?: number; body?: Record<string, unknown> } & Record<string, unknown>) => body(reply).device as { deviceId: string; label: string };
   const register = async (caller: DeveloperCaller, label = "Priya's MacBook", extra: Record<string, unknown> = {}) =>
-    body(await call(caller, "POST", "/v1/app/devices", { requestId: randomUUID(), label, platform: "mac", ...extra })).device as { deviceId: string; label: string };
+    deviceOf(await call(caller, "POST", "/v1/app/devices", { requestId: randomUUID(), label, platform: "mac", ...extra }));
   const devicesOf = async (caller: DeveloperCaller) => (body(await call(caller, "GET", "/v1/app/devices")).devices as Array<{ deviceId: string; label: string }>);
-  const policyOf = async (caller: DeveloperCaller) => body(await call(caller, "GET", "/v1/app/org/local-agents")) as { policy: typeof FULL; revision: number };
-  const putPolicy = (caller: DeveloperCaller, change: Partial<typeof FULL>, revision: number, requestId = randomUUID()) =>
+  const policyOf = async (caller: DeveloperCaller) => body(await call(caller, "GET", "/v1/app/org/local-agents")) as { policy: LocalAgentPolicy; revision: number };
+  const putPolicy = (caller: DeveloperCaller, change: Partial<LocalAgentPolicy>, revision: number, requestId = randomUUID()) =>
     call(caller, "PUT", "/v1/app/org/local-agents", { requestId, revision, policy: { ...FULL, ...change } });
-  const meta = (orgId: OrgId, deviceId: string) => w.db.get(deviceKey(orgId, deviceId as never)) as Item | undefined;
-  const row = (orgId: OrgId, developerId: string, deviceId: string) => w.db.get(memberDevicesKey(orgId, developerId, deviceId as never)) as Item | undefined;
+  const meta = (orgId: OrgId, deviceId: string) => w.db.get(deviceKey(orgId, deviceId)) as Item | undefined;
+  const row = (orgId: OrgId, developerId: string, deviceId: string) => w.db.get(memberDevicesKey(orgId, developerId, deviceId)) as Item | undefined;
   const writes = () => w.db.transactions().length;
-  return { ...w, deps, as, call, body, register, devicesOf, policyOf, putPolicy, meta, row, writes };
+  return { ...w, deps, as, call, body, deviceOf, register, devicesOf, policyOf, putPolicy, meta, row, writes };
 }
+
+/** What a synchronous check throws: its code and text without the code's prefix. */
+const refusal = (check: () => void) => {
+  try { check(); } catch (error) { const { code, message } = error as { code?: string; message: string }; return { code, message: message.replace(`${String(code)}: `, "") }; }
+  return undefined;
+};
 
 const outcome = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 
@@ -113,10 +121,10 @@ describe("registering and listing devices", () => {
     const arjun = await w.register(w.as(ARJUN), "Arjun's Mac");
     const bo = await w.register(w.as(BO, "member", ORG_B), "Bo's Mac");
     // Forged rows in Priya's list: Arjun's device, a device of org B, and a device that does not exist.
-    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, arjun.deviceId as never), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: arjun.deviceId });
-    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, bo.deviceId as never), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: bo.deviceId });
-    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, "dvc_zzzzzzzzzzzzzzzzzzzz" as never), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: "dvc_zzzzzzzzzzzzzzzzzzzz" });
-    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, "dvc_0123456789abcdefghij" as never), entityType: "MEMBER_DEVICE", orgId: ORG_B, developerId: PRIYA, deviceId: "dvc_0123456789abcdefghij" });
+    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, arjun.deviceId), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: arjun.deviceId });
+    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, bo.deviceId), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: bo.deviceId });
+    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, "dvc_zzzzzzzzzzzzzzzzzzzz"), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: "dvc_zzzzzzzzzzzzzzzzzzzz" });
+    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, "dvc_0123456789abcdefghij"), entityType: "MEMBER_DEVICE", orgId: ORG_B, developerId: PRIYA, deviceId: "dvc_0123456789abcdefghij" });
     expect(await w.devicesOf(priya)).toEqual([]);
     // Arjun's device is still Arjun's alone.
     expect((await w.devicesOf(w.as(ARJUN))).map((d) => d.deviceId)).toEqual([arjun.deviceId]);
@@ -143,7 +151,7 @@ describe("registering and listing devices", () => {
     const priya = w.as(PRIYA);
     for (let i = 0; i < 60; i += 1) {
       const id = `dvc_${String(i).padStart(20, "0")}`;
-      w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, id as never), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: id });
+      w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, id), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: id });
     }
     const before = w.writes();
     expect(await outcome(w.call(priya, "POST", "/v1/app/devices", { requestId: randomUUID(), label: "Blind", platform: "mac" }))).toMatchObject({ code: "CONFIG_INVALID" });
@@ -159,18 +167,18 @@ describe("registering and listing devices", () => {
     const w = world();
     const priya = w.as(PRIYA);
     const requestId = randomUUID();
-    const first = w.body(await w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" })).device;
+    const first = w.deviceOf(await w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" }));
     const before = w.writes();
-    const again = w.body(await w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" })).device;
+    const again = w.deviceOf(await w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" }));
     expect(again).toEqual(first);
     expect(w.writes()).toBe(before);
     expect(await w.devicesOf(priya)).toHaveLength(1);
     expect(await outcome(w.call(priya, "POST", "/v1/app/devices", { requestId, label: "A different label", platform: "mac" }))).toMatchObject({ code: "CONFIG_INVALID" });
-    await w.call(priya, "DELETE", `/v1/app/devices/${first.deviceId as string}`);
-    const late = w.body(await w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" })).device;
+    await w.call(priya, "DELETE", `/v1/app/devices/${first.deviceId}`);
+    const late = w.deviceOf(await w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" }));
     expect(late).toEqual(first);
     expect(await w.devicesOf(priya)).toEqual([]);
-    expect(w.meta(ORG_A, first.deviceId as string)).toHaveProperty("revokedAt");
+    expect(w.meta(ORG_A, first.deviceId)).toHaveProperty("revokedAt");
   });
 
   it("the repeat of a request that raced and lost its request item answers the winner's outcome", async () => {
@@ -274,7 +282,7 @@ describe("removing a device", () => {
     expect(w.meta(ORG_A, device.deviceId)).not.toHaveProperty("revokedAt");
     // And Priya can't remove a device that sits in her own list but isn't hers.
     const arjun = await w.register(w.as(ARJUN));
-    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, arjun.deviceId as never), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: arjun.deviceId });
+    w.db.set({ ...memberDevicesKey(ORG_A, PRIYA, arjun.deviceId), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: PRIYA, deviceId: arjun.deviceId });
     expect(await outcome(w.call(w.as(PRIYA), "DELETE", `/v1/app/devices/${arjun.deviceId}`))).toMatchObject({ code: "NOT_FOUND" });
     expect(w.meta(ORG_A, arjun.deviceId)).not.toHaveProperty("revokedAt");
   });
@@ -301,8 +309,8 @@ describe("removing a device", () => {
           if (name === "TransactWriteCommand" && !moved) {
             moved = true;
             w.db.set({ ...w.meta(ORG_A, device.deviceId)!, developerId: ARJUN });
-            w.db.delete(memberDevicesKey(ORG_A, PRIYA, device.deviceId as never));
-            w.db.set({ ...memberDevicesKey(ORG_A, ARJUN, device.deviceId as never), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: ARJUN, deviceId: device.deviceId });
+            w.db.delete(memberDevicesKey(ORG_A, PRIYA, device.deviceId));
+            w.db.set({ ...memberDevicesKey(ORG_A, ARJUN, device.deviceId), entityType: "MEMBER_DEVICE", orgId: ORG_A, developerId: ARJUN, deviceId: device.deviceId });
           }
           return w.db.send(command as never);
         },
@@ -492,7 +500,7 @@ describe("a rule that can't be read refuses", () => {
 });
 
 describe("checkLocalAgentAllowed", () => {
-  const policy = (change: Partial<typeof FULL> = {}) => ({ ...FULL, ...change });
+  const policy = (change: Partial<LocalAgentPolicy> = {}) => ({ ...FULL, ...change });
 
   it("lets an allowed tool on any project through, with or without a project", () => {
     expect(() => checkLocalAgentAllowed(policy(), "claude-code")).not.toThrow();
@@ -501,26 +509,26 @@ describe("checkLocalAgentAllowed", () => {
 
   it("refuses a tool the company turned off, with the exact text", () => {
     const rule = policy({ tools: LOCAL_TOOLS.filter((tool) => tool !== "codex") });
-    expect(() => checkLocalAgentAllowed(rule, "codex", "web")).toThrow(expect.objectContaining({ code: "LOCAL_AGENT_NOT_ALLOWED", message: expect.stringContaining(TOOL_TEXT("codex")) }));
+    expect(refusal(() => checkLocalAgentAllowed(rule, "codex", "web"))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: TOOL_TEXT("codex") });
     expect(() => checkLocalAgentAllowed(rule, "claude-code", "web")).not.toThrow();
   });
 
   it("refuses everything while local agents are off, with the tool text", () => {
-    expect(() => checkLocalAgentAllowed(policy({ allowed: false }), "rovara")).toThrow(expect.objectContaining({ code: "LOCAL_AGENT_NOT_ALLOWED", message: expect.stringContaining(TOOL_TEXT("rovara")) }));
-    expect(() => checkLocalAgentAllowed(policy({ allowed: false }), "claude-code", "web")).toThrow(expect.objectContaining({ code: "LOCAL_AGENT_NOT_ALLOWED" }));
+    expect(refusal(() => checkLocalAgentAllowed(policy({ allowed: false }), "rovara"))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: TOOL_TEXT("rovara") });
+    expect(refusal(() => checkLocalAgentAllowed(policy({ allowed: false }), "claude-code", "web"))?.code).toBe("LOCAL_AGENT_NOT_ALLOWED");
   });
 
   it("refuses a project the company didn't list, with the exact text; a listed project and no project pass", () => {
     const rule = policy({ projects: ["web"] });
-    expect(() => checkLocalAgentAllowed(rule, "claude-code", "api")).toThrow(expect.objectContaining({ code: "LOCAL_AGENT_NOT_ALLOWED", message: expect.stringContaining(PROJECT_TEXT("api")) }));
+    expect(refusal(() => checkLocalAgentAllowed(rule, "claude-code", "api"))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: PROJECT_TEXT("api") });
     expect(() => checkLocalAgentAllowed(rule, "claude-code", "web")).not.toThrow();
     expect(() => checkLocalAgentAllowed(rule, "claude-code")).not.toThrow();
-    expect(() => checkLocalAgentAllowed(policy({ projects: [] }), "claude-code", "web")).toThrow(expect.objectContaining({ code: "LOCAL_AGENT_NOT_ALLOWED" }));
+    expect(refusal(() => checkLocalAgentAllowed(policy({ projects: [] }), "claude-code", "web"))?.code).toBe("LOCAL_AGENT_NOT_ALLOWED");
   });
 
   it("the tool is checked before the project", () => {
     const rule = policy({ tools: ["rovara"], projects: ["web"] });
-    expect(() => checkLocalAgentAllowed(rule, "codex", "api")).toThrow(expect.objectContaining({ message: expect.stringContaining(TOOL_TEXT("codex")) }));
+    expect(refusal(() => checkLocalAgentAllowed(rule, "codex", "api"))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: TOOL_TEXT("codex") });
   });
 
   it("refuses a tool it doesn't know, or a project that isn't a name, without repeating them", () => {

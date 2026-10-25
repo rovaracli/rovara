@@ -136,8 +136,8 @@ export async function registerDevice(deps: DeviceDependencies, caller: DeviceCal
   const record: DeviceRecord = { orgId, deviceId, developerId, label: input.label, platform: "mac", createdAt: at, lastSeenAt: at };
   const view = deviceViewOf(record);
   const items: TransactItem[] = [
-    { Put: { TableName: deps.tableName, Item: { ...deviceKey(orgId, deviceId as never), entityType: "DEVICE", ...record }, ConditionExpression: "attribute_not_exists(pk)" } },
-    { Put: { TableName: deps.tableName, Item: { ...memberDevicesKey(orgId, developerId, deviceId as never), entityType: "MEMBER_DEVICE", orgId, developerId, deviceId, createdAt: at }, ConditionExpression: "attribute_not_exists(pk)" } },
+    { Put: { TableName: deps.tableName, Item: { ...deviceKey(orgId, deviceId), entityType: "DEVICE", ...record }, ConditionExpression: "attribute_not_exists(pk)" } },
+    { Put: { TableName: deps.tableName, Item: { ...memberDevicesKey(orgId, developerId, deviceId), entityType: "MEMBER_DEVICE", orgId, developerId, deviceId, createdAt: at }, ConditionExpression: "attribute_not_exists(pk)" } },
   ];
   try {
     await commit(deps, items, () => undefined, mark, view);
@@ -163,8 +163,8 @@ async function takeBack(deps: DeviceDependencies, record: DeviceRecord, mark: Re
   try {
     await deps.documentClient.send(new TransactWriteCommand({
       TransactItems: [
-        { Delete: { TableName: deps.tableName, Key: deviceKey(record.orgId, record.deviceId as never) } },
-        { Delete: { TableName: deps.tableName, Key: memberDevicesKey(record.orgId, record.developerId, record.deviceId as never) } },
+        { Delete: { TableName: deps.tableName, Key: deviceKey(record.orgId, record.deviceId) } },
+        { Delete: { TableName: deps.tableName, Key: memberDevicesKey(record.orgId, record.developerId, record.deviceId) } },
         { Delete: { TableName: deps.tableName, Key: agentRequestKey(mark.orgId, mark.developerId, mark.requestId) } },
       ],
     }));
