@@ -78,3 +78,11 @@ describe("browser contracts entry", () => {
     }
   });
 });
+
+it("shares one browser-safe principal key helper with Node storage", async () => {
+ const browser = await import("@agentx/contracts/web"), node = await import("@agentx/contracts");
+ expect(browser.principalKey).toBe(node.principalKey);
+ for (const principal of [{ kind: "member", developerId: "a".repeat(64) }, { kind: "project", project: "payments" }, { kind: "org" }] as const) {
+  expect(browser.principalKey(principal)).toBe(node.principalKey(principal));
+ }
+});
