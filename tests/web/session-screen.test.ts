@@ -11,6 +11,7 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
+import { agentProfile, AGENT_FIXTURE_ID } from "./support/agent-fixture.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
 import { navFixture } from "./support/fixtures.js";
 import { sessionFixture, messageFixture, taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
@@ -21,7 +22,7 @@ function setup(initialMessages: ReturnType<typeof messageFixture>[] = [], cursor
  if (request.path.endsWith("/events")) return { status: 200, body: { events: [] } };
  if (request.path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
  if (request.path.endsWith("/follow")) { session = sessionFixture({ you: { ...session.you, following: true } });return { status: 200, body: { following: true } }; }
- if (request.method === "POST" && /\/(stop|retry|take-over)$/.test(request.path) && actionReply) return actionReply(request);
+ if (request.method === "POST" && /\/(stop|retry|take-over|agent)$/.test(request.path) && actionReply) return actionReply(request);
  return { status: 200, body: { session } };
  });
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
@@ -137,3 +138,17 @@ it("does not carry a pending takeover into a different already-cached session", 
  await act(() => f.router.navigate("/app/sessions/" + next.sessionId));await screen.findByRole("heading", { name: "Another task" });
  expect(screen.queryByText("Waiting for you to confirm in your browser")).toBeNull();expect(screen.getByRole<HTMLButtonElement>("button", { name: "Follow" }).disabled).toBe(false);f.close();
 });
+
+it("turns a permitted finished task into the backend's actual agent draft once", async () => {
+ const base = sessionFixture(), f = setup([], undefined, sessionFixture({ status: "succeeded", you: { ...base.you, actions: ["make_agent"] } }), async () => ({ status: 201, body: { agent: agentProfile().agent, copied: true } }));
+ const navigate = vi.spyOn(f.host, "navigate");fireEvent.click(await screen.findByRole("button", { name: "Make this an agent" }));
+ fireEvent.change(screen.getByRole("textbox", { name: "Workflow name (optional)" }), { target: { value: "Refund investigator" } });const create = screen.getByRole("button", { name: "Create draft" });act(() => { create.click();create.click(); });
+ await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/agents/" + AGENT_FIXTURE_ID + "/edit"));
+ const calls = f.request.mock.calls.filter(([request]) => request.path.endsWith("/agent"));expect(calls).toHaveLength(1);expect(calls[0]?.[0].body).toMatchObject({ name: "Refund investigator" });f.close();
+});
+it("explains a draft made from scratch without guessing that the source method was copied", async () => {
+ const base = sessionFixture(), f = setup([], undefined, sessionFixture({ status: "succeeded", you: { ...base.you, actions: ["make_agent"] } }), async () => ({ status: 201, body: { agent: agentProfile().agent, copied: false, reason: "AGENT_NOT_USABLE" } }));
+ fireEvent.click(await screen.findByRole("button", { name: "Make this an agent" }));fireEvent.click(screen.getByRole("button", { name: "Create draft" }));
+ await screen.findByText("The source workflow couldn't be copied. Your new draft starts from scratch.");expect(screen.getByRole("link", { name: "Inspect draft" }).getAttribute("href")).toBe("/app/agents/" + AGENT_FIXTURE_ID + "/edit");expect(screen.getByRole<HTMLButtonElement>("button", { name: "Create draft" }).disabled).toBe(true);f.close();
+});
+it("does not offer task-to-method creation without its server capability", async () => { const f = setup();await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(screen.queryByRole("button", { name: "Make this an agent" })).toBeNull();f.close(); });
