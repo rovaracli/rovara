@@ -6,14 +6,14 @@
  *  - a name CloudFormation generates is `<stack name>-<logical id>-<13 random characters>`, cut at the resource type's limit
  *    (64 for a function or a role, 80 for a queue, 63 for a bucket, 255 for a table);
  *  - a queue's Ref is its URL, a role's ARN carries its path, a key's id is a UUID, a key's ARN is 75 characters;
- *  - a parameter with no default is given `PARAMETER_FALLBACK`, or what `parameterValues` says;
+ *  - a parameter is given what `parameterValues` says, else its longest allowed value, else its default, else `PARAMETER_FALLBACK`;
  *  - Fn::If takes the longer branch.
  * The region is the longest one there is (14 characters), the account is 12 digits.
  */
 
 type Json = Record<string, unknown>;
 interface Resource { Type: string; Properties?: Json }
-export interface Template { Resources: Record<string, Resource>; Parameters?: Record<string, { Default?: unknown; Type?: string }> }
+export interface Template { Resources: Record<string, Resource>; Parameters?: Record<string, { Default?: unknown; Type?: string; AllowedValues?: string[] }> }
 
 export const LAMBDA_ENVIRONMENT_LIMIT_BYTES = 4096;
 const REGION = "ap-southeast-4";
@@ -32,12 +32,19 @@ export const DEPLOY_PARAMETER_VALUES: Record<string, string> = {
   Ec2WorkerSecurityGroupId: "sg-0123456789abcdef0",
   Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0",
   // The optional parameters, set (an install that uses them: their defaults are empty, and the worst case is not).
-  SlackTeamId: "T0123456789",
+  // A Slack team id is [TE][A-Z0-9]{2,31} (the parameter's AllowedPattern): 32 characters at most.
+  SlackTeamId: `T${"0123456789ABCDEFGHIJKLMNOPQRSTUV".slice(0, 31)}`,
   DeveloperOidcIssuer: "https://login.example-company.okta.com/oauth2/default",
   DeveloperOidcClientId: "0oa1b2c3d4e5f6g7h8i9",
   DeveloperOidcRequiredClaim: "groups",
   GitHubAppId: "1234567",
   GitHubClientId: "Iv1.0123456789abcdef",
+  // The settings packed into the broker's AGENTX_SETTINGS, at their realistic maxima (ENV-ROOM review): an epoch-seconds parameter allows 12 digits (its default is "0"), and the
+  // workspace limits are small counts (their defaults are 3 and 20; six digits is generous). A parameter with an AllowedValues list takes its longest value (see Resolver.ref).
+  DeveloperSignInSlackSince: "999999999999",
+  DeveloperOidcSince: "999999999999",
+  SlackMemberWorkspaceLimit: "999999",
+  SlackOrganizationWorkspaceLimit: "999999",
   CloudSignInEmailFrom: "Rovara <no-reply@mail.example-company.com>",
   CloudSignInEmailSourceArn: "arn:aws:ses:us-east-1:123456789012:identity/mail.example-company.com",
 };
@@ -107,6 +114,7 @@ class Resolver {
     if (parameter !== undefined) {
       const given = this.options.parameterValues?.[key];
       if (given !== undefined) return given;
+      if (parameter.AllowedValues !== undefined && parameter.AllowedValues.length > 0) return [...parameter.AllowedValues].sort((a, b) => b.length - a.length)[0]!;
       return parameter.Default === undefined ? PARAMETER_FALLBACK : typeof parameter.Default === "string" ? parameter.Default : JSON.stringify(parameter.Default);
     }
     const resource = this.template.Resources[key];
