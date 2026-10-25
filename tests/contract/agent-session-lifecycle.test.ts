@@ -2,6 +2,7 @@
 // nothing of theirs passes to the successor (their task sessions keep refusing through R60). A merged duplicate's follows, shares, session ownership (the session, its live tile, its
 // "mine" row and the task's current owner) and devices move to the survivor. A mover that runs out of time leaves the marker for the next drain. Closing an org deletes its live index,
 // open and ended work entries, presence, devices and change feeds, shortens the rest to 30 days, and touches no other org.
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   agentSessionKey, changesKey, deviceCommandKey, deviceKey, endedSessionWorkKey, livePresenceKey, liveSessionKey, memberDevicesKey, memberMergeQueueKey, memberRemovalQueueKey,
@@ -10,7 +11,7 @@ import {
 } from "@agentx/contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { drainMemberMerges, drainMemberRemovals, onMemberRemoved, onMembersMerged, resolveMember, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
-import { clearOrgSessions, closeOrgSessions, onSessionMemberRemoved, onSessionMembersMerged } from "../../packages/broker/src/agent-sessions/lifecycle.js";
+import { clearOrgSessions, closeOrgSessions, closeStopRequestId, onSessionMemberRemoved, onSessionMembersMerged, stopOrgSessions } from "../../packages/broker/src/agent-sessions/lifecycle.js";
 import "../../packages/broker/src/agent-sessions/index.js";
 import { sessionLevelOf } from "../../packages/broker/src/agent-sessions/access.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
@@ -19,6 +20,8 @@ import { requireCreatorStillMember } from "../../packages/broker/src/developer/c
 import { requireNewWorkAllowed } from "../../packages/broker/src/developer/project-roles.js";
 import { effectiveTaskOwner, ownerActorIdOf, takenOverSince, taskIndexKey, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { paymentOfTask } from "../../packages/broker/src/spend/payer.js";
+import { createPendingChange, getAnyApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalStoreDependencies } from "../../packages/broker/src/agents/approvals.js";
+import { deleteSessionShare, type SessionShareDependencies } from "../../packages/broker/src/agent-sessions/shares.js";
 import { ARJUN, BO, CELL, MAX, MIA, NAMES, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 type Item = Record<string, unknown>;
@@ -340,6 +343,10 @@ describe("two members are merged", () => {
     w.db.set({ ...w.taskOf(zedsOwn.taskId), developerId: ZED, developerName: "Zed", currentOwner: { developerId: ZED, name: "Zed", provider: "oidc", since: "2026-10-22T08:30:00.000Z" } });
     await merge(w);
     expect(w.taskOf(takenByZed.taskId).currentOwner).toMatchObject({ developerId: PRIYA, name: "Priya" });
+    // Review M-1: the session whose task stays Priya's stays with the duplicate for the next run, and says so in the log.
+    expect(w.get(agentSessionKey(ORG_A, takenByZed.sessionId, "META"))!["owner"]).toMatchObject({ developerId: ZED });
+    expect(w.get(mySessionsKey(ORG_A, ZED, takenByZed.createdAt, takenByZed.sessionId))).toBeDefined();
+    expect(w.lines.map((line) => line.event)).toContain("agent_session.lifecycle_session_left");
     expect(w.taskOf(zedsOwn.taskId).currentOwner).toMatchObject({ developerId: ARJUN, name: "Arjun", since: "2026-10-22T08:30:00.000Z" });
     expect(w.get(taskIndexKey(ZED, zedsOwn.createdAt, zedsOwn.taskId))).toBeDefined();
     // The survivor gets a copy of the creator's row so the task is in their list; the creator's row is not moved.
@@ -383,6 +390,26 @@ describe("two members are merged", () => {
     w.db.delete({ pk: `DEVELOPER#${ARJUN}`, sk: "META" });
     expect(await code(merge(w))).toMatchObject({ code: "NOT_FOUND", message: "the member the sessions move to could not be found" });
     expect(w.followers(ORG_A, followed.sessionId)).toContain(ZED);
+  });
+
+  it("leaves a session alone whose task's owner can't be read, and moves nothing of it (Review M-1)", async () => {
+    const { w, zedsOwn } = setup();
+    w.db.set({ ...w.taskOf(zedsOwn.taskId), currentOwner: { developerId: "", name: "?", provider: "nope", since: "x" } });
+    await merge(w);
+    expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["owner"]).toMatchObject({ developerId: ZED });
+    expect(w.get(mySessionsKey(ORG_A, ZED, zedsOwn.createdAt, zedsOwn.sessionId))).toBeDefined();
+    expect(w.get(liveSessionKey(ORG_A, zedsOwn.sessionId))).toMatchObject({ ownerId: ZED });
+  });
+
+  it("a share the duplicate made can be removed by the survivor as its maker, before the mover has run (Review M-2)", async () => {
+    const { w, followed } = setup();
+    w.share(ORG_A, followed.sessionId, OWNER, "view", ZED);
+    const deps: SessionShareDependencies = { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore };
+    // Arjun holds only "view" on this session; he made no share himself, but Zed did and Zed is Arjun now.
+    expect(await deleteSessionShare(deps, { orgId: ORG_A, developerId: ARJUN, name: "Arjun" }, followed.sessionId, `MEMBER#${OWNER}`)).toEqual({ removed: true });
+    // A share Priya made is still not his to remove.
+    const refused = await code(deleteSessionShare(deps, { orgId: ORG_A, developerId: ARJUN, name: "Arjun" }, followed.sessionId, `MEMBER#${MIA}`));
+    expect(refused).toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
   });
 
   describe("the duplicate's tasks keep working for the survivor (Controller ruling 3)", () => {
@@ -453,6 +480,48 @@ describe("two members are merged", () => {
       expect(w.get(agentSessionKey(ORG_A, followed.sessionId, "META"))!["payer"]).toEqual({ kind: "member", developerId: PRIYA });
     });
 
+    it("hands on a duplicate with more than 5,000 task rows in one run, and then moves the shares, follows and devices (Review I-1)", async () => {
+      const { w, followed } = setup();
+      for (let i = 0; i < 5_100; i += 1) {
+        w.db.set({ ...taskIndexKey(ZED, new Date(Date.parse("2026-01-01T00:00:00.000Z") + i * 1000).toISOString(), `t${String(i)}`), entityType: "DEVELOPER_TASK_INDEX", taskId: `t${String(i)}`, orgId: ORG_A });
+      }
+      const last = soloTask(w);
+      await merge(w);
+      expect(effectiveTaskOwner(w.taskOf(last.taskId)).developerId).toBe(ARJUN);
+      expect(w.get(deviceKey(ORG_A, DEVICE_A))!["developerId"]).toBe(ARJUN);
+      expect(w.shares(ORG_A, followed.sessionId)).toContain(`MEMBER#${ARJUN}=edit`);
+      // A repeat reads the marked rows without touching a task again.
+      const after = w.snapshot();
+      await merge(w);
+      expect(w.snapshot()).toBe(after);
+    });
+
+    it("a run stopped by its deadline is continued by the next: each run hands on more tasks, and the steps after them run in the end (Review I-1)", async () => {
+      const { w } = setup();
+      const solos = Array.from({ length: 30 }, () => soloTask(w));
+      let clock = T0;
+      const tick = () => (clock += 1);
+      const handed = () => solos.filter((solo) => effectiveTaskOwner(w.taskOf(solo.taskId)).developerId === ARJUN).length;
+      let runs = 0;
+      let finished = false;
+      let before = handed();
+      while (!finished && runs < 60) {
+        runs += 1;
+        try {
+          await onSessionMembersMerged({ ...w.deps, now: tick, deadline: clock + 40 }, { orgId: ORG_A, survivorId: ARJUN, duplicateId: ZED });
+          finished = true;
+        } catch (error) {
+          expect((error as Error).name).toBe("LifecycleDeadline");
+          expect(handed(), `run ${String(runs)} made no progress`).toBeGreaterThan(before);
+        }
+        before = handed();
+      }
+      expect(finished).toBe(true);
+      expect(runs).toBeGreaterThan(1);
+      expect(handed()).toBe(30);
+      expect(w.get(deviceKey(ORG_A, DEVICE_A))!["developerId"]).toBe(ARJUN);
+    });
+
     it("does not hand on a task that someone else created and nobody took over, though the duplicate's session names it, and keeps a third person's payer on a session the duplicate owns", async () => {
       const { w, zedsOwn } = setup();
       w.db.set({ ...w.taskOf(zedsOwn.taskId), developerId: PRIYA, developerName: "Priya", payer: { kind: "member", developerId: PRIYA } });
@@ -462,7 +531,10 @@ describe("two members are merged", () => {
       expect(w.taskOf(zedsOwn.taskId)).toEqual(before);
       expect(w.get(taskIndexKey(ARJUN, zedsOwn.createdAt, zedsOwn.taskId))).toBeUndefined();
       expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["payer"]).toEqual({ kind: "member", developerId: PRIYA });
-      expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["owner"]).toMatchObject({ developerId: ARJUN });
+      // Review M-1: the task is not the duplicate's to hand on, so the session does not move either (the two owners never disagree).
+      expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["owner"]).toMatchObject({ developerId: ZED });
+      expect(w.get(mySessionsKey(ORG_A, ZED, zedsOwn.createdAt, zedsOwn.sessionId))).toBeDefined();
+      expect(w.get(liveSessionKey(ORG_A, zedsOwn.sessionId))).toMatchObject({ ownerId: ZED });
     });
 
     it("loses to a take-over that lands between the read and the write: the task is read again and left to its new owner", async () => {
@@ -624,6 +696,86 @@ describe("an org is closed", () => {
   const rowsOf = (w: World, orgId: OrgId) => JSON.stringify(w.db.find((item) => String(item.pk).includes(orgId) || String(item.sk).includes(orgId)));
   const orgAPartitions = (w: World) => w.db.find((item) => String(item.pk).startsWith(`ORG#${ORG_A}#`) && /LIVE_SESSIONS|LIVE_PRESENCE|CHANGES#|DEVICE#|MEMBER_DEVICES#/.test(String(item.pk)));
 
+  /** How many sessions of org A have their record given the expiry. */
+  const stampedCount = (w: World) => w.db.find((item) => item.sk === "META" && String(item.pk).startsWith(`ORG#${ORG_A}#AGENT_SESSION#`) && typeof item.indexExpiresAt === "number").length;
+  const manySessions = (w: World, count: number) => Array.from({ length: count }, () => {
+    const made = w.session({ owner: PRIYA });
+    for (let i = 0; i < 3; i += 1) w.db.set({ ...agentSessionKey(ORG_A, made.sessionId, `EVENT#2026-10-22T08:0${String(i)}:00.000Z#evt_${String(i)}`), entityType: "AGENT_SESSION_EVENT", orgId: ORG_A, text: "x" });
+    return made;
+  });
+
+  it("makes progress across runs: each run that runs out of time leaves more sessions done, and the close completes (Review I-2)", async () => {
+    // How many clock ticks a whole close takes, on a world of its own.
+    const calibration = setup();
+    manySessions(calibration.w, 25);
+    let spent = T0;
+    await closeOrgSessions({ documentClient: calibration.w.db, tableName: "state", now: () => (spent += 1) }, ORG_A, { budgetMs: 1_000_000 });
+    const whole = spent - T0;
+    const { w } = setup();
+    manySessions(w, 25);
+    let clock = T0;
+    const tick = () => (clock += 1);
+    let runs = 0;
+    let finished = false;
+    let before = stampedCount(w);
+    while (!finished && runs < 40) {
+      runs += 1;
+      try {
+        await closeOrgSessions({ documentClient: w.db, tableName: "state", now: tick }, ORG_A, { budgetMs: Math.ceil(whole * 0.45) });
+        finished = true;
+      } catch (error) {
+        expect((error as { code?: string }).code).toBe("RUNTIME_UNAVAILABLE");
+        expect(stampedCount(w), `run ${String(runs)} made no progress`).toBeGreaterThan(before);
+      }
+      before = stampedCount(w);
+    }
+    expect(finished).toBe(true);
+    expect(runs).toBeGreaterThan(1);
+    expect(orgAPartitions(w)).toEqual([]);
+    expect(stampedCount(w)).toBeGreaterThanOrEqual(25);
+  });
+
+  it("does not read a finished session again on a later run (Review I-2)", async () => {
+    const { w } = setup();
+    const made = manySessions(w, 3);
+    await clearOrgSessions(w.deps, ORG_A);
+    const queried: string[] = [];
+    const send = w.db.send;
+    w.db.send = (async (command: { constructor: { name: string }; input: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
+      if (command.constructor.name === "QueryCommand") queried.push(String(command.input.ExpressionAttributeValues?.[":pk"]));
+      return send(command as never);
+    }) as typeof w.db.send;
+    w.clock.now += 3_600_000;
+    await clearOrgSessions(w.deps, ORG_A);
+    for (const session of made) expect(queried.filter((pk) => pk.includes(session.sessionId)), session.sessionId).toEqual([]);
+  });
+
+  it("stops the org's running work first, once per open session with a request id that repeats, never failing the close (Review M-6)", async () => {
+    const { w, a, ended } = setup();
+    const calls: Array<{ sessionId: string; requestId: string }> = [];
+    const stop = async (sessionId: string, requestId: string) => {
+      calls.push({ sessionId, requestId });
+      if (sessionId === ended.sessionId) throw new Error("this one cannot be stopped");
+    };
+    await stopOrgSessions(w.deps, ORG_A, stop);
+    expect(calls.map((call) => call.sessionId).sort()).toEqual([a.sessionId, ended.sessionId].sort());
+    for (const call of calls) expect(call.requestId).toBe(closeStopRequestId(ORG_A, call.sessionId));
+    expect(closeStopRequestId(ORG_A, a.sessionId)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(closeStopRequestId(ORG_A, a.sessionId)).not.toBe(closeStopRequestId(ORG_B, a.sessionId));
+    expect(w.lines.some((line) => line.event === "agent_session.close_stop_failed")).toBe(true);
+    // A second run asks again with the same ids; the stop is idempotent by them.
+    await stopOrgSessions(w.deps, ORG_A, stop);
+    expect(calls.filter((call) => call.sessionId === a.sessionId).map((call) => call.requestId)).toHaveLength(2);
+    expect(new Set(calls.filter((call) => call.sessionId === a.sessionId).map((call) => call.requestId)).size).toBe(1);
+  });
+
+  it("asks nothing for another org's sessions", async () => {
+    const { w, b } = setup();
+    const asked: string[] = [];
+    await stopOrgSessions(w.deps, ORG_A, async (sessionId) => { asked.push(sessionId); });
+    expect(asked).not.toContain(b.sessionId);
+  });
+
   it("deletes the org's live index, presence, open and ended entries, devices and change feeds, and leaves another org's", async () => {
     const { w, a, ended, b } = setup();
     const theirs = rowsOf(w, ORG_B);
@@ -704,5 +856,69 @@ describe("the surface bindings of a closed org", () => {
     w.db.set({ ...sessionSurfaceKey(ORG_A, binding), entityType: "SESSION_SURFACE", orgId: ORG_A, sessionId: s.sessionId, binding });
     await clearOrgSessions(w.deps, ORG_A);
     expect(w.get(sessionSurfaceKey(ORG_A, binding))!["indexExpiresAt"]).toBe(Math.floor(T0 / 1000) + 30 * DAY);
+  });
+});
+
+describe("a removal in an org with no owner left (Review M-5)", () => {
+  const SUBJECT = (sessionId: string) => ({ kind: "session_owner" as const, sessionId, to: PRIYA, sessionRevision: 1 });
+  const setup = () => {
+    const w = world();
+    registerApproverRule("lifecycle_test", async () => true);
+    registerApprovalSubjectHandler("session_owner", async () => undefined);
+    w.db.delete(orgMemberKey(ORG_A, OWNER));
+    const asked = (approvers: { kind: "ids"; ids: string[] } | { kind: "rule"; rule: string; candidates: string[] }, requestedBy = PRIYA) =>
+      createPendingChange(w.deps as unknown as ApprovalStoreDependencies, { orgId: ORG_A, requestId: randomUUID(), requestedBy, subject: SUBJECT(`ses_${"1".repeat(20)}`), changes: ["a change"], approvers });
+    const record = async (approvalId: string) => (await getAnyApproval(w.deps as unknown as ApprovalStoreDependencies, ORG_A, approvalId as never))!;
+    const listed = (approvalId: string) => w.db.find((item) => item.entityType === "APPROVER_INDEX" && item.approvalId === approvalId).map((item) => String(item.pk).split("APPROVER#")[1]).sort();
+    const notices = (developerId: string) => w.db.find((item) => item.entityType === "CHANGE_NOTICE" && item.pk === changesKey(ORG_A, developerId, CREATED_AT, 0).pk && (item.notice as { type?: string } | undefined)?.type === "home.changed");
+    return { w, asked, record, listed, notices };
+  };
+  const removeArjun = (w: World) => onMemberRemoved(w.deps, { orgId: ORG_A, developerId: ARJUN, by: PRIYA });
+
+  it("re-routes an approval to the approvers who are left, and never decides it", async () => {
+    const { w, asked, record, listed } = setup();
+    const ids = await asked({ kind: "ids", ids: [ARJUN, MIA] });
+    const rule = await asked({ kind: "rule", rule: "lifecycle_test", candidates: [ARJUN, MAX] });
+    w.db.delete(orgMemberKey(ORG_A, ARJUN));
+    await removeArjun(w);
+    expect((await record(ids.approvalId)).approvers).toEqual({ kind: "ids", ids: [MIA] });
+    expect((await record(rule.approvalId)).approvers).toEqual({ kind: "rule", rule: "lifecycle_test", candidates: [MAX] });
+    for (const made of [ids, rule]) expect((await record(made.approvalId)).status).toBe("PENDING");
+    expect(listed(ids.approvalId)).toEqual([PRIYA, MIA].sort());
+    expect(listed(rule.approvalId)).not.toContain(ARJUN);
+  });
+
+  it("ends an approval nobody else can decide, as expired with the reason, tells the requester, and never approves it", async () => {
+    const { w, asked, record, listed, notices } = setup();
+    const only = await asked({ kind: "ids", ids: [ARJUN] });
+    w.db.delete(orgMemberKey(ORG_A, ARJUN));
+    await removeArjun(w);
+    const ended = await record(only.approvalId);
+    expect(ended).toMatchObject({ status: "EXPIRED", closedBy: "system", closedReason: "Everyone who could decide this has left your organization, so it was closed without a decision. Ask again if it is still needed." });
+    expect(listed(only.approvalId)).toEqual([]);
+    expect(notices(PRIYA)).toHaveLength(1);
+    expect(w.db.find((item) => item.entityType === "OPEN_APPROVAL" && item.approvalId === only.approvalId)).toEqual([]);
+  });
+
+  it("does not tell a requester who is the one who left, and repeating changes nothing", async () => {
+    const { w, asked, record, notices } = setup();
+    const own = await asked({ kind: "ids", ids: [ARJUN] }, ARJUN);
+    w.db.delete(orgMemberKey(ORG_A, ARJUN));
+    await removeArjun(w);
+    expect((await record(own.approvalId)).status).toBe("EXPIRED");
+    expect(notices(ARJUN)).toEqual([]);
+    const after = w.snapshot();
+    w.clock.now += 3_600_000;
+    await removeArjun(w);
+    expect(w.snapshot().replaceAll(String(T0), "")).toBe(after.replaceAll(String(T0), ""));
+  });
+
+  it("leaves an approval alone that does not name the leaver", async () => {
+    const { w, asked, record } = setup();
+    const other = await asked({ kind: "ids", ids: [MIA, MAX] });
+    const before = structuredClone(await record(other.approvalId));
+    w.db.delete(orgMemberKey(ORG_A, ARJUN));
+    await removeArjun(w);
+    expect(await record(other.approvalId)).toEqual(before);
   });
 });

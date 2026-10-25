@@ -846,6 +846,22 @@ describe("a task's key at the broker", () => {
     expect(r.operation().modelKeyIds).toEqual([keyIdOf(key!)]);
   });
 
+  it("counts a payer who was merged into another member against the member they are now, in the key's scopes, tags and name (Review M-3 of Task 21)", async () => {
+    const t = await brokerSetup();
+    const DUPLICATE = "9".repeat(64);
+    t.db.set({ pk: `DEVELOPER#${DUPLICATE}`, sk: "META", developerId: DUPLICATE, provider: "oidc", displayName: "Duplicate", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: DEV_MAYA.developerId });
+    const r = await t.running();
+    t.db.set({ ...(t.db.get(taskKey(r.taskId)) as Record<string, unknown>), payer: { kind: "member", developerId: DUPLICATE } });
+    const reply = await r.ask();
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const [key] = t.access.mintedKeys();
+    const record = t.db.get(modelKeyKey(TEST_ORG, keyIdOf(key!))) as unknown as ModelKeyRecord;
+    expect(record.tags).toMatchObject({ payerKind: "member", payerId: DEV_MAYA.developerId });
+    expect(record.scopes).toContainEqual({ kind: "member", developerId: DEV_MAYA.developerId });
+    expect(record.scopes).not.toContainEqual({ kind: "member", developerId: DUPLICATE });
+    expect(t.access.mintKey.mock.calls[0]![0]).toMatchObject({ tags: { payerId: DEV_MAYA.developerId } });
+  });
+
   it("gives a task's second operation the room that is left, not the room less its own first key's hold", async () => {
     const t = await brokerSetup();
     const r = await t.running();

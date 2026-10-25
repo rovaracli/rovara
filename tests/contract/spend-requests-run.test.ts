@@ -1288,3 +1288,58 @@ describe("fix round 1 (the Task 32 review)", () => {
     });
   });
 });
+
+// Review M-5 of Plan 5 Task 21: in an org with no owner left, a request routed to the person who left is handed to the approvers who are left, or ended with a reason and the asker told. Never approved.
+describe("a removal in an org with no owner left", () => {
+  /** A $1 budget change that waits for an admin, asked by Maya; Ada is then made an admin (no owner is left once Deb goes). */
+  async function waiting() {
+    const t = await setup();
+    await t.budgeted(50);
+    await t.budgeted(50);
+    const third = await t.agentOf();
+    const asked = await t.setBudget(MAYA, third, { monthlyUsd: 1 });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    const id = asked.body.spendRequestId as string;
+    t.db.set({ ...(t.db.get(orgMemberKey(TEST_ORG, ADA.developerId)) as Record<string, unknown>), role: "admin" });
+    const recordOf = () => t.requests().find((record) => record.spendRequestId === id)!;
+    const setApprovers = (approverIds: string[]) => {
+      const stored = t.db.get(spendRequestKey(TEST_ORG, id)) as Record<string, unknown>;
+      t.db.set({ ...stored, approverIds });
+      t.db.set({ ...openSpendRequestsKey(TEST_ORG, String(stored["createdAt"]), id), entityType: "SPEND_REQUEST_OPEN", orgId: TEST_ORG, spendRequestId: id, approverIds });
+    };
+    const noticesOf = (who: string) => t.db.find((item) => item.entityType === "CHANGE_NOTICE" && String(item.pk).includes(`CHANGES#${who}`));
+    return { t, id, recordOf, setApprovers, noticesOf };
+  }
+
+  it("hands the request to the approvers who are left, still PENDING", async () => {
+    const { t, recordOf, setApprovers } = await waiting();
+    setApprovers([DEB.developerId, ADA.developerId]);
+    t.db.delete(orgMemberKey(TEST_ORG, DEB.developerId));
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
+    expect(recordOf()).toMatchObject({ status: "PENDING", approverIds: [ADA.developerId] });
+    expect(t.openItems().map((item) => (item as { approverIds?: string[] }).approverIds)).toEqual([[ADA.developerId]]);
+  });
+
+  it("ends a request nobody else can decide, with the reason the asker reads, and tells the asker; it is never approved", async () => {
+    const { t, id, recordOf, setApprovers, noticesOf } = await waiting();
+    setApprovers([DEB.developerId]);
+    t.db.delete(orgMemberKey(TEST_ORG, DEB.developerId));
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
+    expect(recordOf()).toMatchObject({ status: "EXPIRED", endedBecause: "approver_left" });
+    expect(t.openItems()).toEqual([]);
+    expect(noticesOf(MAYA.developerId)).toHaveLength(1);
+    const refused = await refusal(t.decide(ADA, id));
+    expect(refused).toMatchObject({ code: "APPROVAL_CLOSED", message: "Everyone who could decide this has left your organization, so it was closed without a decision. Ask again if it is still needed." });
+  });
+
+  it("leaves a request alone that does not name the person who left, and repeating changes nothing", async () => {
+    const { t, recordOf, setApprovers } = await waiting();
+    setApprovers([ADA.developerId]);
+    const before = structuredClone(recordOf());
+    t.db.delete(orgMemberKey(TEST_ORG, DEB.developerId));
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
+    expect(recordOf()).toEqual(before);
+    await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
+    expect(recordOf()).toEqual(before);
+  });
+});

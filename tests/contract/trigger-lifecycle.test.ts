@@ -266,6 +266,9 @@ describe("the last owner leaves", () => {
     await removal(v, OWNER);
     expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false, disabledReason: reason });
     expect(v.logs.map((entry) => entry.event)).toContain("trigger.no_one_to_tell");
+    // A repeat finds the trigger off already and says nothing more (Review M-7).
+    await removal(v, OWNER);
+    expect(v.logs.filter((entry) => entry.event === "trigger.no_one_to_tell")).toHaveLength(1);
   });
 
   it("keeps the marker when a mover fails, so the next run turns the trigger off", async () => {

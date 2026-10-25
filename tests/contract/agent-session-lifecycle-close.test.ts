@@ -84,3 +84,34 @@ describe("closing an org with sessions", () => {
     expect(h.db.get(orgMetaKey(TEST_ORG))?.["closedAt"]).toBeDefined();
   });
 });
+
+describe("closing an org stops the work that is running (Review M-6)", () => {
+  const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
+  type Item = Record<string, unknown>;
+
+  async function runningRun() {
+    const h = await createDeveloperTaskBroker({ orgResolver: async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG), brokerExtra: { cloud: true, agents: {} } });
+    await h.orgOf(MAYA);
+    seedMembership(h.db, MAYA.developerId, { orgId: TEST_ORG, role: "owner" });
+    const operations = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION") as Array<Item & { id: string; kind: string; fence: number; status: string }>;
+    const reply = await h.dev(MAYA, "POST", "/v1/app/agents/root-cause-analyst/runs", { requestId: randomUUID(), project: "payments", input: { text: "Why did checkout fail?" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const taskId = (reply.body.task as { taskId: string }).taskId;
+    const { workspaceId, sessionId } = h.db.get(`DEVTASK#${taskId}`, "META") as Item & { workspaceId: string; sessionId: string };
+    await h.finish(workspaceId, String(operations(workspaceId).find((operation) => operation.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    return { h, operations, workspaceId, sessionId, taskId };
+  }
+
+  it("asks the running step to stop, once, through the task's own cancel, and the close still completes", async () => {
+    const { h, operations, workspaceId, sessionId } = await runningRun();
+    const step = () => operations(workspaceId).filter((operation) => operation.kind === "task").sort((a, b) => a.fence - b.fence)[0]!;
+    expect(step().status).not.toBe("CANCEL_REQUESTED");
+    const left = await h.dev(MAYA, "POST", "/v1/app/org/leave", { requestId: randomUUID() });
+    expect(left.status, JSON.stringify(left.body)).toBe(200);
+    expect(left.body).toMatchObject({ orgClosed: true });
+    expect(step().status).toBe("CANCEL_REQUESTED");
+    expect(operations(workspaceId).filter((operation) => operation.kind === "cancel")).toHaveLength(1);
+    expect(h.db.get(orgMetaKey(TEST_ORG))?.["closedAt"]).toBeDefined();
+    expect(h.db.get(openAgentSessionKey(TEST_ORG, sessionId))).toBeUndefined();
+  });
+});
