@@ -31,8 +31,10 @@ describe("what a message to a chain is for", () => {
     await onStepTaskEnded(w.deps, w.endEvent("task-1", { finalReport: "Bug in refund retry", branch: "fix" }));
     expect(w.run(run.runId)).toMatchObject({ status: "waiting" });
     expect(await steer.current(ORG_A, run.runId)).toEqual({ kind: "gate" });
-    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "rejected", decisionBy(w, run.runId, 2));
-    expect(w.run(run.runId)?.status).not.toBe("waiting");
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
+    expect(await steer.current(ORG_A, run.runId)).toEqual({ kind: "step", taskId: "task-2" });
+    await chainControlFor(w.deps).cancel(ORG_A, actor(PRIYA), run.runId, randomUUID());
+    expect(w.run(run.runId)?.status).toBe("cancelled");
     expect(await steer.current(ORG_A, run.runId)).toEqual({ kind: "none" });
   });
 });
