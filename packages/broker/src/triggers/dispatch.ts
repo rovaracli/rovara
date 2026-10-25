@@ -244,6 +244,8 @@ export async function startAgentFor(deps: TriggerDispatchDependencies, orgId: Or
   const started = await deps.chainRuns.startAgentRun({
     requestId: requestIdFor(identity), orgId, project: source.project, agent: { agentId, version: ref.version },
     input: { text: source.agentText, ...(context.length === 0 ? {} : { context }) }, origin: source.origin, owner, payer,
+    // Plan 5 (N6): nobody started this run, so it names the trigger that did (taken from the trigger's own record, never from the event), and its session says so.
+    trigger: { kind: source.origin, triggerId: trigger.triggerId },
   });
   return { taskId: started.taskId };
 }
