@@ -509,6 +509,16 @@ describe("a merged pull request adds one to the project's month, once", () => {
     expect(busy.count()).toBeUndefined();
   });
 
+  it("gives up on a persistent cancelled-transaction conflict after the few tries, without reading GitHub again (Round 2 review I-2)", async () => {
+    const busy = harness();
+    busy.remote.set(1, "merged");
+    await expect(busy.reconcile("acme/api", 1, { conflicts: { times: 100, kind: "cancelled" } })).rejects.toMatchObject({ name: "GithubWebhookRetryableError" });
+    // The first try and three more: not the outer loop's five reads of GitHub with four tries in each.
+    expect(busy.saves.count).toBe(4);
+    expect(busy.reads.count).toBe(2);
+    expect(busy.count()).toBeUndefined();
+  });
+
   it("counts on the task's own org and project, and nowhere else", async () => {
     const h = harness("api", ORG_B);
     h.remote.set(1, "merged");
