@@ -562,7 +562,7 @@ describe("old data", () => {
 
 describe("the route", () => {
   const route = (w: World, who: string, method: string, sessionId: string, body?: unknown) => routeAgentSessionRequest(
-    { ...w.sessionDeps, origin: CELL, approvals: w.deps, taskView: async () => ({}) as never },
+    { ...w.sessionDeps, origin: CELL, approvals: w.deps as never, taskView: async () => ({}) as never },
     w.caller(who), { method, path: `/v1/app/sessions/${sessionId}/take-over`, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
     new URL(`${CELL}/v1/app/sessions/${sessionId}/take-over`),
   );
@@ -589,7 +589,7 @@ describe("the route", () => {
     const { sessionId } = sessionSeed(w);
     const { approvalId } = await w.asked(MAX, sessionId);
     const { decidingOf } = await import("../../packages/broker/src/agent-sessions/routes.js");
-    const listed = await decidingOf(w.deps).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId, subject: { kind: "task", taskId: "t" } } as never);
+    const listed = await decidingOf(w.deps as never).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId, subject: { kind: "task", taskId: "t" } } as never);
     expect(listed).toEqual([{ approvalId, title: 'Max becomes the owner of "Bump the Stripe SDK".' }]);
   });
 });
@@ -770,7 +770,7 @@ describe("what the first round of mutation showed was not yet pinned", () => {
     const other = sessionSeed(w);
     await w.asked(MAX, other.sessionId);
     const { decidingOf } = await import("../../packages/broker/src/agent-sessions/routes.js");
-    const listed = await decidingOf(w.deps).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId: mine.sessionId, subject: { kind: "task", taskId: "t" } } as never);
+    const listed = await decidingOf(w.deps as never).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId: mine.sessionId, subject: { kind: "task", taskId: "t" } } as never);
     expect(listed).toEqual([]);
   });
 });
@@ -838,7 +838,7 @@ describe("approvals already waiting when the session is taken over (12b review I
     expect(await listed(w, PRIYA)).toEqual([]);
     expect(await w.approvalOf(approvalId)).toMatchObject({ status: "PENDING", owner: { developerId: MAX, name: "Max" } });
     const { decidingOf } = await import("../../packages/broker/src/agent-sessions/routes.js");
-    const deciding = await decidingOf(w.deps).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId, subject: { kind: "task", taskId } } as never);
+    const deciding = await decidingOf(w.deps as never).approvals({ orgId: ORG_A, developerId: MAX, orgRole: "member" } as never, { sessionId, subject: { kind: "task", taskId } } as never);
     expect(deciding).toEqual([{ approvalId, title: "Create a Linear issue" }]);
   });
 

@@ -4,6 +4,7 @@
 // sees the origin with its title and link; everyone else, and everyone once the session is deleted or past retention, sees `{ kind: "session", visible: false }`. The session view says whether the
 // caller may do this (`you.actions` holds `make_agent`), worked out by the same check as the route. Drafts and versions made before this still parse.
 import { randomUUID } from "node:crypto";
+import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { describe, expect, it } from "vitest";
 import {
   AgentOriginSchema,
@@ -39,7 +40,7 @@ function world(options: { goal?: string | null; agent?: { agentId: string; name:
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now });
   const agentDeps = {
     store, projectMembers: w.members, documentClient: w.db, tableName: "state", now: () => w.clock.now, confirmOrigin: CELL, signInStore: w.signInStore, log: (event: string, fields: Record<string, unknown>) => { logs.push({ event, fields }); },
-  } as unknown as ApprovalDependencies;
+  } as unknown as ApprovalDependencies & AgentRouteDependencies;
   const deps = {
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, approvals: agentDeps,
     taskView: async () => ({ status: "RUNNING" }) as never,

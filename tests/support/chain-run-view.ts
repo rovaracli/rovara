@@ -10,5 +10,5 @@ export function chainRunViewOf(runId: string, extra: Partial<ChainRunView> = {})
     chainOwner: { kind: "member", id: HEX, name: "Priya" }, owner: { developerId: HEX, name: "Priya" }, startedBy: { kind: "member", developerId: HEX, name: "Priya" },
     status: "running", currentSeq: 1, createdAt: AT, updatedAt: AT, cost: { spentUsd: 0, runLimitUsd: 30 },
     sections: [{ seq: 1, stepId: "investigate", name: "investigate", kind: "agent", status: "running", attempt: 1, startedAt: AT }], ...extra,
-  } as ChainRunView;
+  };
 }

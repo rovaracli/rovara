@@ -261,7 +261,7 @@ import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "..
 import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
 import type { SessionAccessDependencies } from "../agent-sessions/access.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
-import { END_LEASE_MS, hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
+import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
 
 export interface DeveloperTaskRouteDependencies {

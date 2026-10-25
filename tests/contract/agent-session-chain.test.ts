@@ -14,7 +14,7 @@ import { loadSlackBroker } from "../support/slack-broker.js";
 beforeAll(async () => { await loadSlackBroker(); });
 afterAll(async () => { (await loadSlackBroker() as unknown as { uninstallChainRunner(): void }).uninstallChainRunner(); });
 
-const ONE_STEP: ChainDefinitionInput = { start: "look", steps: [{ kind: "agent", id: "look", name: "Look into it", agent: { agentId: "root-cause-analyst", version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 30 } } as ChainDefinitionInput;
+const ONE_STEP: ChainDefinitionInput = { start: "look", steps: [{ kind: "agent", id: "look", name: "Look into it", agent: { agentId: "root-cause-analyst", version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 30 } };
 const TRIGGER_ID = "ctr_aaaaaaaaaaaaaaaaaaaa";
 
 function world() {
