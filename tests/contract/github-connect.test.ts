@@ -448,6 +448,7 @@ describe("the callback and the confirmation", () => {
     expect((await confirmGithubConnect(w.deps, { connect: started.stateHash, decision: "connect" }, result.confirmToken, CELL)).outcome).toBe("connected_trial_used");
     expect(w.db.get(githubInstallationKey(501))).toMatchObject({ orgId: TEST_ORG });
     expect(w.db.get(orgMetaKey(TEST_ORG))).not.toHaveProperty("trialUnlockedAt");
+    expect(w.db.get(orgMetaKey(TEST_ORG))).toMatchObject({ trialGithubUsedAt: NOW });
   });
 
   it("another unlock failure is logged by name and the outcome is connected", async () => {
