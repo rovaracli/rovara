@@ -7,6 +7,7 @@ import {
   SlackThreadSchema,
   agentSessionKey,
   agentXError,
+  sessionBindingKey,
   sessionSurfaceKey,
   type AgentSessionRecord,
   type OrgId,
@@ -21,14 +22,14 @@ const BUSY = "This can't be saved right now. Try again.";
 const ATTEMPTS = 3;
 
 /**
- * The two items of one binding: the session's own `BINDING#<kind>` item and the reverse `sessionSurfaceKey` item that says which session a
+ * The two items of one binding: the session's own `BINDING#<kind>` item (in its own partition, `sessionBindingKey`, so a role that may write bindings has no reach into the session's partition) and the reverse `sessionSurfaceKey` item that says which session a
  * surface follows. Each is written only if absent, so a surface follows one session and a session has one binding of each kind.
  */
 export function bindingItems(table: Pick<TableInput, "tableName">, orgId: OrgId, sessionId: SessionId, binding: SessionBinding, at: string): TransactItem[] {
   const clean = SessionBindingSchema.parse(binding);
   const writer = table as TableInput;
   return [
-    putNew(writer, agentSessionKey(orgId, sessionId, `BINDING#${clean.kind}`), "AGENT_SESSION_BINDING", { orgId, sessionId, binding: clean, at }),
+    putNew(writer, sessionBindingKey(orgId, sessionId, clean.kind), "AGENT_SESSION_BINDING", { orgId, sessionId, binding: clean, at }),
     putNew(writer, sessionSurfaceKey(orgId, clean), "SESSION_SURFACE", { orgId, sessionId, kind: clean.kind, at }),
   ];
 }
@@ -81,7 +82,7 @@ async function diagnose(table: TableInput, orgId: OrgId, sessionId: SessionId, b
   const surface = sessionSurfaceKey(orgId, binding);
   const [meta, own, reverse] = await Promise.all([
     getItem(table, agentSessionKey(orgId, sessionId, "META")),
-    getItem(table, agentSessionKey(orgId, sessionId, `BINDING#${binding.kind}`)),
+    getItem(table, sessionBindingKey(orgId, sessionId, binding.kind)),
     getItem(table, surface),
   ]);
   if (meta === undefined || meta["orgId"] !== orgId) return agentXError("NOT_FOUND", "session not found");
@@ -99,6 +100,10 @@ async function diagnose(table: TableInput, orgId: OrgId, sessionId: SessionId, b
  * absent, behind a check that the session is in this org and still open. "bound" when it wrote them, "already_bound" for a repeat of the same binding (nothing written). A
  * surface that follows another session, or a second binding of one kind on the session, is `CONFIG_INVALID`; a session of another org or a missing one is `NOT_FOUND`
  * (the same answer for both); an ended one is `SESSION_ENDED`. A conflict with another writer is a retryable `RUNTIME_UNAVAILABLE`, never taken for a lost race.
+ *
+ * It takes no actor and does not check that the binding's Slack team or Linear workspace belongs to `orgId`. The caller must have (a) checked that the actor holds edit on the
+ * session, and (b) resolved `orgId` from the team or workspace the binding names. A binding is a routing hint, never authority: whatever arrives through it (a Slack reply, a
+ * Linear event) must still be checked against the acting person's own session level before it steers the agent.
  */
 export async function bindSessionSurface(
   table: TableInput,
@@ -128,7 +133,8 @@ export async function bindSessionSurface(
 /**
  * The session a surface follows in this org, or undefined (nothing bound, a session that is gone, or two items that disagree). The surface item names the session and the
  * session's own binding must name the surface back, so a stale or tampered item reads as unbound. The caller resolves the org first (from its own team or workspace
- * binding). A read that fails is thrown, never read as "unbound".
+ * binding). A read that fails is thrown, never read as "unbound". The record it returns is a routing hint, not authority: the caller must check the acting person's own session
+ * level (Plan 9: a Slack or Linear event before it steers) and must not show the session to someone who cannot view it.
  */
 export async function sessionForSurface(table: TableInput, orgId: OrgId, binding: SessionBinding): Promise<AgentSessionRecord | undefined> {
   const parsed = SessionBindingSchema.safeParse(binding);
@@ -140,6 +146,6 @@ export async function sessionForSurface(table: TableInput, orgId: OrgId, binding
   if (!id.success) return undefined;
   const session = await new AgentSessionStore(table).get(orgId, id.data);
   if (session === undefined) return undefined;
-  const own = await getItem(table, agentSessionKey(orgId, id.data, `BINDING#${parsed.data.kind}`));
+  const own = await getItem(table, sessionBindingKey(orgId, id.data, parsed.data.kind));
   return own !== undefined && own["orgId"] === orgId && surfaceOf(orgId, own["binding"]) === surface.sk ? session : undefined;
 }

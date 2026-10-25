@@ -194,7 +194,7 @@ describe("retention: drainEndedSessions", () => {
     const timed = { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "UpdateCommand") { updates += 1; if (updates === 100) p.w.clock.now += DRAIN_BUDGET_MS + 1; } return base(command as never); } };
     await drainEndedSessions({ ...p.deps, documentClient: timed }, p.w.clock.now);
     const partial = p.w.db.get(work)!;
-    expect(partial.cursor).toMatchObject({ prefix: 3, after: expect.stringMatching(/^MESSAGE#/) as string });
+    expect(partial.cursor).toMatchObject({ prefix: 2, after: expect.stringMatching(/^MESSAGE#/) as string });
     const stamped = () => p.w.db.find((item) => String(item.sk).startsWith("MESSAGE#") && item.indexExpiresAt === expires).length;
     expect(stamped()).toBeGreaterThanOrEqual(100);
     expect(stamped()).toBeLessThan(250);

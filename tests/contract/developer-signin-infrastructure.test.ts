@@ -403,8 +403,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       ["dynamodb:Query", [`${ORG}#MEMBER#*`, ORG, `${ORG}#PROJECT_CATALOG`]],
       // A member's grants copied to the survivor.
       ["dynamodb:PutItem", [`${ORG}#MEMBER#*`]],
-      // Plan 5, Task 20 (the notifier's): the session's binding to the thread and the thread's reverse item, put with the thread's record.
-      ["dynamodb:PutItem", [`${ORG}#AGENT_SESSION#*`, `${ORG}#SESSION_SURFACE`]],
+      // Plan 5, Task 20 (the notifier's): the session's binding to the thread (in its own partition, never the session's) and the thread's reverse item, put with the thread's record.
+      ["dynamodb:PutItem", [`${ORG}#SESSION_BINDING#*`, `${ORG}#SESSION_SURFACE`]],
     ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
     for (const statement of stateGrants) {
       expect(statement.Effect).toBe("Allow");
@@ -585,7 +585,7 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
       { actions: ["dynamodb:PutItem"], keys: ["SHARED_TASK#*"] },
       { actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"], keys: ["ADMIN_CHANGE#*"] },
       { actions: ["dynamodb:PutItem"], keys: ["CHATGPT_NOTICE#*"] },
-      { actions: ["dynamodb:PutItem"], keys: ["ORG#org_????????????????????#AGENT_SESSION#*", "ORG#org_????????????????????#SESSION_SURFACE"] },
+      { actions: ["dynamodb:PutItem"], keys: ["ORG#org_????????????????????#SESSION_BINDING#*", "ORG#org_????????????????????#SESSION_SURFACE"] },
     ]));
   });
 

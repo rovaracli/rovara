@@ -564,10 +564,11 @@ async function recordThread(deps: NotifierDependencies, taskId: string, threadTs
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
           UpdateExpression: "SET #share = :share, shareVersion = :next, updatedAt = :now",
-          // A close does not move shareVersion, so the close state read here is a condition too.
-          ConditionExpression: task.closedAt === undefined ? "shareVersion = :current AND attribute_not_exists(closedAt)" : "shareVersion = :current",
+          // A close does not move shareVersion, so the close state read here is a condition too. So is the task's session (or its absence): one given to the task meanwhile
+          // (a lazy creation) refuses this write, and the read again binds it.
+          ConditionExpression: `shareVersion = :current AND ${task.sessionId === undefined ? "attribute_not_exists(sessionId)" : "sessionId = :sessionId"}${task.closedAt === undefined ? " AND attribute_not_exists(closedAt)" : ""}`,
           ExpressionAttributeNames: { "#share": "share" },
-          ExpressionAttributeValues: { ":share": share, ":next": version + 1, ":current": version, ":now": now },
+          ExpressionAttributeValues: { ":share": share, ":next": version + 1, ":current": version, ":now": now, ...(task.sessionId === undefined ? {} : { ":sessionId": task.sessionId }) },
         } },
         { Put: {
           TableName: deps.tableName,
@@ -586,7 +587,8 @@ async function recordThread(deps: NotifierDependencies, taskId: string, threadTs
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
-      // The binding's items come last: a refusal at one of them (and not at the thread's own items) drops the binding, and the thread is tried again without it.
+      // The binding's items come last: a refusal at any of them (whether or not the thread's own items were refused too) drops the binding, and the thread is tried again
+      // after reading the task again, without the binding. If the thread's own items were the only cause the next attempt records it; if not, nothing is lost.
       if (binding.length > 0 && [...(failedIndexes(error) ?? [])].some((index) => index >= THREAD_RECORD_ITEMS)) {
         bindToSession = false;
         deps.log({ event: "developer_notifier.session_binding_skipped", taskId });

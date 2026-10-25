@@ -258,6 +258,7 @@ export async function ensureTaskSession(
         title: input.title, owner: { developerId: task.developerId, name: input.ownerName }, startedBy, origin: task.origin,
         payer: task.payer ?? { kind: "member", developerId: task.developerId }, now: task.createdAt,
       }),
+      // A thread maps to one shared task, so this binding cannot meet another session's; if it ever were refused, the whole creation would fail on every read until fixed.
       ...threadBindingItems(table, task.orgId, sessionId, task.share, task.createdAt),
       {
         Update: {
