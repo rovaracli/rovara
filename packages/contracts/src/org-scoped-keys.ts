@@ -736,11 +736,6 @@ export function changesKey(orgId: OrgId, developerId: string, at: string, n: num
   return { pk: orgScoped(orgId, `CHANGES#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(at)}#${paddedCounter(n, "a notice number")}` };
 }
 
-/** A Home card one person dismissed. */
-export function homeDismissKey(orgId: OrgId, developerId: string, cardId: string): OrgKey {
-  return { pk: orgScoped(orgId, `HOME_DISMISS#${keyPart(developerId, "a developer id")}`), sk: keyPart(cardId, "a card id") };
-}
-
 /** A project's session counts for one UTC month (`month` is `YYYY-MM`). */
 export function projectMonthStatsKey(orgId: OrgId, project: string, month: string): OrgKey {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/u.test(month)) throw new Error("a month is YYYY-MM");
