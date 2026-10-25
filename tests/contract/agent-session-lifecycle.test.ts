@@ -15,7 +15,8 @@ import "../../packages/broker/src/agent-sessions/index.js";
 import { liveSessions } from "../../packages/broker/src/agent-sessions/live.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { requireNewWorkAllowed } from "../../packages/broker/src/developer/project-roles.js";
-import { effectiveTaskOwner, taskIndexKey, taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { effectiveTaskOwner, ownerActorIdOf, takenOverSince, taskIndexKey, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { paymentOfTask } from "../../packages/broker/src/spend/payer.js";
 import { ARJUN, BO, CELL, MAX, MIA, NAMES, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 type Item = Record<string, unknown>;
@@ -299,9 +300,8 @@ describe("two members are merged", () => {
     expect(effectiveTaskOwner(w.taskOf(takenByZed.taskId)).developerId).toBe(ARJUN);
     expect(w.get(taskIndexKey(ZED, takenByZed.createdAt, takenByZed.taskId))).toBeUndefined();
     expect(w.get(taskIndexKey(ARJUN, takenByZed.createdAt, takenByZed.taskId))).toMatchObject({ taskId: takenByZed.taskId });
-    // The creator's row stays, and a task nobody took over keeps its creator (history): the duplicate's own list row stays.
+    // The creator's row stays (history).
     expect(w.get(taskIndexKey(PRIYA, takenByZed.createdAt, takenByZed.taskId))).toBeDefined();
-    expect(w.taskOf(zedsOwn.taskId).currentOwner).toBeUndefined();
     expect(w.get(taskIndexKey(ZED, zedsOwn.createdAt, zedsOwn.taskId))).toBeDefined();
   });
 
@@ -380,6 +380,107 @@ describe("two members are merged", () => {
     w.db.delete({ pk: `DEVELOPER#${ARJUN}`, sk: "META" });
     expect(await code(merge(w))).toMatchObject({ code: "NOT_FOUND", message: "the member the sessions move to could not be found" });
     expect(w.followers(ORG_A, followed.sessionId)).toContain(ZED);
+  });
+
+  describe("the duplicate's tasks keep working for the survivor (Controller ruling 3)", () => {
+    const MERGED_AT = new Date(T0).toISOString();
+    /** A task with no session, as a CLI task from before sessions: its record and its creator's list row. */
+    const soloTask = (w: World, over: Record<string, unknown> = {}) => {
+      const taskId = `00000000-0000-4000-8000-${String(Math.floor(Math.random() * 1e12)).padStart(12, "0")}`;
+      const createdAt = "2026-10-21T08:00:00.000Z";
+      w.db.set({
+        ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: ORG_A, developerId: ZED, developerName: "Zed", provider: "oidc", project: "web", workspaceId: `w-${taskId}`,
+        ownerKey: taskOwnerKey(ZED, taskId), createdAt, updatedAt: createdAt, ...over,
+      });
+      w.db.set({ ...taskIndexKey(ZED, createdAt, taskId), entityType: "DEVELOPER_TASK_INDEX", taskId, orgId: ORG_A, project: "web", title: "t", client: "app", status: "RUNNING", createdAt, updatedAt: createdAt });
+      return { taskId, createdAt };
+    };
+
+    it("hands a task nobody took over to the survivor as its current owner, keeping the creator as history and the principal as it was", async () => {
+      const { w, zedsOwn } = setup();
+      const before = w.taskOf(zedsOwn.taskId);
+      await merge(w);
+      const task = w.taskOf(zedsOwn.taskId);
+      expect(effectiveTaskOwner(task)).toMatchObject({ developerId: ARJUN, name: "Arjun", provider: "oidc" });
+      expect(ownerActorIdOf(task)).toBe(taskOwnerKey(ARJUN, zedsOwn.taskId));
+      expect(takenOverSince(task)).toBe(MERGED_AT);
+      // The creator's fields, the principal and the workspace never change.
+      expect(task).toMatchObject({ developerId: ZED, developerName: "Zed", ownerKey: before.ownerKey, workspaceId: before.workspaceId });
+      expect(w.get(taskIndexKey(ARJUN, zedsOwn.createdAt, zedsOwn.taskId))).toMatchObject({ taskId: zedsOwn.taskId });
+      expect(w.get(taskIndexKey(ZED, zedsOwn.createdAt, zedsOwn.taskId))).toBeDefined();
+    });
+
+    it("hands on a task that has no session too", async () => {
+      const { w } = setup();
+      const solo = soloTask(w);
+      await merge(w);
+      expect(effectiveTaskOwner(w.taskOf(solo.taskId)).developerId).toBe(ARJUN);
+      expect(w.get(taskIndexKey(ARJUN, solo.createdAt, solo.taskId))).toBeDefined();
+    });
+
+    it("leaves a task someone else took over, and another org's task of the same creator id, alone", async () => {
+      const { w } = setup();
+      const taken = soloTask(w, { currentOwner: { developerId: PRIYA, name: "Priya", provider: "oidc", since: "2026-10-22T08:30:00.000Z" }, payer: { kind: "member", developerId: PRIYA } });
+      const foreign = soloTask(w, { orgId: ORG_B });
+      const before = { taken: structuredClone(w.taskOf(taken.taskId)), foreign: structuredClone(w.taskOf(foreign.taskId)) };
+      await merge(w);
+      expect(w.taskOf(taken.taskId)).toEqual(before.taken);
+      expect(w.taskOf(foreign.taskId)).toEqual(before.foreign);
+      expect(w.get(taskIndexKey(ARJUN, foreign.createdAt, foreign.taskId))).toBeUndefined();
+    });
+
+    it("makes the survivor pay: a member payer, and the creator-default payer, become the survivor; other payers stay", async () => {
+      const { w, zedsOwn } = setup();
+      const explicit = soloTask(w, { payer: { kind: "member", developerId: ZED } });
+      const project = soloTask(w, { payer: { kind: "project", project: "web" } });
+      const third = soloTask(w, { payer: { kind: "member", developerId: PRIYA } });
+      await merge(w);
+      expect(paymentOfTask(w.taskOf(zedsOwn.taskId)).payer).toEqual({ kind: "member", developerId: ARJUN });
+      expect(paymentOfTask(w.taskOf(explicit.taskId)).payer).toEqual({ kind: "member", developerId: ARJUN });
+      expect(paymentOfTask(w.taskOf(project.taskId)).payer).toEqual({ kind: "project", project: "web" });
+      expect(paymentOfTask(w.taskOf(third.taskId)).payer).toEqual({ kind: "member", developerId: PRIYA });
+    });
+
+    it("moves the session's payer copy with it", async () => {
+      const { w, zedsOwn, followed } = setup();
+      w.db.set({ ...w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!, payer: { kind: "member", developerId: ZED } });
+      w.db.set({ ...w.get(agentSessionKey(ORG_A, followed.sessionId, "META"))!, payer: { kind: "member", developerId: PRIYA } });
+      await merge(w);
+      expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["payer"]).toEqual({ kind: "member", developerId: ARJUN });
+      expect(w.get(agentSessionKey(ORG_A, followed.sessionId, "META"))!["payer"]).toEqual({ kind: "member", developerId: PRIYA });
+    });
+
+    it("makes the next dispatch's owner check follow the survivor: R60 names and tests the survivor, not the merged-away id", async () => {
+      const { w, zedsOwn } = setup();
+      await merge(w);
+      const deps = { documentClient: w.db, tableName: "state", orgId: ORG_A };
+      // Arjun is a member: the check passes. Remove him and it refuses naming him.
+      await expect(requireCreatorStillMember(deps, w.taskOf(zedsOwn.taskId))).resolves.toBeUndefined();
+      w.removed(ARJUN);
+      expect(await code(requireCreatorStillMember(deps, w.taskOf(zedsOwn.taskId)))).toMatchObject({ code: "TASK_ACCESS_DENIED", message: "Arjun is no longer a member of the organization, so Rovara stopped this task." });
+    });
+
+    it("does it again to nothing, and a second run finishes tasks the first did not reach", async () => {
+      const { w } = setup();
+      await merge(w);
+      const after = w.snapshot();
+      await merge(w);
+      expect(w.snapshot()).toBe(after);
+      const late = soloTask(w);
+      await merge(w);
+      expect(effectiveTaskOwner(w.taskOf(late.taskId)).developerId).toBe(ARJUN);
+    });
+
+    it("rewrites who made the duplicate's shares to the survivor, and leaves other people's", async () => {
+      const { w, followed, zedsOwn } = setup();
+      // Zed (edit on `followed`) shared it with Ola; Zed also shared his own session with Mia; Priya shared `followed` with Mia (seeded).
+      w.share(ORG_A, followed.sessionId, OWNER, "view", ZED);
+      w.share(ORG_A, zedsOwn.sessionId, MIA, "view", ZED);
+      await merge(w);
+      expect(w.get(agentSessionKey(ORG_A, followed.sessionId, `SHARE#MEMBER#${OWNER}`))!["sharedBy"]).toMatchObject({ developerId: ARJUN, name: "Arjun" });
+      expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, `SHARE#MEMBER#${MIA}`))!["sharedBy"]).toMatchObject({ developerId: ARJUN, name: "Arjun" });
+      expect(w.get(agentSessionKey(ORG_A, followed.sessionId, `SHARE#MEMBER#${MIA}`))!["sharedBy"]).toMatchObject({ developerId: PRIYA });
+    });
   });
 
   it("is stopped by its deadline, leaves the marker, and finishes on the next drain", async () => {
