@@ -1,4 +1,4 @@
-import { BROKER_NAMES, BROKER_NAMES_VARIABLE, type BrokerNameKey } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, type BrokerNameKey, type BrokerSettingKey } from "@agentx/contracts";
 
 /**
  * The broker's one variable of names (AGENTX_NAMES, packages/contracts/src/broker-names.ts), read out of a synthesized template. The control
@@ -29,6 +29,22 @@ export function brokerNamesIn(variables: Variables | undefined): Partial<Record<
   return Object.fromEntries(Object.entries(parsed).map(([code, value]) => {
     const key = KEY_OF_CODE.get(code);
     if (key === undefined) throw new Error(`${BROKER_NAMES_VARIABLE} holds a code nobody sent: ${code}`);
+    const marked = MARK.exec(value);
+    return [key, marked === null ? value : nodes[Number(marked[1])]];
+  }));
+}
+
+const SETTING_KEY_OF_CODE = new Map<string, BrokerSettingKey>(Object.entries(BROKER_SETTINGS).map(([key, spec]) => [spec.code, key as BrokerSettingKey]));
+
+/** The broker's settings (AGENTX_SETTINGS, the same shape as its names), by key: the template node that resolves to the setting's value, or the literal text. */
+export function brokerSettingsIn(variables: Variables | undefined): Partial<Record<BrokerSettingKey, Node>> {
+  const variable = variables?.[BROKER_SETTINGS_VARIABLE];
+  if (variable === undefined) return {};
+  const { text, nodes } = joinedText(variable);
+  const parsed = JSON.parse(text) as Record<string, string>;
+  return Object.fromEntries(Object.entries(parsed).map(([code, value]) => {
+    const key = SETTING_KEY_OF_CODE.get(code);
+    if (key === undefined) throw new Error(`${BROKER_SETTINGS_VARIABLE} holds a code nobody sent: ${code}`);
     const marked = MARK.exec(value);
     return [key, marked === null ? value : nodes[Number(marked[1])]];
   }));
