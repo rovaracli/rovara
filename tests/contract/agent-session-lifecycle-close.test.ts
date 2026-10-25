@@ -6,6 +6,8 @@ import {
   agentSessionKey, changesKey, deviceKey, endedSessionWorkKey, liveSessionKey, memberDevicesKey, mySessionsKey, openAgentSessionKey, orgMetaKey, projectSessionsKey,
   type OrgId,
 } from "../../packages/contracts/src/index.js";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -113,5 +115,22 @@ describe("closing an org stops the work that is running (Review M-6)", () => {
     expect(operations(workspaceId).filter((operation) => operation.kind === "cancel")).toHaveLength(1);
     expect(h.db.get(orgMetaKey(TEST_ORG))?.["closedAt"]).toBeDefined();
     expect(h.db.get(openAgentSessionKey(TEST_ORG, sessionId))).toBeUndefined();
+  });
+});
+
+describe("the store's stop of running work (Review M-6)", () => {
+  it("runs before anything is torn down, and a failure of it never stops the close", async () => {
+    const db = new FakeDynamoDb();
+    const store = new OrgStore({ documentClient: db, tableName: "T", now: () => Date.parse("2026-10-24T12:00:00.000Z"), newOrgId: () => "org_cccccccccccccccccccc" });
+    const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "dev-1" });
+    const order: string[] = [];
+    await store.closeOrg(orgId, {
+      stopWork: async () => { order.push("stop"); throw new Error("a stop that fails"); },
+      archiveProjects: async () => { order.push("archive"); },
+      clearEgress: async () => { order.push("egress"); },
+      clearSessions: async () => { order.push("sessions"); },
+    });
+    expect(order).toEqual(["stop", "archive", "egress", "sessions"]);
+    expect(db.get(orgMetaKey(orgId))?.["closedAt"]).toBeDefined();
   });
 });

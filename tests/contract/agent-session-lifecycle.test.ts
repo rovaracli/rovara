@@ -401,6 +401,17 @@ describe("two members are merged", () => {
     expect(w.get(liveSessionKey(ORG_A, zedsOwn.sessionId))).toMatchObject({ ownerId: ZED });
   });
 
+  it("moves a session whose task is the survivor's already (an earlier run handed it on), and a session whose task is gone (Review M-1)", async () => {
+    const { w, zedsOwn, takenByZed } = setup();
+    w.db.set({ ...w.taskOf(zedsOwn.taskId), currentOwner: { developerId: ARJUN, name: "Arjun", provider: "oidc", since: "2026-10-22T09:00:00.000Z" } });
+    w.db.delete(taskKey(takenByZed.taskId));
+    await merge(w);
+    for (const session of [zedsOwn, takenByZed]) {
+      expect(w.get(agentSessionKey(ORG_A, session.sessionId, "META"))!["owner"], session.sessionId).toMatchObject({ developerId: ARJUN });
+      expect(w.get(mySessionsKey(ORG_A, ARJUN, session.createdAt, session.sessionId))).toBeDefined();
+    }
+  });
+
   it("a share the duplicate made can be removed by the survivor as its maker, before the mover has run (Review M-2)", async () => {
     const { w, followed } = setup();
     w.share(ORG_A, followed.sessionId, OWNER, "view", ZED);
@@ -733,6 +744,17 @@ describe("an org is closed", () => {
     expect(runs).toBeGreaterThan(1);
     expect(orgAPartitions(w)).toEqual([]);
     expect(stampedCount(w)).toBeGreaterThanOrEqual(25);
+  });
+
+  it("a run that fails partway through a session finishes it next time: the record is stamped last (Review I-2)", async () => {
+    const { w, a } = setup();
+    w.db.set({ ...agentSessionKey(ORG_A, a.sessionId, "EVENT#2026-10-22T08:00:00.000Z#evt_9"), entityType: "AGENT_SESSION_EVENT", orgId: ORG_A, text: "x" });
+    w.db.injectFault({ command: "UpdateCommand", match: (input) => JSON.stringify(input).includes("EVENT#2026-10-22T08:00:00.000Z#evt_9"), error: { name: "InternalServerError" }, times: 1 });
+    expect(await code(clearOrgSessions(w.deps, ORG_A))).toMatchObject({ name: "InternalServerError" });
+    expect(w.get(agentSessionKey(ORG_A, a.sessionId, "META"))!["indexExpiresAt"]).toBeUndefined();
+    await clearOrgSessions(w.deps, ORG_A);
+    expect(w.get(agentSessionKey(ORG_A, a.sessionId, "EVENT#2026-10-22T08:00:00.000Z#evt_9"))!["indexExpiresAt"]).toBe(EXPIRES);
+    expect(w.get(agentSessionKey(ORG_A, a.sessionId, "META"))!["indexExpiresAt"]).toBe(EXPIRES);
   });
 
   it("does not read a finished session again on a later run (Review I-2)", async () => {
