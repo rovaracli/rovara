@@ -5,6 +5,7 @@ import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js"
 import { onMemberRemoved, onMembersMerged } from "../../packages/broker/src/agents/lifecycle.js";
 import { onTriggerOwnersRemoved } from "../../packages/broker/src/triggers/lifecycle.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
+import { orgMemberKey } from "../../packages/contracts/src/org.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, OWNER, PRIYA, VIV, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 
 afterEach(disposeGateWorlds);
@@ -170,5 +171,80 @@ describe("chains of a member who is removed or merged", () => {
     await onMembersMerged(v.routeDeps, { orgId: ORG_A, survivorId: PRIYA, duplicateId: CARL });
     expect((await v.chains.get(ORG_A, mine.chainId))?.owner).toEqual({ kind: "member", developerId: PRIYA });
     expect(DANA).toBeDefined();
+  });
+});
+
+// Plan 5 Task 21 (merge Open (g)): the last owner leaves. `onMemberRemoved` used to stop at "no owner to hand things to" before any mover ran, so the triggers they created stayed
+// enabled with no owner (dispatch refuses them) and nobody was told. The removal itself now turns them off and tells an org admin.
+describe("the last owner leaves", () => {
+  const unownable = async (v: TriggerWorld, createdBy: string) => {
+    const agent = await v.customAgent("Private digger", PRIYA);
+    const chain = await v.budgetedChain({ start: "look", limits: { maxRunUsd: 5 }, steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: agent.agentId, version: "current" }, next: { kind: "end" } }] });
+    return { chain, trigger: await v.seed({ target: { kind: "chain", chainId: chain.chainId }, createdBy }) };
+  };
+  const reason = "no remaining member could own this trigger";
+
+  it("turns their triggers off through the removal itself, and tells the org's admin", async () => {
+    const v = setupTriggerWorld();
+    const { chain, trigger } = await unownable(v, OWNER);
+    await removal(v, OWNER);
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false, disabledReason: reason, createdBy: OWNER });
+    expect((await v.triggers.listActivity(ORG_A, trigger.triggerId))[0]).toMatchObject({ outcome: "disabled", reason });
+    expect((await v.notices(DANA)).filter((text) => text.includes("turned off"))).toEqual([`${chain.name}'s trigger "github pull request opened" was turned off: ${reason}.`]);
+  });
+
+  it("tells the org's admin and the project's maintainer, and no other member", async () => {
+    const v = setupTriggerWorld();
+    const { trigger } = await unownable(v, OWNER);
+    await removal(v, OWNER);
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false });
+    expect((await v.notices(MAX)).filter((text) => text.includes("turned off"))).toHaveLength(1);
+    expect((await v.notices(DANA)).filter((text) => text.includes("turned off"))).toHaveLength(1);
+    // Members who are neither are not told.
+    expect((await v.notices(VIV)).filter((text) => text.includes("turned off"))).toEqual([]);
+  });
+
+  it("hands a trigger to a maintainer who can own it, as for any removal, and says so", async () => {
+    const v = setupTriggerWorld();
+    const chain = await v.budgetedChain();
+    const trigger = await v.seed({ target: { kind: "chain", chainId: chain.chainId }, createdBy: OWNER });
+    await removal(v, OWNER);
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: true, createdBy: MAX });
+    expect((await v.notices(DANA)).filter((text) => text.includes("turned off"))).toEqual([]);
+  });
+
+  it("changes nothing a second time, and leaves other people's triggers alone", async () => {
+    const v = setupTriggerWorld();
+    const { trigger } = await unownable(v, OWNER);
+    const other = await v.seed({ target: { kind: "chain", chainId: (await v.budgetedChain()).chainId }, createdBy: MAX });
+    await removal(v, OWNER);
+    const first = await stored(v, trigger.triggerId);
+    expect(first).toMatchObject({ enabled: false, disabledReason: reason });
+    const told = (await v.notices(DANA)).length;
+    expect(told).toBeGreaterThan(0);
+    await removal(v, OWNER);
+    expect(await stored(v, trigger.triggerId)).toEqual(first);
+    expect((await v.notices(DANA)).length).toBe(told);
+    expect(await stored(v, other.triggerId)).toMatchObject({ enabled: true, createdBy: MAX });
+  });
+
+  it("still turns the trigger off when no admin or maintainer is left to tell, and says so in the log", async () => {
+    const v = setupTriggerWorld();
+    const { trigger } = await unownable(v, OWNER);
+    v.db.set({ ...v.db.get(orgMemberKey(ORG_A, DANA))!, role: "member" });
+    v.projectMembers.revoke(ORG_A, "web", MAX);
+    await removal(v, OWNER);
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false, disabledReason: reason });
+    expect(v.logs.map((entry) => entry.event)).toContain("trigger.no_one_to_tell");
+  });
+
+  it("keeps the marker when a mover fails, so the next run turns the trigger off", async () => {
+    const v = setupTriggerWorld();
+    const { trigger } = await unownable(v, OWNER);
+    v.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" }, times: 1 });
+    await expect(removal(v, OWNER)).rejects.toBeDefined();
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: true });
+    await removal(v, OWNER);
+    expect(await stored(v, trigger.triggerId)).toMatchObject({ enabled: false });
   });
 });
