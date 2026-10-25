@@ -1852,6 +1852,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(asWorkflow ? { workflow: createWorkflowSnapshot({
       taskId, ownerId: identity.ownerKey, now: receivedAt, path: workflowPath, checkPolicy: taskWorkflowCheckPolicy(project.definition),
       ...(prepared?.program === undefined ? {} : { program: prepared.program }),
+      // Plan 6: a recipe with a plan check step (Rovara Code version 2, or an agent built on it) is a 1.1.0 workflow, which alone may hold the new stages. Every other task stays 1.0.0.
+      ...(prepared?.recipe.steps.some((step) => step.kind === "plan_critic") === true ? { definitionVersion: "1.1.0" as const } : {}),
     }) } : {}),
     ...(prepared === undefined ? {} : {
       agent: prepared.ref, origin: prepared.origin, payer: prepared.payer, place: prepared.place,

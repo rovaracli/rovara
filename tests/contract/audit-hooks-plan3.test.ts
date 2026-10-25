@@ -42,7 +42,7 @@ import { getApprovalSubjectHandler, type ApprovalDependencies, type ApprovalReco
 import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { writeProjectAi, writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
-import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinRecipe, builtinDefaultPin, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { RUN_LIMIT_MULTIPLIER, defaultSpendPolicy } from "../../packages/contracts/src/spend.js";
 import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
@@ -172,6 +172,7 @@ describe("the decide session's proof", () => {
 function builtinsWithRelease(release: { ticketTriage: number }): BuiltinSource {
   return {
     currentVersion: (id) => (id === "ticket-triage" ? release.ticketTriage : currentBuiltinVersion(id as "rovara-code")),
+    defaultPin: (id) => (id === "ticket-triage" ? release.ticketTriage : builtinDefaultPin(id as "rovara-code")),
     recipe: (id, version) => {
       if (id !== "ticket-triage" || version <= currentBuiltinVersion("ticket-triage")) return builtinRecipe(id as "rovara-code", version);
       if (version > release.ticketTriage) return builtinRecipe(id, version);

@@ -409,7 +409,8 @@ async function setup(options: SetupOptions = {}) {
       if (active !== undefined) await h.finish(workspaceId, String(active.id), "FAILED", { error: "ended by the test" });
     };
     /** What the broker builds for the next operation of `mode`, as the engine's own calls would. */
-    const accept = async (mode: DispatchMode, programStepId?: string) => {
+    // The broker accepts the plan check's mode with Task 8 (the critic step); until then these tests drive the modes it already accepts.
+    const accept = async (mode: Exclude<DispatchMode, "PLAN_CRITIQUE">, programStepId?: string) => {
       await endActive();
       const task = meta();
       const accepted = await h.actions.acceptTask(developerTaskIdentity(task, TEST_ORG), workspaceId, { requestId: randomUUID(), conversationId: task.conversationId, prompt: `Do the ${mode} step` }, () => [],

@@ -133,7 +133,7 @@ describe("step schemas", () => {
   });
 
   it("exports the step kinds and tool tables", () => {
-    expect([...CODING_STEP_KINDS]).toEqual(["plan", "build", "check", "review", "pull_request"]);
+    expect([...CODING_STEP_KINDS]).toEqual(["plan", "plan_critic", "build", "check", "review", "pull_request"]);
     expect([...AGENT_STEP_KINDS]).toEqual(["agent", "approval"]);
     expect([...READ_ONLY_TOOLS]).toEqual(["read", "grep", "find", "ls"]);
     expect(PiToolNameSchema.options).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);

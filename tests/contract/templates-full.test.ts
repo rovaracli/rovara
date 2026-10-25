@@ -69,8 +69,9 @@ describe("the five templates have a version 2, and version 1 is as it was", () =
     expect(BUILTIN_AGENTS[id].versions[1]!.digest).not.toBe(BUILTIN_AGENTS[id].versions[0]!.digest);
   });
 
-  it("leaves Rovara Code at version 1", () => {
-    expect(currentBuiltinVersion("rovara-code")).toBe(1);
+  it("gives Rovara Code a version 2 of its own (Plan 6 Task 2), which an org with no settings does not run until it adopts it", () => {
+    expect(currentBuiltinVersion("rovara-code")).toBe(2);
+    expect(BUILTIN_AGENTS["rovara-code"].versions[0]!.digest).toBe("1f3d988f8f6c4ae406aca2a61c7afbc378a08f14d3ce47e8037228d9195c989b");
   });
 
   it.each(FIVE)("%s version 2 validates against the same schemas a person's agent does, runs as agent steps and lists only the person trigger", (id) => {

@@ -15,6 +15,7 @@ import { lessSafeChanges } from "../../packages/broker/src/agents/less-safe.js";
 
 const DIGESTS = JSON.parse(readFileSync(new URL("../fixtures/builtin-agent-digests.json", import.meta.url), "utf8")) as Record<string, Record<string, string>>;
 const V1_DIGEST = "1f3d988f8f6c4ae406aca2a61c7afbc378a08f14d3ce47e8037228d9195c989b";
+const LAYER = { agentId: "agt_00000000000000000001", name: "Ours", version: 1, builtin: false } as const;
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const now = "2026-10-25T12:00:00.000Z";
 
@@ -69,13 +70,14 @@ describe("a plan check step in a recipe", () => {
     const base = [step("plan"), step("build"), step("check"), reviewStep(), step("pull_request")];
     expect(problems(withSteps([base[0]!, step("plan_critic"), ...base.slice(1)]))).toEqual([]);
     expect(problems(withSteps([base[0]!, base[1]!, step("plan_critic"), ...base.slice(2)]))).toContain("steps: a plan check must come right after the plan step");
-    expect(problems(withSteps([step("plan_critic"), ...base]))).toContain("steps: a plan check needs a plan step");
+    expect(problems(withSteps([step("plan_critic"), ...base.slice(1)]))).toContain("steps: a plan check needs a plan step");
+    expect(problems(withSteps([step("plan_critic"), ...base]))).toContain("steps: a plan check must come right after the plan step");
     expect(problems(withSteps([base[0]!, step("plan_critic"), step("plan_critic", "second_check"), ...base.slice(1)]))).toContain("steps: a recipe can have only one plan check step");
   });
 
   it("takes the company's model like any step, and refuses differentCompanyFrom (only a review or agent step takes it)", () => {
     const overlay: RecipeOverlay = { steps: { plan_critic: { model: { provider: "openai", modelId: "gpt-5.5" }, fallbackModel: { provider: "anthropic", modelId: "claude-opus-4-6" } } } };
-    const layer = { agentId: "agt_00000000000000000001" as never, name: "Ours", version: 1, builtin: false };
+    const layer = LAYER;
     const applied = applyOverlay(v2(), overlay, layer);
     expect(applied.steps[1]!.settings).toMatchObject({ model: { provider: "openai", modelId: "gpt-5.5" }, fallbackModel: { provider: "anthropic", modelId: "claude-opus-4-6" } });
     expect(problems(applied)).toEqual([]);
@@ -86,7 +88,7 @@ describe("a plan check step in a recipe", () => {
 
   it("can read the code but not change it: it takes the read-only tools", () => {
     expect(STEP_TOOLS.plan_critic).toEqual(["read", "grep", "find", "ls"]);
-    const edit = applyOverlay(v2(), { steps: { plan_critic: { tools: ["read", "edit"] } } }, { agentId: "agt_00000000000000000001" as never, name: "Ours", version: 1, builtin: false });
+    const edit = applyOverlay(v2(), { steps: { plan_critic: { tools: ["read", "edit"] } } }, LAYER);
     expect(problems(edit)).toEqual(['steps.1.settings.tools: the "plan_critic" step (plan_critic) can\'t use edit; it can use read, grep, find, ls']);
   });
 

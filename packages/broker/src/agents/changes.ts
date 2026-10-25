@@ -139,7 +139,7 @@ export async function versionSafety(
 ): Promise<{ current: number | undefined; safety: VersionSafety }> {
   const builtin = agent === undefined;
   // Read only: a version list must not make the org's settings for a built-in (the start does, `ensureBuiltinSettings`, before it asks).
-  const current = builtin ? (await deps.store.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId) : agent.currentVersion;
+  const current = builtin ? (await deps.store.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? deps.store.builtinDefaultPin(agentId) : agent.currentVersion;
   if (current === undefined || version === current) return { current, safety: { kind: "current" } };
   const target = builtin ? deps.store.builtinRecipe(agentId, version) : await resolveRecipe(deps, orgId, agentId, version);
   let now: ResolvedRecipe;

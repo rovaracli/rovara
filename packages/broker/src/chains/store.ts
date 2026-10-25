@@ -414,7 +414,7 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
         if ((guardrails.guardrails.disabledBuiltins as string[]).includes(agentId)) throw coded("AGENT_UNAVAILABLE", `${name} is turned off in your company. Ask an admin to turn it on.`);
         const latest = this.agents.builtinLatestVersion(agentId);
         const settings = await this.agents.getBuiltinSettings(orgId, agentId);
-        const orgPin = settings?.pinnedVersion ?? latest;
+        const orgPin = settings?.pinnedVersion ?? this.agents.builtinDefaultPin(agentId);
         for (const version of [...wanted.current, ...wanted.named]) {
           if (version > latest) throw coded("NOT_FOUND", `${name} has no version ${String(version)}`);
         }

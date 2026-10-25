@@ -11,7 +11,7 @@ import { validateChainForPublish } from "../../packages/broker/src/chains/valida
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
-import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { agentXError } from "../../packages/contracts/src/errors.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
@@ -56,6 +56,7 @@ const looped = (bound: number): ChainDefinitionInput => variant({
 function builtinsWithRelease(release: { rootCause: number; widen: boolean; breakV1?: Error }): BuiltinSource {
   return {
     currentVersion: (id) => (id === "root-cause-analyst" ? release.rootCause : currentBuiltinVersion(id as "rovara-code")),
+    defaultPin: (id) => (id === "root-cause-analyst" ? release.rootCause : builtinDefaultPin(id as "rovara-code")),
     recipe: (id, version) => {
       if (id === "root-cause-analyst" && version === 1 && release.breakV1 !== undefined) throw release.breakV1;
       // Root-cause analyst here ships version 1 only, so that a test can add release 2 by hand (the real version 2 is not offered).

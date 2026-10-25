@@ -267,7 +267,7 @@ describe("resolveAgentForTask", () => {
     const { deps, store } = await setup();
     const resolved = await resolveAgentForTask(deps, callerOf(CARL), { project: "web" });
     expect(resolved.testRun).toBe(false);
-    expect(resolved.ref).toEqual({ agentId: "rovara-code", name: BUILTIN_AGENTS["rovara-code"].name, version: store.builtinLatestVersion("rovara-code"), builtin: true, digest: recipeDigest(resolved.recipe) });
+    expect(resolved.ref).toEqual({ agentId: "rovara-code", name: BUILTIN_AGENTS["rovara-code"].name, version: store.builtinDefaultPin("rovara-code"), builtin: true, digest: recipeDigest(resolved.recipe) });
     expect(resolved.digest).toBe(resolved.ref.digest);
     expect(resolved.recipe).toEqual(await resolveAgent(store, TEST_ORG, "rovara-code", "current"));
   });
@@ -557,6 +557,7 @@ function twoReleases() {
     state,
     source: {
       currentVersion: (id: string) => (id === "ticket-triage" ? state.latest : 1),
+      defaultPin: (id: string) => (id === "ticket-triage" ? state.latest : 1),
       recipe: (id: string, version: number) => {
         const found = id === "ticket-triage" ? [undefined, shipped, widened][version] : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[version - 1]?.recipe;
         if (found === undefined) throw agentXError("NOT_FOUND", `${id} has no version ${String(version)}`);

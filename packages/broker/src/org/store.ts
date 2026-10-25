@@ -9,6 +9,8 @@ import {
   MEMBER_GRANT_SK_PREFIX,
   agentXError,
   LAST_OWNER_MESSAGE,
+  builtinSettingsKey,
+  currentBuiltinVersion,
   developerOrgKey,
   githubInstallationKey,
   memberGrantsPk,
@@ -205,6 +207,8 @@ export class OrgStore {
         this.put(orgMetaKey(orgId), "ORG", org as unknown as Item),
         ...this.membershipItems({ orgId, developerId: input.developerId, role: "owner", email: input.email, joinedAt }),
         ...this.pendingFor(event),
+        // Plan 6: a new org runs Rovara Code version 2 from its first task, as an explicit pin. An org with no settings item (created before) stays on version 1 until an admin adopts 2.
+        this.put(builtinSettingsKey(orgId, "rovara-code"), "BUILTIN_AGENT_SETTINGS", { pinnedVersion: currentBuiltinVersion("rovara-code"), updatedBy: input.developerId, updatedAt: joinedAt }),
       ],
       (failed) => (failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined),
     );

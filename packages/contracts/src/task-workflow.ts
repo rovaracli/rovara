@@ -732,6 +732,7 @@ export const WorkflowProgramSchema = z.object({
   if (new Set(steps.map((step) => step.id)).size !== steps.length) problem("step ids must be unique");
   steps.forEach((step, index) => {
     if (step.kind === "plan" && index !== 0) problem("a plan step can only come first", index);
+    if (step.kind === "plan_critic" && (index !== 1 || steps[0]?.kind !== "plan")) problem("a plan check step can only come directly after the plan step", index);
     if (step.kind === "pull_request" && index !== steps.length - 1) problem("a pull request step can only come last", index);
     if (step.kind === "review") {
       if (step.reviewers === undefined) problem("a review step needs its reviewers", index);
@@ -744,7 +745,7 @@ export const WorkflowProgramSchema = z.object({
       if (target < 0 || target >= index || steps[target]?.kind !== "build") problem("onFindings must go back to an earlier build step", index);
     }
   });
-  if (steps.find((step) => step.kind !== "plan")?.kind !== "build") problem("the first step after the plan must be a build step");
+  if (steps.find((step) => step.kind !== "plan" && step.kind !== "plan_critic")?.kind !== "build") problem("the first step after the plan must be a build step");
   if (steps.some((step) => step.kind === "pull_request")) {
     const after = steps.slice(steps.findLastIndex((step) => step.kind === "build") + 1);
     if (!after.some((step) => step.kind === "check") || !after.some((step) => step.kind === "review" && step.reviewers?.includes("code") === true && step.reviewers.includes("security"))) {
@@ -768,7 +769,7 @@ function reviewNotPassedReason(roles: ReadonlyArray<"CRITIC" | "SECURITY">): str
 }
 
 const PROGRAM_STAGE_OF_STEP: Record<WorkflowProgramStep["kind"], WorkflowStage> = {
-  plan: "PLAN", build: "IMPLEMENT", check: "VERIFY", review: "REVIEW", pull_request: "PULL_REQUEST",
+  plan: "PLAN", plan_critic: "PLAN_CRITIQUE", build: "IMPLEMENT", check: "VERIFY", review: "REVIEW", pull_request: "PULL_REQUEST",
 };
 
 function programIndex(program: WorkflowProgram, id: string | undefined): number {
@@ -778,11 +779,14 @@ function programIndex(program: WorkflowProgram, id: string | undefined): number 
   return index;
 }
 
-/** The step the engine runs after the one at `index`: a plan step never repeats, and a check not right after a build was recorded with its build. */
+/**
+ * The step the engine runs after the one at `index`: a plan step never repeats, the plan check (Rovara Code version 2) is skipped because the engine runs it
+ * between the plan and its approval and not as a step to move to afterwards, and a check not right after a build was recorded with its build.
+ */
 function programStepAfter(program: WorkflowProgram, index: number): WorkflowProgramStep | undefined {
   for (let next = index + 1; next < program.steps.length; next += 1) {
     const step = program.steps[next]!;
-    if (step.kind === "plan" || (step.kind === "check" && program.steps[next - 1]?.kind !== "build")) continue;
+    if (step.kind === "plan" || step.kind === "plan_critic" || (step.kind === "check" && program.steps[next - 1]?.kind !== "build")) continue;
     return step;
   }
   return undefined;
@@ -1132,6 +1136,7 @@ export function applyWorkflowFeedbackCheckChanges(currentInput: unknown, changes
 export const WorkflowPathSchema = z.enum(["QUICK", "FULL"]);
 /** The definition versions a stored snapshot may have: Rovara Code v1 (today's engine) and v2. */
 export const WORKFLOW_DEFINITION_VERSIONS = ["1.0.0", "1.1.0"] as const;
+export type WorkflowDefinitionVersion = (typeof WORKFLOW_DEFINITION_VERSIONS)[number];
 export const WorkflowReviewPhaseSchema = z.enum(["REQUIREMENTS", "DESIGN", "IMPLEMENTATION_PLAN"]);
 export type WorkflowPath = z.infer<typeof WorkflowPathSchema>;
 export type WorkflowReviewPhase = z.infer<typeof WorkflowReviewPhaseSchema>;
@@ -1298,6 +1303,9 @@ const WorkflowSnapshotShapeSchema = z.object({
     if (workflow.outcome === "ANSWERED") context.addIssue({ code: "custom", path: ["outcome"], message: "this outcome needs definition version 1.1.0" });
     for (const field of ["intent", "critique", "risk"] as const) {
       if (workflow[field] !== undefined) context.addIssue({ code: "custom", path: [field], message: `${field} needs definition version 1.1.0` });
+    }
+    if (workflow.program?.steps.some((step) => step.kind === "plan_critic") === true) {
+      context.addIssue({ code: "custom", path: ["program"], message: "a plan check step needs definition version 1.1.0" });
     }
   }
   if (workflow.program === undefined) {
@@ -2020,11 +2028,11 @@ function validSnapshot(input: unknown): WorkflowSnapshot {
   return parsed.data;
 }
 
-export function createWorkflowSnapshot(input: { taskId: string; ownerId: string; now: string; path?: WorkflowPath; checkPolicy?: WorkflowCheckPolicyInput; program?: WorkflowProgram }): WorkflowSnapshot {
+export function createWorkflowSnapshot(input: { taskId: string; ownerId: string; now: string; path?: WorkflowPath; checkPolicy?: WorkflowCheckPolicyInput; program?: WorkflowProgram; definitionVersion?: WorkflowDefinitionVersion }): WorkflowSnapshot {
   const parsed = WorkflowSnapshotSchema.safeParse({
     schemaVersion: 1,
     definitionId: "agentx-task-to-pr",
-    definitionVersion: "1.0.0",
+    definitionVersion: input.definitionVersion ?? "1.0.0",
     taskId: input.taskId,
     ownerId: input.ownerId,
     path: input.path ?? "QUICK",

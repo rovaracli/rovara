@@ -11,7 +11,7 @@ import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { BUILTIN_AGENTS, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -285,7 +285,7 @@ describe("access", () => {
     const builtin = await call(EVE, "GET", "/v1/app/agents?scope=builtin");
     const agents = builtin.body.agents as Array<{ agentId: string; builtin: boolean; pinnedVersion: number; access: string; name: string }>;
     expect(agents).toHaveLength(6);
-    expect(agents.every((agent) => agent.builtin && agent.pinnedVersion === currentBuiltinVersion(agent.agentId as "rovara-code") && agent.access === "use")).toBe(true);
+    expect(agents.every((agent) => agent.builtin && agent.pinnedVersion === builtinDefaultPin(agent.agentId as "rovara-code") && agent.access === "use")).toBe(true);
     expect(agents.find((agent) => agent.agentId === "ticket-triage")?.name).toBe(BUILTIN_AGENTS["ticket-triage"].name);
     expect((await call(DANA, "GET", "/v1/app/agents?scope=builtin")).body.agents).toEqual(expect.arrayContaining([expect.objectContaining({ access: "manage" })]));
 
@@ -315,7 +315,7 @@ describe("access", () => {
     const detail = await call(MAYA, "GET", "/v1/app/agents/rovara-code");
     expect(detail.status).toBe(200);
     expect(detail.body).toMatchObject({ agent: { builtin: true, pinnedVersion: 1, access: "use" }, current: { version: 1 }, suggestedMaxPerRunUsd: 20 });
-    expect((await call(MAYA, "GET", "/v1/app/agents/rovara-code/versions")).body.versions).toEqual([expect.objectContaining({ version: 1, current: true })]);
+    expect((await call(MAYA, "GET", "/v1/app/agents/rovara-code/versions")).body.versions).toEqual([expect.objectContaining({ version: 1, current: true }), expect.objectContaining({ version: 2, current: false })]);
     expect((await call(MAYA, "GET", "/v1/app/agents/rovara-code/versions/1")).body).toMatchObject({ recipe: { chain: [{ agentId: "rovara-code" }] } });
   });
 });
@@ -613,6 +613,7 @@ describe("adopting a built-in's version", () => {
     const state = { latest: 1 };
     const source = {
       currentVersion: (id: string) => (id === "ticket-triage" ? state.latest : 1),
+      defaultPin: (id: string) => (id === "ticket-triage" ? state.latest : 1),
       recipe: (id: string, version: number) => {
         const found = id === "ticket-triage" ? releases[version] : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[version - 1]?.recipe;
         if (found === undefined) throw agentXError("NOT_FOUND", `${id} has no version ${String(version)}`);
@@ -1171,6 +1172,7 @@ describe("the confirmation page for a change names the agent and the versions", 
     const released = { latest: 1 };
     const source = {
       currentVersion: (id: string) => (id === "ticket-triage" ? released.latest : 1),
+      defaultPin: (id: string) => (id === "ticket-triage" ? released.latest : 1),
       recipe: (id: string, version: number) => structuredClone(id === "ticket-triage" && version === 2 ? widened : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[0]!.recipe),
       name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
     };
@@ -1247,6 +1249,7 @@ describe("a confirmed change applied before its record ended is done when its ha
     const released = { latest: 1 };
     const source = {
       currentVersion: (id: string) => (id === "ticket-triage" ? released.latest : 1),
+      defaultPin: (id: string) => (id === "ticket-triage" ? released.latest : 1),
       recipe: (id: string, version: number) => structuredClone(id === "ticket-triage" && version === 2 ? widened : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[0]!.recipe),
       name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
     };

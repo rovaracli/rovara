@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { AgentStore, resolveAgent, updateAvailable, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
 import { agentXError } from "../../packages/contracts/src/errors.js";
 import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent.js";
-import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { agentKey, agentNameKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -27,6 +27,7 @@ const layer = (text: string): RecipeOverlay => ({ instructions: text });
 function builtinsWithRelease(release: { ticketTriage: number }): BuiltinSource {
   return {
     currentVersion: (id) => (id === "ticket-triage" ? release.ticketTriage : currentBuiltinVersion(id as "rovara-code")),
+    defaultPin: (id) => (id === "ticket-triage" ? release.ticketTriage : builtinDefaultPin(id as "rovara-code")),
     // Ticket triage here ships version 1 only (the store's rules are the same for any built-in), so that a test can add releases 2 and 3 by hand; the real version 2 is not offered.
     recipe: (id, version) => {
       if (id !== "ticket-triage" || version === 1) return builtinRecipe(id as "rovara-code", version);
@@ -335,7 +336,7 @@ describe("pinned bases", () => {
   it("builds on Rovara Code with the shipped built-ins", async () => {
     const real = new AgentStore({ documentClient: new FakeDynamoDb(), tableName: "T", now: () => START });
     const agent = await real.create({ orgId: ORG_A, name: "Careful coder", owner: MEMBER, extends: "rovara-code", overlay: layer("be careful"), createdBy: ALICE });
-    expect((await real.getDraft(ORG_A, agent.agentId))?.extends).toEqual({ agentId: "rovara-code", version: currentBuiltinVersion("rovara-code") });
+    expect((await real.getDraft(ORG_A, agent.agentId))?.extends).toEqual({ agentId: "rovara-code", version: builtinDefaultPin("rovara-code") });
     const recipe = await resolveAgent(real, ORG_A, agent.agentId, "draft");
     expect(recipe.chain.map((entry) => entry.builtin)).toEqual([true, false]);
     expect(recipe.steps.map((step) => step.kind)).toEqual(["plan", "build", "check", "review", "pull_request"]);

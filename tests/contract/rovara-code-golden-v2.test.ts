@@ -13,7 +13,6 @@ import {
   WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, blockWorkflow,
   submitWorkflowArtifact, submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/task-workflow.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -36,7 +35,7 @@ const verified = (workflow: WorkflowSnapshot, candidate: ReturnType<typeof candi
   { candidate, checks: { candidateDigest: candidate.digest, producer: "agentx-broker", environmentId: "ci", recordedAt: now, results: [{ checkId: "unit", status: "PASS" }] }, now },
 );
 const reviewedWith = (workflow: WorkflowSnapshot, candidate: ReturnType<typeof candidateOf>, findings: unknown[]): WorkflowSnapshot =>
-  [report("CRITIC", findings.length > 0 ? "FINDINGS" : "PASS", candidate.digest, findings), report("SECURITY", "PASS", candidate.digest)].reduce<WorkflowSnapshot>((current, next) => submitWorkflowReview(current, next, now), workflow);
+  (["CRITIC", "SECURITY"] as const).map((role) => report(role, findings.length > 0 ? "FINDINGS" : "PASS", candidate.digest, findings)).reduce<WorkflowSnapshot>((current, next) => submitWorkflowReview(current, next, now), workflow);
 
 describe("a version 2 task in the workflow engine", () => {
   const start = () => createWorkflowSnapshot({ taskId, ownerId, now, definitionVersion: "1.1.0", path: "QUICK", program: v2Program() });
@@ -56,7 +55,9 @@ describe("a version 2 task in the workflow engine", () => {
     expect(WorkflowSnapshotSchema.safeParse(critiquing).success).toBe(true);
     expect(WorkflowSnapshotSchema.safeParse({ ...critiquing, definitionVersion: "1.0.0" }).success).toBe(false);
     const { programStepId: _programStepId, ...withoutStep } = created; // eslint-disable-line @typescript-eslint/no-unused-vars -- Understand runs before any recipe step
-    expect(WorkflowSnapshotSchema.safeParse({ ...withoutStep, stage: "UNDERSTAND", state: "READY" }).success).toBe(false);
+    const understanding = { ...withoutStep, stage: "UNDERSTAND", state: "READY" };
+    expect(WorkflowSnapshotSchema.safeParse(understanding).success).toBe(true);
+    expect(WorkflowSnapshotSchema.safeParse({ ...understanding, definitionVersion: "1.0.0" }).success).toBe(false);
   });
 });
 
@@ -92,8 +93,6 @@ describe("review rounds on the v2 program", () => {
     expect(done).toMatchObject({ stage: "PULL_REQUEST", state: "READY", programStepId: "pull_request", definitionVersion: "1.1.0" });
   });
 });
-
-const orgIdOf = (id: string): OrgId => id as OrgId;
 
 describe("which version a task starts on", () => {
   beforeAll(async () => { await loadSlackBroker(); });
@@ -147,7 +146,7 @@ describe("which version a task starts on", () => {
 
   it("R3-4: an org with no settings item sees version 1 in the roster, and adopting version 2 writes a pin of 2 so its next task is 1.1.0", async () => {
     const t = await setup();
-    seedMembership(t.db, MAYA.developerId, { orgId: orgIdOf(TEST_ORG), role: "owner" });
+    seedMembership(t.db, MAYA.developerId, { orgId: TEST_ORG, role: "owner" });
     const listed = await t.dev(MAYA, "GET", "/v1/app/agents?scope=builtin");
     const entry = (listed.body.agents as Array<{ agentId: string; pinnedVersion: number; latestVersion: number }>).find((agent) => agent.agentId === "rovara-code")!;
     expect(entry).toMatchObject({ pinnedVersion: 1, latestVersion: 2 });
@@ -163,7 +162,7 @@ describe("which version a task starts on", () => {
 
   it("R3-4: a custom agent built on Rovara Code sees no update while the org is still on version 1", async () => {
     const t = await setup();
-    const created = await t.dev(MAYA, "POST", "/v1/app/agents", { requestId: randomUUID(), name: `Mine ${randomUUID().slice(0, 6)}`, overlay: {} });
+    const created = await t.dev(MAYA, "POST", "/v1/app/agents", { requestId: randomUUID(), name: `Mine ${randomUUID().slice(0, 6)}`, extends: "rovara-code", overlay: {} });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const agentId = (created.body.agent as { agentId: string }).agentId;
     expect((await t.store.getDraft(TEST_ORG, agentId as never))?.extends).toEqual({ agentId: "rovara-code", version: 1 });

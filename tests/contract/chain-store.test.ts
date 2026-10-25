@@ -17,7 +17,7 @@ import { validateChainForPublish } from "../../packages/broker/src/chains/valida
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { AgentOwner } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe.js";
-import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
 import { CHAIN_MAX_STEPS, type ChainDefinitionInput, type PinnedChainDefinition } from "../../packages/contracts/src/chains.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
@@ -62,6 +62,7 @@ const TWO_STEPS: ChainDefinitionInput = {
 function builtinsWithRelease(release: { codeReviewer: number }): BuiltinSource {
   return {
     currentVersion: (id) => (id === "code-reviewer" ? release.codeReviewer : currentBuiltinVersion(id as "rovara-code")),
+    defaultPin: (id) => (id === "code-reviewer" ? release.codeReviewer : builtinDefaultPin(id as "rovara-code")),
     recipe: (id, version) => (id === "code-reviewer" && version > currentBuiltinVersion("code-reviewer") && version <= release.codeReviewer ? builtinRecipe("code-reviewer", 1) : builtinRecipe(id as "rovara-code", version)),
     name: (id) => BUILTIN_AGENTS[id as "rovara-code"].name,
   };

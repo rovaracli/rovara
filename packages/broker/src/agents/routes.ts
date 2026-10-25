@@ -293,7 +293,7 @@ async function builtinView(deps: ApprovalDependencies, orgId: OrgId, agentId: Ag
     builtin: true,
     status: "active",
     ...(disabled ? { disabled: true } : {}),
-    pinnedVersion: settings?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId),
+    pinnedVersion: settings?.pinnedVersion ?? deps.store.builtinDefaultPin(agentId),
     latestVersion: deps.store.builtinLatestVersion(agentId),
     ...(template.needsLaterConnectors === undefined ? {} : { needsLaterConnectors: template.needsLaterConnectors }),
     ...(settings?.accountable === undefined ? {} : { accountable: settings.accountable }),
@@ -399,7 +399,7 @@ async function safetyMarks(deps: AgentRouteDependencies, orgId: OrgId, agentId: 
 async function listVersions(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<{ versions: Shown[] }> {
   const { agent } = await requireReadableAgent(deps, caller, agentId, "view");
   if (!("owner" in agent)) {
-    const pinned = (await deps.store.getBuiltinSettings(caller.orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId);
+    const pinned = (await deps.store.getBuiltinSettings(caller.orgId, agentId))?.pinnedVersion ?? deps.store.builtinDefaultPin(agentId);
     const releases = BUILTIN_AGENTS[agentId as keyof typeof BUILTIN_AGENTS].versions;
     const marks = await safetyMarks(deps, caller.orgId, agentId, undefined, releases.map((release) => release.version));
     return { versions: releases.map((release) => ({ version: release.version, digest: release.digest, releasedIn: release.releasedIn, notes: release.notes, current: release.version === pinned, ...marks.get(release.version) })) };

@@ -30,11 +30,11 @@ import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDe
 import type { TaskAgentRef } from "./roster.js";
 
 /** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
-export type DispatchMode = "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW";
+export type DispatchMode = "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW";
 
-const KIND_OF_MODE: Record<DispatchMode, CodingStepKind> = { PLAN: "plan", IMPLEMENT: "build", REVIEW: "review", CHECKS: "check", FEEDBACK_REVIEW: "pull_request" };
+const KIND_OF_MODE: Record<DispatchMode, CodingStepKind> = { PLAN: "plan", PLAN_CRITIQUE: "plan_critic", IMPLEMENT: "build", REVIEW: "review", CHECKS: "check", FEEDBACK_REVIEW: "pull_request" };
 /** What a step is called in a refusal when the recipe has no step of that kind (a program that leaves out its plan still gets the engine's planning pass). */
-const KIND_LABEL: Record<CodingStepKind, string> = { plan: "Plan", build: "Build", check: "Check", review: "Review", pull_request: "Pull request" };
+const KIND_LABEL: Record<CodingStepKind, string> = { plan: "Plan", plan_critic: "Plan check", build: "Build", check: "Check", review: "Review", pull_request: "Pull request" };
 
 /**
  * The recipe step an operation is. With a program, the step the operation names (`programStepId`); without one, or when it names a step of

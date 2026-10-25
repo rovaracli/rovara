@@ -22,6 +22,7 @@ import {
   applyOverlay,
   builtinRecipe,
   builtinSettingsKey,
+  builtinDefaultPin,
   currentBuiltinVersion,
   formatRecipeProblem,
   isBuiltinAgentId,
@@ -133,6 +134,8 @@ export type AgentEventKind =
 /** The built-in agents as the store sees them; tests replace it to add a release without editing the shipped list. */
 export interface BuiltinSource {
   currentVersion(id: AgentId): number;
+  /** The version an org runs before it has settings for the built-in (Rovara Code stays on 1 until an admin adopts 2; every other built-in reads the newest release). */
+  defaultPin(id: AgentId): number;
   recipe(id: AgentId, version: number): ResolvedRecipe;
   name(id: AgentId): string;
 }
@@ -161,6 +164,7 @@ export interface AgentStoreInput {
 
 const SHIPPED_BUILTINS: BuiltinSource = {
   currentVersion: (id) => currentBuiltinVersion(id as Parameters<typeof currentBuiltinVersion>[0]),
+  defaultPin: (id) => builtinDefaultPin(id as Parameters<typeof builtinDefaultPin>[0]),
   recipe: (id, version) => builtinRecipe(id as Parameters<typeof builtinRecipe>[0], version),
   name: (id) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
 };
@@ -278,6 +282,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     return this.builtins.currentVersion(agentId);
   }
 
+  /** The version the org runs while it has no settings for the built-in (`BuiltinSource.defaultPin`). */
+  builtinDefaultPin(agentId: AgentId): number {
+    return this.builtins.defaultPin(agentId);
+  }
+
   builtinRecipe(agentId: AgentId, version: number): ResolvedRecipe {
     return this.builtins.recipe(agentId, version);
   }
@@ -288,17 +297,17 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
     return item === undefined ? undefined : (strip(item) as unknown as BuiltinSettings);
   }
 
-  /** The version the org's own use of a built-in runs: its pin, or the newest release while it has no settings yet. */
+  /** The version the org's own use of a built-in runs: its pin, or the default pin while it has no settings yet. */
   async pinnedBuiltinVersion(orgId: OrgId, agentId: AgentId): Promise<number> {
-    return (await this.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? this.builtins.currentVersion(agentId);
+    return (await this.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? this.builtins.defaultPin(agentId);
   }
 
-  /** Creates the org's settings for a built-in, pinned to the newest release, if it has none; returns them either way. */
+  /** Creates the org's settings for a built-in, pinned to its default pin (the newest release, except Rovara Code's), if it has none; returns them either way. */
   async ensureBuiltinSettings(orgId: OrgId, agentId: AgentId, by = "system"): Promise<BuiltinSettings> {
     this.requireBuiltin(agentId);
     const existing = await this.getBuiltinSettings(orgId, agentId);
     if (existing !== undefined) return existing;
-    const settings: BuiltinSettings = { pinnedVersion: this.builtins.currentVersion(agentId), updatedBy: by, updatedAt: this.iso() };
+    const settings: BuiltinSettings = { pinnedVersion: this.builtins.defaultPin(agentId), updatedBy: by, updatedAt: this.iso() };
     try {
       await this.input.documentClient.send(new PutCommand({
         TableName: this.input.tableName,
