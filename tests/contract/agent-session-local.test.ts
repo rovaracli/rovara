@@ -933,6 +933,34 @@ describe("limits (review I2, M4)", () => {
     expect(w.db.find((item) => String(item.pk).includes(`CHANGES#${PRIYA}`)).length).toBeGreaterThan(12);
   });
 
+  it("counts only changes into a status that tells followers: repeating the same status does not use up the hour's places", async () => {
+    const w = world();
+    installRealtimeSink({});
+    const { sessionId, deviceId } = await w.started();
+    w.follower(ORG_A, sessionId, ARJUN);
+    const feed = () => w.db.find((item) => String(item.pk).includes(`CHANGES#${ARJUN}`)).length;
+    for (let i = 0; i < 14; i += 1) {
+      if (i % 5 === 0) w.clock.now += MINUTE;
+      await w.update(PRIYA, sessionId, deviceId, { status: "waiting", step: `again ${String(i)}` });
+    }
+    expect(feed()).toBe(1);
+    w.clock.now += MINUTE;
+    await w.update(PRIYA, sessionId, deviceId, { status: "running" });
+    await w.update(PRIYA, sessionId, deviceId, { status: "waiting" });
+    expect(feed()).toBe(2);
+  });
+
+  it("does not count the entry of a session that ended without taking it away against the device's 20", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const made: string[] = [];
+    for (let i = 0; i < 20; i += 1) made.push((await w.register(PRIYA, deviceId)).sessionId);
+    w.db.set({ ...w.meta(made[0]!)!, endedAt: iso(T0) });
+    await expect(w.register(PRIYA, deviceId)).resolves.toBeDefined();
+    expect(w.db.get(deviceSessionKey(ORG_A, deviceId, made[0]!))).toBeUndefined();
+    expect(await code(w.register(PRIYA, deviceId))).toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
   it("allows 20 open sessions on a device: the 21st is refused with a clear text, nothing written, and an end frees a place", async () => {
     const w = world();
     const deviceId = await w.mac(PRIYA);
@@ -1014,7 +1042,7 @@ describe("review minors", () => {
     await w.stop(PRIYA, sessionId);
     expect(w.commands(deviceId).map((command) => command.seq)).toContain(58);
     await w.removeDevice(PRIYA, deviceId);
-    expect(typeof w.db.get(deviceCommandCounterKey(ORG_A, deviceId))![INDEX_EXPIRY_ATTRIBUTE]).toBe("number");
+    expect(w.db.get(deviceCommandCounterKey(ORG_A, deviceId))![INDEX_EXPIRY_ATTRIBUTE]).toBe(Math.floor(w.clock.now / 1000) + 365 * 86_400);
   });
 
   it("M5: closing the company ends its open local sessions with a clear text and does not ask the stop of a cloud session for them", async () => {
