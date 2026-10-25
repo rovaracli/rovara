@@ -3,7 +3,7 @@
 import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, Lazy, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
-import { BrokerNames } from "./broker-names.js";
+import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { packagedFunction } from "./control-plane.js";
 import { CloudIdentity } from "./cloud-identity.js";
 
@@ -60,6 +60,8 @@ export interface DeveloperSignInProps {
   stage: apigwv2.CfnStage;
   /** Further public routes of the same API the stage throttles like the /v1/auth, /v1/dev and /v1/app ones (the GitHub install routes). */
   throttledRoutes?: Array<{ route: apigwv2.CfnRoute; burst: number; rate: number }>;
+  /** Plan 4 Task 19: the public event-hook route. It gets a bucket of its own, larger than the sign-in routes' (route settings are per route key, so it does not share `/v1/app`'s). */
+  hookRoute?: apigwv2.CfnRoute;
   /** The TurnRecords table (control-plane.ts), so the broker may write AI-tool audit records.
    * The concrete Table (as with slackSecret above): dynamodb.ITable's tableStreamArn is an
    * optional string, but Table's getter returns string | undefined, which this repo's
@@ -355,6 +357,7 @@ export class DeveloperSignIn extends Construct {
     props.stage.routeSettings = {
       [SIGN_IN_ROUTE_KEY]: throttle, [DEV_ROUTE_KEY]: throttle, [APP_ROUTE_KEY]: throttle, [FEEDBACK_REVIEW_ROUTE_KEY]: throttle, [SESSION_LINK_ROUTE_KEY]: throttle,
       ...Object.fromEntries(throttledRoutes.map(({ route, burst, rate }) => [route.routeKey, { ThrottlingBurstLimit: burst, ThrottlingRateLimit: rate }])),
+      ...(props.hookRoute === undefined ? {} : { [props.hookRoute.routeKey]: { ThrottlingBurstLimit: 100, ThrottlingRateLimit: 50 } }),
     };
     // Route settings must name routes that already exist.
     props.stage.addDependency(authRoute);
@@ -363,6 +366,7 @@ export class DeveloperSignIn extends Construct {
     props.stage.addDependency(feedbackReviewRoute);
     props.stage.addDependency(sessionLinkRoute);
     for (const { route } of throttledRoutes) props.stage.addDependency(route);
+    if (props.hookRoute !== undefined) props.stage.addDependency(props.hookRoute);
 
     const broker = props.broker;
     // The sign-in issuer is the API's address plus /v1/auth: the broker is given the API's id (in its names) and builds the URL.
@@ -372,12 +376,15 @@ export class DeveloperSignIn extends Construct {
     const brokerNames = BrokerNames.of(broker);
     brokerNames.add("signInTable", table.tableName);
     brokerNames.add("identityFunction", fn.functionName);
-    broker.addEnvironment("SLACK_TEAM_ID", p.slackTeamId.valueAsString);
-    broker.addEnvironment("DEVELOPER_SIGNIN_SLACK", p.slack.valueAsString);
+    // The constrained parameters (a Slack team id pattern, allowed lists, digit patterns) are the broker's settings (BrokerSettings: one JSON variable, as its names are; Lambda's 4 KB).
+    // The issuer URL is free text, so it stays a variable of its own.
+    const brokerSettings = BrokerSettings.of(broker);
+    brokerSettings.add("slackTeamId", p.slackTeamId.valueAsString);
+    brokerSettings.add("signInSlack", p.slack.valueAsString);
     broker.addEnvironment("DEVELOPER_OIDC_ISSUER", p.oidcIssuer.valueAsString);
-    broker.addEnvironment("DEVELOPER_SIGNIN_SLACK_SINCE", p.slackSince.valueAsString);
-    broker.addEnvironment("DEVELOPER_OIDC_SINCE", p.oidcSince.valueAsString);
-    broker.addEnvironment("MCP_CONFIRM_ELICITATION", p.mcpConfirmElicitation.valueAsString);
+    brokerSettings.add("signInSlackSince", p.slackSince.valueAsString);
+    brokerSettings.add("oidcSince", p.oidcSince.valueAsString);
+    brokerSettings.add("mcpConfirmElicitation", p.mcpConfirmElicitation.valueAsString);
     // The broker reads only whether the cloud sign-in is configured (it then resolves orgs by membership, R6)
     // and where invite links point; the sign-in function holds the client settings and the secret.
     if (cloud !== undefined) {

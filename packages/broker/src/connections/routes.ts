@@ -12,12 +12,14 @@ import {
   agentRequestKey,
   agentXError,
   canonicalJson,
+  cloudwatchExternalId,
   newPrefixedId,
 } from "@agentx/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import type { RequestMark } from "../agents/table-writes.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
+import { cloudwatchTrustPolicy } from "../connectors/native/cloudwatch.js";
 import type { OrgConnectionRecord, OrgConnectionStore } from "./store.js";
 
 /** What the connection routes need: the store, and the State table the request items are read from. */
@@ -26,6 +28,8 @@ export interface ConnectionRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
+  /** The ARN of the broker function's role, which a CloudWatch connection's trust policy names as the principal (Plan 4 Task 16). Absent, no setup is shown. */
+  brokerRoleArn?: string | undefined;
 }
 
 export const isConnectionRoute = (pathname: string): boolean => /^\/v1\/app\/connections(\/|$)/.test(pathname);
@@ -64,6 +68,28 @@ function view(record: OrgConnectionRecord) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
   const { hasSecret, orgId: _org, ...rest } = record;
   return { ...rest, hasCredential: hasSecret };
+}
+
+/**
+ * What a customer needs to make the role Rovara assumes: the external id and the trust policy to paste. Both are built from the CALLER's org, never from the
+ * stored record, and only for a CloudWatch connection on a deployment that knows its broker role.
+ */
+function setupOf(deps: ConnectionRouteDependencies, caller: AgentCaller, record: OrgConnectionRecord): { setup?: { externalId: string; trustPolicy: ReturnType<typeof cloudwatchTrustPolicy> } } {
+  if (record.type !== "cloudwatch" || deps.brokerRoleArn === undefined) return {};
+  const externalId = cloudwatchExternalId(caller.orgId);
+  return { setup: { externalId, trustPolicy: cloudwatchTrustPolicy({ brokerRoleArn: deps.brokerRoleArn, externalId }) } };
+}
+
+/** The warning code of a Linear or Jira connection that is not marked as a service identity: a fixed code and fixed words, with nothing of the connection in them. */
+export const PERSONAL_KEY_WARNING = {
+  code: "PERSONAL_KEY_LOOP_GUARD_LIMITED",
+  message: "This connection uses a personal key, so Rovara cannot tell its own tickets from that person's: their tickets can start work, and only the repeat guard and the run limits stop a loop. A service account is recommended; mark the connection with identity \"service\" once it is one.",
+} as const;
+
+/** What a save adds to its answer: the personal-key warning for a Linear or Jira connection not marked `service`; nothing for any other. */
+function warningsOf(record: OrgConnectionRecord): { warnings?: Array<typeof PERSONAL_KEY_WARNING> } {
+  if (record.type !== "linear" && record.type !== "jira") return {};
+  return record.identity === "service" ? {} : { warnings: [PERSONAL_KEY_WARNING] };
 }
 
 const notFound = () => agentXError("NOT_FOUND", "no connection has that ID");
@@ -127,7 +153,7 @@ async function createConnection(deps: ConnectionRouteDependencies, caller: Agent
   const input = parseBody(SaveBodySchema, body);
   const connectionId = mintConnectionId(caller, input.requestId);
   const { mark, replay } = await markRequest(deps, caller, "create", "", input);
-  if (replay !== undefined) return new StatusReply(201, { connection: view(replay.result as OrgConnectionRecord) });
+  if (replay !== undefined) return new StatusReply(201, { connection: view(replay.result as OrgConnectionRecord), ...warningsOf(replay.result as OrgConnectionRecord) });
   const connection = withId(input.connection, connectionId, false);
   // The id comes from the request id, so a connection already there means a request id used again after its memory expired: `requireNew` refuses it,
   // and the write itself is conditional on there being none.
@@ -135,19 +161,19 @@ async function createConnection(deps: ConnectionRouteDependencies, caller: Agent
     orgId: caller.orgId, connection, ...(input.secret === undefined ? {} : { secret: input.secret }),
     by: caller.developerId, requestId: input.requestId, request: mark, requireNew: true,
   });
-  return new StatusReply(201, { connection: view(saved) });
+  return new StatusReply(201, { connection: view(saved), ...warningsOf(saved) });
 }
 
 async function saveConnection(deps: ConnectionRouteDependencies, caller: AgentCaller, connectionId: string, body: unknown): Promise<unknown> {
   requireAdmin(caller);
   const input = parseBody(SaveBodySchema, body);
   const { mark, replay } = await markRequest(deps, caller, "save", connectionId, input);
-  if (replay !== undefined) return { connection: view(replay.result as OrgConnectionRecord) };
+  if (replay !== undefined) return { connection: view(replay.result as OrgConnectionRecord), ...warningsOf(replay.result as OrgConnectionRecord) };
   const saved = await deps.store.put({
     orgId: caller.orgId, connection: withId(input.connection, connectionId, true), ...(input.secret === undefined ? {} : { secret: input.secret }),
     by: caller.developerId, requestId: input.requestId, request: mark, requireExisting: true,
   });
-  return { connection: view(saved) };
+  return { connection: view(saved), ...warningsOf(saved) };
 }
 
 async function removeConnection(deps: ConnectionRouteDependencies, caller: AgentCaller, connectionId: string, body: unknown): Promise<unknown> {
@@ -185,7 +211,7 @@ export async function routeConnectionRequest(deps: ConnectionRouteDependencies, 
   if (method === "GET") {
     const found = await deps.store.get(caller.orgId, connectionIdOf(rawId));
     if (found === undefined) throw notFound();
-    return { connection: view(found) };
+    return { connection: { ...view(found), ...setupOf(deps, caller, found) } };
   }
   if (method === "PUT") return saveConnection(deps, caller, connectionIdOf(rawId), jsonBody(request));
   if (method === "DELETE") return removeConnection(deps, caller, connectionIdOf(rawId), jsonBody(request));

@@ -1,6 +1,7 @@
 import { test,expect } from "./support/csp.js";
 import { checkA11y } from "./support/axe.js";
 import { mockRealtime } from "./support/realtime.js";
+import { chainRunViewOf } from "../web/support/chain-fixture.js";
 import { navFixture } from "../web/support/fixtures.js";
 import { AppNavSchema } from "@agentx/contracts/web";
 const sid="ses_aaaaaaaaaaaaaaaaaaaa",agentId="agt_aaaaaaaaaaaaaaaaaaaa",payload="<img src=x onerror=window.__pwned=1>";
@@ -26,7 +27,7 @@ const flows=[
 for(const theme of ["light","dark"] as const)for(const flow of flows)test(flow.name+" accessibility, safe input, focus and reflow in "+theme,async({page,context,request,baseURL})=>{
  await request.post("/__mock/scenario",{data:{name:flow.scenario}});await context.addCookies([{name:"__Host-agentx_review_session",value:"11111111-1111-4111-8111-111111111111",url:baseURL!,secure:true,httpOnly:true,sameSite:"Strict"}]);await mockRealtime(page);await page.emulateMedia({colorScheme:theme,reducedMotion:"reduce"});
  if("onboarding"in flow)await request.get("/__mock/github-install");
- if("chain"in flow)await request.post("/__mock/session-state",{data:{kind:"chain",body:{kind:"chain",chain:{}}}});
+ if("chain"in flow)await request.post("/__mock/session-state",{data:{kind:"chain",body:{kind:"chain",chain:chainRunViewOf("crn_"+"a".repeat(20))}}});
  if("code"in flow)await request.post("/__mock/session-state",{data:{agent:{agentId:"rovara-code",name:"Rovara Code",version:1}}});
  if("readonly"in flow)await request.post("/__mock/agent-state",{data:{access:"view"}});
  await page.goto(flow.path);const heading=page.getByRole("heading",{name:flow.heading,level:1,exact:true});await expect(heading).toBeVisible();

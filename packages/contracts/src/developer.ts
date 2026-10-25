@@ -5,7 +5,7 @@ import { ProjectRoleSchema } from "./app-projects.js";
 import { EnvironmentNameSchema } from "./environments.js";
 export { normalizeEmail } from "./email.js";
 import { looseCopy } from "./loose.js";
-import { OrgRoleSchema } from "./org-node.js";
+import { OrgRoleSchema } from "./org.js";
 import { DeveloperTaskPolicySchema } from "./project-node.js";
 import { SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema } from "./slack.js";
 import { WorkspaceStatusSchema } from "./workspace.js";

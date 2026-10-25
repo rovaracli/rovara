@@ -207,7 +207,7 @@ export type AdminWorkspacesResponse = z.infer<typeof AdminWorkspacesResponseSche
  */
 export const HEALTH_ALARM_SUFFIXES = [
   "AuditChainMismatch", "AuditIntakeBacklog", "AuditIntakeDeadLetters", "AuditLockDrift", "AuditObjectConflict", "AuditPendingStuck", "AuditRecordFailed", "AuditSealOverdue", "AuditShredFailed", "AuditTimestampFailed",
-  "BedrockThrottling", "CheckerFailures", "ClassifierThrottling", "ConnectorBroken", "ConnectorNotConnected",
+  "BedrockThrottling", "ChainScheduleDeadLetters", "ChainWriteApproverSelectorFailed", "CheckerFailures", "ClassifierThrottling", "ConnectorBroken", "ConnectorNotConnected",
   "DeveloperNoticeDeadLetters", "DeveloperNoticeStreamFailures", "DispatchDeadLetters", "EmptyResponses",
   "EvalBatchTickErrors", "EvalBatchWatcherErrors", "EvalExecutionsFailed",
   "ReconcilerLostInstances", "ReconcilerQuarantinedVolumes", "ReconcilerStuckProvisioning", "RecordingFailures",

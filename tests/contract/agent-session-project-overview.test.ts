@@ -2,9 +2,10 @@
 // that person may do there, the agents that work on it with how many are running, the month's budget and cost per merged pull request (only for a maintainer, who may see spend), and the open
 // sessions the person may view. Everything is read now for the caller: a person with no role gets `PROJECT_NOT_FOUND`, the same as for a project that is not there. A merged pull request adds
 // one to the project's month count in the transaction that records the merge.
+import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   LIVE_PAGE_MAX, ProjectOverviewReaderSchema, ProjectOverviewSchema, agentKey, agentSessionKey, liveSessionKey, projectAiKey, orgMemberKey, projectMonthStatsKey, spendCounterKey, type OrgId, type ProjectOverview, type SessionStatus,
 } from "../../packages/contracts/src/index.js";
@@ -33,7 +34,7 @@ function world() {
   const store = new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now });
   const approvals = {
     store, projectMembers: w.members, documentClient: w.db, tableName: "state", signInStore: w.signInStore, now: () => w.clock.now, confirmOrigin: CELL, log: () => undefined,
-  } as unknown as ApprovalDependencies;
+  } as unknown as ApprovalDependencies & AgentRouteDependencies;
   const page = (name: string) => ({ name, status: "active" as const, repositories: [{ fullName: `acme/${name}`, defaultBranch: "main" }], setup: { status: "ready" as const }, channels: ["C0123456789"] });
   const deps = (extra: Partial<SessionRouteDependencies> = {}): SessionRouteDependencies => ({
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
@@ -391,13 +392,15 @@ describe("a merged pull request adds one to the project's month, once", () => {
     }]));
     const remote = new Map<number, "open" | "merged">([[1, "open"], [2, "open"]]);
     let revision = 0;
+    const reads = { count: 0 };
+    const saves = { count: 0 };
     let clock = Date.parse(NOW);
-    const reconcile = (fullName: string, number: number, extra: { failTransaction?: boolean; now?: string; auditOrgId?: (taskId: string) => Promise<OrgId> } = {}) => reconcileTaskPullRequestFeedback({
+    const reconcile = (fullName: string, number: number, extra: { failTransaction?: boolean; conflicts?: { times: number; kind: "whole" | "cancelled" }; now?: string; auditOrgId?: (taskId: string) => Promise<OrgId> } = {}) => reconcileTaskPullRequestFeedback({
       documentClient: { send: async (command: unknown) => ({ Item: rows.get(String(((command as { input: { Key: { pk: string } } }).input.Key).pk)) }) },
       tableName: "state", repositoryFullName: fullName, number, deliveryId: randomUUID(), ...(mode === "merge" ? { observationMode: "merge" as const } : {}), now: extra.now ?? iso(clock += 1000),
       loadTask: async () => ({ project, startingRevision: 1, ...(orgId === null ? {} : { orgId }), workflow }),
       repositoryUrl: async (_project: string, _revision: number, repositoryId: string) => `https://github.com/acme/${repositoryId}.git`,
-      getCurrentFeedback: async (_url: string, prNumber: number) => ({
+      getCurrentFeedback: async (_url: string, prNumber: number) => (reads.count += 1, {
         pullRequest: { number: prNumber, url: `https://github.com/acme/${prNumber === 1 ? "api" : "ui"}/pull/${String(prNumber)}`, state: remote.get(prNumber)!, headBranch: "feature", baseBranch: "main", headCommit: "a".repeat(40), headTreeSha: "b".repeat(40), title: "t", body: "" },
         comments: [], threads: [],
       }),
@@ -406,13 +409,20 @@ describe("a merged pull request adds one to the project's month, once", () => {
       saveWorkflow: async (_taskId, expectedRevision, next, extraItems = []) => {
         if (expectedRevision !== workflow.revision) throw Object.assign(new Error("conditional"), { name: "ConditionalCheckFailedException" });
         if (extra.failTransaction === true) throw Object.assign(new Error("cancelled"), { name: "TransactionCanceledException" });
+        saves.count += 1;
+        if (extra.conflicts !== undefined && saves.count <= extra.conflicts.times) {
+          // The hot stats item: another transaction holds it right now. Nothing was written and no condition failed.
+          throw extra.conflicts.kind === "whole"
+            ? Object.assign(new Error("conflict"), { name: "TransactionConflictException" })
+            : Object.assign(new Error("cancelled"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "None" }, { Code: "TransactionConflict" }] });
+        }
         revision += 1;
         await db.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: "state", Item: { pk: "TASK", sk: "META", revision } } }, ...extraItems] }));
         workflow = next;
       },
     });
     const count = (month = MONTH) => (db.get(projectMonthStatsKey(orgId ?? ORG_A, project, month)) as Item | undefined)?.["mergedPullRequests"];
-    return { db, remote, reconcile, count };
+    return { db, remote, reconcile, count, reads, saves };
   }
 
   it("adds one when a pull request is found merged, nothing for a redelivery, and one for the next pull request", async () => {
@@ -471,6 +481,23 @@ describe("a merged pull request adds one to the project's month, once", () => {
     expect(await mergedPullRequestStats({ ...(input as object), auditOrgId: async () => { throw new Error("no"); } } as never, { project: "web" }, TASK, merged, reads)).toEqual([]);
   });
 
+  it("says in the log when a merge is not counted because its org is unknown or the lookup failed (Round 2 review M-2)", async () => {
+    const merged = { pullRequests: [{ repositoryId: "api", number: 1, state: "MERGED" }] } as never;
+    const reads = [{ pr: { repositoryId: "api", number: 1, state: "OPEN" } }];
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const events = () => log.mock.calls.flatMap(([line]) => { try { return [JSON.parse(String(line)) as Record<string, unknown>]; } catch { return []; } }).filter((entry) => entry["event"] === "merged_count.skipped");
+      const input = { tableName: "state", now: NOW };
+      expect(await mergedPullRequestStats({ ...input, auditOrgId: async () => { throw new Error("no"); } } as never, { project: "web" }, TASK, merged, reads)).toEqual([]);
+      expect(events().map((entry) => entry["reason"])).toEqual(["lookup_failed"]);
+      expect(await mergedPullRequestStats(input as never, { project: "web" }, TASK, merged, reads)).toEqual([]);
+      expect(events().map((entry) => entry["reason"])).toEqual(["lookup_failed", "org_unknown"]);
+      expect(events()[0]).toMatchObject({ taskId: TASK, project: "web" });
+      expect(await mergedPullRequestStats(input as never, { orgId: ORG_A, project: "web" }, TASK, merged, reads)).toHaveLength(1);
+      expect(events()).toHaveLength(2);
+    } finally { log.mockRestore(); }
+  });
+
   it("counts nothing when the save does not commit, and nothing for a pull request that is still open", async () => {
     const h = harness();
     await h.reconcile("acme/api", 1);
@@ -480,6 +507,33 @@ describe("a merged pull request adds one to the project's month, once", () => {
     expect(h.count()).toBeUndefined();
     expect(await h.reconcile("acme/api", 1)).toBe(true);
     expect(h.count()).toBe(1);
+  });
+
+  it("tries the save again when only the project's hot stats item was busy (a transaction conflict), without reading GitHub again, and gives up after a few tries", async () => {
+    for (const kind of ["whole", "cancelled"] as const) {
+      const h = harness();
+      h.remote.set(1, "merged");
+      expect(await h.reconcile("acme/api", 1, { conflicts: { times: 2, kind } }), kind).toBe(true);
+      expect(h.count(), kind).toBe(1);
+      expect(h.saves.count, kind).toBe(3);
+      // GitHub was read once for each of the task's two pull requests, not again for each try.
+      expect(h.reads.count, kind).toBe(2);
+    }
+    const busy = harness();
+    busy.remote.set(1, "merged");
+    await expect(busy.reconcile("acme/api", 1, { conflicts: { times: 100, kind: "whole" } })).rejects.toMatchObject({ name: "TransactionConflictException" });
+    expect(busy.saves.count).toBeLessThanOrEqual(5);
+    expect(busy.count()).toBeUndefined();
+  });
+
+  it("gives up on a persistent cancelled-transaction conflict after the few tries, without reading GitHub again (Round 2 review I-2)", async () => {
+    const busy = harness();
+    busy.remote.set(1, "merged");
+    await expect(busy.reconcile("acme/api", 1, { conflicts: { times: 100, kind: "cancelled" } })).rejects.toMatchObject({ name: "GithubWebhookRetryableError" });
+    // The first try and three more: not the outer loop's five reads of GitHub with four tries in each.
+    expect(busy.saves.count).toBe(4);
+    expect(busy.reads.count).toBe(2);
+    expect(busy.count()).toBeUndefined();
   });
 
   it("counts on the task's own org and project, and nowhere else", async () => {

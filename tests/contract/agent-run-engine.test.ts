@@ -10,6 +10,7 @@ import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
+import { currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import {
   advanceAgentRun, cancelAgentRun, driveAgentRun, giveUpAgentRun, onAgentStepFinished, onApprovalGaveUp, onTaskEnded, onWriteDecided, prepareSlackReport, registerTaskEndHandler,
   registerTaskPauseHandler, type TaskEndEvent, type TaskPauseEvent,
@@ -258,7 +259,7 @@ describe("running the steps in order", () => {
     expect(t.stepOps(run.workspaceId)).toHaveLength(1);
     expect(first).toMatchObject({ kind: "task", programStepId: "investigate", status: "ACCEPTED" });
     const firstPayload = t.invocationOf(first!.id).payload;
-    expect(AgentStepPayloadSchema.parse(firstPayload.agentStep)).toMatchObject({ kind: "agent", agentId: "root-cause-analyst", version: 1, stepId: "investigate", workspace: "read" });
+    expect(AgentStepPayloadSchema.parse(firstPayload.agentStep)).toMatchObject({ kind: "agent", agentId: "root-cause-analyst", version: currentBuiltinVersion("root-cause-analyst"), stepId: "investigate", workspace: "read" });
     expect(firstPayload.agentStep!.inputs).toBe(renderRunInput(INPUT));
     expect(firstPayload.agentStep).not.toHaveProperty("resultContract");
     expect(typeof firstPayload.prompt).toBe("string");
@@ -1307,6 +1308,7 @@ describe("a run that looks at a pull request: an old worker", () => {
   function dispatcherFor(features: readonly string[]) {
     const post = vi.fn<Ec2DeliveryDependencies["post"]>(async () => ({ status: 200, body: "{\"accepted\":true}" }));
     const deliverEc2 = createEc2Delivery({
+      applicationPlanNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation: 3, privateIp: "10.42.128.10" }) },
       binding: async () => binding, sign: kmsSign, post, progress: async () => undefined, now: () => Date.parse("2026-10-21T12:00:00.000Z"),
       workerFeatures: async () => features,

@@ -4,7 +4,7 @@
 // total (every budget they hold, this month's top-ups included) stays within the cap, else to the admins. The owner counter's `version` makes an owner's
 // approval race-safe (R4-6). An approval adds the top-up and resumes every task paused on that scope, keeping their cap windows.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MONTH_APPROVERS, OWNER_TOTAL_CONTRIBUTORS, createSpendRequest, decideSpendRequest, escalateOwnerRequests, ownerEffectiveTotal, requestForPausedTask, routeSpendRequests, spendApprovers,
   type OwnerTotalContributor,
@@ -22,6 +22,21 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { ADA, BEN, CARL, DEB, ORG_B, month, person, refusal, setup, type World } from "../support/spend-world.js";
+
+
+// Only `Date` is pinned (to the 10th of a month), so timers and promises run as they do.
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z")); });
+afterEach(() => { vi.useRealTimers(); });
+
+// These tests expire requests 7 days on. Run late in a month, that crosses the month end, the month's budget resets and the paused task resumes, which is the
+// product working and not what they check: so they run on a clock that is mid-month.
+describe("the clock these tests run on", () => {
+  it("is mid-month, far enough from the month end for a 7-day expiry to stay inside it", () => {
+    const now = new Date();
+    const monthEnd = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+    expect(monthEnd - now.getTime()).toBeGreaterThan(10 * 86_400_000);
+  });
+});
 
 const MEMBER: BudgetScope = { kind: "member", developerId: MAYA.developerId };
 const monthRequests = (t: World): SpendRequestRecord[] => t.requests().filter((record) => record.kind === "month");
@@ -149,8 +164,8 @@ describe("a pause on a month's budget", () => {
 });
 
 describe("an agent's month (MONTH_APPROVERS)", () => {
-  it("routes every scope kind: an agent's to its owner or the admins, every other to the admins", () => {
-    expect(Object.keys(MONTH_APPROVERS).sort()).toEqual(["agent", "member", "org", "project", "testing"]);
+  it("routes every scope kind: an agent's (and, from Plan 4, a chain's) to its owner or the admins, every other to the admins", () => {
+    expect(Object.keys(MONTH_APPROVERS).sort()).toEqual(["agent", "chain", "member", "org", "project", "testing"]);
   });
 
   it("an agent-scope request for $40 on a $30 limit goes to its owner, one for $60 to the admins", async () => {

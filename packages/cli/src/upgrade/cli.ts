@@ -44,8 +44,9 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--boot-stage2-sha256 <hex>", "with --worker-image: the SHA-256 of packages/worker/ec2/boot-stage2.sh in the release source that image was built from (a release supplies its own)")
     .option("--slack-image <digest-ref>", "Slack service image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
     .option("--yes", "apply without asking; every change and the release notes are still printed", false)
+    .option("--no-reserved-concurrency", "the cdk engine only: deploy with no Lambda reserved concurrency, for an AWS account whose Lambda concurrency limit is too low to reserve any (a new account's limit of 10); keep it on in production")
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string }, command: Command) => {
+    .action(async (options: { to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       const aws = options.region === undefined ? {} : { region: options.region };
@@ -62,10 +63,10 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         notes: overrides.notes ?? ((version) => releaseNotes({ fetch: context.fetch, version })),
         prepare: overrides.prepare ?? ((input) => prepareDeployment({
           engine: input.settings.engine, env: input.settings.env, region: input.settings.region, account: input.settings.account,
-          identityMode: input.settings.identity.mode, ...(input.settings.cloud === true ? { cloud: true } : {}), release: input.release, ...(input.source === undefined ? {} : { source: input.source }),
+          identityMode: input.settings.identity.mode, ...(input.settings.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), release: input.release, ...(input.source === undefined ? {} : { source: input.source }),
           deps: context.deploy ?? {}, stderr: context.stderr,
         })),
-        cdkDiff: overrides.cdkDiff ?? ((request, settings, source) => cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), request })),
+        cdkDiff: overrides.cdkDiff ?? ((request, settings, source, reservedConcurrency) => cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), request })),
         ask: overrides.ask ?? readlineAsk(),
         isInteractive: overrides.isInteractive ?? (() => process.stdin.isTTY === true),
         githubWebhook: overrides.githubWebhook ?? ((settings) => ({ secrets: secretsManagerInitSecrets(new SecretsManagerClient({ region: settings.region })), github: githubRestApi(context.fetch) })),
@@ -82,6 +83,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         env: globals.env, yes: options.yes, allowReplace: options.allowReplace,
         ...(options.to === undefined ? {} : { to: options.to }), ...(options.release === undefined ? {} : { releaseDir: options.release }),
         ...(options.source === undefined ? {} : { source: options.source }), ...(options.export === undefined ? {} : { exportDir: options.export }),
+        ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
         ...(images === undefined ? {} : { images }),
       }, deps);
       context.stdout.write(globals.json ? formatSuccess(result, true) : result.exported !== undefined

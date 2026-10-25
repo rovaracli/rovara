@@ -1,122 +1,26 @@
-// What session routes answer and clients read (Plan 5 Task 1 declares the shapes; the tasks that serve each one fill it in).
-//
-// Every shape has a strict server schema (`…Schema`, which refuses what it doesn't know) and a forward-compatible reader (`…ReaderSchema`,
-// which keeps unknown fields and reads a value a newer server added to an enum as "unknown"). Clients parse with the reader; the server
-// validates what it writes with the strict one. The reader is derived from the strict schema, so the two can't drift apart.
 import { z } from "zod";
-import {
-  AGENT_SESSION_CONTRACT_VERSION,
-  SESSION_ACTIONS,
-  SESSION_SHARES_MAX,
-  LocalToolSchema,
-  SessionActionSchema,
-  LIVE_PAGE_MAX,
-  LIVE_FILTERS,
-  LIVE_VIEWING_MAX,
-  SESSION_EVENTS_PAGE_MAX,
-  SESSION_ANCHORS_MAX,
-  SESSION_MESSAGES_PAGE_MAX,
-  SESSION_KINDS,
-  SessionAnchorRefSchema,
-  SESSION_LEVELS,
-  SESSION_MODES,
-  SessionAgentSchema,
-  SessionEventSchema,
-  SessionIdSchema,
-  SessionLegSchema,
-  SessionMessageSchema,
-  SessionOwnerSchema,
-  SessionStartedBySchema,
-  SessionSummarySchema,
-  SessionWhereSchema,
-  SESSION_LEGS_MAX,
-} from "./agent-sessions.js";
-import { AgentIdSchema, AgentPrincipalSchema } from "./agent.js";
-import { ProjectRoleSchema, ProjectSetupStatusSchema, ProjectStatusSchema } from "./app-projects.js";
-import { DeveloperTaskViewSchema } from "./developer-tasks.js";
+import { AGENT_SESSION_CONTRACT_VERSION, SessionIdSchema, SESSION_KINDS, SESSION_MODES, SessionAgentSchema, SessionOwnerSchema, SessionStartedBySchema, SessionSummarySchema, SESSION_LEVELS, SessionActionSchema, SESSION_ACTIONS, SessionLegSchema, SESSION_LEGS_MAX, SessionAnchorRefSchema, SESSION_ANCHORS_MAX, LocalToolSchema, SESSION_SHARES_MAX, SessionWhereSchema, LIVE_FILTERS, LIVE_VIEWING_MAX, LIVE_PAGE_MAX, SessionEventSchema, SessionMessageSchema, SESSION_EVENTS_PAGE_MAX, SESSION_MESSAGES_PAGE_MAX } from "./agent-sessions.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
+import { DeveloperTaskViewSchema } from "./developer-tasks.js";
+import { ChainRunViewSchema } from "./chain-session.js";
+import { forwardReader } from "./forward-reader.js";
+import { AgentPrincipalSchema, AgentIdSchema } from "./agent.js";
+import { ProjectStatusSchema, ProjectSetupStatusSchema, ProjectRoleSchema } from "./app-projects.js";
 
-const UNKNOWN = "unknown" as const;
-const InstantSchema = z.string().datetime();
+export const InstantSchema = z.string().datetime();
+
 /** The most people `viewingNow` names. */
 export const PRESENCE_VIEWERS_MAX = 20;
-const NEEDS_CONFIRMATION_CHANGES_MAX = 10;
-const CHANGE_TEXT_MAX = 300;
-const URL_MAX = 2048;
 
-// ---- forward-compatible readers
+export const NEEDS_CONFIRMATION_CHANGES_MAX = 10;
 
-/**
- * A value of an enum that reads a string a newer server added as "unknown". A missing or non-string value stays an error.
- * TODO(Plan 4 merge): Plan 4 defines `openEnum` in `packages/contracts/src/chain-session.ts` as `z.enum(values).catch("unknown")`, which also
- * turns a missing value into "unknown". Keep this one private and stricter, or move both onto one definition when the branches meet.
- */
-function openEnum<const T extends readonly [string, ...string[]]>(values: T): z.ZodType<T[number] | typeof UNKNOWN> {
-  return z.string().transform((value): T[number] | typeof UNKNOWN => ((values as readonly string[]).includes(value) ? value : UNKNOWN));
-}
+export const CHANGE_TEXT_MAX = 300;
 
-/** What a reader gives for a strict type: objects keep unknown fields, and a string-literal union may read as "unknown". */
-export type ForwardReader<T> = T extends string
-  ? string extends T ? T : T | typeof UNKNOWN
-  : T extends readonly (infer Item)[]
-    ? Array<ForwardReader<Item>>
-    : T extends object
-      ? { [Key in keyof T]: ForwardReader<T[Key]> } & { [other: string]: unknown }
-      : T;
+export const URL_MAX = 2048;
 
-type Def = { type: string } & Record<string, unknown>;
-const defOf = (schema: z.ZodType): Def => (schema as unknown as { _zod: { def: Def } })._zod.def;
+export const LinkSchema = z.string().url().max(URL_MAX);
 
-/**
- * The reader for a strict schema: objects become `looseObject`s, enums become `openEnum`s, an object variant of a discriminated union with a
- * kind the schema doesn't know is read with `kind: "unknown"` and its other fields kept, and everything else (strings, numbers, literals,
- * arrays, optionals) is rebuilt around the same pieces. Length and pattern rules on plain values are kept.
- */
-export function forwardReader<S extends z.ZodType>(schema: S): z.ZodType<ForwardReader<z.output<S>>> {
-  return readerOf(schema) as z.ZodType<ForwardReader<z.output<S>>>;
-}
-
-function readerOf(schema: z.ZodType): z.ZodType {
-  const def = defOf(schema);
-  switch (def.type) {
-    case "object": {
-      const shape: Record<string, z.ZodType> = (schema as unknown as z.ZodObject).shape;
-      return z.looseObject(Object.fromEntries(Object.entries(shape).map(([key, field]) => [key, readerOf(field)])));
-    }
-    case "enum":
-      return openEnum((schema as unknown as z.ZodEnum).options as unknown as readonly [string, ...string[]]);
-    case "array":
-      return z.array(readerOf(def.element as z.ZodType));
-    case "optional":
-      return readerOf(def.innerType as z.ZodType).optional();
-    case "union": {
-      const options = def.options as z.ZodType[];
-      if (typeof def.discriminator !== "string") {
-        // RULING Q41: an open enum must not swallow a valid sibling ID or another known enum value.
-        const known = options.map(option => defOf(option).type === "enum" ? option : readerOf(option));
-        const fallbacks = options.filter(option => defOf(option).type === "enum").map(readerOf);
-        return z.union([...known, ...fallbacks] as unknown as [z.ZodType, z.ZodType]);
-      }
-      const discriminator = def.discriminator;
-      const known = options.flatMap((option) => [...((option as unknown as z.ZodObject).shape[discriminator] as unknown as z.ZodLiteral).values]);
-      const unknownVariant = z.looseObject({ [discriminator]: z.string().refine((value) => !known.includes(value)).transform((): typeof UNKNOWN => UNKNOWN) });
-      return z.union([...options.map(readerOf), unknownVariant] as unknown as [z.ZodType, z.ZodType]);
-    }
-    default:
-      return schema;
-  }
-}
-
-// ---- the session as one person reads it
-
-const LinkSchema = z.string().url().max(URL_MAX);
-const CountSchema = z.number().int().min(0);
-
-/**
- * What Plan 4's `chainRunView` answers for a chain session's body. Plan 4 is not on this branch, so the body is read as an object whose fields
- * are kept as they come. TODO(Plan 4 merge): replace with `ChainRunViewSchema` from `packages/contracts/src/chain-session.ts`.
- */
-export const ChainRunViewPlaceholderSchema = z.looseObject({});
+export const CountSchema = z.number().int().min(0);
 
 /** Where a session runs as a person is told: the cloud, or a Mac by its label (never its device id) and whether it is offline. */
 export const SessionWhereViewSchema = z.discriminatedUnion("kind", [
@@ -124,8 +28,7 @@ export const SessionWhereViewSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("mac"), label: z.string().min(1).max(200), offline: z.boolean() }).strict(),
 ]);
 
-/** Who pays for a session: the kind and a name to show (a person, a project or an agent). */
-const PayerNameSchema = z.object({ kind: z.enum(["member", "project", "agent"]), name: z.string().min(1).max(200) }).strict();
+export const PayerNameSchema = z.object({ kind: z.enum(["member", "project", "agent", "chain"]), name: z.string().min(1).max(200) }).strict();
 
 /**
  * One person's reading of one session: the header, its cost, what they may do, and the work itself (`body`). `approvals` are the caller's own
@@ -174,20 +77,25 @@ export const SessionViewSchema = z
     endedAt: InstantSchema.optional(),
     body: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("task"), task: DeveloperTaskViewSchema }).strict(),
-      z.object({ kind: z.literal("chain"), chain: ChainRunViewPlaceholderSchema }).strict(),
+      // Plan 4's run view. A gate's `confirmUrl` is optional in it: it is there for a person who may decide the gate and left out for anyone else.
+      z.object({ kind: z.literal("chain"), chain: ChainRunViewSchema }).strict(),
       z.object({ kind: z.literal("local"), tool: LocalToolSchema }).strict(),
     ]),
   })
   .strict();
+
 export type SessionView = z.infer<typeof SessionViewSchema>;
+
 export const SessionViewReaderSchema = forwardReader(SessionViewSchema);
 
 /** `GET /v1/app/sessions/{id}`. */
 export const SessionResponseSchema = z.object({ session: SessionViewSchema }).strict();
+
 export const SessionResponseReaderSchema = forwardReader(SessionResponseSchema);
 
 /** `GET /v1/app/sessions/{id}/sections/{seq}/task`: a chain step's task, as the task view shows it. */
 export const SessionStepTaskResponseSchema = z.object({ task: DeveloperTaskViewSchema }).strict();
+
 export const SessionStepTaskResponseReaderSchema = forwardReader(SessionStepTaskResponseSchema);
 
 /** One share on a session, as `GET .../shares` lists it. */
@@ -199,23 +107,34 @@ export const SessionShareSchema = z
     sharedAt: InstantSchema,
   })
   .strict();
+
 export type SessionShare = z.infer<typeof SessionShareSchema>;
+
 export const SessionShareReaderSchema = forwardReader(SessionShareSchema);
+
 /** `GET /v1/app/sessions/{id}/shares`. */
 export const SessionSharesResponseSchema = z.object({ shares: z.array(SessionShareSchema).max(SESSION_SHARES_MAX) }).strict();
+
 export const SessionSharesResponseReaderSchema = forwardReader(SessionSharesResponseSchema);
+
 /** `PUT /v1/app/sessions/{id}/shares` when it applies at once (a person or a project); a company-wide share answers `NeedsConfirmationSchema` with 202. */
 export const SessionSharePutResponseSchema = z.object({ share: SessionShareSchema }).strict();
+
 export const SessionSharePutResponseReaderSchema = forwardReader(SessionSharePutResponseSchema);
+
 /** `DELETE /v1/app/sessions/{id}/shares/{principalKey}`. */
 export const SessionShareDeleteResponseSchema = z.object({ removed: z.boolean() }).strict();
+
 export const SessionShareDeleteResponseReaderSchema = forwardReader(SessionShareDeleteResponseSchema);
 
 /** `POST` and `DELETE /v1/app/sessions/{id}/follow`: whether the caller follows now (the session's owner always does, with no item). */
 export const SessionFollowResponseSchema = z.object({ following: z.boolean() }).strict();
+
 export const SessionFollowResponseReaderSchema = forwardReader(SessionFollowResponseSchema);
+
 /** `POST /v1/app/sessions/{id}/presence`: who is looking at the session now, counting this heartbeat. */
 export const SessionPresenceResponseSchema = z.object({ viewingNow: z.array(SessionOwnerSchema).max(PRESENCE_VIEWERS_MAX) }).strict();
+
 export const SessionPresenceResponseReaderSchema = forwardReader(SessionPresenceResponseSchema);
 
 /** One session on the Live wall, a project page or a Home card: the header's short form. */
@@ -237,14 +156,15 @@ export const SessionTileSchema = z
     endedAt: InstantSchema.optional(),
   })
   .strict();
+
 export type SessionTile = z.infer<typeof SessionTileSchema>;
+
 export const SessionTileReaderSchema = forwardReader(SessionTileSchema);
 
 // ---- the Live wall (Plan 5 Task 14)
 
 /** The filter of `GET /v1/app/live`. */
 export const LiveFilterSchema = z.enum(LIVE_FILTERS);
-export type LiveFilter = z.infer<typeof LiveFilterSchema>;
 
 /**
  * One session on the Live wall, as one person sees it. Everything on it is read for that person now: `actions` is what they may do (the session view's `you.actions` without
@@ -278,28 +198,34 @@ export const LiveTileSchema = z
     updatedAt: InstantSchema,
   })
   .strict();
-export type LiveTile = z.infer<typeof LiveTileSchema>;
+
 export const LiveTileReaderSchema = forwardReader(LiveTileSchema);
 
 /** `GET /v1/app/live?filter=&project=&cursor=`: one page of tiles, newest session first; `next` is opaque, passed back as `cursor`. */
 export const LiveResponseSchema = z.object({ tiles: z.array(LiveTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();
-export type LiveResponse = z.infer<typeof LiveResponseSchema>;
+
 export const LiveResponseReaderSchema = forwardReader(LiveResponseSchema);
 
 /** `GET /v1/app/sessions`: one page of sessions, newest first; `next` is opaque, passed back as `cursor`. */
 export const SessionListSchema = z.object({ sessions: z.array(SessionTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();
+
 export type SessionList = z.infer<typeof SessionListSchema>;
+
 export const SessionListReaderSchema = forwardReader(SessionListSchema);
 
 export const DeveloperTaskViewReaderSchema = forwardReader(DeveloperTaskViewSchema);
+
 export const SessionEventReaderSchema = forwardReader(SessionEventSchema);
+
 export const SessionMessageReaderSchema = forwardReader(SessionMessageSchema);
 
 /** A page of a session's timeline, oldest first. `next` is the last event's sort key (`<at>#<eventId>`); readers re-read a little before it and de-duplicate by `eventId`. */
 export const SessionEventPageSchema = z
   .object({ events: z.array(SessionEventSchema).max(SESSION_EVENTS_PAGE_MAX), next: z.string().min(1).optional() })
   .strict();
+
 export type SessionEventPage = z.infer<typeof SessionEventPageSchema>;
+
 export const SessionEventPageReaderSchema = forwardReader(SessionEventPageSchema);
 
 /**
@@ -310,14 +236,16 @@ export const SessionEventPageReaderSchema = forwardReader(SessionEventPageSchema
 export const SessionMessagePageSchema = z
   .object({ messages: z.array(SessionMessageSchema).max(2 * SESSION_MESSAGES_PAGE_MAX), next: z.string().min(1).optional() })
   .strict();
-export type SessionMessagePage = z.infer<typeof SessionMessagePageSchema>;
+
 export const SessionMessagePageReaderSchema = forwardReader(SessionMessagePageSchema);
 
 // ---- the project page (Plan 5 Task 16; Home's shapes are in home.ts)
 
 /** The most repositories, channels and agents a project page lists. */
 export const PROJECT_OVERVIEW_REPOSITORIES_MAX = 50;
+
 export const PROJECT_OVERVIEW_CHANNELS_MAX = 20;
+
 export const PROJECT_OVERVIEW_AGENTS_MAX = 100;
 
 /** The project's card: what it is, where its code is, how ready it is, and the Slack channels that reach it. */
@@ -369,7 +297,9 @@ export const ProjectOverviewSchema = z
     running: z.array(LiveTileSchema).max(LIVE_PAGE_MAX),
   })
   .strict();
+
 export type ProjectOverview = z.infer<typeof ProjectOverviewSchema>;
+
 export const ProjectOverviewReaderSchema = forwardReader(ProjectOverviewSchema);
 
 // ---- asking for a confirmation
@@ -386,11 +316,14 @@ export const NeedsConfirmationSchema = z
     changes: z.array(z.string().min(1).max(CHANGE_TEXT_MAX)).max(NEEDS_CONFIRMATION_CHANGES_MAX),
   })
   .strict();
+
 export type NeedsConfirmation = z.infer<typeof NeedsConfirmationSchema>;
 
 /** Plan 7 Task 13c: a bounded, redacted page of an authorized session's PR files. */
 export const DIFF_FILES_PAGE_MAX = 100;
+
 export const DIFF_PATCH_MAX_BYTES = 65_536;
+
 export const SessionDiffSchema = z.object({
  files: z.array(z.object({
   path: z.string().min(1).max(4096),
@@ -403,5 +336,9 @@ export const SessionDiffSchema = z.object({
  nextPage: z.number().int().positive().optional(),
  pullRequest: z.object({ repository: z.string(), number: z.number().int().positive(), url: z.string().url() }).strict(),
 }).strict();
+
 export type SessionDiff = z.infer<typeof SessionDiffSchema>;
+
 export const SessionDiffReaderSchema = forwardReader(SessionDiffSchema);
+
+export { forwardReader, type ForwardReader } from "./forward-reader.js";

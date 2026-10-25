@@ -137,12 +137,12 @@ describe("resolveToolGrants", () => {
 
   it("a { name: \"slack\" } selector is a problem when the agent is published", async () => {
     expect(toolGrantProblems([grant({ name: "slack" }, "read_write"), grant({ name: "linear" }, "read"), grant({ type: "mcp" }, "read")])).toEqual([
-      { path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana or mcp" },
+      { path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana, mcp, sentry, datadog, cloudwatch, github-actions, grafana, vercel or pagerduty" },
     ]);
     const h = await createDeveloperTaskBroker();
     const recipe: ResolvedRecipe = { ...EMPTY_RECIPE, steps: [{ id: "triage", name: "Triage", kind: "agent", workspace: "none", settings: { instructions: [] } }], tools: [grant({ name: "slack" }, "read_write")] };
     const problems = await validateRecipeForOrg({ documentClient: h.db, tableName: "state" }, TEST_ORG, recipe);
-    expect(problems).toContainEqual({ path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana or mcp" });
+    expect(problems).toContainEqual({ path: "tools.0.connector", message: "slack isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana, mcp, sentry, datadog, cloudwatch, github-actions, grafana, vercel or pagerduty" });
   });
 
   it("grants only tools the project approved and the vendor still offers", () => {
@@ -900,6 +900,19 @@ describe("POST /v1/internal/agent-tools/call", () => {
   });
 
   describe("the write gate seam", () => {
+    it("hands the gate the chain step that started the task (Plan 4's write approver selectors read it), and nothing for any other task", async () => {
+      const w = await world();
+      const { gate, seen } = recordingGate(() => ({ decision: "run" }));
+      w.configure((base) => ({ ...base, gate }));
+      const run = await w.startRun({ tools: [grant({ type: "linear" }, "read_write")], approvals: { alwaysAsk: ["save_comment"] }, autonomy: "run" });
+      await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "one" });
+      expect(seen[0]).not.toHaveProperty("chain");
+      const task = w.db.get(`DEVTASK#${run.taskId}`, "META") as Record<string, unknown>;
+      w.db.set({ ...task, chain: { chainRunId: "crn_aaaaaaaaaaaaaaaaaaaa", stepId: "look" } });
+      await w.linearCall(run.capability, "save_comment", { issueId: "CHA-1", body: "two" });
+      expect(seen[1]).toMatchObject({ chain: { chainRunId: "crn_aaaaaaaaaaaaaaaaaaaa", stepId: "look" } });
+    });
+
     it("is handed the prepared call and the grant, and a run decision sends it to the vendor", async () => {
       const w = await world();
       const { gate, seen } = recordingGate(() => ({ decision: "run" }));

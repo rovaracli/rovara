@@ -31,6 +31,15 @@ export interface TaskEndEvent {
   spentUsd: number;
 }
 
+/**
+ * What a step approval's decision ends an agent-step run with, as the run records it: `<step> declined: <prompt>` or `<step> expired: <prompt>`. A run ended this way is
+ * ended by a person's (or the clock's) answer to the approval, never by a cancel of the task, which `isDeclinedEndReason` lets a listener tell.
+ */
+export const approvalEndReason = (stepName: string, status: "DECLINED" | "EXPIRED", prompt: string): string => `${stepName} ${status === "DECLINED" ? "declined" : "expired"}: ${prompt}`;
+
+/** Whether an end reason is a person's decline of a write approval (`approvalEndReason`). */
+export const isDeclinedEndReason = (reason: string): boolean => / declined: /u.test(reason);
+
 /** What a pause handler is told: the limit that was reached and, once Task 32 has asked for the raise, its request. */
 export interface TaskPauseEvent { orgId: OrgId; taskId: string; chain?: { chainRunId: string; stepId: string }; scope: PauseScope; spendRequestId?: string }
 
@@ -53,11 +62,16 @@ export interface TaskEndDependencies {
   agentRuns?: TaskEndHost | undefined;
 }
 
+/** What a resume handler is told: a task that was paused for money goes on because its limit was raised. */
+export interface TaskResumeEvent { orgId: OrgId; taskId: string; chain?: { chainRunId: string; stepId: string } }
+
 export type TaskEndHandler = (deps: TaskEndDependencies, event: TaskEndEvent) => Promise<void>;
 export type TaskPauseHandler = (deps: TaskEndDependencies, event: TaskPauseEvent) => Promise<void>;
+export type TaskResumeHandler = (deps: TaskEndDependencies, event: TaskResumeEvent) => Promise<void>;
 
 const endHandlers: TaskEndHandler[] = [];
 const pauseHandlers: TaskPauseHandler[] = [];
+const resumeHandlers: TaskResumeHandler[] = [];
 
 /**
  * Registers a handler that is told, once per task, how the task ended (`TaskEndEvent`). Handlers are called in the order they were registered. Returns
@@ -77,6 +91,15 @@ export function registerTaskPauseHandler(handler: TaskPauseHandler): () => void 
   return () => {
     const at = pauseHandlers.indexOf(handler);
     if (at >= 0) pauseHandlers.splice(at, 1);
+  };
+}
+
+/** Registers a handler that is told when a task paused for money goes on after its limit was raised (`TaskResumeEvent`). Returns the function that removes it. */
+export function registerTaskResumeHandler(handler: TaskResumeHandler): () => void {
+  resumeHandlers.push(handler);
+  return () => {
+    const at = resumeHandlers.indexOf(handler);
+    if (at >= 0) resumeHandlers.splice(at, 1);
   };
 }
 
@@ -145,6 +168,19 @@ async function eventOf(deps: TaskEndDependencies, task: DeveloperTaskRecord, out
     stopAtUsd: fresh.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, fresh.maxPerRunUsd),
     spentUsd,
   };
+}
+
+/**
+ * The event a task's recorded end tells its handlers, built again from what is stored: the outcome the first call recorded (`TASK_END`) and the task as it is now. Plan 4's
+ * sweep tells a handler that missed it. Undefined when the task has no recorded end, or the end or the task is another org's. `detail` is what the run ended with (its
+ * report and its branch), which the end record does not keep.
+ */
+export async function readTaskEndEvent(deps: TaskEndDependencies, orgId: OrgId, taskId: string, detail: { finalReport?: string; branch?: string } = {}): Promise<TaskEndEvent | undefined> {
+  const record = await get<EndRecord>(deps, taskEndKey(taskId));
+  if (record === undefined || record.orgId !== orgId || record.outcome === undefined) return undefined;
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== orgId) return undefined;
+  return eventOf(deps, task, record.outcome, detail);
 }
 
 /**
@@ -228,4 +264,20 @@ export async function onTaskPaused(deps: TaskEndDependencies, task: DeveloperTas
     }
   }
   if (failure !== undefined) throw failure instanceof Error ? failure : new Error("a pause handler failed");
+}
+
+/**
+ * A task that was paused for money goes on (its raise was approved): tells every resume handler, in order. Best effort: a handler that fails is logged and the
+ * rest are still told, and nothing is thrown, because the task must go on whatever a listener's view of it says (a listener that missed this is put right by the task's end).
+ */
+export async function onTaskResumed(deps: TaskEndDependencies, task: DeveloperTaskRecord): Promise<void> {
+  if (task.orgId === undefined) return;
+  const event: TaskResumeEvent = { orgId: task.orgId, taskId: task.taskId, ...(task.chain === undefined ? {} : { chain: task.chain }) };
+  for (const handler of [...resumeHandlers]) {
+    try {
+      await handler(deps, event);
+    } catch (error) {
+      log(deps, "task_resume.handler_failed", { taskId: task.taskId, error: errorName(error) });
+    }
+  }
 }

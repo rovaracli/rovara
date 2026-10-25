@@ -288,8 +288,13 @@ describe("workflow Slack messages", () => {
 
   it("turns the broker's own block reasons into plain sentences", () => {
     expect(plainBlockReason("implementation operation ended failed")).toBe("The run stopped unexpectedly.");
-    expect(plainBlockReason("planning operation ended interrupted")).toBe("The run stopped unexpectedly.");
-    expect(plainBlockReason("independent review operation ended cancelled")).toBe("The run stopped unexpectedly.");
+    // PLANINC-2: a stop the owner asked for is not "unexpected", and says what to do next.
+    expect(plainBlockReason("planning operation ended interrupted")).toBe("Planning was stopped before it finished. Choose Retry to run it again.");
+    expect(plainBlockReason("planning operation ended cancelled")).toBe("Planning was stopped before it finished. Choose Retry to run it again.");
+    expect(plainBlockReason("implementation operation ended cancelled")).toBe("Coding was stopped before it finished. Choose Retry to run it again.");
+    expect(plainBlockReason("verification retry operation ended cancelled")).toBe("Checking was stopped before it finished. Choose Retry to run it again.");
+    expect(plainBlockReason("independent review operation ended cancelled")).toBe("Reviewing was stopped before it finished. Choose Retry to run it again.");
+    expect(plainBlockReason("planning operation ended failed")).toBe("The run stopped unexpectedly.");
     expect(plainBlockReason("independent candidate review was invalid, incomplete, or stale")).toBe("The result couldn't be trusted, so nothing moved forward.");
     // Only exact, known plain reasons pass: a prefix that looks plain is not enough.
     expect(plainBlockReason("AgentX could not verify the selected checks for the final code candidate.")).toBe("Something went wrong on AgentX's side.");
@@ -438,6 +443,19 @@ describe("workflow Slack messages", () => {
       ["agentx_workflow_approve", "Approve coding plan", "primary"], ["agentx_workflow_changes", "Request changes", undefined], ["agentx_workflow_close", "Close task", undefined]]);
     expect(JSON.parse(buttons[0]!.value)).toEqual({ taskId, revision: 7, digest: plan.sha256, decision: "APPROVE" });
     expect(workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING") })!.text).toContain("I couldn't link the full coding plan; ask an AgentX admin to check the task page.");
+  });
+
+  it("links the task page when the document could not be shown, never telling the owner to ask an admin", () => {
+    const pageUrl = "https://agentx.example.test/review/task-1/task";
+    const message = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), taskPageUrl: pageUrl })!;
+    expect(message.text).toContain(`I couldn't show the plan summary here. <${pageUrl}|Open the task page to read the plan>`);
+    expect(message.text).not.toContain("ask an AgentX admin");
+    // The decision buttons are exactly what they are with a linked document.
+    expect(buttonsOf(message.blocks).map((button) => [button.action_id, button.text.text])).toEqual([
+      ["agentx_workflow_approve", "Approve coding plan"], ["agentx_workflow_changes", "Request changes"], ["agentx_workflow_close", "Close task"]]);
+    const structured = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), taskPageUrl: pageUrl, structured: { claims: ["a", "b", "c"], claimCount: 3, decisionCount: 0, tiny: true } })!;
+    expect(structured.text).toContain(`<${pageUrl}|Open the task page to read the plan>`);
+    expect(structured.text).not.toContain("ask an AgentX admin");
   });
 
   describe("the card for a structured document", () => {

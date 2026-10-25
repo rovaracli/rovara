@@ -53,13 +53,14 @@ import { confirmationReply, type SessionShareDependencies, type ShareCaller } fr
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
 /**
- * Plan 4's chain run, behind a seam until Plan 4 merges (`setChainRunOwnerItems`): what a take-over needs of a chain run. `read` answers who pays for the run now and the task
- * of its running step, if one is running; `ownerItems` are the transaction items, conditional on the run as `read` saw it, that set the run's owner to `to` and, when `payer` is a
- * member, the run's payer to `to` too, so every later step starts with the taker as payer. Without it a chain session can't be taken over.
+ * Plan 4's chain run (`chainOwnerMoverFor`, chains/session-seam.ts): what a take-over needs of a chain run. `read` answers who pays for the run now, the task of its running step,
+ * if one is running, and the run's `fence` (the version it was read at); `ownerItems` are the transaction items, conditional on the run still being at that `fence`, that set the
+ * run's owner to `to` and, when `payer` (the payer `read` answered) is a member, the run's payer to `to` too, so every later step starts with the taker as payer. Without it a
+ * chain session can't be taken over.
  */
 export interface ChainOwnerMover {
-  read(orgId: OrgId, chainRunId: string): Promise<{ payer: Payer; runningStepTaskId?: string } | undefined>;
-  ownerItems(input: { orgId: OrgId; chainRunId: string; to: { developerId: string; name: string }; payer: Payer }): TransactItem[];
+  read(orgId: OrgId, chainRunId: string): Promise<{ payer: Payer; runningStepTaskId?: string; fence?: number } | undefined>;
+  ownerItems(input: { orgId: OrgId; chainRunId: string; to: { developerId: string; name: string }; payer: Payer; fence?: number | undefined }): TransactItem[];
 }
 
 /** What a take-over needs beyond a share: the payer's admission (Plan 3's budget check, supplied by the broker), the realtime events API, and Plan 4's chain mover. */
@@ -125,7 +126,7 @@ async function taskOfSession(deps: SessionTakeOverDependencies, session: AgentSe
   return found as unknown as DeveloperTaskRecord & Item;
 }
 
-interface PayerFacts { payer: Payer; chainStepTaskId?: string | undefined }
+interface PayerFacts { payer: Payer; chainStepTaskId?: string | undefined; chainFence?: number | undefined }
 
 /** Who pays for the session now: a task's payer (its creator when none was recorded), or a chain run's. */
 async function payerOfSession(deps: SessionTakeOverDependencies, session: AgentSessionRecord, task: DeveloperTaskRecord | undefined): Promise<PayerFacts> {
@@ -134,7 +135,7 @@ async function payerOfSession(deps: SessionTakeOverDependencies, session: AgentS
     if (deps.chainOwner === undefined) throw agentXError("RUNTIME_UNAVAILABLE", CHAIN_NOT_AVAILABLE);
     const run = await deps.chainOwner.read(session.orgId, session.subject.chainRunId);
     if (run === undefined) throw agentXError("NOT_FOUND", "session not found");
-    return { payer: run.payer, chainStepTaskId: run.runningStepTaskId };
+    return { payer: run.payer, chainStepTaskId: run.runningStepTaskId, chainFence: run.fence };
   }
   return { payer: session.payer ?? { kind: "member", developerId: session.owner.developerId } };
 }
@@ -158,6 +159,7 @@ async function admitTaker(deps: SessionTakeOverDependencies, session: AgentSessi
 function payerWords(payer: Payer, taker: string, session: AgentSessionRecord): string {
   if (payer.kind === "member") return `${taker}'s budget`;
   if (payer.kind === "project") return `the ${payer.project} project's budget`;
+  if (payer.kind === "chain") return "the chain's budget";
   return session.agent === undefined ? "the agent's budget" : `${session.agent.name}'s budget`;
 }
 
@@ -305,7 +307,7 @@ export function registerSessionTakeOverApprovals(): void {
     if (session.revision !== subject.sessionRevision) throw agentXError("SESSION_REVISION_CONFLICT", CHANGED);
 
     const task = await taskOfSession(sessions, session);
-    const { payer, chainStepTaskId } = await payerOfSession(sessions, session, task);
+    const { payer, chainStepTaskId, chainFence } = await payerOfSession(sessions, session, task);
     await admitTaker(sessions, session, task, payer, takerId);
     const takerRecord = await sessions.signInStore.getDeveloper(takerId);
     if (takerRecord === undefined) throw agentXError("NOT_FOUND", "the person taking this over could not be found");
@@ -346,7 +348,7 @@ export function registerSessionTakeOverApprovals(): void {
       });
     }
     if (session.subject.kind === "chain") {
-      items.push(...sessions.chainOwner!.ownerItems({ orgId, chainRunId: session.subject.chainRunId, to: { developerId: takerId, name: takerName }, payer }));
+      items.push(...sessions.chainOwner!.ownerItems({ orgId, chainRunId: session.subject.chainRunId, to: { developerId: takerId, name: takerName }, payer, fence: chainFence }));
       if (chainStepTaskId !== undefined) {
         const step = await getItem(sessions, taskKey(chainStepTaskId));
         if (step !== undefined && step["orgId"] === orgId) {

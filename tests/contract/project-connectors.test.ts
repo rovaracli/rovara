@@ -3,8 +3,12 @@
 // `registerProjectFor`; a tool newly approved to write waits for a person on the confirmation page (R9-3, R69). The broker is the real one,
 // with a fake Linear MCP server behind the Linear connector type and a fake Secrets Manager behind the org's connections.
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuditProof, OrgId, OrgRole } from "../../packages/contracts/src/index.js";
+import {
+  AgentConnectorTypeSchema, ConnectorConfigSchema, ConnectorsSchema, RegistrationPreflightSchema, SlackThreadWorkspaceResultSchema, StoredConnectorsSchema,
+  toolGrantProblems,
+} from "../../packages/contracts/src/index.js";
 import { orgMemberKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { approvalKey } from "../../packages/contracts/src/index.js";
@@ -12,7 +16,8 @@ import { getApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalD
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import { registerProjectConnectorApprovals, widenings } from "../../packages/broker/src/connections/project-connectors.js";
+import { PROJECT_CONNECTOR_TOOLS, registerProjectConnectorApprovals, widenings } from "../../packages/broker/src/connections/project-connectors.js";
+import { resolveToolGrants, toolFactsFor } from "../../packages/broker/src/agents/tool-grants.js";
 import { createProjectMembers } from "../../packages/broker/src/org/project-members.js";
 import { githubConnectorType, type ConnectorType } from "../../packages/broker/src/aws/connector-types.js";
 import { jiraConnectorType } from "../../packages/broker/src/aws/jira-connector-type.js";
@@ -296,7 +301,10 @@ describe("attaching a connection", () => {
     expect(extra.body.error?.code).toBe("CONFIG_INVALID");
     expect(JSON.stringify(extra.body)).not.toContain("SECRET_FIELD");
     const asana = await s.put(MIA, "asana", { name: "asana", type: "asana", credentialRef: "x" });
-    expect(asana.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "type: a project connector is one of github, linear, jira, mcp" });
+    expect(asana.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "type: a project connector is one of github, linear, jira, mcp, sentry, datadog, cloudwatch, github-actions, grafana, vercel, pagerduty" });
+    // B-M2 (review): the refusal names every type PUT accepts, so a misspelt one is told what it could have been.
+    const typo = await s.put(MIA, "sentyr", { name: "sentyr", type: "sentyr", credentialRef: "x" });
+    expect(typo.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "type: a project connector is one of github, linear, jira, mcp, sentry, datadog, cloudwatch, github-actions, grafana, vercel, pagerduty" });
     const named = await s.put(MIA, "other", linear(id));
     expect(named.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "name: must be the name in the path" });
     expect((await s.put(MIA, "linear", "nope")).body.error).toMatchObject({ code: "CONFIG_INVALID", message: "connector: must be an object" });
@@ -349,18 +357,19 @@ describe("attaching a connection", () => {
     await s.fakeLinear.close();
   });
 
-  it("holds a project to eight connectors and to one GitHub connector", async () => {
+  // Plan 4 Task 12 raised the most connectors a project holds from eight to twelve, to make room for the seven new types.
+  it("holds a project to twelve connectors", async () => {
     const s = await install();
     const id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
     let revision = 1;
-    for (const name of ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"]) {
+    for (const name of ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12"]) {
       const saved = await s.put(MIA, name, linear(id, READ_TOOLS, { name }), { expectedRevision: revision });
       expect(saved.status, name).toBe(200);
       revision += 1;
     }
-    const ninth = await s.put(MIA, "a9", linear(id, READ_TOOLS, { name: "a9" }), { expectedRevision: revision });
-    expect(ninth.status).toBe(400);
-    expect(ninth.body.error?.code).toBe("CONFIG_INVALID");
+    const thirteenth = await s.put(MIA, "a13", linear(id, READ_TOOLS, { name: "a13" }), { expectedRevision: revision });
+    expect(thirteenth.status).toBe(400);
+    expect(thirteenth.body.error?.code).toBe("CONFIG_INVALID");
     expect(s.revisions()).toHaveLength(revision);
     await s.fakeLinear.close();
   });
@@ -1518,5 +1527,602 @@ describe("widenings", () => {
       expect(widenings(link({ attribution: false }), link(), "web")).toEqual([]);
       expect(widenings(link(), link({ attribution: false, tools: [{ name: "a", access: "read" }] }), "web")).toEqual([]);
     });
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Plan 4 Task 12: the seven new connector types (sentry, datadog, cloudwatch, github-actions, grafana, vercel, pagerduty) join this module. They are
+// read-only: a tool outside PROJECT_CONNECTOR_TOOLS[type] and any `write` approval are refused, and Plan 3's rules for the connection apply unchanged.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+const NEW_TYPES = ["sentry", "datadog", "cloudwatch", "github-actions", "grafana", "vercel", "pagerduty"] as const;
+type NewType = (typeof NEW_TYPES)[number];
+const CON = "con_aaaaaaaaaaaaaaaaaaaa";
+const THINGS = [{ name: "list_things", access: "read" }];
+
+/** One valid connector of each new type, named as its type (`github-actions` is `gha`: a name is 20 characters at most). */
+const sample = (type: NewType, extra: Record<string, unknown> = {}): Record<string, unknown> => {
+  const base: Record<NewType, Record<string, unknown>> = {
+    sentry: { name: "sentry", type, credentialRef: CON, scopes: [{ alias: "web", projectSlug: "web-app" }], tools: THINGS },
+    datadog: { name: "datadog", type, credentialRef: CON, scopes: [{ alias: "pay", tags: ["service:payments", "env:prod"] }], tools: THINGS },
+    cloudwatch: { name: "cloudwatch", type, credentialRef: CON, scopes: [{ alias: "prod", region: "us-east-1", logGroupPrefixes: ["/aws/lambda/pay"], alarmNamePrefix: "pay-" }], tools: THINGS },
+    "github-actions": { name: "gha", type, scopes: ["web"], tools: THINGS },
+    grafana: { name: "grafana", type, credentialRef: CON, scopes: [{ alias: "main", folderUids: ["fold1"], datasourceUid: "prom1" }], tools: THINGS },
+    vercel: { name: "vercel", type, credentialRef: CON, scopes: [{ alias: "site", projectId: "prj_abc123" }], tools: THINGS },
+    pagerduty: { name: "pagerduty", type, credentialRef: CON, scopes: [{ alias: "oncall", serviceIds: ["PABC123"] }], tools: THINGS },
+  };
+  return { ...base[type], ...extra };
+};
+
+describe("Plan 4 Task 12: the schemas of the seven new types", () => {
+  it.each(NEW_TYPES)("%s parses, and refuses a field it does not take", (type) => {
+    expect(ConnectorConfigSchema.safeParse(sample(type)).success).toBe(true);
+    const extra = ConnectorConfigSchema.safeParse(sample(type, { somethingElse: 1 }));
+    expect(extra.success).toBe(false);
+    if (!extra.success) expect(extra.error.issues[0]).toMatchObject({ code: "unrecognized_keys" });
+  });
+
+  it.each(NEW_TYPES.filter((type) => type !== "github-actions"))("%s refuses a field it does not take inside a scope too (review B-M3)", (type) => {
+    const scope = (sample(type)["scopes"] as Array<Record<string, unknown>>)[0]!;
+    const extra = ConnectorConfigSchema.safeParse(sample(type, { scopes: [{ ...scope, somethingElse: 1 }] }));
+    expect(extra.success).toBe(false);
+    if (!extra.success) expect(extra.error.issues[0]).toMatchObject({ code: "unrecognized_keys", path: ["scopes", 0] });
+  });
+
+  it("holds a project to one github-actions connector, as it does one github connector (review B-M4)", () => {
+    const two = [sample("github-actions"), sample("github-actions", { name: "gha-two" })];
+    const refused = ConnectorsSchema.safeParse(two);
+    expect(refused.success).toBe(false);
+    if (!refused.success) expect(refused.error.issues.map((issue) => issue.message)).toContain("at most one github-actions connector is supported");
+    expect(StoredConnectorsSchema.safeParse(two).success).toBe(false);
+    // One of each is fine, and two of any other native type are too (each names its own project or service set).
+    expect(ConnectorsSchema.safeParse([sample("github-actions"), { name: "github", type: "github", scopes: "all-repositories", tools: THINGS }]).success).toBe(true);
+    expect(ConnectorsSchema.safeParse([sample("sentry"), sample("sentry", { name: "sentry-two" })]).success).toBe(true);
+  });
+
+  it("keeps the schema's options in the order the types landed", () => {
+    expect(ConnectorConfigSchema.options.map((option) => option.shape.type.value)).toEqual(["github", "linear", "jira", "asana", "mcp", ...NEW_TYPES]);
+  });
+
+  it("gives six types a connection, and github-actions none, as github has none", () => {
+    for (const type of NEW_TYPES.filter((entry) => entry !== "github-actions")) {
+      const { credentialRef: _ref, ...without } = sample(type); // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+      expect(ConnectorConfigSchema.safeParse(without).success, `${type} without a connection`).toBe(false);
+      expect(ConnectorConfigSchema.safeParse(sample(type, { credentialRef: "my-sentry" })).success, `${type} named by a registry name`).toBe(false);
+    }
+    expect(ConnectorConfigSchema.safeParse(sample("github-actions", { credentialRef: CON })).success).toBe(false);
+    expect(ConnectorConfigSchema.safeParse(sample("github-actions", { scopes: "all-repositories" })).success).toBe(true);
+    expect(ConnectorConfigSchema.safeParse(sample("github-actions", { scopes: [] })).success).toBe(false);
+    expect(ConnectorConfigSchema.safeParse(sample("github-actions", { scopes: ["web", "web"] })).success).toBe(false);
+  });
+
+  it.each(NEW_TYPES)("%s refuses a tool approved to write, at the tool's own place, with the plan's words", (type) => {
+    const parsed = ConnectorConfigSchema.safeParse(sample(type, { tools: [...THINGS, { name: "do_things", access: "write" }] }));
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues).toEqual([expect.objectContaining({ path: ["tools", 1], message: `${type} connectors are read-only` })]);
+  });
+
+  it.each(NEW_TYPES)("%s needs a scope and names each alias once", (type) => {
+    expect(ConnectorConfigSchema.safeParse(sample(type, { scopes: [] })).success).toBe(false);
+    const scope = (sample(type)["scopes"] as unknown[])[0];
+    if (typeof scope === "object") expect(ConnectorConfigSchema.safeParse(sample(type, { scopes: [scope, scope] })).success, "the same alias twice").toBe(false);
+  });
+
+  it("holds each type's scope to its vendor's names", () => {
+    const refused = (type: NewType, scope: unknown) => ConnectorConfigSchema.safeParse(sample(type, { scopes: [scope] })).success === false;
+    expect(refused("sentry", { alias: "web", projectSlug: "Web App" })).toBe(true);
+    expect(refused("sentry", { alias: "web" })).toBe(true);
+    // A Datadog tag is key:value and goes into a query, so it carries nothing that could change the query.
+    for (const tags of [[], ["nocolon"], ["service:pay ments"], ["service:a) OR (env:b"], ["a:b", "a:b"], ["a:1", "a:2", "a:3", "a:4", "a:5", "a:6"], ["Service:x"]]) {
+      expect(refused("datadog", { alias: "pay", tags }), JSON.stringify(tags)).toBe(true);
+    }
+    expect(refused("cloudwatch", { alias: "prod", region: "nowhere" })).toBe(true);
+    expect(refused("cloudwatch", { alias: "prod", region: "us-east-1", logGroupPrefixes: ["a", "b", "c", "d", "e", "f"] })).toBe(true);
+    expect(refused("cloudwatch", { alias: "prod", region: "us-east-1", alarmNamePrefix: "" })).toBe(true);
+    expect(refused("cloudwatch", { alias: "prod", region: "us-east-1", alarmNamePrefix: "bad\nprefix" })).toBe(true);
+    expect(refused("cloudwatch", { alias: "prod", region: "us-east-1" })).toBe(false);
+    expect(refused("grafana", { alias: "main", folderUids: ["a/b"] })).toBe(true);
+    expect(refused("grafana", { alias: "main", folderUids: [] })).toBe(true);
+    expect(refused("grafana", { alias: "main", datasourceUid: "x y" })).toBe(true);
+    expect(refused("grafana", { alias: "main" })).toBe(false);
+    expect(refused("vercel", { alias: "site", projectId: "abc" })).toBe(true);
+    expect(refused("pagerduty", { alias: "oncall", serviceIds: [] })).toBe(true);
+    expect(refused("pagerduty", { alias: "oncall", serviceIds: ["p123"] })).toBe(true);
+    expect(refused("pagerduty", { alias: "oncall", serviceIds: Array.from({ length: 11 }, (_, index) => `PABC${String(100 + index)}`) })).toBe(true);
+  });
+
+  it("raises the most connectors a project holds from 8 to 12 in all three places, and no further", () => {
+    const many = (count: number) => Array.from({ length: count }, (_, index) => sample("sentry", { name: `s${String(index)}` }));
+    for (const schema of [ConnectorsSchema, StoredConnectorsSchema]) {
+      expect(schema.safeParse(many(12)).success).toBe(true);
+      expect(schema.safeParse(many(13)).success).toBe(false);
+    }
+    const entry = (index: number) => ({ name: `s${String(index)}`, status: "connected", offered: [], skipped: [] });
+    expect(RegistrationPreflightSchema.safeParse({ connectors: Array.from({ length: 12 }, (_, index) => entry(index)) }).success).toBe(true);
+    expect(RegistrationPreflightSchema.safeParse({ connectors: Array.from({ length: 13 }, (_, index) => entry(index)) }).success).toBe(false);
+  });
+
+  it("lets the Slack thread answer list as many connectors as a project may hold", () => {
+    const thread = (count: number) => ({
+      outcome: "WORKSPACE", workspaceId: randomUUID(), status: "READY", operationId: null, created: false, orchestratorInstructions: "x",
+      connectors: Array.from({ length: count }, (_, index) => ({ name: `c${String(index)}`, type: "sentry", label: "Sentry", scopes: ["a"], connected: true })),
+    });
+    expect(SlackThreadWorkspaceResultSchema.safeParse(thread(12)).success).toBe(true);
+    expect(SlackThreadWorkspaceResultSchema.safeParse(thread(13)).success).toBe(false);
+  });
+
+  it("keeps a stored connector of an unknown type passing through, and a malformed one of a new type failing as itself", () => {
+    expect(StoredConnectorsSchema.safeParse([{ name: "later", type: "newvendor", anything: [1] }]).success).toBe(true);
+    for (const type of NEW_TYPES) expect(StoredConnectorsSchema.safeParse([{ name: "bad", type }]).success, type).toBe(false);
+    expect(StoredConnectorsSchema.safeParse([sample("pagerduty")]).success).toBe(true);
+  });
+
+  it("lets agents be granted tools on each new type, and still refuses a connector called slack", () => {
+    for (const type of NEW_TYPES) expect(AgentConnectorTypeSchema.parse(type)).toBe(type);
+    expect(AgentConnectorTypeSchema.safeParse("newvendor").success).toBe(false);
+    expect(toolGrantProblems([{ connector: { name: "slack" }, access: "read" }])).toHaveLength(1);
+    expect(toolGrantProblems([{ connector: { type: "sentry" }, access: "read" }, { connector: { name: "errors" }, access: "read" }])).toEqual([]);
+  });
+});
+
+describe("Plan 4 Task 12: agent tool grants on the new types", () => {
+  const catalogOf = (name: string, tools: string[]) => ({
+    connector: name,
+    tools: tools.map((upstreamName) => ({
+      name: `${name}__${upstreamName}`, upstreamName, description: upstreamName, inputSchema: { type: "object", properties: {} }, access: "read" as const,
+      scopes: [{ alias: "web", schemaHash: "a".repeat(64) }],
+    })),
+    skipped: [],
+  });
+
+  it("keeps the project's approvals as the ceiling: a read_write grant on a read-only connector gives read tools only", () => {
+    const connector = { name: "errors", type: "sentry", approvals: [{ name: "list_issues", access: "read" as const }, { name: "get_issue", access: "read" as const }] };
+    const granted = resolveToolGrants({ grants: [{ connector: { type: "sentry" }, access: "read_write" }], connectors: [connector], catalogs: [catalogOf("errors", ["list_issues", "get_issue", "resolve_issue"])] });
+    // `resolve_issue` is not approved, so it is not granted however much the grant allows.
+    expect(granted.map((entry) => `${entry.connector}.${entry.upstreamName}:${entry.access}`)).toEqual(["errors.list_issues:read", "errors.get_issue:read"]);
+    expect(granted.every((entry) => entry.type === "sentry")).toBe(true);
+  });
+
+  it.each(NEW_TYPES)("a %s type selector and a name selector both reach its connector", (type) => {
+    const connector = { name: "thing", type, approvals: [{ name: "list_things", access: "read" as const }] };
+    for (const selector of [{ type }, { name: "thing" }] as const) {
+      expect(resolveToolGrants({ grants: [{ connector: selector, access: "read" }], connectors: [connector], catalogs: [catalogOf("thing", ["list_things"])] })).toHaveLength(1);
+    }
+  });
+
+  it.each(NEW_TYPES)("%s declares no facts of its own: the catalog's alone", (type) => {
+    const [tool] = catalogOf("thing", ["list_things"]).tools;
+    const facts = toolFactsFor({ name: "thing", type }, tool!, "read");
+    expect(facts).toEqual({ connector: "thing", upstreamName: "list_things", access: "read" });
+  });
+});
+
+describe("Plan 4 Task 12: what a widening is for the new types", () => {
+  // The routes refuse a write tool on these types, so nothing of this reaches the confirmation page today; `widenings` is still complete for them, so
+  // the day a type is allowed to write (or a stored write tool exists from another path) a scope addition is confirmed like any other.
+  const withWrite = (type: NewType, extra: Record<string, unknown> = {}) => sample(type, { tools: [...THINGS, { name: "do_things", access: "write" }], ...extra }) as never;
+  const scopeKey = (type: NewType) => (type === "github-actions" ? undefined : (sample(type)["scopes"] as Array<Record<string, unknown>>)[0]!);
+  const more = (type: NewType, scope: Record<string, unknown>) => withWrite(type, { scopes: [scopeKey(type), scope] });
+  const swapped = (type: NewType, change: Record<string, unknown>) => withWrite(type, { scopes: [{ ...scopeKey(type), ...change }] });
+  const added = (alias: string) => [`On web, lets the x connector's write tools reach one more scope (${alias})`];
+  /** The connector as `widenings` reads it, called x so the sentences are the same for every type. */
+  const as = (value: unknown): never => ({ ...(value as Record<string, unknown>), name: "x" }) as never;
+
+  it("asks for a write tool the connector did not have, and for none once it was confirmed for the same target", () => {
+    for (const type of NEW_TYPES) {
+      expect(widenings(undefined, as(withWrite(type)), "web"), type).toEqual(["On web, lets the x connector's do_things tool make changes"]);
+      expect(widenings(as(withWrite(type)), as(withWrite(type)), "web"), type).toEqual([]);
+    }
+  });
+
+  it("asks for a scope that was added, by what each type's scope names", () => {
+    const stored = (type: NewType) => as(withWrite(type));
+    expect(widenings(stored("sentry"), as(more("sentry", { alias: "api", projectSlug: "api" })), "web")).toEqual(added("api"));
+    expect(widenings(stored("sentry"), as(swapped("sentry", { projectSlug: "other-app" })), "web")).toEqual(added("web"));
+    expect(widenings(stored("vercel"), as(swapped("vercel", { projectId: "prj_other" })), "web")).toEqual(added("site"));
+    expect(widenings(stored("pagerduty"), as(swapped("pagerduty", { serviceIds: ["PABC123", "PXYZ789"] })), "web")).toEqual(added("oncall"));
+    // A scope with fewer tags matches more (a tag only narrows a query), so it widens; one with more tags narrows.
+    expect(widenings(stored("datadog"), as(swapped("datadog", { tags: ["service:payments"] })), "web")).toEqual(added("pay"));
+    expect(widenings(stored("datadog"), as(swapped("datadog", { tags: ["service:other", "env:prod"] })), "web")).toEqual(added("pay"));
+    expect(widenings(stored("cloudwatch"), as(swapped("cloudwatch", { region: "eu-west-1" })), "web")).toEqual(added("prod"));
+    expect(widenings(stored("cloudwatch"), as(swapped("cloudwatch", { logGroupPrefixes: ["/aws/lambda/pay", "/aws/lambda/other"] })), "web")).toEqual(added("prod"));
+    expect(widenings(stored("cloudwatch"), as(swapped("cloudwatch", { logGroupPrefixes: ["/aws/lambda"] })), "web")).toEqual(added("prod"));
+    expect(widenings(stored("cloudwatch"), as(swapped("cloudwatch", { alarmNamePrefix: undefined })), "web")).toEqual(added("prod"));
+    expect(widenings(stored("cloudwatch"), as(swapped("cloudwatch", { alarmNamePrefix: "p" })), "web")).toEqual(added("prod"));
+    expect(widenings(stored("grafana"), as(swapped("grafana", { folderUids: ["fold1", "fold2"] })), "web")).toEqual(added("main"));
+    expect(widenings(stored("grafana"), as(swapped("grafana", { folderUids: undefined })), "web")).toEqual(added("main"));
+    expect(widenings(stored("grafana"), as(swapped("grafana", { datasourceUid: "prom2" })), "web")).toEqual(added("main"));
+    expect(widenings(as(swapped("grafana", { datasourceUid: undefined })), as(swapped("grafana", { datasourceUid: "prom1" })), "web")).toEqual(added("main"));
+    expect(widenings(stored("github-actions"), as(withWrite("github-actions", { scopes: ["web", "api"] })), "web")).toEqual(["On web, lets the x connector's write tools reach one more scope (api)"]);
+    expect(widenings(stored("github-actions"), as(withWrite("github-actions", { scopes: "all-repositories" })), "web")).toEqual(["On web, lets the x connector's write tools reach all repositories"]);
+  });
+
+  it("does not ask for a narrower scope, and does not count a connector that cannot write", () => {
+    const stored = (type: NewType) => as(withWrite(type));
+    expect(widenings(as(swapped("pagerduty", { serviceIds: ["PABC123", "PXYZ789"] })), stored("pagerduty"), "web")).toEqual([]);
+    expect(widenings(stored("datadog"), as(swapped("datadog", { tags: ["service:payments", "env:prod", "team:core"] })), "web")).toEqual([]);
+    expect(widenings(as(withWrite("github-actions", { scopes: ["web", "api"] })), stored("github-actions"), "web")).toEqual([]);
+    expect(widenings(as(withWrite("github-actions", { scopes: "all-repositories" })), stored("github-actions"), "web")).toEqual([]);
+    expect(widenings(stored("cloudwatch"), as(swapped("cloudwatch", { logGroupPrefixes: ["/aws/lambda/pay-api"], alarmNamePrefix: "pay-api-" })), "web")).toEqual([]);
+    expect(widenings(as(swapped("grafana", { folderUids: undefined })), stored("grafana"), "web")).toEqual([]);
+    expect(widenings(as(swapped("grafana", { datasourceUid: "prom1" })), as(swapped("grafana", { datasourceUid: undefined })), "web")).toEqual([]);
+    for (const type of NEW_TYPES) {
+      const reads = (extra: Record<string, unknown>) => as(sample(type, extra));
+      const other = type === "github-actions" ? { scopes: "all-repositories" } : { scopes: [...(sample(type)["scopes"] as unknown[]), { ...(scopeKey(type) as object), alias: "more" }] };
+      expect(widenings(reads({}), reads(other), "web"), `${type} reads only`).toEqual([]);
+    }
+  });
+
+  it("moves a connector's write tools to the newly confirmed state when its connection changes", () => {
+    const next = as(withWrite("sentry", { credentialRef: "con_bbbbbbbbbbbbbbbbbbbb" }));
+    expect(widenings(as(withWrite("sentry")), next, "web")).toEqual(["On web, lets the x connector's do_things tool make changes (now on connection con_bbbbbbbbbbbbbbbbbbbb)"]);
+  });
+});
+
+describe("Plan 4 Task 12: PUT accepts the seven new types", () => {
+  const QUIET = () => vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const CONNECTIONS: Record<Exclude<NewType, "github-actions">, [Record<string, unknown>, Record<string, unknown> | null]> = {
+    sentry: [{ type: "sentry", label: "Sentry", access: "read", region: "us", orgSlug: "acme" }, { authToken: "sntrys_PROJECTCONNECTORTOKEN0123" }],
+    datadog: [{ type: "datadog", label: "Datadog", access: "read", site: "datadoghq.eu" }, { apiKey: "dd-api-key-0123456789", appKey: "dd-app-key-0123456789" }],
+    cloudwatch: [{ type: "cloudwatch", label: "CloudWatch", access: "read", roleArn: "arn:aws:iam::123456789012:role/rovara-read", regions: ["us-east-1"] }, null],
+    grafana: [{ type: "grafana", label: "Grafana", access: "read", baseUrl: "https://grafana.acme.dev" }, { serviceAccountToken: "glsa_SECRET0123456789" }],
+    vercel: [{ type: "vercel", label: "Vercel", access: "read" }, { token: "vercel-token-0123456789" }],
+    pagerduty: [{ type: "pagerduty", label: "PagerDuty", access: "read", region: "eu" }, { apiKey: "pd-api-key-0123456789" }],
+  };
+  /** The tool lists Tasks 13 to 17 fill, stood in for here: a stub per type, restored after each test. */
+  const STUB_TOOLS: Record<NewType, string[]> = {
+    sentry: ["list_things", "get_thing"], datadog: ["list_things"], cloudwatch: ["list_things"], "github-actions": ["list_things"], grafana: ["list_things"], vercel: ["list_things"], pagerduty: ["list_things"],
+  };
+  // Each test starts with every new type's list empty and puts back what Tasks 13 to 17 filled in; a test stands in the lists it needs.
+  const filled = { ...PROJECT_CONNECTOR_TOOLS };
+  const stub = (types: readonly NewType[] = NEW_TYPES) => { for (const type of types) PROJECT_CONNECTOR_TOOLS[type] = STUB_TOOLS[type]; };
+  beforeEach(() => { for (const type of NEW_TYPES) PROJECT_CONNECTOR_TOOLS[type] = []; });
+  afterEach(() => { Object.assign(PROJECT_CONNECTOR_TOOLS, filled); });
+
+  const connectionOf = async (s: Install, type: Exclude<NewType, "github-actions">, who: Developer = DANA) => {
+    const [body, secret] = CONNECTIONS[type];
+    return s.connection(body, secret, who);
+  };
+  const connectorOf = (type: NewType, id?: string): Record<string, unknown> => (type === "github-actions" ? sample(type) : { ...sample(type), credentialRef: id });
+
+  it("accepts no tool of a type whose list is empty, so a type is usable only once its task lists its tools", async () => {
+    QUIET();
+    const s = await install();
+    const id = await connectionOf(s, "sentry");
+    const refused = await s.put(MIA, "sentry", connectorOf("sentry", id));
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: list_things is not a sentry tool" });
+    expect(s.revisions()).toHaveLength(1);
+    await s.fakeLinear.close();
+  });
+
+  it.each(NEW_TYPES)("adds a %s connector that lists only tools of its type, keeps every other field, and writes one revision", async (type) => {
+    const log = QUIET();
+    stub();
+    const s = await install();
+    const id = type === "github-actions" ? undefined : await connectionOf(s, type);
+    const body = connectorOf(type, id);
+    const saved = await s.put(MIA, body["name"] as string, body);
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ revision: 2, connector: { name: body["name"], type, tools: [{ name: "list_things", access: "read" }], ...(id === undefined ? {} : { connectionId: id }) } });
+    expect(s.revision(2)!.definition).toEqual({ ...s.revision(1)!.definition, revision: 2, integrations: { connectors: [body] } });
+    const read = await s.list(CARL);
+    expect(read.body).toMatchObject({ revision: 2, connectors: [{ name: body["name"], type }] });
+    expect(JSON.stringify(read.body)).not.toMatch(/sntrys_|dd-api-key|glsa_|vercel-token|pd-api-key/);
+    // No vendor connector exists for the type yet, which the log says by name and which shows as a status the person can read.
+    expect(log.mock.calls.every(([line]) => String(line).includes("connector.type_unknown"))).toBe(true);
+    await s.fakeLinear.close();
+  });
+
+  it("refuses a tool outside its type's list with the plan's words, at the tool's place, and writes no revision", async () => {
+    QUIET();
+    stub(["sentry"]);
+    const s = await install();
+    const id = await connectionOf(s, "sentry");
+    const refused = await s.put(MIA, "sentry", { ...connectorOf("sentry", id), tools: [...THINGS, { name: "resolve_issue", access: "read" }] });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.1: resolve_issue is not a sentry tool" });
+    // A tool of another new type's list is not this type's.
+    stub(["vercel"]);
+    PROJECT_CONNECTOR_TOOLS["vercel"] = ["deploy_things"];
+    expect((await s.put(MIA, "sentry", { ...connectorOf("sentry", id), tools: [{ name: "deploy_things", access: "read" }] })).body.error)
+      .toMatchObject({ code: "CONFIG_INVALID", message: "tools.0: deploy_things is not a sentry tool" });
+    expect(s.revisions()).toHaveLength(1);
+    expect(s.requestItems()).toHaveLength(0);
+    expect(s.approvals()).toHaveLength(0);
+    await s.fakeLinear.close();
+  });
+
+  it("holds a connector that changes nothing it was confirmed for to the list as it stands, so a narrowing cannot keep a tool the type no longer offers", async () => {
+    QUIET();
+    stub(["sentry"]);
+    const s = await install();
+    const id = await connectionOf(s, "sentry");
+    const two = { ...connectorOf("sentry", id), tools: [{ name: "list_things", access: "read" }, { name: "get_thing", access: "read" }] };
+    expect((await s.put(MIA, "sentry", two)).status).toBe(200);
+    PROJECT_CONNECTOR_TOOLS["sentry"] = ["list_things"];
+    // The same target with fewer tools holds what was confirmed, and needs no connection; its tools are still the type's.
+    const kept = await s.put(MIA, "sentry", { ...two, tools: [{ name: "get_thing", access: "read" }] }, { expectedRevision: 2 });
+    expect(kept.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: get_thing is not a sentry tool" });
+    expect((await s.put(MIA, "sentry", { ...two, tools: [{ name: "list_things", access: "read" }] }, { expectedRevision: 2 })).status).toBe(200);
+    expect(s.revisions()).toHaveLength(3);
+    await s.fakeLinear.close();
+  });
+
+  it.each(NEW_TYPES)("refuses a %s tool approved to write outright, never to the confirmation page, writing nothing", async (type) => {
+    QUIET();
+    stub();
+    const s = await install();
+    const id = type === "github-actions" ? undefined : await connectionOf(s, type);
+    const body: Record<string, unknown> = { ...connectorOf(type, id), tools: [...THINGS, { name: "list_things_again", access: "write" }] };
+    PROJECT_CONNECTOR_TOOLS[type] = ["list_things", "list_things_again"];
+    const refused = await s.put(MIA, body["name"] as string, body);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: `tools.1: ${type} connectors are read-only` });
+    expect(s.revisions()).toHaveLength(1);
+    expect(s.approvals()).toHaveLength(0);
+    expect(s.requestItems()).toHaveLength(0);
+    await s.fakeLinear.close();
+  });
+
+  it("refuses a write tool that is also outside the list as read-only, since the shape is judged before the list", async () => {
+    QUIET();
+    stub(["sentry"]);
+    const s = await install();
+    const id = await connectionOf(s, "sentry");
+    const refused = await s.put(MIA, "sentry", { ...connectorOf("sentry", id), tools: [{ name: "resolve_issue", access: "write" }] });
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: sentry connectors are read-only" });
+    await s.fakeLinear.close();
+  });
+
+  it("gives org B naming org A's connection Plan 3's 400 for a new type, the same as an id nobody has, and writes no revision", async () => {
+    QUIET();
+    stub();
+    const s = await install();
+    const idInA = await connectionOf(s, "sentry");
+    const missing = "con_zzzzzzzzzzzzzzzzzzzz";
+    const theirs = await s.put(OMAR, "sentry", connectorOf("sentry", idInA));
+    const absent = await s.put(OMAR, "sentry", connectorOf("sentry", missing));
+    expect(theirs.status).toBe(400);
+    expect(theirs.body.error).toEqual({ code: "CONFIG_INVALID", message: `credentialRef: no sentry connection called ${idInA} in your organization` });
+    expect(absent.body.error).toEqual({ code: "CONFIG_INVALID", message: `credentialRef: no sentry connection called ${missing} in your organization` });
+    expect(s.revisions("web", ORG_B)).toHaveLength(1);
+    expect(s.requestItems()).toHaveLength(0);
+    // The connection is still org A's to use.
+    expect((await s.put(MIA, "sentry", connectorOf("sentry", idInA))).status).toBe(200);
+    expect(s.revisions("web", ORG_B)).toHaveLength(1);
+    await s.fakeLinear.close();
+  });
+
+  it("refuses a connection of another type with the same text, whichever new type it is", async () => {
+    QUIET();
+    stub();
+    const s = await install();
+    const linearId = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
+    const vercelId = await connectionOf(s, "vercel");
+    for (const [type, id] of [["sentry", linearId], ["sentry", vercelId], ["pagerduty", vercelId]] as const) {
+      const refused = await s.put(MIA, type, connectorOf(type, id));
+      expect(refused.body.error, `${type} on ${id}`).toEqual({ code: "CONFIG_INVALID", message: `credentialRef: no ${type} connection called ${id} in your organization` });
+    }
+    expect(s.revisions()).toHaveLength(1);
+    await s.fakeLinear.close();
+  });
+
+  it("asks a connection that takes a key for one, and asks CloudWatch for none, since a role stands in for it", async () => {
+    QUIET();
+    stub();
+    const s = await install();
+    const [sentryBody] = CONNECTIONS.sentry;
+    const empty = await s.connection(sentryBody, null);
+    const refused = await s.put(MIA, "sentry", connectorOf("sentry", empty));
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: "credentialRef: Sentry has no key saved yet; add one to the connection first" });
+    expect(s.revisions()).toHaveLength(1);
+    const role = await connectionOf(s, "cloudwatch");
+    const saved = await s.put(MIA, "cloudwatch", connectorOf("cloudwatch", role));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    await s.fakeLinear.close();
+  });
+
+  it("keeps the rules a connection brings: a removed connection refuses the save, and a narrowing still goes through", async () => {
+    QUIET();
+    stub();
+    const s = await install();
+    const id = await connectionOf(s, "sentry");
+    const two = { ...connectorOf("sentry", id), scopes: [{ alias: "web", projectSlug: "web-app" }, { alias: "api", projectSlug: "api-app" }] };
+    expect((await s.put(MIA, "sentry", two)).status).toBe(200);
+    expect((await s.call(DANA, "DELETE", `/v1/app/connections/${id}`, {})).status).toBe(200);
+    expect((await s.put(MIA, "sentry", connectorOf("sentry", id), { expectedRevision: 2 })).status).toBe(200);
+    const again = await s.put(MIA, "other", { ...connectorOf("sentry", id), name: "other" }, { expectedRevision: 3 });
+    expect(again.body.error).toMatchObject({ code: "CONFIG_INVALID", message: `credentialRef: no sentry connection called ${id} in your organization` });
+    await s.fakeLinear.close();
+  });
+
+  it("applies a scope added to a read-only connector at once, with no confirmation, and records the change as an update", async () => {
+    QUIET();
+    stub();
+    const s = await install();
+    const id = await connectionOf(s, "sentry");
+    expect((await s.put(MIA, "sentry", connectorOf("sentry", id))).status).toBe(200);
+    const wider = { ...connectorOf("sentry", id), scopes: [{ alias: "web", projectSlug: "web-app" }, { alias: "api", projectSlug: "api-app" }] };
+    const saved = await s.put(MIA, "sentry", wider, { expectedRevision: 2 });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.revision).toBe(3);
+    expect(s.approvals()).toHaveLength(0);
+    expect(s.audit.recordedBy("project_connector.changed").at(-1)?.facts?.["change"]).toBe("updated");
+    await s.fakeLinear.close();
+  });
+
+  it("takes a github-actions connector with no connection, held to this project's repositories as github is", async () => {
+    QUIET();
+    stub();
+    const s = await install();
+    const outside = await s.put(MIA, "gha", sample("github-actions", { scopes: ["web", "elsewhere"] }));
+    expect(outside.status).toBe(400);
+    expect(outside.body.error).toEqual({ code: "CONFIG_INVALID", message: "scopes.1: is not a repository of this project" });
+    const withRef = await s.put(MIA, "gha", sample("github-actions", { credentialRef: CON, secretValue: "x" }));
+    expect(withRef.status).toBe(400);
+    expect(JSON.stringify(withRef.body)).not.toContain("secretValue");
+    expect(s.revisions()).toHaveLength(1);
+    const all = await s.put(MIA, "gha", sample("github-actions", { scopes: "all-repositories" }));
+    expect(all.status, JSON.stringify(all.body)).toBe(200);
+    expect(all.body.connector).toMatchObject({ type: "github-actions", scopes: "all-repositories" });
+    expect(all.body.connector).not.toHaveProperty("connectionId");
+    await s.fakeLinear.close();
+  });
+
+  it("repeats a request without a second revision, and removes a new-type connector", async () => {
+    QUIET();
+    stub();
+    const s = await install();
+    const id = await connectionOf(s, "pagerduty");
+    const requestId = randomUUID();
+    const first = await s.put(MIA, "pagerduty", connectorOf("pagerduty", id), {}, requestId);
+    const second = await s.put(MIA, "pagerduty", connectorOf("pagerduty", id), {}, requestId);
+    expect(first.status).toBe(200);
+    expect(second.body).toMatchObject({ revision: 2, connector: { name: "pagerduty" } });
+    expect(s.revisions()).toHaveLength(2);
+    const removed = await s.del(MIA, "pagerduty", { expectedRevision: 2 });
+    expect(removed.body).toEqual({ removed: { name: "pagerduty" }, revision: 3 });
+    expect(s.revision(3)!.definition).not.toHaveProperty("integrations");
+    await s.fakeLinear.close();
+  });
+
+  it("holds a project to twelve connectors: the twelfth is written, the thirteenth refused with no revision", async () => {
+    QUIET();
+    stub(["sentry"]);
+    const s = await install();
+    const id = await connectionOf(s, "sentry");
+    for (let index = 1; index <= 12; index += 1) {
+      const saved = await s.put(MIA, `s${String(index)}`, { ...connectorOf("sentry", id), name: `s${String(index)}` }, { expectedRevision: index });
+      expect(saved.status, `connector ${String(index)}: ${JSON.stringify(saved.body)}`).toBe(200);
+    }
+    const thirteenth = await s.put(MIA, "s13", { ...connectorOf("sentry", id), name: "s13" }, { expectedRevision: 13 });
+    expect(thirteenth.status).toBe(400);
+    expect(thirteenth.body.error?.code).toBe("CONFIG_INVALID");
+    expect(s.revisions()).toHaveLength(13);
+    await s.fakeLinear.close();
+  });
+});
+
+
+describe("Plan 4 Task 13: sentry on the project connectors", () => {
+  const sentryOf = (id: string, tools: unknown[]) => ({ name: "errors", type: "sentry", credentialRef: id, scopes: [{ alias: "web", projectSlug: "web-app" }], tools });
+
+  it("lists the four tools Sentry's connector offers, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS.sentry).toEqual(["list_issues", "get_issue", "get_latest_event", "list_releases"]);
+  });
+
+  it("accepts a sentry connector approving list_issues, and refuses resolve_issue with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const id = await s.connection({ type: "sentry", label: "Sentry", access: "read", region: "us", orgSlug: "acme" }, { authToken: "sntrys_PROJECTCONNECTORTOKEN0123" });
+    const refused = await s.put(MIA, "errors", sentryOf(id, [{ name: "list_issues", access: "read" }, { name: "resolve_issue", access: "read" }]));
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.1: resolve_issue is not a sentry tool" });
+    expect(s.revisions()).toHaveLength(1);
+    const saved = await s.put(MIA, "errors", sentryOf(id, [{ name: "list_issues", access: "read" }]));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ revision: 2, connector: { name: "errors", type: "sentry", connectionId: id } });
+    await s.fakeLinear.close();
+  });
+});
+
+describe("Plan 4 Task 14: datadog and grafana on the project connectors", () => {
+  it("lists each type's tools, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS.datadog).toEqual(["search_monitors", "get_monitor", "query_metrics", "search_logs"]);
+    expect(PROJECT_CONNECTOR_TOOLS.grafana).toEqual(["list_firing_alerts", "get_alert_rule", "get_dashboard", "query_prometheus"]);
+  });
+
+  it("accepts a datadog and a grafana connector approving their tools, and refuses an unlisted one with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const dd = await s.connection({ type: "datadog", label: "Datadog", access: "read", site: "datadoghq.eu" }, { apiKey: "dd-api-key-0123456789", appKey: "dd-app-key-0123456789" });
+    const gf = await s.connection({ type: "grafana", label: "Grafana", access: "read", baseUrl: "https://grafana.acme.dev" }, { serviceAccountToken: "glsa_SECRET0123456789" });
+    const datadog = (tools: unknown[]) => ({ name: "metrics", type: "datadog", credentialRef: dd, scopes: [{ alias: "pay", tags: ["service:payments"] }], tools });
+    const grafana = (tools: unknown[]) => ({ name: "dash", type: "grafana", credentialRef: gf, scopes: [{ alias: "all" }], tools });
+    const refusedDd = await s.put(MIA, "metrics", datadog([{ name: "search_logs", access: "read" }, { name: "mute_monitor", access: "read" }]));
+    expect(refusedDd.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.1: mute_monitor is not a datadog tool" });
+    const refusedGf = await s.put(MIA, "dash", grafana([{ name: "silence_alert", access: "read" }]));
+    expect(refusedGf.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: silence_alert is not a grafana tool" });
+    expect(s.revisions()).toHaveLength(1);
+    expect((await s.put(MIA, "metrics", datadog([{ name: "search_logs", access: "read" }]))).status).toBe(200);
+    expect((await s.put(MIA, "dash", grafana([{ name: "list_firing_alerts", access: "read" }]), { expectedRevision: 2 })).status).toBe(200);
+    await s.fakeLinear.close();
+  });
+});
+
+
+describe("Plan 4 Task 16: cloudwatch on the project connectors", () => {
+  it("lists the four tools CloudWatch's connector offers, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS.cloudwatch).toEqual(["list_alarms", "get_alarm_history", "get_metric_data", "query_logs"]);
+  });
+
+  it("accepts a cloudwatch connector (a connection with no key) approving its tools, and refuses an unlisted one with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const cw = await s.connection({ type: "cloudwatch", label: "CloudWatch", access: "read", roleArn: "arn:aws:iam::123456789012:role/rovara-read", regions: ["us-east-1"] }, null);
+    const cloudwatch = (tools: unknown[]) => ({ name: "aws", type: "cloudwatch", credentialRef: cw, scopes: [{ alias: "prod", region: "us-east-1", logGroupPrefixes: ["/aws/lambda/pay"], alarmNamePrefix: "pay-" }], tools });
+    expect((await s.put(MIA, "aws", cloudwatch([{ name: "put_metric_alarm", access: "read" }]))).body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: put_metric_alarm is not a cloudwatch tool" });
+    expect(s.revisions()).toHaveLength(1);
+    expect((await s.put(MIA, "aws", cloudwatch([{ name: "list_alarms", access: "read" }, { name: "query_logs", access: "read" }]))).status).toBe(200);
+    await s.fakeLinear.close();
+  });
+});
+
+describe("Plan 4 Task 17: github-actions on the project connectors", () => {
+  const TOOLS = ["list_workflow_runs", "get_workflow_execution", "list_execution_jobs", "get_job_log", "list_deployments", "list_deployment_statuses"];
+  const gha = (tools: unknown[]) => ({ name: "gha", type: "github-actions", scopes: ["web"], tools });
+
+  it("lists the six tools GitHub Actions' connector offers, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS["github-actions"]).toEqual(TOOLS);
+  });
+
+  it("accepts a github-actions connector approving list_workflow_runs, and refuses cancel_workflow_run and any other unlisted tool with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    for (const name of ["cancel_workflow_run", "rerun_workflow", "run_workflow", "create_deployment", "get_secret", "list_secrets"]) {
+      const refused = await s.put(MIA, "gha", gha([{ name: "list_workflow_runs", access: "read" }, { name, access: "read" }]));
+      expect(refused.status, name).toBe(400);
+      expect(refused.body.error, name).toEqual({ code: "CONFIG_INVALID", message: `tools.1: ${name} is not a github-actions tool` });
+    }
+    expect(s.revisions()).toHaveLength(1);
+    expect(s.approvals()).toHaveLength(0);
+    const saved = await s.put(MIA, "gha", gha([{ name: "list_workflow_runs", access: "read" }, { name: "get_job_log", access: "read" }]));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ revision: 2, connector: { name: "gha", type: "github-actions", scopes: ["web"] } });
+    await s.fakeLinear.close();
+  });
+
+  it("refuses a github-actions tool approved to write, and keeps the connector read-only", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const refused = await s.put(MIA, "gha", gha([{ name: "list_workflow_runs", access: "write" }]));
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: github-actions connectors are read-only" });
+    expect(s.revisions()).toHaveLength(1);
+    await s.fakeLinear.close();
+  });
+});
+
+describe("Plan 4 Task 15: pagerduty and vercel on the project connectors", () => {
+  it("lists each type's tools, all reads", () => {
+    expect(PROJECT_CONNECTOR_TOOLS.pagerduty).toEqual(["list_incidents", "get_incident", "list_incident_log_entries", "list_oncalls"]);
+    expect(PROJECT_CONNECTOR_TOOLS.vercel).toEqual(["list_deployments", "get_deployment", "get_deployment_events"]);
+  });
+
+  it("accepts a pagerduty and a vercel connector approving their tools, and refuses an unlisted one with Task 12's text, writing no revision", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const s = await install();
+    const pd = await s.connection({ type: "pagerduty", label: "PagerDuty", access: "read", region: "eu" }, { apiKey: "pd-api-key-0123456789" });
+    const vc = await s.connection({ type: "vercel", label: "Vercel", access: "read" }, { token: "vercel-token-0123456789" });
+    const pagerduty = (tools: unknown[]) => ({ name: "oncall", type: "pagerduty", credentialRef: pd, scopes: [{ alias: "pay", serviceIds: ["PSVC001"] }], tools });
+    const vercel = (tools: unknown[]) => ({ name: "deploys", type: "vercel", credentialRef: vc, scopes: [{ alias: "site", projectId: "prj_web1" }], tools });
+    expect((await s.put(MIA, "oncall", pagerduty([{ name: "resolve_incident", access: "read" }]))).body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: resolve_incident is not a pagerduty tool" });
+    expect((await s.put(MIA, "deploys", vercel([{ name: "promote_deployment", access: "read" }]))).body.error).toEqual({ code: "CONFIG_INVALID", message: "tools.0: promote_deployment is not a vercel tool" });
+    expect(s.revisions()).toHaveLength(1);
+    expect((await s.put(MIA, "oncall", pagerduty([{ name: "list_incidents", access: "read" }]))).status).toBe(200);
+    expect((await s.put(MIA, "deploys", vercel([{ name: "list_deployments", access: "read" }]), { expectedRevision: 2 })).status).toBe(200);
+    await s.fakeLinear.close();
   });
 });

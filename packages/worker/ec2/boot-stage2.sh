@@ -22,7 +22,7 @@ pull_contained_image() {
   return 1
 }
 
-# Optional until the control plane sets EXECUTOR_IMAGE.
+# Optional until EXECUTOR_IMAGE is set; without it only end-to-end checks are withheld.
 pull_executor_image() {
   [[ -n "${EXECUTOR_IMAGE:-}" ]] || return 0
   local attempt
@@ -34,7 +34,7 @@ pull_executor_image() {
   return 1
 }
 
-# Root-only: the worker's environment is its configuration.
+# Root-only: nothing here is secret today, but it must not become world-readable.
 write_worker_environment() {
   local region=$1
   install -d -m 0700 "$(dirname "$WORKER_ENV_FILE")"
@@ -47,6 +47,7 @@ AGENTX_CONTROL_PLANE_URL=$AGENTX_CONTROL_PLANE_URL
 AGENTX_MODEL_PROVIDER=$AGENTX_MODEL_PROVIDER
 AGENTX_MODEL_ID=$AGENTX_MODEL_ID
 AGENTX_OPENROUTER_PROVIDERS=${AGENTX_OPENROUTER_PROVIDERS:-}
+AGENTX_MODEL_FALLBACK=${AGENTX_MODEL_FALLBACK:-}
 PI_CACHE_RETENTION=$PI_CACHE_RETENTION
 AGENTX_INVOKE_PUBLIC_KEY=$AGENTX_INVOKE_PUBLIC_KEY
 AGENTX_WORKSPACE_ID=$AGENTX_WORKSPACE_ID
@@ -66,7 +67,7 @@ EOF
     done
   fi
   printf 'TMPDIR=/tmp\n' >>"$WORKER_ENV_FILE"
-  # docker exec agentx-worker processes (the web/API runtime) read the executor image from this file.
+  # The web/API runtime's browser executor; docker exec agentx-worker processes read it here too.
   [[ -z "${EXECUTOR_IMAGE:-}" ]] || printf 'EXECUTOR_IMAGE=%s\n' "$EXECUTOR_IMAGE" >>"$WORKER_ENV_FILE"
 }
 
@@ -175,8 +176,7 @@ WantedBy=multi-user.target
 EOF
 }
 
-# Opt-in TEST qualification of the web/API runtime (AGENTX_E2E_QUALIFICATION_*), under e2e-runtime/<role ID>:<instance ID>/,
-# the prefix the grant e2e-runtime/${aws:userid}/ allows. Its own unit, so it cannot fail the boot; it reports through status.json.
+# Opt-in TEST qualification (AGENTX_E2E_QUALIFICATION_*): its own unit, so it cannot fail the boot.
 write_e2e_qualification_script() {
   install -d -o root -g root -m 0755 /usr/local/libexec
   cat >/usr/local/libexec/agentx-e2e-qualification <<'QUALIFICATION'
@@ -187,6 +187,7 @@ readonly EVIDENCE_HOST=${AGENTX_HOST_ROOT:-}/mnt/workspace/.agentx-runtime/evide
 readonly EVIDENCE_CONTAINER=/mnt/agentx-runtime/evidence
 readonly CHALLENGE_NAME=runtime-install-challenge.json
 readonly PROPOSAL_NAME=runtime-install-proposal.json
+readonly FAILURE_NAME=runtime-install-failure.json
 readonly CHALLENGE_MAX_BYTES=65536
 readonly PROPOSAL_MAX_BYTES=5242880
 readonly POLL=${AGENTX_E2E_QUALIFICATION_POLL_SECONDS:-10}
@@ -195,18 +196,27 @@ readonly CHALLENGE_WAIT=${AGENTX_E2E_QUALIFICATION_CHALLENGE_WAIT_SECONDS:-1800}
 readonly QUALIFY_SECONDS=${AGENTX_E2E_QUALIFICATION_QUALIFY_SECONDS:-2700}
 readonly PULL_SECONDS=${AGENTX_E2E_QUALIFICATION_PULL_SECONDS:-300}
 log() { printf 'agentx-e2e-qualification: %s\n' "$*" >&2; }
-[[ "$ROLE_ID" =~ ^AROA[A-Z0-9]{12,}$ ]] || { log "refused: the role ID must be the worker role's unique ID (AROA...)"; exit 2; }
-[[ "$INSTANCE_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || { log "refused: the instance ID is not valid"; exit 2; }
-[[ "$EXECUTOR" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || { log "refused: the executor image must be an ECR image pinned by digest"; exit 2; }
-[[ "$PROFILE" == linux-arm64-web-api-v1 ]] || { log "refused: the profile must be linux-arm64-web-api-v1"; exit 2; }
-[[ "$BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { log "refused: the bucket name is not valid"; exit 2; }
-[[ "$REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || { log "refused: the region is not valid"; exit 2; }
+refuse() { log "refused: $1"; exit 2; }
+[[ "$ROLE_ID" =~ ^AROA[A-Z0-9]{12,}$ ]] || refuse "the role ID must be the worker role's unique ID (AROA...)"
+[[ "$INSTANCE_ID" =~ ^i-[0-9a-f]{8,17}$ ]] || refuse "the instance ID is not valid"
+[[ "$EXECUTOR" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || refuse "the executor image must be an ECR image pinned by digest"
+[[ "$PROFILE" == linux-arm64-web-api-v1 ]] || refuse "the profile must be linux-arm64-web-api-v1"
+[[ "$BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || refuse "the bucket name is not valid"
+[[ "$REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || refuse "the region is not valid"
 readonly PREFIX="e2e-runtime/$ROLE_ID:$INSTANCE_ID/"
 STAGE=$(mktemp -d) || exit 1
 readonly STAGE
+# Status objects also carry the executor image and /ping's features (test-deploy --check).
+EXTRA=",\"executorImage\":\"$EXECUTOR\""
 upload() { aws s3api put-object --bucket "$BUCKET" --key "$PREFIX$1" --body "$2" --server-side-encryption AES256 --region "$REGION" --no-cli-pager >/dev/null; }
 publish_status() {
-  printf '{"state":"%s","reason":"%s","finishedAt":"%s"}\n' "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$STAGE/status.json" && upload status.json "$STAGE/status.json"
+  printf '{"state":"%s","reason":"%s","finishedAt":"%s"%s}\n' "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EXTRA" >"$STAGE/status.json" && upload status.json "$STAGE/status.json"
+}
+add_failure() {
+  local f="$EVIDENCE_HOST/$FAILURE_NAME" c
+  [[ -f "$f" ]] || return 0
+  c=$(dd if="$f" iflag=nofollow bs=16384 count=1 2>/dev/null | grep -oE '"[a-z0-9-]{1,48}(:[a-z0-9-]{1,48})?"[],}]' | head -n 16 | tr -d '],}' | paste -sd, -)
+  EXTRA+=",\"failure\":{\"codes\":[$c]}"
 }
 fail_with() {
   log "failed: $1"
@@ -214,11 +224,12 @@ fail_with() {
   exit 1
 }
 deadline=$((SECONDS + HEALTHY_WAIT))
-until curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:8080/ping >/dev/null 2>&1; do
+until PING=$(curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:8080/ping 2>/dev/null); do
   ((SECONDS < deadline)) || fail_with worker-not-healthy
   sleep "$POLL"
 done
-# The boot preload is optional; the qualification needs the image.
+features=$(tr -d ' \n\r\t' <<<"$PING" | grep -oE '"invocationFeatures":\[("[A-Za-z0-9.]+"(,"[A-Za-z0-9.]+")*)?\]' | head -n1) && [[ -n "$features" ]] && EXTRA+=",$features"
+# The preload is optional but the qualification needs the executor image: pull it if missing.
 if ! docker image inspect "$EXECUTOR" >/dev/null 2>&1; then
   log "the executor image is not on this host; pulling it"
   { timeout --foreground --kill-after=10s "${PULL_SECONDS}s" aws ecr get-login-password --region "$REGION" \
@@ -227,7 +238,7 @@ if ! docker image inspect "$EXECUTOR" >/dev/null 2>&1; then
     || log "the executor image could not be pulled"
   docker image inspect "$EXECUTOR" >/dev/null 2>&1 || fail_with executor-image-unavailable
 fi
-printf '{"state":"READY","reason":"worker-healthy","finishedAt":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$STAGE/ready.json" && upload ready.json "$STAGE/ready.json" || fail_with ready-upload-failed
+printf '{"state":"READY","reason":"worker-healthy","finishedAt":"%s"%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EXTRA" >"$STAGE/ready.json" && upload ready.json "$STAGE/ready.json" || fail_with ready-upload-failed
 fetched="$STAGE/challenge.json"
 deadline=$((SECONDS + CHALLENGE_WAIT))
 until aws s3api get-object --bucket "$BUCKET" --key "${PREFIX}challenge.json" --region "$REGION" --no-cli-pager "$fetched" >/dev/null 2>&1; do
@@ -238,19 +249,20 @@ size=$(wc -c <"$fetched" | tr -d '[:space:]')
 ((size > 0 && size <= CHALLENGE_MAX_BYTES)) || fail_with challenge-size-rejected
 [[ -d "$EVIDENCE_HOST" && ! -L "$EVIDENCE_HOST" ]] || fail_with evidence-directory-unavailable
 chown 1000:1000 "$fetched" && chmod 0600 "$fetched" && mv -fT "$fetched" "$EVIDENCE_HOST/$CHALLENGE_NAME" || fail_with challenge-install-failed
-rm -f "$EVIDENCE_HOST/$PROPOSAL_NAME"
-timeout --foreground --kill-after=10s "${QUALIFY_SECONDS}s" docker exec --user node agentx-worker /usr/local/bin/node /opt/agentx/packages/verifier/dist/install-qualification-cli.js --profile "$PROFILE" --challenge-file "$EVIDENCE_CONTAINER/$CHALLENGE_NAME" --evidence-root "$EVIDENCE_CONTAINER" --out "$EVIDENCE_CONTAINER/$PROPOSAL_NAME" >"$STAGE/qualifier.log" 2>&1
+rm -f "$EVIDENCE_HOST/$PROPOSAL_NAME" "$EVIDENCE_HOST/$FAILURE_NAME"
+timeout --foreground --kill-after=10s "${QUALIFY_SECONDS}s" docker exec --user node agentx-worker /usr/local/bin/node /opt/agentx/packages/verifier/dist/install-qualification-cli.js --profile "$PROFILE" --challenge-file "$EVIDENCE_CONTAINER/$CHALLENGE_NAME" --evidence-root "$EVIDENCE_CONTAINER" --out "$EVIDENCE_CONTAINER/$PROPOSAL_NAME" --failure-out "$EVIDENCE_CONTAINER/$FAILURE_NAME" >"$STAGE/qualifier.log" 2>&1
 status=$?
 tail -c 2000 "$STAGE/qualifier.log" | while IFS= read -r line; do log "qualifier: $line"; done
-((status == 0)) || fail_with "qualification-failed-exit-$status"
-proposal="$EVIDENCE_HOST/$PROPOSAL_NAME"
-[[ -f "$proposal" && ! -L "$proposal" ]] || fail_with proposal-missing
+((status == 0)) || { add_failure; fail_with "qualification-failed-exit-$status"; }
+proposal="$STAGE/proposal"
+dd if="$EVIDENCE_HOST/$PROPOSAL_NAME" iflag=nofollow of="$proposal" bs=1M count=6 2>/dev/null || fail_with proposal-missing
 size=$(wc -c <"$proposal" | tr -d '[:space:]')
 ((size > 0)) || fail_with proposal-missing
 ((size <= PROPOSAL_MAX_BYTES)) || fail_with proposal-too-large
 upload proposal.json "$proposal" || fail_with proposal-upload-failed
 publish_status SUCCEEDED qualified || { log "could not upload the success status"; exit 1; }
 log "qualified; the proposal and status are under the prefix"
+timeout --foreground --kill-after=10s 7d docker exec --user node agentx-worker /usr/local/bin/node /opt/agentx/packages/worker/dist/e2e-model-canary-cli.js --bucket "$BUCKET" --prefix "$PREFIX" 2>&1 | while read l; do log "$l"; done
 QUALIFICATION
 }
 

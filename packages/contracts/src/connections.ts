@@ -3,38 +3,47 @@
 // org id and the connection id, which only a role session tagged with that org can read.
 import { z } from "zod";
 import { ConnectionIdSchema } from "./agent-node.js";
+import { ConnectionLabelSchema, ConnectionSecretText } from "./connection-fields.js";
+import { ObservabilityConnectionSchemas, ObservabilitySecretSchemas } from "./connection-types-observability.js";
 import { McpAuthSchema, McpEndpointSchema } from "./mcp-connector.js";
 import { type OrgId } from "./org.js";
 import { orgScoped, type OrgKey } from "./org-node.js";
 
-export const ConnectionTypeSchema = z.enum(["linear", "jira", "mcp"]);
+export const ConnectionTypeSchema = z.enum(["linear", "jira", "mcp", "sentry", "datadog", "cloudwatch", "grafana", "vercel", "pagerduty"]);
 export type ConnectionType = z.infer<typeof ConnectionTypeSchema>;
 
 export const ConnectionAccessSchema = z.enum(["read", "read_write"]);
 export type ConnectionAccess = z.infer<typeof ConnectionAccessSchema>;
 
-export const CONNECTION_LABEL_MAX = 64;
+export { CONNECTION_LABEL_MAX } from "./connection-fields.js";
 
-const LabelSchema = z.string().trim().min(1).max(CONNECTION_LABEL_MAX)
-  // eslint-disable-next-line no-control-regex -- a label is one line of plain text
-  .refine((label) => !/[\u0000-\u001f\u007f\u2028\u2029]/.test(label), "must be one line");
+const LabelSchema = ConnectionLabelSchema;
 
 /** `https://<site>.atlassian.net`: one DNS label under atlassian.net, no path, so the token only ever goes to Atlassian. */
 export const JiraSiteUrlSchema = z.string().regex(/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net$/, "must be https://<site>.atlassian.net");
 
 const McpVendorSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 .&+-]{0,31}$/);
 
+/**
+ * Whose key a Linear or Jira connection holds, said by the person who makes it (the vendor does not tell a bot from a person). A `service` identity is an account only Rovara
+ * uses, so every ticket it makes is Rovara's and the trigger loop guard skips it. A `personal` key is a person's own: the guard cannot tell their tickets from Rovara's, so it
+ * does not skip them (the subject guard and the run caps bound a loop instead). Left out, it is read as personal.
+ */
+export const ConnectionIdentitySchema = z.enum(["service", "personal"]);
+export type ConnectionIdentity = z.infer<typeof ConnectionIdentitySchema>;
+
 const Common = { connectionId: ConnectionIdSchema, label: LabelSchema, access: ConnectionAccessSchema } as const;
 
 export const OrgConnectionSchema = z.discriminatedUnion("type", [
-  z.object({ ...Common, type: z.literal("linear") }).strict(),
-  z.object({ ...Common, type: z.literal("jira"), siteUrl: JiraSiteUrlSchema }).strict(),
+  z.object({ ...Common, type: z.literal("linear"), identity: ConnectionIdentitySchema.optional() }).strict(),
+  z.object({ ...Common, type: z.literal("jira"), siteUrl: JiraSiteUrlSchema, identity: ConnectionIdentitySchema.optional() }).strict(),
   z.object({ ...Common, type: z.literal("mcp"), endpoint: McpEndpointSchema, vendor: McpVendorSchema, auth: McpAuthSchema.optional() }).strict(),
+  // Plan 4 Task 11: Sentry, Datadog, CloudWatch, Grafana, Vercel and PagerDuty, read-only.
+  ...ObservabilityConnectionSchemas,
 ]);
 export type OrgConnection = z.infer<typeof OrgConnectionSchema>;
 
-/** A key or token goes in an HTTP header, so it is printable ASCII with no space or line break. */
-const SecretText = z.string().regex(/^[\x21-\x7e]{1,8192}$/, "must be 1 to 8192 printable characters with no space");
+const SecretText = ConnectionSecretText;
 
 /**
  * The Atlassian account email a Jira Cloud API token belongs to. Jira Cloud's REST API takes `Basic base64(email:apiToken)`, so
@@ -42,19 +51,41 @@ const SecretText = z.string().regex(/^[\x21-\x7e]{1,8192}$/, "must be 1 to 8192 
  */
 const AtlassianEmail = z.string().max(254).regex(/^[^\s:@]+@[^\s:@]+\.[^\s:@]+$/, "must be the Atlassian account email, such as name@company.com");
 
-/** What a secret holds, by connection type: a Linear API key, a Jira account email and API token, an MCP bearer token. Write-only: nothing returns it. */
+/**
+ * What a secret holds, by connection type: a Linear API key, a Jira account email and API token, an MCP bearer token, and (Plan 4) a Sentry
+ * auth token, a Datadog API and application key, a Grafana service account token, a Vercel token and a PagerDuty API key. Write-only: nothing
+ * returns it. A CloudWatch connection has none: Rovara assumes the customer's role.
+ */
 export const ConnectionSecretSchemas = {
   linear: z.object({ apiKey: SecretText }).strict(),
   jira: z.object({ email: AtlassianEmail, apiToken: SecretText }).strict(),
   mcp: z.object({ token: SecretText }).strict(),
+  ...ObservabilitySecretSchemas,
 } as const;
 
-export const ConnectionSecretSchema = z.union([ConnectionSecretSchemas.linear, ConnectionSecretSchemas.jira, ConnectionSecretSchemas.mcp]);
+export const ConnectionSecretSchema = z.union([
+  ConnectionSecretSchemas.linear, ConnectionSecretSchemas.jira, ConnectionSecretSchemas.mcp,
+  ConnectionSecretSchemas.sentry, ConnectionSecretSchemas.datadog, ConnectionSecretSchemas.grafana, ConnectionSecretSchemas.vercel, ConnectionSecretSchemas.pagerduty,
+]);
 export type ConnectionSecret = z.infer<typeof ConnectionSecretSchema>;
 
-/** The secret's one value the runtime sends, whatever the type calls it (a Jira connection's email is only for its check). */
-export function connectionSecretToken(type: ConnectionType, secret: ConnectionSecret): string {
-  return type === "linear" ? (secret as { apiKey: string }).apiKey : type === "jira" ? (secret as { apiToken: string }).apiToken : (secret as { token: string }).token;
+/** The connection types that hold a secret: every one but CloudWatch. */
+export type SecretConnectionType = keyof typeof ConnectionSecretSchemas;
+
+export const connectionTakesSecret = (type: ConnectionType): type is SecretConnectionType => type in ConnectionSecretSchemas;
+
+/** The secret's one value the runtime sends, whatever the type calls it (a Jira connection's email is only for its check; a Datadog connection also has an application key). */
+export function connectionSecretToken(type: SecretConnectionType, secret: ConnectionSecret): string {
+  switch (type) {
+    case "linear": return (secret as { apiKey: string }).apiKey;
+    case "jira": return (secret as { apiToken: string }).apiToken;
+    case "mcp": return (secret as { token: string }).token;
+    case "sentry": return (secret as { authToken: string }).authToken;
+    case "datadog": return (secret as { apiKey: string }).apiKey;
+    case "grafana": return (secret as { serviceAccountToken: string }).serviceAccountToken;
+    case "vercel": return (secret as { token: string }).token;
+    case "pagerduty": return (secret as { apiKey: string }).apiKey;
+  }
 }
 
 /** One connection's partition: its META record. */

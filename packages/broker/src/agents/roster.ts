@@ -85,8 +85,11 @@ async function readEntry(deps: RosterDependencies, orgId: OrgId, project: string
   return response.Item === undefined ? undefined : (strip(response.Item) as unknown as RosterEntry);
 }
 
-/** Every agent on the project's roster, in the order of their ids. */
-async function readEntries(deps: RosterDependencies, orgId: OrgId, project: string): Promise<RosterEntry[]> {
+/**
+ * The agents on the project's roster, in the order of their ids: at most `max` of them when given. A roster longer than that is cut (the rest is not read) and `onCut` is called, so
+ * that the caller can log it.
+ */
+async function readEntries(deps: RosterDependencies, orgId: OrgId, project: string, bound?: { max: number; onCut: () => void }): Promise<RosterEntry[]> {
   const found: Item[] = [];
   let start: Record<string, unknown> | undefined;
   do {
@@ -100,6 +103,11 @@ async function readEntries(deps: RosterDependencies, orgId: OrgId, project: stri
     })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
     found.push(...(page.Items ?? []));
     start = page.LastEvaluatedKey;
+    if (bound !== undefined && found.length >= bound.max && (start !== undefined || found.length > bound.max)) {
+      bound.onCut();
+      found.length = bound.max;
+      break;
+    }
   } while (start !== undefined);
   return found.map((item) => strip(item) as unknown as RosterEntry);
 }
@@ -178,9 +186,9 @@ export async function rosterAgentView(deps: RosterDependencies, caller: AgentCal
 
 /**
  * What works on the project: the built-ins the company has not turned off (owners and admins also see those, marked), then the agents
- * added to it. Anyone with a role on the project sees it.
+ * added to it. Anyone with a role on the project sees it. The roster is read whole, unless `options.max` is given (the project page shows a few agents): then it reads at most that many entries and logs the cut.
  */
-export async function listRoster(deps: RosterDependencies, caller: AgentCaller, project: string): Promise<RosterAgentView[]> {
+export async function listRoster(deps: RosterDependencies, caller: AgentCaller, project: string, options: { max?: number } = {}): Promise<RosterAgentView[]> {
   await roleOnProject(deps, caller, project);
   const listed: RosterAgentView[] = [];
   for (const builtin of await listVisibleAgents(deps, caller, "builtin")) {
@@ -189,7 +197,11 @@ export async function listRoster(deps: RosterDependencies, caller: AgentCaller, 
       pinnedVersion: await deps.store.pinnedBuiltinVersion(caller.orgId, builtin.agentId), ...(builtin.disabled === true ? { disabled: true as const } : {}),
     });
   }
-  for (const entry of await readEntries(deps, caller.orgId, project)) {
+  // Bounded only for the project page (Plan 5 Task 16 review): a roster longer than its cap lists its first agents, and the cut is logged.
+  const entries = await readEntries(deps, caller.orgId, project, options.max === undefined ? undefined : {
+    max: options.max, onCut: () => console.log(JSON.stringify({ component: "broker", event: "roster.list_truncated", orgId: caller.orgId, project })),
+  });
+  for (const entry of entries) {
     const view = await rosterAgentView(deps, caller, entry);
     if (view !== undefined) listed.push(view);
   }

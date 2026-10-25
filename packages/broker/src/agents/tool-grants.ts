@@ -161,6 +161,8 @@ const TYPE_FACTS: Readonly<Record<AgentConnectorType, { all?: FactPatch; tools?:
     },
   },
   mcp: {},
+  // Plan 4 Task 12: the native connectors only read, offer no create or bulk tool and take no item argument (H9), so the catalog's facts are all there are.
+  sentry: {}, datadog: {}, cloudwatch: {}, "github-actions": {}, grafana: {}, vercel: {}, pagerduty: {},
 };
 
 /**

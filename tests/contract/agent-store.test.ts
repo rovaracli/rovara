@@ -2,7 +2,9 @@
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { AgentStore, resolveAgent, updateAvailable, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent-node.js";
+import { agentXError } from "../../packages/contracts/src/errors.js";
+import type { AgentId } from "../../packages/contracts/src/agent.js";
+import type { AgentOwner } from "../../packages/contracts/src/agent-node.js";
 import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import type { OrgId } from "../../packages/contracts/src/org-node.js";
@@ -26,9 +28,10 @@ const layer = (text: string): RecipeOverlay => ({ instructions: text });
 function builtinsWithRelease(release: { ticketTriage: number }): BuiltinSource {
   return {
     currentVersion: (id) => (id === "ticket-triage" ? release.ticketTriage : currentBuiltinVersion(id as "rovara-code")),
+    // Ticket triage here ships version 1 only (the store's rules are the same for any built-in), so that a test can add releases 2 and 3 by hand; the real version 2 is not offered.
     recipe: (id, version) => {
-      if (id !== "ticket-triage" || version <= currentBuiltinVersion("ticket-triage")) return builtinRecipe(id as "rovara-code", version);
-      if (version > release.ticketTriage) return builtinRecipe(id, version);
+      if (id !== "ticket-triage" || version === 1) return builtinRecipe(id as "rovara-code", version);
+      if (version > release.ticketTriage) throw agentXError("NOT_FOUND", `${id} has no version ${String(version)}`);
       const v1 = builtinRecipe("ticket-triage", 1);
       return { ...v1, chain: [{ ...v1.chain[0]!, version }], instructions: [{ agentName: "Ticket triage", text: `release ${String(version)}` }] };
     },
@@ -517,7 +520,7 @@ describe("archive, budget, owner, accountable and events", () => {
     expect(await code(store.setBudget(ORG_A, agent.agentId, { monthlyUsd: -1 }, ALICE))).toMatchObject({ code: "CONFIG_INVALID" });
 
     await store.setBudget(ORG_A, "code-reviewer", { monthlyUsd: 12 }, BOB);
-    expect(db.get(builtinSettingsKey(ORG_A, "code-reviewer"))).toMatchObject({ pinnedVersion: 1, monthlyBudgetUsd: 12, updatedBy: BOB });
+    expect(db.get(builtinSettingsKey(ORG_A, "code-reviewer"))).toMatchObject({ pinnedVersion: currentBuiltinVersion("code-reviewer"), monthlyBudgetUsd: 12, updatedBy: BOB });
     await store.setAccountable(ORG_A, "code-reviewer", { developerId: BOB }, ALICE);
     expect((await store.getBuiltinSettings(ORG_A, "code-reviewer"))?.accountable).toEqual({ developerId: BOB });
   });

@@ -1,6 +1,7 @@
 // Plan 5 Task 14: the Live wall's data. `GET /v1/app/live?filter=all|mine|team|needs_me|failed&project=&cursor=` shows other people's work, so what it answers is read for the caller, now:
 // only the sessions they may view, with the actions they may take at their level, an approval link only for a decision they may make (bare, never with a ticket), nothing of another org,
 // and a fixed number of reads however many tiles there are. `SessionTileSchema` is the list's tile; the Live wall's is `LiveTileSchema`, read with `LiveResponseReaderSchema`.
+import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { randomUUID } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -351,7 +352,7 @@ describe("approval links", () => {
     const approvals = {
       store: new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now }), projectMembers: w.members, documentClient: w.db, tableName: "state", signInStore: w.signInStore,
       now: () => w.clock.now, confirmOrigin: CELL, log: () => undefined,
-    } as unknown as ApprovalDependencies;
+    } as unknown as ApprovalDependencies & AgentRouteDependencies;
     const made = await createWriteApprovalRecord({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, {
       orgId: ORG_A, approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "write", subject: { kind: "agent_run", taskId: s5.taskId, stepId: "work" }, operationId: randomUUID(), connector: "linear", connectorType: "linear",
       tool: "save_issue", toolAccess: "write", scope: "eng", schemaHash: "a".repeat(64), projectRevision: 1, scopeDigest: "b".repeat(64), arguments: { title: "SECRET-ARGUMENT" }, argumentsHash: "c".repeat(64),

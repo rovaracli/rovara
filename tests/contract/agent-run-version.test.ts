@@ -361,7 +361,7 @@ describe("built-in agents below the org's pin follow the same rules", () => {
     // The pin itself runs by default, and the list says which is which.
     expect((await t.run(KIT, "ticket-triage")).status).toBe(202);
     const listed = await t.call(KIT, "GET", "/v1/app/agents/ticket-triage/versions");
-    expect((listed.body.versions as Array<Record<string, unknown>>).map((version) => [version.version, version.safety])).toEqual([[1, "less_safe"]]);
+    expect((listed.body.versions as Array<Record<string, unknown>>).map((version) => [version.version, version.safety])).toEqual([[1, "less_safe"], [2, "current"]]);
   });
 
   it("runs a release below the pin that is no looser at once", async () => {

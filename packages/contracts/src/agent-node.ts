@@ -5,7 +5,6 @@ import { z } from "zod";
 
 const MIN_RANDOM_BYTES = 16;
 
-
 /**
  * A server-generated id: the prefix and 20 base36 characters from at least 16 random bytes, reduced modulo 36^20
  * the way org ids are. Ids are never taken from a request.
@@ -30,7 +29,6 @@ export type ConnectionId = z.infer<typeof ConnectionIdSchema>;
 
 export type ModelSourceId = z.infer<typeof ModelSourceIdSchema>;
 
-
 export type AgentOwner = z.infer<typeof AgentOwnerSchema>;
 
 export type AgentPrincipal = z.infer<typeof AgentPrincipalSchema>;
@@ -39,4 +37,4 @@ export type Autonomy = z.infer<typeof AutonomySchema>;
 
 export type BaseRef = z.infer<typeof BaseRefSchema>;
 
-export { ModelListSchema, AGENT_NAME_MAX, AGENT_DESCRIPTION_MAX, BUILTIN_AGENT_IDS, type BuiltinAgentId, ROVARA_CODE_AGENT_ID, type IdPrefix, BuiltinAgentIdSchema, AgentIdSchema, SkillIdSchema, SpendRequestIdSchema, ApprovalIdSchema, ModelSourceIdSchema, type AgentId, isBuiltinAgentId, AgentOwnerSchema, AgentPrincipalSchema, AGENT_ACCESS_LEVELS, AgentAccessLevelSchema, type AgentAccessLevel, atLeast, AutonomySchema, BaseRefSchema } from "./agent.js";
+export { AGENT_NAME_MAX, AGENT_DESCRIPTION_MAX, BUILTIN_AGENT_IDS, type BuiltinAgentId, ROVARA_CODE_AGENT_ID, PREFIXED_ID_BODY_LENGTH, type IdPrefix, prefixedIdPattern, BuiltinAgentIdSchema, AgentIdSchema, SkillIdSchema, SpendRequestIdSchema, ApprovalIdSchema, ModelSourceIdSchema, type AgentId, isBuiltinAgentId, MemberOwnerSchema, ProjectOwnerSchema, AgentOwnerSchema, AgentPrincipalSchema, AGENT_ACCESS_LEVELS, AgentAccessLevelSchema, type AgentAccessLevel, atLeast, AutonomySchema, BaseRefSchema, principalKey, ModelListSchema } from "./agent.js";

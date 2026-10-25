@@ -6,6 +6,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import {
   AGENT_SESSION_CONTRACT_VERSION,
   AGENTX_NAME_PATTERN,
+  ChainRunViewSchema,
   LIVE_INDEX_SCAN_MAX,
   LIVE_PAGE_MAX,
   SessionBindingSchema,
@@ -17,6 +18,7 @@ import {
   projectAllows,
   projectSessionsKey,
   sessionLink,
+  sessionBindingKey,
   sharedSessionsKey,
   type AgentSessionRecord,
   type DeveloperTaskView,
@@ -55,7 +57,7 @@ export interface SessionDeciding {
 export interface SessionReadDependencies extends SessionTakeOverDependencies {
   /** Plan 5 Task 13: Plan 3's cancel, workflow retry and run start for the signed-in person. Without it stop and retry of a task session answer `RUNTIME_UNAVAILABLE`. */
   control?: SessionControlHost | undefined;
-  /** Plan 5 Task 13, PLAN4: Plan 4's chain cancel and retry with the session actor. Without it a chain session is neither stopped nor retried, and nothing is written. */
+  /** Plan 5 Task 13: Plan 4's chain cancel and retry with the session actor (`chainControlFor`, built for each request). Without it a chain session is neither stopped nor retried, and nothing is written. */
   chainControl?: ChainControl | undefined;
   /** The Audit Ledger's outbox: a stop or retry adds its pending item to its own transaction. Absent on a legacy install, where nothing is recorded. */
   audit?: AuditRuntime;
@@ -124,9 +126,11 @@ async function nameOf(deps: SessionReadDependencies, developerId: string): Promi
   }
 }
 
-async function payerOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<{ kind: "member" | "project" | "agent"; name: string }> {
+async function payerOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<{ kind: "member" | "project" | "agent" | "chain"; name: string }> {
   const payer = session.payer ?? { kind: "member" as const, developerId: session.owner.developerId };
   if (payer.kind === "project") return { kind: "project", name: payer.project };
+  // Plan 4: a chain that pays for the runs its triggers start. The chain's own name is not on the session header, so the view names the chain by its id.
+  if (payer.kind === "chain") return { kind: "chain", name: payer.chainId };
   if (payer.kind === "agent") return { kind: "agent", name: session.agent?.agentId === payer.agentId ? session.agent.name : payer.agentId };
   return { kind: "member", name: payer.developerId === session.owner.developerId ? session.owner.name : await nameOf(deps, payer.developerId) ?? "A teammate" };
 }
@@ -139,7 +143,7 @@ function bindingLink(binding: SessionBinding): { kind: SessionBinding["kind"]; u
 async function bindingsOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<Array<{ kind: SessionBinding["kind"]; url: string }>> {
   const found: Array<{ kind: SessionBinding["kind"]; url: string }> = [];
   for (const kind of ["slack_thread", "linear_issue"] as const) {
-    const item = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `BINDING#${kind}`));
+    const item = await getItem(deps, sessionBindingKey(session.orgId, session.sessionId, kind));
     const parsed = SessionBindingSchema.safeParse(item?.["binding"]);
     if (parsed.success && parsed.data.kind === kind) found.push(bindingLink(parsed.data));
   }
@@ -190,7 +194,10 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   } else if (session.subject.kind === "chain") {
     if (deps.chain === undefined) throw UNAVAILABLE();
     const chain = await deps.chain.runView({ kind: "session", developerId: caller.developerId }, session.subject.chainRunId);
-    body = { kind: "chain", chain: typeof chain === "object" && chain !== null ? chain as Record<string, unknown> : {} };
+    // Plan 4's run view, read against its own contract: a view that does not meet it is not shown (the screen would be handed something it can't read).
+    const view = ChainRunViewSchema.safeParse(chain);
+    if (!view.success) throw UNAVAILABLE();
+    body = { kind: "chain", chain: view.data };
   } else {
     body = { kind: "local", tool: session.subject.tool };
   }

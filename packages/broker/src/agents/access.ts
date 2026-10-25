@@ -55,6 +55,17 @@ export interface AgentAccessDeps {
   audit?: AuditRuntime;
 }
 
+/** What deciding access to an owned thing (an agent or a chain) needs: everything in `AgentAccessDeps` but the agent store. */
+export type OwnedAccessDeps = Omit<AgentAccessDeps, "store">;
+
+/** The fields of an agent's or a chain's record that decide who may do what with it. */
+export interface OwnedAccessRecord {
+  orgId: OrgId;
+  owner: AgentOwner;
+  accountable?: { developerId: string };
+  status: "active" | "archived";
+}
+
 export interface AgentCaller {
   orgId: OrgId;
   developerId: string;
@@ -99,7 +110,7 @@ const rank = (level: AgentAccessLevel) => AGENT_ACCESS_LEVELS.indexOf(level);
 const higher = (left: AgentAccessLevel, right: AgentAccessLevel) => (rank(left) >= rank(right) ? left : right);
 const lower = (left: AgentAccessLevel, right: AgentAccessLevel) => (rank(left) <= rank(right) ? left : right);
 const isCustom = (agent: AccessibleAgent): agent is AgentRecord => "owner" in agent;
-const report = (deps: AgentAccessDeps, event: string, fields: Record<string, unknown>) =>
+const report = (deps: Pick<AgentAccessDeps, "log">, event: string, fields: Record<string, unknown>) =>
   (deps.log ?? ((name, detail) => console.error(JSON.stringify({ component: "broker", level: "error", event: name, ...detail }))))(event, fields);
 
 /** The developer a record names, read as whoever they were merged into (following a chain of merges, stopping at a loop). */
@@ -121,11 +132,11 @@ export function resolveSurvivor(deps: Pick<AgentAccessDeps, "signInStore" | "res
 }
 
 /** One request's reads of developers and project roles, each made once. */
-class Lookups {
+export class Lookups<D extends OwnedAccessDeps = OwnedAccessDeps> {
   private readonly survivors = new Map<string, Promise<string>>();
   private readonly roles = new Map<string, Promise<ProjectRole | undefined>>();
 
-  constructor(readonly deps: AgentAccessDeps, readonly caller: AgentCaller) {}
+  constructor(readonly deps: D, readonly caller: AgentCaller) {}
 
   survivor(developerId: string): Promise<string> {
     let found = this.survivors.get(developerId);
@@ -157,12 +168,17 @@ class Lookups {
  * makes a read or a save throw.
  */
 async function validShares(deps: AgentAccessDeps, orgId: OrgId, agentId: AgentId): Promise<AgentShare[]> {
+  return validSharesOf(deps, { orgId, agentId }, () => deps.store.listShares(orgId, agentId), "agent_share_skipped");
+}
+
+/** `validShares` for any owned thing: `fields` name it in the report, `list` reads its stored shares, and `event` is what a skipped row is reported as. */
+export async function validSharesOf(deps: OwnedAccessDeps, fields: Record<string, unknown>, list: () => Promise<Array<{ principal: unknown; level: unknown }>>, event: string): Promise<AgentShare[]> {
   const valid: AgentShare[] = [];
-  for (const share of await deps.store.listShares(orgId, agentId)) {
+  for (const share of await list()) {
     const principal = AgentPrincipalSchema.safeParse(share.principal);
     const level = ShareLevelSchema.safeParse(share.level);
     if (!principal.success || !level.success) {
-      report(deps, "agent_share_skipped", { orgId, agentId, reason: "the stored share is not a valid principal and level" });
+      report(deps, event, { ...fields, reason: "the stored share is not a valid principal and level" });
       continue;
     }
     valid.push({ principal: principal.data, level: level.data });
@@ -170,7 +186,7 @@ async function validShares(deps: AgentAccessDeps, orgId: OrgId, agentId: AgentId
   return valid;
 }
 
-interface Evaluation {
+export interface Evaluation {
   access: AgentAccessLevel;
   /** The caller is the member owner, or the accountable maintainer of a project's agent. */
   owns: boolean;
@@ -184,29 +200,40 @@ interface Evaluation {
  * What the caller holds on one agent, highest rule winning. Shares are read only when `withShares` is set or the owner rules
  * leave room above their level, so an owner or admin costs no share query.
  */
-async function evaluate(lookups: Lookups, agent: AccessibleAgent, withShares = false): Promise<Evaluation> {
+async function evaluate(lookups: Lookups<AgentAccessDeps>, agent: AccessibleAgent, withShares = false): Promise<Evaluation> {
   const { caller, deps } = lookups;
   const admin = isOrgAdmin(caller.orgRole);
   if (isBuiltinAgentId(agent.agentId)) return { access: admin ? "manage" : "use", owns: false, viaShares: "none", sharedProjects: [] };
   // Anything else needs a record of its own; an id with none gives nothing, to an org admin too.
   if (!isCustom(agent) || agent.orgId !== caller.orgId) return { access: "none", owns: false, viaShares: "none", sharedProjects: [] };
+  return evaluateOwned(lookups, agent, () => validShares(deps, agent.orgId, agent.agentId), withShares);
+}
 
+/**
+ * What the caller holds on one owned thing (an agent or a chain), highest rule winning: an org owner or admin `manage`; a member owner `manage`;
+ * for a project's thing a `manage_agents` holder `manage` and a contributor `use`; the shares that name the caller (a project's capped by their
+ * role there). Archived caps at `view` for everyone without `manage`. `shares` is read only when `withShares` is set or the owner rules leave
+ * room above their level.
+ */
+export async function evaluateOwned(lookups: Lookups, record: OwnedAccessRecord, shares: () => Promise<AgentShare[]>, withShares = false): Promise<Evaluation> {
+  const { caller } = lookups;
+  const admin = isOrgAdmin(caller.orgRole);
   let access: AgentAccessLevel = admin ? "manage" : "none";
   let owns = false;
-  if (agent.owner.kind === "member") {
-    owns = await lookups.isCaller(agent.owner.developerId);
+  if (record.owner.kind === "member") {
+    owns = await lookups.isCaller(record.owner.developerId);
     if (owns) access = "manage";
   } else {
-    const role = await lookups.role(agent.owner.project);
+    const role = await lookups.role(record.owner.project);
     if (role !== undefined && projectAllows(role, "manage_agents")) access = "manage";
     else if (role !== undefined && projectAllows(role, "start_tasks")) access = higher(access, "use");
   }
-  if (agent.accountable !== undefined && !owns) owns = await lookups.isCaller(agent.accountable.developerId);
+  if (record.accountable !== undefined && !owns) owns = await lookups.isCaller(record.accountable.developerId);
 
   let viaShares: AgentAccessLevel = "none";
   const sharedProjects: string[] = [];
   if (withShares || access !== "manage") {
-    for (const { principal: stored, level } of await validShares(deps, agent.orgId, agent.agentId)) {
+    for (const { principal: stored, level } of await shares()) {
       let given: AgentAccessLevel | undefined;
       if (stored.kind === "org") given = level;
       else if (stored.kind === "member") given = (await lookups.survivor(stored.developerId)) === caller.developerId ? level : undefined;
@@ -220,7 +247,7 @@ async function evaluate(lookups: Lookups, agent: AccessibleAgent, withShares = f
     }
     access = higher(access, viaShares);
   }
-  if (agent.status === "archived" && access !== "manage") access = lower(access, "view");
+  if (record.status === "archived" && access !== "manage") access = lower(access, "view");
   return { access, owns, viaShares, sharedProjects };
 }
 
@@ -234,7 +261,8 @@ export async function agentAccess(deps: AgentAccessDeps, caller: AgentCaller, ag
   return (await evaluate(new Lookups(deps, caller), agent)).access;
 }
 
-function whoNeeds(agent: AgentRecord, wanted: AgentAccessLevel): string {
+/** Who could give the caller `wanted` access to an agent or a chain, in words. */
+export function whoNeeds(agent: OwnedAccessRecord, wanted: AgentAccessLevel): string {
   const owners = agent.owner.kind === "project" ? `a maintainer of ${agent.owner.project} or an org admin` : "its owner or an org admin";
   if (agent.status === "archived" && wanted !== "manage") return `${owners} to unarchive it`;
   if (wanted === "manage") return owners;
@@ -296,35 +324,35 @@ export async function listVisibleAgents(deps: AgentAccessDeps, caller: AgentCall
   return visible;
 }
 
-async function exists(deps: AgentAccessDeps, key: { pk: string; sk: string }): Promise<boolean> {
+async function exists(deps: OwnedAccessDeps, key: { pk: string; sk: string }): Promise<boolean> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: unknown };
   return response.Item !== undefined;
 }
 
 /** A member of the org; a developer merged into another is looked for as the survivor. */
-async function isOrgMember(deps: AgentAccessDeps, lookups: Lookups, orgId: OrgId, developerId: string): Promise<boolean> {
+async function isOrgMember(deps: OwnedAccessDeps, lookups: Lookups, orgId: OrgId, developerId: string): Promise<boolean> {
   return exists(deps, orgMemberKey(orgId, await lookups.survivor(developerId)));
 }
 
 /** A member's role in the org (a developer merged into another is looked for as the survivor), or undefined for someone who isn't a member. */
-export async function orgRoleOf(deps: AgentAccessDeps, orgId: OrgId, developerId: string): Promise<OrgRole | undefined> {
+export async function orgRoleOf(deps: OwnedAccessDeps, orgId: OrgId, developerId: string): Promise<OrgRole | undefined> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, await resolveSurvivor(deps, orgId, developerId)), ConsistentRead: true })) as { Item?: { role?: unknown } };
   const role = OrgRoleSchema.safeParse(response.Item?.role);
   return role.success ? role.data : undefined;
 }
 
-const isProjectInCatalog = (deps: AgentAccessDeps, orgId: OrgId, project: string) => exists(deps, orgProjectCatalogKey(orgId, project));
+const isProjectInCatalog = (deps: OwnedAccessDeps, orgId: OrgId, project: string) => exists(deps, orgProjectCatalogKey(orgId, project));
 
 /** Refuses, as `CONFIG_INVALID` at `path`, a principal that isn't in the org: an unknown member or a project not in the catalog. */
-async function requirePrincipalExists(deps: AgentAccessDeps, lookups: Lookups, orgId: OrgId, path: string, principal: AgentPrincipal | AgentOwner): Promise<void> {
+async function requirePrincipalExists(deps: OwnedAccessDeps, lookups: Lookups, orgId: OrgId, path: string, principal: AgentPrincipal | AgentOwner): Promise<void> {
   if (principal.kind === "member" && !(await isOrgMember(deps, lookups, orgId, principal.developerId))) throw invalid(`${path}: nobody in your company has that ID`);
   if (principal.kind === "project" && !(await isProjectInCatalog(deps, orgId, principal.project))) throw invalid(`${path}: no project called ${principal.project} in your company`);
 }
 
 /** Validates a list of shares: at most 50, each well formed, no principal twice. */
-function parseShares(shares: unknown): AgentShare[] {
+function parseShares(shares: unknown, noun: "agent" | "chain" = "agent"): AgentShare[] {
   if (!Array.isArray(shares)) throw invalid("shares: must be a list");
-  if (shares.length > MAX_SHARES) throw invalid(`shares: an agent can be shared with at most ${String(MAX_SHARES)} people or groups`);
+  if (shares.length > MAX_SHARES) throw invalid(`shares: ${noun === "agent" ? "an agent" : "a chain"} can be shared with at most ${String(MAX_SHARES)} people or groups`);
   const seen = new Set<string>();
   return shares.map((entry: unknown, index) => {
     const parsed = ShareSchema.safeParse(entry);
@@ -373,15 +401,30 @@ export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agen
  * decider the approval's rule has already checked (Task 7's `agent_share`). `by` is the developer the `shared` event names.
  */
 export async function saveShares(deps: AgentAccessDeps, orgId: OrgId, by: string, agent: AgentRecord, shares: AgentShare[], request?: RequestMark): Promise<AgentShare[]> {
-  const wanted = await checkShares(deps, orgId, by, shares);
-  // The revision is read before the shares: a save that lands in between leaves this one's revision stale, and it conflicts.
-  const expectedSharesRevision = agent.sharesRevision ?? 0;
-  const current = new Map((await validShares(deps, orgId, agent.agentId)).map((share) => [principalKey(share.principal), share]));
+  return saveSharesOf(deps, orgId, by, agent.sharesRevision ?? 0, shares, {
+    current: () => validShares(deps, orgId, agent.agentId),
+    replace: (change) => deps.store.replaceShares({ orgId, agentId: agent.agentId, ...change }),
+  }, request, "agent");
+}
+
+/** What `saveSharesOf` needs of the thing whose shares it saves: its valid shares now, and the write that replaces them. */
+export interface ShareTarget {
+  current(): Promise<AgentShare[]>;
+  replace(change: { upsert: AgentShare[]; remove: AgentPrincipal[]; expectedSharesRevision: number; by: string; request?: RequestMark }): Promise<void>;
+}
+
+/**
+ * `saveShares` for any owned thing. `sharesRevision` is the revision read with the record, before the shares: a save that lands in between
+ * leaves this one's revision stale, and it conflicts.
+ */
+export async function saveSharesOf(deps: OwnedAccessDeps, orgId: OrgId, by: string, sharesRevision: number, shares: AgentShare[], target: ShareTarget, request: RequestMark | undefined, noun: "agent" | "chain"): Promise<AgentShare[]> {
+  const wanted = await checkShares(deps, orgId, by, shares, noun);
+  const current = new Map((await target.current()).map((share) => [principalKey(share.principal), share]));
   const upsert = wanted.filter((share) => current.get(principalKey(share.principal))?.level !== share.level);
   const keep = new Set(wanted.map((share) => principalKey(share.principal)));
   const remove = [...current].filter(([key]) => !keep.has(key)).map(([, share]) => share.principal);
   if (upsert.length > 0 || remove.length > 0) {
-    await deps.store.replaceShares({ orgId, agentId: agent.agentId, upsert, remove, expectedSharesRevision, by, ...(request === undefined ? {} : { request: { ...request, result: wanted } }) });
+    await target.replace({ upsert, remove, expectedSharesRevision: sharesRevision, by, ...(request === undefined ? {} : { request: { ...request, result: wanted } }) });
   }
   return wanted;
 }
@@ -400,9 +443,9 @@ export async function sharesAlreadyStored(deps: AgentAccessDeps, orgId: OrgId, b
  * The shares as they would be stored, or the refusal `saveShares` would give: well formed, at most 50, no person or group twice (after
  * naming each member by the developer they were merged into), and everyone named in the org. Nothing is written.
  */
-export async function checkShares(deps: AgentAccessDeps, orgId: OrgId, by: string, shares: unknown): Promise<AgentShare[]> {
+export async function checkShares(deps: OwnedAccessDeps, orgId: OrgId, by: string, shares: unknown, noun: "agent" | "chain" = "agent"): Promise<AgentShare[]> {
   const lookups = new Lookups(deps, { orgId, developerId: by, orgRole: "member" });
-  const wanted = await withSurvivors(lookups, parseShares(shares));
+  const wanted = await withSurvivors(lookups, parseShares(shares, noun));
   for (const [index, share] of wanted.entries()) await requirePrincipalExists(deps, lookups, orgId, `shares.${String(index)}`, share.principal);
   return wanted;
 }
@@ -414,7 +457,7 @@ export async function checkShares(deps: AgentAccessDeps, orgId: OrgId, by: strin
  * project's agent to any member (the caller too: the project's other maintainers lose it), takes an org owner or admin; a
  * project owner needs `manage_agents` on that project. The owner must be in the org.
  */
-export async function requireOwnerAllowed(deps: AgentAccessDeps, caller: AgentCaller, owner: AgentOwner, current?: AgentOwner, owns: "an agent" | "a skill" = "an agent"): Promise<AgentOwner> {
+export async function requireOwnerAllowed(deps: OwnedAccessDeps, caller: AgentCaller, owner: AgentOwner, current?: AgentOwner, owns: "an agent" | "a skill" | "a chain" = "an agent"): Promise<AgentOwner> {
   const lookups = new Lookups(deps, caller);
   const admin = isOrgAdmin(caller.orgRole);
   if (owner.kind === "member") {
@@ -422,7 +465,7 @@ export async function requireOwnerAllowed(deps: AgentAccessDeps, caller: AgentCa
     const self = survivor === caller.developerId;
     const handOver = current !== undefined && (!self || current.kind === "project");
     if (!admin && (!self || handOver)) {
-      throw agentXError("FORBIDDEN", current === undefined ? `Only an org owner or admin can make someone else ${owns}'s owner.` : "Only an org owner or admin can hand an agent to another member.");
+      throw agentXError("FORBIDDEN", current === undefined ? `Only an org owner or admin can make someone else ${owns}'s owner.` : `Only an org owner or admin can hand ${owns === "a chain" ? "a chain" : "an agent"} to another member.`);
     }
     const stored: AgentOwner = { kind: "member", developerId: survivor };
     if (!self) await requirePrincipalExists(deps, lookups, caller.orgId, "owner", stored);

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
 import { cdkDiff } from "../../packages/cli/src/deploy/cdk-engine.js";
@@ -416,5 +417,52 @@ describe("cdk diff must show it was read (review round 2)", () => {
     expect(cdkDiffRisks("Stack s\nResources\n[~] AWS::DynamoDB::Table State StateABC replace").data).toEqual([
       { logicalId: "StateABC", type: "AWS::DynamoDB::Table", verb: "unclear", line: "[~] AWS::DynamoDB::Table State StateABC replace" },
     ]);
+  });
+});
+
+// Real `cdk diff` output of aws-cdk 2.1142.0 for the v0.4.4 staging stacks (stdout and stderr together, as
+// cdkDiff returns it). Its "no differences" line carries a hint when CDK metadata changes were hidden.
+const realDiff = (stack: string) => readFileSync(new URL(`../fixtures/cdk-diff-2.1142.0/${stack}.txt`, import.meta.url), "utf8");
+const NEW_NO_DIFFERENCES = "There were no differences (CDK metadata changes were hidden, run cdk diff --strict to show)";
+
+describe("reading aws-cdk 2.1142.0's real cdk diff output", () => {
+  it("reads \"There were no differences\" with the metadata hint as no differences", () => {
+    for (const stack of ["AgentXAccess", "AgentXProductionFoundation", "AgentXIdentity"]) {
+      expect(realDiff(stack)).toContain(NEW_NO_DIFFERENCES);
+      expect(cdkDiffRisks(realDiff(stack))).toEqual({ iam: false, data: [] });
+    }
+    expect(cdkDiffRisks(`Stack s (agentx-staging-access)\n${NEW_NO_DIFFERENCES}\n\n\u2728  Number of stacks with differences: 0`)).toEqual({ iam: false, data: [] });
+  });
+
+  it("reads the control plane's real diff in full: IAM flagged, its ECS task definition replace is not a data change", () => {
+    const text = realDiff("AgentXControlPlane");
+    expect(text.match(/^\[~\] AWS::ECS::TaskDefinition .* replace$/gm)).toHaveLength(1);
+    expect(cdkDiffRisks(text)).toEqual({ iam: true, data: [] });
+  });
+
+  it("reads every staging stack's real diff cleanly, and the only replaces are the 2 ECS task definitions", () => {
+    const stacks = ["AgentXAccess", "AgentXProductionFoundation", "AgentXIdentity", "AgentXProductionRuntime", "AgentXControlPlane", "AgentXSlackOrchestrator"];
+    for (const stack of stacks) expect(cdkDiffRisks(realDiff(stack)).data, stack).toEqual([]);
+    const replaces = stacks.flatMap((stack) => realDiff(stack).match(/^\[~\] AWS::\S+ .* replace$/gm) ?? []);
+    expect(replaces).toHaveLength(2);
+    expect(replaces.every((line) => line.startsWith("[~] AWS::ECS::TaskDefinition "))).toBe(true);
+  });
+
+  it("still stops on a data store replaced or deleted in the new format", () => {
+    const replaced = realDiff("AgentXSlackOrchestrator").replace(/^\[~\] AWS::ECS::TaskDefinition TaskDefinition TaskDefinition replace$/m, "[~] AWS::DynamoDB::Table State StateABC123 replace");
+    expect(replaced).not.toBe(realDiff("AgentXSlackOrchestrator"));
+    expect(cdkDiffRisks(replaced).data).toEqual([{ logicalId: "StateABC123", type: "AWS::DynamoDB::Table", verb: "replace" }]);
+    const deleted = `${realDiff("AgentXProductionRuntime")}`.replace(/^\[\+\] AWS::SSM::Parameter WorkerModelFallbackParameter .*$/m, "[-] AWS::S3::Bucket Artifacts ArtifactsABC123 destroy");
+    expect(cdkDiffRisks(deleted).data).toEqual([{ logicalId: "ArtifactsABC123", type: "AWS::S3::Bucket", verb: "delete" }]);
+  });
+
+  it("stays strict: only a parenthesised note may follow \"There were no differences\", and only on a line of its own", () => {
+    const unclear = [{ logicalId: "", type: "", verb: "unclear", line: "no Resources section, and not \"There were no differences\"" }];
+    for (const line of ["There were no differences (note", "There were no differences note", "There were no differences (a) (b)", "There were no differences (a) and more", "There were no differences.", "There were no differences ()x", "There were no differencesX"]) {
+      expect(cdkDiffRisks(`Stack s\n${line}`).data, line).toEqual(unclear);
+    }
+    // An indented one, or one after a section heading, is not the all-clear.
+    expect(cdkDiffRisks(`Stack s\n  ${NEW_NO_DIFFERENCES}`).data).toEqual(unclear);
+    expect(cdkDiffRisks(`Stack s\nParameters\n${NEW_NO_DIFFERENCES}`).data).toEqual(unclear);
   });
 });

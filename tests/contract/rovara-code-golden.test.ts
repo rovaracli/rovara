@@ -78,11 +78,44 @@ function runLimitChanges(scenario: GoldenScenario, record: unknown): Array<{ pat
   ];
 }
 
+
+/**
+ * Round 4 merge (mainline M1.3 Task 3.7b and M1.4): a capability that allows `candidate-export` now also allows `candidate-build-source` and `baseline-source` (the same
+ * grant, for the candidate's build source and the baseline's source). Every capability in the record is checked against the fixture's: the same claims, with those two actions
+ * added after `candidate-export`, nothing else; then it is listed by value.
+ */
+function capabilityPaths(record: unknown, path = ""): string[] {
+  if (record === null || typeof record !== "object") return [];
+  const here = record as Record<string, unknown>;
+  const found: string[] = [];
+  if (!Array.isArray(record) && typeof here.callbackCapability === "string") found.push(path === "" ? "callbackCapability" : `${path}.callbackCapability`);
+  for (const [key, child] of Object.entries(here)) found.push(...capabilityPaths(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+  return found;
+}
+const valueAt = (record: unknown, path: string): unknown => path.split(/\.|(?=\[)/u).filter(Boolean).reduce<unknown>((node, part) => {
+  const index = /^\[(\d+)\]$/u.exec(part);
+  return (node as Record<string, unknown>)[index === null ? part : index[1]!];
+}, record);
+const claimsOfCapability = (capability: string) => JSON.parse(Buffer.from(capability.split(".")[0]!, "base64url").toString("utf8")) as { actions: string[] } & Record<string, unknown>;
+function capabilityChanges(scenario: GoldenScenario, record: unknown): Array<{ path: string; expected: unknown; change: 6 }> {
+  const stored = JSON.parse(readFileSync(join(GOLDEN_FIXTURE_DIRECTORY, `${scenario}.json`), "utf8")) as unknown;
+  return capabilityPaths(record).flatMap((path) => {
+    const now = valueAt(record, path);
+    const before = valueAt(stored, path);
+    if (typeof now !== "string" || typeof before !== "string" || now === before) return [];
+    const claims = claimsOfCapability(now);
+    const wasClaims = claimsOfCapability(before);
+    const grown = wasClaims.actions.flatMap((action) => (action === "candidate-export" ? [action, "candidate-build-source", "baseline-source"] : [action]));
+    expect({ ...claims, actions: claims.actions }, `${scenario} ${path}: only the two actions of the candidate export grew`).toEqual({ ...wasClaims, actions: grown });
+    return [{ path, expected: now, change: 6 as const }];
+  });
+}
+
 describe("Rovara Code before agents", () => {
   for (const scenario of GOLDEN_SCENARIOS) {
     it(`${scenario} matches its golden fixture, apart from change 1 and change 4`, async () => {
       const record = await recordGolden(scenario);
-      expectGolden(scenario, record, updatingGolden() ? [] : runLimitChanges(scenario, record));
+      expectGolden(scenario, record, updatingGolden() ? [] : [...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record)]);
     }, 120_000);
   }
 
@@ -220,6 +253,7 @@ describe("Rovara Code with agents switched on", () => {
       const recorded = { ...record, taskItems: kept };
       expectGolden(scenario, recorded, [
         ...runLimitChanges(scenario, recorded),
+        ...capabilityChanges(scenario, recorded),
         { path: `taskItems[${String(meta)}].sessionId`, expected: sessionId, change: 5 },
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
         { path: `taskItems[${String(meta)}].origin`, expected: "cli", change: 5 },

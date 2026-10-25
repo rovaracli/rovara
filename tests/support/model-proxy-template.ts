@@ -59,10 +59,11 @@ function withoutModelAccess(synthesized: { Resources: Record<string, Resource> }
   const variables = brokers[0]![1].Properties.Environment!.Variables;
   // The broker's one variable of names holds it (the broker's variables are held to Lambda's 4 KB).
   expect(variables.MODEL_ACCESS_FUNCTION_NAME).toBeUndefined();
-  expect(takeBrokerNames(variables, ["modelAccessFunction"]).modelAccessFunction).toStrictEqual({ Ref: functionId });
-  // Ruling R29: the proxy's address, which the broker hands a task's worker with its key.
-  expect(JSON.stringify(variables.MODEL_PROXY_URL)).toContain("LoadBalancer");
-  delete variables.MODEL_PROXY_URL;
+  expect(variables.MODEL_PROXY_URL).toBeUndefined();
+  // Ruling R29: the proxy's address, which the broker hands a task's worker with its key: the load balancer's name, in the same variable (the broker builds the URL from it).
+  const taken = takeBrokerNames(variables, ["modelAccessFunction", "modelProxy"]);
+  expect(taken.modelAccessFunction).toStrictEqual({ Ref: functionId });
+  expect(JSON.stringify(taken.modelProxy)).toContain("LoadBalancer");
   // The broker's grants live in named managed policies in named environments (ruling M2), inline elsewhere.
   const grants = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy" ? [resource.Properties.PolicyDocument!] : []))
     .filter((document) => document.Statement.some((statement) => JSON.stringify(statement.Resource).includes(`"${functionId!}"`)

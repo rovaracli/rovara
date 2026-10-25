@@ -14,6 +14,17 @@ skipLambdaBundling();
 
 /** Below Lambda's 4,096 with room for a name that CloudFormation lengthens, a new variable or two, and the measuring being an estimate. */
 const CEILING_BYTES = 3800;
+/**
+ * The broker keeps at least this much room under the ceiling (ENV-ROOM, owner decision 2026-10-24): it reached the ceiling again after the merge of Plans 4 and 5, because tasks
+ * kept adding variables. A task that eats the room fails the test below; the fix is to derive the value, not to add an environment variable.
+ */
+const BROKER_HEADROOM_BYTES = 400;
+const DERIVE_DONT_ADD = [
+  "Derive it, don't add an environment variable.",
+  "A name or ARN that follows the agentx-<env>-... naming is built at run time from AGENTX_ENV, AWS_REGION and the account: add it to DERIVED_BROKER_VARIABLES in packages/contracts/src/derived-names.ts",
+  "(the module CDK names the resource with and broker-environment.ts reads), not to the function's environment.",
+  "A generated name or an id goes in AGENTX_NAMES (BROKER_NAMES), a constrained setting in AGENTX_SETTINGS (BROKER_SETTINGS), both in packages/contracts/src/broker-names.ts.",
+].join(" ");
 /** An environment name of the longest length the installer accepts (20 characters), and the usual one. */
 const LONGEST_ENVIRONMENT = "a1234567890123456789";
 const ENVIRONMENTS = [LONGEST_ENVIRONMENT, "staging"] as const;
@@ -45,6 +56,19 @@ describe("a Lambda function's environment stays under Lambda's 4 KB limit", () =
           expect(over, `over ${CEILING_BYTES}: ${JSON.stringify(sizes)}`).toEqual([]);
           expect(Math.max(...Object.values(sizes))).toBeLessThan(LAMBDA_ENVIRONMENT_LIMIT_BYTES);
         });
+      });
+    }
+  }
+});
+
+describe("the broker keeps room (ENV-ROOM)", () => {
+  for (const env of ENVIRONMENTS) {
+    for (const [label, context] of [["cloud", { agentxCloud: true }], ["self-hosted", {}]] as const) {
+      it(`keeps ${BROKER_HEADROOM_BYTES} bytes under ${CEILING_BYTES}, cloud or not: ${label}, environment ${env}`, () => {
+        const broker = environmentsOf(env, context).find((entry) => /^Broker[0-9A-F]{8}$/.test(entry.logicalId));
+        expect(broker, "the control plane has a broker").toBeDefined();
+        const headroom = CEILING_BYTES - broker!.bytes;
+        expect(headroom, `The broker's environment is ${broker!.bytes} bytes, ${headroom} under ${CEILING_BYTES}; it must keep ${BROKER_HEADROOM_BYTES}. ${DERIVE_DONT_ADD}`).toBeGreaterThanOrEqual(BROKER_HEADROOM_BYTES);
       });
     }
   }

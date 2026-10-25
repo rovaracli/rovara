@@ -5,6 +5,8 @@ import type { ResolvedConnector } from "./connector-types.js";
 import { credentialSetupCommand, hostPinProblem, type ConnectorCredentials } from "./credentials.js";
 
 const MAX_SKIPPED = 64;
+/** The connector types that are built in, run in the broker and never write (Plan 4 Tasks 13 to 17). */
+const READ_ONLY_NATIVE_TYPES: ReadonlySet<string> = new Set(["sentry", "datadog", "cloudwatch", "github-actions", "grafana", "vercel", "pagerduty"]);
 const MAX_PROBLEM = 512;
 const MAX_REASON = 256;
 
@@ -54,7 +56,10 @@ async function preflightConnector(
   // Item argument paths are the connector's own data (feature 014, R7). This check runs only when
   // the caller asks for preflight, after the connector definition resolves and before discovery
   // contacts the vendor; if a malformed declaration were ever served anyway, it is served as none.
-  const pathProblems = itemPathProblems(resolved.itemArguments);
+  // A native connector (Sentry, Datadog, CloudWatch, GitHub Actions, Grafana, Vercel, PagerDuty) only reads, so it declares no item argument on purpose (`itemArguments: []`); every other
+  // connector can write, and must say which arguments name an item.
+  const declaresNoneOnPurpose = resolved.itemArguments?.length === 0 && READ_ONLY_NATIVE_TYPES.has(connector.type);
+  const pathProblems = declaresNoneOnPurpose ? [] : itemPathProblems(resolved.itemArguments);
   if (pathProblems.length > 0) {
     return {
       entry: { name: connector.name, status: "unavailable", problem: `connector ${connector.name} declares unusable item arguments`, offered: [], skipped: [] },

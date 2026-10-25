@@ -1,14 +1,16 @@
 import { Stack } from "aws-cdk-lib";
+import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { normalizedTemplate } from "../support/template-snapshot.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
+import { brokerSettingsIn, takeBrokerSettings } from "../support/broker-names-template.js";
 import { withoutModelProxy } from "../support/model-proxy-template.js";
 import { withoutAuditLedger } from "../support/audit-ledger-template.js";
 
 skipLambdaBundling();
 
-type Resource = { Type: string; Properties: Record<string, unknown> };
+type Resource = { Type: string; Properties: Record<string, unknown>; DependsOn?: string | string[] };
 type Statement = { Sid?: string };
 
 /**
@@ -43,6 +45,32 @@ function withoutDispatchDeadLettersAlarm(template: unknown): unknown {
     },
   });
   delete resources[alarms[0]!];
+  return template;
+}
+
+/**
+ * Plan 4 Task 19 adds the public event-hook route to a named control plane, and nothing else: one route with no authorizer, to the broker's own integration (every
+ * delivery is verified by the broker over its own bytes). It is checked strictly to be exactly this, then taken out, so the rest of the template must still match the
+ * recorded snapshot.
+ */
+function withoutEventHookRoute(template: unknown): unknown {
+  const resources = (template as { Resources: Record<string, Resource> }).Resources;
+  const routes = Object.keys(resources).filter((id) => id.startsWith("EventHookRoute"));
+  expect(routes).toHaveLength(1);
+  const github = resources["GithubWebhookRoute"]!;
+  expect(resources[routes[0]!]).toStrictEqual({
+    Type: "AWS::ApiGatewayV2::Route",
+    Properties: { ApiId: github.Properties["ApiId"], AuthorizationType: "NONE", RouteKey: "POST /v1/hooks/{source}/{hookId}", Target: github.Properties["Target"] },
+  });
+  // Its own throttle bucket and the stage's wait for the route: exactly these, taken out too.
+  const [, stage] = Object.entries(resources).find(([, resource]) => resource.Type === "AWS::ApiGatewayV2::Stage")!;
+  const settings = stage.Properties["RouteSettings"] as Record<string, unknown>;
+  expect(settings["POST /v1/hooks/{source}/{hookId}"]).toStrictEqual({ ThrottlingBurstLimit: 100, ThrottlingRateLimit: 50 });
+  delete settings["POST /v1/hooks/{source}/{hookId}"];
+  const depends = [stage.DependsOn].flat() as string[];
+  expect(depends).toContain(routes[0]!);
+  stage.DependsOn = depends.filter((id) => id !== routes[0]!);
+  delete resources[routes[0]!];
   return template;
 }
 
@@ -199,19 +227,16 @@ function withoutTaskPeopleControls(template: unknown): unknown {
     (resource.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
   const brokerFunctions = functions.filter(([id]) => id.startsWith("Broker"));
   expect(brokerFunctions).toHaveLength(1);
-  const brokerEnvironmentNames = [
-    "AGENTX_TASK_PEOPLE_CHANGES_ENABLED",
-    "AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED",
-    "AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED",
-  ];
+  // The broker has the three flags in its settings (AGENTX_SETTINGS, ENV-ROOM), not as variables of their own: taken out of them here.
   const brokerVariables = variablesFor(brokerFunctions[0]![1]);
-  const expectedBrokerReferences = {
-    AGENTX_TASK_PEOPLE_CHANGES_ENABLED: { Ref: "TaskPeopleChangesEnabled" },
-    AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED: { Ref: "TaskPeoplePublicInvitationsEnabled" },
-    AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED: { Ref: "TaskPeoplePrivateInvitationsEnabled" },
-  };
-  expect(Object.fromEntries(brokerEnvironmentNames.map((name) => [name, brokerVariables[name]]))).toStrictEqual(expectedBrokerReferences);
-  for (const name of brokerEnvironmentNames) delete brokerVariables[name];
+  for (const name of ["AGENTX_TASK_PEOPLE_CHANGES_ENABLED", "AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED", "AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED"]) expect(brokerVariables).not.toHaveProperty(name);
+  const flags = brokerSettingsIn(brokerVariables);
+  expect({ taskPeopleChanges: flags.taskPeopleChanges, taskPeoplePublicInvitations: flags.taskPeoplePublicInvitations, taskPeoplePrivateInvitations: flags.taskPeoplePrivateInvitations }).toStrictEqual({
+    taskPeopleChanges: { Ref: "TaskPeopleChangesEnabled" },
+    taskPeoplePublicInvitations: { Ref: "TaskPeoplePublicInvitationsEnabled" },
+    taskPeoplePrivateInvitations: { Ref: "TaskPeoplePrivateInvitationsEnabled" },
+  });
+  takeBrokerSettings(brokerVariables, ["taskPeopleChanges", "taskPeoplePublicInvitations", "taskPeoplePrivateInvitations"]);
 
   const notifierFunctions = functions.filter(([id]) => id.startsWith("DeveloperTaskNotifier"));
   expect(notifierFunctions).toHaveLength(1);
@@ -231,7 +256,7 @@ describe("named environment templates", () => {
   for (const stack of stacks) {
     it(`${stack.stackName} is unchanged`, () => {
       const template = normalizedTemplate(stack);
-      expect(stack.stackName === "agentx-staging-control-plane" ? withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template)))))) : template).toMatchSnapshot();
+      expect(stack.stackName === "agentx-staging-control-plane" ? withoutEventHookRoute(withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template))))))) : template).toMatchSnapshot();
     }, 120_000);
   }
 
@@ -248,4 +273,62 @@ describe("named environment templates", () => {
     expect(starts.map((statement) => statement.Resource)).toContainEqual({ Ref: deleterId });
     expect(starts.every((statement) => typeof statement.Resource === "object" && statement.Resource !== null && "Ref" in statement.Resource)).toBe(true);
   }, 120_000);
+});
+
+// Plan 4 Task 9: the chain sweep. Every 5 minutes the broker looks at the chain runs that are due (timeouts, lost callbacks, a decision not yet applied). Like the spend
+// settlement it is for named environments only, and it runs through the same role as the other recovery schedules, so it needs no new grant.
+describe("the chain sweep schedule", () => {
+  type Schedule = { Type: string; Properties: { ScheduleExpression: string; State: string; FlexibleTimeWindow: unknown; Target: { Arn: unknown; RoleArn: unknown; Input: string; RetryPolicy: unknown } } };
+  const schedules = (context: Record<string, unknown>): Array<[string, Schedule]> => {
+    const stack = buildAgentXApp(context).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+    return Object.entries(Template.fromStack(stack!).toJSON().Resources as Record<string, Schedule>).filter(([, resource]) => resource.Type === "AWS::Scheduler::Schedule");
+  };
+
+  it("runs every 5 minutes in a named environment, through the recovery schedules' role, with the event the broker answers", () => {
+    const found = schedules({ agentxEnv: "staging" });
+    const sweep = found.filter(([id]) => id.startsWith("ChainSweepSchedule"));
+    expect(sweep).toHaveLength(1);
+    const [, schedule] = sweep[0]!;
+    expect(schedule.Properties).toMatchObject({ ScheduleExpression: "rate(5 minutes)", State: "ENABLED", FlexibleTimeWindow: { Mode: "OFF" } });
+    expect(JSON.parse(schedule.Properties.Target.Input)).toStrictEqual({ source: "agentx.chain-sweep" });
+    expect(schedule.Properties.Target.RetryPolicy).toStrictEqual({ MaximumRetryAttempts: 2, MaximumEventAgeInSeconds: 300 });
+    const recovery = found.find(([id]) => id.startsWith("WorkflowMergeRecoverySchedule"))![1];
+    expect(schedule.Properties.Target.Arn).toStrictEqual(recovery.Properties.Target.Arn);
+    expect(schedule.Properties.Target.RoleArn).toStrictEqual(recovery.Properties.Target.RoleArn);
+  });
+
+  it("is not in the legacy template", () => {
+    expect(schedules({}).map(([id]) => id).filter((id) => id.startsWith("ChainSweep"))).toStrictEqual([]);
+  });
+});
+
+// Plan 4 Task 19: the endpoint vendors post events to is in a named environment's API with no authorizer, and not in the legacy template (which stays as it was).
+describe("the event hook route", () => {
+  const routes = (context: Record<string, unknown>): Array<[string, { Properties: Record<string, unknown> }]> => {
+    const stack = buildAgentXApp(context).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+    return Object.entries(Template.fromStack(stack!).toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>).filter(([, resource]) => resource.Type === "AWS::ApiGatewayV2::Route");
+  };
+
+  it("is a POST route with no authorizer, to the broker's integration, in a named environment", () => {
+    const found = routes({ agentxEnv: "staging" }).filter(([, route]) => String(route.Properties["RouteKey"]).includes("/v1/hooks/"));
+    expect(found).toHaveLength(1);
+    const github = routes({ agentxEnv: "staging" }).find(([id]) => id === "GithubWebhookRoute")![1];
+    expect(found[0]![1].Properties).toStrictEqual({ ApiId: github.Properties["ApiId"], AuthorizationType: "NONE", RouteKey: "POST /v1/hooks/{source}/{hookId}", Target: github.Properties["Target"] });
+  });
+
+  it("is not in the legacy template", () => {
+    expect(routes({}).filter(([, route]) => String(route.Properties["RouteKey"]).includes("/v1/hooks/"))).toStrictEqual([]);
+  });
+
+  it("never exists without its throttle: where the stage has a bucket for it the route is there, and where the route is absent the stage has none", () => {
+    const key = "POST /v1/hooks/{source}/{hookId}";
+    for (const context of [{ agentxEnv: "staging" }, {}]) {
+      const stack = buildAgentXApp(context).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+      const resources = Template.fromStack(stack!).toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>;
+      const route = Object.values(resources).some((resource) => resource.Type === "AWS::ApiGatewayV2::Route" && resource.Properties["RouteKey"] === key);
+      const stage = Object.values(resources).find((resource) => resource.Type === "AWS::ApiGatewayV2::Stage")!;
+      const throttled = Object.hasOwn(stage.Properties["RouteSettings"] ?? {}, key);
+      expect(route, JSON.stringify(context)).toBe(throttled);
+    }
+  });
 });

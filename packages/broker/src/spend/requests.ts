@@ -8,17 +8,19 @@ import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  AgentIdSchema, AgentXError, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
+  AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
   suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, ROVARA_CODE_AGENT_ID, spendCounterKey,
   type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
+import { requireChainAccess, requireChainAccountable, requireChainBudgetAllowed, requireChainOwnerAllowed } from "../chains/access.js";
 import { roleOnProject } from "../agents/roster.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { budgetOwnerOf, ownerVersionItem, withBudgetFields } from "./owner-total.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import { askedRunLimit, type RequestRunLimit, type RunLimitRequest } from "./estimate.js";
+import { writeChanges } from "../realtime/changes.js";
 import { checkTime, registerMemberMover, registerOwnerCapConfirmation, type LifecycleDeps } from "../agents/lifecycle.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { failedIndexes, readRequest, requestMarkItem, type RequestMark, type TransactItem } from "../agents/table-writes.js";
@@ -83,6 +85,7 @@ const ENDED_WORDS: Record<NonNullable<SpendRequestRecord["endedBecause"]>, strin
   task_closed: "This task was closed, so nobody can decide this now.",
   target_left: "The person this change names is no longer a member of your organization, so it can't apply now.",
   owner_moved: "This agent's budget now counts for someone else than the person this change was checked for, so it can't apply. Nothing was changed; ask again.",
+  approver_left: "Everyone who could decide this has left your organization, so it was closed without a decision. Ask again if it is still needed.",
 };
 const closed = (record: Pick<SpendRequestRecord, "status" | "endedBecause">) =>
   agentXError("APPROVAL_CLOSED", record.status !== "EXPIRED" ? "This request was already decided." : record.endedBecause === undefined ? "This request expired, so nobody can decide it now." : ENDED_WORDS[record.endedBecause]);
@@ -163,8 +166,19 @@ const agentBudgets: OwnerTotalContributor = async (deps, { orgId, owner, month }
   return cleanUsd(total);
 };
 
+/**
+ * The chains an owner holds (member-owned, or accountable for), each at its monthly budget plus this month's top-up. The owner counter holds agents and chains
+ * together (one total, `OwnerBudgets`), so the effective total sums both.
+ */
+const chainBudgets: OwnerTotalContributor = async (deps, { orgId, owner, month }) => {
+  if (deps.chains === undefined) return 0;
+  let total = 0;
+  for (const chain of await deps.chains.ownerChains(orgId, owner)) total += chain.monthlyBudgetUsd + await readTopUp(deps, orgId, month, { kind: "chain", chainId: chain.chainId });
+  return cleanUsd(total);
+};
+
 /** Every budget an owner holds counts toward the cap through one of these, so a top-up can't get round it through any of them. */
-export const OWNER_TOTAL_CONTRIBUTORS: OwnerTotalContributor[] = [agentBudgets];
+export const OWNER_TOTAL_CONTRIBUTORS: OwnerTotalContributor[] = [agentBudgets, chainBudgets];
 
 /**
  * What one owner's budgets total this month, top-ups included (every `OWNER_TOTAL_CONTRIBUTORS`), and the owner counter's `version` read before the sum (R4-6).
@@ -197,6 +211,13 @@ async function unclampedAgentLimit(deps: SpendRequestDependencies, orgId: OrgId,
 async function agentLimitParts(deps: SpendRequestDependencies, orgId: OrgId, month: string, agentId: string): Promise<{ limitUsd: number; topUpUsd: number }> {
   const base = isBuiltinAgentId(agentId) ? (await deps.store.getBuiltinSettings(orgId, agentId))?.monthlyBudgetUsd : (await deps.store.get(orgId, agentId))?.monthlyBudgetUsd;
   const topUpUsd = await readTopUp(deps, orgId, month, { kind: "agent", agentId });
+  return { limitUsd: cleanUsd((base ?? 0) + topUpUsd), topUpUsd };
+}
+
+/** A chain's monthly limit for `month` before the guardrail's clamp: its base plus the month's top-up, with the top-up it was summed with. */
+async function chainLimitParts(deps: SpendRequestDependencies, orgId: OrgId, month: string, chainId: string): Promise<{ limitUsd: number; topUpUsd: number }> {
+  const base = (await deps.chains?.get(orgId, chainId))?.monthlyBudgetUsd;
+  const topUpUsd = await readTopUp(deps, orgId, month, { kind: "chain", chainId: chainId });
   return { limitUsd: cleanUsd((base ?? 0) + topUpUsd), topUpUsd };
 }
 
@@ -246,15 +267,37 @@ const agentMonth: MonthApproverRule = async (deps, request, amountUsd) => {
   return owners.role === "org_admin" ? owners : { ...owners, owner: { developerId: owner, version, policyRevision: revision } };
 };
 
+/**
+ * A chain's month goes to its owner (a member, or the owning project's maintainers) while its new limit stays within the guardrail's `maxAgentMonthlyUsd` and the
+ * sum of that owner's effective agent and chain limits, with the top-up, stays within `ownerAgentBudgetCapUsd`; else to the org's owners and admins. A chain no one
+ * is answerable for, or one that is gone, goes to the admins. A requester never decides their own request (`mayDecideNow`).
+ */
+const chainMonth: MonthApproverRule = async (deps, request, amountUsd) => {
+  const { orgId } = request;
+  const scope = request.scope as Extract<BudgetScope, { kind: "chain" }>;
+  const chain = await deps.chains?.get(orgId, scope.chainId);
+  const raw = chain === undefined ? undefined : budgetOwnerOf(chain);
+  if (raw === undefined) return admins(deps, orgId);
+  const owner = await resolveSurvivor(deps, orgId, raw);
+  const month = monthOfRequest(request);
+  if (cleanUsd((await chainLimitParts(deps, orgId, month, scope.chainId)).limitUsd + amountUsd) > (await readGuardrails(deps, orgId)).maxAgentMonthlyUsd) return admins(deps, orgId);
+  const { policy, revision } = await readSpendPolicyWithRevision(deps, orgId);
+  const { totalUsd, version } = await ownerEffectiveTotal(deps, { orgId, owner, month });
+  if (cleanUsd(totalUsd + amountUsd) > policy.ownerAgentBudgetCapUsd) return admins(deps, orgId);
+  const owners = await chainOwners(deps, orgId, scope.chainId);
+  return owners.role === "org_admin" ? owners : { ...owners, owner: { developerId: owner, version, policyRevision: revision } };
+};
+
 export const MONTH_APPROVERS: Record<BudgetScope["kind"], MonthApproverRule> = {
   org: toAdmins,
   member: toAdmins,
   project: toAdmins,
   testing: toAdmins,
   agent: agentMonth,
+  chain: chainMonth,
 };
 
-const BUDGET_SCOPE_KINDS = new Set(["org", "member", "project", "agent", "testing"]);
+const BUDGET_SCOPE_KINDS = new Set(["org", "member", "project", "agent", "chain", "testing"]);
 const isBudgetScope = (scope: PauseScope | undefined): scope is BudgetScope => scope !== undefined && BUDGET_SCOPE_KINDS.has(scope.kind);
 
 /** The one-pending subject of a month's request: the month, the scope and who asked (`system` for a pause). */
@@ -302,7 +345,15 @@ async function agentOwners(deps: SpendRequestDependencies, orgId: OrgId, agentId
   return maintainersOrAdmins(deps, orgId, agent.owner.project, "agent_owner");
 }
 
-/** The payer of a task, as approvers: the member who pays, a paying project's maintainers, a paying agent's owner. */
+/** Who owns a chain, as approvers: the member owner, the owning project's maintainers; the org's admins for a chain that is gone or has no one to answer. */
+async function chainOwners(deps: SpendRequestDependencies, orgId: OrgId, chainId: string): Promise<SpendApprovers> {
+  const chain = await deps.chains?.get(orgId, chainId);
+  if (chain === undefined) return admins(deps, orgId);
+  if (chain.owner.kind === "member") return { role: "chain_owner", ids: [chain.owner.developerId], who: `${await nameOf(deps, chain.owner.developerId)}, the chain's owner` };
+  return maintainersOrAdmins(deps, orgId, chain.owner.project, "chain_owner");
+}
+
+/** The payer of a task, as approvers: the member who pays, a paying project's maintainers, a paying agent's owner, a paying chain's owner. */
 async function payerOf(deps: SpendRequestDependencies, orgId: OrgId, task: DeveloperTaskRecord): Promise<SpendApprovers> {
   const payer = task.payer ?? { kind: "member" as const, developerId: task.developerId };
   if (payer.kind === "member") return { role: "payer", ids: [payer.developerId], who: await nameOf(deps, payer.developerId) };
@@ -310,8 +361,22 @@ async function payerOf(deps: SpendRequestDependencies, orgId: OrgId, task: Devel
     const ids = await grantMaintainers(deps, orgId, payer.project);
     return ids.length > 0 ? { role: "payer", ids, who: maintainersWho(payer.project) } : admins(deps, orgId);
   }
+  if (payer.kind === "chain") return chainOwners(deps, orgId, payer.chainId);
   const owners = await agentOwners(deps, orgId, payer.agentId);
   return owners.role === "org_admin" ? owners : { ...owners, role: "payer" };
+}
+
+/**
+ * Whether the new limit `limitUsd` of a chain step's task is a run-level raise: it takes the run past the limit the run had left when the step started
+ * (`remainingAtStartUsd`, Task 5's `settleStepSpend`). Below that, the money was inside the chain's own limit already. The run's side is read through
+ * `chainRunBudgets`; a run it can't find is a run-level raise (fail closed).
+ */
+async function chainRaise(deps: SpendRequestDependencies, task: DeveloperTaskRecord, limitUsd: number): Promise<{ runLevel: boolean; chainId: string | undefined }> {
+  const payerChain = task.payer?.kind === "chain" ? task.payer.chainId : undefined;
+  if (task.chain === undefined) return { runLevel: false, chainId: payerChain };
+  const limits = await deps.chainRunBudgets?.stepLimits(task.orgId as OrgId, task.chain).catch(() => undefined);
+  if (limits === undefined) return { runLevel: true, chainId: payerChain };
+  return { runLevel: limitUsd > limits.remainingAtStartUsd + 0.000001, chainId: limits.chainId };
 }
 
 /** The limit a request would set for the amount asked or approved. A planning request's limit is its new window (the reset window starts from nothing). */
@@ -340,10 +405,16 @@ export async function spendApprovers(deps: SpendRequestDependencies, request: Sp
     const policy = await readSpendPolicy(deps, orgId);
     const limit = newLimitFor(request, amountUsd);
     const project = task.place?.project ?? task.project;
-    // Owner decision 3 (option E): an agent that pays has its owner decide a run limit of any size (its max per run and the company's ceiling bound what it can
-    // spend); when the owner has left, its managers (the owning project's maintainers) and then the org's admins.
-    if (task.payer?.kind === "agent") found = await agentOwners(deps, orgId, task.payer.agentId);
-    else if (limit <= policy.leadApprovalThresholdUsd) found = await payerOf(deps, orgId, task);
+    // A chain step's raise past what its run had left is a run-level raise (`chainRaise`): whatever the payer and the amount, the chain's owner decides it (a chain
+    // run never goes past its limit without them), and the admins above the admin threshold, or when the chain or the run can't be read (fail closed).
+    const raise = await chainRaise(deps, task, limit);
+    if (raise.runLevel) {
+      found = limit <= policy.adminApprovalThresholdUsd && raise.chainId !== undefined ? await chainOwners(deps, orgId, raise.chainId) : await admins(deps, orgId);
+    } else if (task.payer?.kind === "agent") {
+      // Owner decision 3 (option E): an agent that pays has its owner decide a run limit of any size (its max per run and the company's ceiling bound what it can
+      // spend); when the owner has left, its managers (the owning project's maintainers) and then the org's admins.
+      found = await agentOwners(deps, orgId, task.payer.agentId);
+    } else if (limit <= policy.leadApprovalThresholdUsd) found = await payerOf(deps, orgId, task);
     else if (limit <= policy.adminApprovalThresholdUsd) found = await maintainersOrAdmins(deps, orgId, project, "project_maintainer");
     else found = await admins(deps, orgId);
   } else if (request.kind === "max_per_run") {
@@ -361,7 +432,7 @@ export async function spendApprovers(deps: SpendRequestDependencies, request: Sp
     found = await admins(deps, orgId);
   }
   const members = await Promise.all(found.ids.map(async (id) => (await orgRoleOf(deps, orgId, id)) !== undefined));
-  return withoutStarter(deps, request, members.some(Boolean) ? found : await admins(deps, orgId));
+  return withoutStarter(deps, request, members.some(Boolean) ? found : await admins(deps, orgId), amountUsd);
 }
 
 /** The person whose run a task's request is for (its starter), as the survivor of any merge. */
@@ -373,20 +444,24 @@ async function starterOf(deps: SpendRequestDependencies, request: SpendRequestRe
  * Whether a run's starter may decide their own run's request (fix round 1, I-4): a run limit or planning limit when they are the payer member, or the org's
  * only owner or admin (merge of Tasks 32 and 34: else nobody could decide it); a max per run never, even as the agent's owner, unless they are the org's only owner or admin (as an owner's cap is ruled). A month's request (Task 33 fix round 1,
  * I-3, M-11) the same as a max per run: its asker, or the starter of the task whose pause asked, never decides it unless they are the only owner or admin.
+ * A chain step's raise past its run's limit is never the payer's to decide; and a chain's owner who starts the run is no exception (Plan 4 Task 5, review M-5).
  */
-async function starterMayDecide(deps: SpendRequestDependencies, request: SpendRequestRecord, starter: string): Promise<boolean> {
+async function starterMayDecide(deps: SpendRequestDependencies, request: SpendRequestRecord, starter: string, amountUsd: number = request.amountUsd): Promise<boolean> {
   // The org's only owner or admin, whatever the kind: nobody else could decide it, and the request would wait until it expired.
   const ids = await orgAdmins(deps, request.orgId);
   if (ids.length === 1 && ids[0] === starter) return true;
   if (request.kind === "max_per_run" || request.kind === "month") return false;
+  // A raise that takes a chain run past its own limit is the chain's owner's to decide, not the payer's: the payer exception does not cover it.
+  const task = await readTask(deps, request.orgId, request.taskId);
+  if (task?.chain !== undefined && (await chainRaise(deps, task, newLimitFor(request, amountUsd))).runLevel) return false;
   const payer = await taskPayerId(deps, request);
   return payer !== undefined && await resolveSurvivor(deps, request.orgId, payer) === starter;
 }
 
 /** Approvers without the run's starter where they may not decide: someone else of the same list, else the org's other owners and admins. */
-async function withoutStarter(deps: SpendRequestDependencies, request: SpendRequestRecord, found: SpendApprovers): Promise<SpendApprovers> {
+async function withoutStarter(deps: SpendRequestDependencies, request: SpendRequestRecord, found: SpendApprovers, amountUsd: number): Promise<SpendApprovers> {
   const starter = await starterOf(deps, request);
-  if (starter === undefined || await starterMayDecide(deps, request, starter)) return found;
+  if (starter === undefined || await starterMayDecide(deps, request, starter, amountUsd)) return found;
   const survivors = await Promise.all(found.ids.map((id) => resolveSurvivor(deps, request.orgId, id)));
   const rest = found.ids.filter((_id, index) => survivors[index] !== starter);
   if (rest.length === found.ids.length) return found;
@@ -397,7 +472,7 @@ async function withoutStarter(deps: SpendRequestDependencies, request: SpendRequ
 }
 
 /** The words a pause message uses for who was asked. */
-const askedWords = (role: SpendApproverRole): string => (role === "payer" ? "the payer" : role === "project_maintainer" ? "a project maintainer" : role === "agent_owner" ? "the agent's owner" : "an admin");
+const askedWords = (role: SpendApproverRole): string => (role === "payer" ? "the payer" : role === "project_maintainer" ? "a project maintainer" : role === "agent_owner" ? "the agent's owner" : role === "chain_owner" ? "the chain's owner" : "an admin");
 
 /** The payer of a task request, read now (who "the payer" is). */
 async function taskPayerId(deps: SpendRequestDependencies, record: SpendRequestRecord): Promise<string | undefined> {
@@ -426,7 +501,7 @@ async function mayDecideNow(deps: SpendRequestDependencies, caller: Pick<AgentCa
     const admins = await orgAdmins(deps, caller.orgId);
     return answer((payer !== undefined && await resolveSurvivor(deps, caller.orgId, payer) === me) || (admins.length === 1 && admins[0] === me));
   }
-  if (await starterOf(deps, record) === me && !await starterMayDecide(deps, record, me)) return answer(false);
+  if (await starterOf(deps, record) === me && !await starterMayDecide(deps, record, me, amountUsd)) return answer(false);
   return answer(true);
 }
 
@@ -448,6 +523,8 @@ export interface CreateSpendRequestInput {
   scope?: PauseScope;
   taskId?: string;
   agentId?: string;
+  /** The chain an `owner_cap` request is about (Plan 4). */
+  chainId?: string;
   newOwner?: { developerId: string };
   /** An `owner_cap` request: the person whose total it was summed against (`SpendRequestRecord.forOwner`). */
   forOwner?: string;
@@ -506,6 +583,7 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
       orgId: input.orgId, spendRequestId: newPrefixedId("spr"), kind: input.kind,
       ...(input.scope === undefined ? {} : { scope: input.scope }), ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
+      ...(input.chainId === undefined ? {} : { chainId: input.chainId }),
       ...(input.newOwner === undefined ? {} : { newOwner: input.newOwner }), ...(input.forOwner === undefined ? {} : { forOwner: input.forOwner }),
       amountUsd: cleanUsd(input.amountUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: cleanUsd(input.newLimitUsd) }),
       reason: "", requestedBy: input.requestedBy, ...(input.requestedFor === undefined ? {} : { requestedFor: input.requestedFor }),
@@ -824,6 +902,7 @@ function monthMessage(scope: BudgetScope, task: DeveloperTaskRecord, approvers: 
     case "project": return `The ${scope.project} project's monthly AI budget is used up. ${ask}`;
     case "agent": return `${task.agent?.agentId === scope.agentId ? task.agent.name : "This agent"}'s monthly AI budget is used up. ${ask}`;
     case "org": return `Your company's monthly AI budget is used up. ${ask}`;
+    case "chain": return `This chain's monthly AI budget is used up. ${ask}`;
   }
 }
 
@@ -991,20 +1070,26 @@ async function prunePausedTasks(deps: Pick<SpendRequestDependencies, "documentCl
 
 // ---- an owner's cap
 
-const ownerCapSentence = (name: string, wouldBeUsd: number, capUsd: number) => `${name}'s agent budgets would total ${dollars(wouldBeUsd)} a month, over the ${dollars(capUsd)} limit for one person.`;
+/** `budgets` says what the total holds: a change of an agent's budget says "agent" (as it always has), a chain's, whose total holds both kinds, "agent and chain". */
+const ownerCapSentence = (name: string, wouldBeUsd: number, capUsd: number, budgets: "agent" | "agent and chain" = "agent") =>
+  `${name}'s ${budgets} budgets would total ${dollars(wouldBeUsd)} a month, over the ${dollars(capUsd)} limit for one person.`;
 /** What the person whose change waits is told. */
 export const ownerCapMessage = (reason: string) => `${reason} I asked an org admin to approve it.`;
 
 /**
- * The `owner_cap` request of a change held by the cap (Task 28's seam, PF27): made once per agent, and the change waits for an org admin. Nothing changes while it
- * is PENDING; `request` is the asking route's R18 mark, which remembers the 202 answer. Answers the request and the words the route answers with.
+ * The `owner_cap` request of a change held by the cap (Task 28's seam, PF27): made once per agent (or, for a chain's budget change, once per chain), and the
+ * change waits for an org admin. Nothing changes while it is PENDING; `request` is the asking route's R18 mark, which remembers the 202 answer. Answers the
+ * request and the words the route answers with.
  */
 export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
-  orgId: OrgId; agentId: string; requestedBy: string; owner: string; wouldBeUsd: number; capUsd: number; newLimitUsd?: number; newOwner?: string; change: OwnerCapChange; request?: RequestMark;
+  orgId: OrgId; agentId?: string; chainId?: string; requestedBy: string; owner: string; wouldBeUsd: number; capUsd: number; newLimitUsd?: number; newOwner?: string; change: OwnerCapChange; request?: RequestMark;
 }): Promise<{ record: SpendRequestRecord; message: string }> {
-  const reason = ownerCapSentence(await nameOf(deps, input.owner), input.wouldBeUsd, input.capUsd);
+  const chainId = input.chainId;
+  if ((input.agentId === undefined) === (chainId === undefined)) throw new Error("an owner_cap request is about an agent or a chain");
+  const reason = ownerCapSentence(await nameOf(deps, input.owner), input.wouldBeUsd, input.capUsd, chainId === undefined ? "agent" : "agent and chain");
   const made = await createSpendRequest(deps, {
-    orgId: input.orgId, kind: "owner_cap", scope: { kind: "agent", agentId: input.agentId }, agentId: input.agentId,
+    orgId: input.orgId, kind: "owner_cap",
+    ...(chainId === undefined ? { scope: { kind: "agent" as const, agentId: input.agentId as never }, agentId: input.agentId as string } : { scope: { kind: "chain" as const, chainId: chainId }, chainId, subject: `CHAIN#${chainId}` }),
     ...(input.newOwner === undefined ? {} : { newOwner: { developerId: input.newOwner } }), forOwner: input.owner,
     amountUsd: cleanUsd(input.wouldBeUsd - input.capUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: input.newLimitUsd }),
     reason, requestedBy: { kind: "member", developerId: input.requestedBy }, change: input.change,
@@ -1015,7 +1100,7 @@ export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
   if (!made.created) {
     // One change waits per agent (fix round 1, I-2): another change is refused rather than answered with the first; the same change is the caller's too.
     if (canonicalJson(made.record.change) !== canonicalJson(input.change)) {
-      throw agentXError("AGENT_REVISION_CONFLICT", `A change to this agent's budget is already waiting for an admin (${made.record.spendRequestId}). Wait for it, or ask an admin to decline it.`);
+      throw agentXError(chainId === undefined ? "AGENT_REVISION_CONFLICT" : "CHAIN_REVISION_CONFLICT", `A change to this ${chainId === undefined ? "agent" : "chain"}'s budget is already waiting for an admin (${made.record.spendRequestId}). Wait for it, or ask an admin to decline it.`);
     }
     if (input.request !== undefined) {
       try {
@@ -1194,8 +1279,10 @@ function followUpRunLimit(task: DeveloperTaskRecord, limitUsd: number): Omit<Cre
 async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCaller, record: SpendRequestRecord): Promise<OwnerCapChange | undefined> {
   const change = record.change;
   if (change === undefined || change.op === "confirm_move" || change.op === "unarchive") return change;
+  const forChain = record.chainId !== undefined;
   if (change.op === "set_budget") {
-    await requireAgentBudgetAllowed(deps, record.orgId, change.budget);
+    if (forChain) await requireChainBudgetAllowed(deps, record.orgId, change.budget.monthlyUsd);
+    else await requireAgentBudgetAllowed(deps, record.orgId, change.budget);
     return change;
   }
   const member = async (developerId: string): Promise<string> => {
@@ -1204,15 +1291,17 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
     await expireOne(deps, record, "target_left");
     throw closed({ status: "EXPIRED", endedBecause: "target_left" });
   };
-  const agent = await deps.store.get(record.orgId, record.agentId as never);
+  // The agent or chain the change is about, and the rules for making someone its owner or accountable maintainer, which are the same for both.
+  const agent = forChain ? await deps.chains?.get(record.orgId, record.chainId as string) : await deps.store.get(record.orgId, record.agentId as never);
+  const accountableOf = (project: string, developerId: string) => (forChain ? requireChainAccountable(deps, record.orgId, project, developerId) : requireAccountable(deps, record.orgId, project, developerId));
   if (change.op === "set_accountable") {
     const developerId = await member(change.accountable.developerId);
-    return { op: "set_accountable", accountable: agent?.owner.kind === "project" ? await requireAccountable(deps, record.orgId, agent.owner.project, developerId) : { developerId } };
+    return { op: "set_accountable", accountable: agent?.owner.kind === "project" ? await accountableOf(agent.owner.project, developerId) : { developerId } };
   }
   const named = change.owner.kind === "member" ? { kind: "member" as const, developerId: await member(change.owner.developerId) } : change.owner;
   const accountableId = change.accountable === undefined ? undefined : await member(change.accountable.developerId);
-  const owner = await requireOwnerAllowed(deps, decider, named, agent?.owner);
-  const accountable = accountableId === undefined ? undefined : owner.kind === "project" ? await requireAccountable(deps, record.orgId, owner.project, accountableId) : { developerId: accountableId };
+  const owner = await (forChain ? requireChainOwnerAllowed(deps, decider, named, agent?.owner) : requireOwnerAllowed(deps, decider, named, agent?.owner));
+  const accountable = accountableId === undefined ? undefined : owner.kind === "project" ? await accountableOf(owner.project, accountableId) : { developerId: accountableId };
   return { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
 }
 
@@ -1222,7 +1311,8 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
  */
 async function requireSameOwner(deps: SpendRequestDependencies, record: SpendRequestRecord, change: OwnerCapChange | undefined): Promise<void> {
   if (record.forOwner === undefined || change === undefined || change.op === "confirm_move") return;
-  const agent = await deps.store.get(record.orgId, record.agentId as never);
+  // The agent or chain the request is about (Plan 4: a chain's budget counts in the same owner total).
+  const agent = record.chainId !== undefined ? await deps.chains?.get(record.orgId, record.chainId) : await deps.store.get(record.orgId, record.agentId as never);
   const after = agent === undefined ? undefined
     : change.op === "set_accountable" ? withBudgetFields(agent, { accountable: change.accountable })
       : change.op === "set_owner" ? withBudgetFields(agent, { owner: change.owner, ...(change.accountable === undefined ? {} : { accountable: change.accountable }) })
@@ -1241,6 +1331,17 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
   if (change === undefined || change.op === "confirm_move") {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
     return;
+  }
+  if (record.chainId !== undefined) {
+    // A chain's budget change: the same stored change, applied through the chain store, whose counter is the same owner total.
+    if (deps.chains === undefined) throw notFound();
+    const chainId = record.chainId;
+    switch (change.op) {
+      case "set_budget": await deps.chains.setBudget(record.orgId, chainId, change.budget.monthlyUsd === null ? undefined : change.budget.monthlyUsd, by, undefined, options); return;
+      case "set_owner": await deps.chains.setOwner(record.orgId, chainId, change.owner, by, change.accountable, undefined, options); return;
+      case "set_accountable": await deps.chains.setAccountable(record.orgId, chainId, change.accountable, by, undefined, options); return;
+      case "unarchive": await deps.chains.unarchive(record.orgId, chainId, by, undefined, options); return;
+    }
   }
   switch (change.op) {
     case "set_budget": await deps.store.setBudget(record.orgId, agentId, change.budget, by, undefined, options); return;
@@ -1423,19 +1524,23 @@ async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestR
   const raced: number[] = [];
   if (decision.status === "APPROVED" && decision.approvedUsd !== undefined) {
     const month = monthOfRequest(record);
+    // An agent's and a chain's budgets are in their owner's one total: the same version, cap and guardrail hold for both.
+    const owned = scope.kind === "agent" || scope.kind === "chain";
     // The owner's read must carry what it summed at; an owner's route without it is not decided on (fail closed).
-    if (scope.kind === "agent" && approvers.role === "agent_owner" && approvers.owner === undefined) throw agentXError("AGENT_REVISION_CONFLICT", "This request changed while it was decided. Open it again.");
-    const adminOwner = scope.kind === "agent" && approvers.owner === undefined ? await agentBudgetOwner(deps, record.orgId, scope.agentId) : undefined;
+    if (owned && (approvers.role === "agent_owner" || approvers.role === "chain_owner") && approvers.owner === undefined) throw agentXError(scope.kind === "chain" ? "CHAIN_REVISION_CONFLICT" : "AGENT_REVISION_CONFLICT", "This request changed while it was decided. Open it again.");
+    const adminOwner = owned && approvers.owner === undefined ? (scope.kind === "agent" ? await agentBudgetOwner(deps, record.orgId, scope.agentId) : await chainBudgetOwner(deps, record.orgId, scope.chainId)) : undefined;
     // Read before the limit, so a base raise or top-up after it moves the version the write is held to.
     const adminVersion = adminOwner === undefined ? undefined : await ownerCounterVersion(deps, record.orgId, adminOwner);
     let seenTopUp: number | undefined;
-    if (scope.kind === "agent") {
-      const parts = await agentLimitParts(deps, record.orgId, month, scope.agentId);
+    if (owned) {
+      const parts = scope.kind === "agent" ? await agentLimitParts(deps, record.orgId, month, scope.agentId) : await chainLimitParts(deps, record.orgId, month, scope.chainId);
       if (approvers.owner === undefined) seenTopUp = parts.topUpUsd;
       const limit = cleanUsd(parts.limitUsd + decision.approvedUsd);
       const guardrail = (await readGuardrails(deps, record.orgId)).maxAgentMonthlyUsd;
       if (limit > guardrail) {
-        throw agentXError("CONFIG_INVALID", `amountUsd: that would take this agent to ${dollars(limit)} a month, past the ${dollars(guardrail)} an agent may have. Approve less, or raise the agent guardrail first.`);
+        throw agentXError("CONFIG_INVALID", scope.kind === "chain"
+          ? `amountUsd: that would take this chain to ${dollars(limit)} a month, past the ${dollars(guardrail)} a chain may have. Approve less, or raise the agent guardrail first.`
+          : `amountUsd: that would take this agent to ${dollars(limit)} a month, past the ${dollars(guardrail)} an agent may have. Approve less, or raise the agent guardrail first.`);
       }
     }
     if (seenTopUp !== undefined) raced.push(items.length);
@@ -1450,7 +1555,7 @@ async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestR
         ...(seenTopUp === undefined ? {} : { ConditionExpression: seenTopUp === 0 ? "attribute_not_exists(amountUsd) OR amountUsd <= :zero" : "amountUsd = :seen" }),
       },
     });
-    if (scope.kind === "agent") {
+    if (owned) {
       const owner = approvers.owner?.developerId ?? adminOwner;
       if (owner !== undefined) {
         await deps.store.ensureOwnerTotal(record.orgId, owner);
@@ -1478,13 +1583,20 @@ async function decideMonth(deps: SpendRequestDependencies, record: SpendRequestR
       return (await reroute(deps, record, decision.mark)).answer;
     }
     if (failed !== undefined && raced.some((index) => failed.has(index)) && !failed.has(0)) {
-      throw agentXError("AGENT_REVISION_CONFLICT", "This agent's budget changed while you decided. Open the request again: it is checked on the budget as it is now.");
+      throw agentXError(scope.kind === "chain" ? "CHAIN_REVISION_CONFLICT" : "AGENT_REVISION_CONFLICT", `This ${scope.kind === "chain" ? "chain" : "agent"}'s budget changed while you decided. Open the request again: it is checked on the budget as it is now.`);
     }
     await decision.refused(error);
   }
   await flushAuditEvents(deps, decision.events);
   if (decision.status === "APPROVED") await resumeMonthTasks(deps, record, scope);
   return decision.answer;
+}
+
+/** Whose total a chain's budget counts in: its member owner, else its accountable maintainer, read as their survivor. */
+async function chainBudgetOwner(deps: SpendRequestDependencies, orgId: OrgId, chainId: string): Promise<string | undefined> {
+  const chain = await deps.chains?.get(orgId, chainId);
+  const raw = chain === undefined ? undefined : budgetOwnerOf(chain);
+  return raw === undefined ? undefined : resolveSurvivor(deps, orgId, raw);
 }
 
 /** Whose total an agent's budget counts in: its member owner, else its accountable maintainer, read as their survivor. */
@@ -1916,6 +2028,8 @@ async function moveRequests(deps: LifecycleDeps, orgId: OrgId, from: string, to:
     for (let tried = 0; ; tried += 1) {
       try {
         await moveOne(deps, (await getSpendRequest(deps, orgId, id)) ?? record, from, to, mode);
+        // A removal may leave a request no one can decide (the successor is the person who asked, or is no approver): it is settled on who may decide it now (Re-check R-1).
+        if (mode === "removed") await settleAfterLeave(deps, orgId, id, from);
         break;
       } catch (error) {
         if (failedIndexes(error) === undefined || tried >= 2) throw error;
@@ -1926,12 +2040,78 @@ async function moveRequests(deps: LifecycleDeps, orgId: OrgId, from: string, to:
   }
 }
 
+/**
+ * A request that named a person who left (Plan 5 Task 21, review M-5 and Re-check R-1): who may decide is read live (`spendApprovers`, then `mayDecideNow`, which keeps the person who
+ * asked from deciding their own), so the approvers listed are the ones who can decide it now, whether an owner is left or not. When no one can, the request ends (`approver_left`, with the words
+ * the asker reads) and the asker is told with a `home.changed` change notice (ids only). It is never approved. Conditional on the request still being PENDING and listing the same
+ * approvers; repeatable.
+ */
+async function settleAfterLeave(deps: LifecycleDeps, orgId: OrgId, id: string, from: string): Promise<void> {
+  const full = deps as unknown as SpendRequestDependencies;
+  for (let tried = 0; tried < 3; tried += 1) {
+    const record = await getSpendRequest(deps, orgId, id);
+    if (record === undefined || record.status !== "PENDING") return;
+    const deciders: string[] = [];
+    for (const approver of (await spendApprovers(full, record)).ids.slice(0, 20)) {
+      if (approver !== from && (await mayDecideNow(full, { orgId, developerId: approver }, record)).allowed) deciders.push(approver);
+    }
+    deciders.sort();
+    if (deciders.length === 0) {
+      if (await expireOne(deps, record, "approver_left")) {
+        const task = await readTask(deps, orgId, record.taskId);
+        const asker = record.requestedBy.kind === "member" ? record.requestedBy.developerId : task === undefined ? undefined : tryEffectiveTaskOwner(task)?.developerId;
+        if (asker !== undefined && asker !== from) {
+          await writeChanges({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, [{ developerId: asker, notice: { type: "home.changed", revision: 0 }, at: iso(deps.now()) }]);
+        }
+        return;
+      }
+      continue;
+    }
+    if (JSON.stringify([...record.approverIds].sort()) === JSON.stringify(deciders)) return;
+    const at = iso(deps.now());
+    const events = await tryAuditEvents(deps, () => [auditSpendRequestRerouted({
+      orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: auditOccurrence(id, "orphaned", at), spendRequestId: id, kind: record.kind, mode: "removed", from, to: deciders[0]!,
+    })]);
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        {
+          Update: {
+            TableName: deps.tableName, Key: spendRequestKey(orgId, id), UpdateExpression: "SET approverIds = :rest, movedBy = :system, movedAt = :at",
+            ConditionExpression: "#status = :pending AND approverIds = :seen", ExpressionAttributeNames: { "#status": "status" },
+            ExpressionAttributeValues: { ":rest": deciders, ":seen": record.approverIds, ":pending": "PENDING", ":system": "system", ":at": at },
+          },
+        },
+        { Put: { TableName: deps.tableName, Item: { ...openSpendRequestsKey(orgId, record.createdAt, id), entityType: "SPEND_REQUEST_OPEN", orgId, spendRequestId: id, approverIds: deciders } } },
+        ...events.flatMap((event) => auditPending(deps, event)),
+      ] }));
+      await flushAuditEvents(deps, events);
+      return;
+    } catch (error) {
+      if (failedIndexes(error) === undefined || tried >= 2) throw error;
+    }
+  }
+}
+
+/** `from` left an org that has no owner to hand anything to: every open request that lists them is settled (see `settleAfterLeave`). */
+async function orphanRequests(deps: LifecycleDeps, orgId: OrgId, from: string): Promise<void> {
+  const open = await queryAll(deps, openSpendRequestsKey(orgId, "2000-01-01T00:00:00.000Z", "spr_0").pk);
+  for (const item of open) {
+    const id = item["spendRequestId"];
+    if (typeof id !== "string") continue;
+    checkTime(deps);
+    const record = await getSpendRequest(deps, orgId, id);
+    if (record === undefined || record.status !== "PENDING" || !record.approverIds.includes(from)) continue;
+    await settleAfterLeave(deps, orgId, id, from);
+  }
+}
+
 registerOwnerCapConfirmation((deps, orgId, owner, cause, totals) => confirmOwnerMove(deps as SpendRequestDependencies, orgId, owner, cause, totals));
 
 registerMemberMover({
   name: "spend-requests",
   merged: (deps, { orgId, survivorId, duplicateId }) => moveRequests(deps, orgId, duplicateId, survivorId, "merged"),
   removed: (deps, { orgId, developerId, successorId }) => moveRequests(deps, orgId, developerId, successorId, "removed"),
+  orphaned: (deps, { orgId, developerId }) => orphanRequests(deps, orgId, developerId),
 });
 
 // ---- the confirmation page's kind (PF21)
@@ -1960,7 +2140,7 @@ async function confirmViewOf(deps: SpendRequestDependencies, record: SpendReques
   const task = await readTask(deps, record.orgId, record.taskId);
   if (task !== undefined) {
     const payer = task.payer ?? { kind: "member" as const, developerId: task.developerId };
-    facts_.push(fact("Payer", payer.kind === "member" ? await nameOf(deps, payer.developerId) : payer.kind === "project" ? `the ${payer.project} project` : "the agent's budget"));
+    facts_.push(fact("Payer", payer.kind === "member" ? await nameOf(deps, payer.developerId) : payer.kind === "project" ? `the ${payer.project} project` : payer.kind === "chain" ? "the chain's budget" : "the agent's budget"));
     facts_.push(fact("Project", task.place?.project ?? task.project), fact("Task", task.title ?? task.taskId));
     if (task.agent !== undefined) facts_.push(fact("Agent", task.agent.name));
   }
@@ -1968,11 +2148,18 @@ async function confirmViewOf(deps: SpendRequestDependencies, record: SpendReques
     const agent = await deps.store.get(record.orgId, record.agentId as never).catch(() => undefined);
     if (agent !== undefined) facts_.push(fact("Agent", agent.name));
   }
-  const scopeWords = record.kind === "max_per_run" ? "This run's max per run" : record.kind === "planning" ? "This task's planning limit" : record.kind === "run_limit" ? "This task's run limit" : record.kind === "owner_cap" ? "One person's agent budgets" : "A monthly budget";
+  const chainId = record.chainId ?? (record.scope?.kind === "chain" ? record.scope.chainId : undefined);
+  if (chainId !== undefined) {
+    const chain = await deps.chains?.get(record.orgId, chainId).catch(() => undefined);
+    if (chain !== undefined) facts_.push(fact("Chain", chain.name));
+  }
+  const scopeWords = record.kind === "max_per_run" ? "This run's max per run" : record.kind === "planning" ? "This task's planning limit" : record.kind === "run_limit" ? "This task's run limit"
+    : record.kind === "owner_cap" ? (record.chainId === undefined ? "One person's agent budgets" : "One person's agent and chain budgets") : "A monthly budget";
   facts_.push(fact("Raises", scopeWords), fact("Amount", dollars(record.amountUsd)));
   if (record.newLimitUsd !== undefined) facts_.push(fact("New limit", dollars(record.newLimitUsd)));
   facts_.push(fact("Expires", record.expiresAt));
-  return { title: KIND_TITLES[record.kind], facts: facts_, paragraphs: [record.reason] };
+  const title = record.kind === "owner_cap" && record.chainId !== undefined ? "A chain budget change is over the limit for one person" : KIND_TITLES[record.kind];
+  return { title, facts: facts_, paragraphs: [record.reason] };
 }
 
 /** The `spr` kind of the confirmation page (PF21): `inspect` is the same live evaluation `decideSpendRequest` makes; `decide` is that function as the member. */
@@ -2011,6 +2198,7 @@ const BudgetScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("member"), developerId: Hex64 }).strict(),
   z.object({ kind: z.literal("project"), project: z.string().min(1).max(100) }).strict(),
   z.object({ kind: z.literal("agent"), agentId: AgentIdSchema }).strict(),
+  z.object({ kind: z.literal("chain"), chainId: ChainIdSchema }).strict(),
   z.object({ kind: z.literal("testing"), developerId: Hex64 }).strict(),
 ]);
 const AskMonthBodySchema = z.object({
@@ -2032,6 +2220,10 @@ async function requireMayAsk(deps: SpendRequestDependencies, caller: AgentCaller
       return;
     case "project": await roleOnProject(deps, caller, scope.project); return;
     case "agent": await requireAgentAccess(deps, caller, scope.agentId, "use"); return;
+    case "chain":
+      if (deps.chains === undefined) throw notFound();
+      await requireChainAccess({ ...deps, store: deps.chains }, caller, scope.chainId, "use");
+      return;
     case "org": return;
   }
 }

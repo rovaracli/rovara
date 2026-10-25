@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-
 export const RelativeWorkspacePathSchema = z
   .string()
   .min(1)
@@ -18,7 +17,6 @@ export const RelativeWorkspacePathSchema = z
     // RULING Q3: the segment checks above already reject every POSIX normalization change.
   });
 
-
 export const PROJECT_COMMAND_ENV_MAX_ENTRIES = 64;
 
 export const PROJECT_COMMAND_ENV_VALUE_MAX = 4_096;
@@ -26,7 +24,6 @@ export const PROJECT_COMMAND_ENV_VALUE_MAX = 4_096;
 export const PROJECT_COMMAND_ENV_TOTAL_MAX_BYTES = 32_768;
 
 export const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
 
 /**
  * Environment variables for one project command (#54): the structure only, which stored revisions
@@ -66,7 +63,6 @@ export const ProjectCommandEnvSchema = z
       }
     }));
 
-
 export const ProjectCommandSchema = z
   .object({
     cwd: RelativeWorkspacePathSchema,
@@ -77,6 +73,5 @@ export const ProjectCommandSchema = z
     env: ProjectCommandEnvSchema.optional(),
   })
   .strict();
-
 
 export const DeveloperShareModeSchema = z.enum(["view", "continue"]);

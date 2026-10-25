@@ -30,7 +30,7 @@ export interface GitHubManifest {
   setup_on_update?: true;
   hook_attributes: { url: string; active: true };
   /** members (organization members, read) is a Rovara Cloud App's only: the install callback's admin check reads the person's membership with a user token. */
-  default_permissions: { contents: "write"; pull_requests: "write"; issues: "write"; metadata: "read"; members?: "read" };
+  default_permissions: { contents: "write"; pull_requests: "write"; issues: "write"; metadata: "read"; actions: "read"; deployments: "read"; members?: "read" };
   default_events: string[];
 }
 
@@ -52,7 +52,7 @@ export function githubAppManifest(input: { appName: string; redirectUrl: string;
   const hook = { hook_attributes: { url: input.webhookUrl, active: true as const } };
   const events = { default_events: [...GITHUB_WEBHOOK_EVENTS] };
   if (!input.cloud) {
-    return { ...base, public: false, ...hook, default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read" }, ...events };
+    return { ...base, public: false, ...hook, default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", ...TRIGGER_PERMISSIONS }, ...events };
   }
   return {
     ...base,
@@ -61,7 +61,7 @@ export function githubAppManifest(input: { appName: string; redirectUrl: string;
     request_oauth_on_install: true,
     setup_on_update: true,
     ...hook,
-    default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", members: "read" },
+    default_permissions: { contents: "write", pull_requests: "write", issues: "write", metadata: "read", ...TRIGGER_PERMISSIONS, members: "read" },
     ...events,
   };
 }
@@ -157,8 +157,14 @@ export function githubAppJwt(input: { appId: string; privateKey: string; nowSeco
   return `${unsigned}.${createSign("RSA-SHA256").update(unsigned).sign(input.privateKey).toString("base64url")}`;
 }
 
-/** The events AgentX handles for a pull request (the broker refuses any other). */
-export const GITHUB_WEBHOOK_EVENTS = ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"] as const;
+/**
+ * The events AgentX handles: a pull request's (its feedback, and the events that start triggers), and the issues, deployment statuses and workflow runs that start triggers (Plan 4
+ * Task 21). The broker answers any other with 202 and does nothing.
+ */
+export const GITHUB_WEBHOOK_EVENTS = ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues"] as const;
+
+/** What the deployment and workflow events need on top of the App's pull request, issue and contents permissions: read access to Actions and Deployments. */
+export const TRIGGER_PERMISSIONS = { actions: "read", deployments: "read" } as const;
 
 /** Where the control plane receives GitHub's deliveries, from its API endpoint. */
 export const githubWebhookUrl = (apiEndpoint: string) => `${apiEndpoint.replace(/\/+$/, "")}/v1/github/webhooks`;
@@ -167,7 +173,7 @@ export interface GitHubApi {
   /** webhook_secret is the secret GitHub made for the manifest's webhook; it is null when the manifest had none. client_id and
    * client_secret are the App's OAuth credentials, which the install flow's user authorization needs. */
   convertManifest(code: string): Promise<{ id: number; slug: string; pem: string; owner: { login: string; type: string }; webhook_secret?: string | null; client_id?: string | null; client_secret?: string | null }>;
-  getApp(jwt: string): Promise<{ slug: string; owner: { login: string; type: string }; events?: string[] }>;
+  getApp(jwt: string): Promise<{ slug: string; owner: { login: string; type: string }; events?: string[]; permissions?: Record<string, string> }>;
   /** The App's webhook settings. GitHub masks the secret, so only the rest can be read back. */
   getHookConfig(jwt: string): Promise<{ url?: string; contentType?: string; insecureSsl?: string }>;
   /**

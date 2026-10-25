@@ -1,6 +1,6 @@
 import type { z } from "zod";
-import type { StepIdSchema, AGENT_STEP_KINDS, StepSettingsSchema, InstructionLayerSchema, StepSpecSchema, ResolvedStepSchema, AgentConnectorTypeSchema, ConnectorSelectorSchema, ToolGrantSchema, ApprovalRulesSchema, TriggerSpecSchema, SkillRefSchema, RecipeOverlaySchema, ResolvedRecipeSchema} from "./agent-recipe.js";
-import { CODING_STEP_KINDS, RESOLVED_RECIPE_SCHEMA_VERSION, STEP_TOOLS, PI_TOOL_NAMES } from "./agent-recipe.js";
+import type { StepIdSchema, AGENT_STEP_KINDS, StepSettingsSchema, InstructionLayerSchema, StepSpecSchema, ResolvedStepSchema, ConnectorSelectorSchema, ToolGrantSchema, ApprovalRulesSchema, TriggerSpecSchema, SkillRefSchema, RecipeOverlaySchema, ResolvedRecipeSchema} from "./agent-recipe.js";
+import { CODING_STEP_KINDS, AgentConnectorTypeSchema, RESOLVED_RECIPE_SCHEMA_VERSION, STEP_TOOLS, PI_TOOL_NAMES } from "./agent-recipe.js";
 import { type WorkflowProgram } from "./task-workflow-node.js";
 import { createHash } from "node:crypto";
 import { canonicalJson } from "./canonical-json.js";
@@ -27,9 +27,11 @@ export type ToolGrant = z.infer<typeof ToolGrantSchema>;
 
 export type ApprovalRules = z.infer<typeof ApprovalRulesSchema>;
 
-
-/** The ways a run can start that agents allow at launch. Plan 4 adds `event` and `schedule` here and to the schema below. */
-export const TRIGGER_KINDS_AT_LAUNCH = ["person"] as const;
+/**
+ * The ways a run can start. In a custom agent's recipe they say how the agent may be started (G10); on a trigger record (triggers.ts) an `event` or `schedule` spec is the
+ * live one. A built-in recipe lists `person` alone: its suggested triggers are Plan 4 data (builtin-triggers.ts), never recipe content.
+ */
+export const TRIGGER_KINDS_AT_LAUNCH = ["person", "event", "schedule"] as const;
 
 export type TriggerSpec = z.infer<typeof TriggerSpecSchema>;
 
@@ -38,7 +40,6 @@ export type SkillRef = z.infer<typeof SkillRefSchema>;
 export type RecipeOverlay = z.infer<typeof RecipeOverlaySchema>;
 
 export type ResolvedRecipe = z.infer<typeof ResolvedRecipeSchema>;
-
 
 /** A recipe with nothing in it: what an agent built from scratch starts from. */
 export const EMPTY_RECIPE: ResolvedRecipe = {
@@ -54,7 +55,6 @@ export const EMPTY_RECIPE: ResolvedRecipe = {
   allowMentions: false,
 };
 
-
 export type RecipeLayer = ResolvedRecipe["chain"][number];
 
 export type ResolvedSkill = ResolvedRecipe["skills"][number];
@@ -62,26 +62,21 @@ export type ResolvedSkill = ResolvedRecipe["skills"][number];
 /** A problem with where it is (`path`, dotted) and what is wrong (`message`, which does not repeat the path). */
 export interface RecipeProblem { path: string; message: string }
 
-
 /** The problem as one line: `<path>: <message>`. */
 export function formatRecipeProblem(problem: RecipeProblem): string {
   return `${problem.path}: ${problem.message}`;
 }
 
-
 function isCodingKind(kind: string): kind is CodingStepKind {
   return (CODING_STEP_KINDS as readonly string[]).includes(kind);
 }
-
 
 /** The runner a recipe needs: Rovara Code's workflow engine for coding steps, the agent-step runner otherwise. */
 export function recipeRunner(recipe: ResolvedRecipe): "coding" | "agent_steps" {
   return recipe.steps.some((step) => isCodingKind(step.kind)) ? "coding" : "agent_steps";
 }
 
-
 type LooseSettings = Record<string, unknown> & { instructions: InstructionLayer[] };
-
 
 /**
  * Applies one layer's settings patch to a step's inherited settings: a value replaces, `null` clears, instructions
@@ -105,7 +100,6 @@ function patchSettings(inherited: LooseSettings, patch: StepSettings | undefined
   }
   return next;
 }
-
 
 /**
  * The recipe after one more layer. The base is not changed. A `steps` patch for an id no step has is left out here;
@@ -145,13 +139,11 @@ export function applyOverlay(base: ResolvedRecipe, overlay: RecipeOverlay, layer
   return recipe;
 }
 
-
 /** Patches in an overlay's `steps` that name no step of the recipe it applies to (after its own `sequence`). */
 export function overlayProblems(base: ResolvedRecipe, overlay: RecipeOverlay): RecipeProblem[] {
   const ids = new Set((overlay.sequence ?? base.steps).map((step) => step.id));
   return Object.keys(overlay.steps ?? {}).filter((id) => !ids.has(id)).map((id) => ({ path: `steps.${id}`, message: `no step has that id` }));
 }
-
 
 /** The structure a coding recipe must have for the workflow engine to run it. */
 function codingStructureProblems(steps: readonly ResolvedStep[], add: (path: string, message: string) => void): void {
@@ -183,7 +175,6 @@ function codingStructureProblems(steps: readonly ResolvedStep[], add: (path: str
   });
 }
 
-
 function toolProblem(step: ResolvedStep, tools: readonly string[]): string | undefined {
   const label = `the "${step.id}" step (${step.kind})`;
   if (!(step.kind in STEP_TOOLS)) return `${label} takes no tools`;
@@ -199,7 +190,6 @@ function toolProblem(step: ResolvedStep, tools: readonly string[]): string | und
   return `${label} can't use ${refused.join(", ")}; it can use ${can}`;
 }
 
-
 /**
  * Integrations Rovara knows by name that are not connectors an agent can be given. A recipe that grants a connector called one of these is asking for
  * something no project can give it, so it is refused when it is published rather than matching nothing in silence. (A project's connector may well be
@@ -208,18 +198,16 @@ function toolProblem(step: ResolvedStep, tools: readonly string[]): string | und
  */
 const NOT_AGENT_CONNECTORS: readonly string[] = ["slack"];
 
-
 /** Problems with a recipe's tool grants that can be seen without a project: a name selector that no connector an agent can use is called. */
 export function toolGrantProblems(tools: readonly ToolGrant[]): RecipeProblem[] {
   const problems: RecipeProblem[] = [];
   tools.forEach((grant, index) => {
     if ("name" in grant.connector && NOT_AGENT_CONNECTORS.includes(grant.connector.name)) {
-      problems.push({ path: `tools.${String(index)}.connector`, message: `${grant.connector.name} isn't a connector agents can use; name a connector of the project, or pick a type: github, linear, jira, asana or mcp` });
+      problems.push({ path: `tools.${String(index)}.connector`, message: `${grant.connector.name} isn't a connector agents can use; name a connector of the project, or pick a type: ${AgentConnectorTypeSchema.options.slice(0, -1).join(", ")} or ${AgentConnectorTypeSchema.options.at(-1) ?? ""}` });
     }
   });
   return problems;
 }
-
 
 /** Why a recipe can't be published or run, in terms of its structure. Empty when it can. */
 export function recipeProblems(recipe: ResolvedRecipe): RecipeProblem[] {
@@ -258,11 +246,8 @@ export function recipeProblems(recipe: ResolvedRecipe): RecipeProblem[] {
     }
   });
 
-  const launchKinds: readonly string[] = TRIGGER_KINDS_AT_LAUNCH;
-  if (recipe.triggers.some((trigger) => !launchKinds.includes(trigger.kind))) add("triggers", "event and schedule triggers aren't available yet");
   return problems;
 }
-
 
 /** Rovara Code's built-in version 1: plan, build, check, then a two-reviewer review that sends findings back to build for 3 rounds, then the pull request. */
 function isRovaraCodeVersion1(steps: readonly ResolvedStep[]): boolean {
@@ -271,7 +256,6 @@ function isRovaraCodeVersion1(steps: readonly ResolvedStep[]): boolean {
   if (review?.kind !== "review" || [...review.reviewers].sort().join() !== "code,security") return false;
   return review.onFindings?.maxRounds === 3 && steps.findIndex((step) => step.id === review.onFindings?.backTo) === 1;
 }
-
 
 /**
  * The workflow program a coding recipe's engine follows, or undefined when the engine's own path (Rovara Code's
@@ -287,26 +271,21 @@ export function codingProgram(recipe: ResolvedRecipe): WorkflowProgram | undefin
   return { steps };
 }
 
-
 /** SHA-256 of the recipe's canonical JSON (hex): equal recipes have equal digests whatever their key order. */
 export function recipeDigest(recipe: ResolvedRecipe): string {
   return createHash("sha256").update(canonicalJson(recipe), "utf8").digest("hex");
 }
 
-
 /** Settings whose value is one unit: a changed model is one change, not one per field of it. */
 const WHOLE_VALUE_KEYS = new Set(["model", "fallbackModel"]);
-
 
 function pointer(parent: string, key: string | number): string {
   return `${parent}/${String(key).replaceAll("~", "~0").replaceAll("/", "~1")}`;
 }
 
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
 
 function diffValues(path: string, before: unknown, after: unknown, found: string[]): void {
   if (before === undefined && after === undefined) return;
@@ -325,12 +304,10 @@ function diffValues(path: string, before: unknown, after: unknown, found: string
   }
 }
 
-
 /** The versions of the agents a recipe builds on: the chain without the agent's own layer (a built-in is always a base). */
 function baseVersions(recipe: ResolvedRecipe): Array<RecipeLayer["version"]> {
   return recipe.chain.filter((layer, index) => layer.builtin || index < recipe.chain.length - 1).map((layer) => layer.version);
 }
-
 
 /**
  * JSON-pointer paths (`/steps/1/settings/model`) of what differs between two recipes. The chain is left out but for
@@ -343,7 +320,6 @@ export function diffRecipes(before: ResolvedRecipe, after: ResolvedRecipe): stri
   if (canonicalJson(baseVersions(before)) !== canonicalJson(baseVersions(after))) found.push("/base/version");
   return found;
 }
-
 
 /** JSON-pointer paths of what an overlay sets, down to each setting of a step (`/steps/build/model`). */
 export function overlayPaths(overlay: RecipeOverlay): string[] {
@@ -363,4 +339,4 @@ export function overlayPaths(overlay: RecipeOverlay): string[] {
   return paths;
 }
 
-export { INSTRUCTIONS_MAX_BYTES, STEP_NAME_MAX, APPROVAL_PROMPT_MAX, MAX_RECIPE_STEPS, MAX_RECIPE_TOOL_GRANTS, MAX_ALWAYS_ASK_RULES, MAX_RECIPE_TRIGGERS, MAX_RESOLVED_SKILLS, StepIdSchema, CODING_STEP_KINDS, AGENT_STEP_KINDS, PI_TOOL_NAMES, PiToolNameSchema, type PiToolName, READ_ONLY_TOOLS, STEP_TOOLS, StepThinkingLevelSchema, StepSettingsSchema, InstructionLayerSchema, ReviewerSchema, OnFindingsSchema, StepSpecSchema, ResolvedStepSchema, AgentConnectorTypeSchema, ConnectorSelectorSchema, ToolGrantSchema, ApprovalRulesSchema, TriggerSpecSchema, SkillRefSchema, RecipeOverlaySchema, RESOLVED_RECIPE_SCHEMA_VERSION, ResolvedRecipeSchema } from "./agent-recipe.js";
+export { INSTRUCTIONS_MAX_BYTES, STEP_NAME_MAX, APPROVAL_PROMPT_MAX, MAX_RECIPE_STEPS, MAX_RECIPE_TOOL_GRANTS, MAX_ALWAYS_ASK_RULES, MAX_RECIPE_TRIGGERS, MAX_RESOLVED_SKILLS, utf8, InstructionTextSchema, Sha256HexSchema, StepIdSchema, CODING_STEP_KINDS, AGENT_STEP_KINDS, PI_TOOL_NAMES, PiToolNameSchema, type PiToolName, READ_ONLY_TOOLS, STEP_TOOLS, StepThinkingLevelSchema, StepSettingsSchema, CheckStepSettingsSchema, InstructionLayerSchema, ResolvedStepSettingsSchema, ResolvedCheckStepSettingsSchema, StepNameSchema, ReviewerSchema, OnFindingsSchema, stepVariants, StepSpecSchema, ResolvedStepSchema, AgentConnectorTypeSchema, ConnectorSelectorSchema, ToolGrantSchema, AlwaysAskSchema, ApprovalRulesSchema, TriggerSpecSchema, SkillRefSchema, RecipeOverlaySchema, RESOLVED_RECIPE_SCHEMA_VERSION, ResolvedRecipeSchema } from "./agent-recipe.js";

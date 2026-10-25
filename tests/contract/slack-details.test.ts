@@ -433,6 +433,9 @@ describe("the Details handler on the ingress Lambda's AWS wiring", () => {
   });
 
   function wire(tableName: string | undefined, readDelayMs = 0, pendingRequests = 1) {
+    // The stored turn is dated 2026-09-24 and Details keeps a turn for 30 days: pin the clock to an hour after its reply so these tests do not depend on the real date.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(repliedAt + 3_600_000);
     process.env.SLACK_THREADS_TABLE_NAME = "threads";
     process.env.SLACK_REQUEST_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123456789012/requests.fifo";
     process.env.SLACK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:slack";
@@ -477,6 +480,9 @@ describe("the Details handler on the ingress Lambda's AWS wiring", () => {
   }
 
   it("still queues Approve with TURN_RECORDS_TABLE_NAME unset, says so once at startup, and answers Details that the details are unavailable", async () => {
+    // Keep this wiring check inside the fixture reply's retention window.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(repliedAt + 3_600_000);
     const { handler, lines, queued, slack, confirmationId } = wire(undefined);
     expect(lines.filter((line) => line.event === "interaction.details_not_configured")).toEqual([
       { component: "slack-interactivity", event: "interaction.details_not_configured", variable: "TURN_RECORDS_TABLE_NAME" },
@@ -517,7 +523,7 @@ describe("the Details handler on the ingress Lambda's AWS wiring", () => {
     const invocations: Array<Record<string, unknown>> = [];
     // Lambda queues the event (202) without waiting for the broker; the second time it refuses the invoke.
     let accepted = true;
-    let authorizationReply: "allow" | "deny" | "invalid-json" = "allow";
+    let authorizationReply: "allow" | "deny" | "fault" | "invalid-json" = "allow";
     vi.spyOn(LambdaClient.prototype, "send").mockImplementation((async (command: { input: Record<string, unknown> }) => {
       invocations.push(command.input);
       expect(command.input.FunctionName).toBe("broker");
@@ -528,7 +534,9 @@ describe("the Details handler on the ingress Lambda's AWS wiring", () => {
         if (authorizationReply === "invalid-json") return { StatusCode: 200, Payload: Buffer.from("{") };
         const reply = authorizationReply === "allow"
           ? { statusCode: 200, body: JSON.stringify({ authorized: true }) }
-          : { statusCode: 403, body: JSON.stringify({ error: { message: "Only the task owner can approve this step." } }) };
+          : authorizationReply === "fault"
+            ? { statusCode: 500, body: JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "boom" } }) }
+            : { statusCode: 403, body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Only the task owner can approve this step." } }) };
         return { StatusCode: 200, Payload: Buffer.from(JSON.stringify(reply)) };
       }
       expect(command.input.InvocationType).toBe("Event");
@@ -561,9 +569,17 @@ describe("the Details handler on the ingress Lambda's AWS wiring", () => {
     expect(invocations.slice(2).map((invocation) => invocation.InvocationType)).toEqual(["RequestResponse", "Event"]);
 
     authorizationReply = "deny";
-    expect(JSON.parse((await submit()).body)).toMatchObject({ response_action: "errors" });
+    expect((await submit()).body).toContain("Only the task owner can approve this step.");
     expect(invocations).toHaveLength(5);
     expect(invocations[4]).toMatchObject({ InvocationType: "RequestResponse", FunctionName: "broker" });
+
+    // A broker fault says nothing about this member: the code reaches the log and the member is asked to try again, not told they are not the owner.
+    authorizationReply = "fault";
+    const faultBody = (await submit()).body;
+    expect(faultBody).toContain("Something went wrong; try again in a minute.");
+    expect(faultBody).not.toContain("task owner");
+    expect(logs).toContainEqual(expect.objectContaining({ event: "workflow.authorize_failed", code: "INTERNAL_ERROR", action: "decide" }));
+    expect(invocations).toHaveLength(6);
 
     authorizationReply = "invalid-json";
     const beforeMalformedAuthorization = invocations.length;
@@ -587,6 +603,9 @@ describe("the Details handler on the ingress Lambda's AWS wiring", () => {
   });
 
   it("reads the turn record table named by TURN_RECORDS_TABLE_NAME when it is set", async () => {
+    // Keep this wiring check inside the fixture reply's retention window.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(repliedAt + 3_600_000);
     const { handler, lines, dynamo } = wire("turn-records");
     expect(lines.map((line) => line.event)).not.toContain("interaction.details_not_configured");
     await handler(signed(payload(), Date.now()));

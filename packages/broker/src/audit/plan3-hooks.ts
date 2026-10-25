@@ -68,6 +68,13 @@ export function agentBudgetEvents(base: Base & { agentId: string; occurrence: st
   return events;
 }
 
+/** One `budget.changed` when a write moved a chain's monthly limit. `occurrence` is the store's `EVENT#` sort key. */
+export function chainBudgetEvents(base: Base & { chainId: string; occurrence: string; before: number | undefined; after: number | undefined }): AuditEventInput[] {
+  const { chainId, occurrence, before, after, ...common } = base;
+  if (before === after) return [];
+  return [budgetEvent(common, { occurrence: auditOccurrence(occurrence, "chain_monthly_limit"), target: { kind: "budget", id: chainId }, scopeKind: "chain", field: "chain_monthly_limit", from: before, to: after })];
+}
+
 /** One `budget.changed` for each money limit of a project's AI settings that the write moved. The project's name is a name-keyed target. */
 export function projectAiEvents(base: Base & { project: string; revision: number; before: ProjectAiSettings; after: ProjectAiSettings }): AuditEventInput[] {
   const { project, revision, before, after, ...common } = base;
@@ -102,21 +109,21 @@ function ownerParts(owner: { kind: "member"; developerId: string } | { kind: "pr
 }
 
 /**
- * `agent.owner_changed` for a move of an agent to another owner. The people involved (both owners that are members, and the accountable maintainer)
+ * `agent.owner_changed` (or, with `scope` "chain", `chain.owner_changed`; `agentId` then holds the chain's id) for a move of an agent to another owner. The people involved (both owners that are members, and the accountable maintainer)
  * are `related` ids; a project's name is personal data and goes only in `details`.
  */
-export function ownerMovedEvent(base: Base & { occurrence: string; agentId: string; from: Parameters<typeof ownerParts>[0]; to: Parameters<typeof ownerParts>[0]; accountable?: string }): AuditEventInput {
+export function ownerMovedEvent(base: Base & { occurrence: string; agentId: string; from: Parameters<typeof ownerParts>[0]; to: Parameters<typeof ownerParts>[0]; accountable?: string }, scope: "agent" | "chain" = "agent"): AuditEventInput {
   const { occurrence, agentId, from, to, accountable, ...common } = base;
   const was = ownerParts(from);
   const now = ownerParts(to);
   const related = [...new Set([was.member, now.member, accountable].filter((id): id is string => id !== undefined))];
   const fields = { ...(was.project === undefined ? {} : { fromProject: was.project }), ...(now.project === undefined ? {} : { toProject: now.project }) };
   const details: AuditDetailPart[] = Object.keys(fields).length === 0 ? [] : [{ subject: "org", fields }];
-  return auditOwnerChanged({ ...common, occurrence, scope: "agent", targetId: agentId, field: "owner", ...(related.length === 0 ? {} : { related }), ...(details.length === 0 ? {} : { details }) });
+  return auditOwnerChanged({ ...common, occurrence, scope, targetId: agentId, field: "owner", ...(related.length === 0 ? {} : { related }), ...(details.length === 0 ? {} : { details }) });
 }
 
-/** `agent.owner_changed` for a change of the maintainer accountable for an agent; `related` has the new person first, then the one before. */
-export function accountableChangedEvent(base: Base & { occurrence: string; agentId: string; accountable: string; previous?: string }): AuditEventInput {
+/** `agent.owner_changed` (`chain.owner_changed` with `scope` "chain", and the chain's id in `agentId`) for a change of the maintainer accountable; `related` has the new person first, then the one before. */
+export function accountableChangedEvent(base: Base & { occurrence: string; agentId: string; accountable: string; previous?: string }, scope: "agent" | "chain" = "agent"): AuditEventInput {
   const { occurrence, agentId, accountable, previous, ...common } = base;
-  return auditOwnerChanged({ ...common, occurrence, scope: "agent", targetId: agentId, field: "accountable", related: [...new Set([accountable, ...(previous === undefined ? [] : [previous])])] });
+  return auditOwnerChanged({ ...common, occurrence, scope, targetId: agentId, field: "accountable", related: [...new Set([accountable, ...(previous === undefined ? [] : [previous])])] });
 }

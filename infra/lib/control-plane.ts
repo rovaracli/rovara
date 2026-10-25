@@ -38,7 +38,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { HEALTH_ALARM_SUFFIXES, brokerManagedPolicyPath, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { E2E_ARTIFACT_RETENTION_DAYS, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { RealtimeEvents } from "./realtime.js";
@@ -46,7 +46,7 @@ import { TaskPersonProof } from "./task-person-proof.js";
 import { DeveloperTaskNotifier } from "./developer-task-notifier.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
 import { AuditLedger } from "./audit-ledger.js";
-import { BrokerNames } from "./broker-names.js";
+import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
 
@@ -78,6 +78,11 @@ export interface ControlPlaneStackProps extends StackProps {
    * environment; a legacy install keeps its recorded template). Only a test turns it off, to compare the permissions before and after.
    */
   mergeBrokerStatements?: boolean;
+  /**
+   * Whether the audit ledger's functions reserve Lambda concurrency (default true; the agentxReservedConcurrency context).
+   * Off only for an account whose concurrency limit is too low to reserve any.
+   */
+  reservedConcurrency?: boolean;
 }
 
 /**
@@ -173,6 +178,10 @@ export class ControlPlaneStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
+      // M1.3 Task 3.7b, owner decision D4: a browser or API round's screenshots expire 30 days after they are written. A lifecycle filter matches the start of a key, and a screenshot's
+      // key starts like every other private object's, so the rule matches the tag the broker puts on a screenshot and on nothing else. The bucket is not versioned: expiry deletes.
+      // Named environments only: the legacy production template stays as it is.
+      ...(naming.env === undefined ? {} : { lifecycleRules: [{ id: "ExpireE2EScreenshots", expiration: Duration.days(E2E_ARTIFACT_RETENTION_DAYS), tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: E2E_ARTIFACT_RETENTION_TAG_VALUE } }] }),
       // Retained: the broker's operation artifacts must outlive a stack deletion.
       removalPolicy: RemovalPolicy.RETAIN,
     });
@@ -188,9 +197,9 @@ export class ControlPlaneStack extends Stack {
     });
 
     const broker = packagedFunction(this, "Broker", "packages/broker/src/aws/broker.ts", {
-      STATE_TABLE_NAME: state.tableName,
+      // A named environment's broker is given the State table's and the bucket's names in AGENTX_NAMES (BrokerNames, below), not as variables of their own: its variables are held to Lambda's 4 KB.
+      ...(naming.env === undefined ? { STATE_TABLE_NAME: state.tableName, ARTIFACT_BUCKET_NAME: artifacts.bucketName } : {}),
       ...(naming.env === undefined ? { AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID: projectSetupRuntimeCatalogId, AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: e2eFeatureRuntimeCatalogId } : {}),
-      ARTIFACT_BUCKET_NAME: artifacts.bucketName,
       OIDC_ISSUER: oidcIssuer.valueAsString,
       ADMIN_CLAIM: adminClaim.valueAsString,
       ADMIN_VALUES: adminValues.valueAsString,
@@ -199,6 +208,10 @@ export class ControlPlaneStack extends Stack {
       GITHUB_APP_ID: githubAppId.valueAsString,
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
+    if (naming.env !== undefined) {
+      BrokerNames.of(broker).add("stateTable", state.tableName);
+      BrokerNames.of(broker).add("artifactBucket", artifacts.bucketName);
+    }
     // The merged control plane's broker policy is past CDK's 10,000-character inline limit, and CDK would move the overflow into a
     // managed policy, which the deploy's CloudFormation role may not create (R53). Merge same-shaped statements instead.
     // Then they move into named managed policies (agentx-<env>-broker-<group>, ruling M2): a role's inline policies are capped at 10,240
@@ -228,6 +241,8 @@ export class ControlPlaneStack extends Stack {
       resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
     }));
     // A named environment's broker derives its connector secret prefix from AGENTX_ENV (broker-environment.ts), so it is not given it.
+    // A fixed name, so the default boundary's AssumeOrgRoles statement can name this role as one of the three that may be granted a cross-account assume.
+    if (naming.env !== undefined) (broker.role!.node.defaultChild as iam.CfnRole).roleName = brokerRoleName(naming.env);
     // Plan 3, ruling R62: an org's connection keys and event hook secrets (agentx/<env>/org-connectors/<org>/... and
     // agentx/<env>/org-hooks/<org>/...) are readable only through this role, in a session the broker tags with the org.
     // The broker role may assume it and holds no Secrets Manager permission on those paths. Named environments only.
@@ -263,8 +278,9 @@ export class ControlPlaneStack extends Stack {
     // update and read that one list and nothing else in Route 53 Resolver, and no other role here has these actions.
     let projectAllowListArn: string | undefined;
     if (props?.cloud === true && naming.env !== undefined) {
-      const projectAllowListId = new CfnParameter(this, "ProjectAllowListId", { type: "String", description: "The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains" }).valueAsString;
-      broker.addEnvironment("AGENT_PROJECT_ALLOW_LIST_ID", projectAllowListId);
+      const projectAllowListId = new CfnParameter(this, "ProjectAllowListId", { type: "String", allowedPattern: "^rslvr-fdl-[0-9a-zA-Z]{8,32}$", description: "The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains" }).valueAsString;
+      // An AWS-generated id, in the broker's names (BrokerNames; its variables are held to Lambda's 4 KB).
+      BrokerNames.of(broker).add("projectAllowList", projectAllowListId);
       projectAllowListArn = this.formatArn({ service: "route53resolver", resource: "firewall-domain-list", resourceName: projectAllowListId });
       // A broker grant like the rest: it lives in the broker's managed policy group for its service (route53resolver falls in "integrations",
       // see brokerPolicyGroup), not in a policy of its own, so the broker role's inline and managed policies stay within the M2 size guard.
@@ -273,15 +289,45 @@ export class ControlPlaneStack extends Stack {
         resources: [projectAllowListArn],
       }));
     }
+    // Plan 4, Task 16 (cloud installs): the CloudWatch connector assumes a role a customer made in their own AWS account. The grant is one action on roles in
+    // OTHER accounts (never a role of this one, so the broker cannot reach its own or any other role here this way), and only with an external id that names a
+    // Rovara org; the connector sends the caller org's own, and the customer's trust policy requires it. AWS documents sts:ExternalId as a request-context key
+    // present whenever the caller supplies an external id (docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_iam-condition-keys.html); it does not say
+    // in so many words that an identity policy is checked against it, so the external id the connector sets itself stays the control and this condition is a second one.
+    // The statement falls in the broker's orchestration managed policy (an sts action), see brokerPolicyGroup. The role's own ARN is the principal the customer
+    // names in the trust policy, so the function gets it.
+    if (props?.cloud === true && naming.env !== undefined) {
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "AssumeCustomerCloudWatchRoles",
+        actions: ["sts:AssumeRole"],
+        resources: [`arn:${Aws.PARTITION}:iam::*:role/*`],
+        conditions: {
+          StringNotEquals: { "aws:ResourceAccount": Aws.ACCOUNT_ID },
+          StringLike: { "sts:ExternalId": "rovara-org_*" },
+        },
+      }));
+      // The ARN is not passed: the role has a fixed name, so the broker builds it from AGENTX_ENV in the environment's role path, and only where this flag is set (the same condition as the grant above), so its
+      // environment stays under Lambda's 4 KB.
+      broker.addEnvironment("AGENTX_CLOUD", "true");
+    }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
     // exist only once the eval stack is deployed, and until then a run is refused as not installed.
     if (naming.env === undefined) broker.addEnvironment("SWEBENCH_SETTINGS_PREFIX", naming.ec2.workerSettingsPrefix);
+    // M1.4 Task 4.10 (PREFIXGAP): the broker derives the AI navigation route from the installation's worker settings. A named environment's broker builds the settings prefix from its
+    // environment name (AGENTX_E2E_AGENT_SETTINGS_PREFIX in DERIVED_BROKER_VARIABLES), so no variable is passed here (ENV-ROOM); the read grant below covers it. The legacy template stays as it is.
     const swebenchParameterArns = [
       swebenchNames(naming).settingsParameterName,
       swebenchNames(naming).runnerImageParameterName,
       swebenchNames(naming).runnerFeaturesParameterName,
       ...Object.values(WORKER_SETTING_PARAMETERS).map((name) => `${naming.ec2.workerSettingsPrefix}${name}`),
+    ].map((name) => `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${name}`);
+    // The eval batch tick reads the SWE-bench settings and the worker settings the deployment reads for an eval run, but never the AI navigation model setting (Task 4.10A review M-2) or the missing-key fallback model (Task 4.10D): it boots no worker and runs no model of its own.
+    const evalSettingArns = [
+      swebenchNames(naming).settingsParameterName,
+      swebenchNames(naming).runnerImageParameterName,
+      swebenchNames(naming).runnerFeaturesParameterName,
+      ...Object.entries(WORKER_SETTING_PARAMETERS).filter(([key]) => key !== "e2eAgentModel" && key !== "modelFallback").map(([, name]) => `${naming.ec2.workerSettingsPrefix}${name}`),
     ].map((name) => `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${name}`);
     const swebenchStateMachineArn = this.formatArn({ service: "states", resource: "stateMachine", resourceName: swebenchNames(naming).stateMachineName, arnFormat: ArnFormat.COLON_RESOURCE_NAME });
     broker.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameters"], resources: swebenchParameterArns }));
@@ -380,12 +426,15 @@ export class ControlPlaneStack extends Stack {
         STATE_TABLE_NAME: state.tableName,
         AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID: projectSetupRuntimeCatalogId,
         MAX_DISPATCH_ATTEMPTS: String(MAX_DISPATCH_ATTEMPTS),
+        ARTIFACT_BUCKET_NAME: artifacts.bucketName,
       },
       Duration.seconds(60),
     );
     if (naming.env !== undefined) dispatcher.addEnvironment("AGENTX_ENV", naming.env);
     dispatchQueue.grantConsumeMessages(dispatcher);
     state.grantReadWriteData(dispatcher);
+    // The dispatcher holds a CHECKS reference's kind to the admission it names; it reads only the immutable admission objects.
+    dispatcher.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:GetObject"], resources: [artifacts.arnForObjects("workflow-e2e-admissions/*")] }));
     // EC2 workers (#76): the idle reaper and reconciler find sessions by state through this sparse index.
     state.addGlobalSecondaryIndex({
       indexName: WORKSPACE_SESSION_STATE_INDEX.name,
@@ -715,8 +764,14 @@ export class ControlPlaneStack extends Stack {
     // A named environment's broker is given the role's name (BrokerNames): the role is under /agentx/<env>/, so the broker builds the ARN.
     if (naming.env === undefined) broker.addEnvironment("SLACK_ORCHESTRATOR_ROLE_ARN", slackOrchestratorRole.roleArn);
     else BrokerNames.of(broker).add("slackOrchestratorRole", slackOrchestratorRole.roleName);
-    broker.addEnvironment("SLACK_MEMBER_WORKSPACE_LIMIT", memberWorkspaceLimit.valueAsString);
-    broker.addEnvironment("SLACK_ORGANIZATION_WORKSPACE_LIMIT", organizationWorkspaceLimit.valueAsString);
+    // A named environment's broker is given the limits in its settings (BrokerSettings: Number parameters, so plain text), not as variables of their own: its variables are held to Lambda's 4 KB.
+    if (naming.env === undefined) {
+      broker.addEnvironment("SLACK_MEMBER_WORKSPACE_LIMIT", memberWorkspaceLimit.valueAsString);
+      broker.addEnvironment("SLACK_ORGANIZATION_WORKSPACE_LIMIT", organizationWorkspaceLimit.valueAsString);
+    } else {
+      BrokerSettings.of(broker).add("memberWorkspaceLimit", memberWorkspaceLimit.valueAsString);
+      BrokerSettings.of(broker).add("organizationWorkspaceLimit", organizationWorkspaceLimit.valueAsString);
+    }
 
     const appPostedMessages = new CfnParameter(this, "SlackAppPostedMessages", {
       type: "String",
@@ -829,6 +884,15 @@ export class ControlPlaneStack extends Stack {
       target: `integrations/${integration.ref}`,
       authorizationType: "NONE",
     });
+    // Plan 4 Task 19: the endpoint vendors post events to. No authorizer: each delivery proves itself with its signature or token over its own bytes, checked by the broker
+    // before anything is written (triggers/ingress.ts). A named environment only: the legacy templates stay as they were. The route exists only where the stage throttles it
+    // (`DeveloperSignIn`, built from `signInParameters`), so a public route is never left without its bucket.
+    const eventHookRoute = naming.env === undefined || signInParameters === undefined ? undefined : new apigwv2.CfnRoute(this, "EventHookRoute", {
+      apiId: api.ref,
+      routeKey: "POST /v1/hooks/{source}/{hookId}",
+      target: `integrations/${integration.ref}`,
+      authorizationType: "NONE",
+    });
     // Plan 2, Task 13: GitHub's install redirect and the confirm page's form post. No JWT: the broker checks the connect state against
     // GitHub, and the confirmation by cookie and Origin. A named environment only (the legacy deployment has no developer sign-in);
     // the stage throttles them like the other public routes (DeveloperSignIn applies `throttledRoutes`).
@@ -935,6 +999,76 @@ export class ControlPlaneStack extends Stack {
         },
       });
     }
+    // Plan 4 Task 9: every 5 minutes the chain sweep looks at the chain runs that are due (a step that ran out of time, a callback or a decision the run did not hear, an ending
+    // left half done). Named environments only, as the chains' own routes are; it runs through the same role as the other recovery schedules and needs no new grant.
+    if (naming.env !== undefined) {
+      new scheduler.CfnSchedule(this, "ChainSweepSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(5 minutes)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.chain-sweep" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
+    }
+    // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets
+    // aws:SourceArn to the schedule GROUP's ARN, not the schedule's, so that is what the role's trust names (a `schedule/...` pattern would never match, and a schedule of any
+    // other group is refused). The role can invoke the broker function and write the dead-letter queue, nothing else. The queue is encrypted with SQS-managed keys, so no KMS
+    // permission is needed on either side. The broker manages the group's schedules, passes that one role to the scheduler, and reads and deletes the dead letters. Named
+    // environments only, like the chains' own routes. The role and the queue have fixed names and the group's name is derived from the environment, so the broker builds all three from AGENTX_ENV and passes nothing (Lambda's 4 KB).
+    if (naming.env !== undefined) {
+      const scheduleGroupName = chainScheduleGroupName(naming.env);
+      new scheduler.CfnScheduleGroup(this, "ChainScheduleGroup", { name: scheduleGroupName });
+      const chainScheduleDeadLetters = new sqs.Queue(this, "ChainScheduleDeadLetters", { queueName: chainScheduleQueueName(naming.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(14) });
+      const chainScheduleInvokeRole = new iam.Role(this, "ChainScheduleInvokeRole", {
+        roleName: chainScheduleRoleName(naming.env),
+        assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com", { conditions: {
+          StringEquals: {
+            "aws:SourceAccount": this.account,
+            "aws:SourceArn": `arn:${this.partition}:scheduler:${this.region}:${this.account}:schedule-group/${scheduleGroupName}`,
+          },
+        } }),
+      });
+      chainScheduleInvokeRole.addToPolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [broker.functionArn] }));
+      chainScheduleInvokeRole.addToPolicy(new iam.PolicyStatement({ actions: ["sqs:SendMessage"], resources: [chainScheduleDeadLetters.queueArn] }));
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "ManageChainSchedules",
+        actions: ["scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule", "scheduler:GetSchedule"],
+        resources: [`arn:${this.partition}:scheduler:${this.region}:${this.account}:schedule/${scheduleGroupName}/*`],
+      }));
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "PassChainScheduleRole", actions: ["iam:PassRole"], resources: [chainScheduleInvokeRole.roleArn], conditions: { StringEquals: { "iam:PassedToService": "scheduler.amazonaws.com" } },
+      }));
+      // The sweep reads, deletes and parks the dead letters (ChangeMessageVisibility hides one that keeps failing), and a fire that failed records itself here (SendMessage), because the
+      // scheduler invokes the broker asynchronously and never sees its errors. All on this one queue.
+      broker.addToRolePolicy(new iam.PolicyStatement({
+        sid: "UseChainScheduleDeadLetters", actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:SendMessage"], resources: [chainScheduleDeadLetters.queueArn],
+      }));
+      // A letter that is parked, or that the sweep cannot clear, stays in the queue. The age metric is no use: SQS stops counting a message in it once it has been received three
+      // times, and a poison letter is received up to six. A parked letter is not visible (its visibility is 12 hours), so the alarm counts visible plus in-flight messages and
+      // fires when the queue has held any for three 5-minute periods (the sweep clears an ordinary letter within one).
+      new cloudwatch.Alarm(this, "ChainScheduleDeadLettersAlarm", {
+        alarmName: naming.alarmName("ChainScheduleDeadLetters"),
+        alarmDescription: "A schedule trigger's fire failed and its record has stayed in the chain schedule dead-letter queue for 15 minutes or more: the sweep could not handle it, or it was parked after repeated tries. Check the queue and the broker logs (schedule.dead_letter_failed, schedule.dead_letter_parked) for the trigger's id.",
+        metric: new cloudwatch.MathExpression({
+          expression: "FILL(visible, 0) + FILL(notVisible, 0)",
+          usingMetrics: {
+            visible: chainScheduleDeadLetters.metricApproximateNumberOfMessagesVisible({ statistic: "Maximum", period: Duration.minutes(5) }),
+            notVisible: chainScheduleDeadLetters.metricApproximateNumberOfMessagesNotVisible({ statistic: "Maximum", period: Duration.minutes(5) }),
+          },
+          period: Duration.minutes(5),
+          label: "Messages in the chain schedule dead-letter queue",
+        }),
+        threshold: 0,
+        evaluationPeriods: 3,
+        datapointsToAlarm: 3,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction(notifyOperator);
+    }
     // Gap 6: re-run any workflow dispatch (an automatic review start) left behind after its result committed.
     const workflowDispatchRecoveryRole = new iam.Role(this, "WorkflowDispatchRecoveryRole", {
       assumedBy: schedulerPrincipal,
@@ -1006,12 +1140,12 @@ export class ControlPlaneStack extends Stack {
       if (configuredHosting !== undefined && configuredHosting !== "cloudfront" && configuredHosting !== "cell") throw new Error("agentxWebAssetHosting must be cloudfront or cell");
       const web = new WebApp(this, "WebApp", { naming, api, assetHosting: configuredHosting === "cell" ? "cell" : "cloudfront" });
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
-        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: [...githubInstallRoutes.map(route => ({ route, burst: 50, rate: 20 })), ...web.routes],
+        naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: [...githubInstallRoutes.map(route => ({ route, burst: 50, rate: 20 })), ...web.routes], ...(eventHookRoute === undefined ? {} : { hookRoute: eventHookRoute }),
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       signInFunction = developerSignIn.signInFunction;
       // Plan 5, Task 8: change notices over an AppSync Events API. The broker and the outbox publisher publish to its one namespace; clients subscribe with a short-lived token
-      // the authorizer checks (it may read the token key's public half and nothing more). The broker gets the API's id in its names and builds the endpoint from it
+      // the authorizer checks (it may read the token key's public half and nothing more). The broker gets the DNS prefix of the API's hosts (not its id: that host does not exist) in its names and builds the endpoint from it
       // (its variables are held to 4 KB); the outbox publisher gets the endpoint whole.
       const realtime = new RealtimeEvents(this, "Realtime", {
         env: naming.env, state, tokenKey: developerSignIn.tokenKey, allowPublicKeyRead: (role) => developerSignIn.allowPublicKeyRead(role),
@@ -1022,7 +1156,7 @@ export class ControlPlaneStack extends Stack {
       realtime.grantPublish(broker);
       realtime.grantPublish(outboxPublisher);
       outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
-      BrokerNames.of(broker).add("realtimeApi", realtime.api.apiId);
+      BrokerNames.of(broker).add("realtimeApi", realtime.dnsPrefix);
       if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,
@@ -1033,10 +1167,12 @@ export class ControlPlaneStack extends Stack {
           dispatcher,
         });
       }
-      broker.addEnvironment("AGENTX_TASK_PEOPLE_CHANGES_ENABLED", signInParameters.taskPeopleChangesEnabled.valueAsString);
-      broker.addEnvironment("AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED", signInParameters.taskPeoplePublicInvitationsEnabled.valueAsString);
-      broker.addEnvironment("AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED", signInParameters.taskPeoplePrivateInvitationsEnabled.valueAsString);
-      broker.addEnvironment("AGENTX_WORKFLOW_DEPENDENCIES_ENABLED", signInParameters.workflowDependenciesEnabled.valueAsString);
+      // The four flags are parameters with an allowed list (true, false), so the broker is given them in its settings (BrokerSettings), not as variables of their own.
+      const brokerSettings = BrokerSettings.of(broker);
+      brokerSettings.add("taskPeopleChanges", signInParameters.taskPeopleChangesEnabled.valueAsString);
+      brokerSettings.add("taskPeoplePublicInvitations", signInParameters.taskPeoplePublicInvitationsEnabled.valueAsString);
+      brokerSettings.add("taskPeoplePrivateInvitations", signInParameters.taskPeoplePrivateInvitationsEnabled.valueAsString);
+      brokerSettings.add("workflowDependencies", signInParameters.workflowDependenciesEnabled.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context
@@ -1164,6 +1300,7 @@ export class ControlPlaneStack extends Stack {
         stateTable: state,
         notifyOperator,
         appenderRole: auditAppenderRole,
+        ...(props?.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
         ...(signInFunction === undefined ? {} : { signInFunction }),
         ...(props?.deploymentRegion === undefined ? {} : { deploymentRegion: props.deploymentRegion }),
       });
@@ -1191,7 +1328,8 @@ export class ControlPlaneStack extends Stack {
       const vpcId = new CfnParameter(this, "VpcId", { type: "String", description: "The foundation's VPC" }).valueAsString;
       // Ruling R55: the broker binds a cloud org's new project to the same EC2 workers `agentx project add` binds to
       // (launch template, and one private subnet per availability zone as availabilityZone=subnetId pairs).
-      broker.addEnvironment("EC2_WORKER_LAUNCH_TEMPLATE_ID", sessions.launchTemplateId.valueAsString);
+      // In the broker's names (BrokerNames): an AWS-generated id, and its variables are held to Lambda's 4 KB.
+      BrokerNames.of(broker).add("launchTemplate", sessions.launchTemplateId.valueAsString);
       broker.addEnvironment("EC2_WORKER_SUBNETS", new CfnParameter(this, "Ec2WorkerSubnets", { type: "String", description: "The foundation's EC2 worker subnets, as availabilityZone=subnetId pairs" }).valueAsString);
       modelProxy = new ModelProxy(this, "ModelProxy", {
         naming,
@@ -1205,6 +1343,8 @@ export class ControlPlaneStack extends Stack {
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this
       // VPC-attached function, the only reader of the master key besides the proxy. The broker may invoke it, and nothing else.
       const modelAccessFunction = packagedFunction(this, "ModelAccessFunction", "packages/broker/src/model-proxy/handler.ts", {});
+      // A fixed name, like the broker's: the Bedrock source probe's role is one of the three the default boundary's AssumeOrgRoles statement names.
+      (modelAccessFunction.role!.node.defaultChild as iam.CfnRole).roleName = modelAccessProbeRoleName(naming.env);
       new ModelAccess(this, "ModelAccess", {
         naming,
         vpcId,
@@ -1215,7 +1355,8 @@ export class ControlPlaneStack extends Stack {
       modelAccessFunction.grantInvoke(broker);
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);
       // Ruling R29: the proxy's address, which the broker hands a task's worker together with its key.
-      broker.addEnvironment("MODEL_PROXY_URL", modelProxy.url);
+      // The load balancer's name, in the broker's names: the host is <name>.<region>.elb.amazonaws.com and the port is MODEL_PROXY_INFERENCE_PORT, so the broker builds the URL.
+      BrokerNames.of(broker).add("modelProxy", modelProxy.loadBalancerName);
       // The worker asks for its key with the operation's callback capability, which the broker verifies; like the
       // setup execution read above, the one GET is exempt from the JWT authorizer.
       new apigwv2.CfnRoute(this, "ModelAccessRoute", {
@@ -1253,6 +1394,37 @@ export class ControlPlaneStack extends Stack {
           ],
         },
       });
+      // M1.4 Task 4.9: the model canary's request and result, exact keys under the same prefix. A policy of its own, so the guarded add-only change set of the
+      // qualification-transport deploy unit adds it beside the deployed grant without modifying that grant.
+      new iam.CfnPolicy(this, "E2eQualificationTransportCanary", {
+        policyName: "E2eQualificationTransportCanary",
+        roles: [sessions.instanceRoleName],
+        policyDocument: {
+          Version: "2012-10-17",
+          Statement: [
+            { Sid: "ReadModelCanaryRequest", Effect: "Allow", Action: "s3:GetObject", Resource: artifacts.arnForObjects(`${ownPrefix}/canary-request.json`) },
+            { Sid: "WriteModelCanaryResult", Effect: "Allow", Action: "s3:PutObject", Resource: artifacts.arnForObjects(`${ownPrefix}/canary-result.json`) },
+          ],
+        },
+      });
+      // M1.4 Task 4.10C, read-only model discovery for the runner's worker (what the model check lists: Bedrock models and profiles, availability, and the tokens-per-minute quotas).
+      // No invoke grant is added: the driving test uses BedrockModelInvocation, which already covers the foundation models and this account's inference profiles (global. included).
+      // `bedrock:GetFoundationModelAvailability` is `*` because the action has no resource type in the Service Authorization Reference. The broker needs no grant of its own for the check keys: its role already reads and writes the artifact bucket. Named like the transport policies so the
+      // qualification-transport unit adds it (prefix E2eQualificationTransport); its policy name is E2eModelDiscovery.
+      new iam.CfnPolicy(this, "E2eQualificationTransportDiscovery", {
+        policyName: "E2eModelDiscovery",
+        roles: [sessions.instanceRoleName],
+        policyDocument: {
+          Version: "2012-10-17",
+          Statement: [
+            { Sid: "ListBedrockModels", Effect: "Allow", Action: ["bedrock:ListFoundationModels", "bedrock:ListInferenceProfiles"], Resource: "*" },
+            { Sid: "ReadBedrockModelAvailability", Effect: "Allow", Action: "bedrock:GetFoundationModelAvailability", Resource: "*" },
+            { Sid: "ReadBedrockInferenceProfiles", Effect: "Allow", Action: "bedrock:GetInferenceProfile", Resource: `arn:${Aws.PARTITION}:bedrock:${Aws.REGION}:${Aws.ACCOUNT_ID}:inference-profile/*` },
+            { Sid: "ListBedrockQuotas", Effect: "Allow", Action: "servicequotas:ListServiceQuotas", Resource: "*" },
+            { Sid: "ReadBedrockQuota", Effect: "Allow", Action: "servicequotas:GetServiceQuota", Resource: `arn:${Aws.PARTITION}:servicequotas:${Aws.REGION}:${Aws.ACCOUNT_ID}:bedrock/*` },
+          ],
+        },
+      });
     }
     sessions.steps.addEnvironment("CONTROL_PLANE_URL", api.attrApiEndpoint);
     sessions.connectDispatcher(dispatcher);
@@ -1275,7 +1447,7 @@ export class ControlPlaneStack extends Stack {
     state.grantReadWriteData(evalBatchTick);
     // A run's launch.json (evals/<runId>/) and a batch's results (evals/batches/<id>/); it reads nothing there.
     evalBatchTick.addToRolePolicy(new iam.PolicyStatement({ sid: "WriteEvalObjects", actions: ["s3:PutObject"], resources: [artifacts.arnForObjects("evals/*")] }));
-    evalBatchTick.addToRolePolicy(new iam.PolicyStatement({ sid: "ReadEvalSettings", actions: ["ssm:GetParameters"], resources: swebenchParameterArns }));
+    evalBatchTick.addToRolePolicy(new iam.PolicyStatement({ sid: "ReadEvalSettings", actions: ["ssm:GetParameters"], resources: evalSettingArns }));
     evalBatchTick.addToRolePolicy(new iam.PolicyStatement({ sid: "StartEvalRuns", actions: ["states:StartExecution"], resources: [swebenchStateMachineArn] }));
     // Ruling 16: a dead run's instance, ended before the run is charged; this environment's eval instances only.
     evalBatchTick.addToRolePolicy(new iam.PolicyStatement({
@@ -1353,6 +1525,27 @@ export class ControlPlaneStack extends Stack {
         metricName: "GithubInstallRequestNoticeFailed",
         metricValue: "1",
       });
+    }
+
+    // Plan 4 Task 8 (R41), named environments only: an autonomous chain run's write must always have approvers. When the selector Plan 3's agent-tools call asks for them
+    // throws, times out or answers what it must not, the write falls back to Plan 3's default approvers and the broker logs `write_approver_selector.failed`. This counts
+    // those lines and alarms on any in 5 minutes, so a selector that has stopped working is seen, as the egress alarms are. The legacy template stays as it is.
+    if (naming.env !== undefined) {
+      broker.logGroup.addMetricFilter("ChainWriteApproverSelectorFailuresMetric", {
+        filterPattern: logs.FilterPattern.stringValue("$.event", "=", "write_approver_selector.failed"),
+        metricNamespace: naming.metricsNamespace,
+        metricName: "ChainWriteApproverSelectorFailures",
+        metricValue: "1",
+      });
+      new cloudwatch.Alarm(this, "ChainWriteApproverSelectorFailedAlarm", {
+        alarmName: naming.alarmName("ChainWriteApproverSelectorFailed"),
+        alarmDescription: "The selector that chooses who approves an autonomous chain run's write failed, so the write fell back to the default approvers (the run's owner and the project's maintainers). Check the broker logs for write_approver_selector.failed lines and the task they name.",
+        metric: agentxSum("ChainWriteApproverSelectorFailures", Duration.minutes(5)),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction(notifyOperator);
     }
 
     new CfnOutput(this, "ApiEndpoint", { value: api.attrApiEndpoint });

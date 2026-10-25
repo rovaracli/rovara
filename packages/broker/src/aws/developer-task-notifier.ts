@@ -18,6 +18,8 @@ import { readStream, type Notice, type StreamRecord } from "../developer/notific
 import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
 import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
 import { deriveTaskStatus, failureCategory, plannerRepliesKey, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type OperationFacts, type TaskShare } from "../developer/task-records.js";
+import { bindingItemsForOpenSession } from "../agent-sessions/bindings.js";
+import { failedIndexes } from "../agents/table-writes.js";
 import { isConditional } from "./broker-shared.js";
 import { requiredEnvironment } from "./lambda.js";
 import { parseSlackSecrets } from "./slack-ingress.js";
@@ -529,13 +531,19 @@ async function currentStatus(deps: NotifierDependencies, task: DeveloperTaskReco
   return deriveTaskStatus({ closedAt: task.closedAt, outcome: task.outcome, workspaceStatus: workspace?.status ?? "PREPARING", pointer, operations: operations as unknown as OperationFacts[] }).status;
 }
 
+/** How many items `recordThread` writes before the session's binding items: the task's share, the thread's record and the notice marker. */
+const THREAD_RECORD_ITEMS = 3;
+
 /**
  * C1, C2: the thread on the task and its record, in ONE transaction, so the close and the share
  * routes (which condition on the record existing) never find a thread without its record. Retried
  * on a share change or a close meanwhile; a task closed first gets a closed record at once (C24).
  */
 async function recordThread(deps: NotifierDependencies, taskId: string, threadTs: string, marker: { pk: string; sk: string }): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  // Plan 5 Task 20: the session follows the thread, written in this same transaction. The thread's record is the core of the share, so a binding that can't be
+  // made (the thread already follows another session, the session has ended) is left out and logged, and the thread is recorded without it.
+  let bindToSession = true;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     const task = await getItem<DeveloperTaskRecord>(deps, taskKey(taskId));
     if (task?.share === undefined) return;
     if (task.share.threadTs !== undefined) {
@@ -548,15 +556,19 @@ async function recordThread(deps: NotifierDependencies, taskId: string, threadTs
     const share: TaskShare = { ...task.share, threadTs };
     const version = task.shareVersion ?? 0;
     const now = new Date(deps.now()).toISOString();
+    const binding = bindToSession && task.sessionId !== undefined && task.orgId !== undefined
+      ? bindingItemsForOpenSession(deps, task.orgId, task.sessionId, { kind: "slack_thread", teamId: share.teamId, channelId: share.channelId, threadTs }, now)
+      : [];
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
           UpdateExpression: "SET #share = :share, shareVersion = :next, updatedAt = :now",
-          // A close does not move shareVersion, so the close state read here is a condition too.
-          ConditionExpression: task.closedAt === undefined ? "shareVersion = :current AND attribute_not_exists(closedAt)" : "shareVersion = :current",
+          // A close does not move shareVersion, so the close state read here is a condition too. So is the task's session (or its absence): one given to the task meanwhile
+          // (a lazy creation) refuses this write, and the read again binds it.
+          ConditionExpression: `shareVersion = :current AND ${task.sessionId === undefined ? "attribute_not_exists(sessionId)" : "sessionId = :sessionId"}${task.closedAt === undefined ? " AND attribute_not_exists(closedAt)" : ""}`,
           ExpressionAttributeNames: { "#share": "share" },
-          ExpressionAttributeValues: { ":share": share, ":next": version + 1, ":current": version, ":now": now },
+          ExpressionAttributeValues: { ":share": share, ":next": version + 1, ":current": version, ":now": now, ...(task.sessionId === undefined ? {} : { ":sessionId": task.sessionId }) },
         } },
         { Put: {
           TableName: deps.tableName,
@@ -570,10 +582,17 @@ async function recordThread(deps: NotifierDependencies, taskId: string, threadTs
           ConditionExpression: "attribute_not_exists(pk)",
         } },
         { Put: { TableName: deps.tableName, Item: { ...marker, entityType: "NOTICE", deliveredAt: now, ...noticeExpiry(deps) }, ConditionExpression: MARKER_CONDITION } },
+        ...binding,
       ] }));
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
+      // The binding's items come last: a refusal at any of them (whether or not the thread's own items were refused too) drops the binding, and the thread is tried again
+      // after reading the task again, without the binding. If the thread's own items were the only cause the next attempt records it; if not, nothing is lost.
+      if (binding.length > 0 && [...(failedIndexes(error) ?? [])].some((index) => index >= THREAD_RECORD_ITEMS)) {
+        bindToSession = false;
+        deps.log({ event: "developer_notifier.session_binding_skipped", taskId });
+      }
     }
   }
   deps.log({ event: "developer_notifier.thread_record_failed", taskId });
@@ -693,8 +712,8 @@ function structuredCardClaims(plan: PlanDocument): NonNullable<WorkflowMessageCo
 /**
  * The approval card's link and summary: the document is read through its recorded key and its digest checked; then a
  * Canvas holds the full text (recorded before and after it is created, so a retry never makes a second one). When no
- * Canvas can be linked, the task page is; when nothing can be, the card says so. A document whose digest does not
- * match is neither summarised nor linked.
+ * Canvas can be linked, the task page is. A document whose digest does not match is neither summarised nor linked
+ * (it returns nothing), and the card then links the task page itself, so the owner can still reach the plan.
  */
 async function prepareDocumentLink(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot): Promise<{ url?: string; summary?: string[]; structured?: NonNullable<WorkflowMessageContext["structured"]>; workBreakdownDigest?: string }> {
   const unavailable = (reason: string) => deps.log({ event: "developer_notifier.document_link_unavailable", taskId: task.taskId, workflowRevision: workflow.revision, reason });
@@ -844,6 +863,13 @@ function reopenedOf(value: unknown): Array<{ repositoryId: string; number: numbe
   });
 }
 
+/** Whether a browser and API test round has started for the workflow's current candidate. */
+function e2eRoundStarted(workflow: WorkflowSnapshot): boolean {
+  const { e2e, candidate } = workflow;
+  if (e2e === undefined || candidate === undefined) return false;
+  return e2e.currentRoundId !== undefined || e2e.qualifiedRound?.candidateDigest === candidate.digest || e2e.failedRound?.candidateDigest === candidate.digest;
+}
+
 async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot, reopenedPullRequests?: ReadonlyArray<{ repositoryId: string; number: number }>): Promise<Reply | undefined> {
   // A task closed in Slack has its own closed reply; a second "closed" line would say it twice.
   if (workflow.stage === "CLOSED" && task.closedAt !== undefined) return undefined;
@@ -883,7 +909,7 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
     })
     : undefined;
   const unavailableE2E = workflow.e2e?.required === true && e2eBlocks === undefined
-    ? [renderE2EUnavailableSlackBlock(context.taskPageUrl)]
+    ? [renderE2EUnavailableSlackBlock(context.taskPageUrl, e2eRoundStarted(workflow))]
     : [];
   const blocks = e2eBlocks === undefined
     ? [...(message.blocks ?? []), ...unavailableE2E].slice(0, 50)
@@ -1812,22 +1838,33 @@ function createAwsNotifierHandler() {
     peopleChangesEnabled: process.env.AGENTX_TASK_PEOPLE_CHANGES_ENABLED === "true",
     workflowE2EBlocks: async (task, operations) => {
       void operations;
-      const progress = task.workflow?.e2e;
-      const candidateDigest = task.workflow?.candidate?.digest;
-      const ref = progress?.displayRef;
-      if (candidateDigest === undefined || progress?.currentRoundId === undefined || ref === undefined) return undefined;
-      const view = await readWorkflowE2ENotifierProjection({ ref, ownerKey: task.ownerKey, workspaceId: task.workspaceId, current: { candidateDigest, roundId: progress.currentRoundId,
-        groupRunIds: progress.currentGroupRunIds, admissionSha256: ref.admissionSha256, evidenceSha256: ref.evidenceSha256 },
-      readPrivateObject: async (key, maxBytes) => {
-        if (maxBytes > 262_144 || !/^private\/[^/]+\/[^/]+\/workflow-e2e-display\/[a-f0-9]{64}\.json$/u.test(key)) return undefined;
-        const response = await s3.send(new GetObjectCommand({ Bucket: requiredEnvironment("ARTIFACT_BUCKET_NAME"), Key: key }));
-        const bytes = response.Body === undefined ? undefined : Buffer.from(await response.Body.transformToByteArray());
-        return bytes !== undefined && bytes.byteLength <= maxBytes ? bytes : undefined;
-      } });
-      return view === undefined ? undefined : renderE2ENotifierSlackBlocks(view.view,
-        { candidateDigest: view.candidateDigest, roundId: view.roundId, capturedAt: view.capturedAt }, taskPageUrlFromBase(reviewUrlBase, task.taskId));
+      return workflowE2ENotifierBlocks({ task, taskPageUrl: taskPageUrlFromBase(reviewUrlBase, task.taskId),
+        readPrivateObject: async (key, maxBytes) => {
+          if (maxBytes > 262_144 || !/^private\/[^/]+\/[^/]+\/workflow-e2e-display\/[a-f0-9]{64}\.json$/u.test(key)) return undefined;
+          const response = await s3.send(new GetObjectCommand({ Bucket: requiredEnvironment("ARTIFACT_BUCKET_NAME"), Key: key }));
+          const bytes = response.Body === undefined ? undefined : Buffer.from(await response.Body.transformToByteArray());
+          return bytes !== undefined && bytes.byteLength <= maxBytes ? bytes : undefined;
+        } });
     },
   });
+}
+
+/**
+ * The Slack blocks of a task's stored E2E display, or undefined when it has none this reader can use (a different round, changed bytes, or a display schema newer than this
+ * code reads), in which case the notifier says "Open the task page" and states no verdict. A display with scenario rows (schema v2, M1.3) reads as the per-scenario summary.
+ */
+export async function workflowE2ENotifierBlocks(input: { task: Pick<DeveloperTaskRecord, "taskId" | "ownerKey" | "workspaceId" | "workflow">; taskPageUrl?: string | undefined;
+  readPrivateObject: (key: string, maxBytes: number) => Promise<Uint8Array | undefined> }): Promise<unknown[] | undefined> {
+  const { task } = input;
+  const progress = task.workflow?.e2e;
+  const candidateDigest = task.workflow?.candidate?.digest;
+  const ref = progress?.displayRef;
+  if (candidateDigest === undefined || progress?.currentRoundId === undefined || ref === undefined) return undefined;
+  const view = await readWorkflowE2ENotifierProjection({ ref, ownerKey: task.ownerKey, workspaceId: task.workspaceId, current: { candidateDigest, roundId: progress.currentRoundId,
+    groupRunIds: progress.currentGroupRunIds, admissionSha256: ref.admissionSha256, evidenceSha256: ref.evidenceSha256 },
+  readPrivateObject: input.readPrivateObject });
+  return view === undefined ? undefined : renderE2ENotifierSlackBlocks(view.view,
+    { candidateDigest: view.candidateDigest, roundId: view.roundId, capturedAt: view.capturedAt, ...(view.scenarioResults === undefined ? {} : { scenarioResults: view.scenarioResults }) }, input.taskPageUrl);
 }
 
 let awsHandler: ReturnType<typeof createNotifierHandler> | undefined;

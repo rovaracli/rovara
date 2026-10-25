@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BOUNDARY_SERVICES, MANAGED_POLICY_ACTIONS, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
+import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/contracts";
 
 const scope: PolicyScope = {
   env: "staging", partition: "aws", region: "us-east-1", account: "123456789012",
@@ -39,9 +40,9 @@ describe("service role policy", () => {
         expect(resources).toEqual(["arn:aws:iam::123456789012:role/aws-service-role/*"]);
         expect(statement.Condition?.StringLike?.["iam:AWSServiceName"]).toBeDefined();
       } else if (statement.Sid === "IamFixedNameRolesNotYetCreated") {
-        // The one fixed-name role: IAM authorizes CloudFormation's lookup of it before it exists against its path-less ARN.
+        // The fixed-name roles: IAM authorizes CloudFormation's lookup of each before it exists against its path-less ARN.
         // Reads and deletes only, never create or change (tests/contract/role-paths.test.ts proves what each action may do).
-        expect(resources).toEqual(["arn:aws:iam::123456789012:role/agentx-staging-connector-secrets"]);
+        expect(resources).toEqual(["connector-secrets", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule"].map((name) => `arn:aws:iam::123456789012:role/agentx-staging-${name}`));
         expect(statement.Action.every((a) => /^iam:(Get|List|Delete|Detach)/.test(a))).toBe(true);
       } else if (statement.Sid === "IamInstanceProfiles") {
         // The EC2 workers' instance profile, under the same path as the environment's roles.
@@ -302,6 +303,106 @@ describe("operator role policy", () => {
   });
 });
 
+// Owner decision A (task-15-16-review.md, "AssumeOrgRoles: recommendation for the owner"): the ceiling is raised for the broker, the model proxy task role and the
+// model access probe only, and the exclusion covers every account of Rovara's own AWS Organization when one is configured.
+const THREE_ROLE_ARNS = [
+  "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role",
+  "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-model-proxy-task",
+  "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-model-access-probe",
+];
+const ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION = {
+  Sid: "AssumeOrgRoles", Effect: "Allow", Action: ["sts:AssumeRole"], Resource: "arn:aws:iam::*:role/*",
+  Condition: {
+    ArnLike: { "aws:PrincipalArn": THREE_ROLE_ARNS },
+    StringNotEquals: { "aws:ResourceAccount": "123456789012" },
+    StringLike: { "sts:ExternalId": "rovara-org_*" },
+  },
+};
+const ORGANIZATION_ID = "o-abc123def4";
+const ASSUME_ORG_ROLES_WITH_ORGANIZATION = {
+  ...ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION,
+  Condition: { ...ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION.Condition, StringNotEquals: { "aws:ResourceAccount": "123456789012", "aws:ResourceOrgID": ORGANIZATION_ID } },
+};
+const assumeOrgRoles = (s: PolicyScope) => defaultBoundaryStatements(s).find((st) => st.Sid === "AssumeOrgRoles")!;
+/** IAM's ArnLike: a glob over the whole ARN, `*` any run and `?` one character, case-sensitive. */
+const arnLike = (pattern: string, arn: string) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`).test(arn);
+/** Whether the statement's ArnLike condition lets this principal use the statement at all: a principal that fails it gets no raised ceiling. */
+const raisesCeilingFor = (statement: ReturnType<typeof assumeOrgRoles>, principalArn: string) =>
+  [statement.Condition!.ArnLike!["aws:PrincipalArn"]!].flat().some((pattern) => arnLike(pattern, principalArn));
+
+describe("AssumeOrgRoles in the default permission boundary (owner decision A)", () => {
+  it("is exactly this statement when no Rovara organization is configured: the three roles, this account excluded, the external id kept", () => {
+    expect(assumeOrgRoles(scope)).toEqual(ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION);
+    expect(JSON.stringify(assumeOrgRoles(scope))).toBe(JSON.stringify(ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION));
+    expect(JSON.stringify(assumeOrgRoles(scope))).not.toContain("aws:ResourceOrgID");
+  });
+
+  it("adds aws:ResourceOrgID beside aws:ResourceAccount, in the same StringNotEquals, when a Rovara organization is configured", () => {
+    expect(assumeOrgRoles({ ...scope, rovaraOrganizationId: ORGANIZATION_ID })).toEqual(ASSUME_ORG_ROLES_WITH_ORGANIZATION);
+    expect(JSON.stringify(assumeOrgRoles({ ...scope, rovaraOrganizationId: ORGANIZATION_ID }))).toBe(JSON.stringify(ASSUME_ORG_ROLES_WITH_ORGANIZATION));
+  });
+
+  it("never hard-codes an organization id: the document holds only the one it was given", () => {
+    expect(JSON.stringify(defaultBoundaryStatements(scope))).not.toMatch(/o-[a-z0-9]{10,32}/);
+    expect(JSON.stringify(defaultBoundaryStatements({ ...scope, rovaraOrganizationId: "o-zzzzzzzzzz" }))).toContain("o-zzzzzzzzzz");
+    expect(JSON.stringify(defaultBoundaryStatements({ ...scope, rovaraOrganizationId: "o-zzzzzzzzzz" }))).not.toContain(ORGANIZATION_ID);
+  });
+
+  it("refuses an organization id that is not an AWS Organizations id, rather than writing it into a policy", () => {
+    for (const bad of ["", "abc123def4", "o-ABC123DEF4", "o-short", "o-abc123def4 ", `o-${"a".repeat(33)}`, "r-abc1", "o-abc123def4\"}"]) {
+      expect(() => defaultBoundaryStatements({ ...scope, rovaraOrganizationId: bad }), JSON.stringify(bad)).toThrow(/organization id/i);
+    }
+  });
+
+  it("names the three roles by their fixed names under the environment's path", () => {
+    expect(brokerRoleName("staging")).toBe("agentx-staging-broker-role");
+    expect(modelProxyTaskRoleName("staging")).toBe("agentx-staging-model-proxy-task");
+    expect(modelAccessProbeRoleName("staging")).toBe("agentx-staging-model-access-probe");
+    expect(assumeOrgRoles(scope).Condition!.ArnLike!["aws:PrincipalArn"]).toEqual(THREE_ROLE_ARNS);
+  });
+
+  it("keeps the three names distinct from every other fixed role name and within IAM's 64 characters, for the longest environment name", () => {
+    const longest = "a".repeat(20);
+    const names = [brokerRoleName(longest), modelProxyTaskRoleName(longest), modelAccessProbeRoleName(longest)];
+    expect(new Set(names).size).toBe(3);
+    for (const name of names) expect(name.length).toBeLessThanOrEqual(64);
+    for (const other of [`agentx-${longest}-connector-secrets`, `agentx-${longest}-cloudformation`, `agentx-${longest}-operator`, `agentx-${longest}-boundary`]) expect(names).not.toContain(other);
+  });
+
+  it("raises the ceiling for the three roles and no other principal", () => {
+    const statement = assumeOrgRoles(scope);
+    for (const arn of THREE_ROLE_ARNS) expect(raisesCeilingFor(statement, arn), arn).toBe(true);
+    for (const arn of [
+      // Another role of the same environment: the ConnectorSecretsRole, the CloudFormation and operator roles, a generated worker or orchestrator role.
+      "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets",
+      "arn:aws:iam::123456789012:role/agentx-staging-cloudformation",
+      "arn:aws:iam::123456789012:role/agentx-staging-operator",
+      "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-control-plane-SlackOrchestratorTaskRole1A2B3C4D-XYZ",
+      "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-runtime-WorkerInstanceRole-ABCDEF",
+      // A prefix, a suffix or a case change of a listed name, the same name outside the environment's path, in another environment, or in another account.
+      "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role-extra",
+      "arn:aws:iam::123456789012:role/agentx/staging/xagentx-staging-broker-role",
+      "arn:aws:iam::123456789012:role/agentx/staging/AGENTX-STAGING-BROKER-ROLE",
+      "arn:aws:iam::123456789012:role/agentx-staging-broker-role",
+      "arn:aws:iam::123456789012:role/agentx/prod/agentx-prod-broker-role",
+      "arn:aws:iam::999999999999:role/agentx/staging/agentx-staging-broker-role",
+    ]) expect(raisesCeilingFor(statement, arn), arn).toBe(false);
+  });
+
+  it("holds no wildcard in the principal list, so the three roles are all it can ever match", () => {
+    for (const arn of assumeOrgRoles(scope).Condition!.ArnLike!["aws:PrincipalArn"]!) expect(arn).not.toMatch(/[*?]/);
+  });
+
+  it("still excludes this account's roles and still requires a Rovara external id, with or without an organization", () => {
+    for (const statement of [assumeOrgRoles(scope), assumeOrgRoles({ ...scope, rovaraOrganizationId: ORGANIZATION_ID })]) {
+      expect(statement.Condition!.StringNotEquals!["aws:ResourceAccount"]).toBe("123456789012");
+      expect(statement.Condition!.StringLike).toEqual({ "sts:ExternalId": "rovara-org_*" });
+      expect(statement.Action).toEqual(["sts:AssumeRole"]);
+      expect(Object.keys(statement.Condition!).sort()).toEqual(["ArnLike", "StringLike", "StringNotEquals"]);
+    }
+  });
+});
+
 describe("default permission boundary", () => {
   const statements = defaultBoundaryStatements(scope);
   const allows = statements.filter((s) => s.Effect === "Allow");
@@ -331,9 +432,12 @@ describe("default permission boundary", () => {
     expect(allows.find((s) => s.Sid === "Services")!.Action).not.toContain("events:*");
   });
 
-  it("allows only sts:GetCallerIdentity from STS, and AssumeRole with TagSession for the one ConnectorSecretsRole", () => {
+  it("allows only sts:GetCallerIdentity from STS, AssumeRole with TagSession for the one ConnectorSecretsRole, and AssumeRole into other accounts' roles with a Rovara external id", () => {
     const sts = allows.flatMap((s) => s.Action).filter((a) => a.startsWith("sts:"));
-    expect(sts).toEqual(["sts:GetCallerIdentity", "sts:AssumeRole", "sts:TagSession"]);
+    expect(sts).toEqual(["sts:GetCallerIdentity", "sts:AssumeRole", "sts:TagSession", "sts:AssumeRole"]);
+    // Plan 4 Task 16 (and Plan 3's Bedrock sources): a bounded role's own policy may grant this, and the boundary must not cap it away. Another account's role only,
+    // only with an external id that names a Rovara org, and (owner decision A) only for the three roles that need it: see "AssumeOrgRoles" below.
+    expect(allows.find((s) => s.Sid === "AssumeOrgRoles")).toEqual(ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION);
     expect(allows.find((s) => s.Sid === "CallerIdentity")).toEqual({ Sid: "CallerIdentity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" });
     // Plan 3 (R62): the broker assumes this one role, named exactly; no wildcard, and no other role.
     expect(allows.find((s) => s.Sid === "ConnectorSecretsRole")).toEqual({
@@ -341,7 +445,7 @@ describe("default permission boundary", () => {
       Resource: "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets",
     });
     expect(allows.flatMap((s) => s.Action).filter((a) => a === "*" || a === "sts:*")).toEqual([]);
-    expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole"]);
+    expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole", "AssumeOrgRoles"]);
   });
 
   it("never allows iam:* or any user, group, access key, login profile or managed-policy action, except agentx-* managed policies (ruling M2)", () => {

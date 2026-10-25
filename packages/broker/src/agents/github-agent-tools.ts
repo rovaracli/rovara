@@ -14,8 +14,14 @@ export interface GitHubAgentToolPermissionSet {
   contents?: "read";
 }
 
-/** What a token for one call carries: the tool's permissions plus `metadata: read`. */
-export type GitHubAgentTokenPermissions = GitHubAgentToolPermissionSet & { metadata?: "read" };
+/** What a token for one call carries: the tool's permissions plus `metadata: read`. `actions` and `deployments` are Plan 4's GitHub Actions connector's, at `read` only. */
+export type GitHubAgentTokenPermissions = GitHubAgentToolPermissionSet & { metadata?: "read"; actions?: "read"; deployments?: "read" };
+
+/** What a GitHub Actions tool's catalog entry may hold (Plan 4 Task 17): reads of workflow runs and deployments, and nothing else. */
+export interface GitHubActionsToolPermissionSet {
+  actions?: "read";
+  deployments?: "read";
+}
 
 const ISSUES_READ = { issues: "read" } as const;
 const ISSUES_WRITE = { issues: "write" } as const;
@@ -52,6 +58,31 @@ export const GITHUB_AGENT_TOOL_PERMISSIONS: Readonly<Record<string, Readonly<Git
   get_file_contents: CONTENTS_READ,
   search_code: CONTENTS_READ,
 });
+
+const ACTIONS_READ = Object.freeze({ actions: "read" } as const);
+const DEPLOYMENTS_READ = Object.freeze({ deployments: "read" } as const);
+
+/**
+ * Plan 4 Task 17: the permissions each GitHub Actions connector tool mints its token with, read-only by type. This is the connector's own catalog: the
+ * Plan 3 refusal list below (`*workflow*`) belongs to the tools of the `github` connector and does not apply to it. A tool not listed here is refused.
+ */
+export const GITHUB_ACTIONS_AGENT_TOOL_PERMISSIONS: Readonly<Record<string, Readonly<GitHubActionsToolPermissionSet>>> = Object.freeze({
+  list_workflow_runs: ACTIONS_READ,
+  get_workflow_execution: ACTIONS_READ,
+  list_execution_jobs: ACTIONS_READ,
+  get_job_log: ACTIONS_READ,
+  list_deployments: DEPLOYMENTS_READ,
+  list_deployment_statuses: DEPLOYMENTS_READ,
+});
+
+/** The permissions a call to a GitHub Actions tool mints a token with: the tool's own plus `metadata: read`. A tool not in the catalog throws AGENT_TOOL_NOT_GRANTED. */
+export function githubActionsToolPermissions(
+  tool: string,
+  catalog: Readonly<Record<string, Readonly<GitHubActionsToolPermissionSet>>> = GITHUB_ACTIONS_AGENT_TOOL_PERMISSIONS,
+): GitHubAgentTokenPermissions {
+  if (typeof tool !== "string" || !Object.hasOwn(catalog, tool)) throw agentXError("AGENT_TOOL_NOT_GRANTED", "That GitHub Actions tool is not available.");
+  return { ...catalog[tool], metadata: "read" };
+}
 
 /**
  * Tools that are never presented and never run, whatever a project approved: a call is refused with
@@ -97,7 +128,7 @@ export function githubAgentToolPermissions(
   return { ...catalog[tool], metadata: "read" };
 }
 
-const TOKEN_PERMISSION_KEYS = new Set(["issues", "pull_requests", "contents", "metadata"]);
+const TOKEN_PERMISSION_KEYS = new Set(["issues", "pull_requests", "contents", "metadata", "actions", "deployments"]);
 
 function forbidden(problem: string): never {
   throw agentXError("FORBIDDEN", `An agent's GitHub token cannot carry ${problem}.`);
@@ -105,8 +136,8 @@ function forbidden(problem: string): never {
 
 /**
  * Refuses any token permission an agent must never hold: `contents: write`, `workflows`, `administration`,
- * `actions: write`, and every key outside issues, pull_requests, contents and metadata. `contents` and
- * `metadata` may only be `read`; `issues` and `pull_requests` are `read` or `write`. Returns the checked
+ * `actions: write`, `deployments: write`, and every key outside issues, pull_requests, contents, metadata, actions and
+ * deployments. `contents`, `metadata`, `actions` and `deployments` may only be `read`; `issues` and `pull_requests` are `read` or `write`. Returns the checked
  * permissions. The token minter (14b) calls it before every request to GitHub.
  */
 export function checkAgentTokenPermissions(permissions: unknown): GitHubAgentTokenPermissions {

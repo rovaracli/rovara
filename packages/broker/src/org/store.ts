@@ -485,7 +485,7 @@ export class OrgStore {
    * `closedAt` is set and the sole member removed without a ban. `emails` are the leaving person's email pointers, which must go so an invite
    * to another org can index them. The org's TRIAL_GITHUB claim stays. Safe to run again after a stop part-way.
    */
-  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; /** Takes the org's company AI sources out of the model proxy and deletes their record (Task 24b); absent where there are none. */ releaseModelSources?: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
+  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; /** Deletes the org's triggers, their activity and their notices (Plan 4 Task 18); absent where there are none. */ clearTriggers?: (orgId: OrgId) => Promise<void>; /** Turns off the org's event hooks, takes their lookups away and schedules their secrets' deletion (Plan 4 Task 19); absent where there are none. */ clearHooks?: (orgId: OrgId) => Promise<void>; /** Takes the org's company AI sources out of the model proxy and deletes their record (Task 24b); absent where there are none. */ releaseModelSources?: (orgId: OrgId) => Promise<void>; /** Deletes the org's live index, work entries, devices and change feeds and shortens the rest of its sessions to 30 days (Plan 5 Task 21); absent where there are none. */ clearSessions?: (orgId: OrgId) => Promise<void>; /** Asks the org's running work to stop once its triggers and hooks are cleared (Plan 5 Task 21, review M-6); best effort: a failure is logged and never stops the close. */ stopWork?: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
     const members = await this.listMembers(orgId);
     if (members.length > 1 || members.some((member) => member.role !== "owner")) throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
     const meta = await this.get(orgMetaKey(orgId));
@@ -513,7 +513,17 @@ export class OrgStore {
     await deps.clearEgress(orgId);
     // The secrets go before the org closes: a failure here stops the close, and running it again finishes the clearing.
     await deps.clearConnections?.(orgId);
+    await deps.clearTriggers?.(orgId);
+    await deps.clearHooks?.(orgId);
+    // Work already running is asked to stop once nothing can start more (the triggers, their schedules and the hooks are gone), so nothing keeps spending once the company is gone. The
+    // dispatch guard (the owner is no longer a member) and the model-key mint (the org is closed, the owner is not a member) are the backstops.
+    try {
+      await deps.stopWork?.(orgId);
+    } catch (error) {
+      console.log(JSON.stringify({ component: "broker", level: "warn", event: "org_close.stop_work_failed", orgId, error: errorName(error) ?? "unknown" }));
+    }
     await deps.releaseModelSources?.(orgId);
+    await deps.clearSessions?.(orgId);
     const [sole] = members;
     if (sole === undefined) return;
     await this.deleteMemberData(orgId, sole.developerId);

@@ -288,7 +288,7 @@ describe("doctor: GitHub webhook", () => {
     const checks = await githubWebhookChecks(doctorContext());
     expect(checks.map((entry) => [entry.name, entry.status, entry.detail])).toEqual([
       ["GitHub webhook", "ok", `the App sends events to ${EXPECTED_URL}`],
-      ["GitHub webhook", "ok", "subscribed to pull request and comment events; check that Active is on at https://github.com/organizations/acme/settings/apps/agentx-acme-staging"],
+      ["GitHub webhook", "ok", "subscribed to pull request, issue, deployment and workflow events; check that Active is on at https://github.com/organizations/acme/settings/apps/agentx-acme-staging"],
       ["GitHub webhook secret", "ok", "stored"],
       ["GitHub webhook deliveries", "ok", "GitHub delivered an event to AgentX in the last 3 days"],
     ]);

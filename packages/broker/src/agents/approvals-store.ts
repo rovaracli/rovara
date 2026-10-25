@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { ProjectConnectorDependencies } from "../connections/project-connectors.js";
@@ -13,6 +13,8 @@ import { auditApprovalRequested } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
+import type { ChainStore } from "../chains/store.js";
+import type { TriggerHookReader, TriggerHooks, TriggerLookup, TriggerScheduler } from "../triggers/ports.js";
 import { orgRoleOf, type AgentAccessDeps, type AgentCaller, type AgentShare } from "./access.js";
 import type { ServableModels } from "./guardrails.js";
 import { resolveMember, sameMember } from "./lifecycle.js";
@@ -23,6 +25,17 @@ import type { AgentRunHost } from "./run-engine.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
+  /** Plan 4: the chain store, where a chain's change names the chain it is about on the confirmation page. Absent where chains are not set up. */
+  chains?: ChainStore;
+  /**
+   * Plan 4 Task 18: the trigger store (a lookup of who created a trigger, for who approves an autonomous run's writes, and the whole store where the broker builds it), what
+   * the changes that confirm and the member movers ask of the trigger code (`triggerHooks`), the hooks that receive events (`hooks`, Task 19) and the scheduler (`triggerSchedules`,
+   * Task 26). Each is absent where its code is not set up.
+   */
+  triggers?: TriggerLookup;
+  triggerHooks?: TriggerHooks;
+  hooks?: TriggerHookReader;
+  triggerSchedules?: TriggerScheduler;
   now: () => number;
   /** The cell's origin, where `/v1/app/approve/<id>` is served. */
   confirmOrigin: string;
@@ -114,7 +127,21 @@ export interface SessionOwnerSubject { kind: "session_owner"; sessionId: Session
 
 /** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5). */
 export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
+
+/** Plan 4 Task 4: a chain's publish or rollback that makes something less safe, bound to the draft revision and digest (or the version) that was shown. */
+export type ChainChangeSubject =
+  | { kind: "chain_publish"; chainId: string; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string }
+  | { kind: "chain_rollback"; chainId: string; version: number; digest: string; expectedCurrentVersion: number }
+  /** Make `shares` the chain's share set (it includes a company-wide share, or a wider one than there is), while it is still at `expectedSharesRevision`. */
+  | { kind: "chain_share"; chainId: string; shares: AgentShare[]; expectedSharesRevision: number };
+
+/**
+ * Plan 4 Task 18: turning a trigger on is a person's decision (N6). The approval is bound to the digest of the spec the person was shown, so a trigger edited in between
+ * does not turn on under it, and to the revision of the trigger it was made for, so a request that outlived a turn-off or a newer request turns nothing on.
+ */
+export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string; triggerRevision: number };
+
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -168,6 +195,10 @@ interface DecidedFields {
   /** Set when the member movers changed who may decide this (a merge or a removal), with when: the audit event `approval.rerouted` names the people. */
   movedBy?: "system";
   movedAt?: string;
+  /** Set when a step approval was closed because the run it belonged to ended (Plan 4, `closeStepApproval`), not decided: who closed it, why and when. */
+  closedBy?: "system";
+  closedReason?: string;
+  closedAt?: string;
 }
 
 /** A step of a run that waits for a person (an `approval` step, or a chain gate). */
@@ -258,6 +289,31 @@ export function registerApprovalGaveUpHandler(kind: ApprovalSubject["kind"], han
   gaveUp.set(kind, handler);
 }
 
+/**
+ * What a rule says to someone it refuses: `text` is the whole sentence the decide API answers `FORBIDDEN` with, `who` the words the confirmation page puts in
+ * "Only <who> can decide this." `code`, when the rule gives one, is the error code of a record that can't be decided because it is closed (default `FORBIDDEN`). A rule that can name its people (Plan 4's chain gates) registers it; Plan 3's own rules keep their fixed words.
+ */
+export interface ApproverRefusal { text: string; who: string; code?: "APPROVAL_CLOSED" | "CHAIN_RUN_CLOSED" }
+export type ApproverRefusalFor = (deps: ApprovalDependencies, record: AnyApprovalRecord) => Promise<ApproverRefusal | undefined>;
+const refusals = new Map<string, ApproverRefusalFor>();
+
+/** Registers (or replaces) how a rule words its refusal. Only words: it decides nothing, and a failure of it falls back to the generic text. */
+export function registerApproverRefusal(rule: string, refusal: ApproverRefusalFor): void {
+  refusals.set(rule, refusal);
+}
+
+/** The registered words for a record whose approvers are a rule that has some; undefined for any other record or when the rule's own lookup fails. */
+export async function approverRefusalFor(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<ApproverRefusal | undefined> {
+  if (record.approvers.kind !== "rule") return undefined;
+  const refusal = refusals.get(record.approvers.rule);
+  if (refusal === undefined) return undefined;
+  try {
+    return await refusal(deps, record);
+  } catch {
+    return undefined;
+  }
+}
+
 export const getApprovalGaveUpHandler = (kind: string): ApprovalSubjectHandler | undefined => gaveUp.get(kind);
 export const getApproverRule = (rule: string): ApproverRuleCheck | undefined => rules.get(rule);
 export const getApprovalSubjectHandler = (kind: string): ApprovalSubjectHandler | undefined => handlers.get(kind);
@@ -285,12 +341,19 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
+  z.object({ kind: z.literal("chain_publish"), chainId: ChainIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
+  z.object({ kind: z.literal("chain_rollback"), chainId: ChainIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
+  z.object({
+    kind: z.literal("chain_share"), chainId: ChainIdSchema, expectedSharesRevision: z.number().int(),
+    shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
+  }).strict(),
   z.object({ kind: z.literal("session_share_org"), sessionId: SessionIdSchema, level: SessionLevelSchema }).strict(),
   z.object({ kind: z.literal("session_owner"), sessionId: SessionIdSchema, to: Hex64, sessionRevision: z.number().int().min(1) }).strict(),
   z.object({
     kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
     project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
   }).strict(),
+  z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64, triggerRevision: z.number().int().min(1) }).strict(),
   z.object({ kind: z.literal("connector_widen"), project: z.string(), name: z.string(), expectedRevision: z.number().int().min(1), connector: ConnectorConfigSchema }).strict(),
   z.object({
     kind: z.literal("opt_out"), project: z.string(), repository: z.string(), expectedDigest: Hex64, files: z.array(z.string()), reason: z.string(),
@@ -312,6 +375,9 @@ const DecidedShape = {
   handlerTries: z.number().int().min(0).optional(),
   movedBy: z.literal("system").optional(),
   movedAt: z.string().optional(),
+  closedBy: z.literal("system").optional(),
+  closedReason: z.string().optional(),
+  closedAt: z.string().optional(),
 };
 const RunOwnerSchema = z.object({ developerId: z.string(), name: z.string() }).strict();
 /** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */
@@ -430,7 +496,7 @@ export function pendingChangeFor(deps: Pick<ApprovalStoreDependencies, "document
 }
 
 /** The same request always names the same approval, so a replay finds the record it made (R18). */
-function approvalIdFor(orgId: OrgId, requestedBy: string, requestId: string): ApprovalId {
+export function approvalIdFor(orgId: OrgId, requestedBy: string, requestId: string): ApprovalId {
   return newPrefixedId("apr", () => createHash("sha256").update(`${orgId}|${requestedBy}|${requestId}`, "utf8").digest());
 }
 

@@ -6,7 +6,7 @@
 // The levels are the scopes of `budgetScopesFor` (the org and the project always; the member who pays, or the starter's testing allowance for a test run, or the
 // agent that pays). An org or a member is also held to the proxy's own figure, which stays authoritative (R22, R23); every other level is counted by the ledger.
 import {
-  PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX, agentXError, scopeKey,
+  PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX, agentXError, chainBudgetExceededMessage, chainBudgetRequiredMessage, scopeKey,
   type AgentId, type AgentXError, type AgentXErrorCode, type BudgetScope, type OrgId, type Payer, type PauseScope,
 } from "@agentx/contracts";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -23,13 +23,14 @@ import { effectiveLimits } from "./settings.js";
 
 /**
  * The error each kind of scope is refused with. `exceeded` is the code of a scope that has too little left; `required` is the code of a scope that must have a
- * limit and has none (an agent that pays has to have a budget). Plan 4 adds `chain`.
+ * limit and has none (an agent or a chain that pays has to have a budget).
  */
 export const SCOPE_ERRORS: Record<BudgetScope["kind"], { required?: AgentXErrorCode; exceeded: AgentXErrorCode }> = {
   org: { exceeded: "ORG_BUDGET_EXCEEDED" },
   member: { exceeded: "BUDGET_EXCEEDED" },
   project: { exceeded: "PROJECT_BUDGET_EXCEEDED" },
   agent: { required: "AGENT_BUDGET_REQUIRED", exceeded: "AGENT_BUDGET_EXCEEDED" },
+  chain: { required: "CHAIN_BUDGET_REQUIRED", exceeded: "CHAIN_BUDGET_EXCEEDED" },
   testing: { exceeded: "TEST_ALLOWANCE_USED" },
 };
 
@@ -48,8 +49,11 @@ export interface Level {
   held?: { heldUsd: number };
 }
 
-/** The words each scope's refusal is made of. `agentName` names the agent whose budget it is. */
-function refusalFor(level: Level, names: { agentName: string }): AgentXError {
+/** The names a refusal uses: the agent that runs, and the chain whose budget it is when a chain pays. */
+export interface RefusalNames { agentName: string; chainName?: string | undefined }
+
+/** The words each scope's refusal is made of. `agentName` names the agent whose budget it is; `chainName` the chain's. */
+function refusalFor(level: Level, names: RefusalNames): AgentXError {
   const { scope } = level;
   const figures = `$${dollars(level.usedUsd)} of $${dollars(level.limitUsd ?? 0)}`;
   switch (scope.kind) {
@@ -60,6 +64,7 @@ function refusalFor(level: Level, names: { agentName: string }): AgentXError {
       : agentXError("BUDGET_EXCEEDED", `Your monthly AI budget is used or held for work that is running ($${dollars(level.held.heldUsd)} of $${dollars(level.limitUsd ?? 0)}). Try again when it finishes, or ask an admin to raise it.`);
     case "project": return agentXError(SCOPE_ERRORS.project.exceeded, `The ${scope.project} project's monthly AI budget is used up (${figures}). Ask for more from the project's page.`);
     case "agent": return agentXError(SCOPE_ERRORS.agent.exceeded, `${names.agentName}'s monthly AI budget is used up (${figures}). Ask its owner for more.`);
+    case "chain": return agentXError(SCOPE_ERRORS.chain.exceeded, chainBudgetExceededMessage(names.chainName ?? "This chain", level.usedUsd, level.limitUsd ?? 0));
     case "testing": return agentXError(SCOPE_ERRORS.testing.exceeded, `Your testing allowance for this month is used up (${figures}). Run the agent as a normal task instead.`);
   }
 }
@@ -67,8 +72,10 @@ function refusalFor(level: Level, names: { agentName: string }): AgentXError {
 const agentRequired = (agentName: string): AgentXError =>
   agentXError("AGENT_BUDGET_REQUIRED", `${agentName} has no monthly budget, so it can't run work that no person started. Ask its owner to set one.`);
 
+const chainRequired = (chainName: string): AgentXError => agentXError(SCOPE_ERRORS.chain.required ?? "CHAIN_BUDGET_REQUIRED", chainBudgetRequiredMessage(chainName));
+
 /** The order refusals are told in: the member's own budget first, then the org's, then the rest in the order work counts against them. */
-const REFUSAL_ORDER: Record<BudgetScope["kind"], number> = { member: 0, org: 1, project: 2, testing: 3, agent: 4 };
+const REFUSAL_ORDER: Record<BudgetScope["kind"], number> = { member: 0, org: 1, project: 2, testing: 3, agent: 4, chain: 4 };
 const inRefusalOrder = (levels: readonly Level[]): Level[] => [...levels].sort((a, b) => REFUSAL_ORDER[a.scope.kind] - REFUSAL_ORDER[b.scope.kind]);
 
 interface LevelDependencies extends BudgetDependencies { cloud?: boolean }
@@ -88,7 +95,7 @@ async function readLevels(deps: LevelDependencies, input: { orgId: OrgId; scopes
     effectiveLimits(deps, { orgId: input.orgId, month: input.month, scopes: input.scopes }),
     readScopeCounters({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.access, now: deps.now ?? Date.now }, input.orgId, input.month, input.scopes),
   ]);
-  const missing = input.scopes.find((scope) => scope.kind === "agent" && limits.get(scopeKey(scope)) === undefined);
+  const missing = input.scopes.find((scope) => (scope.kind === "agent" || scope.kind === "chain") && limits.get(scopeKey(scope)) === undefined);
   if (missing !== undefined) return { levels: [], missing };
   await ensureSynced(deps, input.orgId, input.developerId);
   const { member, org } = await figuresFor(deps, input.orgId, input.developerId);
@@ -110,8 +117,8 @@ async function readLevels(deps: LevelDependencies, input: { orgId: OrgId; scopes
 }
 
 /** Why a read of the levels refuses the work, if it does: the scope and its error. `isShort` says when a level's room is too little. */
-function refusalOf(read: LevelRead, names: { agentName: string }, isShort: (leftUsd: number) => boolean): { scope: BudgetScope; error: AgentXError } | undefined {
-  if (read.missing !== undefined) return { scope: read.missing, error: agentRequired(names.agentName) };
+function refusalOf(read: LevelRead, names: RefusalNames, isShort: (leftUsd: number) => boolean): { scope: BudgetScope; error: AgentXError } | undefined {
+  if (read.missing !== undefined) return { scope: read.missing, error: read.missing.kind === "chain" ? chainRequired(names.chainName ?? "This chain") : agentRequired(names.agentName) };
   const short = firstShort(read.levels, isShort);
   return short === undefined ? undefined : { scope: short.scope, error: refusalFor(short, names) };
 }
@@ -132,6 +139,8 @@ export interface AdmitWorkInput {
   /** The agent that runs, and the name its refusals use. */
   agentId: AgentId;
   agentName: string;
+  /** The chain that pays, for the words of its refusals (Plan 4). */
+  chainName?: string | undefined;
   path: SpendPath;
   /** The person whose testing allowance a draft agent's test run is counted on. */
   testRunBy?: string | undefined;
@@ -153,7 +162,7 @@ export async function admitWork(deps: AdmissionDependencies, input: AdmitWorkInp
   const developerId = input.payer.kind === "member" && input.testRunBy === undefined ? input.payer.developerId : undefined;
   const read = await readLevels(deps, { orgId: input.orgId, scopes, developerId, month: monthOf((deps.now ?? Date.now)()) });
   const needed = MINIMUM_REMAINING_USD[input.path];
-  const refusal = refusalOf(read, { agentName: input.agentName }, (left) => left < needed);
+  const refusal = refusalOf(read, { agentName: input.agentName, chainName: input.chainName }, (left) => left < needed);
   if (refusal !== undefined) throw refusal.error;
   return { maxBudgetUsd: clean(Math.min(smallestRoom(read.levels), PER_TASK_BUDGET_USD)) };
 }
@@ -176,6 +185,8 @@ export interface MintOperationKeyInput {
   ttlSeconds: number;
   /** The agent whose name the budget errors use (default Rovara Code). */
   agentName?: string | undefined;
+  /** The chain that pays, for the words of its refusals (Plan 4). */
+  chainName?: string | undefined;
   /** The budgets the work counts against (`budgetScopesFor`); by default the org's and, for a member, theirs. */
   scopes?: readonly BudgetScope[] | undefined;
   /** What the key says about who pays and what ran; the key is reserved in the ledger when these and `scopes` are given. */
@@ -244,7 +255,7 @@ interface CapPlan {
 }
 
 /** Works out the most the next key may spend, or writes the pause and throws the error of whatever has nothing left. */
-async function planCap(deps: MintOperationDependencies, input: MintOperationKeyInput, scopes: readonly BudgetScope[], names: { agentName: string }, month: string): Promise<CapPlan> {
+async function planCap(deps: MintOperationDependencies, input: MintOperationKeyInput, scopes: readonly BudgetScope[], names: RefusalNames, month: string): Promise<CapPlan> {
   const read = await readLevels(deps, { orgId: input.orgId, scopes, developerId: input.developerId, month });
   const full = refusalOf(read, names, (left) => left <= 0);
   if (full !== undefined) {
@@ -335,7 +346,7 @@ async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOpe
  * once and mints again; a second miss is that scope's error. A key that is reserved and cannot be recorded is blocked and finalized.
  */
 export async function mintOperationKey(deps: MintOperationDependencies, input: MintOperationKeyInput): Promise<MintedOperationKey> {
-  const names = { agentName: input.agentName ?? "Rovara Code" };
+  const names = { agentName: input.agentName ?? "Rovara Code", chainName: input.chainName };
   const scopes = input.scopes ?? [{ kind: "org" } as const, ...(input.developerId === undefined ? [] : [{ kind: "member", developerId: input.developerId } as const])];
   const ledger = input.scopes !== undefined && input.tags !== undefined ? deps.ledger : undefined;
   const tags = input.tags === undefined ? undefined : input.route?.sourceId === undefined ? input.tags : { ...input.tags, source: input.route.sourceId };

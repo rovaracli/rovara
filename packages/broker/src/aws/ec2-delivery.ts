@@ -3,18 +3,26 @@ import {
   AGENT_STEP_FEATURE,
   AGENT_WORKER_OUTDATED,
   MODEL_ROUTE_FEATURE,
+  E2E_AGENT_MODEL_CHOICE_FEATURE,
+  E2E_AGENT_STEPS_FEATURE,
+  E2E_AGENT_UNAVAILABLE_REASONS,
+  E2E_MODEL_FREE_LIMITS_FEATURE,
+  E2E_REPLAY_CHECKS_FEATURE,
+  E2E_APPLICATION_ADMISSION_SCHEMA_V2,
   WORKER_INVOKE_AUTHORIZATION_SCHEME,
   WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED,
   agentXError,
+  isE2EApplicationAdmissionSchemaVersion,
   modelSelectionFor,
   workerInvokeToken,
   workerInvokeTokenPayload,
   workflowPublicationContext,
   workflowPublicationContextDigest,
+  type E2EWorkflowAdmissionRef,
   type Ec2RuntimeBinding,
   type WorkerInvocation,
 } from "@agentx/contracts";
-import { asksForCodeAnchors, withoutCodeAnchorText } from "./broker-shared.js";
+import { asksForApplicationPlan, asksForCodeAnchors, withoutApplicationPlanText, withoutCodeAnchorText } from "./broker-shared.js";
 import type { Ec2OutboxRecord } from "./lambda.js";
 import type { SessionManager } from "./sessions.js";
 
@@ -48,6 +56,34 @@ export interface Ec2DeliveryDependencies {
    * worker built before them. Without it, no optional field is sent.
    */
   workerFeatures?: (url: string) => Promise<readonly string[]>;
+  /**
+   * Called, before the invocation is posted, when a planning run's schema-v2 application plan was dropped for a worker that does not list
+   * "task.workflowE2EApplicationPlan": the operation record must stop saying the version was offered, so the broker refuses a v2 plan it uploads.
+   * A failure fails the attempt (the run must not go out with the record still saying 2).
+   */
+  applicationPlanNotNegotiated: (record: Ec2OutboxRecord) => Promise<void>;
+  /**
+   * The schemaVersion of the admission a CHECKS invocation's reference names, read from the stored object and held to the reference's content address; undefined when it
+   * cannot be read. With it, the dispatcher does not trust the reference's `kind` alone: a reference whose kind disagrees with its admission is refused before delivery.
+   * Without it (a deployment that cannot read admissions) only the kind decides, and the worker still cross-checks.
+   */
+  workflowE2EAdmissionSchemaVersion?: (reference: E2EWorkflowAdmissionRef) => Promise<string | undefined>;
+  /**
+   * Whether an application admission has an `agent` step in its scenarios, read the same way. With it, the dispatcher also holds the reference's `agentSteps` flag to the admission: the
+   * flag decides whether the worker must list the agent-steps feature, so a reference that understated it would skip that gate. Undefined when it cannot be read.
+   */
+  workflowE2EAdmissionUsesAgentSteps?: (reference: E2EWorkflowAdmissionRef) => Promise<boolean | undefined>;
+  /**
+   * Whether the route an application admission pins is one a worker built before the model choice (Task 4.10) cannot serve: a model other than the recommended one, or the minimal
+   * request shape. Undefined when it cannot be read. With it, a round with AI navigation steps is never sent to a worker that does not list `task.workflowE2EAgentModelChoice.v1`
+   * when the route needs it, and a route that cannot be read is refused rather than assumed to be the default.
+   */
+  workflowE2EAdmissionNeedsModelChoice?: (reference: E2EWorkflowAdmissionRef) => Promise<boolean | undefined>;
+  /**
+   * Whether an application admission relies on the normal no-model limits for a group (RUN-1, Ruling DV), read from the admission itself. With it, the dispatcher hands such a round only to a
+   * worker that lists `task.workflowE2EModelFreeLimits.v1`. Undefined when it cannot be read, which refuses the attempt; absent in a deployment that cannot read admissions.
+   */
+  workflowE2EAdmissionNeedsModelFreeLimits?: (reference: E2EWorkflowAdmissionRef) => Promise<boolean | undefined>;
   /** Rechecks fresh PEOPLE authority after compute is ready, immediately before signing and POST. */
   guardTaskDispatch?: (record: Ec2OutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED">;
   /** Loads and validates the durable internal readiness marker before any session provisioning. */
@@ -86,6 +122,9 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
     const workflowE2EReadiness = storedReadiness === "READINESS";
     if (workflowE2EReadiness && await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
     if (invocation.kind === "project-setup-smoke" && await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
+    const admissionSchemaVersion = await checkAdmissionKind(invocation, dependencies.workflowE2EAdmissionSchemaVersion);
+    await checkAdmissionAgentSteps(invocation, dependencies.workflowE2EAdmissionUsesAgentSteps);
+    const needsModelFreeLimits = await admissionNeedsModelFreeLimits(invocation, dependencies.workflowE2EAdmissionNeedsModelFreeLimits);
     let binding: Ec2RuntimeBinding | undefined;
     let session: { ready: true; generation: number; privateIp: string } | { ready: false; generation: number; state: string };
     if (invocation.kind === "project-setup-smoke") {
@@ -119,7 +158,19 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
       return { readinessGeneration: session.generation };
     }
     if (await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
-    const sent = await forWorker(invocation, `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures);
+    const applicationAdmission = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.kind === "application" ? invocation.payload.workflowE2EAdmission : undefined;
+    const modelChoice = applicationAdmission === undefined || dependencies.workflowE2EAdmissionNeedsModelChoice === undefined ? undefined
+      : () => dependencies.workflowE2EAdmissionNeedsModelChoice!(applicationAdmission);
+    const sent = await forWorker(invocation, `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice);
+    if (invocation.kind === "task" && invocation.payload.workflowE2EPlanVersion !== undefined
+      && !(sent.kind === "task" && sent.payload.workflowE2EPlanVersion !== undefined)) {
+      // Without the recorder the operation record would keep saying version 2 was offered while the worker was sent a portable-only run, so the broker would
+      // accept a v2 plan it never asked for: a missing recorder is a wiring error, and the run does not go out.
+      if (dependencies.applicationPlanNotNegotiated === undefined) {
+        throw agentXError("CONFIG_INVALID", "the application plan version was dropped for this worker but no applicationPlanNotNegotiated recorder is configured");
+      }
+      await dependencies.applicationPlanNotNegotiated(record);
+    }
     if (await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
     const payload = workerInvokeTokenPayload({
       workspaceId: record.workspaceId,
@@ -149,6 +200,50 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
   };
 }
 
+/** What a worker that cannot run a version 2 application admission (web and API runtime bindings keyed by kind) is told; the feature it must list is `task.workflowE2EApplicationChecks.v2`. */
+export const COMBINED_CHECKS_WORKER_REFUSAL = "This worker can't run combined browser and API checks yet; retry once it restarts.";
+const PORTABLE_ADMISSION_SCHEMA = "workflow-e2e-admission/v1";
+
+/**
+ * The reference's `kind` decides which worker may receive an application round, so it is checked against the admission it names before any compute is started: a reference
+ * without `kind` that names an application admission would bypass the gate, and one marked application that names a portable admission is a broker defect. Both are refused.
+ */
+async function checkAdmissionKind(invocation: WorkerInvocation, read: Ec2DeliveryDependencies["workflowE2EAdmissionSchemaVersion"]): Promise<string | undefined> {
+  if (invocation.kind !== "task" || invocation.payload.workflowE2EAdmission === undefined) return undefined;
+  const reference = invocation.payload.workflowE2EAdmission;
+  // Fail closed: with no reader wired the version of an application admission is unknown, so it is treated as needing the newest worker feature.
+  if (read === undefined) return reference.kind === "application" ? E2E_APPLICATION_ADMISSION_SCHEMA_V2 : undefined;
+  let schemaVersion: string | undefined;
+  try { schemaVersion = await read(reference); } catch { schemaVersion = undefined; }
+  if (schemaVersion === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "could not read the E2E admission to check its kind against the reference; no round was sent");
+  if (!isE2EApplicationAdmissionSchemaVersion(schemaVersion) && schemaVersion !== PORTABLE_ADMISSION_SCHEMA) {
+    throw agentXError("CONFIG_INVALID", "the E2E admission is of a kind this dispatcher does not know; no round was sent");
+  }
+  if (isE2EApplicationAdmissionSchemaVersion(schemaVersion) !== (reference.kind === "application")) {
+    throw agentXError("CONFIG_INVALID", "the E2E admission reference's kind does not match the admission it names; no round was sent");
+  }
+  return schemaVersion;
+}
+
+async function checkAdmissionAgentSteps(invocation: WorkerInvocation, read: Ec2DeliveryDependencies["workflowE2EAdmissionUsesAgentSteps"]): Promise<void> {
+  if (read === undefined || invocation.kind !== "task" || invocation.payload.workflowE2EAdmission?.kind !== "application") return;
+  const reference = invocation.payload.workflowE2EAdmission;
+  let uses: boolean | undefined;
+  try { uses = await read(reference); } catch { uses = undefined; }
+  if (uses === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "could not read the E2E admission to check its agent steps against the reference; no round was sent");
+  if (uses !== (reference.agentSteps === true)) {
+    throw agentXError("CONFIG_INVALID", "the E2E admission reference's agentSteps flag does not match the admission it names; no round was sent");
+  }
+}
+
+async function admissionNeedsModelFreeLimits(invocation: WorkerInvocation, read: Ec2DeliveryDependencies["workflowE2EAdmissionNeedsModelFreeLimits"]): Promise<boolean> {
+  if (read === undefined || invocation.kind !== "task" || invocation.payload.workflowE2EAdmission?.kind !== "application") return false;
+  let relies: boolean | undefined;
+  try { relies = await read(invocation.payload.workflowE2EAdmission); } catch { relies = undefined; }
+  if (relies === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "could not read the E2E admission to check the time limits it relies on; no round was sent");
+  return relies;
+}
+
 /**
  * Spec 053: the invocation as the worker can parse it. Worker payloads are strict and a running
  * worker keeps its image after a release (or after a worker-image rollback), so a thinking level goes
@@ -162,7 +257,8 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
  * an older one reviews without being told which checks ran, and its workflowReviewPlan goes only to one whose /ping lists
  * "task.workflowReviewPlan"; an older one reviews without seeing the approved plan, and its workflowReviewFeedback goes only to one whose
  * /ping lists "task.workflowReviewFeedback"; an older one judges a feedback fix against the plan alone. The retry note goes only to one whose /ping lists "task.workflowReviewNote"; older workers review without it. A planning run's workflowPhase and planFormat go only to one whose /ping lists
- * "task.structuredPlans"; an older one plans without checking the answer's format. A planning prompt asks for anchor lines on
+ * "task.structuredPlans"; an older one plans without checking the answer's format. A planning run's workflowE2EPlanVersion (the schema-v2 application plan)
+ * goes only to one whose /ping lists "task.workflowE2EApplicationPlan"; an older one is sent the portable-only prompt, and its review plan without a v2 intent. A planning prompt asks for anchor lines on
  * code citations only on one whose /ping lists "task.codeAnchors"; for an older one that text is left out of the prompt. The invoke token signs the operation, not the payload, so
  * dropping a field leaves it valid. A ping that fails fails the attempt: the worker journals a hash of
  * the whole invocation, so a retry must send what the first attempt would have, and a blip must not
@@ -172,6 +268,21 @@ async function forWorker(
   invocation: WorkerInvocation,
   pingUrl: string,
   workerFeatures: Ec2DeliveryDependencies["workerFeatures"],
+  admissionSchemaVersion?: string,
+  needsModelFreeLimits = false,
+  modelChoice?: () => Promise<boolean | undefined>,
+): Promise<WorkerInvocation> {
+  // The CLI's stored model check results (`lastCheck`) are not for workers, and a worker built before them refuses the whole invocation for an unknown key: they never go out.
+  return forWorkerFeatures(withoutLastCheck(invocation), pingUrl, workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice);
+}
+
+async function forWorkerFeatures(
+  invocation: WorkerInvocation,
+  pingUrl: string,
+  workerFeatures: Ec2DeliveryDependencies["workerFeatures"],
+  admissionSchemaVersion?: string,
+  needsModelFreeLimits = false,
+  modelChoice?: () => Promise<boolean | undefined>,
 ): Promise<WorkerInvocation> {
   const requestedThinkingLevel = carriedThinkingLevel(invocation);
   const carriesReadiness = invocation.kind === "task" && invocation.payload.readiness !== undefined;
@@ -184,6 +295,10 @@ async function forWorker(
   const carriesWorkflowBase = invocation.kind === "task" && invocation.payload.workflowBase !== undefined;
   const carriesStructuredPlans = invocation.kind === "task" && (invocation.payload.workflowPhase !== undefined || invocation.payload.planFormat !== undefined);
   const carriesCodeAnchors = invocation.kind === "task" && asksForCodeAnchors(invocation.payload.prompt);
+  const carriesApplicationPlans = invocation.kind === "task" && (invocation.payload.workflowE2EPlanVersion !== undefined || asksForApplicationPlan(invocation.payload.prompt)
+    || invocation.payload.workflowReviewPlan?.e2eIntent?.schemaVersion === 2);
+  const carriesApplicationAdmission = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.kind === "application";
+  const carriesAgentSteps = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.agentSteps === true;
   const carriesReportChecks = invocation.kind === "publish" && invocation.payload.reportChecks !== undefined;
   const carriesCandidateTree = invocation.kind === "publish" && invocation.payload.candidateTreeSha !== undefined;
   const carriesPublicationMode = invocation.kind === "publish" && invocation.payload.publicationMode !== undefined;
@@ -199,7 +314,7 @@ async function forWorker(
   // Its read-only form (clone and checkout, nothing of the repository run) is the same: a worker that does not know the field would run the setup.
   const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesCheckout) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesCheckout) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -240,6 +355,42 @@ async function forWorker(
   // A review step that asks for fewer than both reviews must not be run by a worker that would run them all, so the field is never dropped.
   if (carriesReviewers && !features.includes("task.workflowReviewers")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "a review step that runs only some of the reviews needs a worker that runs just the reviews it is asked for");
+  }
+  // A worker built before application CHECKS, or one without the executor image on its host (it then does not list the feature), cannot run an application admission, and the admission's content decides what the round proves, so it is never
+  // sent one (and never a trimmed one): the attempt fails with this reason instead (Ruling BQ, mixed fleet).
+  if (carriesApplicationAdmission && !features.includes("task.workflowE2EApplicationChecks")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "browser and API verification needs a worker that runs application admissions (it must list task.workflowE2EApplicationChecks); this worker predates it or has no executor image on its host, so no application round was sent to it");
+  }
+  // A round with AI navigation steps needs the model channel only a worker that lists the feature has, and the steps are never trimmed away: the attempt fails with this reason instead.
+  if (carriesAgentSteps && !features.includes(E2E_AGENT_STEPS_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "This worker can't run AI navigation steps yet; retry once it restarts");
+  }
+  // Task 4.10: a route whose model the installation chose, or whose request shape is minimal, is derived only by a worker that lists the model-choice feature. An older worker would refuse it
+  // after compute was spent, so it is refused here, with a fixed sentence. A route that cannot be read is refused too: it is never assumed to be the default.
+  if (carriesAgentSteps && modelChoice !== undefined && !features.includes(E2E_AGENT_MODEL_CHOICE_FEATURE)) {
+    let needs: boolean | undefined;
+    try { needs = await modelChoice(); } catch { needs = undefined; }
+    if (needs !== false) throw agentXError("RUNTIME_UNAVAILABLE", `${E2E_AGENT_UNAVAILABLE_REASONS.routeNotApproved}: this worker is too old for the chosen AI navigation model`);
+  }
+  // M1.3 Task 3.4: a version 2 admission keys its runtime rows by profile and kind, which a worker built before it cannot read. It is refused here, before compute is spent, with a sentence the
+  // owner can act on (the worker lists the feature again once it restarts on the new image).
+  if (carriesApplicationAdmission && admissionSchemaVersion === E2E_APPLICATION_ADMISSION_SCHEMA_V2 && !features.includes("task.workflowE2EApplicationChecks.v2")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", COMBINED_CHECKS_WORKER_REFUSAL);
+  }
+  // M1.3 Task 3.7b: a baseline round is an application round of a kind of its own. A worker that runs application admissions but predates baseline rounds would run it as a
+  // candidate's, and its refusal of the signed purpose would come only after compute was spent, so it is refused here with the reason.
+  if (carriesApplicationAdmission && invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.purpose === "baseline" && !features.includes("task.workflowE2EBaselineChecks")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "the baseline round on the unchanged code needs a worker that runs baseline rounds (it must list task.workflowE2EBaselineChecks); this worker predates it or has no executor image on its host, so no baseline round was sent to it");
+  }
+  // M1.4 Task 4.6b: an audit replay is an application round of a kind of its own, run with no model by a worker that lists its feature. An older worker could not parse the purpose, and one
+  // that runs application rounds only would run it as a candidate's; it is never handed one, and nothing is spent on a worker that cannot run it.
+  if (carriesApplicationAdmission && invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.purpose === "replay" && !features.includes(E2E_REPLAY_CHECKS_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "the audit replay needs a worker that runs replay rounds (it must list task.workflowE2EReplayChecks.v1); this worker predates it or has no executor image on its host, so no replay was sent to it");
+  }
+  // Evaluation fix RUN-1 (Ruling DV): a route-pinned round whose groups with no agent step rely on the normal time limits goes only to a worker that compiles them that way; an older one would
+  // refuse the admission after compute was spent, so it is refused here, before anything runs.
+  if (carriesApplicationAdmission && needsModelFreeLimits && !features.includes(E2E_MODEL_FREE_LIMITS_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "this round's browser and API checks need a worker that runs them under the normal time limits (it must list task.workflowE2EModelFreeLimits.v1); this worker predates it, so no round was sent to it; update the worker, then retry the checks");
   }
   if (carriesProjectSetupSmoke && !features.includes("project.setupSmoke")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "project setup smoke requires a worker that implements project.setupSmoke");
@@ -362,8 +513,8 @@ async function forWorker(
       workspaceId: invocation.workspaceId,
     }));
   }
-  const sent = withoutCodeAnchors(withNote, features);
-  if (sent !== withNote) {
+  const anchored = withoutCodeAnchors(withNote, features);
+  if (anchored !== withNote) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.code_anchors_omitted",
@@ -372,13 +523,70 @@ async function forWorker(
       workspaceId: invocation.workspaceId,
     }));
   }
+  const planned = withoutApplicationPlans(anchored, features);
+  if (planned !== anchored) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.application_plan_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
+  // M1.3 Task 3.7b: the request to export the unchanged code is only for a worker that can; an older one runs the coding without it (a baseline never stops the coding), and the
+  // baseline then says it could not be checked.
+  const sent = withoutBaselineSource(planned, features);
+  if (sent !== planned) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.baseline_source_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
   return sent;
+}
+
+/** A coding run without the request to export the unchanged code, for a worker that does not list "task.workflowE2EBaselineSource": it would reject the field. The export reads the repository alone, so this feature is not withheld with the executor image. */
+function withoutBaselineSource(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || invocation.payload.workflowE2EBaselineSource === undefined || features.includes("task.workflowE2EBaselineSource")) return invocation;
+  const { workflowE2EBaselineSource: _request, ...payload } = invocation.payload;
+  void _request;
+  return { ...invocation, payload };
 }
 
 /** A planning prompt that does not ask for anchor lines, for a worker that does not parse them: it would reject a plan that carried one. */
 function withoutCodeAnchors(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
   if (invocation.kind !== "task" || !asksForCodeAnchors(invocation.payload.prompt) || features.includes("task.codeAnchors")) return invocation;
   return { ...invocation, payload: { ...invocation.payload, prompt: withoutCodeAnchorText(invocation.payload.prompt) } };
+}
+
+/**
+ * A worker that does not list "task.workflowE2EApplicationPlan" parses only the portable schemaVersion 1 intent, so it is never handed a version 2
+ * one: a planning run is sent the portable-only prompt without the plan version, and a review's approved plan without its (version 2) E2E intent.
+ * The edit is deterministic, so a retry sends what the first attempt did.
+ */
+function withoutApplicationPlans(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || features.includes("task.workflowE2EApplicationPlan")) return invocation;
+  const payload = { ...invocation.payload };
+  let changed = false;
+  if (payload.workflowE2EPlanVersion !== undefined) {
+    delete payload.workflowE2EPlanVersion;
+    changed = true;
+  }
+  const prompt = withoutApplicationPlanText(payload.prompt);
+  if (prompt !== payload.prompt) {
+    payload.prompt = prompt;
+    changed = true;
+  }
+  if (payload.workflowReviewPlan?.e2eIntent?.schemaVersion === 2) {
+    const { e2eIntent: _applicationIntent, ...plan } = payload.workflowReviewPlan;
+    void _applicationIntent;
+    payload.workflowReviewPlan = plan;
+    changed = true;
+  }
+  return changed ? { ...invocation, payload } : invocation;
 }
 
 /** A planning run without the kind and format of plan it writes, for a worker that does not parse them; it plans without checking the answer's format. */
@@ -478,6 +686,18 @@ function withoutUnparsedFields(invocation: WorkerInvocation, features: readonly 
   if (models === undefined) return invocation;
   const project = { ...invocation.payload.project, models: { default: withoutLevel(models.default), approved: models.approved.map(withoutLevel) } };
   // Identical branches so each keeps its own payload type within the discriminated union.
+  if (invocation.kind === "prepare") return { ...invocation, payload: { ...invocation.payload, project } };
+  if (invocation.kind === "publish") return { ...invocation, payload: { ...invocation.payload, project } };
+  return { ...invocation, payload: { ...invocation.payload, project } };
+}
+
+/** The same invocation with every project model's stored check result dropped (and the very object back when it carries none). */
+function withoutLastCheck(invocation: WorkerInvocation): WorkerInvocation {
+  if (!carriesProject(invocation)) return invocation;
+  const models = invocation.payload.project.models;
+  if (models === undefined || ![models.default, ...models.approved].some((model) => model.lastCheck !== undefined)) return invocation;
+  const strip = <Model extends { lastCheck?: unknown }>(model: Model): Omit<Model, "lastCheck"> => { const rest: Model = { ...model }; delete rest.lastCheck; return rest; };
+  const project = { ...invocation.payload.project, models: { default: strip(models.default), approved: models.approved.map(strip) } };
   if (invocation.kind === "prepare") return { ...invocation, payload: { ...invocation.payload, project } };
   if (invocation.kind === "publish") return { ...invocation, payload: { ...invocation.payload, project } };
   return { ...invocation, payload: { ...invocation.payload, project } };

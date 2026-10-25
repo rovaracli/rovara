@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
-  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, egressDomainsKey, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, orgGithubInstallationKey,
+  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, egressDomainsKey, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey,
   orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, workerProjectDefinition, type GithubInstallationRecord, type OrgId, type OrgRole,
 } from "../../packages/contracts/src/index.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
@@ -675,5 +675,35 @@ describe("agentx project show and agentx project settings", () => {
     const h = await signedIn((request) => (request.method === "GET" ? Response.json(detail) : Response.json({ error: { code: "CONFIG_INVALID", message: FIELD_MESSAGE("allowedDomains.0") } }, { status: 400 })));
     expect(await h.run(["project", "settings", "web", "--allow-domain", "github.io"])).not.toBe(0);
     expect(h.err.join("")).toContain(FIELD_MESSAGE("allowedDomains.0"));
+  });
+});
+
+describe("GitHub's events find a project by repository (Plan 4 Task 21)", () => {
+  const PINNED = [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app", installationId: 55, githubRepositoryId: 1 }];
+  const rows = (h: { db: FakeDynamoDb }) => h.db.find((item) => String(item.pk).startsWith("GITHUB_REPO#")).map((item) => [item.pk, item.sk]);
+
+  it("writes the index row of each pinned repository with the revision that holds it, and none for a repository without a pin", async () => {
+    const h = await install();
+    seedInstallation(h.db, 55, "acme");
+    seedProject(h.db, TEST_ORG, "web", { repositories: PINNED });
+    expect(rows(h)).toEqual([]);
+    expect((await h.put(OMAR, { setupCommands: ["make"] })).status).toBe(200);
+    expect(rows(h)).toEqual([[githubRepoProjectKey(1, TEST_ORG, "web").pk, `${TEST_ORG}#web`]]);
+    expect(h.db.get(githubRepoProjectKey(1, TEST_ORG, "web"))).toMatchObject({ orgId: TEST_ORG, project: "web", installationId: 55, githubRepositoryId: 1 });
+    // The repository added through the by-records connection has no pin, so no row names it.
+    expect((await h.put(OMAR, { addRepositories: ["acme/api"], expectedRevision: 2 })).status).toBe(200);
+    expect(rows(h)).toEqual([[githubRepoProjectKey(1, TEST_ORG, "web").pk, `${TEST_ORG}#web`]]);
+  });
+
+  it("deletes the row with the revision that removes the repository, in the same write, and leaves another project's row alone", async () => {
+    const h = await install();
+    seedInstallation(h.db, 55, "acme");
+    seedProject(h.db, TEST_ORG, "web", { repositories: PINNED });
+    h.db.set({ ...githubRepoProjectKey(1, TEST_ORG, "other"), entityType: "GITHUB_REPO_PROJECT", orgId: TEST_ORG, project: "other", installationId: 55, githubRepositoryId: 1 });
+    expect((await h.put(OMAR, { addRepositories: ["acme/api"] })).status).toBe(200);
+    expect(rows(h)).toHaveLength(2);
+    const removed = await h.put(OMAR, { removeRepositories: ["web"], setupCommands: ["make"], testCommands: ["make test"], expectedRevision: 2 });
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(rows(h)).toEqual([[githubRepoProjectKey(1, TEST_ORG, "other").pk, `${TEST_ORG}#other`]]);
   });
 });

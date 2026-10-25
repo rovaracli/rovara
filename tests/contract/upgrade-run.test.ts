@@ -144,7 +144,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
     it("tells the owner which events to tick and where", async () => {
       const h = await harness({ github: { hookUrl: GITHUB_WEBHOOK_URL, events: ["pull_request"] } });
       await runUpgrade(options, h.deps);
-      expect(h.lines).toContain("GitHub webhook: tick these events on https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions: pull_request_review, pull_request_review_comment, issue_comment");
+      expect(h.lines).toContain("GitHub webhook: tick these events on https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions: pull_request_review, pull_request_review_comment, issue_comment, deployment_status, workflow_run, issues");
     });
 
     it("never prints the webhook secret, stored or generated", async () => {
@@ -598,6 +598,46 @@ describe("the agentx upgrade command", () => {
     expect(io.out.join("")).toBe("Upgraded staging from 1.2.3 to 1.3.0.\n");
     expect(io.err.join("")).toContain("Upgrading staging from 1.2.3 to 1.3.0 (templates engine)");
     expect(io.out.join("") + io.err.join("")).not.toContain(CALLBACK_KEY);
+  });
+
+  describe("--no-reserved-concurrency", () => {
+    const cdkHarness = async (overrides: Parameters<typeof harness>[0] = {}) => {
+      const h = await harness(overrides);
+      await writeEnvironmentSettings(h.store, { ...INSTALLED, engine: "cdk" });
+      return h;
+    };
+
+    it("tells the cdk app to leave Lambda reservations off, for the deploy and for the diff that reviews it", async () => {
+      const prepareInputs: Array<{ reservedConcurrency?: false }> = [];
+      const diffs: Array<false | undefined> = [];
+      const h = await cdkHarness();
+      const base = h.deps;
+      const io = capture();
+      const code = await executeCli(["--env", "staging", "upgrade", "--yes", "--source", "/src", "--no-reserved-concurrency"], {
+        ...io,
+        upgrade: { ...withoutWrite(base), prepare: async (input) => { prepareInputs.push(input); return base.prepare(input); }, cdkDiff: async (request, settings, source, reservedConcurrency) => { diffs.push(reservedConcurrency); return base.cdkDiff(request, settings, source, reservedConcurrency); } },
+      });
+      expect(code).toBe(0);
+      expect(prepareInputs.map((input) => input.reservedConcurrency)).toEqual([false]);
+      expect(diffs.length).toBeGreaterThan(0);
+      expect(new Set(diffs)).toEqual(new Set([false]));
+    });
+
+    it("leaves reserved concurrency on when the option is not given", async () => {
+      const prepareInputs: Array<{ reservedConcurrency?: false }> = [];
+      const h = await cdkHarness();
+      const base = h.deps;
+      const io = capture();
+      const code = await executeCli(["--env", "staging", "upgrade", "--yes", "--source", "/src"], { ...io, upgrade: { ...withoutWrite(base), prepare: async (input) => { prepareInputs.push(input); return base.prepare(input); } } });
+      expect(code).toBe(0);
+      expect(prepareInputs.map((input) => "reservedConcurrency" in input)).toEqual([false]);
+    });
+
+    it("refuses an environment on the templates engine, whose templates are built ahead and cannot change a reservation", async () => {
+      const h = await harness();
+      await expect(runUpgrade({ ...options, reservedConcurrency: false }, h.deps)).rejects.toThrow(/reserved concurrency.*cdk engine/i);
+      expect(h.deployer.deployed).toEqual([]);
+    });
   });
 
   it("with --export, says where the bundle is and who it is for", async () => {

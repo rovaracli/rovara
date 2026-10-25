@@ -29,7 +29,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, canonicalJson } from "@agentx/contracts";
+import { AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, auditIntakeQueueName, canonicalJson } from "@agentx/contracts";
 import { BrokerNames } from "./broker-names.js";
 import type { AgentXNaming } from "./naming.js";
 import {
@@ -216,6 +216,11 @@ export interface AuditLedgerProps {
   readonly appenderRole: iam.IRole;
   /** The region the environment installs in; it is part of the ledger bucket's name, which S3 caps at 63 characters. */
   readonly deploymentRegion?: string;
+  /**
+   * Whether the export and anchor functions reserve concurrency (default true). False sets no reservation, for an account whose
+   * Lambda concurrency limit is Lambda's minimum, where any reservation fails the deploy; production keeps it on.
+   */
+  readonly reservedConcurrency?: boolean;
 }
 
 export class AuditLedger extends Construct {
@@ -294,7 +299,8 @@ export class AuditLedger extends Construct {
       removalPolicy: RemovalPolicy.RETAIN,
     });
     this.intakeQueue = new sqs.Queue(this, "AuditIntakeQueue", {
-      queueName: `${naming.resourcePrefix}-audit-intake.fifo`,
+      // The module the broker derives the queue's URL from (derived-names.ts), so the name and the URL cannot drift.
+      queueName: auditIntakeQueueName(env),
       fifo: true,
       contentBasedDeduplication: false,
       deduplicationScope: sqs.DeduplicationScope.MESSAGE_GROUP,
@@ -578,8 +584,7 @@ export class AuditLedger extends Construct {
    */
   private addBrokerOutbox(props: AuditLedgerProps, brokerRole: iam.IRole): void {
     const { naming, broker } = props;
-    // The queue's name goes in the broker's names (BrokerNames): the broker builds its URL from the region and the account.
-    BrokerNames.of(broker).add("auditIntakeQueue", this.intakeQueue.queueName);
+    // The queue's URL is not passed: its name is fixed (auditIntakeQueueName), so the broker builds the URL from AGENTX_ENV, the region and the account (DERIVED_BROKER_VARIABLES).
     new iam.Policy(this, "AuditBrokerOutboxPolicy", {
       roles: [brokerRole],
       statements: [
@@ -736,7 +741,7 @@ export class AuditLedger extends Construct {
       handler: "handler",
       timeout: Duration.seconds(AUDIT_EXPORT_TIMEOUT_SECONDS),
       memorySize: 1024,
-      reservedConcurrentExecutions: 5,
+      ...(props.reservedConcurrency === false ? {} : { reservedConcurrentExecutions: 5 }),
       role,
       logGroup,
       environment: {
@@ -878,7 +883,7 @@ export class AuditLedger extends Construct {
       handler: "handler",
       timeout: Duration.seconds(300),
       memorySize: 512,
-      reservedConcurrentExecutions: 1,
+      ...(props.reservedConcurrency === false ? {} : { reservedConcurrentExecutions: 1 }),
       role,
       logGroup,
       environment: {

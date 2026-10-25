@@ -5,7 +5,7 @@ import { ConnectorNameSchema } from "./connectors.js";
 import { ToolApprovalListSchema, McpToolNameSchema, GitHubMcpResultSchema } from "./github-mcp.js";
 import { isOneLine, ScopeValueNameSchema, McpEndpointSchema, McpAuthSchema, ArgumentNameSchema, ScopingSchema } from "./mcp-connector.js";
 import { ItemPathSchema } from "./item-paths.js";
-
+import { AwsRegionSchema } from "./connection-types-observability.js";
 
 /** The Jira tools AgentX can hold to one project, and the access each must be approved with. */
 export const JIRA_PROJECT_TOOL_ACCESS = {
@@ -16,7 +16,6 @@ export const JIRA_PROJECT_TOOL_ACCESS = {
   transitionJiraIssue: "write",
   addOrEditJiraIssueComment: "write",
 } as const satisfies Record<string, "read" | "write">;
-
 
 /**
  * The Asana tools AgentX can hold to one project, and the access each must be approved with.
@@ -33,9 +32,7 @@ export const ASANA_PROJECT_TOOL_ACCESS = {
   add_comment: "write",
 } as const satisfies Record<string, "read" | "write">;
 
-
 const RepositoryNameSchema = z.string().regex(AGENTX_NAME_PATTERN);
-
 
 /**
  * What a connector's `credentialRef` names: a credential an administrator registered (an AgentX name, as on an install of your own), or on
@@ -43,23 +40,23 @@ const RepositoryNameSchema = z.string().regex(AGENTX_NAME_PATTERN);
  */
 export const CredentialRefSchema = z.union([z.string().regex(AGENTX_NAME_PATTERN), ConnectionIdSchema]);
 
-
 /** A scope alias such as a repository name. */
 export const ConnectorAliasSchema = z.string().regex(AGENTX_NAME_PATTERN);
 
+/** The repositories a GitHub connector reaches: every repository of the project, or the ones it names. */
+const RepositoryScopesSchema = z.union([
+  z.literal("all-repositories"),
+  z.array(RepositoryNameSchema).min(1).max(32).refine((names) => new Set(names).size === names.length, "connector scopes must be unique"),
+]);
 
 /** GitHub uses each scoped repository's own GitHub App credential, as feature 007 does. */
 export const GitHubConnectorSchema = z.object({
   name: ConnectorNameSchema,
   type: z.literal("github"),
-  scopes: z.union([
-    z.literal("all-repositories"),
-    z.array(RepositoryNameSchema).min(1).max(32).refine((names) => new Set(names).size === names.length, "connector scopes must be unique"),
-  ]),
+  scopes: RepositoryScopesSchema,
   tools: ToolApprovalListSchema,
   attribution: z.boolean().optional(),
 }).strict();
-
 
 const JiraScopeSchema = z.object({
   alias: ConnectorAliasSchema,
@@ -77,7 +74,6 @@ const JiraScopeSchema = z.object({
   /** Jira project keys are 2 to 10 characters; a longer key is refused. */
   projectKey: z.string().regex(/^[A-Z][A-Z0-9_]{1,9}$/).optional(),
 }).strict();
-
 
 /**
  * Jira reads a static-secret service-account API token through the credential registry. Each
@@ -116,14 +112,10 @@ export const JiraConnectorSchema = z.object({
   }
 });
 
-
-
 /** A Linear team UUID, in any case; resolvers lowercase it. */
 const LinearTeamIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "teamId must be a Linear team UUID");
 
-
 export const LinearScopeSchema = z.object({ alias: ConnectorAliasSchema, teamId: LinearTeamIdSchema }).strict();
-
 
 /** Linear reads a static-secret API key through the credential registry; each scope is one team. */
 export const LinearConnectorSchema = z.object({
@@ -137,13 +129,10 @@ export const LinearConnectorSchema = z.object({
   attribution: z.boolean().optional(),
 }).strict();
 
-
 /** An Asana project GID: the long number in the project's URL. */
 const AsanaGidSchema = z.string().regex(/^[1-9][0-9]{0,19}$/, "projectGid must be an Asana project GID, the long number in the project's URL");
 
-
 export const AsanaScopeSchema = z.object({ alias: ConnectorAliasSchema, projectGid: AsanaGidSchema }).strict();
-
 
 /**
  * Asana reads an oauth-refresh-token credential (a bot user signed in once) through the credential
@@ -170,9 +159,7 @@ export const AsanaConnectorSchema = z.object({
   }
 });
 
-
 const OneLineSchema = (max: number) => z.string().min(1).max(max).refine(isOneLine, "must be one line");
-
 
 /** One scope of a generic connector: the alias the model sees and the values the binder and guard read. */
 export const McpScopeSchema = z.object({
@@ -180,7 +167,6 @@ export const McpScopeSchema = z.object({
   values: z.record(ScopeValueNameSchema, OneLineSchema(256))
     .refine((values) => Object.keys(values).length <= 16, "a scope has at most 16 values"),
 }).strict();
-
 
 /**
  * Spec 055: any remote MCP server, described entirely by data. The credential must be pinned to the
@@ -231,12 +217,149 @@ export const McpConnectorSchema = z.object({
   }
 });
 
+// ---- Plan 4 Task 12: the seven read-only connectors that watch a company's systems.
+// Each is `{ name, type, credentialRef, scopes, tools }` (strict), the credential an org connection of the same type (Task 11) except GitHub Actions,
+// which reads through the project's GitHub App like `github` and has none. A tool is never approved to write: the schema says so at the tool's own place
+// (`tools.<i>`), so a route, a stored revision and a registration by an administrator are held to it alike. Which tools exist is each type's own list
+// (the broker's `PROJECT_CONNECTOR_TOOLS`), filled as Tasks 13 to 17 land.
 
-export const ConnectorConfigSchema = z.discriminatedUnion("type", [GitHubConnectorSchema, LinearConnectorSchema, JiraConnectorSchema, AsanaConnectorSchema, McpConnectorSchema]);
+/** The most connectors one project may hold: the five older types and the seven that Plan 4 adds, with room for a few of the generic `mcp` kind. */
+export const MAX_PROJECT_CONNECTORS = 12;
 
+const NATIVE_SCOPE_MAX = 32;
+
+/** The scopes of a native connector: at least one, each alias once. */
+const nativeScopes = <S extends z.ZodType<{ alias: string }>>(scope: S) => z.array(scope).min(1).max(NATIVE_SCOPE_MAX)
+  .refine((scopes) => new Set(scopes.map((entry) => entry.alias)).size === scopes.length, "connector scope aliases must be unique");
+
+const uniqueList = (values: readonly unknown[]): boolean => new Set(values).size === values.length;
+
+/** Refuses any tool approved to write: these connectors only read. */
+function readOnlyConnector(type: string): (connector: { tools: ReadonlyArray<{ access: "read" | "write" }> }, context: z.RefinementCtx) => void {
+  return (connector, context) => {
+    connector.tools.forEach((tool, index) => {
+      if (tool.access === "write") context.addIssue({ code: "custom", path: ["tools", index], message: `${type} connectors are read-only` });
+    });
+  };
+}
+
+/** A Sentry project slug. */
+export const SentryProjectSlugSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,49}$/);
+
+export const SentryScopeSchema = z.object({ alias: ConnectorAliasSchema, projectSlug: SentryProjectSlugSchema }).strict();
+
+/** Sentry reads an org connection's auth token; each scope is one project of the connection's Sentry organization. */
+export const SentryConnectorSchema = z.object({
+  name: ConnectorNameSchema,
+  type: z.literal("sentry"),
+  credentialRef: ConnectionIdSchema,
+  scopes: nativeScopes(SentryScopeSchema),
+  tools: ToolApprovalListSchema,
+}).strict().superRefine(readOnlyConnector("sentry"));
+
+/**
+ * A Datadog tag, `key:value`, which goes into a query as it is written. The key starts with a lowercase letter and neither part may hold a space, a
+ * quote, a bracket, a comma or any other character a query reads as syntax, so a tag can only narrow a search.
+ */
+export const DatadogTagSchema = z.string().regex(/^[a-z][a-z0-9_./-]{0,63}:[A-Za-z0-9_./-]{1,100}$/);
+
+export const DatadogScopeSchema = z.object({
+  alias: ConnectorAliasSchema,
+  tags: z.array(DatadogTagSchema).min(1).max(5).refine(uniqueList, "scope tags must be unique"),
+}).strict();
+
+/** Datadog reads an org connection's two keys; each scope is a set of tags every query is narrowed to. */
+export const DatadogConnectorSchema = z.object({
+  name: ConnectorNameSchema,
+  type: z.literal("datadog"),
+  credentialRef: ConnectionIdSchema,
+  scopes: nativeScopes(DatadogScopeSchema),
+  tools: ToolApprovalListSchema,
+}).strict().superRefine(readOnlyConnector("datadog"));
+
+export const CloudWatchScopeSchema = z.object({
+  alias: ConnectorAliasSchema,
+  region: AwsRegionSchema,
+  /** Log groups the scope may query are those whose name starts with one of these; none means no log search. */
+  logGroupPrefixes: z.array(z.string().regex(/^[A-Za-z0-9_/.#-]{1,512}$/)).min(1).max(5).refine(uniqueList, "log group prefixes must be unique").optional(),
+  /** Alarms the scope may read are those whose name starts with this; none means every alarm of the region. */
+  alarmNamePrefix: z.string().regex(/^[A-Za-z0-9_.:/#@=+ -]{1,255}$/).optional(),
+}).strict();
+
+/** CloudWatch assumes the org connection's role; each scope is one region, optionally held to log groups and alarms by name prefix. */
+export const CloudWatchConnectorSchema = z.object({
+  name: ConnectorNameSchema,
+  type: z.literal("cloudwatch"),
+  credentialRef: ConnectionIdSchema,
+  scopes: nativeScopes(CloudWatchScopeSchema),
+  tools: ToolApprovalListSchema,
+}).strict().superRefine(readOnlyConnector("cloudwatch"));
+
+/** GitHub Actions reads workflow runs and deployments through the project's GitHub App, as `github` does: no connection, and scopes that are repositories of the project. */
+export const GitHubActionsConnectorSchema = z.object({
+  name: ConnectorNameSchema,
+  type: z.literal("github-actions"),
+  scopes: RepositoryScopesSchema,
+  tools: ToolApprovalListSchema,
+}).strict().superRefine(readOnlyConnector("github-actions"));
+
+/** A Grafana folder or data source UID. */
+export const GrafanaUidSchema = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
+
+export const GrafanaScopeSchema = z.object({
+  alias: ConnectorAliasSchema,
+  /** Alerts and dashboards are those in these folders; none means every folder the token can see. */
+  folderUids: z.array(GrafanaUidSchema).min(1).max(10).refine(uniqueList, "folder UIDs must be unique").optional(),
+  /** The one data source metric queries go to; none means no metric queries. */
+  datasourceUid: GrafanaUidSchema.optional(),
+}).strict();
+
+/** Grafana reads an org connection's service account token at its base URL. */
+export const GrafanaConnectorSchema = z.object({
+  name: ConnectorNameSchema,
+  type: z.literal("grafana"),
+  credentialRef: ConnectionIdSchema,
+  scopes: nativeScopes(GrafanaScopeSchema),
+  tools: ToolApprovalListSchema,
+}).strict().superRefine(readOnlyConnector("grafana"));
+
+/** A Vercel project id. */
+export const VercelProjectIdSchema = z.string().regex(/^prj_[A-Za-z0-9]{1,64}$/);
+
+export const VercelScopeSchema = z.object({ alias: ConnectorAliasSchema, projectId: VercelProjectIdSchema }).strict();
+
+/** Vercel reads an org connection's token; each scope is one project. */
+export const VercelConnectorSchema = z.object({
+  name: ConnectorNameSchema,
+  type: z.literal("vercel"),
+  credentialRef: ConnectionIdSchema,
+  scopes: nativeScopes(VercelScopeSchema),
+  tools: ToolApprovalListSchema,
+}).strict().superRefine(readOnlyConnector("vercel"));
+
+/** A PagerDuty service id. */
+export const PagerDutyServiceIdSchema = z.string().regex(/^P[A-Z0-9]{5,13}$/);
+
+export const PagerDutyScopeSchema = z.object({
+  alias: ConnectorAliasSchema,
+  serviceIds: z.array(PagerDutyServiceIdSchema).min(1).max(10).refine(uniqueList, "service ids must be unique"),
+}).strict();
+
+/** PagerDuty reads an org connection's API key; each scope is a set of services. */
+export const PagerDutyConnectorSchema = z.object({
+  name: ConnectorNameSchema,
+  type: z.literal("pagerduty"),
+  credentialRef: ConnectionIdSchema,
+  scopes: nativeScopes(PagerDutyScopeSchema),
+  tools: ToolApprovalListSchema,
+}).strict().superRefine(readOnlyConnector("pagerduty"));
+
+export const ConnectorConfigSchema = z.discriminatedUnion("type", [
+  GitHubConnectorSchema, LinearConnectorSchema, JiraConnectorSchema, AsanaConnectorSchema, McpConnectorSchema,
+  SentryConnectorSchema, DatadogConnectorSchema, CloudWatchConnectorSchema, GitHubActionsConnectorSchema, GrafanaConnectorSchema, VercelConnectorSchema, PagerDutyConnectorSchema,
+]);
 
 const KNOWN_CONNECTOR_TYPES = new Set(ConnectorConfigSchema.options.map((option) => option.shape.type.value as string));
-
 
 /**
  * A connector entry whose type this release's schema does not know, for example one written by a
@@ -253,7 +376,6 @@ export const UnknownConnectorEntrySchema = z.object({
   "a known connector type must match its own schema, not the passthrough shape",
 );
 
-
 /**
  * A connector entry for a stored (already-registered) project definition: a known type validates
  * strictly, exactly as `ConnectorConfigSchema` does, and any other type passes through as
@@ -262,7 +384,6 @@ export const UnknownConnectorEntrySchema = z.object({
  */
 export const StoredConnectorConfigSchema = z.union([ConnectorConfigSchema, UnknownConnectorEntrySchema]);
 
-
 function connectorArrayChecks(connectors: ReadonlyArray<{ name: string; type: string }>, context: z.RefinementCtx): void {
   if (new Set(connectors.map((connector) => connector.name)).size !== connectors.length) {
     context.addIssue({ code: "custom", message: "connector names must be unique" });
@@ -270,16 +391,17 @@ function connectorArrayChecks(connectors: ReadonlyArray<{ name: string; type: st
   if (connectors.filter((connector) => connector.type === "github").length > 1) {
     context.addIssue({ code: "custom", message: "at most one github connector is supported" });
   }
+  // The same rule for GitHub Actions: it reads through the project's one GitHub App, so a second connector would only duplicate tool prefixes.
+  if (connectors.filter((connector) => connector.type === "github-actions").length > 1) {
+    context.addIssue({ code: "custom", message: "at most one github-actions connector is supported" });
+  }
 }
 
+export const ConnectorsSchema = z.array(ConnectorConfigSchema).min(1).max(MAX_PROJECT_CONNECTORS).superRefine(connectorArrayChecks);
 
-export const ConnectorsSchema = z.array(ConnectorConfigSchema).min(1).max(8).superRefine(connectorArrayChecks);
-
-export const StoredConnectorsSchema = z.array(StoredConnectorConfigSchema).min(1).max(8).superRefine(connectorArrayChecks);
-
+export const StoredConnectorsSchema = z.array(StoredConnectorConfigSchema).min(1).max(MAX_PROJECT_CONNECTORS).superRefine(connectorArrayChecks);
 
 const SchemaHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
-
 
 /**
  * The two MCP tool annotations the action gate reads (feature 014). They come from the vendor, so
@@ -289,7 +411,6 @@ export const ToolHintsSchema = z.object({
   readOnlyHint: z.boolean().optional(),
   destructiveHint: z.boolean().optional(),
 }).strict();
-
 
 export const PresentedToolSchema = z.object({
   name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -310,14 +431,12 @@ export const PresentedToolSchema = z.object({
   itemArguments: z.array(ItemPathSchema).max(16).optional(),
 }).strict();
 
-
 export const ConnectorCatalogSchema = z.object({
   connector: ConnectorNameSchema,
   notConnected: z.literal(true).optional(),
   tools: z.array(PresentedToolSchema).max(40),
   skipped: z.array(z.object({ tool: z.string().max(64), reason: z.string().max(256) }).strict()).max(64),
 }).strict();
-
 
 export const ConnectorCallRequestSchema = z.object({
   requestId: z.uuid(),
@@ -327,11 +446,9 @@ export const ConnectorCallRequestSchema = z.object({
   arguments: z.record(z.string(), z.unknown()).refine((value) => JSON.stringify(value).length <= 65_536, "arguments exceed limit"),
 }).strict();
 
-
 export const ConnectorResultReasonSchema = z.enum(["not_connected", "schema_changed", "policy_denied", "vendor_error"]);
 
 export const ConnectorResultSchema = GitHubMcpResultSchema.extend({ reason: ConnectorResultReasonSchema.optional() }).strict();
-
 
 export const ThreadConnectorSchema = z.object({
   name: ConnectorNameSchema,
@@ -340,7 +457,6 @@ export const ThreadConnectorSchema = z.object({
   scopes: z.array(ConnectorAliasSchema).max(32),
   connected: z.boolean(),
 }).strict();
-
 
 export type ToolHints = z.infer<typeof ToolHintsSchema>;
 
@@ -354,7 +470,6 @@ export type ConnectorResult = z.infer<typeof ConnectorResultSchema>;
 
 export type ThreadConnector = z.infer<typeof ThreadConnectorSchema>;
 
-
 export type GitHubConnectorConfig = z.infer<typeof GitHubConnectorSchema>;
 
 export type JiraConnectorConfig = z.infer<typeof JiraConnectorSchema>;
@@ -365,10 +480,23 @@ export type AsanaConnectorConfig = z.infer<typeof AsanaConnectorSchema>;
 
 export type McpConnectorConfig = z.infer<typeof McpConnectorSchema>;
 
+export type SentryConnectorConfig = z.infer<typeof SentryConnectorSchema>;
+
+export type DatadogConnectorConfig = z.infer<typeof DatadogConnectorSchema>;
+
+export type CloudWatchConnectorConfig = z.infer<typeof CloudWatchConnectorSchema>;
+
+export type GitHubActionsConnectorConfig = z.infer<typeof GitHubActionsConnectorSchema>;
+
+export type GrafanaConnectorConfig = z.infer<typeof GrafanaConnectorSchema>;
+
+export type VercelConnectorConfig = z.infer<typeof VercelConnectorSchema>;
+
+export type PagerDutyConnectorConfig = z.infer<typeof PagerDutyConnectorSchema>;
+
 export type McpScope = z.infer<typeof McpScopeSchema>;
 
 export type ConnectorConfig = z.infer<typeof ConnectorConfigSchema>;
-
 
 /** Six in-house tools when recovery tools are shown; kept equal to ORCHESTRATION_TOOL_NAMES by a test. */
 export const IN_HOUSE_TOOL_COUNT = 6;
@@ -377,7 +505,6 @@ export const TOOL_WARNING_THRESHOLD = 20;
 
 export const TOOL_LIMIT = 40;
 
-
 interface ConnectorApprovals {
   integrations?: {
     githubMcp?: { tools: ReadonlyArray<{ name: string }> } | undefined;
@@ -385,12 +512,10 @@ interface ConnectorApprovals {
   } | undefined;
 }
 
-
 export function approvedToolCount(definition: ConnectorApprovals): number {
   const legacy = definition.integrations?.githubMcp?.tools.length ?? 0;
   return legacy + (definition.integrations?.connectors ?? []).reduce((sum, connector) => sum + connector.tools.length, 0);
 }
-
 
 /** The most tools the model could see: every in-house tool plus every approval. */
 export function toolBudget(approved: number): { maximum: number; warning?: string; refusal?: string } {
@@ -400,14 +525,12 @@ export function toolBudget(approved: number): { maximum: number; warning?: strin
   return { maximum };
 }
 
-
 /** Each connector's name and approved tools. The feature 007 githubMcp policy reads as a connector named github. */
 export function connectorApprovals(definition: ConnectorApprovals): Array<{ name: string; tools: ReadonlyArray<{ name: string }> }> {
   return definition.integrations?.githubMcp
     ? [{ name: "github", tools: definition.integrations.githubMcp.tools }]
     : [...(definition.integrations?.connectors ?? [])];
 }
-
 
 export function presentedNameProblems(definition: ConnectorApprovals): string[] {
   const connectors = connectorApprovals(definition);
@@ -417,7 +540,6 @@ export function presentedNameProblems(definition: ConnectorApprovals): string[] 
     .map((presented) => `connector ${connector.name} tool ${presented.slice(connector.name.length + 2)}: presented name ${presented} exceeds 64 characters`));
 }
 
-
 export const ConnectorPreflightSchema = z.object({
   name: ConnectorNameSchema,
   status: z.enum(["connected", "not_connected", "unavailable"]),
@@ -426,11 +548,9 @@ export const ConnectorPreflightSchema = z.object({
   skipped: z.array(z.object({ tool: z.string().max(64), reason: z.string().max(256) }).strict()).max(64),
 }).strict();
 
-
 export const RegistrationPreflightSchema = z.object({
-  connectors: z.array(ConnectorPreflightSchema).max(8),
+  connectors: z.array(ConnectorPreflightSchema).max(MAX_PROJECT_CONNECTORS),
 }).strict();
-
 
 export type ConnectorPreflight = z.infer<typeof ConnectorPreflightSchema>;
 

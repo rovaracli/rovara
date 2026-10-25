@@ -3,13 +3,11 @@ import { canonicalJson } from "./canonical-json.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema, DigestSchema, TreeSchema } from "./workflow-dependencies.js";
 import { createHash } from "node:crypto";
 
-
 export const TASK_GRAPH_ITEMS_MAX = 8;
 
 export const TASK_GRAPH_EDGES_MAX = 12;
 
 export const TASK_GRAPH_CANONICAL_BYTES_MAX = 16_384;
-
 
 const GraphItemSchema = z.object({
   id: z.string().uuid(),
@@ -18,7 +16,6 @@ const GraphItemSchema = z.object({
   repository: z.string().trim().min(1).max(200),
   dependsOn: z.array(z.string().uuid()).max(TASK_GRAPH_ITEMS_MAX),
 }).strict();
-
 
 export const TaskGraphV1Schema = z.object({
   schemaVersion: z.literal(1),
@@ -59,13 +56,11 @@ export const TaskGraphV1Schema = z.object({
   }
 });
 
-
 export type TaskGraphV1 = z.infer<typeof TaskGraphV1Schema>;
 
 export type WorkflowDependencyApproval = z.infer<typeof WorkflowDependencyApprovalSchema>;
 
 export type WorkItemProgressV1 = z.infer<typeof WorkItemProgressV1Schema>;
-
 
 export const WorkflowDependencyResultSchema = z.object({
   schemaVersion: z.literal(1),
@@ -95,7 +90,6 @@ export const WorkflowDependencyResultSchema = z.object({
 
 export type WorkflowDependencyResult = z.infer<typeof WorkflowDependencyResultSchema>;
 
-
 export const WorkflowDependencyInvocationSchema = z.object({
   approval: WorkflowDependencyApprovalSchema,
   graph: TaskGraphV1Schema,
@@ -120,17 +114,14 @@ export const WorkflowDependencyInvocationSchema = z.object({
 
 export type WorkflowDependencyInvocation = z.infer<typeof WorkflowDependencyInvocationSchema>;
 
-
 export type TaskGraphValidation =
   | { ok: true; graph: TaskGraphV1 }
   | { ok: false; errors: string[] };
-
 
 export interface TaskGraphValidationContext {
   taskId: string;
   repositoryId: string;
 }
-
 
 function isCyclic(items: ReadonlyArray<z.infer<typeof GraphItemSchema>>): boolean {
   const ids = new Set(items.map((item) => item.id));
@@ -151,7 +142,6 @@ function isCyclic(items: ReadonlyArray<z.infer<typeof GraphItemSchema>>): boolea
   return items.some((item) => visit(item.id));
 }
 
-
 export function validateTaskGraph(input: unknown, expected: TaskGraphValidationContext): TaskGraphValidation {
   const parsed = TaskGraphV1Schema.safeParse(input);
   if (!parsed.success) {
@@ -164,12 +154,10 @@ export function validateTaskGraph(input: unknown, expected: TaskGraphValidationC
   return { ok: true, graph: parsed.data };
 }
 
-
 /** SHA-256 of canonical graph bytes; arrays retain their submitted order. */
 export function taskGraphDigest(graph: TaskGraphV1): string {
   return createHash("sha256").update(canonicalJson(graph), "utf8").digest("hex");
 }
-
 
 /** Stable Kahn ordering. Among currently-ready items, submitted position wins ties. */
 export function taskGraphOrder(input: unknown): string[] {
@@ -190,7 +178,6 @@ export function taskGraphOrder(input: unknown): string[] {
   }
   return result;
 }
-
 
 /**
  * Project terminal checkpoints for one immutable operation attempt. The durable event log is the
@@ -250,4 +237,4 @@ export function workflowDependencyAttemptTerminalProgress(input: {
   });
 }
 
-export { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";
+export { DigestSchema, TreeSchema, WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";

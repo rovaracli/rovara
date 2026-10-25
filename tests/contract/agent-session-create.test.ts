@@ -29,6 +29,7 @@ import {
   runRequestKey,
   sessionEventSk,
   sessionLegSk,
+  sessionBindingKey,
   sessionSurfaceKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { OrgId } from "../../packages/contracts/src/org-node.js";
@@ -351,10 +352,10 @@ describe("a task shared to its Slack thread at the start", () => {
     expect(items.some((item) => item.entityType === "SHARED_TASK")).toBe(true);
     const binding = { kind: "slack_thread" as const, ...thread };
     const surface = sessionSurfaceKey(TEST_ORG, binding);
-    const bound = items.filter((item) => (item.pk === surface.pk && item.sk === surface.sk) || (item.pk === agentSessionKey(TEST_ORG, sessionId, "BINDING#slack_thread").pk && item.sk === "BINDING#slack_thread"));
+    const bound = items.filter((item) => (item.pk === surface.pk && item.sk === surface.sk) || (item.pk === sessionBindingKey(TEST_ORG, sessionId, "slack_thread").pk && item.sk === "BINDING#slack_thread"));
     expect(bound).toHaveLength(2);
     expect(t.db.get(surface)).toMatchObject({ orgId: TEST_ORG, sessionId, kind: "slack_thread" });
-    expect(t.db.get(agentSessionKey(TEST_ORG, sessionId, "BINDING#slack_thread"))).toMatchObject({ orgId: TEST_ORG, sessionId, binding });
+    expect(t.db.get(sessionBindingKey(TEST_ORG, sessionId, "slack_thread"))).toMatchObject({ orgId: TEST_ORG, sessionId, binding });
     expect(items.length).toBeLessThan(100);
   });
 
@@ -362,7 +363,7 @@ describe("a task shared to its Slack thread at the start", () => {
     const t = await setup();
     const { task } = await t.start(MAYA, {});
     expect(t.db.find((item) => typeof item.pk === "string" && item.pk.includes("SESSION_SURFACE"))).toEqual([]);
-    expect(t.sessionPartitions().some((item) => String(item.sk).startsWith("BINDING#"))).toBe(false);
+    expect(t.db.find((item) => typeof item.pk === "string" && item.pk.includes("SESSION_BINDING#"))).toEqual([]);
     expect(task.sessionId).toBeDefined();
   });
 });

@@ -4,7 +4,6 @@ export const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const TreeSchema = z.string().regex(/^[a-f0-9]{40}$/);
 
-
 export const WorkflowDependencyApprovalSchema = z.object({
   artifactDigest: DigestSchema,
   graphDigest: DigestSchema,
@@ -12,7 +11,6 @@ export const WorkflowDependencyApprovalSchema = z.object({
   actorId: z.string().regex(/^[a-f0-9]{64}$/),
   runId: z.string().uuid(),
 }).strict();
-
 
 export const WorkItemProgressV1Schema = z.object({
   schemaVersion: z.literal(1),

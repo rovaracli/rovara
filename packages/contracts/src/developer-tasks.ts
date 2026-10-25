@@ -20,7 +20,6 @@ export const CHANNEL_TURNS_MAX = 20;
 
 export const CHANNEL_TURN_REQUEST_MAX = 300;
 
-
 export const DeveloperTaskShareSchema = z.object({
   mode: DeveloperShareModeSchema,
   channelId: z.string(),
@@ -34,7 +33,6 @@ export const DeveloperTaskShareSchema = z.object({
   postFailed: z.boolean().optional(),
 });
 
-
 /** C15: one Slack turn a teammate ran on the task in its shared thread. */
 export const ChannelTurnSchema = z.object({
   author: z.object({ slackUserId: z.string(), name: z.string().optional() }),
@@ -43,9 +41,7 @@ export const ChannelTurnSchema = z.object({
   outcome: z.string(),
 });
 
-
 export const DeveloperTaskStatusSchema = z.enum(["STARTING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED", "CLOSED"]);
-
 
 export const DeveloperTaskFailureCategorySchema = z.enum(["setup_failed", "worker_unavailable", "task_failed", "timed_out", "interrupted", "publication_failed", "budget_exhausted"]);
 
@@ -60,7 +56,6 @@ export const DeveloperTaskFailureSchema = z.object({
   message: z.string().max(DEVELOPER_FAILURE_MESSAGE_MAX),
 });
 
-
 export const DeveloperTaskEventSchema = z.object({
   at: z.string(),
   kind: z.enum(["status", "progress", "tool", "message", "error"]),
@@ -73,7 +68,6 @@ export const PullRequestSummarySchema = z.object({
   url: z.string().url(),
   state: z.enum(["open", "closed", "merged"]),
 });
-
 
 /**
  * Plan 3, Task 22: where an agent-step run is. `currentStep` is the step the run is at (the one that runs or waits); a step's `report` is its
@@ -89,7 +83,6 @@ export const DeveloperTaskRunViewSchema = z.object({
   branch: z.string().optional(),
   endReason: z.string().optional(),
 }).strict();
-
 
 export const DeveloperTaskViewSchema = z.object({
   taskId: z.string().uuid(),

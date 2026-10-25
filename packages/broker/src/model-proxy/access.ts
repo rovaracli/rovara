@@ -19,8 +19,11 @@ export interface MintTags {
   operationId?: string | undefined;
   stepId?: string | undefined;
   agentId: string;
+  /** Plan 4: the chain and the run a chain's step belongs to. */
+  chainId?: string | undefined;
+  chainRunId?: string | undefined;
   project?: string | undefined;
-  payerKind: "member" | "project" | "agent";
+  payerKind: "member" | "project" | "agent" | "chain";
   payerId: string;
   source: string;
   origin: string;

@@ -297,10 +297,13 @@ async function runTurn(input: TurnInput): Promise<string> {
     const turn = await proxiedModels?.turnModels(input.message);
     const proxy = turn?.proxy;
     const turnClassifier = turn === undefined ? classifier : turn.classifier;
+    // MODEL3: the model that ran in place of a missing-key one is said under the reply.
+    let fallbackNote: string | undefined;
     const runtime = await createHostedSlackRuntime(input, {
       stateDirectory: directory,
       ...(proxy === undefined ? {} : { proxy }),
       ...(turn?.route === undefined ? {} : { modelRoute: turn.route }),
+      onModelFallback: (notice) => { fallbackNote = notice.text; },
       api: new ControlPlaneApi(controlPlaneUrl, "slack-service", input.workspaceId, signedFetch),
       model,
       ...(sessionFile === undefined ? {} : { sessionFile }),
@@ -331,7 +334,7 @@ async function runTurn(input: TurnInput): Promise<string> {
           ServerSideEncryption: "AES256",
         }));
       }
-      return response;
+      return fallbackNote === undefined ? response : `${response}\n_I ${fallbackNote}._`;
     } finally {
       await runtime.dispose();
     }

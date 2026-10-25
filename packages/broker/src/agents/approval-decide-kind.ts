@@ -11,6 +11,7 @@ import { AgentSessionStore } from "../agent-sessions/store.js";
 import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
+import { approverRefusalFor } from "./approvals-store.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 
@@ -29,10 +30,11 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
       case "org_admin": return "an organization owner or admin";
       case "agent_publish":
       case "agent_manager": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
+      case "chain_publish": return "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin";
       case "project_settings": return "a maintainer of this project";
       case "session_share_org": return "the person who asked, while they can still share the session";
       case "session_take_over": return "the person who asked, while they can still take the session over";
-      default: return "the people it was asked of";
+      default: return (await approverRefusalFor(deps, record))?.who ?? "the people it was asked of";
     }
   }
   return "the people it was asked of";
@@ -54,6 +56,10 @@ const TITLES: Record<string, string> = {
   builtin_adopt: "Use a new version of a built-in agent",
   agent_share: "Share an agent with the whole company",
   guardrails: "Relax the company's agent guardrails",
+  chain_publish: "Publish a chain",
+  chain_rollback: "Roll a chain back",
+  chain_share: "Share a chain with the whole company",
+  trigger_enable: "Turn on a trigger",
   connector_widen: "Let a project's connector make changes",
   opt_out: "Let agents comment in a repository whose workflows act on comments",
   session_share_org: "Share a session with everyone",
@@ -130,11 +136,19 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
-  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "session_share_org" && subject.kind !== "session_owner") facts.push(...await agentChangeFacts(deps, record.orgId, subject));
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner") {
+    facts.push(...await agentChangeFacts(deps, record.orgId, subject));
+  }
   if (subject.kind === "opt_out") {
     facts.push(fact("Project", subject.project), fact("Repository", subject.repository), fact("Reviewed workflows", subject.files.join("\n")), fact("Digest of what was reviewed", subject.expectedDigest), fact("Reason", subject.reason));
   } else if (subject.kind === "connector_widen") {
     facts.push(fact("Project", subject.project), fact("Connector", subject.name), fact("Project revision it applies to", String(subject.expectedRevision)));
+  }
+  if (subject.kind === "chain_publish" || subject.kind === "chain_rollback" || subject.kind === "chain_share") {
+    // The changes name steps, not the chain; a company has many chains made from one design.
+    const chain = await deps.chains?.get(record.orgId, subject.chainId);
+    if (chain !== undefined) facts.push(fact("Chain", shownText(chain.name, NAME_MAX)));
+    if (subject.kind === "chain_rollback") facts.push(fact("Version", String(subject.version)));
   }
   if (subject.kind === "session_share_org") {
     // The title is the session's own (redacted when it was stored); a session that can't be read is named by its id.

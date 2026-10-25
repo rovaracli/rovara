@@ -1,14 +1,11 @@
 import { z } from "zod";
 
-
 export const ModelIdentifierSchema = z.object({
   provider: z.string().trim().min(1).max(128),
   modelId: z.string().trim().min(1).max(256),
 }).strict();
 
-
 export const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
-
 
 /** A model plus the thinking level to run it at, as carried by an invocation or an eval run. */
 export const ModelSelectionSchema = ModelIdentifierSchema.extend({

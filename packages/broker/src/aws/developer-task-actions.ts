@@ -30,6 +30,11 @@ export interface DeveloperTaskActions {
   latestProject(orgId: OrgId, projectName: string): Promise<RegisteredProjectRecord | undefined>;
   /** One registered revision of a project, or undefined when it does not exist. Unchecked: callers must load the owned task and check project access first. */
   projectRevision(orgId: OrgId, projectName: string, revision: number): Promise<RegisteredProjectRecord | undefined>;
+  /**
+   * Makes sure the project's catalog row carries its latest-revision pointer, repairing a row written before the pointer
+   * existed from the revision history (index only). CONFIG_INVALID, naming the project, when it cannot be repaired.
+   */
+  ensureProjectCatalogPointer(orgId: OrgId, projectName: string): Promise<void>;
   preparation(identity: AuthenticatedIdentity, project: RegisteredProjectRecord, requestId: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean }): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems }>;
   /**
    * Plan 3, Task 32: the outbox item that sends an existing workspace's held preparation (a run started with a run limit of 0), with a new capability and
@@ -53,7 +58,7 @@ export interface DeveloperTaskActions {
   /** The workspace's pull requests, across all pages. Unchecked: callers must load the owned task and check project access first. */
   pullRequests(workspaceId: string): Promise<StoredPullRequest[]>;
   /** `sharedTask`: the task is shared, so the worker's prompt gets the re-read line (25c note 1). */
-  acceptTask(identity: AuthenticatedIdentity, workspaceId: string, request: OperationRequest, extra: ExtraItems, options?: { sharedTask?: boolean; operationId?: string; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput }): Promise<{ operation: Operation; duplicate: boolean }>;
+  acceptTask(identity: AuthenticatedIdentity, workspaceId: string, request: OperationRequest, extra: ExtraItems, options?: { sharedTask?: boolean; operationId?: string; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput }): Promise<{ operation: Operation; duplicate: boolean }>;
   /**
    * `workflowCandidate`: the workflow's own draft publication of the tree its checks and reviews passed on, the only
    * pull request a workflow task's workspace accepts. The worker refuses a workspace that no longer has that tree, and

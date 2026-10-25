@@ -3,7 +3,6 @@ import { ToolPatternSchema } from "./action-policy.js";
 import { ConnectorNameSchema } from "./connectors.js";
 import { connectorApprovals } from "./connectors-node.js";
 
-
 /**
  * The orchestrator's in-house tools, which action policy rules may name. Kept equal to the
  * orchestrator's ORCHESTRATION_TOOL_NAMES by a test, as IN_HOUSE_TOOL_COUNT is.
@@ -16,7 +15,6 @@ export const IN_HOUSE_TOOL_NAMES = [
   "agentx_follow_up",
   "agentx_manage_pull_request",
 ] as const;
-
 
 /**
  * One administrator rule. With `connector`, `tool` matches that connector's own tool names
@@ -34,12 +32,10 @@ export const ActionPolicyRuleSchema = z.object({
   reason: z.string().min(1).max(200).optional(),
 }).strict().refine((rule) => (rule.outcome === undefined) !== (rule.treatAs === undefined), "an action policy rule sets exactly one of outcome and treatAs");
 
-
 /** A project's additions to the action gate's built-in defaults (feature 014). */
 export const ActionPolicySchema = z.object({
   rules: z.array(ActionPolicyRuleSchema).min(1).max(64),
 }).strict();
-
 
 /**
  * Whether a tool name matches a rule's pattern, where `*` is any run of characters and every other
@@ -69,9 +65,7 @@ export function toolPatternMatches(pattern: string, name: string): boolean {
   return true;
 }
 
-
 type PolicyProject = Parameters<typeof connectorApprovals>[0] & { actionPolicy?: ActionPolicy | undefined };
-
 
 /**
  * Registration refuses a rule that can never apply: one that names a connector the project does
@@ -93,7 +87,6 @@ export function actionPolicyProblems(project: PolicyProject): string[] {
   }
   return problems;
 }
-
 
 export type ActionPolicyRule = z.infer<typeof ActionPolicyRuleSchema>;
 

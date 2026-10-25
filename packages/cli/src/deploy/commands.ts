@@ -679,6 +679,8 @@ export async function prepareDeployment(input: {
   identityMode: "cognito" | "oidc";
   /** The hosted Rovara cloud (R45): the cdk app is synthesized with agentxCloud=true; the templates engine cannot deploy it. */
   cloud?: boolean;
+  /** `agentx upgrade --no-reserved-concurrency`: the cdk app is synthesized with agentxReservedConcurrency=false. */
+  reservedConcurrency?: false;
   release: LoadedRelease;
   source?: string;
   deps: DeployCliDependencies;
@@ -724,7 +726,7 @@ export async function prepareDeployment(input: {
     await buildSource({ runner, source });
     // Issue 152: one synth of the built source, with the deploy's own app and context, says which
     // parameters each stack declares; the release's templates may not exist (a source-built agentx).
-    const cloud = input.cloud === true ? { cloud: true } : {};
+    const cloud = { ...(input.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}) };
     declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode, ...cloud });
     cdkOutputsDir = await mkdtemp(join(tmpdir(), "agentx-cdk-outputs-"));
     deployer = cdkDeployer({

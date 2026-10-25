@@ -1,13 +1,18 @@
 // Multi-tenancy: the DynamoDB keys whose names two orgs can share (a project called "web", a member
 // grant on it, the workspace limits) or that list across tenants (the usage and failure indexes).
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
+import { createHash } from "node:crypto";
 import { canonicalInstant, indexDay } from "./admin.js";
 import { principalKey, type AgentId } from "./agent.js";
 export { principalKey } from "./agent.js";
 import type { AgentPrincipal, ApprovalId, SkillId } from "./agent-node.js";
-import type { DeviceId, SessionBinding, SessionId } from "./agent-sessions-node.js";
+import type { SessionId } from "./agent-sessions.js";
+import type { DeviceId, SessionBinding } from "./agent-sessions-node.js";
 import { OrgIdSchema, type OrgId } from "./org.js";
 import { orgScoped, type OrgKey } from "./org-node.js";
+import type { ChainId, ChainRunId } from "./chains.js";
+import type { EventSource } from "./trigger-specs.js";
+import type { TriggerTarget } from "./triggers.js";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
 const REVISION_WIDTH = 12;
@@ -75,6 +80,14 @@ export const MEMBER_GRANT_SK_PREFIX = "PROJECT#";
 
 export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string): OrgKey {
   return { pk: memberGrantsPk(orgId, ownerKey), sk: `PROJECT#${project}` };
+}
+
+/**
+ * A person's default workspace for a project in one org: the map from (person, project) to the workspace an administrator prepared or the Slack channel started. A person has one
+ * owner key across orgs, so the org is part of the key: leaving one org and joining another with a project of the same name never reads the old org's workspace.
+ */
+export function defaultWorkspaceKey(orgId: OrgId, ownerKey: string, project: string): OrgKey {
+  return { pk: orgScoped(orgId, `OWNER#${ownerKey}`), sk: `PROJECT#${project}` };
 }
 
 export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS";
@@ -213,6 +226,11 @@ export function agentNameKey(orgId: OrgId, name: string): OrgKey {
 /** The index item that lists, per principal, the agents shared with it. */
 export function principalSharesKey(orgId: OrgId, principal: AgentPrincipal, agentId: AgentId): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SHARES#${principalKey(principal)}`), sk: agentId };
+}
+
+/** The index item that lists, per principal, the chains shared with it (chains have their own partition, so an agent listing never sees them). */
+export function principalChainSharesKey(orgId: OrgId, principal: AgentPrincipal, chainId: ChainId): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN_SHARES#${principalKey(principal)}`), sk: chainId };
 }
 
 /** The roster item that puts an agent on a project. */
@@ -438,6 +456,157 @@ export function agentItemKey(orgId: OrgId, taskId: string, connector: string, va
   return { pk: agentItemsPk(orgId, taskId), sk: `${connector}#${value}` };
 }
 
+// ---- chains (Plan 4 Task 1)
+
+const CHAIN_VERSION_WIDTH = 6;
+const MAX_CHAIN_VERSION = 10 ** CHAIN_VERSION_WIDTH - 1;
+const STEP_SEQ_WIDTH = 4;
+const RUN_EVENT_SEQ_WIDTH = 6;
+
+export type ChainItemSk = "META" | "DRAFT" | `VERSION#${string}` | `SHARE#${string}` | `EVENT#${string}`;
+
+/** One chain's partition: its META, its DRAFT, immutable versions, shares and events. */
+export function chainKey(orgId: OrgId, chainId: ChainId, sk: ChainItemSk): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN#${chainId}`), sk };
+}
+
+/** The sort key of a published chain version; six digits keep a query on `VERSION#` in version order. */
+export function chainVersionSk(version: number): `VERSION#${string}` {
+  if (!Number.isInteger(version) || version < 1 || version > MAX_CHAIN_VERSION) throw new Error(`a chain version is a whole number from 1 to ${MAX_CHAIN_VERSION}`);
+  return `VERSION#${String(version).padStart(CHAIN_VERSION_WIDTH, "0")}`;
+}
+
+/** The org's chain directory: one item per chain, for listing without reading every partition. */
+export function chainDirectoryKey(orgId: OrgId, chainId: ChainId): OrgKey {
+  return { pk: orgScoped(orgId, "CHAINS"), sk: chainId };
+}
+
+/** The item that makes a chain's name unique in its org, ignoring case and surrounding spaces. */
+export function chainNameKey(orgId: OrgId, name: string): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN_NAME#${name.trim().toLowerCase()}`), sk: "META" };
+}
+
+export type ChainRunItemSk = "META" | `STEP#${string}` | `EVENT#${string}`;
+
+/** One chain run's partition: its META, one item per step attempt and its event log. */
+export function chainRunKey(orgId: OrgId, runId: ChainRunId, sk: ChainRunItemSk): OrgKey {
+  return { pk: orgScoped(orgId, `CHAIN_RUN#${runId}`), sk };
+}
+
+function paddedSeq(seq: number, width: number, what: string): string {
+  const max = 10 ** width - 1;
+  if (!Number.isInteger(seq) || seq < 0 || seq > max) throw new Error(`${what} is a whole number from 0 to ${max}`);
+  return String(seq).padStart(width, "0");
+}
+
+/** The sort key of a step attempt in a run; four digits keep a query on `STEP#` in order. */
+export function stepSk(seq: number): `STEP#${string}` {
+  return `STEP#${paddedSeq(seq, STEP_SEQ_WIDTH, "a step sequence number")}`;
+}
+
+/** The sort key of a run event; six digits keep a query on `EVENT#` in order. */
+export function runEventSk(seq: number): `EVENT#${string}` {
+  return `EVENT#${paddedSeq(seq, RUN_EVENT_SEQ_WIDTH, "an event sequence number")}`;
+}
+
+/** The index item that lists a chain's runs, newest last; `createdAt` is an instant. */
+export function chainRunsByChainKey(orgId: OrgId, chainId: ChainId, createdAt: string, runId: ChainRunId): OrgKey {
+  return { pk: chainRunsByChainPk(orgId, chainId), sk: `${canonicalInstant(createdAt)}#${runId}` };
+}
+
+/** The partition of a chain's run index: a list of the chain's runs queries it. */
+export function chainRunsByChainPk(orgId: OrgId, chainId: ChainId): string {
+  return orgScoped(orgId, `CHAIN_RUNS#${chainId}`);
+}
+
+/** The index item that lists a project's chain runs, newest last; `createdAt` is an instant. */
+export function chainRunsByProjectKey(orgId: OrgId, project: string, createdAt: string, runId: ChainRunId): OrgKey {
+  return { pk: chainRunsByProjectPk(orgId, project), sk: `${canonicalInstant(createdAt)}#${runId}` };
+}
+
+/** The partition of a project's chain-run index: a list of the project's runs queries it. */
+export function chainRunsByProjectPk(orgId: OrgId, project: string): string {
+  return orgScoped(orgId, `CHAIN_RUNS_P#${project}`);
+}
+
+/**
+ * The global index of chain runs still open, in the order they are next due (ids only: the item names the org and the run, and a reader
+ * re-checks `orgId` on the record it points at). `dueAt` is an instant.
+ */
+export function openChainRunKey(dueAt: string, orgId: OrgId, runId: ChainRunId): OrgKey {
+  return { pk: "OPEN_CHAIN_RUNS", sk: `${canonicalInstant(dueAt)}#${orgId}#${runId}` };
+}
+
+// ---- triggers (Plan 4 Task 18)
+
+/** The name a trigger's target goes by in keys: `CHAIN#<id>` or `AGENT#<id>`. */
+export function triggerTargetKey(target: TriggerTarget): string {
+  return target.kind === "chain" ? `CHAIN#${target.chainId}` : `AGENT#${target.agentId}`;
+}
+
+/** A trigger's record. */
+export function triggerKey(orgId: OrgId, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER#${triggerId}`), sk: "META" };
+}
+
+/** The index item that lists a target's triggers (`targetKey` is `triggerTargetKey(target)`), and its counter at `COUNT`. */
+export function targetTriggersKey(orgId: OrgId, targetKey: string, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TARGET_TRIGGERS#${targetKey}`), sk: triggerId };
+}
+
+/** The counter of a target's triggers, beside the index items: a transaction that adds a trigger is held to `MAX_TRIGGERS_PER_TARGET` by it. */
+export function targetTriggerCountKey(orgId: OrgId, targetKey: string): OrgKey {
+  return { pk: orgScoped(orgId, `TARGET_TRIGGERS#${targetKey}`), sk: "COUNT" };
+}
+
+/** The index item that lists the triggers a member created, so a removed or merged member's can be found. */
+export function triggersByCreatorKey(orgId: OrgId, developerId: string, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGERS_BY_CREATOR#${developerId}`), sk: triggerId };
+}
+
+/** The index item dispatch reads: the triggers of the receiving hook only (`hookId` is `"github"` for GitHub's, which have none). */
+export function triggerMatchKey(orgId: OrgId, source: EventSource, project: string, hookId: string, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGERS#${source}#${project}#${hookId}`), sk: triggerId };
+}
+
+/**
+ * The global list of schedule triggers whose schedule the scheduler does not hold as the trigger says (`scheduleStatus: "pending"`), for the sweep that repairs them. Like the
+ * open-run list it names the org and the trigger and nothing else: a reader reads the record under that org's own key.
+ */
+export function pendingTriggerScheduleKey(orgId: OrgId, triggerId: string): OrgKey {
+  return { pk: "PENDING_TRIGGER_SCHEDULES", sk: `${orgId}#${triggerId}` };
+}
+
+/** One thing a trigger did or was told, newest last; it expires with `TRIGGER_ACTIVITY_TTL_DAYS`. */
+export function triggerActivityKey(orgId: OrgId, triggerId: string, at: string, eventKey: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER_ACTIVITY#${triggerId}`), sk: `${canonicalInstant(at)}#${eventKey}` };
+}
+
+/** A notice stored for a member to be shown (Plan 7) and posted (Plan 9), as Plan 3 stores budget alerts. */
+export function triggerNoticeKey(orgId: OrgId, developerId: string, at: string, triggerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER_NOTICES#${developerId}`), sk: `${canonicalInstant(at)}#${triggerId}` };
+}
+
+// ---- the limits dispatch counts against (Plan 4 Task 20)
+
+/** The count of runs one trigger started in one UTC hour (`hour` is `YYYY-MM-DDTHH`); it expires after two hours. */
+export function triggerRateKey(orgId: OrgId, triggerId: string, hour: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER_RATE#${triggerId}`), sk: hour };
+}
+
+/** The count of runs events and schedules started for the whole org in one UTC day (`day` is `YYYY-MM-DD`); it expires after two days. */
+export function orgAutonomousKey(orgId: OrgId, day: string): OrgKey {
+  return { pk: orgScoped(orgId, "ORG_AUTONOMOUS"), sk: day };
+}
+
+/**
+ * The note that one trigger started a run for one subject (a pull request, an issue, an incident...) and when: the sort key is the SHA-256 of what names the subject. Dispatch
+ * reads it so that an event on the subject the trigger's own run may have caused is not started again within `TRIGGER_SUBJECT_GUARD_MINUTES`; it expires after two hours.
+ */
+export function triggerSubjectKey(orgId: OrgId, triggerId: string, subject: { kind: string; id: string; url?: string | undefined }): OrgKey {
+  return { pk: orgScoped(orgId, `TRIGGER_SUBJECT#${triggerId}`), sk: createHash("sha256").update(`${subject.kind}\0${subject.id}\0${subject.url ?? ""}`, "utf8").digest("hex") };
+}
+
 // ---- agent sessions (Plan 5 Task 1)
 
 /** A key segment: never empty and never holds the `#` that separates segments, so one segment can't be read as two. */
@@ -462,13 +631,12 @@ export type AgentSessionItemSk =
   | `MESSAGE#${string}`
   | `TURN#${string}`
   | `EVENT#${string}`
-  | `BINDING#${string}`
   | `LEG#${string}`
   | `TAKE_OVER_FOLLOW_UP#${string}`
   | `REQUEST#${string}`
   | "RETRIED";
 
-/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, bindings, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
+/** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
 export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
 }
@@ -559,6 +727,14 @@ export function endedSessionWorkKey(day: string, orgId: OrgId, sessionId: Sessio
 /** Where the sweep remembers how far it got. A global item holding no org. */
 export const SESSION_SWEEP_CURSOR_KEY: OrgKey = { pk: "SESSION_SWEEP_CURSOR", sk: "META" };
 
+/**
+ * A session's own record of an outside place it follows (`BINDING#<kind>`: `slack_thread` or `linear_issue`), in a partition of its own, not the session's. The Slack notifier writes it, and
+ * an IAM grant can limit a writer by partition key only, so keeping it out of the session partition keeps that role away from the session's META, shares and everything else in it.
+ */
+export function sessionBindingKey(orgId: OrgId, sessionId: SessionId, kind: SessionBinding["kind"]): OrgKey {
+  return { pk: orgScoped(orgId, `SESSION_BINDING#${keyPart(sessionId, "a session id")}`), sk: `BINDING#${kind}` };
+}
+
 /** The item that binds one outside surface (a Slack thread or a Linear issue) to one session: one binding per surface per org. */
 export function sessionSurfaceKey(orgId: OrgId, binding: SessionBinding): OrgKey {
   const sk = binding.kind === "slack_thread"
@@ -570,11 +746,6 @@ export function sessionSurfaceKey(orgId: OrgId, binding: SessionBinding): OrgKey
 /** One person's change notice (ids only), kept for the catch-up feed; `at` is an instant and `n` orders notices written in one instant. */
 export function changesKey(orgId: OrgId, developerId: string, at: string, n: number): OrgKey {
   return { pk: orgScoped(orgId, `CHANGES#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(at)}#${paddedCounter(n, "a notice number")}` };
-}
-
-/** A Home card one person dismissed. */
-export function homeDismissKey(orgId: OrgId, developerId: string, cardId: string): OrgKey {
-  return { pk: orgScoped(orgId, `HOME_DISMISS#${keyPart(developerId, "a developer id")}`), sk: keyPart(cardId, "a card id") };
 }
 
 /** A project's session counts for one UTC month (`month` is `YYYY-MM`). */

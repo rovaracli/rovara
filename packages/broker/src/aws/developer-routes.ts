@@ -9,6 +9,8 @@ import { listVisibleAgents } from "../agents/access.js";
 // routes use. /v1/dev/* has no API Gateway authorizer (D17): the broker verifies the developer
 // access token itself, then checks the environment, the method and the sign-in session on every
 // request (R12, R13), so a revoked session stops at once.
+import { clearOrgHooks } from "../triggers/hooks.js";
+import { deleteOrgTriggers } from "../triggers/lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { SlackRequestQueue } from "../developer/page-comments.js";
@@ -28,6 +30,7 @@ import {
   TaskPersonProofResponseSchema,
   TaskChannelPeopleResponseSchema,
   TaskPeopleDisplayReadResponseSchema,
+  AgentXError,
   agentXError,
   LAST_OWNER_MESSAGE,
   MEMBER_GRANT_SK_PREFIX,
@@ -98,6 +101,7 @@ import {
   type TaskChannelPeopleResponse,
   type TaskPeopleDisplayReadRequest,
   type TaskPeopleDisplayReadResponse,
+  SESSION_PROJECT_BINDINGS_MAX,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
@@ -128,17 +132,24 @@ import { admitMachineTime, admitTrial } from "../org/trial.js";
 import { commitSetupCheck, setupCheckLimitMessage, setupCheckReplay, setupStateOf, type SetupCheckDependencies } from "../org/project-setup-check.js";
 import type { DeveloperTaskActions } from "./developer-task-actions.js";
 import {
-  createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, setPageSuggestion,
+  createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, retryApplicationRoundOnPage, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeopleCapabilities, getTaskPeopleForPage, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  CLOSED_TASK, cancelTask, cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
 import { isAgentRoute, routeAgentRequest, type AgentRouteDependencies } from "../agents/routes.js";
+import { isChainRoute, routeChainRequest, type ChainRouteDependencies } from "../chains/routes.js";
+import { chainRunPortsFor, type ChainRunPorts, type ChainRunnerDependencies } from "../chains/runner.js";
+import { chainControlFor, chainSessionReads, chainSteerReadsFor } from "../chains/session-seam.js";
+import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { decidingOf, isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
+import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
+import { stopSession } from "../agent-sessions/stop.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
+import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
@@ -146,6 +157,10 @@ import { pausedTaskGate, requestForPausedTask, withdrawTaskSpendRequests } from 
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
+import { getTaskE2EArtifact } from "./task-e2e-artifact.js";
+
+/** How long the close spends asking running sessions to stop; the rest are stopped by the model-key mint and the dispatch guard. */
+const CLOSE_STOP_BUDGET_MS = 8_000;
 
 export interface DeveloperApiConfiguration {
   issuer: string; env: string; methods: { slack: boolean; oidc: boolean; cloud?: boolean; github?: boolean }; slackTeamId?: string;
@@ -204,6 +219,11 @@ export interface DeveloperRouteDependencies {
   workflowE2EPresentation?: DeveloperTaskRouteDependencies["workflowE2EPresentation"];
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
   sessionDiffFiles?: NonNullable<SessionRouteDependencies["diff"]>["files"] | undefined;
+  workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
+  workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
+  startWorkflowE2EBaseline?: DeveloperTaskRouteDependencies["startWorkflowE2EBaseline"];
+  /** Checks a plan's application E2E intent when the owner approves it. */
+  validateWorkflowE2EApplicationPlan?: DeveloperTaskRouteDependencies["validateWorkflowE2EApplicationPlan"];
   registeredRepositoryIdentity?: DeveloperTaskRouteDependencies["registeredRepositoryIdentity"];
   /** Plan 2, Task 15: the check that an org's GitHub connection still reaches a project's repositories (cloud installs). */
   requireRepositoriesConnected?: DeveloperTaskRouteDependencies["requireRepositoriesConnected"];
@@ -215,7 +235,7 @@ export interface DeveloperRouteDependencies {
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
-  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void> };
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void> };
   /**
    * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a
    * replay; a failure is logged and never undoes or fails the archive. Absent where agents are not set up.
@@ -650,7 +670,7 @@ export async function authenticateDeveloperSessionId(deps: DeveloperRouteDepende
 }
 
 /** Every item under `pk` with the sort key prefix, following LastEvaluatedKey through each page. */
-async function queryAll<T>(deps: DeveloperRouteDependencies, pk: string, prefix: string): Promise<T[]> {
+async function queryAll<T>(deps: DeveloperRouteDependencies, pk: string, prefix: string, bound?: { max: number; onCut: () => void }): Promise<T[]> {
   const items: T[] = [];
   let start: Record<string, unknown> | undefined;
   do {
@@ -663,6 +683,11 @@ async function queryAll<T>(deps: DeveloperRouteDependencies, pk: string, prefix:
     })) as { Items?: T[]; LastEvaluatedKey?: Record<string, unknown> };
     items.push(...(response.Items ?? []));
     start = response.LastEvaluatedKey;
+    // A bounded read stops at its cap, with what it has: the rest is not read, and the caller is told it was cut.
+    if (bound !== undefined && items.length >= bound.max && (start !== undefined || items.length > bound.max)) {
+      bound.onCut();
+      return items.slice(0, bound.max);
+    }
   } while (start !== undefined);
   return items;
 }
@@ -779,9 +804,14 @@ async function grantRowsOf(deps: DeveloperRouteDependencies, caller: ProjectAcce
 }
 type GrantRow = { role?: unknown; projectRole?: unknown; grantedBy?: unknown };
 
-/** The install's Slack team's channel bindings inside one org. */
-async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId): Promise<SlackChannelBinding[]> {
-  return deps.developer.slackTeamId === undefined ? [] : queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX);
+/**
+ * The install's Slack team's channel bindings inside one org. Every one of them is read, because a person's access to a project is computed from them: a cut here would silently take a
+ * channel's access away. Only the project page (which shows a few channels) passes `boundEvent`, and then reads at most `SESSION_PROJECT_BINDINGS_MAX`, logging the cut with the org's id.
+ */
+async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId, boundEvent?: string): Promise<SlackChannelBinding[]> {
+  if (deps.developer.slackTeamId === undefined) return [];
+  const bound = boundEvent === undefined ? undefined : { max: SESSION_PROJECT_BINDINGS_MAX, onCut: () => logDeveloperEvent({ event: boundEvent, orgId }) };
+  return queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX, bound);
 }
 
 /** A developer's name for display: their sign-in record's, else "Unknown". */
@@ -1432,6 +1462,16 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
       }
       return { task: answer.task, run: answer.run };
     },
+    // Plan 4 Task 9: a chain stops a step's task through the owner's own cancel (the same path as their cancel button), so the workspace, the keys and the end are Plan 3's.
+    cancelTask: async (caller, taskId, requestId) => {
+      try {
+        await cancelTask(developerTaskRouteDependencies(deps, caller), caller, taskId, { requestId });
+      } catch (error) {
+        // A task that was closed is over: there is nothing left to stop.
+        if (error instanceof AgentXError && error.message.endsWith(CLOSED_TASK)) return;
+        throw error;
+      }
+    },
   };
 }
 
@@ -1472,6 +1512,24 @@ async function startAppRun(
   return { task: await taskView(taskDeps, await loadOwnedTask(taskDeps, caller, started.taskId), { events: 0, details: false }) };
 }
 
+/**
+ * Plan 4's chain dependencies for one caller: the agent routes' own, the chain store, the run view's ports (built over the task layer for this caller, so the task's own rules apply
+ * inside a run's view) and, where Plan 3's run start is held, the runner's ports. The chain routes and the chain reads of a session are made from this, once per request: a chain read
+ * is bound to the org of the request, never to one fixed when the broker was built. Undefined where chains are not set up.
+ */
+function chainRouteDependenciesFor(deps: DeveloperRouteDependencies, caller: DeveloperCaller): (ChainRouteDependencies & { chainRuns?: ChainRunPorts }) | undefined {
+  if (deps.agents?.chains === undefined) return undefined;
+  // The chain runner starts each step through Plan 3's run start, which this API holds (the task start); a test may bring its own.
+  const starter = deps.agents.chainRuns === undefined ? agentRunStarterOf(deps) : undefined;
+  const admission = deps.modelAccess === undefined ? undefined : { documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess, now: deps.now, cloud: deps.cloud === true };
+  const agentDeps = deps.agents;
+  const chainView = agentDeps.chainView ?? chainViewPortsFor({
+    approvals: agentDeps, keySpend: deps.modelAccess === undefined ? undefined : (keyIds) => deps.modelAccess!.keySpend(keyIds),
+    taskView: (task) => taskView(developerTaskRouteDependencies(deps, caller), task, { events: 20, details: true, actor: "viewer" }),
+  });
+  return { ...agentDeps, chains: deps.agents.chains, chainView, ...(starter === undefined ? {} : { chainRuns: chainRunPortsFor(starter, admission) }) };
+}
+
 /** What session levels and reads need, from the route dependencies: the broker's own, or those it gave the agent routes. */
 function sessionDependenciesOf(deps: DeveloperRouteDependencies): SessionTakeOverDependencies | undefined {
   return deps.agentSessions ?? deps.agents?.agentSessions;
@@ -1483,6 +1541,8 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
   if (sessions === undefined || tasks === undefined) throw agentXError("NOT_FOUND", "sessions are not set up in this deployment");
   const taskDeps = developerTaskRouteDependencies(deps, caller);
   const mint = deps.developer.realtimeToken;
+  // Plan 4's chain reads, messages, stop and retry, made for this request: the reads need the org of the person asking, which the broker doesn't have when it is built.
+  const chainDeps = chainRouteDependenciesFor(deps, caller);
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
     ...(deps.sessionDiffFiles === undefined ? {} : { diff: {
@@ -1493,6 +1553,11 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
         return registered?.definition.repositories.find(item => item.name === repository)?.url;
       },
     } satisfies NonNullable<SessionRouteDependencies["diff"]> }),
+    ...(chainDeps === undefined ? {} : {
+      chain: chainSessionReads(chainDeps, caller.orgId),
+      chainSteer: chainSteerReadsFor(chainDeps),
+      ...(chainDeps.chainRuns === undefined ? {} : { chainControl: chainControlFor(chainDeps as ChainRunnerDependencies) }),
+    }),
     // Plan 5 Task 13: Plan 3's cancel, workflow retry and run start, bound to this person. They are called only after the session routes read the person's level on the session.
     control: {
       cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
@@ -1511,7 +1576,7 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
       const [record, meta] = await Promise.all([latestProjectRecord(deps, who.orgId, name), readProjectMeta(deps, who.orgId, name)]);
       if (record === undefined) return undefined;
       const summary = await appProjectSummary(deps, name, "viewer", record, meta);
-      const channels = (await bindingsOf(deps, who.orgId)).filter((binding) => binding.projectName === name).map((binding) => binding.channelId);
+      const channels = (await bindingsOf(deps, who.orgId, "project_page.bindings_truncated")).filter((binding) => binding.projectName === name).map((binding) => binding.channelId);
       return {
         name, ...(summary.description === undefined ? {} : { description: summary.description }), status: summary.status, latestRevision: summary.latestRevision, repositories: summary.repositories,
         setup: summary.setup, channels: [...new Set(channels)].slice(0, 20),
@@ -1604,6 +1669,10 @@ export function developerTaskRouteDependencies(
     ...(deps.cloud === true ? { cloud: true } : {}),
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
+    ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),
+    ...(deps.workflowE2EArtifact === undefined ? {} : { workflowE2EArtifact: deps.workflowE2EArtifact }),
+    ...(deps.startWorkflowE2EBaseline === undefined ? {} : { startWorkflowE2EBaseline: deps.startWorkflowE2EBaseline }),
+    ...(deps.validateWorkflowE2EApplicationPlan === undefined ? {} : { validateWorkflowE2EApplicationPlan: deps.validateWorkflowE2EApplicationPlan }),
     ...(deps.registeredRepositoryIdentity === undefined ? {} : { registeredRepositoryIdentity: deps.registeredRepositoryIdentity }),
     ...(deps.requireRepositoriesConnected === undefined ? {} : { requireRepositoriesConnected: deps.requireRepositoriesConnected }),
     ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task), pausedTaskGate: (who, task: DeveloperTaskRecord) => pausedTaskGate(agents, who, task) }),
@@ -1712,6 +1781,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           deleteComment: (caller, taskId, input) => deletePageComment(routeDeps(caller), caller, taskId, input),
           setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
           decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
+          retryApplicationRound: (caller, taskId, input) => retryApplicationRoundOnPage(routeDeps(caller), caller, taskId, input),
+          readE2EArtifact: (caller, taskId, sha256) => getTaskE2EArtifact(routeDeps(caller), caller, taskId, sha256),
           getPeople: (caller, taskId) => getTaskPeopleForPage(routeDeps(caller), caller, taskId),
           proposePeopleRole: (caller, taskId, input) => proposeTaskPeopleRoleForPage(routeDeps(caller), caller, taskId, input),
           proposeOwnership: (caller, taskId, input) => proposeTaskOwnershipForPage(routeDeps(caller), caller, taskId, input),
@@ -1740,9 +1811,17 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
     return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);
   }
+  // Plan 4's chains (`/v1/app/chains*`, `/v1/app/chain-runs*`), beside Plan 3's agents.
+  if (isChainRoute(url.pathname)) {
+    const chainDeps = chainRouteDependenciesFor(deps, caller);
+    if (chainDeps === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
+    return routeChainRequest(chainDeps, caller, request, url);
+  }
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (request.method === "GET" && url.pathname === "/v1/app/nav") return getAppNavigation(deps, caller);
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
+  // Plan 5, Task 17: `/v1/app/devices*` and `/v1/app/org/local-agents`.
+  if (isDeviceRoute(url.pathname)) return routeDeviceRequest({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {
     const me = await getAppMe(deps, caller);
     return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };
@@ -2071,14 +2150,37 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
   if (sole) {
     const connections = deps.orgConnections ?? deps.agents?.connections;
     const clearConnections = deps.closeOrgHooks?.clearConnections ?? (connections === undefined ? undefined : (orgId: OrgId) => clearOrgConnections({ store: connections }, orgId));
+    const triggers = deps.agents?.triggers;
+    const clearTriggers = deps.closeOrgHooks?.clearTriggers ?? (triggers === undefined ? undefined : (orgId: OrgId) => deleteOrgTriggers({ triggers, ...(deps.agents?.triggerSchedules === undefined ? {} : { triggerSchedules: deps.agents.triggerSchedules }) }, orgId));
+    const eventHooks = deps.agents?.eventHooks;
+    const clearHooks = deps.closeOrgHooks?.clearHooks ?? (eventHooks === undefined ? undefined : (orgId: OrgId) => clearOrgHooks({ store: eventHooks.store, secrets: eventHooks.secrets }, orgId));
     const modelSources = deps.agents?.modelSources;
     const releaseModelSources = deps.closeOrgHooks?.releaseModelSources ?? (modelSources === undefined ? undefined : (orgId: OrgId) => releaseOrgModelSources(modelSources, orgId));
+    // Plan 5 Task 21: the org's sessions go with it (live index, work entries, devices, change feeds; the rest expires in 30 days).
+    // Plan 5 Task 21 review M-6: running work is asked to stop through the session stop (the task's own cancel, idempotent by a request id derived from the session), as the person who is leaving.
+    const stopWork = deps.closeOrgHooks?.stopWork ?? (async (orgId: OrgId) => {
+      let sessionDeps: SessionRouteDependencies;
+      try {
+        sessionDeps = sessionReadDependencies(deps, caller);
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "agent_session.close_stop_unavailable", orgId, error: error instanceof Error ? error.name : "unknown" }));
+        return;
+      }
+      await stopOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, deadline: deps.now() + CLOSE_STOP_BUDGET_MS }, orgId, async (sessionId, requestId) => { await stopSession(sessionDeps, caller, sessionId, { requestId }); });
+    });
+    const clearSessions = deps.closeOrgHooks?.clearSessions ?? ((orgId: OrgId) => closeOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId));
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)),
       // Plan 3 Task 12, PF11: the org's connection secrets are scheduled for deletion with the org.
       ...(clearConnections === undefined ? {} : { clearConnections }),
+      // Plan 4 Task 18: the org's triggers, their activity and their notices go with it (and, Task 26, the schedules of its schedule triggers).
+      ...(clearTriggers === undefined ? {} : { clearTriggers }),
+      // Plan 4 Task 19: its event hooks stop receiving, and their secrets are scheduled for deletion.
+      ...(clearHooks === undefined ? {} : { clearHooks }),
       // The org's company AI sources leave the model proxy with it, vendor keys included (Task 24b).
       ...(releaseModelSources === undefined ? {} : { releaseModelSources }),
+      clearSessions,
+      stopWork,
       emails,
       by: { kind: "member", id: caller.developerId },
     });

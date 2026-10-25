@@ -1,7 +1,7 @@
 // Plan 3 Task 29: every expense has a payer and a place, counted once. The payer is whose budget the work is charged to and is named from where the work
 // came from (`resolvePayer`); the place is the project it works on. `budgetScopesFor` turns the two into the budgets the work is counted against, which
 // Task 31 checks and Task 30 records. Plan 4 widens both with its chain payer and the `chain` scope.
-import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type BudgetScope, type Payer, type Place, type WorkOrigin } from "@agentx/contracts";
+import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type BudgetScope, type ChainId, type ChainRunId, type Payer, type Place, type WorkOrigin } from "@agentx/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { MintTags } from "../model-proxy/access.js";
 
@@ -14,8 +14,10 @@ export interface ResolvePayerInput {
   project: string;
   /** Whether the project's AI settings say the project pays for its tasks. */
   projectPays: boolean;
-  /** The agent that runs; the payer of work an event or a schedule starts. */
-  agentId: AgentId;
+  /** The agent that runs; the payer of work an event or a schedule starts, unless a chain started it. */
+  agentId?: AgentId;
+  /** The chain an event or a schedule started: it pays for work it started (Plan 4). Ignored for any other origin. */
+  chainId?: ChainId;
   /** Plan 4's chain payer, required for the `chain` origin: the chain's own rules decided it, or the member for a person-started chain. */
   chainPayer?: Payer;
   /** The person who started the run, for the origins a person starts from. */
@@ -36,7 +38,7 @@ const needs = (what: string) => agentXError("CONFIG_INVALID", `payer: this run n
 
 /**
  * Whose budget a run is charged to, in this order: a test run is the project's (its testing allowance is counted as well, see `budgetScopesFor`); an
- * event or a schedule is the agent's; a chain is whoever the chain named; a project that pays pays; a Linear issue is its person assigner's, else
+ * event or a schedule is the chain's when a chain started it, else the agent's; a chain's step is whoever the chain run named; a project that pays pays; a Linear issue is its person assigner's, else
  * the member who approved a bot's assignment, else the project; an offer is whoever accepted it; any other run is whoever started it. A run whose
  * origin needs a fact it was not given is refused, never charged to someone else by default.
  */
@@ -44,7 +46,10 @@ export function resolvePayer(input: ResolvePayerInput): Payer {
   switch (input.origin) {
     case "test_run": return { kind: "project", project: input.project };
     case "event":
-    case "schedule": return { kind: "agent", agentId: input.agentId };
+    case "schedule":
+      if (input.chainId !== undefined) return { kind: "chain", chainId: input.chainId };
+      if (input.agentId === undefined) throw needs("the agent that pays");
+      return { kind: "agent", agentId: input.agentId };
     case "chain":
       if (input.chainPayer === undefined) throw needs("the chain's payer");
       return input.chainPayer;
@@ -67,8 +72,8 @@ export function resolvePayer(input: ResolvePayerInput): Payer {
 
 /**
  * The budgets a run is counted against. The org and the project always (each is checked only when it has a limit). A member payer adds the member; a
- * test run adds its starter's testing allowance and not the member; an agent payer adds that agent. Work a person started never adds the agent,
- * whatever budget the agent has: only an agent that pays is limited by its own. `options.agentId` is the agent that runs, which the usage counter
+ * test run adds its starter's testing allowance and not the member; an agent payer adds that agent; a chain payer adds that chain and not the agent that
+ * runs the step (no double counting). Work a person started never adds the agent, whatever budget the agent has: only an agent that pays is limited by its own. `options.agentId` is the agent that runs, which the usage counter
  * (`agentUsageCounter`, no limit, not a scope) counts for every expense.
  */
 export function budgetScopesFor(payer: Payer, place: Place, options: { agentId: AgentId; testRunBy?: string | undefined }): BudgetScope[] {
@@ -76,6 +81,7 @@ export function budgetScopesFor(payer: Payer, place: Place, options: { agentId: 
   if (options.testRunBy !== undefined) scopes.push({ kind: "testing", developerId: options.testRunBy });
   else if (payer.kind === "member") scopes.push({ kind: "member", developerId: payer.developerId });
   if (payer.kind === "agent") scopes.push({ kind: "agent", agentId: payer.agentId });
+  if (payer.kind === "chain") scopes.push({ kind: "chain", chainId: payer.chainId });
   return scopes;
 }
 
@@ -103,8 +109,26 @@ export function paymentOfTask(task: Pick<DeveloperTaskRecord, "payer" | "place" 
   return { payer, place, agentId, origin: task.origin, scopes: budgetScopesFor(payer, place, { agentId, testRunBy: task.origin === "test_run" ? (task.startedBy?.developerId ?? task.developerId) : undefined }) };
 }
 
-/** What identifies the payer in a key's tags and the ledger: the member, the project or the agent. */
-export const payerIdOf = (payer: Payer): string => (payer.kind === "member" ? payer.developerId : payer.kind === "project" ? payer.project : payer.agentId);
+/**
+ * `paymentOfTask`, with every member named in it read as the member they were merged into (Plan 5 Task 21, review M-3). A payer or a test-run starter recorded before a merge
+ * (a task the duplicate neither created nor took over, whose payer the merge could not find) is counted against the survivor, in the key's scopes, tags and name. `resolve` follows
+ * a merge pointer to the end of its chain; a failure is the caller's to refuse on (nothing is minted).
+ */
+export async function paymentOfTaskResolved(
+  task: Parameters<typeof paymentOfTask>[0],
+  resolve: (developerId: string) => Promise<string>,
+): Promise<TaskPayment> {
+  const base = paymentOfTask(task);
+  const payer: Payer = base.payer.kind === "member" ? { kind: "member", developerId: await resolve(base.payer.developerId) } : base.payer;
+  const scopes: BudgetScope[] = [];
+  for (const scope of base.scopes) {
+    scopes.push(scope.kind === "member" ? { kind: "member", developerId: await resolve(scope.developerId) } : scope.kind === "testing" ? { kind: "testing", developerId: await resolve(scope.developerId) } : scope);
+  }
+  return { ...base, payer, scopes };
+}
+
+/** What identifies the payer in a key's tags and the ledger: the member, the project, the agent or the chain. */
+export const payerIdOf = (payer: Payer): string => (payer.kind === "member" ? payer.developerId : payer.kind === "project" ? payer.project : payer.kind === "chain" ? payer.chainId : payer.agentId);
 
 /** The model source a key is minted for until the route chooses one (Task 31's `mintOperationKey` passes the route's source). */
 export const ROVARA_SOURCE_ID = "rovara";
@@ -115,8 +139,11 @@ export const ROVARA_SOURCE_ID = "rovara";
  */
 export function mintTagsFor(input: {
   payer: Payer; place: Place; agentId: AgentId; origin: string; taskId?: string | undefined; operationId?: string | undefined; stepId?: string | undefined;
+  /** The chain and the run a chain's step belongs to: its ledger lines carry both (Plan 4). */
+  chain?: { chainId: ChainId; chainRunId: ChainRunId } | undefined;
 }): MintTags {
   return {
+    ...(input.chain === undefined ? {} : { chainId: input.chain.chainId, chainRunId: input.chain.chainRunId }),
     ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
     ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
     ...(input.stepId === undefined ? {} : { stepId: input.stepId }),

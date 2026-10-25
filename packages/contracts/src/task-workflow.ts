@@ -5,21 +5,15 @@ import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";
 
-export const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const ActorIdSchema = z.string().regex(/^[a-f0-9]{64}$/);
-
 
 export const WORKFLOW_PLAN_MAX_BYTES = 32_768;
 
 /** Shown to the owner when AgentX gave up opening the draft pull request on its own; Retry opening the pull request starts it. */
 export const WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE = "AgentX couldn't open the pull request automatically. Use Retry opening the pull request to try again.";
 
-
-/**
- * Why the broker stopped a step, written for the task owner: Slack shows these word for word. Any other block reason
- * is internal and is replaced by a plain sentence before it reaches the owner.
- */
 export const WORKFLOW_BLOCK_REASONS = {
   checksUnconfirmed: "AgentX couldn't confirm the selected checks ran on the final code. Choose checks and retry.",
   checkRetryStale: "This check run no longer matches the task's current step. Use the latest update in the thread.",
@@ -70,7 +64,6 @@ export const CandidateRepositorySchema = z.object({
   baseCommitSha: z.string().regex(/^[a-f0-9]{40}$/).optional(),
 }).strict();
 
-
 export const CandidateManifestSchema = z.object({
   schemaVersion: z.literal(1),
   repositories: z.array(CandidateRepositorySchema).min(1).max(32),
@@ -118,7 +111,6 @@ export const WorkflowVerificationRetrySchema = z.object({
   && new Set(retry.selectedProposedCheckIds ?? []).size === (retry.selectedProposedCheckIds ?? []).length,
 "verification retry check IDs must be unique");
 
-
 /**
  * One reviewer finding; only findings the change INTRODUCED block, PRE_EXISTING ones are advisory. A finding the reviewer
  * marks `advisory` never blocks and never goes to the coder, whatever its origin (for example a remark about something the
@@ -135,13 +127,11 @@ export const WorkflowReviewFindingSchema = z.object({
 
 export type WorkflowReviewFinding = z.infer<typeof WorkflowReviewFindingSchema>;
 
-
 /** Safe machine-readable reasons a review did not qualify; every view of a review (MCP included) uses this list. */
 export const WORKFLOW_REVIEW_FAILURE_REASONS = [
   "RESPONSE_MISSING", "RESPONSE_TOO_LARGE", "INVALID_JSON", "INVALID_SHAPE", "TIMEOUT", "INTERRUPTED", "CANDIDATE_CHANGED",
   "SESSION_FAILED", "USAGE_UNAVAILABLE", "BASE_UNAVAILABLE", "DIFF_UNAVAILABLE",
 ] as const;
-
 
 export const WorkflowReviewReportSchema = z.object({
   operationId: z.string().uuid(),
@@ -176,7 +166,6 @@ export function findingBlocks(finding: { origin?: string; advisory?: boolean | u
   return typeof finding === "string" || (finding.origin === "INTRODUCED" && (finding.advisory !== true || role === "SECURITY"));
 }
 
-
 /**
  * The stable ID of a review finding: the SHA-256 of its review role, text, file and line. The same finding of the same
  * review role always has the same ID, so the owner's answer for it can be matched again later.
@@ -184,7 +173,6 @@ export function findingBlocks(finding: { origin?: string; advisory?: boolean | u
 export function workflowFindingFingerprint(role: "CRITIC" | "SECURITY", finding: { text: string; file?: string | undefined; line?: number | undefined }): string {
   return sha256Hex(JSON.stringify([role, finding.text, finding.file ?? "", finding.line ?? 0]));
 }
-
 
 /** A blocking review finding the owner accepted, for one candidate: it never blocks that candidate again. */
 export const WorkflowAcceptedFindingSchema = z.object({
@@ -209,7 +197,6 @@ export function findingAccepted(
   const fingerprint = workflowFindingFingerprint(role, typeof finding === "string" ? { text: finding } : { text: finding.text ?? "", file: finding.file, line: finding.line });
   return accepted.some((entry) => entry.candidateDigest === candidateDigest && entry.role === role && entry.fingerprint === fingerprint);
 }
-
 
 /**
  * The findings that block a review: those the change introduced that are not marked advisory (a security finding is
@@ -324,40 +311,7 @@ export const WorkflowFeedbackNoteSchema = z.object({
     context.addIssue({ code: "custom", path: ["slack"], message: "Slack thread notes require verified message provenance" });
   }
 });
-export type WorkflowFeedbackNote = z.infer<typeof WorkflowFeedbackNoteSchema>;
-/** A reply longer than this is kept truncated, and marked so. */
-export const WORKFLOW_THREAD_NOTE_MAX_CHARS = 2_000;
-/** The most thread replies one task keeps; later ones are refused. */
-export const WORKFLOW_THREAD_NOTES_MAX = 200;
-/**
- * A reply anyone posted in a Slack-started task's thread: input for the task's next step, never a
- * decision. Stored beside the task (`NOTE#<messageTs>`); it never changes the task's workflow.
- */
-export const SlackNoteSchema = z.object({
-  schemaVersion: z.literal(1), source: z.literal("slack").optional(),
-  taskId: z.string().uuid(), slackUserId: z.string().regex(/^[UW][A-Z0-9]{2,31}$/), isOwner: z.boolean(),
-  teamId: z.string(), channelId: z.string(), threadTs: z.string().regex(/^\d{10}\.\d{6}$/), messageTs: z.string().regex(/^\d{10}\.\d{6}$/), eventId: z.string().min(1).max(128),
-  text: z.string().trim().min(1).max(WORKFLOW_THREAD_NOTE_MAX_CHARS), truncated: z.boolean(), receivedAt: z.string().datetime(), workflowRevision: z.number().int().positive(),
-  /** Set when the chat agent answered this reply as a question: the next step then skips it (it still counts toward the cap). */
-  answeredAt: z.string().datetime().optional(),
-}).strict();
-/**
- * A message a person sent to the agent from a session (Plan 5 Task 11a), stored beside the task at `NOTE#<messageId>` and read by the same steps as a Slack reply. It is
- * input for the next step, never a decision. `text` is already cleaned and redacted; `settledAt` is set once the session has been told that a step took it.
- */
-export const AppNoteSchema = z.object({
-  schemaVersion: z.literal(1), source: z.enum(["app", "linear"]),
-  taskId: z.string().uuid(), developerId: ActorIdSchema, name: z.string().min(1).max(320), isOwner: z.boolean(),
-  sessionId: z.string().min(1).max(64), messageId: z.string().regex(/^msg_[0-9a-z]{20}$/),
-  text: z.string().trim().min(1).max(WORKFLOW_THREAD_NOTE_MAX_CHARS), truncated: z.boolean(), receivedAt: z.string().datetime(), workflowRevision: z.number().int().positive(),
-  answeredAt: z.string().datetime().optional(),
-  settledAt: z.string().datetime().optional(),
-}).strict();
-export type SlackNote = z.infer<typeof SlackNoteSchema>;
-export type AppNote = z.infer<typeof AppNoteSchema>;
-/** What a task keeps as input for its next step: a Slack thread reply (`source` absent or `"slack"`) or a message from a session; both count toward `WORKFLOW_THREAD_NOTES_MAX`. */
-export const WorkflowThreadNoteSchema = z.union([SlackNoteSchema, AppNoteSchema]);
-export type WorkflowThreadNote = z.infer<typeof WorkflowThreadNoteSchema>;
+
 export const WorkflowFeedbackDecisionSchema = z.object({
   schemaVersion: z.literal(1), requestId: z.string().uuid(), workflowRevision: z.number().int().positive(),
   decision: z.enum(["APPROVE", "REQUEST_CHANGES", "DISMISS"]), actorId: ActorIdSchema, actorRole: z.literal("TASK_OWNER"),
@@ -373,7 +327,6 @@ export const WorkflowFeedbackDecisionSchema = z.object({
     context.addIssue({ code: "custom", message: "feedback decision selection or reason is invalid" });
   }
 });
-
 
 /** Immutable owner approval carried to the worker and checked again at worker start. */
 export const WorkflowFeedbackApprovalBindingSchema = z.object({
@@ -411,7 +364,6 @@ export const ReviewedWorkflowFeedbackSchema = z.object({
   }
 });
 
-
 export const WorkflowFeedbackThreadObservationSchema = z.object({
   repositoryId: z.string().min(1).max(200), number: z.number().int().positive(),
   threadId: FeedbackIdSchema, resolved: z.boolean(),
@@ -433,7 +385,6 @@ export const WorkflowFeedbackReviewSchema = z.union([
   ReviewedWorkflowFeedbackSchema.safeExtend({ threadObservations: FeedbackThreadObservationsSchema.optional() }),
 ]);
 
-
 export const WorkflowStageSchema = z.enum([
   "PLAN",
   "PLAN_REVIEW",
@@ -446,9 +397,7 @@ export const WorkflowStageSchema = z.enum([
   "CLOSED",
 ]);
 
-
 export const WorkflowStateSchema = z.enum(["READY", "RUNNING", "WAITING", "BLOCKED", "COMPLETE"]);
-
 
 /** One step of a workflow program: the same step kinds a coding recipe has, in the order the engine follows them. */
 export const WorkflowProgramStepSchema = z.object({
@@ -459,7 +408,6 @@ export const WorkflowProgramStepSchema = z.object({
   /** Review steps only: where findings go back to (an earlier build step), and how many review rounds before the step blocks. */
   onFindings: OnFindingsSchema.optional(),
 }).strict();
-
 
 /**
  * The step order a custom coding recipe hands to the workflow engine. Rovara Code's own order is the engine's built-in
@@ -497,7 +445,6 @@ export const WorkflowProgramSchema = z.object({
 
 export const WorkflowObjectKeySchema = z.string().min(1).max(1024).refine((key) => !key.startsWith("/") && !key.split("/").includes(".."));
 
-
 export const WorkflowArtifactSchema = z.object({
   id: z.string().min(1).max(128),
   type: z.enum(["requirements", "design", "plan", "test_plan", "review_report"]),
@@ -522,7 +469,6 @@ export const PlanOptionIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,30}$/);
 
 export const WorkflowAnswerSchema = z.object({ decisionId: PlanDecisionIdSchema, optionId: PlanOptionIdSchema }).strict();
 
-
 export const WorkflowDecisionSchema = z.object({
   requestId: z.string().uuid(),
   workflowRevision: z.number().int().positive(),
@@ -544,7 +490,6 @@ export const WorkflowDecisionSchema = z.object({
   via: z.literal("PAGE").optional(),
   at: z.string().datetime(),
 }).strict();
-
 
 export const WorkflowCheckSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
@@ -591,7 +536,6 @@ export const WorkflowCheckPolicySchema = z.object({
 
 export type WorkflowCheckPolicy = z.infer<typeof WorkflowCheckPolicySchema>;
 
-
 /**
  * The checks a task runs, in the worker's `readiness:<index>` order: the project's required checks, then the approved
  * plan's proposed checks the owner kept (all, unless a retry removed some) in proposal order, then the selected
@@ -605,7 +549,6 @@ export function workflowSelectedChecks(policy: WorkflowCheckPolicy | undefined):
   return [...policy.required, ...proposed, ...policy.optional.filter((check) => policy.selectedOptionalIds.includes(check.id))];
 }
 
-
 /**
  * Whether a task may be verified as review only: it has a stored check policy and that policy selects no check. A task
  * with no stored policy runs the project's checks, so it is never review only.
@@ -613,7 +556,6 @@ export function workflowSelectedChecks(policy: WorkflowCheckPolicy | undefined):
 export function workflowIsReviewOnly(policy: WorkflowCheckPolicy | undefined): boolean {
   return policy !== undefined && workflowSelectedChecks(policy).length === 0;
 }
-
 
 export const WorkflowPathSchema = z.enum(["QUICK", "FULL"]);
 
@@ -680,7 +622,6 @@ export const WorkflowCanvasCloseoutAttemptSchema = z.object({
   }
 });
 
-
 /** Each repository's base commit: the workflow's pinned reviewBase, a task's prepared base, a worker's workflowBase. */
 export const WorkflowReviewBaseSchema = z.array(z.object({
   repositoryId: z.string().trim().min(1).max(200),
@@ -689,7 +630,6 @@ export const WorkflowReviewBaseSchema = z.array(z.object({
   "base repositories must be unique");
 
 export const PROGRAM_ROUNDS_MAX = 100;
-
 
 /** Why pushing a fix to a pull request failed: its head moved on GitHub, GitHub refused it, or the worker cannot push a reviewed fix. */
 export const WORKFLOW_PULL_REQUEST_UPDATE_CAUSES = ["HEAD_MOVED", "PUSH_REFUSED", "WORKER_OUTDATED"] as const;
@@ -854,7 +794,6 @@ export const WorkflowSnapshotShapeSchema = z.object({
     }
   }
 });
-
 
 /**
  * A workflow as a task view shows it. Besides every stored shape, a view may show an approval as blocked when its

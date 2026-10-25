@@ -9,7 +9,7 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import { ownerFenceOf, taskKey, tryEffectiveTaskOwner } from "../developer/task-records.js";
 import { sameMember } from "./lifecycle.js";
-import { type AnyApprovalRecord, type ApprovalCaller, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runOfApproval, shownText, stripCode, taskOfApproval, updateRecord, withFields } from "./approvals-store.js";
+import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runOfApproval, shownText, stripCode, taskOfApproval, updateRecord, withFields } from "./approvals-store.js";
 
 // ---- deciding
 
@@ -195,7 +195,10 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
   // decision judged under the old owner never lands under the new one (12a review M-4). The check reads the task again, and is the one that decides.
   const fenceTask = record.kind === "change" ? undefined : await taskOfApproval(deps, record);
   const fence = fenceTask === undefined || tryEffectiveTaskOwner(fenceTask) === undefined ? undefined : { task: fenceTask, ...ownerFenceOf(fenceTask) };
-  if (!await mayDecideApproval(deps, caller, record)) throw agentXError("FORBIDDEN", forbiddenText(record, (await runOfApproval(deps, record))?.owner.name ?? "the task owner"));
+  if (!await mayDecideApproval(deps, caller, record)) {
+    const refusal = await approverRefusalFor(deps, record);
+    throw agentXError(refusal?.code ?? "FORBIDDEN", refusal?.text ?? forbiddenText(record, (await runOfApproval(deps, record))?.owner.name ?? "the task owner"));
+  }
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   // The sweep ends an approval whose time ran out only when it reaches it; until then the record is still PENDING, but it can no longer be decided (re-check N1).
   if (Date.parse(record.expiresAt) <= deps.now()) throw agentXError("APPROVAL_CLOSED", "this request has expired");
@@ -287,11 +290,11 @@ export interface ApprovalSweepReport {
 }
 
 /** Ends a PENDING record whose time has run out (conditional on it still being PENDING), freeing its place in its step, then tells its handler. */
-async function expireOne(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<AnyApprovalRecord | undefined> {
+async function expireOne(deps: ApprovalDependencies, record: AnyApprovalRecord, closed?: { reason: string }): Promise<AnyApprovalRecord | undefined> {
   const now = deps.now();
   const handler = hasHandlerPhase(record);
   const dueAt = iso(now + RETRY_MS);
-  const fields = { status: "EXPIRED" as const, handlerDone: !handler, ...(handler ? { handlerClaimedAt: iso(now), handlerDueAt: dueAt } : {}) };
+  const fields = { status: "EXPIRED" as const, handlerDone: !handler, ...(handler ? { handlerClaimedAt: iso(now), handlerDueAt: dueAt } : {}), ...(closed === undefined ? {} : { closedBy: "system" as const, closedReason: closed.reason, closedAt: iso(now) }) };
   const events = await tryAuditEvents(deps, () => [auditApprovalExpired({
     orgId: record.orgId, actor: auditActorOf("system"), occurredAt: iso(now), occurrence: record.approvalId, approvalId: record.approvalId, kind: record.kind, subjectKind: record.subject.kind,
   })]);
@@ -315,6 +318,16 @@ export async function expireApprovalNow(deps: ApprovalDependencies, record: AnyA
   const current = await getAnyApproval(deps, record.orgId, record.approvalId);
   if (current === undefined || current.status !== "PENDING") return false;
   return await expireOne(deps, current) !== undefined;
+}
+
+/**
+ * Ends a PENDING record now because nobody who could decide it is left (Plan 5 Task 21, review M-5): as its time running out does, with the reason on the record (`closedBy`
+ * "system", `closedReason`, `closedAt`) for the person who asked to read. Its handler is told by the sweep. Never a decision. False when it was no longer PENDING.
+ */
+export async function expireApprovalWithReason(deps: ApprovalDependencies, record: AnyApprovalRecord, reason: string): Promise<boolean> {
+  const current = await getAnyApproval(deps, record.orgId, record.approvalId);
+  if (current === undefined || current.status !== "PENDING") return false;
+  return await expireOne(deps, current, { reason }) !== undefined;
 }
 
 /** Drives a record that stayed EXECUTING past the retry time again: claimed by a conditional update of `executingAt`, so two sweeps never both run it. */

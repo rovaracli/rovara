@@ -1,13 +1,16 @@
 import { z } from "zod";
+import type { RunContextItemSchema} from "./agent-run.js";
+import { RunInputSchema, utf8, AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, RUN_INPUT_CONTEXT_MAX } from "./agent-run.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 import { AgentIdSchema } from "./agent.js";
 import { StepIdSchema } from "./agent-recipe.js";
 import { OrgIdSchema } from "./org.js";
-import { RunInputSchema,RUN_INPUT_CONTEXT_MAX,type RunInput,type RunContextItem, AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
 
-
-const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8");
+
+export type RunContextItem = z.infer<typeof RunContextItemSchema>;
+
+export type RunInput = z.infer<typeof RunInputSchema>;
 
 /** Where a run was started from. */
 export const WORK_ORIGINS = ["app", "cli", "mcp", "slack", "linear", "offer", "test_run", "event", "schedule", "chain"] as const;
@@ -16,29 +19,27 @@ export const WorkOriginSchema = z.enum(WORK_ORIGINS);
 
 export type WorkOrigin = z.infer<typeof WorkOriginSchema>;
 
-
 /** Whose budget a run is charged to (`resolvePayer`, Plan 3 Task 29, names it from the origin). */
 export const PayerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("member"), developerId: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal("project"), project: z.string().regex(AGENTX_NAME_PATTERN) }).strict(),
   z.object({ kind: z.literal("agent"), agentId: AgentIdSchema }).strict(),
+  // Plan 4: a chain that pays for the runs its triggers start. The id is `ChainIdSchema`'s form (chains.ts imports this module, so it is spelled out here).
+  z.object({ kind: z.literal("chain"), chainId: z.string().regex(/^chn_[0-9a-z]{20}$/) }).strict(),
 ]);
 
 export type Payer = z.infer<typeof PayerSchema>;
-
 
 /** Where a run's cost is counted: the project it works on (a Slack thread's is the project its channel is bound to). */
 export const PlaceSchema = z.object({ project: z.string().regex(AGENTX_NAME_PATTERN) }).strict();
 
 export type Place = z.infer<typeof PlaceSchema>;
 
-
 export const RESULT_CONTRACT_MIN_BRANCHES = 2;
 
 export const RESULT_CONTRACT_MAX_BRANCHES = 8;
 
 export const RESULT_BRANCH_DESCRIPTION_MAX = 200;
-
 
 /** The branches an agent-step run can choose between with `choose_branch`; each id names the step Plan 4 continues with. */
 export const ResultContractSchema = z.object({
@@ -56,15 +57,12 @@ export const ResultContractSchema = z.object({
 
 export type ResultContract = z.infer<typeof ResultContractSchema>;
 
-
 /** Appended when a request is cut to fit. */
 export const SHORTENED_MARKER = "… (shortened)";
-
 
 function hasContext(input: RunInput): input is RunInput & { context: RunContextItem[] } {
   return input.context !== undefined && input.context.length > 0;
 }
-
 
 /**
  * The only rendering of a run input for a model: the request, then any context as information only. An item's header
@@ -82,7 +80,6 @@ export function renderRunInput(input: RunInput): string {
   return lines.join("\n");
 }
 
-
 /**
  * The request text of a coding run: `input.text` unchanged when there is no context, else the whole render, cut to
  * `limit` UTF-8 bytes (marker included, never inside a character) and ending in "… (shortened)" when it does not fit.
@@ -91,7 +88,6 @@ export function codingRequestText(input: RunInput, limit: number): string {
   if (!hasContext(input)) return input.text;
   return shortenToBytes(renderRunInput(input), limit);
 }
-
 
 /**
  * The text itself when it fits `limit` UTF-8 bytes, else cut so that, with "… (shortened)" after it, it fits (never inside a character).
@@ -108,10 +104,7 @@ export function shortenToBytes(text: string, limit: number): string {
   return `${utf8Decoder.decode(encoded.subarray(0, end))}${SHORTENED_MARKER}`;
 }
 
-
 /** An agent step's report is at most this many bytes (the worker cuts it too); a longer one ends "… (shortened)". */
-export const AGENT_REPORT_MAX_BYTES = 32_768;
-
 
 /** A pull request of a project repository a run was asked to look at: the head commit the run's workspace checks out, read-only. */
 export const RunCheckoutSchema = z.object({
@@ -122,7 +115,6 @@ export const RunCheckoutSchema = z.object({
 }).strict();
 
 export type RunCheckout = z.infer<typeof RunCheckoutSchema>;
-
 
 /**
  * An agent-step run's state at `{ pk: DEVTASK#<taskId>, sk: "AGENT_RUN" }` (Plan 3, Task 22 owns the engine that moves it). Starting a run writes
@@ -150,7 +142,10 @@ export const AgentRunStateSchema = z.object({
     pendingBranch: z.string().max(200).optional(),
     /** How many times the step was handed the outcomes of its approved actions (a continuation); a rerun after a budget pause is not one. Absent on older runs. */
     continuations: z.number().int().min(0).optional(),
-    /** The mark of session/Slack notes already handed to the step before this run (Plan 5 Task 11b). */
+    /**
+     * The task's mark of notes already handed to a step, as it was when this step first ran ("" when there was none): a rerun or a continuation of the step is handed the people's messages
+     * after it again, since each run of a step starts from the request alone (Plan 5 Task 11b). Absent on older runs.
+     */
     notesFrom: z.string().max(40).optional(),
   }).strict()),
   reports: z.array(z.object({ stepId: StepIdSchema, name: z.string(), text: z.string() }).strict()),
@@ -181,6 +176,6 @@ export const AgentRunStateSchema = z.object({
 
 export type AgentRunState = z.infer<typeof AgentRunStateSchema>;
 
-export { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
+export { RUN_INPUT_TEXT_MAX_BYTES, RUN_INPUT_CONTEXT_MAX, RUN_INPUT_REF_MAX, RUN_INPUT_TITLE_MAX, RUN_INPUT_BODY_MAX_BYTES, RUN_CONTEXT_KINDS, RunContextItemSchema, RunInputSchema, AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
 
-export { RUN_INPUT_TEXT_MAX_BYTES,RUN_INPUT_CONTEXT_MAX,RUN_INPUT_REF_MAX,RUN_INPUT_TITLE_MAX,RUN_INPUT_BODY_MAX_BYTES,RUN_CONTEXT_KINDS,RunContextItemSchema,RunInputSchema,type RunContextItem,type RunInput } from "./agent-run.js";
+export { AGENT_REPORT_MAX_BYTES } from "./agent-run.js";

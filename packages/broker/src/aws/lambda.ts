@@ -22,7 +22,7 @@ export interface HttpApiV2Event {
   isBase64Encoded?: boolean;
   requestContext?: {
     requestId?: string;
-    http?: { method?: string };
+    http?: { method?: string; sourceIp?: string };
     authorizer?: {
       jwt?: { claims?: Record<string, unknown> };
       iam?: { userArn?: string };

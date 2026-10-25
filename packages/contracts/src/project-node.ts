@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { AGENTX_NAME_PATTERN, AgentXNameSchema } from "./names.js";
 import { redactText } from "./redaction.js";
+import { AgentXNameSchema } from "./names.js";
 import { RelativeWorkspacePathSchema, ProjectCommandSchema, DeveloperShareModeSchema } from "./project.js";
 import { StoredAllowedDomainSchema, firstRefusedDomainIndex, ALLOWED_DOMAIN_MESSAGE } from "./app-projects.js";
 import { ProjectModelsSchema } from "./models-node.js";
@@ -11,10 +11,6 @@ import { ConnectorsSchema, StoredConnectorsSchema, type GitHubConnectorConfig } 
 import { E2E_PROJECT_CHECK_ID } from "./e2e.js";
 
 export const OCI_DIGEST_PATTERN = /@sha256:[a-f0-9]{64}$/;
-
-
-export { AgentXNameSchema } from "./names.js";
-
 
 export const GitBranchNameSchema = z
   .string()
@@ -38,7 +34,6 @@ export const GitBranchNameSchema = z
     }
   });
 
-
 const HttpsOrLoopbackUrlSchema = z.string().url().superRefine((value, context) => {
   const url = new URL(value);
   const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1";
@@ -46,7 +41,6 @@ const HttpsOrLoopbackUrlSchema = z.string().url().superRefine((value, context) =
     context.addIssue({ code: "custom", message: "URL must use HTTPS (loopback HTTP is test-only)" });
   }
 });
-
 
 /**
  * Names a registration may not put in a command's `env` (#54), compared in upper case. The worker
@@ -72,12 +66,10 @@ const CREDENTIAL_ENV_SUFFIXES = ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "APIKE
 /** A URL with a user and password in it, such as postgres://user:password@host. */
 const URL_WITH_PASSWORD = /[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]*@/i;
 
-
 function reservedEnvName(name: string): boolean {
   const upper = name.toUpperCase();
   return RESERVED_ENV_NAMES.has(upper) || RESERVED_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix));
 }
-
 
 function credentialEnvName(name: string): boolean {
   const upper = name.toUpperCase();
@@ -87,11 +79,9 @@ function credentialEnvName(name: string): boolean {
     || CREDENTIAL_ENV_SUFFIXES.some((suffix) => upper.endsWith(suffix));
 }
 
-
 function secretEnvValue(value: string): boolean {
   return URL_WITH_PASSWORD.test(value) || redactText(value) !== value;
 }
-
 
 /**
  * What registration refuses in a command's `env` (#54): names AgentX, the worker or the system rely
@@ -113,7 +103,6 @@ export function projectCommandEnvProblems(env: Readonly<Record<string, string>>)
   return problems;
 }
 
-
 export const CodeBuildGateDefinitionSchema = z
   .object({
     name: AgentXNameSchema,
@@ -125,7 +114,6 @@ export const CodeBuildGateDefinitionSchema = z
     timeoutMinutes: z.number().int().min(5).max(420),
   })
   .strict();
-
 
 export const RepositoryDefinitionSchema = z
   .object({
@@ -176,7 +164,6 @@ export const RepositoryDefinitionSchema = z
     }
   });
 
-
 /**
  * The development container a project's commands run in (#121): `setup`, `readiness` and the
  * agent's shell. `configPath` is relative to the repository and defaults to
@@ -190,7 +177,6 @@ export const DevcontainerDefinitionSchema = z
   })
   .strict();
 
-
 /**
  * The websites a project's machines may reach beyond the install-wide defaults (Plan 2, Task 17). The revision stores what a maintainer
  * asked for; whether each is approved is the egress item's to say (Task 18). Control-plane only: a worker never reads it, so the broker
@@ -202,9 +188,7 @@ export const ProjectNetworkSchema = z.object({ allowedDomains: z.array(StoredAll
 
 export type ProjectNetwork = z.infer<typeof ProjectNetworkSchema>;
 
-
 export const DEFAULT_DEVCONTAINER_CONFIG_PATH = ".devcontainer/devcontainer.json";
-
 
 /**
  * Fields the project definition carried while AgentX had a local client. `schemaVersion` marked a
@@ -215,7 +199,6 @@ export const DEFAULT_DEVCONTAINER_CONFIG_PATH = ".devcontainer/devcontainer.json
  */
 export const LEGACY_PROJECT_FIELDS = ["schemaVersion", "controlPlaneUrl", "auth", "environment"] as const;
 
-
 export const WorkflowOptionalCheckSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
   label: z.string().trim().min(1).max(80),
@@ -223,7 +206,6 @@ export const WorkflowOptionalCheckSchema = z.object({
 }).strict();
 
 export type WorkflowOptionalCheck = z.infer<typeof WorkflowOptionalCheckSchema>;
-
 
 /** Spec 025 FR-014: how a project treats tasks started from an AI tool. Part of the revision. */
 export const DeveloperTaskPolicySchema = z
@@ -240,6 +222,11 @@ export const DeveloperTaskPolicySchema = z
     channelMembersMayUse: z.boolean().default(true),
     /** Project-approved extra checks task owners may select for the native workflow. */
     optionalWorkflowChecks: z.array(WorkflowOptionalCheckSchema).max(20).optional(),
+    /**
+     * M1.3 Task 3.7b (owner decision D2): the informational baseline round, the approved browser and API scenarios run once on the unchanged code when a plan is approved. On unless
+     * this is false. It lives here, not in the E2E policy, because that policy is bound by digest to the approved setup, and a switch that needed the setup approved again would not be one.
+     */
+    e2eBaselineRound: z.boolean().optional(),
   })
   .strict()
   .superRefine((policy, context) => {
@@ -254,7 +241,6 @@ export type DeveloperTaskPolicy = z.output<typeof DeveloperTaskPolicySchema>;
 
 export const DEFAULT_DEVELOPER_TASK_POLICY: DeveloperTaskPolicy = DeveloperTaskPolicySchema.parse({});
 
-
 /**
  * The policy a stored definition carries, or the defaults when it has none. A value that no longer
  * parses turns tasks and channel access off, so a damaged record never widens access.
@@ -264,7 +250,6 @@ export function developerTaskPolicy(definition: { developerTasks?: unknown }): D
   const parsed = DeveloperTaskPolicySchema.safeParse(definition.developerTasks === undefined ? {} : definition.developerTasks);
   return parsed.success ? parsed.data : { ...DEFAULT_DEVELOPER_TASK_POLICY, enabled: false, channelMembersMayUse: false };
 }
-
 
 function projectDefinitionObject<Connectors extends z.ZodTypeAny>(connectorsSchema: Connectors) {
   return z
@@ -289,7 +274,6 @@ function projectDefinitionObject<Connectors extends z.ZodTypeAny>(connectorsSche
     })
     .strict();
 }
-
 
 /**
  * Shared by `ProjectDefinitionSchema` and `StoredProjectDefinitionSchema`. A connector's `scopes`
@@ -345,7 +329,6 @@ function checkProjectDefinition(
   }
 }
 
-
 export const ProjectDefinitionSchema = projectDefinitionObject(ConnectorsSchema)
   .superRefine(checkProjectDefinition)
   .superRefine((project, context) => {
@@ -375,7 +358,6 @@ export const ProjectDefinitionSchema = projectDefinitionObject(ConnectorsSchema)
     }
   });
 
-
 /**
  * A project definition already on record: an `integrations.connectors` entry of a type this
  * release's schema does not know (for example one written by a later control plane, before a
@@ -385,7 +367,6 @@ export const ProjectDefinitionSchema = projectDefinitionObject(ConnectorsSchema)
  */
 const StoredProjectDefinitionObjectSchema = projectDefinitionObject(StoredConnectorsSchema).superRefine(checkProjectDefinition);
 
-
 /** Parses a definition that may predate the removal of {@link LEGACY_PROJECT_FIELDS}, and that may
  * carry a connector of a type this release does not know (see `StoredConnectorsSchema`). */
 export const StoredProjectDefinitionSchema = z.preprocess(
@@ -393,13 +374,11 @@ export const StoredProjectDefinitionSchema = z.preprocess(
   StoredProjectDefinitionObjectSchema,
 );
 
-
 /** The legacy fields a value carries, so a caller can name them in its own error. */
 export function legacyProjectFields(value: unknown): string[] {
   if (!value || typeof value !== "object") return [];
   return LEGACY_PROJECT_FIELDS.filter((field) => Object.hasOwn(value, field));
 }
-
 
 function withoutFields(value: unknown, fields: readonly string[]): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
@@ -408,9 +387,7 @@ function withoutFields(value: unknown, fields: readonly string[]): unknown {
   return remaining;
 }
 
-
 export type ProjectDefinition = z.infer<typeof ProjectDefinitionSchema>;
-
 
 /**
  * A project definition as a worker is sent it: without `network`, and without any repository's `installationId` and `githubRepositoryId`.
@@ -443,9 +420,7 @@ export type DevcontainerDefinition = z.infer<typeof DevcontainerDefinitionSchema
 
 export type CodeBuildGateDefinition = z.infer<typeof CodeBuildGateDefinitionSchema>;
 
-
 export type RepositoryDefinition = z.infer<typeof RepositoryDefinitionSchema>;
-
 
 export interface ResolvedGitHubConnector {
   name: string;
@@ -453,7 +428,6 @@ export interface ResolvedGitHubConnector {
   policy: GitHubMcpPolicy;
   attribution: boolean;
 }
-
 
 /**
  * The project's GitHub connector from either configuration form. Definitions registered with the
@@ -471,6 +445,8 @@ export function githubConnectorOf(project: Pick<ProjectDefinition, "repositories
   return { name: connector.name, repositories, policy: { tools: connector.tools }, attribution: connector.attribution ?? true };
 }
 
+export { AGENTX_NAME_PATTERN } from "./names.js";
 
-export { AGENTX_NAME_PATTERN };
-export { RelativeWorkspacePathSchema, PROJECT_COMMAND_ENV_MAX_ENTRIES, PROJECT_COMMAND_ENV_VALUE_MAX, PROJECT_COMMAND_ENV_TOTAL_MAX_BYTES, ProjectCommandEnvSchema, ProjectCommandSchema, DeveloperShareModeSchema } from "./project.js";
+export { AgentXNameSchema } from "./names.js";
+
+export { RelativeWorkspacePathSchema, PROJECT_COMMAND_ENV_MAX_ENTRIES, PROJECT_COMMAND_ENV_VALUE_MAX, PROJECT_COMMAND_ENV_TOTAL_MAX_BYTES, ENV_NAME_PATTERN, ProjectCommandEnvSchema, ProjectCommandSchema, DeveloperShareModeSchema } from "./project.js";

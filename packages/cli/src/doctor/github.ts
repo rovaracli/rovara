@@ -1,6 +1,6 @@
 // FR-050: the GitHub App installation and repository access. The private key signs one JWT in
 // memory and is never written anywhere.
-import { appSettingsUrl, GITHUB_WEBHOOK_EVENTS, githubAppJwt, githubAppSecretName, githubWebhookUrl, parseAppSecret } from "../init/github-app.js";
+import { appSettingsUrl, GITHUB_WEBHOOK_EVENTS, TRIGGER_PERMISSIONS, githubAppJwt, githubAppSecretName, githubWebhookUrl, parseAppSecret } from "../init/github-app.js";
 import { storedWebhookSecret } from "../github/webhook-setup.js";
 import { plainMessage } from "../output.js";
 import { check, type DoctorCheck, type DoctorContext } from "./checks.js";
@@ -113,11 +113,25 @@ export async function githubWebhookChecks(context: DoctorContext): Promise<Docto
     const githubApp = await services.github.getApp(jwt);
     const subscribed = githubApp.events ?? [];
     const missing = GITHUB_WEBHOOK_EVENTS.filter((event) => !subscribed.includes(event));
+    // GitHub reports the App's permissions as `{ name: "read" | "write" }`; a reply without them says nothing, so nothing is claimed missing. Write includes read.
+    const held = githubApp.permissions;
+    const lacking = held === undefined ? [] : Object.keys(TRIGGER_PERMISSIONS).filter((name) => held[name] !== "read" && held[name] !== "write");
     settingsPage = appSettingsUrl(githubApp.owner, githubApp.slug);
-    checks.push(missing.length === 0
+    if (missing.length === 0 && lacking.length === 0) {
       // GitHub's API does not say whether the hook is Active, so the page where it is switched on is always named.
-      ? check("github", "GitHub webhook", "ok", `subscribed to pull request and comment events; check that Active is on at ${settingsPage}`)
-      : check("github", "GitHub webhook", "warn", `the App is not subscribed to ${missing.join(", ")}`, `GitHub's API cannot add events: tick ${missing.join(", ")} at ${settingsPage}/permissions, and check that Active is on at ${settingsPage}`));
+      checks.push(check("github", "GitHub webhook", "ok", `subscribed to pull request, issue, deployment and workflow events; check that Active is on at ${settingsPage}`));
+    } else {
+      const detail = [
+        ...(missing.length === 0 ? [] : [`the App is not subscribed to ${missing.join(", ")}`]),
+        ...(lacking.length === 0 ? [] : [`the App lacks the permissions ${lacking.map((name) => `${name}: ${TRIGGER_PERMISSIONS[name as keyof typeof TRIGGER_PERMISSIONS]}`).join(", ")}`]),
+      ].join("; ");
+      const fix = [
+        ...(missing.length === 0 ? [] : [`GitHub's API cannot add events: tick ${missing.join(", ")} at ${settingsPage}/permissions`]),
+        ...(lacking.length === 0 ? [] : [`set ${lacking.join(" and ")} to read-only at ${settingsPage}/permissions and accept the new permissions on the installation`]),
+        `check that Active is on at ${settingsPage}`,
+      ].join(", then ");
+      checks.push(check("github", "GitHub webhook", "warn", detail, fix));
+    }
   } catch (error) {
     checks.push(check("github", "GitHub webhook", "warn", `could not read the App's webhook settings from GitHub: ${plainMessage(error)}`, "run agentx doctor again in a minute"));
   }

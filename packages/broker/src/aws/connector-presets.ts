@@ -15,6 +15,13 @@ import { hostPinProblem, tokenUrlProblem, type HostPin } from "./credentials.js"
 const NOT_CONFIGURED = "connector credentials are not configured in this deployment";
 const MAX_REASON = 300;
 
+/**
+ * The connector types whose address a person typed, so Rovara checks it again before every request and connects only to what that check returned
+ * (`context.endpointGuard`): the generic `mcp` type, and Grafana, whose runtime connector (plan Task 14) must be built on the same guard, as its
+ * connection check already is. A vendor's own fixed endpoint (Linear, Jira, Asana, Sentry, ...) does not go through it.
+ */
+export const HOST_TYPED_CONNECTOR_TYPES = ["mcp", "grafana"] as const;
+
 /** What every stored connector entry a preset serves carries. */
 interface PresetConfig {
   name: string;
@@ -83,7 +90,8 @@ export function presetConnectorType<Config extends PresetConfig, Scope>(preset: 
         return tokenUrlProblem(ref, record.tokenUrl, described.tokenEndpoint);
       };
       // The generic MCP type's endpoint is one a person typed: it is checked again before every request and the connection is pinned to what was checked.
-      const connect = preset.type === "mcp" && context.endpointGuard !== undefined ? guardedConnect(context.connect ?? connectMcp, context.endpointGuard) : context.connect;
+      // So is Grafana's base URL (Plan 4): its runtime connector is built on this same guard.
+      const connect = (HOST_TYPED_CONNECTOR_TYPES as readonly string[]).includes(preset.type) && context.endpointGuard !== undefined ? guardedConnect(context.connect ?? connectMcp, context.endpointGuard) : context.connect;
       const connector: ResolvedConnector<Scope> = {
         name: stored.name,
         type: preset.type,

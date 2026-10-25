@@ -74,3 +74,21 @@ it continues from the stack that failed.
 - To proceed, the owner runs the upgrade, or allows it to run, from the clone:
   `staging-aws.sh node packages/cli/dist/bin.js --env staging upgrade --region us-west-2 --source <clone> --worker-image <repo>/worker@sha256:ad32b73d… --boot-stage2-sha256 1bfeb60e… --slack-image <repo>/slack@sha256:d1141cd4… --yes`
 - Every post-deploy check stays NOT TESTED until then.
+
+## Attempt 3, 2026-10-23: upgrade 0.3.5 to 0.4.2 COMPLETE (reserved concurrency off)
+
+- Code c8a37cd5 (local tag v0.4.2), reused images (worker/slack/model-runtime unchanged since ba7e48d5). Run by the owner with `--no-reserved-concurrency`, because the account's Lambda concurrency limit was 10. The limit is now 1000 (quota approved), so a follow-up upgrade without the flag restores the reservations (AuditAnchor 5, the other 1).
+- Doctor: 0 failed, 31 passed, 3 warnings, 2 skipped. Warnings: no release.json for 0.4.2 (local tag, expected); the GitHub webhook's latest delivery got HTTP 403 (see below); the Slack redirect URL could not be confirmed (the same as before).
+
+| Check | Result | Reason |
+|---|---|---|
+| All agentx-staging-* stacks COMPLETE | PASS | All six are UPDATE_COMPLETE or CREATE_COMPLETE. |
+| SpendSettlementSchedule exists | PASS | agentx-staging-control-pla-SpendSettlementSchedule-1QESDXDST2H89 |
+| ConnectorSecretsRole exists | PASS | agentx-staging-connector-secrets |
+| Proxy STORE_MODEL_IN_DB=True | PASS | model-proxy task definition :4 |
+| Broker env size < 4096 | PASS | 3,019 bytes (names and values) |
+| Broker starts with AGENTX_NAMES hydrated | PASS | An empty-event invoke answers 401 AUTH_REQUIRED with no init error. |
+| API answers | PASS | /v1/app/me and /v1/dev/whoami return 401 without a token. |
+| Task key 401/403 (R48) | NOT TESTED | Needs a signed-in task. |
+| GitHub webhook delivery | OPEN | Doctor says the latest delivery got 403. It may predate this deploy; check the App's Advanced page or redeliver. |
+- Follow-up upgrade without `--no-reserved-concurrency` (Lambda limit 1000): COMPLETE. Doctor 0 failed, 31 passed. Reserved concurrency restored: AuditExport 5, AuditAnchor 1. All six stacks complete.

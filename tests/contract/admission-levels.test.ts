@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   DEFAULT_MEMBER_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, PER_TEST_CAP_USD, TASK_BUDGET_EXCEEDED_PREFIX,
-  agentKey, errorStatus, modelKeyKey, orgMetaKey, orgSettingsKey, pauseKey, scopeKey, spendCounterKey, topUpKey,
+  agentKey, errorStatus, modelKeyKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, pauseKey, scopeKey, spendCounterKey, topUpKey,
   type BudgetScope, type OrgId, type PauseScope,
 } from "@agentx/contracts";
 import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
@@ -66,12 +66,13 @@ describe("the levels' names", () => {
     expect(MINIMUM_REMAINING_USD).toEqual({ QUICK: 0.5, FULL: 2, CHAT: 0.05, TASK: 0.5, AGENT: 0.1 });
   });
 
-  it("each scope kind has the error it refuses with, and only the agent has a required one", () => {
+  it("each scope kind has the error it refuses with, and only the agent and the chain (Plan 4) have a required one", () => {
     expect(SCOPE_ERRORS).toEqual({
       org: { exceeded: "ORG_BUDGET_EXCEEDED" },
       member: { exceeded: "BUDGET_EXCEEDED" },
       project: { exceeded: "PROJECT_BUDGET_EXCEEDED" },
       agent: { required: "AGENT_BUDGET_REQUIRED", exceeded: "AGENT_BUDGET_EXCEEDED" },
+      chain: { required: "CHAIN_BUDGET_REQUIRED", exceeded: "CHAIN_BUDGET_EXCEEDED" },
       testing: { exceeded: "TEST_ALLOWANCE_USED" },
     });
     expect([errorStatus("PROJECT_BUDGET_EXCEEDED"), errorStatus("AGENT_BUDGET_EXCEEDED"), errorStatus("TEST_ALLOWANCE_USED"), errorStatus("AGENT_BUDGET_REQUIRED")]).toEqual([402, 402, 402, 409]);
@@ -845,6 +846,57 @@ describe("a task's key at the broker", () => {
     expect(r.operation().modelKeyIds).toEqual([keyIdOf(key!)]);
   });
 
+  it("counts a payer who was merged into another member against the member they are now, in the key's scopes, tags and name (Review M-3 of Task 21)", async () => {
+    const t = await brokerSetup();
+    const DUPLICATE = "9".repeat(64);
+    t.db.set({ pk: `DEVELOPER#${DUPLICATE}`, sk: "META", developerId: DUPLICATE, provider: "oidc", displayName: "Duplicate", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: DEV_MAYA.developerId });
+    const r = await t.running();
+    t.db.set({ ...(t.db.get(taskKey(r.taskId)) as Record<string, unknown>), payer: { kind: "member", developerId: DUPLICATE } });
+    const reply = await r.ask();
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const [key] = t.access.mintedKeys();
+    const record = t.db.get(modelKeyKey(TEST_ORG, keyIdOf(key!))) as unknown as ModelKeyRecord;
+    expect(record.tags).toMatchObject({ payerKind: "member", payerId: DEV_MAYA.developerId });
+    expect(record.scopes).toContainEqual({ kind: "member", developerId: DEV_MAYA.developerId });
+    expect(record.scopes).not.toContainEqual({ kind: "member", developerId: DUPLICATE });
+    expect(t.access.mintKey.mock.calls[0]![0]).toMatchObject({ tags: { payerId: DEV_MAYA.developerId } });
+  });
+
+  it("mints no key once the org is closed, whatever the task: fail closed (Re-check R-2 of Task 21)", async () => {
+    const t = await brokerSetup();
+    const r = await t.running();
+    expect((await r.ask()).status).toBe(200);
+    expect(t.access.mintedKeys()).toHaveLength(1);
+    t.db.set({ ...(t.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>), closedAt: "2026-10-24T12:00:00.000Z" });
+    const refused = await r.ask();
+    expect(refused.status).toBe(403);
+    expect((refused.body.error as { code: string }).code).toBe("TASK_ACCESS_DENIED");
+    expect(t.access.mintedKeys()).toHaveLength(1);
+  });
+
+  it("mints no key when the org's state can't be read, or the task's owner can't be told (Re-check R-2 of Task 21)", async () => {
+    const t = await brokerSetup();
+    const r = await t.running();
+    t.db.injectFault({ command: "GetCommand", match: (input) => JSON.stringify((input as { Key?: unknown }).Key) === JSON.stringify(orgMetaKey(TEST_ORG)), error: { name: "InternalServerError" }, times: 1 });
+    const unread = await r.ask();
+    expect(unread.status).toBeGreaterThanOrEqual(500);
+    expect(t.access.mintedKeys()).toHaveLength(0);
+    t.db.set({ ...(t.db.get(taskKey(r.taskId)) as Record<string, unknown>), currentOwner: { developerId: "", name: "?", provider: "nope", since: "x" } });
+    const unknown = await r.ask();
+    expect(unknown.status).toBeGreaterThanOrEqual(400);
+    expect(t.access.mintedKeys()).toHaveLength(0);
+  });
+
+  it("mints no key for a task whose owner is no longer a member of the org (Re-check R-2 of Task 21)", async () => {
+    const t = await brokerSetup();
+    const r = await t.running();
+    t.db.delete(orgMemberKey(TEST_ORG, DEV_MAYA.developerId));
+    t.db.set({ ...orgRemovedKey(TEST_ORG, DEV_MAYA.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-24T12:00:00.000Z" });
+    const refused = await r.ask();
+    expect(refused.status).toBe(403);
+    expect(t.access.mintedKeys()).toHaveLength(0);
+  });
+
   it("gives a task's second operation the room that is left, not the room less its own first key's hold", async () => {
     const t = await brokerSetup();
     const r = await t.running();
@@ -1063,5 +1115,21 @@ describe("Slack work at the broker", () => {
     expect(h.db.get(modelKeyKey(TEST_ORG, keyIdOf(reply.body.apiKey as string)))).toMatchObject({ reserved: true, capUsd: 8 });
     near((h.db.get(spendCounterKey(TEST_ORG, NOW_MONTH, "PROJECT#payments")) as { committedUsd?: number }).committedUsd, 8);
     expect((h.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`) as { modelKeyIds?: string[] }).modelKeyIds).toHaveLength(1);
+  });
+
+  it("mints no key for a thread's operation once the org is closed (Re-check R-2 of Task 21)", async () => {
+    const h = await install();
+    const workspace = await ensureWorkspace(h.handler, THREAD, SLACK_USER);
+    const workspaceId = workspace.body.workspaceId as string;
+    markReady(h.db, workspaceId);
+    const conversation = await serviceCall(h.handler, THREAD, SLACK_USER, "POST", `/v1/service/workspaces/${workspaceId}/conversations`, {});
+    const conversationId = (conversation.body.conversation as { id: string }).id;
+    const task = await serviceCall(h.handler, THREAD, SLACK_USER, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId, prompt: "test it" });
+    const operationId = (task.body.operation as { id: string }).id;
+    const capability = ((h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation) as { callbackCapability: string }).callbackCapability;
+    h.db.set({ ...(h.db.get(orgMetaKey(TEST_ORG)) as Record<string, unknown>), pk: orgMetaKey(TEST_ORG).pk, sk: orgMetaKey(TEST_ORG).sk, closedAt: "2026-10-24T12:00:00.000Z" });
+    const reply = await call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capability } });
+    expect(reply.status).toBe(403);
+    expect(h.access.mintKey).not.toHaveBeenCalled();
   });
 });

@@ -48,9 +48,18 @@ export interface RemovedMember {
   successorId: string;
 }
 
+/** A member who is no longer in the org, in an org that has no owner left to hand anything to. */
+export interface OrphanedMember {
+  orgId: OrgId;
+  developerId: string;
+  by: string;
+}
+
 /**
  * One kind of thing a member can own or be named on. `merged` hands the duplicate's to the survivor; `removed` hands the removed person's
  * to the successor (or drops it). Both must be repeatable: they run again after a run that stopped half-way. Throwing leaves the marker.
+ * `orphaned` runs instead of `removed` when the org has no owner to be the successor (the last owner left, or the org closed under the
+ * removal): a mover that can still do its part without a successor (turn something off and tell an admin, drop what the person held) does it.
  * A mover that gave something with a budget to someone answers their ids, once any of it moved, so their per-person cap is looked at after
  * every mover has run (see `noteOwnerCap`).
  */
@@ -59,6 +68,7 @@ export interface MemberMover {
   name: string;
   merged?(deps: LifecycleDeps, merge: MergedMembers): Promise<void | readonly string[]>;
   removed?(deps: LifecycleDeps, removal: RemovedMember): Promise<void | readonly string[]>;
+  orphaned?(deps: LifecycleDeps, removal: OrphanedMember): Promise<void>;
 }
 
 const movers = new Map<string, MemberMover>();
@@ -398,8 +408,9 @@ export async function onMembersMerged(deps: LifecycleDeps, merge: MergedMembers,
 /**
  * A member was removed: what they owned moves to the first owner of the org (agents and skills, with one `owner_changed` event naming the
  * removal; their agent budgets count against that owner's total), `accountable` moves to another maintainer of that project by grant, else to
- * that owner, their shares are deleted and whatever other movers are registered re-route. Repeatable. An org with no other owner (a closed one)
- * has nobody to hand anything to: that is logged and nothing moves. When the run succeeds, the cap is looked at for that owner and for everyone
+ * that owner, their shares are deleted and whatever other movers are registered re-route. Repeatable. An org with no other owner (a closed one,
+ * or one whose last owner left) has nobody to hand anything to: that is logged, nothing is handed over, and each mover's `orphaned` part runs (the
+ * triggers they created are turned off and an org admin is told; their follows, shares and devices go). When the run succeeds, the cap is looked at for that owner and for everyone
  * a mover (this run's or an earlier one's, through `ledger`) gave something to.
  */
 export async function onMemberRemoved(deps: LifecycleDeps, removal: { orgId: OrgId; developerId: string; by: string }, ledger?: RecipientLedger): Promise<void> {
@@ -407,6 +418,8 @@ export async function onMemberRemoved(deps: LifecycleDeps, removal: { orgId: Org
   const successorId = await firstOwner(deps, orgId, developerId);
   if (successorId === undefined) {
     log(deps, "member_removed.no_successor", { orgId, developerId });
+    const { failure } = await runMovers(deps, "member_removed.mover_failed", { orgId, developerId }, (mover) => mover.orphaned?.(deps, { orgId, developerId, by }));
+    if (failure !== undefined) throw failure as Error;
     return;
   }
   const moved: RemovedMember = { orgId, developerId, by, successorId };

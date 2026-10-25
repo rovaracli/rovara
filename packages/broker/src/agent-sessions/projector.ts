@@ -93,7 +93,7 @@ export async function projectSessions(records: readonly StreamRecord[], deps: Pr
   const tasks = new Map<string, Item | undefined>();
   const pointers = new Map<string, string | undefined>();
   const add = (orgId: string, sessionId: string) => { sessions.set(`${orgId}#${sessionId}`, { orgId, sessionId }); };
-  // PLAN4: the tasks of a chain's steps that changed in this batch, by the chain's session: a message to the chain's step is told as taken from the step's own task, which a refresh of the chain doesn't read.
+  // The tasks of a chain's steps that changed in this batch, by the chain's session: a message to the chain's step is told as taken from the step's own task, which a refresh of the chain doesn't read.
   const stepTasks = new Map<string, Set<string>>();
 
   const resolveTask = async (taskId: string, keyOrg: string | undefined) => {

@@ -4,7 +4,8 @@ import { serverPageCss } from "@agentx/design-tokens";
 // requests and its history. GET only, no forms, and one small script (by nonce) that opens and scrolls to a deep
 // link and, while the page is open, asks this origin's `/task/status` whether the task moved on. Every value is escaped; model and reviewer text is plain text in the page, so a link in it is never a link.
 import { randomBytes } from "node:crypto";
-import { SessionIdSchema, redactText, taskGraphDigest, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
+import { SessionIdSchema, redactText, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
+import { renderE2EScenarioRowsHtml } from "../e2e-presentation.js";
 import type { TaskRole } from "../developer/task-access.js";
 import type { TaskPeopleView } from "../developer/task-people.js";
 import type { DeveloperCaller } from "./developer-routes.js";
@@ -62,6 +63,10 @@ export interface TaskDocumentView {
   history: Array<{ at: string; text: string; link?: string }>;
   /** What the reader may do on the page now (spec 061 slice 2). */
   access?: { role: TaskRole; canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean };
+  /** Present while the task is blocked on an approved browser and API round that one retry can fix; `canRetry` is whether this reader (the owner) may make it. */
+  applicationRetry?: { canRetry: boolean };
+  /** The per-scenario results of the task's browser and API round (M1.3 Task 3.7), derived by the broker from evidence it verified itself, and the baseline round on the unchanged code. */
+  e2eResults?: E2EScenarioResults;
   /** The task's comments, replies and AgentX replies, oldest first, as stored (redacted when written; the page escapes them). */
   comments?: TaskComment[];
   /** The suggestions that still apply to each document's current version. */
@@ -355,6 +360,7 @@ function pageData(view: TaskDocumentView, csrf: string): Record<string, unknown>
     canTakeOwnership: view.canTakeOwnership === true, ...(view.peopleRevision === undefined ? {} : { peopleRevision: view.peopleRevision }),
     ...(view.askAvailable === undefined ? {} : { askAvailable: view.askAvailable }),
     ...(current === undefined ? {} : { current }), commentSeq: view.commentSeq ?? 0,
+    ...(view.applicationRetry?.canRetry === true ? { canRetry: true } : {}),
   };
 }
 
@@ -369,6 +375,18 @@ function decideBar(view: TaskDocumentView): string {
   return '<div class="decide-bar" role="region" aria-label="Decide">'
     + `<p><button type="button" id="decide-next" hidden></button><span id="decide-count" role="status">${count === 0 ? "" : `${count} to answer`}</span></p>`
     + `<button type="button" id="decide-approve" hidden>Approve ${escapeHtml(name)}</button> <button type="button" id="decide-request-changes" hidden>Request changes to ${escapeHtml(name)}</button></div>`;
+}
+
+/** The retry of a blocked browser and API round: the owner's button (on with the script, as the decide buttons are) or who may press it. */
+function applicationRetrySection(view: TaskDocumentView): string {
+  if (view.applicationRetry === undefined) return "";
+  return '<section id="application-retry" aria-label="Browser and API checks"><h2>Browser and API checks</h2>'
+    + (view.applicationRetry.canRetry
+      ? '<p>One retry approves the plan again against what is ready now and runs the checks again.</p>'
+        + '<p><button type="button" id="retry-application" hidden>Retry the browser and API checks</button> <span id="retry-status" role="status" aria-live="polite"></span></p>'
+        + '<p id="retry-error" class="error" role="alert" hidden></p>'
+      : '<p class="muted">Only the task owner can retry these checks.</p>')
+    + "</section>";
 }
 
 /** The one confirmation dialog; the page's script fills it with text only. */
@@ -442,6 +460,8 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     + `<p><strong>${escapeHtml(view.status)}</strong></p><p>Next: ${escapeHtml(view.nextStep)}</p>${slackOnly}</header>`
     + `<main>${unverified}${documents}${noDocuments}`
     + (checks === undefined || checks === "" ? "" : `<section id="checks" aria-label="Checks"><h2>Checks</h2>${checks}</section>`)
+    + (view.e2eResults === undefined ? "" : renderE2EScenarioRowsHtml(view.e2eResults, { artifactPath: (sha256) => `/review/${encodeURIComponent(view.taskId)}/task/api/e2e/artifacts/${sha256}` }))
+    + applicationRetrySection(view)
     + `<section id="findings" aria-label="Review findings"><h2>Review findings</h2>${findings}</section>`
     + `<section id="pull-requests" aria-label="Pull requests"><h2>Pull requests</h2>${pullRequests}</section>`
     + (view.people === undefined ? renderTaskPeopleUnavailable() : renderTaskPeoplePanel(view.taskId, view.people))

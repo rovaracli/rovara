@@ -40,7 +40,8 @@ describe("built-in agents", () => {
       expect(agent.description.length, id).toBeGreaterThan(0);
       expect(agent.versions.map((entry) => entry.version), id).toEqual(agent.versions.map((_, index) => index + 1));
       expect(currentBuiltinVersion(id), id).toBe(agent.versions.length);
-      expect(currentBuiltinVersion(id), id).toBe(1);
+      // Plan 4 Task 27 added version 2 of the five templates (templates-full.test.ts); Rovara Code has one.
+      expect(currentBuiltinVersion(id), id).toBe(id === "rovara-code" ? 1 : 2);
     }
   });
 
@@ -135,7 +136,8 @@ describe("the five templates, version 1", () => {
 
   it("Root-cause analyst", () => {
     expect(BUILTIN_AGENTS["root-cause-analyst"].name).toBe("Root-cause analyst");
-    expect(BUILTIN_AGENTS["root-cause-analyst"].needsLaterConnectors).toBe("It finds causes faster once Sentry, Datadog or CloudWatch is connected.");
+    // Plan 4 Task 27: the connectors exist, so no template carries the later-connector note (version 1's grants are unchanged below).
+    expect(BUILTIN_AGENTS["root-cause-analyst"].needsLaterConnectors).toBeUndefined();
     expect(agentSteps(recipeOf("root-cause-analyst"))).toEqual([
       { id: "investigate", kind: "agent", workspace: "read", report: undefined },
       { id: "report", kind: "agent", workspace: "none", report: { slack: true } },
@@ -154,9 +156,7 @@ describe("the five templates, version 1", () => {
 
   it("Deploy reviewer", () => {
     expect(BUILTIN_AGENTS["deploy-reviewer"].name).toBe("Deploy reviewer");
-    expect(BUILTIN_AGENTS["deploy-reviewer"].needsLaterConnectors).toBe(
-      "Until GitHub Actions or Vercel and Datadog or Sentry are connected, it reviews what changed in the deploy, not how the deploy is running.",
-    );
+    expect(BUILTIN_AGENTS["deploy-reviewer"].needsLaterConnectors).toBeUndefined();
     expect(agentSteps(recipeOf("deploy-reviewer"))).toEqual([
       { id: "inspect", kind: "agent", workspace: "read", report: undefined },
       { id: "report", kind: "agent", workspace: "none", report: { slack: true } },
@@ -169,9 +169,7 @@ describe("the five templates, version 1", () => {
 
   it("Service reviewer", () => {
     expect(BUILTIN_AGENTS["service-reviewer"].name).toBe("Service reviewer");
-    expect(BUILTIN_AGENTS["service-reviewer"].needsLaterConnectors).toBe(
-      "Until Sentry, Datadog, CloudWatch, Grafana or PagerDuty are connected, it reads tickets, GitHub issues and any MCP source the project has.",
-    );
+    expect(BUILTIN_AGENTS["service-reviewer"].needsLaterConnectors).toBeUndefined();
     expect(agentSteps(recipeOf("service-reviewer"))).toEqual([
       { id: "gather", kind: "agent", workspace: "none", report: undefined },
       { id: "report", kind: "agent", workspace: "none", report: { slack: true } },
@@ -179,10 +177,8 @@ describe("the five templates, version 1", () => {
     expect(tools("service-reviewer")).toEqual([...trackers("read_write"), { connector: { type: "github" }, access: "read" }, { connector: { type: "mcp" }, access: "read" }]);
   });
 
-  it("only the later-connector notes exist, they never mention a plan, and Rovara Code has none", () => {
-    const withNotes = BUILTIN_AGENT_IDS.filter((id) => BUILTIN_AGENTS[id].needsLaterConnectors !== undefined).sort();
-    expect(withNotes).toEqual(["deploy-reviewer", "root-cause-analyst", "service-reviewer"]);
-    for (const id of withNotes) expect(BUILTIN_AGENTS[id].needsLaterConnectors, id).not.toMatch(/\bplan\b/i);
+  it("no built-in carries a later-connector note any more, and Rovara Code never had one", () => {
+    expect(BUILTIN_AGENT_IDS.filter((id) => BUILTIN_AGENTS[id].needsLaterConnectors !== undefined)).toEqual([]);
   });
 
   it("each template's final step reports to Slack and no earlier step does", () => {

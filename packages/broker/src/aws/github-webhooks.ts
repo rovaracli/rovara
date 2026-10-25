@@ -8,6 +8,7 @@ import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } fr
 import { githubWorkflowPullRequestKey, type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type GitHubPullRequestFeedback } from "../github-app.js";
 import { isConditional } from "./broker-shared.js";
+import { failedIndexes, isTransactionConflict } from "../agents/table-writes.js";
 import type { InstallationCreatedPayload } from "../org/github-install-requests.js";
 import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { feedbackReopenedMeasure, type FeedbackReviewMeasure } from "../developer/feedback-review-measures.js";
@@ -32,12 +33,26 @@ export const GITHUB_WEBHOOK_RECOVERY_INDEX = "github-webhook-recovery";
 const GITHUB_WEBHOOK_RECOVERY_PK = "GITHUB_WEBHOOK_RECOVERY";
 const MAX_WEBHOOK_ATTEMPTS = 8;
 
+/** The events (GitHub's `X-GitHub-Event` names) that can start a trigger, as well as being, for pull requests, feedback on a linked task. */
+export const GITHUB_TRIGGER_EVENT_NAMES: ReadonlySet<string> = new Set(["pull_request", "issues", "deployment_status", "workflow_run"]);
+
 export const GITHUB_WEBHOOK_SIGNATURE_INVALID = "GitHub webhook signature is invalid";
 
 export class GithubWebhookRefusal extends Error {
   constructor(message: string) {
     super(message);
     this.name = "GithubWebhookRefusal";
+  }
+}
+
+/**
+ * A signed delivery that nothing of the pull request feedback path can use: an event type it does not follow, a body it cannot read, or a repository that is not a linked
+ * task's. Where trigger events are handled (`handleGithubWebhook`'s `triggerEvents`) it is answered 202 and ignored; elsewhere it is the refusal it always was.
+ */
+export class GithubWebhookIgnorable extends GithubWebhookRefusal {
+  constructor(message: string) {
+    super(message);
+    this.name = "GithubWebhookIgnorable";
   }
 }
 
@@ -55,6 +70,11 @@ export interface ReceiveGithubWebhookInput {
   secret: string;
   authorizeRepository(scope: { installationId: number; repositoryId: number; fullName: string; pullRequestNumber: number }): Promise<boolean>;
   reserveDelivery(delivery: { deliveryId: string; installationId: number; repositoryId: number; eventHash: string; event: ReceivedGithubWebhook["event"] }): Promise<"reserved" | "retry" | "duplicate" | "conflict">;
+  /**
+   * Called once the signature, the delivery id and the JSON have been checked, before the event is looked at: the one place a delivery's verified body is handed on. It is how
+   * trigger events share this function's verification instead of repeating it. When it is given, an event type this function does not follow is not refused until it has run.
+   */
+  onVerified?(verified: { eventName: string | undefined; deliveryId: string; payload: unknown }): Promise<void>;
 }
 
 export interface ReceivedGithubWebhook {
@@ -205,6 +225,22 @@ function newlyMerged<Read extends { pr: { repositoryId: string; number: number; 
 }
 
 /**
+ * The item that adds `count` merged pull requests to a project's month count (Plan 5 Task 16). It is added by the same transaction as the workflow's move to MERGED, whatever path made it
+ * (a webhook or sweep read, or a pushed fix found merged), so the count has one meaning: a replay changes nothing and so adds nothing. The month is the UTC month of `now`.
+ */
+export function mergedPullRequestCountItem(tableName: string, orgId: OrgId, project: string, now: string, count: number): TransactItem {
+  const month = now.slice(0, 7);
+  return {
+    Update: {
+      TableName: tableName, Key: projectMonthStatsKey(orgId, project, month),
+      UpdateExpression: "SET entityType = :type, orgId = :orgId, #project = :project, #month = :month ADD mergedPullRequests :merged",
+      ExpressionAttributeNames: { "#project": "project", "#month": "month" },
+      ExpressionAttributeValues: { ":type": "PROJECT_SESSION_STATS", ":orgId": orgId, ":project": project, ":month": month, ":merged": count },
+    },
+  };
+}
+
+/**
  * The project's month count of merged pull requests (Plan 5 Task 16): one more for each pull request this save moves to MERGED, added by the same transaction as the move, so a
  * redelivered merge (which changes nothing) adds nothing and a save that does not commit counts nothing. The month is the UTC month the merge was found. A task whose org is not known
  * is not counted (the count is the org's own); a failing lookup is the same, and never stops the save.
@@ -218,19 +254,16 @@ export async function mergedPullRequestStats(
 ): Promise<TransactItem[]> {
   const merged = newlyMerged(next, reads);
   if (merged.length === 0) return [];
+  // The save goes on without the count; the log is the only trace of an undercount.
+  const skipped = (reason: string, error?: unknown) => console.log(JSON.stringify({
+    component: "broker", event: "merged_count.skipped", reason, taskId, project: task.project, ...(error instanceof Error ? { error: error.name } : {}),
+  }));
   try {
     const orgId = task.orgId ?? await input.auditOrgId?.(taskId);
-    if (orgId === undefined) return [];
-    const month = input.now.slice(0, 7);
-    return [{
-      Update: {
-        TableName: input.tableName, Key: projectMonthStatsKey(orgId, task.project, month),
-        UpdateExpression: "SET entityType = :type, orgId = :orgId, #project = :project, #month = :month ADD mergedPullRequests :merged",
-        ExpressionAttributeNames: { "#project": "project", "#month": "month" },
-        ExpressionAttributeValues: { ":type": "PROJECT_SESSION_STATS", ":orgId": orgId, ":project": task.project, ":month": month, ":merged": merged.length },
-      },
-    }];
-  } catch {
+    if (orgId === undefined) { skipped("org_unknown"); return []; }
+    return [mergedPullRequestCountItem(input.tableName, orgId, task.project, input.now, merged.length)];
+  } catch (error) {
+    skipped("lookup_failed", error);
     return [];
   }
 }
@@ -253,6 +286,33 @@ function mergedPullRequestEvents(
       details: [{ subject: "org", fields: { repository: fullName } }],
     }));
   });
+}
+
+/** How many times a save that lost only to another transaction on the same items (a hot item such as the project's month count) is tried again before it fails. */
+export const WORKFLOW_SAVE_CONFLICT_RETRIES = 3;
+
+/**
+ * Runs a workflow save, and again (up to `WORKFLOW_SAVE_CONFLICT_RETRIES` more times, after a short, growing pause) when it failed only because another transaction held one of its items right
+ * now: the whole-call `TransactionConflictException`, or a cancellation whose reasons hold a `TransactionConflict` and no failed condition. Nothing was written then, and the same save
+ * is tried again as it is, without reading GitHub again. A failed condition is the caller's compare-and-set and is not retried here. The last conflict is thrown (a cancelled transaction as a `GithubWebhookRetryableError`, so that no caller takes it for a lost compare-and-set).
+ */
+async function saveRetryingConflicts(save: () => Promise<void>): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await save();
+      return;
+    } catch (error) {
+      const conflictOnly = isTransactionConflict(error) && (failedIndexes(error)?.size ?? 0) === 0;
+      if (!conflictOnly) throw error;
+      if (attempt >= WORKFLOW_SAVE_CONFLICT_RETRIES) {
+        // A cancelled transaction would read as a lost compare-and-set to the callers (`isConditional`), which read GitHub again and save again; a conflict is not one. It is given up here, for the
+        // delivery to be tried again later (the recovery sweep).
+        if (isConditional(error)) throw new GithubWebhookRetryableError("the workflow's items stayed busy with another transaction");
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+    }
+  }
 }
 
 /** Event payloads are hints only. Recollect all linked PRs on every CAS retry. */
@@ -305,7 +365,8 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       if (next === current) return false;
       const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
       try {
-        await input.saveWorkflow(linked.taskId, current.revision, next, [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)]);
+        const items = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)];
+        await saveRetryingConflicts(() => input.saveWorkflow(linked.taskId, current.revision, next, items));
         await flushAuditEvents(input, events);
         return true;
       } catch (error) {
@@ -510,8 +571,9 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
     const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
     const extraItems = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)];
     try {
-      if (recordedPushes.length > 0) await input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems);
-      else await input.saveWorkflow(linked.taskId, current.revision, next, extraItems);
+      await saveRetryingConflicts(() => recordedPushes.length > 0
+        ? input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems)
+        : input.saveWorkflow(linked.taskId, current.revision, next, extraItems));
       await flushAuditEvents(input, events);
       if (reopenedFeedback) {
         const measure = feedbackReopenedMeasure(input.now);
@@ -937,8 +999,13 @@ export async function handleGithubWebhook(input: {
   installationCreated?: (deliveryId: string, payload: InstallationCreatedPayload) => Promise<unknown>;
   /** Plan 2, Task 15: where the other `installation` actions and `installation_repositories` go. Absent, they are unsupported as before. */
   installationLifecycle?: (deliveryId: string, event: InstallationLifecycleEvent) => Promise<unknown>;
+  /**
+   * Plan 4 Task 21: where a verified pull request, issue, deployment status or workflow run event goes to start triggers' work, whether or not it is a linked pull request's. Absent,
+   * those events are what they were (refused unless they are a linked pull request's feedback). Present, a signed event neither this nor the feedback path uses is answered `IGNORED`.
+   */
+  triggerEvents?: (input: { eventName: string; payload: unknown; installationId: number }) => Promise<{ events: number; duplicates: number }>;
   now(): string;
-}): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS"; deliveryId: string; lifecycle?: true }> {
+}): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS" | "IGNORED"; deliveryId: string; lifecycle?: true; trigger?: true }> {
   if ((input.installationCreated !== undefined || input.installationLifecycle !== undefined)
     && Object.entries(input.headers).some(([key, value]) => key.toLowerCase() === "x-github-event" && (value === "installation" || value === "installation_repositories"))) {
     return handleInstallationEvent(input, {
@@ -946,18 +1013,38 @@ export async function handleGithubWebhook(input: {
       ...(input.installationLifecycle === undefined ? {} : { lifecycle: input.installationLifecycle }),
     });
   }
-  const received = await receiveGithubWebhook({
-    rawBody: input.rawBody,
-    headers: input.headers,
-    secret: input.secret,
-    authorizeRepository: input.authorizeRepository,
-    reserveDelivery: (delivery) => reserveGithubWebhookDelivery({
-      documentClient: input.documentClient,
-      tableName: input.tableName,
-      ...delivery,
-      now: input.now(),
-    }),
-  });
+  const triggerEvents = input.triggerEvents;
+  let verifiedDelivery: string | undefined;
+  let triggered: { events: number; duplicates: number } | undefined;
+  let received: ReceivedGithubWebhook;
+  try {
+    received = await receiveGithubWebhook({
+      rawBody: input.rawBody,
+      headers: input.headers,
+      secret: input.secret,
+      authorizeRepository: input.authorizeRepository,
+      reserveDelivery: (delivery) => reserveGithubWebhookDelivery({
+        documentClient: input.documentClient,
+        tableName: input.tableName,
+        ...delivery,
+        now: input.now(),
+      }),
+      ...(triggerEvents === undefined ? {} : {
+        onVerified: async ({ eventName, deliveryId, payload }) => {
+          verifiedDelivery = deliveryId;
+          if (eventName === undefined || !GITHUB_TRIGGER_EVENT_NAMES.has(eventName)) return;
+          const installation = z.object({ installation: z.object({ id: z.number().int().positive() }).passthrough() }).passthrough().safeParse(payload);
+          if (installation.success) triggered = await triggerEvents({ eventName, payload, installationId: installation.data.installation.id });
+        },
+      }),
+    });
+  } catch (error) {
+    // A signed event the feedback path has no use for: if triggers took it, it is accepted (or a duplicate); if nothing did, it is ignored, and neither is a refusal.
+    if (triggerEvents === undefined || !(error instanceof GithubWebhookIgnorable) || verifiedDelivery === undefined) throw error;
+    if (triggered === undefined) return { status: "IGNORED", deliveryId: verifiedDelivery };
+    const taken: { events: number; duplicates: number } = triggered;
+    return { status: taken.events === 0 && taken.duplicates > 0 ? "DUPLICATE" : "ACCEPTED", deliveryId: verifiedDelivery, trigger: true };
+  }
   const processed = await processGithubWebhookDelivery({
     documentClient: input.documentClient,
     tableName: input.tableName,
@@ -993,18 +1080,19 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
   const deliveryId = headers["x-github-delivery"];
   if (deliveryId === undefined || !DELIVERY_ID.test(deliveryId)) throw new GithubWebhookRefusal("GitHub webhook delivery ID is invalid");
   const eventName = headers["x-github-event"];
-  if (eventName !== "pull_request" && eventName !== "pull_request_review" && eventName !== "pull_request_review_comment" && eventName !== "issue_comment") {
-    throw new GithubWebhookRefusal("GitHub webhook event type is unsupported");
-  }
+  const followed = eventName === "pull_request" || eventName === "pull_request_review" || eventName === "pull_request_review_comment" || eventName === "issue_comment";
+  if (!followed && input.onVerified === undefined) throw new GithubWebhookRefusal("GitHub webhook event type is unsupported");
   let raw: unknown;
   try {
     raw = JSON.parse(input.rawBody) as unknown;
   } catch {
     throw new GithubWebhookRefusal("GitHub webhook JSON body is invalid");
   }
+  await input.onVerified?.({ eventName, deliveryId, payload: raw });
+  if (!followed) throw new GithubWebhookIgnorable("GitHub webhook event type is unsupported");
   const parsed = GitHubWebhookPayloadSchema.safeParse(raw);
   const object = parsed.success ? parsed.data : undefined;
-  if (object === undefined) throw new GithubWebhookRefusal("GitHub webhook event payload is unsupported or incomplete");
+  if (object === undefined) throw new GithubWebhookIgnorable("GitHub webhook event payload is unsupported or incomplete");
   let number: number;
   let comment: ReceivedGithubWebhook["event"]["comment"];
   if (eventName === "pull_request" && object.pull_request !== undefined && PULL_REQUEST_ACTIONS.has(object.action)) {
@@ -1019,7 +1107,7 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
     number = object.issue.number;
     comment = toComment(object.comment, "pr_discussion");
   } else {
-    throw new GithubWebhookRefusal("GitHub webhook event payload is unsupported or incomplete");
+    throw new GithubWebhookIgnorable("GitHub webhook event payload is unsupported or incomplete");
   }
   const scope = {
     installationId: object.installation.id,
@@ -1027,7 +1115,7 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
     fullName: object.repository.full_name.toLowerCase(),
     pullRequestNumber: number,
   };
-  if (!await input.authorizeRepository(scope)) throw new GithubWebhookRefusal("GitHub webhook repository is outside the registered installation and repository scope");
+  if (!await input.authorizeRepository(scope)) throw new GithubWebhookIgnorable("GitHub webhook repository is outside the registered installation and repository scope");
   const event: ReceivedGithubWebhook["event"] = {
     kind: comment === undefined ? "PULL_REQUEST" : "PR_COMMENT",
     action: object.action,

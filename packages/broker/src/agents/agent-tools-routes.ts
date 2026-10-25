@@ -38,7 +38,7 @@ import { effectiveTaskOwner, inertName, ownerDisplayName } from "../developer/ta
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { parseGitHubRepository, type AgentGitHubScope, type AgentRepositoryLabel, type AgentTokenOptions } from "../github-app.js";
 import { githubAgentToolPermissions, type GitHubAgentTokenPermissions } from "./github-agent-tools.js";
-import type { ApprovalDependencies, TransactItem } from "./approvals-store.js";
+import { errorNameOf, log, type ApprovalDependencies, type ApproverSpec, type TransactItem } from "./approvals-store.js";
 import type { answerForHeldCall} from "./write-gate.js";
 import { decideWrite, type ClassifyContext, type Regranted } from "./write-gate.js";
 import { githubLabelLister, type LabelLister } from "./label-names.js";
@@ -105,6 +105,8 @@ export interface AgentWriteGateInput {
   claimRequest?(approvalId: string): TransactItem;
   /** A condition that the step's operation has not ended, for the transaction that makes the approval (see `DecideWriteInput.operationGuard`). */
   operationGuard?: TransactItem;
+  /** Plan 4 (N2): the chain step that started the task, for the registered selectors of who approves its writes. Absent for any other task. */
+  chain?: { chainRunId: string; stepId: string };
 }
 export type AgentWriteGate = (input: AgentWriteGateInput) => Promise<AgentWriteDecision>;
 
@@ -124,6 +126,70 @@ export const approvalsNotWiredGate: AgentWriteGate = async (input) => {
   };
 };
 
+// ---------------------------------------------------------------------------------------------
+// Who approves a write (Plan 4, N2, R64): a registry beside the call, so that Plan 3 imports nothing from Plan 4
+// ---------------------------------------------------------------------------------------------
+
+/** The task a write is made in, as far as a selector may look at it: its id and the chain step that started it, if one did. */
+export interface WriteApproverTask { taskId: string; chain?: { chainRunId: string; stepId: string } }
+
+/** The run's project and its owner, as `decideWrite` takes them. */
+export interface WriteApproverRun { orgId: OrgId; project: string; owner: { developerId: string; name: string } }
+
+/**
+ * Answers who decides a write of `task`, as a `rule` spec the call stores on the approval, or `undefined` to leave it to the next selector and in the end to
+ * Plan 3's default (`write_approver`). It never changes the write's class: the write waits whatever a selector says.
+ */
+export type WriteApproverSelector = (deps: ApprovalDependencies, task: WriteApproverTask, run: WriteApproverRun) => Promise<ApproverSpec | undefined>;
+
+const selectors: WriteApproverSelector[] = [];
+
+/** How long one selector may take before the write falls back to Plan 3's default. */
+export const WRITE_APPROVER_SELECTOR_TIMEOUT_MS = 1_000;
+
+/** Registers a selector after the ones already there (they are asked in registration order). Returns the function that takes it off again. */
+export function registerWriteApproverSelector(selector: WriteApproverSelector): () => void {
+  selectors.push(selector);
+  return () => {
+    const index = selectors.indexOf(selector);
+    if (index >= 0) selectors.splice(index, 1);
+  };
+}
+
+/** A well-formed answer: a `rule` spec with a rule name and a list of people. Anything else is not an answer. */
+const isRuleSpec = (answer: unknown): answer is Extract<ApproverSpec, { kind: "rule" }> => {
+  if (typeof answer !== "object" || answer === null) return false;
+  const spec = answer as { kind?: unknown; rule?: unknown; candidates?: unknown };
+  return spec.kind === "rule" && typeof spec.rule === "string" && spec.rule !== "" && Array.isArray(spec.candidates) && spec.candidates.every((id) => typeof id === "string");
+};
+
+/**
+ * Asks the registered selectors, in order, who approves a write: the first that answers with a `rule` spec wins and a later one can't override it. A selector
+ * that throws, takes longer than `WRITE_APPROVER_SELECTOR_TIMEOUT_MS` or answers anything but `undefined` or a `rule` spec is logged as
+ * `write_approver_selector.failed` (with the task id) and the write falls back to Plan 3's default approvers: never to none, and never to a different class.
+ */
+export async function selectWriteApprovers(deps: ApprovalDependencies, task: WriteApproverTask, run: WriteApproverRun): Promise<ApproverSpec | undefined> {
+  for (const selector of [...selectors]) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const answer = await Promise.race([
+        Promise.resolve().then(() => selector(deps, task, run)),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), WRITE_APPROVER_SELECTOR_TIMEOUT_MS); }),
+      ]);
+      if (answer === undefined) continue;
+      if (isRuleSpec(answer)) return { kind: "rule", rule: answer.rule, candidates: [...answer.candidates] };
+      log(deps, "write_approver_selector.failed", { taskId: task.taskId, reason: "not_a_rule_spec" });
+      return undefined;
+    } catch (error) {
+      log(deps, "write_approver_selector.failed", { taskId: task.taskId, reason: error instanceof Error && error.message === "timed out" ? "timeout" : errorNameOf(error) });
+      return undefined;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+  return undefined;
+}
+
 /**
  * Task 21's `decideWrite` as the gate: the classification the route made (on the arguments the server binds too) decides. A read or a safe write runs; a project
  * rule's deny refuses; a consequential one or a merge becomes a pending approval and the step is told it waits. The approval holds exactly the prepared arguments.
@@ -135,7 +201,11 @@ export function approvalsWriteGate(deps: ApprovalDependencies): AgentWriteGate {
       rules: input.recipe.approvals, autonomy: input.recipe.autonomy, allowMentions: input.recipe.allowMentions,
       projectPolicy: input.classifyInput.projectPolicy, guardrails: input.classifyInput.guardrails,
     };
+    // Only a write that will wait for a person has approvers to choose; the selectors are not asked for a read, a safe write or a refused one.
+    const needsApprovers = classification.denied === undefined && (classification.class === "consequential" || classification.class === "merge");
+    const approvers = needsApprovers ? await selectWriteApprovers(deps, { taskId: input.taskId, ...(input.chain === undefined ? {} : { chain: input.chain }) }, { orgId: input.orgId, project: input.project, owner: input.owner }) : undefined;
     const decided = await decideWrite(deps, {
+      ...(approvers === undefined ? {} : { approvers }),
       orgId: input.orgId, taskId: input.taskId, operationId: input.operationId, stepId: input.stepId, agentId: input.agent.id, agentName: input.agent.name,
       tool: input.tool, call: { scope: input.scope, schemaHash: input.schemaHash, arguments: input.args }, classify: context, classification,
       run: { project: input.project, owner: input.owner }, ...(input.claimRequest === undefined ? {} : { claimRequest: (approvalId: string) => input.claimRequest!(approvalId) }),
@@ -544,7 +614,7 @@ export async function callAgentTool(deps: AgentToolsDependencies, run: AgentTool
   const holdItem = deps.holdItem?.bind(deps);
   const decision = GateDecisionSchema.safeParse(await deps.gate({
     orgId, taskId: task.taskId, operationId: run.operation.id, project: task.project, agent: { id: frame.agentId, name: frame.agentName },
-    stepId: frame.stepId, owner: { developerId: effectiveTaskOwner(task).developerId, name: effectiveTaskOwner(task).name },
+    stepId: frame.stepId, owner: { developerId: effectiveTaskOwner(task).developerId, name: effectiveTaskOwner(task).name }, ...(task.chain === undefined ? {} : { chain: task.chain }),
     requestId: request.requestId, connector: connectorName, scope: request.scope, schemaHash: request.schemaHash,
     tool: classifyTool, args: prepared.args, strippedMentions: prepared.strippedMentions,
     recipe: { autonomy: frame.recipe.autonomy, approvals: frame.recipe.approvals, allowMentions: frame.recipe.allowMentions },

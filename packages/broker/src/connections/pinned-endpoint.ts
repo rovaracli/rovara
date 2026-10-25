@@ -20,6 +20,7 @@ export type RequestFunction = (url: URL, options: RequestOptions, callback?: (re
 /** Decides, before one MCP request, whether the endpoint may be called, and gives the fetch that request must use. */
 export type McpEndpointGuard = (endpoint: URL) => Promise<typeof fetch>;
 
+const hasLogin = (url: URL): boolean => url.username !== "" || url.password !== "";
 const asError = (reason: unknown): Error => (reason instanceof Error ? reason : new Error(typeof reason === "string" ? reason : "the request was aborted"));
 const familyOf = (value: number | string | undefined): 0 | 4 | 6 => (value === 4 || value === "IPv4" ? 4 : value === 6 || value === "IPv6" ? 6 : 0);
 
@@ -73,14 +74,28 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
  * the caller's check (`mcpEndpointGuard`); this only keeps the connection to them.
  */
 export function pinnedFetch(addresses: readonly string[], options: { request?: RequestFunction; origin?: string } = {}): typeof fetch {
-  const lookup = pinnedLookup(addresses);
+  return lookupFetch(pinnedLookup(addresses), options);
+}
+
+/** A node connection `lookup`, as `pinnedLookup` and `safeLookup` build one. */
+export type ConnectionLookup = ReturnType<typeof pinnedLookup>;
+
+/**
+ * A `fetch` that connects through `lookup` whatever name the URL holds, opens a connection per request, never follows a redirect and ends with the caller's
+ * signal. `pinnedFetch` gives it a lookup that answers a fixed set of addresses; the native connectors' (`vendor-fetch.ts`) a lookup that resolves the name
+ * and refuses any address that is not public, at connect time. A redirect is refused unless `returnRedirects` is set (Plan 4 Task 17): then its status and
+ * headers come back, with no body, for the caller to read; it is still never followed.
+ */
+export function lookupFetch(lookup: ConnectionLookup, options: { request?: RequestFunction; origin?: string; returnRedirects?: boolean } = {}): typeof fetch {
   return async (input, init) => {
     const original = input instanceof Request ? input : undefined;
     const url = new URL(original?.url ?? (input instanceof URL ? input.href : input));
     // Held to the endpoint that was checked: the lookup pins a DNS name, but an IP literal is connected to directly and `http:` is not the checked scheme.
-    if (options.origin !== undefined && (url.origin !== options.origin || url.protocol !== "https:" || isIP(url.hostname.replace(/^\[|\]$/gu, "")) !== 0)) {
+    if (options.origin !== undefined && (url.origin !== options.origin || url.protocol !== "https:" || isIP(url.hostname.replace(/^\[|\]$/gu, "")) !== 0 || hasLogin(url))) {
       throw new TypeError("a request to anywhere but the checked endpoint was refused");
     }
+    // The origin ignores a login, and node would send one as a Basic header that can replace the caller's own authorization: refused whatever the origin.
+    if (hasLogin(url)) throw new TypeError("a request with a login in the address was refused");
     const signal = init?.signal ?? original?.signal ?? undefined;
     if (signal?.aborted === true) throw asError(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
     const method = (init?.method ?? original?.method ?? "GET").toUpperCase();
@@ -96,9 +111,11 @@ export function pinnedFetch(addresses: readonly string[], options: { request?: R
         request = send(url, { method, headers, lookup: lookup as RequestOptions["lookup"], agent: false }, (response) => {
           signal?.removeEventListener("abort", onAbort);
           const status = response.statusCode ?? 502;
-          if (REDIRECTS.has(status)) { response.destroy(); reject(new TypeError("fetch failed: a redirect was refused")); return; }
+          const redirected = REDIRECTS.has(status);
+          if (redirected && options.returnRedirects !== true) { response.destroy(); reject(new TypeError("fetch failed: a redirect was refused")); return; }
           const responseHeaders = new Headers();
           for (const [key, value] of Object.entries(response.headers)) for (const entry of Array.isArray(value) ? value : value === undefined ? [] : [value]) responseHeaders.append(key, entry);
+          if (redirected) { response.destroy(); resolve(new Response(null, { status, statusText: response.statusMessage ?? "", headers: responseHeaders })); return; }
           const bodyless = BODYLESS.has(status) || method === "HEAD";
           if (bodyless) response.resume();
           resolve(new Response(bodyless ? null : Readable.toWeb(response) as ReadableStream<Uint8Array>, { status, statusText: response.statusMessage ?? "", headers: responseHeaders }));

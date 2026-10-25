@@ -12,6 +12,7 @@ import {
   agentSessionKey,
   mySessionsKey,
   projectSessionsKey,
+  sessionBindingKey,
   sessionSurfaceKey,
   sharedSessionsKey,
   type AgentPrincipal,
@@ -132,7 +133,7 @@ export async function sweepAgentSessions(deps: SweepDependencies, now: number, o
 // ---- retention
 
 /** The partition prefixes whose items expire with the session, in the order the drain walks them. */
-const PREFIXES = ["BINDING#", "FOLLOWER#", "LEG#", "MESSAGE#", "SHARE#", "TURN#"] as const;
+const PREFIXES = ["FOLLOWER#", "LEG#", "MESSAGE#", "SHARE#", "TURN#"] as const;
 
 interface Cursor { prefix: number; after?: string }
 
@@ -167,8 +168,14 @@ async function stampIndexItems(deps: SummaryDependencies, session: AgentSessionR
   for (const share of await queryPartition(deps, pk, "SHARE#", undefined, undefined)) {
     if (share["orgId"] === orgId && share["principal"] !== undefined) await stamp(deps, sharedSessionsKey(orgId, share["principal"] as AgentPrincipal, sessionId), expires);
   }
-  for (const binding of await queryPartition(deps, pk, "BINDING#", undefined, undefined)) {
-    if (binding["orgId"] === orgId && binding["binding"] !== undefined) await stamp(deps, sessionSurfaceKey(orgId, binding["binding"] as SessionBinding), expires);
+  // The bindings sit in a partition of their own (`sessionBindingKey`): each one and the surface item it names expire with the session.
+  for (const kind of ["slack_thread", "linear_issue"] as const) {
+    const key = sessionBindingKey(orgId, sessionId, kind);
+    for (const binding of await queryPartition(deps, key.pk, key.sk, undefined, undefined)) {
+      if (binding["orgId"] !== orgId || binding["binding"] === undefined) continue;
+      await stamp(deps, key, expires);
+      await stamp(deps, sessionSurfaceKey(orgId, binding["binding"] as SessionBinding), expires);
+    }
   }
 }
 

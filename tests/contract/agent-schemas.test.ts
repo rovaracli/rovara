@@ -90,13 +90,13 @@ describe("RecipeOverlaySchema", () => {
     expect(RecipeOverlaySchema.parse(full)).toEqual(full);
   });
 
-  it("refuses a schedule trigger and an event trigger", () => {
+  it("refuses a schedule trigger and an event trigger that have no spec (Plan 4 launches the three kinds, each with its own fields)", () => {
     expect(RecipeOverlaySchema.safeParse({ triggers: [{ kind: "schedule" }] }).success).toBe(false);
     expect(TriggerSpecSchema.safeParse({ kind: "schedule" }).success).toBe(false);
     expect(TriggerSpecSchema.safeParse({ kind: "event" }).success).toBe(false);
     expect(TriggerSpecSchema.parse({ kind: "person" })).toEqual({ kind: "person" });
     expect(TriggerSpecSchema.safeParse({ kind: "person", project: "web" }).success).toBe(false);
-    expect([...TRIGGER_KINDS_AT_LAUNCH]).toEqual(["person"]);
+    expect([...TRIGGER_KINDS_AT_LAUNCH]).toEqual(["person", "event", "schedule"]);
   });
 
   it("refuses a non-boolean allowMentions", () => {

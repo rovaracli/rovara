@@ -206,11 +206,9 @@ describe("recipeProblems", () => {
     });
   });
 
-  it("refuses triggers outside the launch kinds", () => {
-    const recipe = recipeOf([build()], { triggers: [{ kind: "person" }, { kind: "schedule" }] as unknown as ResolvedRecipe["triggers"] });
-    const problems = recipeProblems(recipe);
-    expect(problems).toEqual([{ path: "triggers", message: "event and schedule triggers aren't available yet" }]);
-    expect(problems.map(formatRecipeProblem)).toEqual(["triggers: event and schedule triggers aren't available yet"]);
+  it("no longer refuses event and schedule triggers: Plan 4 launches all three kinds (the specs themselves are checked by the schema)", () => {
+    const recipe = recipeOf([build()], { triggers: [{ kind: "person" }, { kind: "event", source: "github", type: "pull_request.opened" }, { kind: "schedule", schedule: { kind: "interval", minutes: 60 }, timezone: "UTC", missed: "run_once" }] as unknown as ResolvedRecipe["triggers"] });
+    expect(recipeProblems(recipe).filter((problem) => problem.path === "triggers")).toEqual([]);
   });
 });
 

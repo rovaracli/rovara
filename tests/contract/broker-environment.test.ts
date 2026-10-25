@@ -19,12 +19,16 @@ import { awsPartitionOf, brokerNamesFromEnvironment, hydrateBrokerEnvironment, t
 const SCOPE = { AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging" };
 const KEY_ID = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
 const NAMES = {
+  stateTable: "agentx-staging-control-plane-State1C20CC9A-1A2B3C4D5E6F7",
+  artifactBucket: "agentx-staging-control-plane-artifacts82dd59a1-1a2b3c4d5e6f",
+  launchTemplate: "lt-0123456789abcdef0",
+  projectAllowList: "rslvr-fdl-0123456789abcdef",
+  modelProxy: "internal-agentx-staging-proxy-1234567890",
   auditLedgerTable: "agentx-staging-control-plane-AuditLedgerAuditLedgerTableC60B8D3B-1A2B3C4D5E6F7",
   auditSealsTable: "agentx-staging-control-plane-AuditLedgerAuditSealsTableF2EABAF8-1A2B3C4D5E6F7",
   auditKeysTable: "agentx-staging-control-plane-AuditLedgerAuditKeysTableF5520AEA-1A2B3C4D5E6F7",
   auditExportsBucket: "agentx-staging-control-plane-auditledgerauditexportsbucketde99c-1a2b3c4d5e6f",
   auditExportFunction: "agentx-staging-control-plane-AuditLedgerAuditExportED90D71C-1A2B3C4D5E6F7",
-  auditIntakeQueue: "agentx-staging-audit-intake.fifo",
   auditVaultKey: KEY_ID,
   signInTable: "agentx-staging-control-plane-DeveloperSignInTable26CE739E-1A2B3C4D5E6F7",
   identityFunction: "agentx-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7",
@@ -74,6 +78,22 @@ describe("awsPartitionOf", () => {
   });
 });
 
+describe("hydrateBrokerEnvironment: the broker's own role", () => {
+  it("builds the ARN of the broker's role from the environment's name on the hosted cloud, in the environment's role path, and on no other install", () => {
+    const cloud = hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag() });
+    expect(cloud.BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role");
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag({ signInTable: "t" }) }).BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role");
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag(), BROKER_ROLE_ARN: "given" }).BROKER_ROLE_ARN).toBe("given");
+  });
+
+  it("is tied to the cloud flag the control plane sets with the broker's IAM grant (props.cloud and a named environment), not to the sign-in pool being present", () => {
+    // The pool's presence does not decide it: no flag, no ARN, so no function builds a principal for a grant that does not exist.
+    expect(hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag() }).BROKER_ROLE_ARN).toBeUndefined();
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "false", [BROKER_NAMES_VARIABLE]: bag() }).BROKER_ROLE_ARN).toBeUndefined();
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true" }).BROKER_ROLE_ARN).toBeUndefined(); // an unnamed install hydrates nothing
+  });
+});
+
 describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
   it("puts every name back under the variable the broker reads, and builds a URL or an ARN from the name and the region, the account and the environment", () => {
     const env = hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag() });
@@ -83,7 +103,13 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       AUDIT_KEYS_TABLE_NAME: NAMES.auditKeysTable,
       AUDIT_EXPORTS_BUCKET_NAME: NAMES.auditExportsBucket,
       AUDIT_EXPORT_FUNCTION_NAME: NAMES.auditExportFunction,
+      // Derived from the environment's name alone (DERIVED_BROKER_VARIABLES): the queue's name is fixed.
       AUDIT_INTAKE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-audit-intake.fifo",
+      STATE_TABLE_NAME: NAMES.stateTable,
+      ARTIFACT_BUCKET_NAME: NAMES.artifactBucket,
+      EC2_WORKER_LAUNCH_TEMPLATE_ID: NAMES.launchTemplate,
+      AGENT_PROJECT_ALLOW_LIST_ID: NAMES.projectAllowList,
+      MODEL_PROXY_URL: `http://${NAMES.modelProxy}.us-west-2.elb.amazonaws.com:4000`,
       AUDIT_VAULT_KEY_ARN: `arn:aws:kms:us-west-2:123456789012:key/${KEY_ID}`,
       DEVELOPER_SIGNIN_TABLE_NAME: NAMES.signInTable,
       DEVELOPER_IDENTITY_FUNCTION_NAME: NAMES.identityFunction,
@@ -114,8 +140,9 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
   });
 
   it("gives the same text for a key's ARN as CloudFormation does, in another partition's form too (the install's ChatGPT host id derives from it)", () => {
-    const env = hydrated({ AWS_REGION: "cn-north-1", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging", [BROKER_NAMES_VARIABLE]: bag({ auditIntakeQueue: "q.fifo", auditVaultKey: KEY_ID, provisionerStateMachine: "sm" }) });
-    expect(env.AUDIT_INTAKE_QUEUE_URL).toBe("https://sqs.cn-north-1.amazonaws.com.cn/123456789012/q.fifo");
+    const env = hydrated({ AWS_REGION: "cn-north-1", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging", [BROKER_NAMES_VARIABLE]: bag({ slackRequestQueue: "q", auditVaultKey: KEY_ID, provisionerStateMachine: "sm" }) });
+    expect(env.SLACK_REQUEST_QUEUE_URL).toBe("https://sqs.cn-north-1.amazonaws.com.cn/123456789012/q");
+    expect(env.AUDIT_INTAKE_QUEUE_URL).toBe("https://sqs.cn-north-1.amazonaws.com.cn/123456789012/agentx-staging-audit-intake.fifo");
     expect(env.AUDIT_VAULT_KEY_ARN).toBe(`arn:aws-cn:kms:cn-north-1:123456789012:key/${KEY_ID}`);
     expect(env.PROVISIONER_ARN).toBe("arn:aws-cn:states:cn-north-1:123456789012:stateMachine:sm");
   });
@@ -144,7 +171,6 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
   it.each([
     ["not JSON", "{"],
     ["not an object", JSON.stringify(["a"])],
-    ["a code nobody sent", JSON.stringify({ zz: "x" })],
     ["a name that is not text", JSON.stringify({ st: 7 })],
     ["a name that is empty", JSON.stringify({ st: "" })],
     ["a name with a slash", JSON.stringify({ st: "a/b" })],
@@ -156,8 +182,8 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
 
   it("refuses to build a URL or an ARN without the region, the account (12 digits) or, for a role, the environment", () => {
     const only = (names: Partial<Record<keyof typeof BROKER_NAMES, string>>) => ({ [BROKER_NAMES_VARIABLE]: bag(names) });
-    expect(() => hydrated({ AGENTX_ACCOUNT_ID: "123456789012", ...only({ auditIntakeQueue: "q.fifo" }) })).toThrow(/AWS_REGION/);
-    expect(() => hydrated({ AWS_REGION: "us-west-2", ...only({ auditIntakeQueue: "q.fifo" }) })).toThrow(/AGENTX_ACCOUNT_ID/);
+    expect(() => hydrated({ AGENTX_ACCOUNT_ID: "123456789012", ...only({ slackRequestQueue: "q" }) })).toThrow(/AWS_REGION/);
+    expect(() => hydrated({ AWS_REGION: "us-west-2", ...only({ slackRequestQueue: "q" }) })).toThrow(/AGENTX_ACCOUNT_ID/);
     expect(() => hydrated({ AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "12", ...only({ auditVaultKey: KEY_ID }) })).toThrow(/AGENTX_ACCOUNT_ID/);
     expect(() => hydrated({ AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", ...only({ slackOrchestratorRole: "r" }) })).toThrow(/AGENTX_ENV/);
   });
@@ -181,6 +207,8 @@ describe("hydrateBrokerEnvironment: what an environment's name decides", () => {
       AGENTX_METRICS_NAMESPACE: environmentMetricsNamespace("staging"),
       AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID: environmentProjectSetupRuntimeCatalogId("staging"),
       AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: environmentE2eFeatureRuntimeCatalogId("staging"),
+      // M1.4 PREFIXGAP, derived here and not passed (ENV-ROOM): where the installation's worker settings are.
+      AGENTX_E2E_AGENT_SETTINGS_PREFIX: environmentSettingsPrefix("staging"),
     });
     expect([env.CONNECTOR_SECRET_PREFIX, env.SWEBENCH_SETTINGS_PREFIX, env.AGENTX_ALARM_PREFIX, env.AGENTX_METRICS_NAMESPACE]).toEqual(["agentx/staging/connectors/", "/agentx/staging/", "agentx-staging-", "AgentX/staging"]);
     expect([env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID, env.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID]).toEqual(["agentx-staging-project-setup-runtime-v1", "agentx-staging-e2e-mock-runtime-v1"]);

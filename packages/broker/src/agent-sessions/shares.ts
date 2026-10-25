@@ -50,6 +50,7 @@ import {
 } from "../agents/approvals.js";
 import { failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
 import { effectiveOwnerOf, readSessionShares, requireSessionLevel, resolveSessionAccess, sessionLevelOf, type SessionAccessDependencies, type SessionCaller, type SessionShareRow } from "./access.js";
+import { sameMember } from "../agents/lifecycle.js";
 import { removeFollower } from "./followers.js";
 import { sessionEventItem } from "./store.js";
 
@@ -319,7 +320,8 @@ export async function deleteSessionShare(deps: SessionShareDependencies, caller:
   const { session } = access;
   const existing = (await readSessionShares(deps, caller.orgId, session.sessionId)).find((share) => principalKey(share.principal) === key);
   if (existing === undefined) return { removed: false };
-  if (!access.owner && access.level !== "edit" && existing.sharedBy.developerId !== caller.developerId) {
+  // The person who made the share may take it back, and a person merged into another since is the same person (the merge mover rewrites `sharedBy` where it finds it; this covers the rest).
+  if (!access.owner && access.level !== "edit" && !await sameMember(deps, caller.orgId, existing.sharedBy.developerId, caller.developerId)) {
     throw agentXError("SESSION_LEVEL_REQUIRED", sessionLevelRequiredMessage("edit", "remove this share", access.effectiveOwner.name));
   }
   const name = cleanSessionName(caller.name ?? await nameOf(deps, caller.developerId) ?? "") ?? "Someone";

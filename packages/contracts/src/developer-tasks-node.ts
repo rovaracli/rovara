@@ -6,10 +6,9 @@ import { DeveloperShareModeSchema } from "./project.js";
 import { Buffer } from "node:buffer";
 import { AgentIdSchema } from "./agent.js";
 import { WorkflowPathSchema } from "./task-workflow.js";
-import { RunInputSchema } from "./agent-run-node.js";
+import { RunInputSchema } from "./agent-run.js";
 import { OperationStatusSchema } from "./operation.js";
 import { cleanDisplayName } from "./display-name.js";
-
 
 export const DEVELOPER_TASK_OWNER_ISSUER = "agentx-developer-task";
 
@@ -28,7 +27,6 @@ export const DEVELOPER_TASK_LIST_DEFAULT = 20;
 export const DEVELOPER_WAIT_MAX_SECONDS = 600;
 
 export const UNKNOWN_CLIENT_NAME = "an AI tool";
-
 
 /** Spec 025 phase 25c: sharing a task to its Slack channel (FR-031 to FR-035, FR-054). */
 export const DEVELOPER_SHARE_SUMMARY_MAX = 1_500;
@@ -63,10 +61,8 @@ export const VIEW_ONLY_NOTICE =
 export const CLOSED_SHARED_NOTICE =
   "The task this thread followed is closed, so I don't act on messages here. To ask AgentX for something, post a new message in the channel; it starts its own thread workspace.";
 
-
 /** Which fixed notice a claim is for: the view-only one, or a closed task's (Q3). */
 export type SharedNoticeKind = "view" | "closed";
-
 
 /**
  * C10, F13: the conditional Update that claims a shared thread's hourly notice. The Slack ingress
@@ -104,19 +100,16 @@ export type DeveloperTaskShare = z.infer<typeof DeveloperTaskShareSchema>;
 
 export type ChannelTurn = z.infer<typeof ChannelTurnSchema>;
 
-
 export const ShareDeveloperTaskRequestSchema = z
   .object({ requestId: z.string().uuid(), shareMode: DeveloperShareModeSchema.optional(), channel: z.string().min(1).max(80).optional() })
   .strict();
 
 export type ShareDeveloperTaskRequest = z.infer<typeof ShareDeveloperTaskRequestSchema>;
 
-
 /** C25: an AgentX admin switches a shared task's mode; no channel, no first share. */
 export const AdminShareModeRequestSchema = z.object({ requestId: z.string().uuid(), shareMode: DeveloperShareModeSchema }).strict();
 
 export type AdminShareModeRequest = z.infer<typeof AdminShareModeRequestSchema>;
-
 
 /** C2: the shared thread record, read by the Slack ingress and the broker's service identity. */
 export function sharedTaskKey(thread: SlackThread): { pk: string; sk: "META" } {
@@ -152,12 +145,10 @@ export type DeveloperTaskFailureStage = z.infer<typeof DeveloperTaskFailureStage
 
 export type DeveloperTaskFailure = z.infer<typeof DeveloperTaskFailureSchema>;
 
-
 export const DeveloperInstructionsSchema = z
   .string()
   .min(1, "instructions are empty")
   .refine((value) => Buffer.byteLength(value, "utf8") <= DEVELOPER_INSTRUCTIONS_MAX_BYTES, `instructions exceed ${DEVELOPER_INSTRUCTIONS_MAX_BYTES} UTF-8 bytes`);
-
 
 const RequestIdSchema = z.string().uuid();
 
@@ -166,7 +157,6 @@ const hasControlCharacter = (value: string) => [...value].some((character) => {
   return code < 32 || code === 127;
 });
 
-
 /** Plan 3, Task 15: the agent a start names, at a published version or as the owner's draft (a test run). Absent means Rovara Code at the org's pin. */
 export const StartAgentSelectionSchema = z.object({
   agentId: AgentIdSchema,
@@ -174,7 +164,6 @@ export const StartAgentSelectionSchema = z.object({
 }).strict();
 
 export type StartAgentSelection = z.infer<typeof StartAgentSelectionSchema>;
-
 
 export const StartDeveloperTaskRequestSchema = z
   .object({
@@ -204,7 +193,6 @@ export const StartDeveloperTaskRequestSchema = z
 
 export type StartDeveloperTaskRequest = z.infer<typeof StartDeveloperTaskRequestSchema>;
 
-
 export const ContinueDeveloperTaskRequestSchema = z.object({
   requestId: RequestIdSchema,
   instructions: DeveloperInstructionsSchema,
@@ -227,7 +215,6 @@ export const ContinueDeveloperTaskRequestSchema = z.object({
 
 export type ContinueDeveloperTaskRequest = z.infer<typeof ContinueDeveloperTaskRequestSchema>;
 
-
 export const DeveloperTaskActionRequestSchema = z.object({ requestId: RequestIdSchema }).strict();
 
 export type DeveloperTaskActionRequest = z.infer<typeof DeveloperTaskActionRequestSchema>;
@@ -236,11 +223,9 @@ export const DeveloperTaskCloseRequestSchema = z.object({ requestId: RequestIdSc
 
 export type DeveloperTaskCloseRequest = z.infer<typeof DeveloperTaskCloseRequestSchema>;
 
-
 export const CanvasCloseoutRetryRequestSchema = z.object({ requestId: RequestIdSchema, workflowRevision: z.number().int().positive(), manifestDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict();
 
 export type CanvasCloseoutRetryRequest = z.infer<typeof CanvasCloseoutRetryRequestSchema>;
-
 
 /** The owner asks AgentX to open the task's draft pull request again, at the workflow revision they saw. */
 export const WorkflowPublishRetryRequestSchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().positive() }).strict();
@@ -276,7 +261,6 @@ export const WorkflowFeedbackReviewRetryRequestSchema = z.object({ reviewDigest:
 
 export type WorkflowFeedbackReviewRetryRequest = z.infer<typeof WorkflowFeedbackReviewRetryRequestSchema>;
 
-
 export const DeveloperPullRequestRequestSchema = z
   .object({
     requestId: RequestIdSchema,
@@ -298,7 +282,6 @@ export type DeveloperTaskEvent = z.infer<typeof DeveloperTaskEventSchema>;
 export type DeveloperTaskRunView = z.infer<typeof DeveloperTaskRunViewSchema>;
 
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
-
 
 export const DeveloperTaskListItemSchema = DeveloperTaskViewSchema.pick({ taskId: true, title: true, project: true, status: true, shared: true, createdAt: true, updatedAt: true });
 
@@ -331,13 +314,11 @@ export type DeveloperPullRequestResponse = z.infer<typeof DeveloperPullRequestRe
 
 export const DeveloperTaskEventsResponseSchema = z.object({ events: z.array(DeveloperTaskEventSchema) });
 
-
 const KNOWN_CLIENTS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^claude[-_ ]?code\b/i, "Claude Code"],
   [/codex/i, "Codex"],
   [/cursor/i, "Cursor"],
 ];
-
 
 /**
  * FR-033: the MCP client's clientInfo.name, cleaned like a Slack display name, then mapped to
@@ -351,11 +332,9 @@ export function cleanClientName(value: string | undefined): string {
   return known.slice(0, DEVELOPER_CLIENT_NAME_MAX);
 }
 
-
 // Control, format and separator characters that must not reach a title.
 // eslint-disable-next-line no-control-regex
 const TITLE_NOISE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/gu;
-
 
 /** FR-030: the given title, else the first non-empty line of the instructions, at most 120 characters. */
 export function taskTitle(instructions: string, title?: string): string {
@@ -365,7 +344,6 @@ export function taskTitle(instructions: string, title?: string): string {
   const cut = Array.from(clean).slice(0, DEVELOPER_TASK_TITLE_MAX).join("").trimEnd();
   return cut === "" ? "Untitled task" : cut;
 }
-
 
 /** The text of the last assistant message among a worker's events (pi's message_end), without thinking blocks. */
 export function lastAssistantResponse(events: ReadonlyArray<{ payload: unknown }>): string | undefined {
@@ -390,9 +368,7 @@ export function lastAssistantResponse(events: ReadonlyArray<{ payload: unknown }
   return undefined;
 }
 
-
 export interface ChangedFile { repository: string; path: string; added: number; removed: number }
-
 
 /**
  * Changed files from the worker's workspace.diff artifact: per repository a "## <name>" section
@@ -445,4 +421,4 @@ export function diffStat(diff: string, limit = 200): ChangedFile[] {
   return [...byRepository.values()].flat().slice(0, limit);
 }
 
-export { DEVELOPER_TASK_SUMMARY_MAX, DEVELOPER_FAILURE_MESSAGE_MAX, DEVELOPER_EVENT_TEXT_MAX, DEVELOPER_EVENTS_MAX, CHANNEL_TURNS_MAX, CHANNEL_TURN_REQUEST_MAX, DeveloperTaskShareSchema, ChannelTurnSchema, DeveloperTaskStatusSchema, DeveloperTaskFailureCategorySchema, DeveloperTaskFailureStageSchema, DeveloperTaskFailureSchema, DeveloperTaskEventSchema, DeveloperTaskRunViewSchema, DeveloperTaskViewSchema } from "./developer-tasks.js";
+export { DEVELOPER_TASK_SUMMARY_MAX, DEVELOPER_FAILURE_MESSAGE_MAX, DEVELOPER_EVENT_TEXT_MAX, DEVELOPER_EVENTS_MAX, CHANNEL_TURNS_MAX, CHANNEL_TURN_REQUEST_MAX, DeveloperTaskShareSchema, ChannelTurnSchema, DeveloperTaskStatusSchema, DeveloperTaskFailureCategorySchema, DeveloperTaskFailureStageSchema, DeveloperTaskFailureSchema, DeveloperTaskEventSchema, PullRequestSummarySchema, DeveloperTaskRunViewSchema, DeveloperTaskViewSchema } from "./developer-tasks.js";

@@ -3,7 +3,7 @@ import { ModelSelectionSchema } from "./models.js";
 import { ToolPatternSchema } from "./action-policy.js";
 import { AGENT_NAME_MAX, SkillIdSchema, AutonomySchema, AgentIdSchema } from "./agent.js";
 import { ConnectorNameSchema } from "./connectors.js";
-
+import { EventTriggerSpecSchema, ScheduleTriggerSpecSchema } from "./trigger-specs.js";
 
 export const INSTRUCTIONS_MAX_BYTES = 8192;
 
@@ -27,14 +27,11 @@ export const InstructionTextSchema = z.string().refine((text) => utf8.encode(tex
 
 export const Sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
-
 export const StepIdSchema = z.string().regex(/^[a-z][a-z0-9_]{0,23}$/);
-
 
 export const CODING_STEP_KINDS = ["plan", "build", "check", "review", "pull_request"] as const;
 
 export const AGENT_STEP_KINDS = ["agent", "approval"] as const;
-
 
 export const PI_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 
@@ -42,9 +39,7 @@ export const PiToolNameSchema = z.enum(PI_TOOL_NAMES);
 
 export type PiToolName = z.infer<typeof PiToolNameSchema>;
 
-
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const satisfies readonly PiToolName[];
-
 
 /**
  * The most tools a step of that kind can be given. An `agent` step gets them only with `workspace: "read"`; with
@@ -57,9 +52,7 @@ export const STEP_TOOLS = {
   agent: READ_ONLY_TOOLS,
 } as const satisfies Record<"build" | "plan" | "review" | "agent", readonly PiToolName[]>;
 
-
 export const StepThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high"]);
-
 
 /** `null` clears a setting an agent inherits; absent leaves it as it is. */
 export const StepSettingsSchema = z.object({
@@ -76,7 +69,6 @@ export const StepSettingsSchema = z.object({
 }).strict();
 
 export const CheckStepSettingsSchema = StepSettingsSchema.pick({ timeoutMinutes: true }).strict();
-
 
 /** One layer of instructions, written by the agent named. Layers resolve in chain order, base first. */
 export const InstructionLayerSchema = z.object({
@@ -119,23 +111,18 @@ export function stepVariants<Settings extends z.ZodType, CheckSettings extends z
   ]);
 }
 
-
 export const StepSpecSchema = stepVariants(StepSettingsSchema.optional(), CheckStepSettingsSchema.optional());
-
 
 export const ResolvedStepSchema = stepVariants(ResolvedStepSettingsSchema, ResolvedCheckStepSettingsSchema);
 
-
-/** Connector types an agent can be granted tools on. Plan 4 adds its types here and to the connection types. */
-export const AgentConnectorTypeSchema = z.enum(["github", "linear", "jira", "asana", "mcp"]);
-
+/** Connector types an agent can be granted tools on: the five of Plan 3 and the seven read-only ones of Plan 4 (Task 12). */
+export const AgentConnectorTypeSchema = z.enum(["github", "linear", "jira", "asana", "mcp", "sentry", "datadog", "cloudwatch", "github-actions", "grafana", "vercel", "pagerduty"]);
 
 /** A connector by its type (every connection of that type on the project) or by the project's name for it. */
 export const ConnectorSelectorSchema = z.union([
   z.object({ type: AgentConnectorTypeSchema }).strict(),
   z.object({ name: ConnectorNameSchema }).strict(),
 ]);
-
 
 export const ToolGrantSchema = z.object({
   connector: ConnectorSelectorSchema,
@@ -147,11 +134,9 @@ export const AlwaysAskSchema = z.array(ToolPatternSchema).max(MAX_ALWAYS_ASK_RUL
 
 export const ApprovalRulesSchema = z.object({ alwaysAsk: AlwaysAskSchema }).strict();
 
-export const TriggerSpecSchema = z.discriminatedUnion("kind", [z.object({ kind: z.literal("person") }).strict()]);
-
+export const TriggerSpecSchema = z.discriminatedUnion("kind", [z.object({ kind: z.literal("person") }).strict(), EventTriggerSpecSchema, ScheduleTriggerSpecSchema]);
 
 export const SkillRefSchema = z.object({ skillId: SkillIdSchema, digest: Sha256HexSchema.optional() }).strict();
-
 
 /** What an agent version stores: its changes to the agent it builds on (or to the empty recipe). */
 export const RecipeOverlaySchema = z.object({
@@ -170,9 +155,7 @@ export const RecipeOverlaySchema = z.object({
   allowMentions: z.boolean().optional(),
 }).strict();
 
-
 export const RESOLVED_RECIPE_SCHEMA_VERSION = 1;
-
 
 /** The whole recipe a run follows, after every layer of the chain is applied. It is frozen on the task. */
 export const ResolvedRecipeSchema = z.object({

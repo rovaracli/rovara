@@ -3,7 +3,7 @@
 // as "unknown"); a client reads with the reader and never builds a request from a button's words: it follows `href` with `method`, and shows no button that has none.
 import { z } from "zod";
 import { HOME_CARDS_MAX, HOME_CARD_BUTTONS_MAX, SessionIdSchema } from "./agent-sessions.js";
-import { forwardReader } from "./session-views.js";
+import { forwardReader } from "./forward-reader.js";
 
 const InstantSchema = z.string().datetime();
 const HOME_TEXT_MAX = 300;

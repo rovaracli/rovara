@@ -11,6 +11,7 @@ import {
   agentKey,
   agentXError,
   builtinSettingsKey,
+  chainKey,
   defaultProjectAiSettings,
   defaultSpendPolicy,
   isBuiltinAgentId,
@@ -249,7 +250,11 @@ async function agentBase(read: LimitRead, agentId: string): Promise<number | und
   return typeof amount === "number" && Number.isFinite(amount) ? amount : undefined;
 }
 
-/** Plan 4 adds `chain`. */
+async function chainBase(read: LimitRead, chainId: string): Promise<number | undefined> {
+  const amount = (await getItem(read.deps, chainKey(read.orgId, chainId, "META")))?.["monthlyBudgetUsd"];
+  return typeof amount === "number" && Number.isFinite(amount) ? amount : undefined;
+}
+
 export const LIMIT_READERS: { [K in BudgetScope["kind"]]: LimitReader<K> } = {
   org: async (read, _scope, topUp) => withTopUp((await read.budgets()).orgMonthlyUsd, topUp),
   member: async (read, scope, topUp) => withTopUp(memberLimitOf(await read.budgets(), scope.developerId), topUp),
@@ -260,6 +265,11 @@ export const LIMIT_READERS: { [K in BudgetScope["kind"]]: LimitReader<K> } = {
   agent: async (read, scope, topUp) => {
     const limit = withTopUp(await agentBase(read, scope.agentId), topUp);
     // The guardrail holds the base and the top-up together: a top-up can't take an agent past what an agent may be given.
+    return limit === undefined ? undefined : Math.min(limit, (await read.guardrails()).maxAgentMonthlyUsd);
+  },
+  // A chain is held to the same guardrail as an agent: its base and this month's top-up together stay within `maxAgentMonthlyUsd`.
+  chain: async (read, scope, topUp) => {
+    const limit = withTopUp(await chainBase(read, scope.chainId), topUp);
     return limit === undefined ? undefined : Math.min(limit, (await read.guardrails()).maxAgentMonthlyUsd);
   },
   testing: async (read, _scope, topUp) => cleanUsd((await read.policy()).testingAllowanceUsd + topUp),

@@ -5,7 +5,7 @@ import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, agentXError, ec2WorkerUserData } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, agentXError, ec2WorkerUserData, getParametersInBatches, type SsmGetParametersAnswer } from "@agentx/contracts";
 import { requiredEnvironment } from "./lambda.js";
 import { SessionManager, computeMeteringFromEnvironment } from "./sessions.js";
 
@@ -57,6 +57,8 @@ export interface WorkerSettings {
   openaiSecretArn?: string;
   /** A named environment's model proxy; its workers call models through it (Task 14). */
   modelProxyUrl?: string;
+  /** MODEL3: the chosen Bedrock fallback model, when one was chosen (`none` and an absent setting both leave it out). */
+  modelFallback?: string;
 }
 
 export interface SessionStepsDependencies {
@@ -156,6 +158,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           ...(settings.anthropicSecretArn ? { anthropicSecretArn: settings.anthropicSecretArn } : {}),
           ...(settings.openaiSecretArn ? { openaiSecretArn: settings.openaiSecretArn } : {}),
           ...(settings.modelProxyUrl ? { modelProxyUrl: settings.modelProxyUrl } : {}),
+          ...(settings.modelFallback ? { modelFallback: settings.modelFallback } : {}),
           // A named environment is the one that requires a model proxy; the legacy deployment's launch says nothing.
           ...(dependencies.modelProxyRequired ? { environmentKind: "named" as const } : {}),
           logGroupName: dependencies.logGroupName,
@@ -199,6 +202,40 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
   };
 }
 
+/**
+ * Reads the worker settings from SSM under `prefix`. A named environment adds two more names (the proxy URL and the stage 2 hash) to the nine
+ * worker settings: eleven, past GetParameters' limit of ten per call, so the read goes through getParametersInBatches. A parameter SSM
+ * does not find is absent from the merged answer and fails the launch ("is missing") as it did with one call.
+ */
+export async function readWorkerSettings(
+  read: (names: string[]) => Promise<SsmGetParametersAnswer>,
+  options: { prefix: string; modelProxyRequired: boolean },
+): Promise<WorkerSettings> {
+  // The proxy URL and the stage 2 hash are named environments' settings, and only their functions may read them (see modelProxyRequired).
+  const names = Object.fromEntries(Object.entries({
+    ...WORKER_SETTING_PARAMETERS,
+    ...(options.modelProxyRequired ? { modelProxyUrl: MODEL_PROXY_URL_PARAMETER, bootStage2Sha256: BOOT_STAGE2_SHA256_PARAMETER } : {}),
+  }).map(([key, name]) => [key, `${options.prefix}${name}`])) as Record<keyof typeof WORKER_SETTING_PARAMETERS | "modelProxyUrl" | "bootStage2Sha256", string>;
+  const response = await getParametersInBatches(Object.values(names), read);
+  const values = new Map(response.Parameters.map((parameter) => [parameter.Name, parameter.Value]));
+  const setting = (key: keyof typeof WORKER_SETTING_PARAMETERS) => {
+    const value = values.get(names[key]);
+    if (!value) throw new Error(`SSM parameter ${names[key]} is missing`);
+    return value;
+  };
+  const promptCacheRetention = setting("promptCacheRetention");
+  if (promptCacheRetention !== "short" && promptCacheRetention !== "long") throw new Error("worker prompt cache retention must be short or long");
+  // Absent from SSM (a release before the setting existed) or "none" both mean not configured.
+  const optional = (key: "openRouterSecretArn" | "openRouterProviders" | "anthropicSecretArn" | "openaiSecretArn" | "modelProxyUrl" | "bootStage2Sha256" | "executorImage") => {
+    const value = values.get(names[key]);
+    return value && value !== "none" ? { [key]: value } : {};
+  };
+  // The fallback is a choice: only an id of the setting's alphabet travels to the worker; "none", absent and anything else leave it out (the worker then fails by name).
+  const fallback = values.get(names.modelFallback)?.trim();
+  const modelFallback = fallback !== undefined && fallback !== MODEL_FALLBACK_NONE && MODEL_FALLBACK_PATTERN.test(fallback) ? { modelFallback: fallback } : {};
+  return { ...modelFallback, ...optional("openRouterSecretArn"), ...optional("openRouterProviders"), ...optional("anthropicSecretArn"), ...optional("openaiSecretArn"), ...optional("modelProxyUrl"), ...optional("bootStage2Sha256"), ...optional("executorImage"), workerImage: setting("workerImage"), modelProvider: setting("modelProvider"), modelId: setting("modelId"), promptCacheRetention };
+}
+
 const awsClientConfiguration = process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION };
 const ssm = new SSMClient(awsClientConfiguration);
 const kms = new KMSClient(awsClientConfiguration);
@@ -220,27 +257,10 @@ export const handler = createSessionStepsHandler({
     ...computeMeteringFromEnvironment(stateClient, stateTableName),
   }),
   async workerSettings() {
-    const prefix = requiredEnvironment("WORKER_SETTINGS_PREFIX");
-    // The proxy URL and the stage 2 hash are named environments' settings, and only their functions may read them (see modelProxyRequired).
-    const names = Object.fromEntries(Object.entries({
-      ...WORKER_SETTING_PARAMETERS,
-      ...(modelProxyRequired ? { modelProxyUrl: MODEL_PROXY_URL_PARAMETER, bootStage2Sha256: BOOT_STAGE2_SHA256_PARAMETER } : {}),
-    }).map(([key, name]) => [key, `${prefix}${name}`])) as Record<keyof typeof WORKER_SETTING_PARAMETERS | "modelProxyUrl" | "bootStage2Sha256", string>;
-    const response = await ssm.send(new GetParametersCommand({ Names: Object.values(names) }));
-    const values = new Map((response.Parameters ?? []).map((parameter) => [parameter.Name, parameter.Value]));
-    const setting = (key: keyof typeof WORKER_SETTING_PARAMETERS) => {
-      const value = values.get(names[key]);
-      if (!value) throw new Error(`SSM parameter ${names[key]} is missing`);
-      return value;
-    };
-    const promptCacheRetention = setting("promptCacheRetention");
-    if (promptCacheRetention !== "short" && promptCacheRetention !== "long") throw new Error("worker prompt cache retention must be short or long");
-    // Absent from SSM (a release before the setting existed) or "none" both mean not configured.
-    const optional = (key: "openRouterSecretArn" | "openRouterProviders" | "anthropicSecretArn" | "openaiSecretArn" | "modelProxyUrl" | "bootStage2Sha256" | "executorImage") => {
-      const value = values.get(names[key]);
-      return value && value !== "none" ? { [key]: value } : {};
-    };
-    return { ...optional("openRouterSecretArn"), ...optional("openRouterProviders"), ...optional("anthropicSecretArn"), ...optional("openaiSecretArn"), ...optional("modelProxyUrl"), ...optional("bootStage2Sha256"), ...optional("executorImage"), workerImage: setting("workerImage"), modelProvider: setting("modelProvider"), modelId: setting("modelId"), promptCacheRetention };
+    return readWorkerSettings(
+      (names) => ssm.send(new GetParametersCommand({ Names: names })),
+      { prefix: requiredEnvironment("WORKER_SETTINGS_PREFIX"), modelProxyRequired },
+    );
   },
   invokePublicKey() {
     // The key never changes, so one read per container.

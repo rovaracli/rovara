@@ -83,13 +83,13 @@ export function withoutAuditLedger(template: unknown): unknown {
   delete parameters!.AuditLockProfile;
   delete conditions!.AuditLockIsTrial;
   expect(JSON.stringify(template)).not.toMatch(/AuditLockIsTrial|AuditLockProfile/);
-  // Task 6 and Task 11: the changes to an existing resource, all on the broker: the intake queue URL, and the names the reader and
-  // the export builder are given (the ledger, seals and keys tables, the two buckets and the vault key's ARN).
+  // Task 6 and Task 11: the changes to an existing resource, all on the broker: the names the reader and the export builder are given (the ledger, seals and keys tables,
+  // the two buckets and the vault key's ARN). The intake queue's URL is not passed: its name is fixed, so the broker derives the URL (ENV-ROOM).
   const brokers = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && /^Broker[0-9A-F]{8}$/.test(id));
   expect(brokers).toHaveLength(1);
   const variables = (brokers[0]![1].Properties as { Environment: { Variables: Record<string, unknown> } }).Environment.Variables;
   // Since the final review's C1 they are names in the broker's one variable of names (the broker's variables are held to Lambda's 4 KB), not variables of their own.
-  const added = ["auditIntakeQueue", "auditLedgerTable", "auditSealsTable", "auditKeysTable", "auditExportFunction", "auditExportsBucket", "auditVaultKey"] as const;
+  const added = ["auditLedgerTable", "auditSealsTable", "auditKeysTable", "auditExportFunction", "auditExportsBucket", "auditVaultKey"] as const;
   expect(Object.keys(variables).filter((name) => name.startsWith("AUDIT_"))).toStrictEqual([]);
   expect(Object.keys(brokerNamesIn(variables)).filter((key) => key.startsWith("audit")).sort()).toStrictEqual([...added].sort());
   takeBrokerNames(variables, added);

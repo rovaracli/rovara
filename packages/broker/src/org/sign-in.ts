@@ -57,6 +57,8 @@ export interface SignInNoOrg {
   inviteError?: "INVITE_INVALID" | "INVITE_WRONG_EMAIL";
 }
 
+/** What rule 4 says on an install with no single org (a cloud install, ruling R51): a Slack or company sign-in has no org to join there. */
+export const NO_ORG_ON_INSTALL_MESSAGE = "Sign in with Rovara on this install: Slack and company sign-ins do not create or join an organization here";
 export const REMOVED_FROM_ORG_MESSAGE = "You were removed from this organization. Ask an admin to invite you again.";
 const codeOf = (error: unknown) => (error as { code?: unknown }).code;
 /** The same address on both sides, and only for ASCII ones: Unicode folding must not make two different addresses equal (U+212A is "k"). */
@@ -167,7 +169,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
   }
 
   // Rule 4: a Slack or company sign-in joins the install's single org.
-  if (deps.singleOrgId === undefined) throw agentXError("CONFIG_INVALID", "Sign in with Rovara on this install: Slack and company sign-ins do not create or join an organization here");
+  if (deps.singleOrgId === undefined) throw agentXError("CONFIG_INVALID", NO_ORG_ON_INSTALL_MESSAGE);
   // Removed from this install's org with a ban: not back by signing in again. An invite (above) still works and clears the ban.
   if (await orgs.isBanned(deps.singleOrgId, input.developerId)) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
   // No email pointer here: the email index links one person's cloud identities, and a Slack or company

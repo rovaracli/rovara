@@ -118,7 +118,7 @@ describe("checkAgentTokenPermissions", () => {
     [{ administration: "write" }],
     [{ administration: "read" }],
     [{ actions: "write" }],
-    [{ actions: "read" }],
+    [{ deployments: "write" }],
     [{ issues: "read", secrets: "write" }],
     [{ pull_requests: "write", checks: "write" }],
     [{ members: "read" }],
@@ -148,6 +148,10 @@ describe("checkAgentTokenPermissions", () => {
     expect(checkAgentTokenPermissions({ issues: "write", metadata: "read" })).toEqual({ issues: "write", metadata: "read" });
     expect(checkAgentTokenPermissions({ pull_requests: "write", contents: "read", issues: "read", metadata: "read" })).toEqual({ pull_requests: "write", contents: "read", issues: "read", metadata: "read" });
     expect(checkAgentTokenPermissions({})).toEqual({});
+    // Plan 4 Task 17: `actions` and `deployments` are allowed at `read`, and only at `read`.
+    expect(checkAgentTokenPermissions({ actions: "read", metadata: "read" })).toEqual({ actions: "read", metadata: "read" });
+    expect(checkAgentTokenPermissions({ deployments: "read" })).toEqual({ deployments: "read" });
+    expect(checkAgentTokenPermissions({ actions: "read", deployments: "read", contents: "read" })).toEqual({ actions: "read", deployments: "read", contents: "read" });
   });
 });
 

@@ -7,7 +7,7 @@ import {
 } from "./e2e-application.js";
 import { E2EAppRecipeSchema, type E2EAppRecipe } from "./e2e-node.js";
 import { e2eApplicationMetadataSourceRefs } from "./e2e-application-metadata.js";
-import { inspectE2ERepository } from "./e2e-catalog.js";
+import { inspectE2EApplicationRepository } from "./e2e-catalog.js";
 import { verifyE2ESourceSnapshot, type E2ESourceSnapshot } from "./e2e-source.js";
 
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
@@ -19,18 +19,23 @@ function parsedRecipe(recipe: unknown, applicationId: string): E2EAppRecipe {
   if (sha256(canonicalJson(body)) !== recipeDigest) throw new Error(`application ${applicationId} recipe digest does not match its canonical recipe body`);
   return parsed;
 }
-function assertSnapshot(snapshot: E2ESourceSnapshot): ReturnType<typeof inspectE2ERepository> {
+function assertSnapshot(snapshot: E2ESourceSnapshot): ReturnType<typeof inspectE2EApplicationRepository> {
   verifyE2ESourceSnapshot(snapshot, snapshot.candidate);
-  return inspectE2ERepository(snapshot, snapshot.candidate);
+  return inspectE2EApplicationRepository(snapshot, snapshot.candidate);
 }
 function sameRefs(left: readonly SourceRef[], right: readonly SourceRef[]): boolean {
   return canonicalJson([...left].sort((a, b) => a.path.localeCompare(b.path)))
     === canonicalJson([...right].sort((a, b) => a.path.localeCompare(b.path)));
 }
-function expectedOutputPlatform(target: ReturnType<typeof inspectE2ERepository>["inspection"]["proposedTargets"][number]): string {
+function expectedOutputPlatform(target: ReturnType<typeof inspectE2EApplicationRepository>["inspection"]["proposedTargets"][number]): string {
   if (target.kind === "mobile") return target.os;
   if (target.kind === "desktop") return target.os;
   return target.kind;
+}
+
+/** The dependency lockfiles among an application's approved source references: the set a build manifest must name exactly. */
+export function e2eApplicationLockfileRefs(refs: readonly SourceRef[]): SourceRef[] {
+  return refs.filter((ref) => dependencyLockfileName.test(ref.path.slice(ref.path.lastIndexOf("/") + 1)));
 }
 
 /** Shared pure validation for the exact source, recipe, lock, candidate, and artifact binding. */
@@ -67,8 +72,7 @@ export function validateE2EAppBuildBinding(input: {
       throw new Error(`approved target ${ref.targetId} application source or recipe identity changed`);
     }
   }
-  const expectedLocks = (refs: readonly SourceRef[]) => refs.filter((ref) => dependencyLockfileName.test(ref.path.slice(ref.path.lastIndexOf("/") + 1)));
-  if (!sameRefs(manifest.lockfileRefs, expectedLocks(approvedApplication.sourceRefs))) throw new Error("build manifest lockfile references differ from the exact approved lockfile set");
+  if (!sameRefs(manifest.lockfileRefs, e2eApplicationLockfileRefs(approvedApplication.sourceRefs))) throw new Error("build manifest lockfile references differ from the exact approved lockfile set");
   if (manifest.candidateDigest !== input.finalSnapshot.candidate.digest || manifest.repository.repositoryId !== input.finalSnapshot.candidate.repositories[0]?.repositoryId
     || manifest.repository.commitSha !== input.finalSnapshot.commitSha || manifest.repository.treeSha !== input.finalSnapshot.treeSha) {
     throw new Error("build manifest candidate and repository identity do not match the complete final protected source");

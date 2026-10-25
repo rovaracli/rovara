@@ -357,8 +357,9 @@ describe("agentx approvals (R66: the CLI never decides)", () => {
     };
     walk(createCliProgram(), []);
     expect(names).toContain("approvals open");
-    // The operator's review of egress domains (an admin sign-in, not a person's agent approval) predates the agent platform and stays.
-    expect(names.filter((name) => /\b(approve|decline|deny|decide|reject|accept)\b/.test(name))).toEqual(["admin egress approve", "admin egress reject"]);
+    // The operator's review of egress domains (an admin sign-in, not a person's agent approval) predates the agent platform and stays. So does the administrator's approval of a
+    // project's E2E setup (`project setup-approve`, M1.3: an admin sign-in deciding a project's test setup, not an agent's approval).
+    expect(names.filter((name) => /\b(approve|decline|deny|decide|reject|accept)\b/.test(name))).toEqual(["admin egress approve", "admin egress reject", "project setup-approve"]);
     expect(names.filter((name) => name.startsWith("approvals ")).sort()).toEqual(["approvals list", "approvals open", "approvals show"]);
     expect(names.filter((name) => name.startsWith("project connectors comment-triggers ")).sort()).toEqual(["project connectors comment-triggers opt-out", "project connectors comment-triggers show"]);
   });

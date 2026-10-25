@@ -5,7 +5,8 @@ import { StoredProjectDefinitionSchema } from "./project-node.js";
 import { ModelSelectionSchema } from "./models.js";
 import { type ModelSelection } from "./models-node.js";
 import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies-node.js";
-import { E2EFeaturePlanIntentSchema, E2EWorkflowAdmissionRefSchema } from "./e2e-node.js";
+import { E2EFeaturePlanIntentAnySchema } from "./e2e-application.js";
+import { E2EWorkflowAdmissionRefSchema } from "./e2e-node.js";
 import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks-node.js";
 import { AgentIdSchema, SkillIdSchema } from "./agent.js";
 import { MAX_RESOLVED_SKILLS, PI_TOOL_NAMES, PiToolNameSchema, StepIdSchema } from "./agent-recipe.js";
@@ -20,7 +21,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.agentStep", "task.agentRun", "model.route"] as const;
+export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "model.route"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -61,7 +62,7 @@ export const WorkflowReviewPlanSchema = z.object({
   markdown: z.string().min(1).refine((value) => new TextEncoder().encode(value).byteLength <= WORKFLOW_PLAN_MAX_BYTES, `plan exceeds ${WORKFLOW_PLAN_MAX_BYTES} UTF-8 bytes`),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   /** Structured E2E intent reloaded from the exact Owner-approved canonical plan artifact. */
-  e2eIntent: E2EFeaturePlanIntentSchema.optional(),
+  e2eIntent: E2EFeaturePlanIntentAnySchema.optional(),
 }).strict();
 export type WorkflowReviewPlan = z.infer<typeof WorkflowReviewPlanSchema>;
 
@@ -211,10 +212,21 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * and ask once more when it cannot be read. Sent only to a worker whose /ping lists "task.structuredPlans".
          */
         planFormat: z.literal("structured").optional(),
+        /**
+         * Opt-in to the schema-v2 application E2E plan: the planner may propose it and the worker's plan parser accepts it. Sent only to a
+         * worker whose /ping lists "task.workflowE2EApplicationPlan"; an older one is sent the portable-only prompt, without this field.
+         * Absent means the portable schemaVersion 1 intent only.
+         */
+        workflowE2EPlanVersion: z.literal(2).optional(),
         workflowFeedbackReview: z.object({ taskId: z.string().uuid(), workflowRevision: z.number().int().positive(), candidateDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
         workflowFeedbackApproval: WorkflowFeedbackApprovalBindingSchema.optional(),
         /** Server-assigned immutable native E2E round; the worker must reload it through its signed callback capability. */
         workflowE2EAdmission: E2EWorkflowAdmissionRefSchema.optional(),
+        /**
+         * M1.3 Task 3.7b: a coding run is asked to export the unchanged code (its recorded base commit) beside the candidate, for the baseline round of the approved application plan.
+         * Sent only to a worker whose /ping lists "task.workflowE2EBaselineSource" (which, unlike the baseline CHECKS feature, needs no executor image: the export reads the repository alone); an older one is sent the run without it, and the baseline then says it could not be checked.
+         */
+        workflowE2EBaselineSource: z.literal(true).optional(),
         /** One approved same-repository dependency graph, sent only to workers advertising task.workflowDependencies. */
         workflowDependencies: WorkflowDependencyInvocationSchema.optional(),
         /**
@@ -275,6 +287,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         }
         if (payload.planFormat !== undefined && payload.workflowMode !== "PLAN") {
           context.addIssue({ code: "custom", path: ["planFormat"], message: "the plan format requires planning mode" });
+        }
+        if (payload.workflowE2EPlanVersion !== undefined && (payload.workflowMode !== "PLAN" || payload.planFormat !== "structured")) {
+          context.addIssue({ code: "custom", path: ["workflowE2EPlanVersion"], message: "the application E2E plan version requires a structured planning run" });
         }
         if (payload.workflowReviewChecks !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewChecks"], message: "the checks reviewers are told about require review mode" });

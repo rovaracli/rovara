@@ -2,10 +2,11 @@
 // NOT_FOUND and never learns it exists); the body is the task's own view built for the reader; a chain step's task needs a project role; the link
 // `/s/<id>` takes a task session's viewer to the task page, which now admits them to read only. Tasks started before sessions get one lazily.
 // The first part runs the read functions over a small fake company; the second goes through the real broker (routes, wiring, the task page).
+import { chainRunViewOf } from "../support/chain-run-view.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
-import { LIVE_INDEX_SCAN_MAX, agentXError, agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sharedSessionsKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { LIVE_INDEX_SCAN_MAX, agentXError, agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sessionBindingKey, sharedSessionsKey, type OrgId } from "../../packages/contracts/src/index.js";
 import {
   NeedsConfirmationSchema,
   SessionListReaderSchema,
@@ -233,11 +234,11 @@ describe("reading a task session", () => {
     r.patch(sessionId, { followerCount: 3 });
     r.w.follower(ORG_A, sessionId, ARJUN);
     r.w.db.set({
-      ...agentSessionKey(ORG_A, sessionId, "BINDING#slack_thread"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
+      ...sessionBindingKey(ORG_A, sessionId, "slack_thread"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
       binding: { kind: "slack_thread", teamId: "T0123ABC", channelId: "C0123ABC", threadTs: "1760000000.123456" }, at: "2026-10-22T08:00:00.000Z",
     });
     r.w.db.set({
-      ...agentSessionKey(ORG_A, sessionId, "BINDING#linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
+      ...sessionBindingKey(ORG_A, sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
       binding: { kind: "linear_issue", issueId: "ENG-1", url: "https://linear.app/acme/issue/ENG-1" }, at: "2026-10-22T08:00:00.000Z",
     });
     const asArjun = await view(r, ARJUN, sessionId);
@@ -341,7 +342,7 @@ function chainWorld() {
   const seen: Array<{ method: string; actor: unknown; id: string; seq?: number }> = [];
   const r = readWorld({
     chain: {
-      runView: async (actor, runId) => { seen.push({ method: "runView", actor, id: runId }); return { runId, status: "running", steps: [{ seq: 1, name: "investigate" }, { seq: 2, name: "fix" }] }; },
+      runView: async (actor, runId) => { seen.push({ method: "runView", actor, id: runId }); return chainRunViewOf(runId, { sections: [{ seq: 1, stepId: "investigate", name: "investigate", kind: "agent", status: "succeeded", attempt: 1, startedAt: "2026-10-22T09:00:00.000Z" }, { seq: 2, stepId: "fix", name: "fix", kind: "agent", status: "running", attempt: 1, startedAt: "2026-10-22T09:05:00.000Z" }] }); },
       stepTask: async (actor, runId, seq) => { seen.push({ method: "stepTask", actor, id: runId, seq }); return taskViewOf({ taskId: randomUUID(), project: "web" }) as never; },
     },
     chainReadAccess: async (who) => who.developerId === ARJUN || who.developerId === MAX,
@@ -354,7 +355,7 @@ describe("reading a chain session", () => {
     const r = chainWorld();
     const { sessionId } = r.w.seedSession({ kind: "chain" });
     const session = await view(r, ARJUN, sessionId);
-    expect(session.body).toMatchObject({ kind: "chain", chain: { runId: sessionId, status: "running" } });
+    expect(session.body).toMatchObject({ kind: "chain", chain: { sessionId, status: "running", sections: [{ seq: 1 }, { seq: 2 }] } });
     expect(SessionViewSchema.safeParse(session).success).toBe(true);
     expect(r.seen).toEqual([{ method: "runView", actor: { kind: "session", developerId: ARJUN }, id: sessionId }]);
     expect(r.calls).toEqual([]);
@@ -873,7 +874,7 @@ describe("what the routes refuse", () => {
     expect((await t.dev(MAYA, "GET", "/v1/app/sessions?owner=me&status=nope")).status).toBe(400);
   });
 
-  it("fails closed on a chain session's readers until Plan 4 supplies them", async () => {
+  it("reads a chain session by Plan 4's rule by default, and fails closed on a record that is not a chain run's", async () => {
     const t = await setup();
     const deps = t.starter() as unknown as { agentSessions: { chainReadAccess?: (caller: { orgId: OrgId; developerId: string }, session: never) => Promise<boolean> } };
     expect(deps.agentSessions.chainReadAccess).toBeDefined();

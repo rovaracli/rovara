@@ -1,5 +1,5 @@
-// Org connections (Plan 3, ruling R62): the record of each Linear, Jira or MCP connection an org has given Rovara, and
-// the hook secrets of Plan 4's event hooks. A record holds the connection's settings, whether a secret has been saved,
+// Org connections (Plan 3, ruling R62): the record of each Linear, Jira, MCP, Sentry, Datadog, CloudWatch, Grafana, Vercel or PagerDuty
+// connection an org has given Rovara (the last six are Plan 4 Task 11, read-only), and the hook secrets of Plan 4's event hooks. A record holds the connection's settings, whether a secret has been saved,
 // and what the last check found. It never holds the key or token, or even the secret's name: that name is derived from
 // the org id and the connection id each time, and the value lives only in the org-tagged secret (org-secrets.ts).
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
@@ -7,16 +7,23 @@ import { listMcpTools } from "@agentx/gateway";
 import {
   ConnectionIdSchema,
   ConnectionSecretSchemas,
+  ObservabilityConnectionTypeSchema,
   OrgConnectionSchema,
   OrgIdSchema,
   agentXError,
+  cloudwatchExternalId,
+  cloudwatchRoleAccount,
   connectionKey,
   connectionSecretToken,
+  connectionTakesSecret,
   connectionsKey,
+  readOnlyConnectionMessage,
   type ConnectionSecret,
   type ConnectionType,
+  type ObservabilityConnectionType,
   type OrgConnection,
   type OrgId,
+  type SecretConnectionType,
 } from "@agentx/contracts";
 import { auditConnectionRemoved, auditConnectionSaved, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -24,6 +31,9 @@ import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { commit, type RequestMark } from "../agents/table-writes.js";
 import { isSecretLeaf, orgConnectorSecretName, orgHookSecretName, type OrgSecrets } from "./org-secrets.js";
+import { mcpEndpointGuard, type McpEndpointGuard } from "./pinned-endpoint.js";
+import { noWebRequests, originHeldFetch, vendorHostOf } from "./vendor-hosts.js";
+import { safeVendorFetch } from "../connectors/native/vendor-fetch.js";
 
 type Item = Record<string, unknown>;
 
@@ -35,6 +45,8 @@ export interface OrgConnectionDeps {
   env: string;
   secrets: Pick<OrgSecrets, "read" | "put" | "scheduleDelete">;
   now: () => number;
+  /** The AWS account this deployment runs in. A CloudWatch connection may not name a role in it (Plan 4 Task 16); absent, that check is not made. */
+  ownAccountId?: string | undefined;
 }
 
 /** The id of the secret version a connection's own save wrote (kept on the record, never shown); a connection reads exactly that version. */
@@ -49,6 +61,8 @@ export interface ConnectionCheckRecord {
 export type OrgConnectionRecord = OrgConnection & {
   orgId: OrgId;
   hasSecret: boolean;
+  /** A CloudWatch connection's external id, `rovara-<orgId>`: set by the server, shown so the customer can put it in the role's trust policy. It is not a secret. */
+  externalId?: string;
   lastCheck?: ConnectionCheckRecord;
   createdBy: string;
   createdAt: string;
@@ -61,6 +75,28 @@ export interface CheckResult {
   message?: string;
 }
 
+/** One of the six Plan 4 connection types, as a record's settings. */
+export type ObservabilityConnection = Extract<OrgConnection, { type: ObservabilityConnectionType }>;
+
+/**
+ * What a type's check is given: the org, the connection's settings and the saved secret (none for CloudWatch). It answers whether the
+ * connection works, and may name the vendor account the secret belongs to (`actorId`). Its message must hold no part of the secret.
+ */
+export interface ConnectionCheckInput<T extends ObservabilityConnectionType = ObservabilityConnectionType> {
+  orgId: OrgId;
+  connection: Extract<OrgConnection, { type: T }>;
+  secret: ConnectionSecret | undefined;
+  /**
+   * The only fetch a check may use to reach the vendor (review I1). A Grafana check's is pinned to the addresses checked for this very request, keeps to the
+   * connection's origin and follows no redirect (`mcpEndpointGuard`); Sentry's, Datadog's, PagerDuty's and Vercel's are held to the vendor's fixed origin;
+   * CloudWatch's refuses everything, since it speaks to AWS through its own client. A check must not build its own.
+   */
+  fetch: typeof fetch;
+}
+
+/** Each of the six types' check, supplied by its connector task (Tasks 13 to 16). A type with none answers that checking is not available yet. */
+export type ConnectionChecks = { [T in ObservabilityConnectionType]?: (input: ConnectionCheckInput<T>) => Promise<CheckResult & { actorId?: string }> };
+
 export interface OrgConnectionStoreInput extends OrgConnectionDeps {
   fetch?: typeof fetch;
   /**
@@ -68,15 +104,31 @@ export interface OrgConnectionStoreInput extends OrgConnectionDeps {
    * It throws, with a message safe to show, to refuse. Without it an MCP connection cannot be checked.
    */
   checkEndpoint?: (url: string) => Promise<void>;
+  /** The checks of the Plan 4 connection types; see `ConnectionChecks`. */
+  checks?: ConnectionChecks;
+  /**
+   * Checks an address a person typed (a Grafana base URL, an MCP endpoint) and gives the fetch pinned to the addresses it returned, for this request
+   * only (review I1, M7). `checkEndpoint` alone cannot do this: it forgets the addresses, so the connection would resolve the name again. Defaults to
+   * `mcpEndpointGuard()`. The Grafana runtime connector must be built on the same guard (`HOST_TYPED_CONNECTOR_TYPES`).
+   */
+  endpointGuard?: McpEndpointGuard;
   listMcpTools?: typeof listMcpTools;
   /**
    * The Audit Ledger's outbox. With it, saving or removing a connection adds its pending audit item to the write that changes the record
    * (after the secret, which is never part of an event). Absent on a legacy install: nothing is added.
    */
   audit?: AuditRuntime;
+  /**
+   * Told after a connection has been removed (and its removal committed), for what depends on it that lives elsewhere (the CloudWatch hooks of its AWS account). A failure is
+   * logged by name and never undoes or fails the removal.
+   */
+  afterRemove?: (removed: { orgId: OrgId; connectionId: string; type: string; roleArn?: string }) => Promise<void>;
 }
 
 const CHECK_TIMEOUT_MS = 10_000;
+/** The longest message a check may answer, in characters. */
+const CHECK_MESSAGE_MAX = 300;
+const DEFAULT_ENDPOINT_GUARD = mcpEndpointGuard();
 const MAX_CHECK_RESPONSE_BYTES = 1_000_000;
 const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
 
@@ -92,12 +144,47 @@ function requireActor(by: unknown): void {
   if (typeof by !== "string" || by === "") throw coded("CONFIG_INVALID", "by: say who is making this change");
 }
 
-/** The host a saved secret is sent to, or undefined for Linear (a fixed vendor endpoint). */
+/**
+ * Where a saved secret goes, as a value that changes whenever the destination does, or undefined where it cannot change (Linear and Vercel have
+ * one fixed vendor endpoint). A Jira, MCP or Grafana connection names a host; Sentry, Datadog and PagerDuty a region or site, each of which is another
+ * vendor host; a CloudWatch connection names the role Rovara assumes. Moving it needs a new secret with it (CloudWatch has none, so what its last check learned is dropped).
+ */
 function secretHost(connection: OrgConnection): string | undefined {
-  if (connection.type === "jira") return new URL(connection.siteUrl).hostname;
-  if (connection.type === "mcp") return new URL(connection.endpoint).hostname;
+  switch (connection.type) {
+    case "jira": return new URL(connection.siteUrl).hostname;
+    case "mcp": return new URL(connection.endpoint).hostname;
+    case "grafana": return new URL(connection.baseUrl).hostname;
+    case "sentry": return `sentry-region:${connection.region}`;
+    case "datadog": return `datadog-site:${connection.site}`;
+    case "pagerduty": return `pagerduty-region:${connection.region}`;
+    case "cloudwatch": return `role:${connection.roleArn}`;
+    case "linear":
+    case "vercel": return undefined;
+  }
+}
+
+/** The address a customer typed that Rovara will call, and what to call it in a refusal; undefined for the types that call only their vendor. */
+function endpointTarget(connection: OrgConnection): { url: string; noun: string; what: string } | undefined {
+  if (connection.type === "mcp") return { url: connection.endpoint, noun: "an MCP endpoint", what: "an MCP connection" };
+  if (connection.type === "grafana") return { url: connection.baseUrl, noun: "a Grafana address", what: "a Grafana connection" };
   return undefined;
 }
+
+/**
+ * A check's message as it may be recorded and shown: control, format and line-separator characters removed (they can hide or rewrite text on a terminal or page),
+ * every value of the saved secret replaced with `[redacted]`, at most `CHECK_MESSAGE_MAX` characters, and none at all when nothing is left. A vendor's
+ * reply that a careless check passes on, even one that quotes the token, is held to this too.
+ */
+function cleanMessage(message: string | undefined, secret?: ConnectionSecret): string | undefined {
+  if (message === undefined) return undefined;
+  // Cleaned first, so a secret split by a control character is whole again when it is looked for; redacted before the cap, so the cap cannot cut one in half.
+  let cleaned = message.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "");
+  for (const value of Object.values(secret ?? {})) if (typeof value === "string" && value !== "") cleaned = cleaned.split(value).join("[redacted]");
+  cleaned = Array.from(cleaned).slice(0, CHECK_MESSAGE_MAX).join("").trim();
+  return cleaned === "" ? undefined : cleaned;
+}
+
+const isObservability = (connection: OrgConnection): connection is ObservabilityConnection => ObservabilityConnectionTypeSchema.safeParse(connection.type).success;
 
 function strip(item: Item): Item {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the keys
@@ -113,13 +200,13 @@ function atRevision(revision: number | undefined): { expression: string; values?
   return revision === undefined ? { expression: "attribute_not_exists(revision)" } : { expression: "revision = :read", values: { ":read": revision } };
 }
 
-async function readItem(deps: OrgConnectionDeps, orgId: OrgId, connectionId: string): Promise<Item | undefined> {
+async function readItem(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: OrgId, connectionId: string): Promise<Item | undefined> {
   if (!ConnectionIdSchema.safeParse(connectionId).success) return undefined;
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: connectionKey(orgId, connectionId), ConsistentRead: true })) as { Item?: Item };
   return response.Item;
 }
 
-async function listItems(deps: OrgConnectionDeps, orgId: OrgId): Promise<Item[]> {
+async function listItems(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: OrgId): Promise<Item[]> {
   const directory: Item[] = [];
   let start: Record<string, unknown> | undefined;
   const pk = connectionsKey(orgId, "x").pk;
@@ -139,11 +226,24 @@ async function listItems(deps: OrgConnectionDeps, orgId: OrgId): Promise<Item[]>
 }
 
 /** The vendor account ids this org's connections of one type have checked as, to tell their own writes from a person's. */
-export async function connectionActorIds(deps: OrgConnectionDeps, orgId: string, type: ConnectionType): Promise<Set<string>> {
+export async function connectionActorIds(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: string, type: ConnectionType): Promise<Set<string>> {
   const org = parseOrg(orgId);
   const ids = new Set<string>();
   for (const item of await listItems(deps, org)) {
     if (item.type === type && typeof item.actorId === "string" && item.actorId !== "") ids.add(item.actorId);
+  }
+  return ids;
+}
+
+/**
+ * The vendor account ids of this org's connections of one type that are marked as service identities: the accounts only Rovara uses, so what they make is Rovara's. A connection
+ * made with a person's own key, or not marked, is left out, because that person's tickets are not Rovara's.
+ */
+export async function connectionServiceActorIds(deps: Pick<OrgConnectionDeps, "documentClient" | "tableName">, orgId: string, type: ConnectionType): Promise<Set<string>> {
+  const org = parseOrg(orgId);
+  const ids = new Set<string>();
+  for (const item of await listItems(deps, org)) {
+    if (item.type === type && item.identity === "service" && typeof item.actorId === "string" && item.actorId !== "") ids.add(item.actorId);
   }
   return ids;
 }
@@ -186,6 +286,12 @@ export class OrgConnectionStore {
     const orgId = parseOrg(input.orgId);
     requireActor(input.by);
     const requestId = input.requestId ?? input.request?.requestId;
+    // The six Plan 4 types are read-only: asking for more says so in the plan's words, before anything else is judged.
+    if (typeof input.connection === "object" && input.connection !== null) {
+      const { type, access } = input.connection as { type?: unknown; access?: unknown };
+      const readOnly = ObservabilityConnectionTypeSchema.safeParse(type);
+      if (readOnly.success && access !== undefined && access !== "read") throw coded("CONFIG_INVALID", readOnlyConnectionMessage(readOnly.data));
+    }
     const parsed = OrgConnectionSchema.safeParse(input.connection);
     if (!parsed.success) {
       const first = parsed.error.issues[0];
@@ -193,16 +299,23 @@ export class OrgConnectionStore {
       throw coded("CONFIG_INVALID", `connection${first && first.path.length > 0 ? `.${first.path.join(".")}` : ""}: ${first === undefined ? "is not valid" : first.code === "unrecognized_keys" ? "has a field this kind of connection does not take" : first.message}`);
     }
     const connection = parsed.data;
+    // Rovara assumes the customer's role from its own account: a role in that account is never the customer's, and would let the session reach Rovara's own.
+    if (connection.type === "cloudwatch" && this.input.ownAccountId !== undefined && cloudwatchRoleAccount(connection.roleArn) === this.input.ownAccountId) {
+      throw coded("CONFIG_INVALID", "roleArn: use a role in your own AWS account");
+    }
     let secretJson: string | undefined;
     if (input.secret !== undefined) {
-      const secret = ConnectionSecretSchemas[connection.type].safeParse(input.secret);
-      if (!secret.success) throw coded("CONFIG_INVALID", `secret: a ${connection.type} connection takes ${Object.keys(ConnectionSecretSchemas[connection.type].shape).join(", ")} and nothing else`);
+      if (!connectionTakesSecret(connection.type)) throw coded("CONFIG_INVALID", `secret: a ${connection.type} connection takes no secret`);
+      const schema = ConnectionSecretSchemas[connection.type];
+      const secret = schema.safeParse(input.secret);
+      if (!secret.success) throw coded("CONFIG_INVALID", `secret: a ${connection.type} connection takes ${Object.keys(schema.shape).join(", ")} and nothing else`);
       secretJson = JSON.stringify(secret.data);
     }
-    if (connection.type === "mcp") {
+    const target = endpointTarget(connection);
+    if (target !== undefined) {
       // Refused before anything is written, and with no endpoint check at all the save is refused too: nothing here may be called unchecked.
-      if (this.input.checkEndpoint === undefined) throw coded("CONFIG_INVALID", "this deployment cannot check an MCP endpoint, so it cannot save an MCP connection");
-      await this.input.checkEndpoint(connection.endpoint);
+      if (this.input.checkEndpoint === undefined) throw coded("CONFIG_INVALID", `this deployment cannot check ${target.noun}, so it cannot save ${target.what}`);
+      await this.input.checkEndpoint(target.url);
     }
     const existing = await readItem(this.input, orgId, connection.connectionId);
     if (existing === undefined && input.requireExisting === true) throw coded("NOT_FOUND", "no connection has that ID");
@@ -223,6 +336,8 @@ export class OrgConnectionStore {
       entityType: "ORG_CONNECTION",
       orgId,
       ...connection,
+      // The server's own, never the body's (the body's would be an unknown field): the id the customer's role must require.
+      ...(connection.type === "cloudwatch" ? { externalId: cloudwatchExternalId(orgId) } : {}),
       hasSecret: secretJson !== undefined || existing?.hasSecret === true,
       ...(secretVersion !== undefined ? { [VERSION_FIELD]: secretVersion } : typeof existing?.[VERSION_FIELD] === "string" ? { [VERSION_FIELD]: existing[VERSION_FIELD] } : {}),
       ...(keepsAccount && existing.lastCheck !== undefined ? { lastCheck: existing.lastCheck } : {}),
@@ -289,6 +404,9 @@ export class OrgConnectionStore {
       ...events.flatMap((pending) => auditPending(this.input, pending)),
     ], (failed) => (failed.has(0) ? coded("NOT_FOUND", "no connection has that ID") : undefined), input.request, { removed: true });
     await flushAuditEvents(this.input, events);
+    await this.input.afterRemove?.({ orgId, connectionId: input.connectionId, type: String(existing.type), ...(typeof existing.roleArn === "string" ? { roleArn: existing.roleArn } : {}) }).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "connection.after_remove_failed", orgId, connectionId: input.connectionId, error: error instanceof Error ? error.name : "unknown" }));
+    });
   }
 
   /**
@@ -302,20 +420,25 @@ export class OrgConnectionStore {
     const item = await readItem(this.input, org, connectionId);
     if (item === undefined) throw coded("NOT_FOUND", "no connection has that ID");
     const connection = OrgConnectionSchema.parse(pick(item));
-    if (connection.type === "mcp" && this.input.checkEndpoint === undefined) {
-      throw coded("CONFIG_INVALID", "this deployment cannot check an MCP endpoint, so it cannot check an MCP connection");
+    const target = endpointTarget(connection);
+    if (target !== undefined && this.input.checkEndpoint === undefined) {
+      throw coded("CONFIG_INVALID", `this deployment cannot check ${target.noun}, so it cannot check ${target.what}`);
     }
     let result: CheckResult & { actorId?: string };
-    if (item.hasSecret !== true) {
+    let held: ConnectionSecret | undefined;
+    if (!connectionTakesSecret(connection.type)) {
+      // CloudWatch has no secret: its connector assumes the customer's role.
+      result = await this.ask(org, connection, undefined);
+    } else if (item.hasSecret !== true) {
       result = { ok: false, message: "no secret has been saved for this connection yet" };
     } else {
-      const raw = await this.input.secrets.read(org, orgConnectorSecretName(this.input.env, org, connectionId), versionOf(item));
-      const secret = raw === undefined ? undefined : parseSecret(connection.type, raw);
+      const secret = await readConnectionSecret(this.input, org, { connectionId, type: connection.type, ...(versionOf(item) === undefined ? {} : { secretVersion: versionOf(item)! }) });
       result = secret === undefined
         ? { ok: false, message: "the saved secret could not be read; save it again" }
-        : await this.ask(connection, secret);
+        : await this.ask(org, connection, (held = secret));
     }
-    const answer: CheckResult = result.message === undefined ? { ok: result.ok } : { ok: result.ok, message: result.message };
+    const message = cleanMessage(result.message, held);
+    const answer: CheckResult = message === undefined ? { ok: result.ok } : { ok: result.ok, message };
     await this.record(org, connectionId, revisionOf(item), result, answer, request);
     return answer;
   }
@@ -345,7 +468,10 @@ export class OrgConnectionStore {
     }
   }
 
-  private async ask(connection: OrgConnection, secret: ConnectionSecret): Promise<CheckResult & { actorId?: string }> {
+  /** Rovara's own checks for Linear, Jira and MCP; the six Plan 4 types go to the check their connector task supplied. */
+  private async ask(orgId: OrgId, connection: OrgConnection, secret: ConnectionSecret | undefined): Promise<CheckResult & { actorId?: string }> {
+    if (isObservability(connection)) return this.askObservability(orgId, connection, secret);
+    if (secret === undefined) return { ok: false, message: "the saved secret could not be read; save it again" };
     const fetchImplementation = this.input.fetch ?? fetch;
     const token = connectionSecretToken(connection.type, secret);
     if (connection.type === "mcp") return this.askMcp(connection, token);
@@ -380,21 +506,71 @@ export class OrgConnectionStore {
     }
   }
 
-  private async askMcp(connection: Extract<OrgConnection, { type: "mcp" }>, token: string): Promise<CheckResult> {
+  /** Why the customer's address may not be called, as a failed check, or undefined when it may (or the type has none). A lookup that failed is thrown. */
+  private async endpointRefusal(connection: OrgConnection): Promise<CheckResult | undefined> {
+    const target = endpointTarget(connection);
+    if (target === undefined) return undefined;
     try {
-      await this.input.checkEndpoint!(connection.endpoint);
+      await this.input.checkEndpoint!(target.url);
     } catch (error) {
       // A lookup that failed says nothing about the endpoint: it is retryable, so it is neither recorded as a failed check nor remembered as one.
       if ((error as { code?: unknown } | null)?.code === "RUNTIME_UNAVAILABLE") throw error;
       return { ok: false, message: error instanceof Error ? error.message : "the endpoint is not allowed" };
     }
+    return undefined;
+  }
+
+  /**
+   * The address a person typed, checked now, and the fetch pinned to the addresses that check returned; or why it may not be called. A lookup that
+   * failed is thrown (retryable, never recorded), as `endpointRefusal` does.
+   */
+  private async pinnedFetchFor(endpoint: string): Promise<{ fetch: typeof fetch } | { refused: CheckResult }> {
+    try {
+      return { fetch: await (this.input.endpointGuard ?? DEFAULT_ENDPOINT_GUARD)(new URL(endpoint)) };
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "RUNTIME_UNAVAILABLE") throw error;
+      return { refused: { ok: false, message: error instanceof Error ? error.message : "the endpoint is not allowed" } };
+    }
+  }
+
+  /** The only fetch a type's check is given (see `ConnectionCheckInput.fetch`). */
+  private async checkFetch(connection: ObservabilityConnection): Promise<{ fetch: typeof fetch } | { refused: CheckResult }> {
+    if (connection.type === "grafana") return this.pinnedFetchFor(connection.baseUrl);
+    if (connection.type === "cloudwatch") return { fetch: noWebRequests };
+    // Held to the vendor's host and, unless a test injects one, over the same lookup-checked fetch as the tools: an address that is not public is refused when it connects.
+    return { fetch: originHeldFetch(this.input.fetch ?? safeVendorFetch(), vendorHostOf(connection)!) };
+  }
+
+  private async askObservability(orgId: OrgId, connection: ObservabilityConnection, secret: ConnectionSecret | undefined): Promise<CheckResult & { actorId?: string }> {
+    // A customer's Grafana address is checked here, before the type's check can call it.
+    const refused = await this.endpointRefusal(connection);
+    if (refused !== undefined) return refused;
+    const check = this.input.checks?.[connection.type] as ((input: ConnectionCheckInput) => Promise<CheckResult & { actorId?: string }>) | undefined;
+    if (check === undefined) return { ok: false, message: `checking a ${connection.type} connection is not available yet` };
+    const held = await this.checkFetch(connection);
+    if ("refused" in held) return held.refused;
+    try {
+      return await check({ orgId, connection, secret, fetch: held.fetch });
+    } catch (error) {
+      // What a check threw can quote the request or the secret, so only the type is named. A failure to reach the vendor is retryable and not recorded.
+      if ((error as { code?: unknown } | null)?.code === "RUNTIME_UNAVAILABLE") throw coded("RUNTIME_UNAVAILABLE", `could not reach ${connection.type} to check the connection; try again`);
+      return { ok: false, message: `could not check the ${connection.type} connection` };
+    }
+  }
+
+  private async askMcp(connection: Extract<OrgConnection, { type: "mcp" }>, token: string): Promise<CheckResult> {
+    const refused = await this.endpointRefusal(connection);
+    if (refused !== undefined) return refused;
+    // The tool listing goes over a connection pinned to the addresses checked now (review M7), not one that resolves the name again.
+    const held = await this.pinnedFetchFor(connection.endpoint);
+    if ("refused" in held) return held.refused;
     try {
       const tools = await (this.input.listMcpTools ?? listMcpTools)({
         endpoint: new URL(connection.endpoint),
         token,
         signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
         ...(connection.auth === undefined ? {} : { auth: connection.auth }),
-        ...(this.input.fetch === undefined ? {} : { fetchImplementation: this.input.fetch }),
+        fetchImplementation: held.fetch,
       });
       return { ok: true, message: `${String(tools.length)} tool${tools.length === 1 ? "" : "s"}` };
     } catch (error) {
@@ -428,26 +604,42 @@ async function readCapped(response: Response, limit: number): Promise<string | u
 /** The connection's settings out of a stored item. */
 function pick(item: Item): unknown {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the bookkeeping fields
-  const { pk: _pk, sk: _sk, entityType: _type, orgId: _org, hasSecret: _has, actorId: _actor, lastCheck: _check, revision: _revision, secretVersion: _version, createdBy: _by, createdAt: _at, updatedBy: _ub, updatedAt: _ua, ...settings } = item;
+  const { pk: _pk, sk: _sk, entityType: _type, orgId: _org, hasSecret: _has, externalId: _external, actorId: _actor, lastCheck: _check, revision: _revision, secretVersion: _version, createdBy: _by, createdAt: _at, updatedBy: _ub, updatedAt: _ua, ...settings } = item;
   return settings;
+}
+
+/** A stored record's settings as the connection they describe (never its secret, status or bookkeeping), or undefined when they do not parse. */
+export function connectionOf(record: Item): OrgConnection | undefined {
+  const parsed = OrgConnectionSchema.safeParse(pick(record));
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** The secret version a record names (undefined for a record that predates versions: the current one is read). */
 const versionOf = (item: Item): string | undefined => (typeof item[VERSION_FIELD] === "string" ? item[VERSION_FIELD] : undefined);
 
 /** A stored secret, or undefined when it is not the shape its type takes. */
-function parseSecret(type: ConnectionType, raw: string): ConnectionSecret | undefined {
+function parseSecret(type: SecretConnectionType, raw: string): ConnectionSecret | undefined {
   let json: unknown;
   try { json = JSON.parse(raw); } catch { return undefined; }
   const parsed = ConnectionSecretSchemas[type].safeParse(json);
   return parsed.success ? parsed.data : undefined;
 }
 
+/**
+ * Reads a connection's stored secret whole, in the shape its type takes (a Datadog connection's API and application keys both), or undefined when
+ * there is none, it is not that shape, or the type has none (CloudWatch). It reads the version the connection's own save wrote, so pass the record
+ * `readConnection` returns, not a view.
+ */
+export async function readConnectionSecret(deps: OrgConnectionDeps, orgId: OrgId, connection: { connectionId: string; type: ConnectionType; secretVersion?: string }): Promise<ConnectionSecret | undefined> {
+  if (!connectionTakesSecret(connection.type)) return undefined;
+  const raw = await deps.secrets.read(orgId, orgConnectorSecretName(deps.env, orgId, connection.connectionId), connection.secretVersion);
+  return raw === undefined ? undefined : parseSecret(connection.type, raw);
+}
+
 /** Reads a connection's stored secret as its one value, for the credential registry. */
 export async function readConnectionToken(deps: OrgConnectionDeps, orgId: OrgId, connection: { connectionId: string; type: ConnectionType; secretVersion?: string }): Promise<string | undefined> {
-  const raw = await deps.secrets.read(orgId, orgConnectorSecretName(deps.env, orgId, connection.connectionId), connection.secretVersion);
-  const secret = raw === undefined ? undefined : parseSecret(connection.type, raw);
-  return secret === undefined ? undefined : connectionSecretToken(connection.type, secret);
+  const secret = await readConnectionSecret(deps, orgId, connection);
+  return secret === undefined || !connectionTakesSecret(connection.type) ? undefined : connectionSecretToken(connection.type, secret);
 }
 
 /** Reads one connection for the credential registry, with the fields the store keeps back from members. */

@@ -6,7 +6,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
-import { brokerNamesIn } from "../support/broker-names-template.js";
+import { brokerNamesIn, brokerSettingsIn, takeBrokerNames, takeBrokerSettings } from "../support/broker-names-template.js";
 import { hasModelProxy, withoutModelProxy } from "../support/model-proxy-template.js";
 import { hasAuditLedger, withoutAuditLedger } from "../support/audit-ledger-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -91,6 +91,10 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Named environments have the one schedule (spend-ledger.test.ts asserts it) and the legacy template has none; nothing else may hide under the prefix.
   expect(spendSchedules.length, "at most the one spend settlement schedule is taken out").toBeLessThanOrEqual(1);
   for (const id of spendSchedules) delete resources[id];
+  // Plan 4 Task 9's chain sweep schedule is no part of the proof-only addition either (named-templates.test.ts asserts it).
+  const chainSweepSchedules = Object.keys(resources).filter((id) => id.startsWith("ChainSweepSchedule"));
+  expect(chainSweepSchedules.length, "at most the one chain sweep schedule is taken out").toBeLessThanOrEqual(1);
+  for (const id of chainSweepSchedules) delete resources[id];
   // Plan 3 Task 11's one statement (PutItem on the MEMBER_MERGE_QUEUE partition, for the sign-in function) is no part of the proof-only addition either.
   const mergeMarkerGrants = Object.values(resources).flatMap((resource) => {
     if (resource.Type !== "AWS::IAM::Policy") return [];
@@ -109,10 +113,13 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete variables.Variables.DEVELOPER_SIGNIN_TABLE_NAME;
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
+    // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
     // Task 23 (ruling R55): where a cloud org's projects run. A named environment's control plane only; it is no part of the proof addition.
+    if (brokerVariables.Variables.AGENTX_NAMES !== undefined) takeBrokerNames(brokerVariables.Variables, ["launchTemplate"]);
     delete brokerVariables.Variables.EC2_WORKER_LAUNCH_TEMPLATE_ID;
     delete brokerVariables.Variables.EC2_WORKER_SUBNETS;
   }
@@ -225,7 +232,8 @@ describe("the named TEST proof-only installation gate", () => {
       const broker = workflowDependencyEnvironmentEntries(template);
       expect(broker, `${label} has exactly one Broker with the workflow flag`).toHaveLength(1);
       const variables = broker[0]![1].Properties!.Environment as { Variables: Record<string, unknown> };
-      expect(variables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED, `${label} wires only the parameter reference`).toEqual({ Ref: "WorkflowDependenciesEnabled" });
+      expect(brokerSettingsIn(variables.Variables).workflowDependencies, `${label} wires only the parameter reference`).toEqual({ Ref: "WorkflowDependenciesEnabled" });
+      expect(variables.Variables, `${label} has it in the broker's settings, not as a variable of its own`).not.toHaveProperty("AGENTX_WORKFLOW_DEPENDENCIES_ENABLED");
     }
     expect(legacy.Parameters?.WorkflowDependenciesEnabled, "legacy has no workflow gate parameter").toBeUndefined();
     const legacyBrokers = workflowDependencyEnvironmentEntries(legacy);
@@ -241,31 +249,51 @@ describe("the named TEST proof-only installation gate", () => {
     // Plan 3 final fix wave (review C1): a named environment's broker is given its generated names in one variable (AGENTX_NAMES), not whole, and derives
     // what its environment name decides, so Lambda's 4 KB limit on its variables holds; the named and foreign digests moved with it (the broker's
     // variables only, and the connector secrets role's one Deny); the legacy digests did not move, which is the check that its broker is untouched.
+    // Plan 4 Task 19: a named environment's API gains the public event-hook route (`POST /v1/hooks/{source}/{hookId}`, no authorizer, the broker verifies every delivery), so the
+    // named and foreign digests moved with it. They had also drifted from the earlier Plan 4 tasks' broker and role changes (the merge of plan 3, BROKER_ROLE_ARN in AGENTX_NAMES, the
+    // fixed role names), which no task had re-pinned: all four are taken from the synthesized templates now. The legacy digests did not move: its template has no such route.
+    // Task 19 review fix: the route also has its own stage throttle (`RouteSettings`, 100 burst and 50 a second) and the stage waits for it, so the named and foreign digests were taken again from
+    // the synthesized templates; the legacy digests are unchanged.
+    // Plan 4 Task 26: a named environment's control plane gains the schedule group, the scheduler's invoke role (fixed name), the dead-letter queue and the broker's three
+    // statements (manage the group's schedules, pass that one role, drain the queue), so the named and foreign digests were taken again from the synthesized templates; the
+    // legacy digests did not move (nothing is added without an environment name), and the broker's variables did not grow (the names are derived from AGENTX_ENV).
+    // Plan 4 Task 26 review fixes: the broker's one queue statement now also parks and records (SendMessage, ChangeMessageVisibility, renamed UseChainScheduleDeadLetters) and the queue's age
+    // has an alarm, so the named and foreign digests were taken again from the synthesized templates; the legacy digests did not move.
+    // Task 27 review I-1: that alarm counts visible plus in-flight messages over three periods (the age metric stops at three receives); named and foreign were taken again, legacy did not move.
     // Merge of Plan 2's final fix wave into Plan 3: the install-request reminder schedule and metric filter are now created on cloud installs only, so the
     // legacy template lost them again and its digests are back to their values before Plan 2 (the legacy-templates snapshot lost the same 45 lines); the
     // named and foreign digests were regenerated for the merged template (Plan 2's cloud-only schedule and the reconciler's StartExecution grant on top of Plan 3).
     // Merge of Plan 3 into Plan 5: the named and foreign digests were regenerated again for the merged template (Plan 5's `ANY /s/{proxy+}` route on top of the above).
     // Plan 5, Task 8: the realtime events API (its API, namespace, authorizer, the authorizer's and publishers' grants, the token key's split deny and the broker's one more
     // name) moved the named and foreign digests; the legacy template has no sign-in stack and none of it, and its digests did not move.
-    // M1-1: named/foreign parent pins include Plan 7 web hosting, cookie API routes and deploy boundary; legacy pins remain unchanged.
+    // Merge of Plans 4 and 5 (chains-sessions-merge): the named and foreign digests were taken again from the synthesized merged template (Plan 4's schedule group, queue and roles beside Plan 5's
+    // realtime API and session routes, and the fixed-name roles' lookup grant); the legacy digests did not move.
+    // ENV-ROOM (the broker's environment room): the named and foreign digests were taken again from the synthesized templates. The broker's variables moved: the State table, the artifact
+    // bucket, the launch template, the allow list and the model proxy joined AGENTX_NAMES, the audit queue's URL is derived, and eleven constrained parameters joined AGENTX_SETTINGS
+    // (the workflow flag and the launch template stay out of the hash, as before). The legacy digests did not move: its broker is given its variables whole.
+    // ENV-ROOM review fix: the named and foreign digests were taken again after Ec2WorkerLaunchTemplateId gained its AllowedPattern (named environments only); the legacy digests did not move.
+    // Plan 5, Task 20: the notifier's role gained two statements (put the session binding and surface items, check the session record), so the named and foreign digests were taken again; legacy has no notifier and did not move.
+    // Staging 0.4.3 fix: the broker's `rt` name is the DNS prefix of the events API's HTTP host (Fn::Select of Fn::Split of Dns.Http), not the API's id, so the named and foreign digests were taken again; legacy did not move.
+    // Round 5 merge (Tasks 17, 21 and the staging 0.4.3 fixes onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
+    // M3: regenerated named/foreign pins from the merged template; web routes and chain hook throttles coexist. Legacy unchanged.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "f668fc259f8ac61c5f20ae66abd1651a5228ef64e30cc1612b8b193828c145d1",
-        withoutRoute: "e8ab0ab9b9122b69b52a10e01e48306fa0c2d561a26d7e4c3b6aa4f3b726ba7c",
+        withRoute: "87e71785cc9bb6e10510e386f07fc340c96dea9014853af60072d824a6d35d4b",
+        withoutRoute: "4fe80196c046f253f6820f43dd488eac120e1316120a0817c845fbaf7aa71140",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "71dd59000f24e1ecd09db683abfd180fd9ea3b77350132ea331f4bfa6566331a",
-        withoutRoute: "399af7c86b2ccdeafd7794581191303265205328d355480ab6b57d230d9113df",
+        withRoute: "019a98c3cd30b74947bce2658f42ff0fc3e375bd36ae57ad87b47db61a249248",
+        withoutRoute: "5cbd7ab363c2893ca60e97e5f9d815ebcc3827296272fb464ccca3448ba538ff",
       },
       {
         label: "legacy",
         template: legacy,
-        withRoute: "b279f85a0f09a9fd78a25b85706b79bf1394184fd09597efa8cd466f93adb826",
-        withoutRoute: "dcd26742aba45c87a5f82cd0a6039801147e4e6cd02ee337cf28e7f01987a32b",
+        withRoute: "1f0b918254a14b6791514f47902eca58f783e301c5a2335b7d766a950f760b92",
+        withoutRoute: "a41f3a2dedd12ec2c7940789a85fb448626181dc2b658e6e7ad46f18d95c0f06",
       },
     ] as const;
     for (const { label, template, withRoute, withoutRoute } of digestCases) {
@@ -425,7 +453,8 @@ describe("the named TEST proof-only installation gate", () => {
       expect(envVars, `${id} must not receive proof-only runtime configuration`).not.toHaveProperty("TASK_PERSON_PROOF_FUNCTION_ARN");
     }
     const brokerVars = (broker.Properties!.Environment as { Variables: Record<string, unknown> }).Variables;
-    expect(brokerVars.SLACK_TEAM_ID).toEqual({ Ref: "SlackTeamId" });
+    expect(brokerSettingsIn(brokerVars).slackTeamId).toEqual({ Ref: "SlackTeamId" });
+    expect(brokerVars.SLACK_TEAM_ID).toBeUndefined();
     expect(brokerVars.DEVELOPER_SIGNIN_TABLE_NAME).toBeUndefined();
     expect(brokerNamesIn(brokerVars).signInTable).toEqual({ Ref: tableId });
     const notifierVars = (notifier.Properties!.Environment as { Variables: Record<string, unknown> }).Variables;

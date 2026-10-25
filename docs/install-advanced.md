@@ -59,6 +59,31 @@ An environment keeps its engine. Upgrades of a cdk environment need `--source` a
 credentials (see [docs/day-two.md](day-two.md)). An `agentx` built from source upgrades to the
 checkout's tag, with no `--release` or `--to`.
 
+### An account with a low Lambda concurrency limit
+
+Two Lambda functions of the audit ledger reserve concurrency: the export (5) and the anchor (1).
+Lambda will not let a reservation take the account's unreserved concurrency below 10. A new AWS
+account has a limit of 10, so any reservation fails the deploy.
+
+For such an account (a staging account, for example), turn the reservations off with the
+`agentxReservedConcurrency` CDK context flag. With `false`, no function in any stack sets reserved
+concurrency. The default is on, and any value other than `true` or `false` is refused when the app
+is synthesized.
+
+```sh
+npx @preplabsai/rovara-code --env <env> upgrade --source agentx-<version> --no-reserved-concurrency
+```
+
+`--no-reserved-concurrency` adds `-c agentxReservedConcurrency=false` to the `cdk synth`, `cdk diff`
+and `cdk deploy` that `upgrade` runs. It needs the cdk engine, and `upgrade` refuses it on the
+templates engine, whose prebuilt templates keep their reservations. Running `cdk` yourself, pass
+`-c agentxReservedConcurrency=false`.
+
+`agentx` does not remember the flag. Pass it on every `upgrade` of that environment, or the next
+upgrade tries to reserve again. Raise the account's Lambda concurrency limit through AWS Support
+when you can, and then stop passing it. Production should keep reserved concurrency on: it stops a
+burst of audit exports from taking the account's concurrency.
+
 ## Through your platform team (export)
 
 Use this when only your platform team may create IAM roles. You write a bundle; they deploy the

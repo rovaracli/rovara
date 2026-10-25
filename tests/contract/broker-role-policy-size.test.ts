@@ -41,8 +41,8 @@ function resolved(value: Json): Json {
 
 /** The broker's policies, measured as IAM measures them: inline (the role's own and `AWS::IAM::Policy` resources) and the managed policies Plan 3 moved the grants into. */
 function brokerPolicies(resources: Record<string, Resource>): { inline: Array<{ name: string; characters: number }>; managed: Array<{ name: string; characters: number }> } {
-  const broker = Object.values(resources).find((resource) => resource.Type === "AWS::Lambda::Function" && JSON.stringify(resource.Properties.Environment ?? {}).includes("STATE_TABLE_NAME")
-    && JSON.stringify(resource.Properties.Environment ?? {}).includes("AGENT_PROJECT_ALLOW_LIST_ID"));
+  const broker = Object.values(resources).find((resource) => resource.Type === "AWS::Lambda::Function" && JSON.stringify(resource.Properties.Environment ?? {}).includes("AGENTX_NAMES")
+    && JSON.stringify(resource.Properties.Environment ?? {}).includes("ProjectAllowListId"));
   expect(broker, "the broker function").toBeDefined();
   const roleId = (broker!.Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
   const measure = (name: string, document: Json) => ({ name, characters: JSON.stringify(resolved(document)).replace(/\s/g, "").length });

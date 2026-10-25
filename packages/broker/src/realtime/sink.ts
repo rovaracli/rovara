@@ -125,7 +125,7 @@ export function installRealtimeSink(options: RealtimeSinkOptions): void {
 }
 
 /**
- * The events API a Lambda was given, from `REALTIME_HTTP_ENDPOINT` (`https://<id>.appsync-api.<region>.amazonaws.com/event`), signed with the Lambda's own credentials;
+ * The events API a Lambda was given, from `REALTIME_HTTP_ENDPOINT` (`https://<dns prefix>.appsync-api.<region>.amazonaws.com/event`), signed with the Lambda's own credentials;
  * undefined where there is no API (the feed is still written).
  */
 export function realtimeConfigFromEnvironment(env: Record<string, string | undefined> = process.env): RealtimeConfig | undefined {

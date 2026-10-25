@@ -46,7 +46,6 @@ import {
   deviceCommandKey,
   deviceKey,
   endedSessionWorkKey,
-  homeDismissKey,
   liveSessionKey,
   memberDevicesKey,
   mySessionsKey,
@@ -58,6 +57,7 @@ import {
   sessionEventSk,
   sessionRateKey,
   sessionRequestKey,
+  sessionBindingKey,
   sessionSurfaceKey,
   sharedSessionsKey,
   taskSpendKey,
@@ -513,6 +513,34 @@ describe("the view schemas", () => {
     expect(SessionViewReaderSchema.parse(view).status).toBe("running");
   });
 
+  // Plan 4's run view is the body of a chain session (the merge replaced Plan 5's loose placeholder). A gate's confirmUrl is Plan 4's to leave out: it is absent for a person who may not decide it.
+  describe("the body of a chain session", () => {
+    const run = {
+      contractVersion: 1, sessionId: CHAIN_RUN, kind: "chain", chain: { chainId: "chn_0123456789abcdefghij", name: "Investigate", version: 2 }, project: "web",
+      chainOwner: { kind: "member", id: DEV, name: "Priya" }, owner: { developerId: DEV, name: "Priya" }, startedBy: { kind: "member", developerId: DEV, name: "Priya" },
+      status: "waiting", currentSeq: 2, createdAt: NOW, updatedAt: LATER, cost: { spentUsd: 0.5, runLimitUsd: 30 },
+      sections: [
+        { seq: 1, stepId: "investigate", name: "Find the cause", kind: "agent", status: "succeeded", attempt: 1, startedAt: NOW },
+        { seq: 2, stepId: "approve", name: "Approve the fix", kind: "gate", status: "waiting", attempt: 1, startedAt: NOW, gate: { prompt: "Fix it?", status: "PENDING", approvers: "Max" } },
+      ],
+    };
+    const chainView = (chain: unknown) => ({ ...view, sessionId: CHAIN_RUN, kind: "chain", body: { kind: "chain", chain } });
+
+    it("takes the run view with a gate that has no confirmUrl, and with one", () => {
+      for (const schema of [SessionViewSchema, SessionViewReaderSchema]) {
+        expect(schema.safeParse(chainView(run)).success).toBe(true);
+        const withLink = { ...run, sections: [run.sections[0], { ...run.sections[1], gate: { ...run.sections[1]!.gate, confirmUrl: "https://app.rovara.example/v1/app/approve/apr_0123456789abcdefg" } }] };
+        expect(schema.safeParse(chainView(withLink)).success).toBe(true);
+      }
+    });
+
+    it("refuses a body that is not a run view, and reads a newer run's status as unknown", () => {
+      expect(SessionViewSchema.safeParse(chainView({})).success).toBe(false);
+      expect(SessionViewSchema.safeParse(chainView({ ...run, status: "frozen" })).success).toBe(false);
+      expect(SessionViewReaderSchema.parse(chainView({ ...run, status: "frozen", extra: 1 })).body).toMatchObject({ kind: "chain", chain: { status: "unknown", extra: 1 } });
+    });
+  });
+
   it("reads a newer server's event page and tile", () => {
     const newerEvent = { ...event, type: "pair_started", extra: "kept", actor: { kind: "robot", model: "x" } };
     const page = { events: [newerEvent], next: "n", more: true };
@@ -567,7 +595,7 @@ describe("session keys", () => {
     ["agentSessionKey MESSAGE", (org) => agentSessionKey(org, SESSION, `MESSAGE#${MESSAGE}`)],
     ["agentSessionKey TURN", (org) => agentSessionKey(org, SESSION, `TURN#${NOW}#1`)],
     ["agentSessionKey EVENT", (org) => agentSessionKey(org, SESSION, sessionEventSk(NOW, event.eventId))],
-    ["agentSessionKey BINDING", (org) => agentSessionKey(org, SESSION, "BINDING#slack_thread")],
+    ["sessionBindingKey", (org) => sessionBindingKey(org, SESSION, "slack_thread")],
     ["agentSessionKey LEG", (org) => agentSessionKey(org, SESSION, "LEG#1")],
     ["liveSessionKey", (org) => liveSessionKey(org, SESSION)],
     ["mySessionsKey", (org) => mySessionsKey(org, DEV, NOW, SESSION)],
@@ -581,7 +609,6 @@ describe("session keys", () => {
     ["sessionSurfaceKey slack", (org) => sessionSurfaceKey(org, { kind: "slack_thread", teamId: "T0123ABC", channelId: "C0123ABC", threadTs: "1760000000.123456" })],
     ["sessionSurfaceKey linear", (org) => sessionSurfaceKey(org, { kind: "linear_issue", issueId: "abc", url: "https://linear.app/acme/issue/ENG-1" })],
     ["changesKey", (org) => changesKey(org, DEV, NOW, 3)],
-    ["homeDismissKey", (org) => homeDismissKey(org, DEV, "card-1")],
     ["projectMonthStatsKey", (org) => projectMonthStatsKey(org, "web", "2026-10")],
     ["deviceKey", (org) => deviceKey(org, DEVICE)],
     ["memberDevicesKey", (org) => memberDevicesKey(org, DEV, DEVICE)],
@@ -605,6 +632,7 @@ describe("session keys", () => {
     expect(sharedSessionsKey(ORG_A, { kind: "member", developerId: DEV }, SESSION)).toEqual({ pk: `ORG#${ORG_A}#SHARED_SESSIONS#MEMBER#${DEV}`, sk: SESSION });
     expect(sessionRequestKey(ORG_A, DEV, "req-1")).toEqual({ pk: `ORG#${ORG_A}#SESSION_REQUEST#${DEV}`, sk: "req-1" });
     expect(sessionRateKey(ORG_A, SESSION, DEV, "change")).toEqual({ pk: `ORG#${ORG_A}#SESSION_RATE#${SESSION}`, sk: `change#${DEV}` });
+    expect(sessionBindingKey(ORG_A, SESSION, "linear_issue")).toEqual({ pk: `ORG#${ORG_A}#SESSION_BINDING#${SESSION}`, sk: "BINDING#linear_issue" });
     expect(taskSpendKey(ORG_A, TASK).pk).toBe(`ORG#${ORG_A}#TASK_SPENT#${TASK}`);
     expect(deviceKey(ORG_A, DEVICE).pk).toBe(`ORG#${ORG_A}#DEVICE#${DEVICE}`);
     expect(memberDevicesKey(ORG_A, DEV, DEVICE)).toEqual({ pk: `ORG#${ORG_A}#MEMBER_DEVICES#${DEV}`, sk: DEVICE });

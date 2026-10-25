@@ -1,4 +1,4 @@
-import { BROKER_NAMES, BROKER_NAMES_VARIABLE, type BrokerNameKey } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, type BrokerNameKey, type BrokerSettingKey } from "@agentx/contracts";
 
 /**
  * The broker's one variable of names (AGENTX_NAMES, packages/contracts/src/broker-names.ts), read out of a synthesized template. The control
@@ -20,13 +20,21 @@ function joinedText(variable: Node): { text: string; nodes: Node[] } {
   return { text, nodes };
 }
 
+/** `code=value,code=value` as pairs (the form the control plane writes; a node stands as its `‹n›` mark). */
+function pairsOf(text: string): Array<[string, string]> {
+  return text === "" ? [] : text.split(",").map((pair) => {
+    const at = pair.indexOf("=");
+    if (at !== 2) throw new Error(`not a code=value pair: ${pair}`);
+    return [pair.slice(0, 2), pair.slice(3)];
+  });
+}
+
 /** The names the variable holds, by key. A name is a template node, or the literal text where the control plane wrote one. */
 export function brokerNamesIn(variables: Variables | undefined): Partial<Record<BrokerNameKey, Node>> {
   const variable = variables?.[BROKER_NAMES_VARIABLE];
   if (variable === undefined) return {};
   const { text, nodes } = joinedText(variable);
-  const parsed = JSON.parse(text) as Record<string, string>;
-  return Object.fromEntries(Object.entries(parsed).map(([code, value]) => {
+  return Object.fromEntries(pairsOf(text).map(([code, value]) => {
     const key = KEY_OF_CODE.get(code);
     if (key === undefined) throw new Error(`${BROKER_NAMES_VARIABLE} holds a code nobody sent: ${code}`);
     const marked = MARK.exec(value);
@@ -34,12 +42,25 @@ export function brokerNamesIn(variables: Variables | undefined): Partial<Record<
   }));
 }
 
-/** The variable written back from names (the order is the code order, as the control plane writes it; adjacent literals are one piece). */
-function joinedNames(names: Partial<Record<BrokerNameKey, Node>>): Node {
-  const entries = Object.entries(names).sort(([a], [b]) => BROKER_NAMES[a as BrokerNameKey].code.localeCompare(BROKER_NAMES[b as BrokerNameKey].code));
-  const pieces: Node[] = ["{"];
-  entries.forEach(([key, node], index) => { pieces.push(`${index === 0 ? "" : ","}"${BROKER_NAMES[key as BrokerNameKey].code}":"`, node, '"'); });
-  pieces.push("}");
+const SETTING_KEY_OF_CODE = new Map<string, BrokerSettingKey>(Object.entries(BROKER_SETTINGS).map(([key, spec]) => [spec.code, key as BrokerSettingKey]));
+
+/** The broker's settings (AGENTX_SETTINGS, the same shape as its names), by key: the template node that resolves to the setting's value, or the literal text. */
+export function brokerSettingsIn(variables: Variables | undefined): Partial<Record<BrokerSettingKey, Node>> {
+  const variable = variables?.[BROKER_SETTINGS_VARIABLE];
+  if (variable === undefined) return {};
+  const { text, nodes } = joinedText(variable);
+  return Object.fromEntries(pairsOf(text).map(([code, value]) => {
+    const key = SETTING_KEY_OF_CODE.get(code);
+    if (key === undefined) throw new Error(`${BROKER_SETTINGS_VARIABLE} holds a code nobody sent: ${code}`);
+    const marked = MARK.exec(value);
+    return [key, marked === null ? value : nodes[Number(marked[1])]];
+  }));
+}
+
+/** `code=node` pairs written back as a template node (the order is the code order, as the control plane writes it; adjacent literals are one piece). */
+function joinedPairs(entries: Array<[string, Node]>): Node {
+  const pieces: Node[] = [];
+  entries.sort(([a], [b]) => a.localeCompare(b)).forEach(([code, node], index) => { pieces.push(`${index === 0 ? "" : ","}${code}=`, node); });
   const merged: Node[] = [];
   for (const piece of pieces) {
     const last = merged[merged.length - 1];
@@ -62,6 +83,20 @@ export function takeBrokerNames(variables: Variables, keys: readonly BrokerNameK
     delete all[key];
   }
   if (Object.keys(all).length === 0) delete variables[BROKER_NAMES_VARIABLE];
-  else variables[BROKER_NAMES_VARIABLE] = joinedNames(all);
+  else variables[BROKER_NAMES_VARIABLE] = joinedPairs(Object.entries(all).map(([key, node]) => [BROKER_NAMES[key as BrokerNameKey].code, node]));
+  return taken;
+}
+
+/** The same for the broker's settings (AGENTX_SETTINGS). */
+export function takeBrokerSettings(variables: Variables, keys: readonly BrokerSettingKey[]): Partial<Record<BrokerSettingKey, Node>> {
+  const all = brokerSettingsIn(variables);
+  const taken: Partial<Record<BrokerSettingKey, Node>> = {};
+  for (const key of keys) {
+    if (!(key in all)) throw new Error(`the broker's settings hold no ${key}`);
+    taken[key] = all[key];
+    delete all[key];
+  }
+  if (Object.keys(all).length === 0) delete variables[BROKER_SETTINGS_VARIABLE];
+  else variables[BROKER_SETTINGS_VARIABLE] = joinedPairs(Object.entries(all).map(([key, node]) => [BROKER_SETTINGS[key as BrokerSettingKey].code, node]));
   return taken;
 }

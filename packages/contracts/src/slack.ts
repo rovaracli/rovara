@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ActionPolicySchema } from "./action-policy-node.js";
-import { ThreadConnectorSchema } from "./connectors-node.js";
+import { MAX_PROJECT_CONNECTORS, ThreadConnectorSchema } from "./connectors-node.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { OrgIdSchema } from "./org.js";
 import { AgentXNameSchema } from "./project-node.js";
@@ -88,7 +88,7 @@ export const SlackThreadWorkspaceResultSchema = z.discriminatedUnion("outcome", 
       orchestratorInstructions: z.string().min(1).max(32_768),
       githubMcpRepositories: z.array(AgentXNameSchema).max(32).optional(),
       // Connector metadata for services that send includeConnectors: true (feature 013).
-      connectors: z.array(ThreadConnectorSchema).max(8).optional(),
+      connectors: z.array(ThreadConnectorSchema).max(MAX_PROJECT_CONNECTORS).optional(),
       repositories: z.array(AgentXNameSchema).max(32).optional(),
       // Sent only to services that send includeRecoverableOperations: true (see the broker).
       recoverableOperations: z.array(z.string().uuid()).max(5).optional(),

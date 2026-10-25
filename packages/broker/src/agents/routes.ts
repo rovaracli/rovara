@@ -35,7 +35,9 @@ import {
   type AgentId,
   type AgentOwner,
   type BaseRef,
+  type BudgetScope,
   type BuiltinAgentId,
+  type ChainId,
   type OrgId,
   type OwnerCapChange,
   type ProjectAiSettings,
@@ -54,6 +56,7 @@ import {
   requireAgentBudgetAllowed,
   requireOwnerAllowed,
   resolveSurvivor,
+  whoNeeds,
   type AccessibleAgent,
   type AgentCaller,
   type AgentScope,
@@ -71,6 +74,14 @@ import type { PullRequestHeadReader } from "./runs.js";
 import { addToRoster, checkRosterChange, listRoster, removeFromRoster, roleOnProject, rosterAgentView, type RosterEntry } from "./roster.js";
 import type { SkillRecord } from "./skills.js";
 import type { OrgStore } from "../org/store.js";
+import type { ChainTriggerHooks } from "../chains/routes.js";
+import type { ChainStore } from "../chains/store.js";
+import type { TriggerStore } from "../triggers/store.js";
+import { routeEventHooks, type EventHookDependencies } from "../triggers/hooks.js";
+import { routeAgentTriggers, routeBuiltinTriggers } from "../triggers/routes.js";
+import type { ChainRunSpendReader } from "../spend/chain-run-spend.js";
+import type { ChainRunPorts } from "../chains/runner.js";
+import type { ChainViewPorts } from "../chains/view.js";
 import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { readTopUp } from "../spend/top-ups.js";
@@ -89,6 +100,20 @@ import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, 
 export interface AgentRouteDependencies extends ApprovalDependencies {
   /** Read-only model source routing used by the member picker. */
   modelRouting?: RoutingDependencies;
+  /** Plan 4 Task 4: the chain store, built on this agent store (so a person's agent and chain budgets are one total). Absent where chains are not set up: their routes then answer 404. */
+  chains?: ChainStore;
+  /** Plan 4 Task 18: the trigger store, which the trigger routes, the rechecks and the member movers work on. Absent where triggers are not set up: their routes then answer 404. */
+  triggers?: TriggerStore;
+  /** Plan 4 Task 19: the event hooks of a project (`/v1/app/projects/{p}/event-hooks*`). Absent where hooks are not set up: those routes then answer 404. */
+  eventHooks?: EventHookDependencies;
+  /** Plan 4 Tasks 18 and 20: what the chain routes ask of the trigger code. Absent until it exists: a chain then has no triggers. */
+  chainTriggers?: ChainTriggerHooks;
+  /** Plan 4 Task 6: what a chain run says about one of its steps (the chain, and the limit the run had left at the step's start), for who approves a step's raise. Absent: every chain step's raise is read as a run-level raise. */
+  chainRunBudgets?: ChainRunSpendReader;
+  /** Plan 4 Task 6: what the chain runner asks of Plan 3's run start and of the people a run names. Absent: chain runs can't be started and the routes answer NOT_FOUND. */
+  chainRuns?: ChainRunPorts;
+  /** Plan 4 Task 10: what the chain-run view asks of the task layer (a step task's view, its cost and open approvals). Absent: the view has no cost and a step's task can't be read. */
+  chainView?: ChainViewPorts;
   /** Where the org's plan is read (Task 28): a trial org keeps the placeholder limits (R49). Without it no org is a trial. */
   orgs?: Pick<OrgStore, "getOrg">;
   /** Whether the install is a cloud one, whose orgs start with the placeholder monthly limits (R47); the spend routes show limits accordingly. */
@@ -106,6 +131,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   requestRunLimit?: RequestRunLimit;
   /** Task 12b: the org's connections (`/v1/app/connections*`). Without it (no connection secrets role) those routes answer NOT_FOUND. */
   connections?: ConnectionRouteDependencies["store"];
+  /** Plan 4 Task 16: the broker function's role ARN, for the trust policy a CloudWatch connection shows. */
+  brokerRoleArn?: string;
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */
   startRun?: (caller: AgentCaller, input: { requestId: string; project: string; agent: { agentId: AgentId; version?: number | "draft" }; input: RunInput }) => Promise<{ task: unknown }>;
   /** Task 32: what a spend request's approval does with the task it is about (the developer tasks' resume and continue-as-task). */
@@ -143,7 +170,7 @@ export function isAgentRoute(pathname: string): boolean {
   return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget)(\/|$)/.test(pathname)
     || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy)(\/|$)/.test(pathname)
     || /^\/v1\/app\/tasks\/[^/]+\/(continue-as-task|run-limit-request)$/.test(pathname)
-    || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors)(\/|$)/.test(pathname);
+    || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors|builtin-triggers|event-hooks)(\/|$)/.test(pathname);
 }
 
 // ---- bodies
@@ -173,7 +200,7 @@ const ProjectAiBodySchema = z.object({
 const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
 const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema }).strict();
 
-function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
+export function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
   const parsed = schema.safeParse(body);
   if (parsed.success) return parsed.data;
   const issue = parsed.error.issues[0];
@@ -182,6 +209,22 @@ function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
 }
 
 const notFound = () => agentXError("NOT_FOUND", "no agent has that ID");
+
+/** While an agent has a trigger that is on, changing the version it runs is for someone who manages it (Plan 4 Task 18). */
+async function requireManagerWhileTriggered(deps: AgentRouteDependencies, agent: AgentRecord, access: AgentAccessLevel): Promise<void> {
+  if (atLeast(access, "manage")) return;
+  if (await deps.triggerHooks?.hasEnabledTriggers(agent.orgId, { kind: "agent", agentId: agent.agentId }) === true) {
+    throw agentXError("FORBIDDEN", `${agent.name} has triggers turned on, so changing the version it runs needs ${whoNeeds(agent, "manage")}.`);
+  }
+}
+
+/** `body`, with the triggers the change turned off when there are any: an answer that turned nothing off is the answer it always was. */
+const withDisabled = <T extends object>(body: T, disabled: ReadonlyArray<unknown>): T | (T & { disabledTriggers: ReadonlyArray<unknown> }) => (disabled.length === 0 ? body : { ...body, disabledTriggers: disabled });
+
+/** The triggers a change turned off because they no longer qualify, for the answer. The change itself has been made. */
+async function recheck(deps: AgentRouteDependencies, orgId: OrgId, agentId: AgentId): Promise<Awaited<ReturnType<NonNullable<AgentRouteDependencies["triggerHooks"]>["recheckTriggersForTarget"]>>> {
+  return await deps.triggerHooks?.recheckTriggersForTarget(orgId, { kind: "agent", agentId }) ?? [];
+}
 
 /** `requireAgentAccess` for reading an agent: a built-in the company turned off is not found by a member, as it is missing from their list; owners and admins still see it. */
 async function requireReadableAgent(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, wanted: Parameters<typeof requireAgentAccess>[3]) {
@@ -496,21 +539,23 @@ async function publishAgent(deps: AgentRouteDependencies, caller: AgentCaller, a
   const input = parseBody(PublishBodySchema, body);
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "edit");
   if (!("owner" in agent)) throw notFound();
+  await requireManagerWhileTriggered(deps, agent, access);
   const { mark, replay } = await markRequest(deps, caller, "publish", agentId, input);
   if (replay !== undefined) return { version: await withOriginView(deps, caller, replay.result as AgentVersion), agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) };
   const result = await publishDraft(deps, caller, agent, { ...input, request: mark });
   if (!result.applied) return waiting(result);
-  return { version: await withOriginView(deps, caller, result.value), agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) };
+  return withDisabled({ version: await withOriginView(deps, caller, result.value), agent: customView(await deps.store.get(caller.orgId, agentId) ?? agent, access) }, await recheck(deps, caller.orgId, agentId));
 }
 
 async function rollback(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<unknown> {
   const input = parseBody(RollbackBodySchema, body);
   const { agent, access } = await requireAgentAccess(deps, caller, agentId, "edit");
   if (!("owner" in agent)) throw notFound();
+  await requireManagerWhileTriggered(deps, agent, access);
   const { mark, replay } = await markRequest(deps, caller, "rollback", agentId, input);
   if (replay !== undefined) return { agent: customView(replay.result as AgentRecord, access) };
   const result = await rollbackAgent(deps, caller, agent, { ...input, request: mark });
-  return result.applied ? { agent: customView(result.value, access) } : waiting(result);
+  return result.applied ? withDisabled({ agent: customView(result.value, access) }, await recheck(deps, caller.orgId, agentId)) : waiting(result);
 }
 
 async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, archive: boolean): Promise<Shown | StatusReply> {
@@ -518,7 +563,12 @@ async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, ag
   const { access } = await requireAgentAccess(deps, caller, agentId, "manage");
   const { mark, replay } = await markRequest(deps, caller, archive ? "archive" : "unarchive", agentId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
-  if (archive) return { agent: customView(await deps.store.archive(caller.orgId, agentId, caller.developerId, mark), access) };
+  if (archive) {
+    const archived = await deps.store.archive(caller.orgId, agentId, caller.developerId, mark);
+    // An archived agent starts nothing, so its triggers go off with it. Unarchiving turns none back on: a person does that.
+    await deps.triggerHooks?.disableTriggersForTarget(caller.orgId, { kind: "agent", agentId });
+    return { agent: customView(archived, access) };
+  }
   // Unarchiving puts the agent's budget back in its owner's total; an archived agent's budget counted for no one.
   const current = await deps.store.get(caller.orgId, agentId);
   const unarchived = current === undefined || current.status !== "archived"
@@ -616,7 +666,7 @@ async function adopt(deps: AgentRouteDependencies, caller: AgentCaller, agentId:
     return { pinnedVersion: settings.pinnedVersion, changes: diffRecipes(deps.store.builtinRecipe(agentId, previous), deps.store.builtinRecipe(agentId, settings.pinnedVersion)) };
   }
   const result = await adoptBuiltin(deps, caller, agentId, { ...input, request: mark });
-  return result.applied ? result.value : waiting(result);
+  return result.applied ? withDisabled(result.value, await recheck(deps, caller.orgId, agentId)) : waiting(result);
 }
 
 // ---- skills (Task 9)
@@ -685,7 +735,8 @@ async function putGuardrails(deps: AgentRouteDependencies, caller: AgentCaller, 
   const { mark, replay } = await markRequest(deps, caller, "guardrails", "", input);
   if (replay !== undefined) return replay.result;
   const result = await updateGuardrails(deps, caller, { ...input, request: mark });
-  return result.applied ? result.value : waiting(result);
+  // A built-in the company turned off starts nothing: the triggers of every built-in are looked at again.
+  return result.applied ? withDisabled(result.value, await deps.triggerHooks?.recheckBuiltinTriggers(caller.orgId) ?? []) : waiting(result);
 }
 
 // ---- project rosters (Task 10)
@@ -710,7 +761,8 @@ async function deleteRosterAgent(deps: AgentRouteDependencies, caller: AgentCall
   await checkRosterChange(deps, caller, project, { remove: agentId });
   const { mark, replay } = await markRequest(deps, caller, "roster-remove", `${project}/${agentId}`, input);
   if (replay !== undefined) return replay.result as Shown;
-  return { removed: await removeFromRoster(deps, { orgId: caller.orgId, project, agentId, request: mark }) };
+  const removed = await removeFromRoster(deps, { orgId: caller.orgId, project, agentId, request: mark });
+  return withDisabled({ removed }, removed ? await recheck(deps, caller.orgId, agentId) : []);
 }
 
 // ---- budgets (Task 28)
@@ -731,22 +783,35 @@ async function requireWithinTrial(deps: AgentRouteDependencies, orgId: OrgId, la
  * request holding `change`, and the answer is `202 { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }` (PF27). The same happens when the store
  * refuses it for the cap (the total moved after this read), with the figures as they are now. The request's R18 item is `mark`, so a repeat answers 202 again.
  */
-async function holdingCap<T>(
+function holdingCap<T>(
   deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, before: Parameters<typeof ownerShare>[0], after: Parameters<typeof ownerShare>[0],
+  change: OwnerCapChange, mark: RequestMark, run: (options: { ownerCap: OwnerCap }) => Promise<T>,
+): Promise<T | StatusReply> {
+  return holdingOwnerCap(deps, caller, { kind: "agent", agentId }, before, after, change, mark, run);
+}
+
+/**
+ * `holdingCap` for an agent or a chain (Plan 4 Task 5): the two kinds of budget are one monthly total, so a chain's change is held to the same effective
+ * total, at the same counter version, and asks the admin with the same `owner_cap` request, with its own words ("agent and chain budgets") and its own scope.
+ */
+export async function holdingOwnerCap<T>(
+  deps: AgentRouteDependencies, caller: AgentCaller, subject: { kind: "agent"; agentId: AgentId } | { kind: "chain"; chainId: ChainId },
+  before: Parameters<typeof ownerShare>[0], after: Parameters<typeof ownerShare>[0],
   change: OwnerCapChange, mark: RequestMark, run: (options: { ownerCap: OwnerCap }) => Promise<T>,
 ): Promise<T | StatusReply> {
   const shares = async () => {
     const survivor = async (share: ReturnType<typeof ownerShare>) => (share === undefined ? undefined : { ...share, owner: await resolveSurvivor(deps, caller.orgId, share.owner) });
     const [from, to] = [await survivor(ownerShare(before)), await survivor(ownerShare(after))];
-    // Fix round 2 (N-1): the agent's top-up for the month goes with it to an owner it newly counts for.
-    const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), { kind: "agent", agentId }) : 0;
+    // Fix round 2 (N-1): its top-up for the month goes with it to an owner it newly counts for.
+    const topUpScope: BudgetScope = subject.kind === "agent" ? { kind: "agent", agentId: subject.agentId } : { kind: "chain", chainId: subject.chainId };
+    const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), topUpScope) : 0;
     return ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
   };
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
     const monthly = ownerShare(after)?.usd || undefined; // a $0 base has no new limit to name
     const { record, message } = await requestOwnerCap(deps, {
-      orgId: caller.orgId, agentId, requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
+      orgId: caller.orgId, ...(subject.kind === "agent" ? { agentId: subject.agentId } : { chainId: subject.chainId }), requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
       ...(monthly === undefined ? {} : { newLimitUsd: monthly }), ...(newOwner === undefined ? {} : { newOwner }),
     });
     return new StatusReply(202, { status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message });
@@ -765,7 +830,7 @@ async function holdingCap<T>(
 }
 
 /** A request whose first answer was a 202 (it waits for an org admin) answers 202 again (R18). */
-const waitingReplay = (result: unknown): StatusReply | undefined =>
+export const waitingReplay = (result: unknown): StatusReply | undefined =>
   (typeof result === "object" && result !== null && (result as { status?: unknown }).status === "NEEDS_ADMIN_APPROVAL" ? new StatusReply(202, result) : undefined);
 
 async function projectAiView(deps: AgentRouteDependencies, orgId: OrgId, stored: { settings: ProjectAiSettings; revision: number }): Promise<Shown> {
@@ -833,7 +898,7 @@ async function putAgentBudget(deps: AgentRouteDependencies, caller: AgentCaller,
   const change = { ...(input.monthlyUsd === undefined ? {} : { monthlyUsd: input.monthlyUsd }), ...(input.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: input.maxPerRunUsd }) };
   const written = await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { monthlyBudgetUsd }), { op: "set_budget", budget: change }, mark, (options) => deps.store.setBudget(caller.orgId, agentId, change, caller.developerId, mark, options));
   if (written instanceof StatusReply) return written;
-  return { agent: await shown(written) };
+  return withDisabled({ agent: await shown(written) }, await recheck(deps, caller.orgId, agentId));
 }
 
 const SPEND_POLICY_PATH = "/v1/app/org/spend-policy";
@@ -866,7 +931,7 @@ const PROJECT_AGENTS_PATH = /^\/v1\/app\/projects\/([^/]+)\/agents(?:\/([^/]+))?
 const SKILL_PATH = /^\/v1\/app\/skills(?:\/([^/]+)(?:\/(content))?)?$/;
 const AGENT_PATH = /^\/v1\/app\/agents(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}))?)?)?$/;
 
-function jsonBody(request: AdaptedHttpRequest): unknown {
+export function jsonBody(request: AdaptedHttpRequest): unknown {
   if (request.body === undefined || request.body === "") return {};
   try {
     return JSON.parse(request.body) as unknown;
@@ -889,7 +954,7 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (isSpendRequestRoute(url.pathname)) return routeSpendRequests(deps, caller, request, url);
   if (isConnectionRoute(url.pathname)) {
     if (deps.connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
-    return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);
+    return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.brokerRoleArn === undefined ? {} : { brokerRoleArn: deps.brokerRoleArn }) }, caller, request, url);
   }
   // Task 14b's `…/connectors/github/comment-triggers` is matched before Task 13's project connectors, which would otherwise take every `…/connectors/…` path (PF24).
   const commentTriggers = COMMENT_TRIGGERS_PATH.exec(url.pathname);
@@ -935,6 +1000,14 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     }
     throw agentXError("NOT_FOUND", "route not found");
   }
+  // Plan 4 Task 18: the switch for the triggers built-in agents suggest, and the triggers of an agent.
+  const builtinTriggers = await routeBuiltinTriggers(deps, caller, request, url);
+  if (builtinTriggers !== undefined) return builtinTriggers;
+  const agentTriggers = await routeAgentTriggers(deps, caller, request, url);
+  if (agentTriggers !== undefined) return agentTriggers;
+  // Plan 4 Task 19: the hooks vendors post a project's events to.
+  const eventHooks = await routeEventHooks(deps, caller, request, url);
+  if (eventHooks !== undefined) return eventHooks;
   const skillPath = SKILL_PATH.exec(url.pathname);
   if (skillPath !== null) {
     const [, skillId, sub] = skillPath;

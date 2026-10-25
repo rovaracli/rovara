@@ -25,11 +25,16 @@ import { guardedRoots, problemsOf, programOf, rowsOf, scanProgram, sourceFiles, 
 
 const ROWS: readonly Row[] = [
   ["agents/write-gate.ts", "executeWrite", "principal", ".ownerKey*2"],
+  // Plan 4: a cancel's idempotency key (read by a chain to find that its cancel of a step's task was taken, and built by the task cancel) is made from the task's principal (`ownerKey`) and its workspace; it never changes
+  ["chains/runner.ts", "endedByOwnTimeoutCancel", "principal", ".ownerKey*2"],
+  ["developer/task-records.ts", "taskActionRequestKey", "principal", ".ownerKey"],
   // a take-over (Plan 5 Task 12b): the default payer of a task that recorded none is its creator's (money, as in `paymentOfTask`; the take-over then writes it explicitly), and the
   // creator's task-list row is the one the taker's row is copied from (it calls `ownerFenceOf` for the owner the write is fenced on)
   ["agent-sessions/take-over.ts", "payerOfSession", "money", ".developerId"],
   ["agent-sessions/take-over.ts", "registerSessionTakeOverApprovals", "money", ".developerId"],
   ["agent-sessions/take-over.ts", "taskItems", "index", ".developerId*2"],
+  // a merge (Plan 5 Task 21): whether a person's task-list row is a taker's copy, which moves with them (it asks the owner functions)
+  ["developer/task-records.ts", "holdsTaskByTakeOver", "index", ".developerId"],
   ["spend/payer.ts", "paymentOfTask", "money", ".developerId*2", ".startedBy"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
@@ -64,7 +69,6 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks.ts", "feedbackReviewWorkspaceReady", "principal", "taskOwnerKey()", ".developerId"],
   ["aws/developer-tasks.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "commentAnswerSection", "principal", ".ownerKey"],
-  ["aws/developer-tasks.ts", "cancelTask", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "finishTaskClose>closing", "index", ".developerId"],
   ["aws/developer-tasks.ts", "releaseFinishedTask>rest", "index", ".developerId"],
   ["aws/developer-tasks.ts", "shareItems", "index", ".developerId"],
@@ -85,13 +89,13 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/summary.ts", "requestSlotsOf", "authority", ".startedBy", ".developerId*3"],
   ["agents/agent-tools-routes.ts", "frameOf", "principal", ".ownerKey*2"],
   ["agents/agent-tools-routes.ts", "regrantAgentTool", "principal", ".ownerKey"],
-  ["aws/broker.ts", "createAwsBrokerHandler", "other-record", ".ownerKey"],
+  ["aws/broker.ts", "createAwsBrokerHandler", "other-record", ".ownerKey*2"],
   ["aws/broker.ts", "sharedThread", "principal", "taskOwnerKey()"],
   ["aws/broker.ts", "verifiedSharedStopBinding", "principal", ".developerId*3", ".ownerKey*4", "taskOwnerKey()"],
   ["aws/broker.ts", "sharedStopFences", "principal", ".developerId*2", ".ownerKey*2"],
   ["aws/broker.ts", "taskOperationParts", "money", ".developerId"],
   ["aws/broker.ts", "handleModelAccess>loadScope", "money", ".developerId"],
-  ["aws/broker.ts", "workflowE2EPresentation", "principal", ".ownerKey"],
+  ["aws/broker.ts", "workflowE2EPresentationDetailed", "principal", ".ownerKey"],
   ["aws/broker.ts", "currentWorkflowFeedbackApproval", "principal", ".ownerKey"],
   ["aws/broker.ts", "readFeedbackBundlesForCritic", "principal", ".ownerKey*2"],
   ["aws/broker.ts", "describeFeedbackFixes>update", "principal", ".ownerKey"],
@@ -108,7 +112,11 @@ const ROWS: readonly Row[] = [
   ["aws/developer-task-notifier.ts", "deliverRefusal", "other-record", ".slackUserId*2"],
   ["aws/developer-task-notifier.ts", "deliverChatGptFallback", "money", ".developerId", ".slackUserId"],
   ["aws/developer-task-notifier.ts", "deliver", "history", ".developerName", ".slackUserId"],
-  ["aws/developer-task-notifier.ts", "createAwsNotifierHandler>workflowE2EBlocks", "principal", ".ownerKey"],
+  // Round 4 (mainline M1.3/M1.4): a round's stored screenshots and rows are filed under the task's principal (`ownerKey`) in object keys, which never changes.
+  ["aws/developer-task-notifier.ts", "workflowE2ENotifierBlocks", "principal", ".ownerKey"],
+  ["aws/workflow-e2e-artifacts.ts", "loadStoredScenarioResults", "principal", ".ownerKey"],
+  ["aws/workflow-e2e-artifacts.ts", "loadWorkflowE2EArtifact", "principal", ".ownerKey"],
+  ["aws/workflow-e2e-artifacts.ts", "storeWorkflowE2EArtifacts", "principal", ".ownerKey"],
   ["aws/task-person-runtime.ts", "identityDocumentClient>send", "other-record", ".developerId*3"],
   ["aws/task-person-runtime.ts", "createTaskPersonRuntime>stateAuthorityWitnessForOwnerActor", "caller-actor", "taskOwnerKey()"],
   ["aws/plan-evidence-handler.ts", "runPlanEvidenceJob", "principal", ".ownerKey"],
@@ -146,6 +154,8 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/create.ts", "ensureTaskSession", "history", ".developerId*2", ".startedBy"],
   ["agent-sessions/create.ts", "startedText", "history", ".startedBy*4"],
   ["agent-sessions/retry.ts", "repairLink", "other-record", ".developerId"],
+  // Task 14 minor: a retry is recorded as the caller's only when the idempotency item of ITS request id exists (the key is the task's owner key, as Plan 3 writes it)
+  ["agent-sessions/retry.ts", "workflowMovedOn", "principal", ".ownerKey"],
   ["agents/agent-tools-routes.ts", "callAgentTool>holdRecord", "principal", ".ownerKey"],
   ["agents/agent-tools-routes.ts", "callAgentTool>replayOfRecorded", "principal", ".ownerKey*2"],
   ["aws/activity-index.ts", "failureItem", "history", ".developerName"],

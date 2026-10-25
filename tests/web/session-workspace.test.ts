@@ -10,6 +10,7 @@ import { renderUi } from "./support/render.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
+import { chainRunViewOf } from "./support/chain-fixture.js";
 import { taskFixture, SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 function setup(value: unknown = fixture(), hash = "", onComment = vi.fn()) {
  const session = SessionViewReaderSchema.parse(value), f = fakeHost();const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session: SessionViewReaderSchema.parse(session), onComment })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID + hash] });
@@ -61,7 +62,7 @@ it("uses only the server-provided anchor when discussing a changed file", () => 
  const other = setup(fixture(), "#changes");expect(screen.queryByRole("button", { name: "Comment on src/refund.ts" })).toBeNull();other.close();
 });
 it("keeps the missing chain contract as an explicit safe seam", () => {
- const f = setup(fixture({ kind: "chain", body: { kind: "chain", chain: { privateTitle: "Hidden chain detail" } } }));expect(screen.getByText("Details aren't available for this session.")).toBeTruthy();expect(screen.queryByText("Hidden chain detail")).toBeNull();f.close();
+ const f = setup(fixture({ kind: "chain", body: { kind: "chain", chain: chainRunViewOf("crn_" + "a".repeat(20)) } }));expect(screen.getByText("Details aren't available for this session.")).toBeTruthy();expect(screen.queryByText("Hidden chain detail")).toBeNull();f.close();
 });
 for (const theme of ["light", "dark"] as const) it("keeps the workspace accessible in " + theme, async () => {
  const f = setup(fixture(), "#changes");document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
