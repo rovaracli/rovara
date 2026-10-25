@@ -8,6 +8,7 @@ import {
   INDEX_EXPIRY_ATTRIBUTE,
   LOCAL_TOOLS,
   agentRequestKey,
+  deviceCommandKey,
   deviceKey,
   memberDevicesKey,
   orgSettingsKey,
@@ -18,6 +19,7 @@ import {
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { checkLocalAgentAllowed, readLocalAgentPolicy, readLocalAgentPolicyWithRevision } from "../../packages/broker/src/devices/policy.js";
 import { isDeviceRoute, routeDeviceRequest, type DeviceRouteDependencies } from "../../packages/broker/src/devices/routes.js";
+import { clearOrgSessions } from "../../packages/broker/src/agent-sessions/lifecycle.js";
 import { readDevice } from "../../packages/broker/src/devices/store.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -305,6 +307,24 @@ describe("removing a device", () => {
       orgId: ORG_A, developerId: PRIYA, deviceId: device.deviceId, revokedAt: new Date(T0).toISOString(), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(T0 / 1000) + 365 * 86_400,
     });
     expect(await w.devicesOf(priya)).toEqual([]);
+  });
+
+  it("remove a device, then close the org: the device partition is gone (Task 21's close finds the revoked device through the marked list row)", async () => {
+    const w = world();
+    const priya = w.as(PRIYA);
+    const removed = await w.register(priya, "Priya's old MacBook");
+    const live = await w.register(priya, "Priya's new MacBook");
+    w.db.set({ ...deviceCommandKey(ORG_A, removed.deviceId, 1), entityType: "DEVICE_COMMAND", orgId: ORG_A, deviceId: removed.deviceId, command: "stop" });
+    expect(w.body(await w.call(priya, "DELETE", `/v1/app/devices/${removed.deviceId}`))).toEqual({ deviceId: removed.deviceId, revoked: true });
+    expect(w.meta(ORG_A, removed.deviceId)).toHaveProperty("revokedAt");
+
+    await clearOrgSessions({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, ORG_A);
+
+    const partition = (deviceId: string) => w.db.find((item) => item.pk === deviceKey(ORG_A, deviceId).pk);
+    expect(partition(removed.deviceId)).toEqual([]);
+    expect(partition(live.deviceId)).toEqual([]);
+    expect(w.row(ORG_A, PRIYA, removed.deviceId)).toBeUndefined();
+    expect(w.row(ORG_A, PRIYA, live.deviceId)).toBeUndefined();
   });
 
   it("another member's DELETE gets 404 and changes nothing; an org admin's succeeds", async () => {
