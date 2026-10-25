@@ -262,18 +262,20 @@ describe("the named TEST proof-only installation gate", () => {
     // Merge of Plan 3 into Plan 5: the named and foreign digests were regenerated again for the merged template (Plan 5's `ANY /s/{proxy+}` route on top of the above).
     // Plan 5, Task 8: the realtime events API (its API, namespace, authorizer, the authorizer's and publishers' grants, the token key's split deny and the broker's one more
     // name) moved the named and foreign digests; the legacy template has no sign-in stack and none of it, and its digests did not move.
+    // Merge of Plans 4 and 5 (chains-sessions-merge): the named and foreign digests were taken again from the synthesized merged template (Plan 4's schedule group, queue and roles beside Plan 5's
+    // realtime API and session routes, and the fixed-name roles' lookup grant); the legacy digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "03c175e3e8ff9d57a6112b9f1760680009fbf453cd5f605457db52c8e7f0bb75",
-        withoutRoute: "546e32f5e3395e2070749b095d0653c73be7fa26b5bf1211722bc17b345dc446",
+        withRoute: "caf25e932063b06af208ba6d6ba0c053d91600a3a660d1dca226773526b21cab",
+        withoutRoute: "58f9446f10c1848b79d628457c95c44cd68a93710309dc4e1a7d2971907c71d2",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "5e2b22cbbef98cc4b41c0caabcc5bac46a3ea6aeb9526cd8ab7f03ced9faaa1e",
-        withoutRoute: "638aca94822e202c6ad63479bd8226a38332915df88a397d0fa2211bb6df7ae4",
+        withRoute: "7bacfdf7fc1f76c167ba128ff174c80b8c1b0bd69d667ac6b5c5e09ec209e37d",
+        withoutRoute: "de127de27e9c50dbeabef4bb4d29a136d3a56db21b3b3b951aa3a29c5aadd662",
       },
       {
         label: "legacy",

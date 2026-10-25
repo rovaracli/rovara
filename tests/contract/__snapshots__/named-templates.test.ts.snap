@@ -376,6 +376,70 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         ],
                       ],
                     },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-broker-role",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-model-proxy-task",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-model-access-probe",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-chain-schedule",
+                        ],
+                      ],
+                    },
                   ],
                   "Sid": "IamFixedNameRolesNotYetCreated",
                 },
@@ -993,6 +1057,70 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx-staging-connector-secrets",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-broker-role",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-model-proxy-task",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-model-access-probe",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-chain-schedule",
                     ],
                   ],
                 },
