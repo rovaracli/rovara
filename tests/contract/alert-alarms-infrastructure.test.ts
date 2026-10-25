@@ -156,7 +156,8 @@ describe("Plan 4 Task 8 (R41): the autonomous write approver selector alarm (env
     const [filter] = filters();
     expect(filter!.Properties.MetricTransformations).toEqual([{ MetricNamespace: "AgentX/staging", MetricName: "ChainWriteApproverSelectorFailures", MetricValue: "1" }]);
     // On the broker function's own log group, the one the broker's other metric filters read.
-    const others = Object.values(controlPlane.findResources("AWS::Logs::MetricFilter", { Properties: { FilterPattern: '{ $.event = "github.install_request_notice_failed" }' } })) as Array<{ Properties: Record<string, unknown> }>;
+    // (The GitHub install-request notice filter was the other one until it became Rovara Cloud only, which this stack is not; the eval batch watcher's is on the broker's group too.)
+    const others = Object.entries(controlPlane.findResources("AWS::Logs::MetricFilter")).filter(([id]) => id.startsWith("BrokerLogsEvalBatchWatcher")).map(([, resource]) => resource as { Properties: Record<string, unknown> });
     expect(others).toHaveLength(1);
     expect(filter!.Properties.LogGroupName).toEqual(others[0]!.Properties.LogGroupName);
   });

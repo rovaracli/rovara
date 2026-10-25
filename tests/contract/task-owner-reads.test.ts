@@ -25,6 +25,9 @@ import { guardedRoots, problemsOf, programOf, rowsOf, scanProgram, sourceFiles, 
 
 const ROWS: readonly Row[] = [
   ["agents/write-gate.ts", "executeWrite", "principal", ".ownerKey*2"],
+  // Plan 4: a cancel's idempotency key (read by a chain to find that its cancel of a step's task was taken, and built by the task cancel) is made from the task's principal (`ownerKey`) and its workspace; it never changes
+  ["chains/runner.ts", "endedByOwnTimeoutCancel", "principal", ".ownerKey*2"],
+  ["developer/task-records.ts", "taskActionRequestKey", "principal", ".ownerKey"],
   // a take-over (Plan 5 Task 12b): the default payer of a task that recorded none is its creator's (money, as in `paymentOfTask`; the take-over then writes it explicitly), and the
   // creator's task-list row is the one the taker's row is copied from (it calls `ownerFenceOf` for the owner the write is fenced on)
   ["agent-sessions/take-over.ts", "payerOfSession", "money", ".developerId"],
@@ -64,7 +67,6 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks.ts", "feedbackReviewWorkspaceReady", "principal", "taskOwnerKey()", ".developerId"],
   ["aws/developer-tasks.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "commentAnswerSection", "principal", ".ownerKey"],
-  ["aws/developer-tasks.ts", "cancelTask", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "finishTaskClose>closing", "index", ".developerId"],
   ["aws/developer-tasks.ts", "releaseFinishedTask>rest", "index", ".developerId"],
   ["aws/developer-tasks.ts", "shareItems", "index", ".developerId"],

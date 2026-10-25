@@ -169,6 +169,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/messages.ts",
       // Plan 5, Task 11a: the queued-steer count of a session expires with the session; the steer messages share messages.ts's items (steer.ts writes the count).
       "packages/broker/src/agent-sessions/steer.ts",
+      // Plan 5, Tasks 12b and 13: the request items of a stop, a retry and a take-over (their replay keys), and the take-over's follow-up mark, expire with the session's retention.
+      "packages/broker/src/agent-sessions/stop.ts", "packages/broker/src/agent-sessions/retry.ts", "packages/broker/src/agent-sessions/take-over.ts",
       // Plan 5, Task 8: each person's change notices (the catch-up feed) expire a week after they are written.
       "packages/broker/src/realtime/changes.ts",
       // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
