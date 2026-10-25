@@ -51,7 +51,7 @@ it("does not display cached project details or controls after access is refused"
  const f = setup();await screen.findByRole("heading", { name: "payments" });f.answer({ error: { code: "PROJECT_NOT_FOUND", message: "Not found." } }, 404);await f.query.invalidateQueries({ queryKey: ["project", "payments", "overview"] });await screen.findByRole("heading", { name: "Not found" });expect(screen.queryByRole("button", { name: "New session" })).toBeNull();expect(screen.queryByText("Keep customer payments dependable.")).toBeNull();f.close();
 });
 it("validates start identities and refuses the excluded code route before transport", async () => {
- const f = fakeHost(), api = createRunApi(f.host);await expect(async () => api.startWork("rovara-code", { project: "payments", text: "Fix it" })).rejects.toThrow();await expect(async () => api.startWork("../outside", { project: "payments", text: "Fix it" })).rejects.toThrow();expect(f.request).not.toHaveBeenCalled();
+ const f = fakeHost(), api = createRunApi(f.host);await expect(async () => api.startWork("rovara-code", { project: "payments", text: "Fix it" })).rejects.toThrow();await expect(async () => api.startWork("../outside", { project: "payments", text: "Fix it" })).rejects.toThrow();await expect(async () => api.startWork("agt_aaaaaaaaaaaaaaaaaaaa", { project: "../outside", text: "Fix it" })).rejects.toThrow();await expect(async () => api.startWork("agt_aaaaaaaaaaaaaaaaaaaa", { project: "payments", text: "   " })).rejects.toThrow();await expect(async () => api.startWork("agt_aaaaaaaaaaaaaaaaaaaa", { project: "payments", text: "x".repeat(4001) })).rejects.toThrow();expect(f.request).not.toHaveBeenCalled();
 });
 for (const theme of ["light", "dark"] as const) it("has an accessible project overview in " + theme, async () => { const f = setup(undefined, { theme });await screen.findByRole("heading", { name: "payments" });await expectNoAxeViolations(f.container);f.close(); });
 it("keeps an unrecognized future agent readable without inventing a profile or start target", async () => {
@@ -61,4 +61,16 @@ it("keeps an unrecognized future agent readable without inventing a profile or s
 it("refreshes running work on an authenticated session update without leaving the project", async () => {
  const f = setup();await screen.findByText("Planning");await waitFor(() => expect(f.sockets).toHaveLength(1));const socket = f.sockets[0]!.socket;socket.open();socket.message({ type: "connection_ack", connectionTimeoutMs: 900_000 });const subscription = socket.sent.find(frame => frame.type === "subscribe")!;
  const next = projectFixture();next.running[0]!.step = "Building";f.answer(next);socket.message({ type: "data", id: subscription.id, event: [JSON.stringify({ type: "session.updated", sessionId: next.running[0]!.sessionId, revision: 2 })] });await screen.findByText("Building");expect(screen.getByRole("heading", { name: "payments" })).toBeTruthy();f.close();expect(socket.closed).toBe(true);
+});
+
+it("reuses a start's request identity when the same problem is retried after a refusal", async () => {
+ let calls = 0;const send = vi.fn(async () => ++calls === 1 ? { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Try starting again." } } } : { status: 202, body: { task: taskFixture({ sessionId: id }) } });
+ const f = setup(undefined, { send });fireEvent.click(await screen.findByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));fireEvent.change(await screen.findByRole("textbox", { name: "What should Payments expert do?" }), { target: { value: "Investigate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start session" }));await screen.findByText("Try starting again.");fireEvent.click(screen.getByRole("button", { name: "Start session" }));await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+ const writes = f.request.mock.calls.filter(([request]) => request.method === "POST").map(([request]) => request.body as { requestId: string });expect(writes[0]?.requestId).toBe(writes[1]?.requestId);f.close();
+});
+it("hides project data and controls after a non-404 permission refusal too", async () => {
+ const f = setup();await screen.findByRole("heading", { name: "payments" });f.answer({ error: { code: "FORBIDDEN", message: "Your project access ended." } }, 403);await f.query.invalidateQueries({ queryKey: ["project", "payments", "overview"] });await screen.findByText("Your project access ended.");expect(screen.queryByText("Keep customer payments dependable.")).toBeNull();expect(screen.queryByRole("button", { name: "New session" })).toBeNull();f.close();
+});
+it("does not invent a per-merge cost before any pull request merged this month", async () => {
+ const value = projectFixture();value.budget = { month: "2026-10", spentUsd: 812, limitUsd: 2000, mergedPullRequests: 0 };const f = setup(value);await screen.findByText("No merged pull requests yet this month");expect(screen.queryByText("$3.90")).toBeNull();f.close();
 });

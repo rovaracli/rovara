@@ -104,3 +104,6 @@ it("offers no action without a capability and uses DELETE for Following", async 
  const none = setup({ tile: liveFixture({ actions: [] }) });for (const name of ["Follow", "Take over", "Stop", "Retry"]) expect(screen.queryByRole("button", { name })).toBeNull();none.close();
  const f = setup({ tile: liveFixture({ following: true }) });fireEvent.click(screen.getByRole("button", { name: "Following" }));await waitFor(() => expect(f.changed).toHaveBeenCalledTimes(1));expect(f.request.mock.calls[0]?.[0]).toMatchObject({ method: "DELETE", path: "/v1/app/sessions/" + SESSION_FIXTURE_ID + "/follow" });f.close();
 });
+it("does not send an invalid project identifier from a tampered filter URL", async () => {
+ const f = setup({ screen: true, path: "/app/live?project=..%2Foutside" });await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(f.request.mock.calls.filter(([request]) => request.path.startsWith("/v1/app/live")).every(([request]) => !request.path.includes("project="))).toBe(true);f.close();
+});
