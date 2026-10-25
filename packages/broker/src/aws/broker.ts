@@ -394,7 +394,7 @@ import type { ModelAccess } from "../model-proxy/access.js";
 import { changeBudgets, keyIdOf, mintKeyHealing, taskSpendBaseline, type OrgBudgetSettings } from "../org/budget.js";
 import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../spend/admission.js";
 import { blockOperationKeys, forgetKey, registerKey, type LedgerDependencies } from "../spend/ledger.js";
-import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTask, resolvePayer } from "../spend/payer.js";
+import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../spend/payer.js";
 import type { settlementBudgets} from "../spend/settlement-job.js";
 import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
@@ -6109,6 +6109,8 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   });
   // Task 26: the route chosen when the operation was built, checked against the live sources now (once: a retry after a lost race keeps it). An operation built
   // before routing has none, and is keyed as it was.
+  const merges = dependencies.developer === undefined ? undefined : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  const resolveMember = (developerId: string): Promise<string> => (merges === undefined ? Promise.resolve(developerId) : followMerges(merges, developerId));
   const routing = routingOf(dependencies);
   const route = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
@@ -6121,7 +6123,8 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     const withAgents = dependencies.agents !== undefined;
     if (task !== undefined) {
       if (task.orgId === undefined) return undefined;
-      const payment = withAgents ? paymentOfTask(task) : undefined;
+      // A payer recorded before a merge counts against the member they are now (Task 21, M-3); a merge pointer that can't be read is the proxy's retryable answer.
+      const payment = withAgents ? await unreadable("payer", () => paymentOfTaskResolved(task, resolveMember)) : undefined;
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];

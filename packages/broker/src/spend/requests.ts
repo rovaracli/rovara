@@ -20,6 +20,7 @@ import { StatusReply } from "../aws/status-reply.js";
 import { budgetOwnerOf, ownerVersionItem, withBudgetFields } from "./owner-total.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import { askedRunLimit, type RequestRunLimit, type RunLimitRequest } from "./estimate.js";
+import { writeChanges } from "../realtime/changes.js";
 import { checkTime, registerMemberMover, registerOwnerCapConfirmation, type LifecycleDeps } from "../agents/lifecycle.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { failedIndexes, readRequest, requestMarkItem, type RequestMark, type TransactItem } from "../agents/table-writes.js";
@@ -84,6 +85,7 @@ const ENDED_WORDS: Record<NonNullable<SpendRequestRecord["endedBecause"]>, strin
   task_closed: "This task was closed, so nobody can decide this now.",
   target_left: "The person this change names is no longer a member of your organization, so it can't apply now.",
   owner_moved: "This agent's budget now counts for someone else than the person this change was checked for, so it can't apply. Nothing was changed; ask again.",
+  approver_left: "Everyone who could decide this has left your organization, so it was closed without a decision. Ask again if it is still needed.",
 };
 const closed = (record: Pick<SpendRequestRecord, "status" | "endedBecause">) =>
   agentXError("APPROVAL_CLOSED", record.status !== "EXPIRED" ? "This request was already decided." : record.endedBecause === undefined ? "This request expired, so nobody can decide it now." : ENDED_WORDS[record.endedBecause]);
@@ -2036,12 +2038,64 @@ async function moveRequests(deps: LifecycleDeps, orgId: OrgId, from: string, to:
   }
 }
 
+/**
+ * `from` left an org that has no owner to hand anything to (Plan 5 Task 21, review M-5). Every open request that lists them as an approver goes to the approvers who are left; when
+ * no one else is listed it ends (`approver_left`, with the words the asker reads) and the asker is told with a `home.changed` change notice (ids only). It is never approved. Conditional
+ * on the request still being PENDING and listing the same approvers; repeatable.
+ */
+async function orphanRequests(deps: LifecycleDeps, orgId: OrgId, from: string): Promise<void> {
+  const open = await queryAll(deps, openSpendRequestsKey(orgId, "2000-01-01T00:00:00.000Z", "spr_0").pk);
+  for (const item of open) {
+    const id = item["spendRequestId"];
+    if (typeof id !== "string") continue;
+    checkTime(deps);
+    for (let tried = 0; tried < 3; tried += 1) {
+      const record = await getSpendRequest(deps, orgId, id);
+      if (record === undefined || record.status !== "PENDING" || !record.approverIds.includes(from)) break;
+      const rest = record.approverIds.filter((approver) => approver !== from);
+      if (rest.length === 0) {
+        if (await expireOne(deps, record, "approver_left")) {
+          const task = await readTask(deps, orgId, record.taskId);
+          const asker = record.requestedBy.kind === "member" ? record.requestedBy.developerId : task === undefined ? undefined : tryEffectiveTaskOwner(task)?.developerId;
+          if (asker !== undefined && asker !== from) {
+            await writeChanges({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, [{ developerId: asker, notice: { type: "home.changed", revision: 0 }, at: iso(deps.now()) }]);
+          }
+          break;
+        }
+        continue;
+      }
+      const at = iso(deps.now());
+      const events = await tryAuditEvents(deps, () => [auditSpendRequestRerouted({
+        orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: auditOccurrence(id, "orphaned", at), spendRequestId: id, kind: record.kind, mode: "removed", from, to: rest[0]!,
+      })]);
+      try {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+          {
+            Update: {
+              TableName: deps.tableName, Key: spendRequestKey(orgId, id), UpdateExpression: "SET approverIds = :rest, movedBy = :system, movedAt = :at",
+              ConditionExpression: "#status = :pending AND approverIds = :seen", ExpressionAttributeNames: { "#status": "status" },
+              ExpressionAttributeValues: { ":rest": rest, ":seen": record.approverIds, ":pending": "PENDING", ":system": "system", ":at": at },
+            },
+          },
+          { Put: { TableName: deps.tableName, Item: { ...openSpendRequestsKey(orgId, record.createdAt, id), entityType: "SPEND_REQUEST_OPEN", orgId, spendRequestId: id, approverIds: rest } } },
+          ...events.flatMap((event) => auditPending(deps, event)),
+        ] }));
+        await flushAuditEvents(deps, events);
+        break;
+      } catch (error) {
+        if (failedIndexes(error) === undefined || tried >= 2) throw error;
+      }
+    }
+  }
+}
+
 registerOwnerCapConfirmation((deps, orgId, owner, cause, totals) => confirmOwnerMove(deps as SpendRequestDependencies, orgId, owner, cause, totals));
 
 registerMemberMover({
   name: "spend-requests",
   merged: (deps, { orgId, survivorId, duplicateId }) => moveRequests(deps, orgId, duplicateId, survivorId, "merged"),
   removed: (deps, { orgId, developerId, successorId }) => moveRequests(deps, orgId, developerId, successorId, "removed"),
+  orphaned: (deps, { orgId, developerId }) => orphanRequests(deps, orgId, developerId),
 });
 
 // ---- the confirmation page's kind (PF21)

@@ -9,8 +9,13 @@
 // the time its caller gave it (`checkTime`) leaves the marker for the settlement run's drain, and every step can be repeated: a step looks at what is there now and writes
 // conditionally on it. Every key is built from the org the marker names, and only keys of the person are read or written.
 //
+// A merge is not a take-over: it writes no `session.owner_changed` audit event, does not refuse a Mac session and does not check the survivor's limits. It is the same person under
+// two sign-ins (Plan 2's merge carries its own audit and moves their budget), so no spend is put on anyone new. A share the survivor already held on a session the duplicate owned is
+// left standing once the session is theirs (harmless).
+//
 // An org CLOSED: `clearOrgSessions` deletes the org's live index and presence, its open and ended work entries, its devices and its change feeds, and gives everything else of the
 // sessions an expiry 30 days on (vision 11b). An expiry is only ever shortened, so a repeat never pushes one out.
+import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENTX_NAME_PATTERN,
@@ -47,7 +52,7 @@ import { checkTime, registerMemberMover } from "../agents/lifecycle.js";
 import { errorName, failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { paymentOfTask } from "../spend/payer.js";
-import { UNNAMED_MEMBER, currentOwnerAfterMerge, holdsTaskByTakeOver, ownerFenceOf, taskIndexKey, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { UNNAMED_MEMBER, currentOwnerAfterMerge, holdsTaskByTakeOver, ownerFenceOf, taskIndexKey, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { removeFollower } from "./followers.js";
 import { batchGetItems, keyText } from "./live.js";
 import { ENDED_DRAIN_CURSOR_KEY } from "./summary.js";
@@ -256,12 +261,13 @@ export async function onSessionMembersMerged(deps: SessionLifecycleDeps, merge: 
   if (survivorId === duplicateId) throw invalid("a member cannot be merged into itself");
   const survivor = await survivorOf(deps, survivorId);
   const touched = new Set<string>(await moveOwnedSessions(deps, orgId, duplicateId, survivor));
-  await moveCreatedTasks(deps, orgId, duplicateId, survivor);
   await moveShares(deps, orgId, duplicateId, survivor, touched);
   for (const sessionId of await liveSessionIds(deps, orgId)) touched.add(sessionId);
   await rewriteSharers(deps, orgId, duplicateId, survivor, [...touched]);
   await moveFollows(deps, orgId, duplicateId, survivorId, [...touched]);
   await moveDevices(deps, orgId, duplicateId, survivorId);
+  // The tasks come last: the steps above consume what they read, so a duplicate with a great many tasks (or a run that stops early) can't keep them from finishing.
+  await moveCreatedTasks(deps, orgId, duplicateId, survivor);
 }
 
 /** The duplicate's "mine" rows: each session's owner, its live tile, its row and (for a task) the task's current owner and the taker's task-list row, in one transaction on what was read. */
@@ -322,34 +328,48 @@ async function moveOwnedSession(deps: SessionLifecycleDeps, orgId: OrgId, duplic
       });
     }
     const subject = isRecord(header["subject"]) ? header["subject"] : undefined;
-    if (subject?.["kind"] === "task" && typeof subject["taskId"] === "string") items.push(...await taskItems(deps, orgId, subject["taskId"], duplicateId, survivor, at));
+    if (subject?.["kind"] === "task" && typeof subject["taskId"] === "string") {
+      const plan = await taskPlan(deps, orgId, subject["taskId"], duplicateId, survivor, at);
+      // The session and its task never disagree about who owns them: a session moves only with its task (or when the task is the survivor's already, or gone). Otherwise both wait for a later run.
+      if (plan.hold === "other") {
+        log(deps, "agent_session.lifecycle_session_left", { orgId, sessionId });
+        return;
+      }
+      items.push(...plan.items);
+    }
     if (await transact(deps, items)) return;
   }
   throw unavailable("This session is busy right now; the next run moves it.");
 }
 
+/** What a merge finds on a task: `handed` (the duplicate held it; the survivor gets it), `already` (the survivor owns it), `gone` (no such task in this org) or `other` (someone else owns it, or its owner can't be read). */
+type TaskHold = "handed" | "already" | "gone" | "other";
+
 /**
- * What a merge changes on one task, as transaction items (none when there is nothing to change): the survivor becomes the task's current owner when the duplicate held it
- * (see `currentOwnerAfterMerge`), the survivor pays where the duplicate did (the explicit payer, or the creator-default one a take-over would have written), and the survivor gets
+ * What a merge changes on one task, as transaction items (none when there is nothing to change), and who holds the task: the survivor becomes the task's current owner when the duplicate
+ * held it (see `currentOwnerAfterMerge`), the survivor pays where the duplicate did (the explicit payer, or the creator-default one a take-over would have written), and the survivor gets
  * the task-list row (a copy of the creator's; a taker's own copy moves). Conditional on the owner the task was read with.
  */
-async function taskItems(deps: SessionLifecycleDeps, orgId: OrgId, taskId: string, duplicateId: string, survivor: Survivor, at: string): Promise<TransactItem[]> {
+async function taskPlan(deps: SessionLifecycleDeps, orgId: OrgId, taskId: string, duplicateId: string, survivor: Survivor, at: string): Promise<{ items: TransactItem[]; hold: TaskHold }> {
   const found = await getItem(deps, taskKey(taskId));
-  if (found === undefined || found["orgId"] !== orgId) return [];
+  if (found === undefined || found["orgId"] !== orgId) return { items: [], hold: "gone" };
   const task = found as unknown as DeveloperTaskRecord & Item;
   let handedOn: ReturnType<typeof currentOwnerAfterMerge>;
   let fence: ReturnType<typeof ownerFenceOf>;
+  let already: boolean;
   try {
     handedOn = currentOwnerAfterMerge(task, duplicateId, { developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) }, at);
     fence = ownerFenceOf(task);
+    already = tryEffectiveTaskOwner(task)?.developerId === survivor.developerId;
   } catch (error) {
-    // A task whose owner can't be read is nobody's to hand on: it is left as it is and the merge goes on with the rest.
+    // A task whose owner can't be read is nobody's to hand on: it is left as it is.
     log(deps, "agent_session.lifecycle_task_owner_unreadable", { orgId, taskId, error: errorName(error) ?? "unknown" });
-    return [];
+    return { items: [], hold: "other" };
   }
   const paid = paymentOfTask(task).payer;
   const payer: Payer | undefined = paid.kind === "member" && paid.developerId === duplicateId ? { kind: "member", developerId: survivor.developerId } : undefined;
-  if (handedOn === undefined && payer === undefined) return [];
+  const hold: TaskHold = handedOn !== undefined ? "handed" : already ? "already" : "other";
+  if (handedOn === undefined && payer === undefined) return { items: [], hold };
   const sets = ["updatedAt = :at", ...(handedOn === undefined ? [] : ["currentOwner = :currentOwner"]), ...(payer === undefined ? [] : ["payer = :payer"])];
   const items: TransactItem[] = [{
     Update: {
@@ -367,24 +387,36 @@ async function taskItems(deps: SessionLifecycleDeps, orgId: OrgId, taskId: strin
       items.push({ Put: { TableName: deps.tableName, Item: { ...row, ...taskIndexKey(survivor.developerId, task.createdAt, taskId) } } });
     }
   }
-  return items;
+  return { items, hold };
 }
 
-/** The tasks the duplicate created, found by their list rows (also the ones with no session): each is handed on in a transaction on what was read, read again after a lost race. */
+/**
+ * The tasks the duplicate has a list row for (the ones it created, also those with no session, and its taker copies), each handed on in a transaction on what was read, read
+ * again after a lost race. The row is marked handed on (`mergedTo`) in the same transaction, or by a write of its own when there was nothing to hand on, and a marked row is
+ * skipped next time: a run that stopped (the deadline, a fault) is continued by the next from where the marks end, however many rows the duplicate has. A taker copy that moves is deleted instead of marked.
+ */
 async function moveCreatedTasks(deps: SessionLifecycleDeps, orgId: OrgId, duplicateId: string, survivor: Survivor): Promise<void> {
   await eachPage(deps, { pk: taskIndexKey(duplicateId, "2026-01-01T00:00:00.000Z", "x").pk, prefix: "TASK#" }, async (rows) => {
     for (const row of rows) {
-      checkTime(deps);
       const taskId = text(row["taskId"]);
-      if (taskId === undefined || String(row["sk"]).split("#")[2] !== taskId) continue;
+      if (row["mergedTo"] !== undefined || taskId === undefined || String(row["sk"]).split("#")[2] !== taskId) continue;
+      checkTime(deps);
+      const rowKey = { pk: String(row["pk"]), sk: String(row["sk"]) };
+      const mark: TransactItem = {
+        Update: {
+          TableName: deps.tableName, Key: rowKey, UpdateExpression: "SET mergedTo = :survivor", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(mergedTo)",
+          ExpressionAttributeValues: { ":survivor": survivor.developerId },
+        },
+      };
       let moved = false;
       for (let attempt = 0; attempt < CONFLICT_RETRIES && !moved; attempt += 1) {
-        const items = await taskItems(deps, orgId, taskId, duplicateId, survivor, isoOf(deps.now()));
-        moved = items.length === 0 || await transact(deps, items);
+        const { items } = await taskPlan(deps, orgId, taskId, duplicateId, survivor, isoOf(deps.now()));
+        const rowDeleted = items.some((item) => item.Delete?.Key?.["pk"] === rowKey.pk && item.Delete.Key["sk"] === rowKey.sk);
+        moved = await transact(deps, [...items, ...(rowDeleted ? [] : [mark])]);
       }
       if (!moved) throw unavailable("A task is busy right now; the next run hands it on.");
     }
-  }, PAGES_MAX);
+  });
 }
 
 /** The shares the duplicate made on these sessions say the survivor made them (who may remove a share follows the person who made it). Only the duplicate's are touched. */
@@ -531,44 +563,130 @@ async function moveDevices(deps: SessionLifecycleDeps, orgId: OrgId, duplicateId
 // ---- an org is closed
 
 /**
- * Closes the org's session data. Order matters for a run that stops half-way: first every item that is not deleted gets its expiry (found through the live index, each project's
- * sessions and the members' own lists, all still there), then the org's lists and per-person partitions are deleted, the live index last. An expiry is only shortened, so a repeat
- * (at any later time) changes nothing it already did. Everything is found by keys built from `orgId`, and the global lists by the org's own prefix.
+ * Closes the org's session data, in a way that makes progress however many runs it takes. Each session is finished in this order: its partition's items get the expiry, the
+ * feeds and devices of the people it names are deleted, the index rows that name it get the expiry, and its record (`META`) gets the expiry LAST. A record that already has the
+ * expiry (or an earlier one) marks the session as finished, and a later run skips it with one batched read for a hundred sessions and no read of its partition. An expiry is only
+ * shortened, so a run at any later time compares against a later value and still skips what an earlier run finished. Then the org's lists and the live index are deleted (the live
+ * index last, as it names sessions); each of those steps consumes what it reads, so a run that stops is continued by the next. Everything is found by keys built from `orgId`, and the
+ * global lists by the org's own prefix.
+ *
+ * Not found: the change feed and revoked devices of a member removed earlier who is named by no session of the org, and sessions that no list, project or live index names. They expire
+ * through their own TTLs (a revoked device a year after its revoking).
  */
 export async function clearOrgSessions(deps: SessionLifecycleDeps, orgId: string): Promise<void> {
   const org = requireIds(orgId);
   const expires = Math.floor(deps.now() / 1000) + CLOSED_ORG_KEEP_DAYS * DAY_SECONDS;
-  const people = new Set<string>();
-  const sessions = new Set<string>(await liveSessionIds(deps, org));
+  const run: CloseRun = { org, expires, purged: new Set(), looked: new Set() };
 
-  // The members' own lists and the projects' lists name the sessions that ended long ago.
   const memberIds: string[] = [];
   await eachPage(deps, { pk: orgPk(org), prefix: "MEMBER#" }, async (items) => {
     for (const item of items) if (typeof item["developerId"] === "string" && MEMBER_ID.test(item["developerId"])) memberIds.push(item["developerId"]);
   });
-  for (const developerId of memberIds) {
-    people.add(developerId);
-    await stampPartition(deps, mySessionsKey(org, developerId, "2026-01-01T00:00:00.000Z", "ses_00000000000000000000").pk, undefined, expires, (item) => collect(item, org, sessions));
-  }
+  for (const developerId of memberIds) await purgePerson(deps, run, developerId);
+  // The members' own lists and the projects' lists name the sessions that ended long ago; the live index names the rest.
+  for (const developerId of memberIds) await stampList(deps, run, mySessionsKey(org, developerId, "2026-01-01T00:00:00.000Z", "ses_00000000000000000000").pk);
   const projects: string[] = [];
   await eachPage(deps, { pk: orgProjectCatalogPk(org), prefix: "PROJECT#" }, async (items) => {
     for (const item of items) if (typeof item["sk"] === "string" && AGENTX_NAME_PATTERN.test(item["sk"].slice("PROJECT#".length))) projects.push(item["sk"].slice("PROJECT#".length));
   });
   for (const project of projects) {
-    await stampPartition(deps, projectSessionsKey(org, project, "2026-01-01T00:00:00.000Z", "ses_00000000000000000000").pk, undefined, expires, (item) => collect(item, org, sessions));
-    await stampPartition(deps, projectMonthStatsKey(org, project, "2026-01").pk, undefined, expires);
+    await stampList(deps, run, projectSessionsKey(org, project, "2026-01-01T00:00:00.000Z", "ses_00000000000000000000").pk);
+    await stampPartition(deps, projectMonthStatsKey(org, project, "2026-01").pk, expires);
   }
-  for (const sessionId of sessions) await stampSession(deps, org, sessionId, expires, people);
+  await stampSessions(deps, run, await liveSessionIds(deps, org));
 
-  // What is deleted: the org's entries in the global lists, the live presence, each person's change feed and devices, and the live index last.
+  // What is deleted: the org's entries in the global lists, the live presence, and the live index last.
   await deleteByPrefix(deps, openAgentSessionKey(org, "ses_00000000000000000000").pk, `${org}#`);
   for (const day of await endedDays(deps)) await deleteByPrefix(deps, `ENDED_AGENT_SESSIONS#${day}`, `${org}#`);
   await deleteWholePartition(deps, livePresenceKey(org, "ses_00000000000000000000", "0".repeat(64)).pk);
-  for (const developerId of people) {
-    await deleteWholePartition(deps, changesKey(org, developerId, "2026-01-01T00:00:00.000Z", 0).pk);
-    await deleteDevices(deps, org, developerId);
-  }
   await deleteWholePartition(deps, liveSessionKey(org, "ses_00000000000000000000").pk);
+}
+
+/** What one closing run remembers: the expiry it gives, the people whose feed and devices it already deleted, and the sessions it already looked at. */
+interface CloseRun { org: OrgId; expires: number; purged: Set<string>; looked: Set<string> }
+
+/** Deletes one person's change feed and devices in the org, once per run. */
+async function purgePerson(deps: SessionLifecycleDeps, run: CloseRun, developerId: string): Promise<void> {
+  if (run.purged.has(developerId)) return;
+  run.purged.add(developerId);
+  await deleteWholePartition(deps, changesKey(run.org, developerId, "2026-01-01T00:00:00.000Z", 0).pk);
+  await deleteDevices(deps, run.org, developerId);
+}
+
+/** The sessions a list (a member's or a project's) names: each is finished (see `stampSessions`); a row whose session has no record is stale and gets the expiry itself. */
+async function stampList(deps: SessionLifecycleDeps, run: CloseRun, pk: string): Promise<void> {
+  await eachPage(deps, { pk }, async (rows) => {
+    const named = rows.flatMap((row) => {
+      const sessionId = SessionIdSchema.safeParse(row["sessionId"]);
+      return row["orgId"] === run.org && sessionId.success ? [{ row, sessionId: sessionId.data }] : [];
+    });
+    const missing = await stampSessions(deps, run, named.map((entry) => entry.sessionId));
+    for (const { row, sessionId } of named) {
+      if (missing.has(sessionId) && needsExpiry(row, run.expires)) await shorten(deps, { pk: String(row["pk"]), sk: String(row["sk"]) }, run.expires);
+    }
+  });
+}
+
+/** Finishes each session not finished yet (a hundred records are read in one batch); answers the ids that have no record. */
+async function stampSessions(deps: SessionLifecycleDeps, run: CloseRun, sessionIds: readonly string[]): Promise<Set<string>> {
+  const missing = new Set<string>();
+  const fresh = [...new Set(sessionIds)].filter((id) => !run.looked.has(id));
+  for (let at = 0; at < fresh.length; at += PAGE) {
+    checkTime(deps);
+    const chunk = fresh.slice(at, at + PAGE);
+    const found = await batchGetItems(deps, chunk.map((id) => agentSessionKey(run.org, id, "META")));
+    for (const sessionId of chunk) {
+      checkTime(deps);
+      run.looked.add(sessionId);
+      const record = found.get(keyText(agentSessionKey(run.org, sessionId, "META")));
+      if (record === undefined || record["orgId"] !== run.org) missing.add(sessionId);
+      else if (needsExpiry(record, run.expires)) await stampSession(deps, run, sessionId);
+    }
+  }
+  return missing;
+}
+
+/** The request id a close stops a session with: the same for the same org and session, so asking again (the leave run twice) writes nothing more. A v4-shaped uuid from a hash. */
+export function closeStopRequestId(orgId: string, sessionId: string): string {
+  const hex = createHash("sha256").update(`rovara-close-stop|${orgId}|${sessionId}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = "89ab"[Number.parseInt(hex[16]!, 16) % 4]!;
+  const joined = hex.join("");
+  return `${joined.slice(0, 8)}-${joined.slice(8, 12)}-${joined.slice(12, 16)}-${joined.slice(16, 20)}-${joined.slice(20)}`;
+}
+
+/** The most sessions one close asks to stop: more than this is logged, and the dispatch guard (the owner is no longer a member) stops the rest at their next step. */
+const CLOSE_STOP_MAX = 500;
+
+/**
+ * Asks the org's open sessions to stop before the org is closed, so that no work keeps spending (Plan 5 Task 21, review M-6). `stop` is the existing stop of a session (the task's own
+ * cancel, or the chain run's), bound by the caller; the request id is `closeStopRequestId`, so it is idempotent. Best effort: a session that can't be stopped (a Mac session, a stop that
+ * fails) is logged and the close goes on; the dispatch guard stays the backstop. The org's open list is read before the close deletes it.
+ */
+export async function stopOrgSessions(deps: SessionLifecycleDeps, orgId: string, stop: (sessionId: string, requestId: string) => Promise<void>): Promise<void> {
+  const org = requireIds(orgId);
+  const ids: string[] = [];
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, ConsistentRead: true, Limit: PAGE, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: { ":pk": openAgentSessionKey(org, "ses_00000000000000000000").pk, ":prefix": `${org}#` },
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      const sessionId = SessionIdSchema.safeParse(item["sessionId"]);
+      if (item["orgId"] === org && sessionId.success && item["sk"] === `${org}#${sessionId.data}`) ids.push(sessionId.data);
+    }
+    start = ids.length >= CLOSE_STOP_MAX ? undefined : page.LastEvaluatedKey;
+  } while (start !== undefined);
+  if (ids.length >= CLOSE_STOP_MAX) log(deps, "agent_session.close_stop_capped", { orgId: org, max: CLOSE_STOP_MAX });
+  for (const sessionId of ids.slice(0, CLOSE_STOP_MAX)) {
+    try {
+      await stop(sessionId, closeStopRequestId(org, sessionId));
+    } catch (error) {
+      log(deps, "agent_session.close_stop_failed", { orgId: org, sessionId, error: errorName(error) ?? "unknown" });
+    }
+  }
 }
 
 /** A closing run: stops and says so after `budgetMs` (a retryable refusal), so the leave that called it can be run again to finish. */
@@ -579,12 +697,6 @@ export async function closeOrgSessions(deps: Pick<SessionLifecycleDeps, "documen
     if (errorName(error) === "LifecycleDeadline") throw unavailable("Closing the company's sessions is taking a while. Leave again to finish.");
     throw error;
   }
-}
-
-/** Adds the sessions an item of a list names (its `sessionId`, when the item is this org's). */
-function collect(item: Item, orgId: OrgId, sessions: Set<string>): void {
-  const sessionId = SessionIdSchema.safeParse(item["sessionId"]);
-  if (item["orgId"] === orgId && sessionId.success) sessions.add(sessionId.data);
 }
 
 /** Gives an item that exists an expiry, only if it has none or a later one. */
@@ -602,9 +714,9 @@ async function shorten(deps: SessionLifecycleDeps, key: { pk: string; sk: string
 
 const needsExpiry = (item: Item, expires: number): boolean => typeof item[INDEX_EXPIRY_ATTRIBUTE] !== "number" || item[INDEX_EXPIRY_ATTRIBUTE] > expires;
 
-/** Gives every item of a partition the expiry (an item already past it is not written), and shows each to `also`. */
-async function stampPartition(deps: SessionLifecycleDeps, pk: string, prefix: string | undefined, expires: number, also?: (item: Item) => void): Promise<void> {
-  await eachPage(deps, { pk, ...(prefix === undefined ? {} : { prefix }) }, async (items) => {
+/** Gives every item of a partition the expiry (an item already at or past it is not written), and shows each to `also`. */
+async function stampPartition(deps: SessionLifecycleDeps, pk: string, expires: number, also?: (item: Item) => void): Promise<void> {
+  await eachPage(deps, { pk }, async (items) => {
     for (const item of items) {
       checkTime(deps);
       also?.(item);
@@ -613,21 +725,30 @@ async function stampPartition(deps: SessionLifecycleDeps, pk: string, prefix: st
   });
 }
 
-/** One session: every item of its partition, and the index items that name it (its owner's and starter's rows, its project's row, each share's and each binding's). */
-async function stampSession(deps: SessionLifecycleDeps, orgId: OrgId, sessionId: string, expires: number, people: Set<string>): Promise<void> {
+/** One session, record last (see `clearOrgSessions`): its partition's items, the people it names (their feeds and devices go), the index items that name it, then `META`. */
+async function stampSession(deps: SessionLifecycleDeps, run: CloseRun, sessionId: string): Promise<void> {
+  const { org, expires } = run;
   const index: Array<{ pk: string; sk: string }> = [];
+  const people = new Set<string>();
   let meta: Item | undefined;
-  await stampPartition(deps, agentSessionKey(orgId, sessionId, "META").pk, undefined, expires, (item) => {
-    if (item["orgId"] !== orgId) return;
-    const sk = String(item["sk"]);
-    if (sk === "META") meta = item;
-    else if (sk.startsWith(SHARE_PREFIX) && isRecord(item["principal"])) {
-      const principal = item["principal"] as unknown as AgentPrincipal;
-      try { index.push(sharedSessionsKey(orgId, principal, sessionId)); } catch { /* a share that does not read has no index row to find */ }
-      if (principal.kind === "member" && MEMBER_ID.test(principal.developerId)) people.add(principal.developerId);
-    } else if (sk.startsWith(FOLLOWER_PREFIX) && MEMBER_ID.test(sk.slice(FOLLOWER_PREFIX.length))) people.add(sk.slice(FOLLOWER_PREFIX.length));
-    else if (sk.startsWith(BINDING_PREFIX) && isRecord(item["binding"])) {
-      try { index.push(sessionSurfaceKey(orgId, item["binding"] as unknown as SessionBinding)); } catch { /* a binding that does not read has no surface row to find */ }
+  await eachPage(deps, { pk: agentSessionKey(org, sessionId, "META").pk }, async (items) => {
+    for (const item of items) {
+      checkTime(deps);
+      if (item["orgId"] !== org) continue;
+      const sk = String(item["sk"]);
+      if (sk === "META") {
+        meta = item;
+        continue;
+      }
+      if (sk.startsWith(SHARE_PREFIX) && isRecord(item["principal"])) {
+        const principal = item["principal"] as unknown as AgentPrincipal;
+        try { index.push(sharedSessionsKey(org, principal, sessionId)); } catch { /* a share that does not read has no index row to find */ }
+        if (principal.kind === "member" && MEMBER_ID.test(principal.developerId)) people.add(principal.developerId);
+      } else if (sk.startsWith(FOLLOWER_PREFIX) && MEMBER_ID.test(sk.slice(FOLLOWER_PREFIX.length))) people.add(sk.slice(FOLLOWER_PREFIX.length));
+      else if (sk.startsWith(BINDING_PREFIX) && isRecord(item["binding"])) {
+        try { index.push(sessionSurfaceKey(org, item["binding"] as unknown as SessionBinding)); } catch { /* a binding that does not read has no surface row to find */ }
+      }
+      if (needsExpiry(item, expires)) await shorten(deps, { pk: String(item["pk"]), sk }, expires);
     }
   });
   const found = meta;
@@ -638,15 +759,18 @@ async function stampSession(deps: SessionLifecycleDeps, orgId: OrgId, sessionId:
     for (const developerId of [ownerId, startedBy]) {
       if (developerId === undefined || !MEMBER_ID.test(developerId) || createdAt === undefined) continue;
       people.add(developerId);
-      index.push(mySessionsKey(orgId, developerId, createdAt, sessionId));
+      index.push(mySessionsKey(org, developerId, createdAt, sessionId));
     }
     const project = text(found["project"]);
-    if (project !== undefined && createdAt !== undefined && AGENTX_NAME_PATTERN.test(project)) index.push(projectSessionsKey(orgId, project, createdAt, sessionId));
+    if (project !== undefined && createdAt !== undefined && AGENTX_NAME_PATTERN.test(project)) index.push(projectSessionsKey(org, project, createdAt, sessionId));
   }
+  for (const developerId of people) await purgePerson(deps, run, developerId);
   for (const key of index) {
     checkTime(deps);
     await shorten(deps, key, expires);
   }
+  // The record last: once it has the expiry, a later run treats the session as finished.
+  if (found !== undefined) await shorten(deps, { pk: String(found["pk"]), sk: "META" }, expires);
 }
 
 /** The UTC days whose ended-session work entries can still be waiting: from the day the drain has reached (at most `ENDED_DAYS_MAX` back) to tomorrow. A parked entry older than that expires on its own. */

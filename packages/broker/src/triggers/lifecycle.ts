@@ -260,7 +260,7 @@ export async function onTriggerOwnersRemoved(deps: Deps, input: { orgId: OrgId; 
         const [maintainers, owners] = [await projectMaintainers(deps, orgId, trigger.project), await orgOwners(deps, orgId, developerId)];
         // With no owner left (the last one is the one who left) the org's admins are the people to tell: nobody else could turn the trigger back on or give it away.
         const tell = [...maintainers, ...(owners.length > 0 ? owners : (await orgMembersWithRole(deps, orgId, "admin", developerId)).slice(0, ADMINS_TOLD_MAX))];
-        if (tell.length === 0) log(deps, "trigger.no_one_to_tell", { orgId, triggerId: trigger.triggerId });
+        if (tell.length === 0 && trigger.enabled) log(deps, "trigger.no_one_to_tell", { orgId, triggerId: trigger.triggerId });
         await disableTrigger(deps, trigger, [{ path: "", message: "no remaining member could own this trigger" }], { alsoTell: tell });
         // The creator is the one who left: the trigger stays listed under them until someone qualifying is found, which a later merge or removal pass can still do.
         break;
