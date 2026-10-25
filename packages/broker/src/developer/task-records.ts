@@ -360,13 +360,16 @@ export function takenOverSince(task: TaskOwnerSource): string | undefined {
 }
 
 /**
- * A merge hands a taker's record to the survivor (Plan 5 Task 21): the task's `currentOwner` with the person changed, the take-over's `since` kept. Undefined when the duplicate is not
- * the task's current owner (a task nobody took over, one someone else took, or a taker who can't be read), so a merge never touches a task it does not own.
+ * A merge hands the duplicate's hold on a task to the survivor (Plan 5 Task 21), through the same `currentOwner` a take-over uses, so every authority read follows the survivor and the
+ * creator's own fields, the principal and the earlier decisions stay as history: a taker's record with the person changed and the take-over's `since` kept; or, for a task the
+ * duplicate created and nobody took over, a new record that begins at `at`. Undefined when the duplicate does not hold the task (someone else took it over, the taker can't be read, or it
+ * is another person's), so a merge never touches a task it does not own.
  */
-export function currentOwnerAfterMerge(task: TaskOwnerSource, duplicateId: string, survivor: TaskOwner): TaskCurrentOwner | undefined {
-  const taker = isTaskTakenOver(task) ? readCurrentOwner(task.currentOwner) : undefined;
-  if (taker === undefined || taker.developerId !== duplicateId) return undefined;
-  return { developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, since: taker.since, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) };
+export function currentOwnerAfterMerge(task: TaskOwnerSource, duplicateId: string, survivor: TaskOwner, at: string): TaskCurrentOwner | undefined {
+  const person = { developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) };
+  if (!isTaskTakenOver(task)) return tryEffectiveTaskOwner(task)?.developerId === duplicateId ? { ...person, since: at } : undefined;
+  const taker = readCurrentOwner(task.currentOwner);
+  return taker === undefined || taker.developerId !== duplicateId ? undefined : { ...person, since: taker.since };
 }
 
 /** Whether `developerId` holds the task by a take-over (it is theirs now and they did not create it): their task-list row is a copy of the creator's, which moves with them. */

@@ -12,6 +12,8 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { drainMemberMerges, drainMemberRemovals, onMemberRemoved, onMembersMerged, resolveMember, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
 import { clearOrgSessions, closeOrgSessions, onSessionMemberRemoved, onSessionMembersMerged } from "../../packages/broker/src/agent-sessions/lifecycle.js";
 import "../../packages/broker/src/agent-sessions/index.js";
+import { sessionLevelOf } from "../../packages/broker/src/agent-sessions/access.js";
+import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
 import { liveSessions } from "../../packages/broker/src/agent-sessions/live.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { requireNewWorkAllowed } from "../../packages/broker/src/developer/project-roles.js";
@@ -340,7 +342,8 @@ describe("two members are merged", () => {
     expect(w.taskOf(takenByZed.taskId).currentOwner).toMatchObject({ developerId: PRIYA, name: "Priya" });
     expect(w.taskOf(zedsOwn.taskId).currentOwner).toMatchObject({ developerId: ARJUN, name: "Arjun", since: "2026-10-22T08:30:00.000Z" });
     expect(w.get(taskIndexKey(ZED, zedsOwn.createdAt, zedsOwn.taskId))).toBeDefined();
-    expect(w.get(taskIndexKey(ARJUN, zedsOwn.createdAt, zedsOwn.taskId))).toBeUndefined();
+    // The survivor gets a copy of the creator's row so the task is in their list; the creator's row is not moved.
+    expect(w.get(taskIndexKey(ARJUN, zedsOwn.createdAt, zedsOwn.taskId))).toBeDefined();
   });
 
   it("moves the duplicate's devices to the survivor", async () => {
@@ -513,6 +516,21 @@ describe("two members are merged", () => {
     expect(w.get(marker)).toBeUndefined();
     expect(w.followers(ORG_A, s.sessionId)).toEqual([]);
     expect(w.shares(ORG_A, s.sessionId)).toEqual([]);
+  });
+});
+
+describe("a follow alone grants nothing (Controller ruling 1)", () => {
+  it("gives no read to a member with no role or share, or to a person who has left, whatever follows they hold", async () => {
+    const w = world();
+    const s = w.session({ owner: PRIYA, followers: [ZED, ARJUN] });
+    const record = (await new AgentSessionStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now }).get(ORG_A, s.sessionId))!;
+    const deps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members };
+    // Zed is a member with no role on web and no share: his follow is only a flag.
+    expect(await sessionLevelOf(deps, { orgId: ORG_A, developerId: ZED }, record, {})).toBe("none");
+    // Arjun has left the company with his follow still there: nothing is read for him.
+    w.removed(ARJUN);
+    expect(await sessionLevelOf(deps, { orgId: ORG_A, developerId: ARJUN }, record, {})).toBe("none");
+    expect(w.followers(ORG_A, s.sessionId)).toEqual([ARJUN, ZED].sort());
   });
 });
 
