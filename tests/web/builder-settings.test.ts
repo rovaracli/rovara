@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { createElement as h } from "react";
+import { createElement as h, useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import type { Overlay } from "../../packages/ui/src/screens/builder/draft-state.js";
 import { AgentSettingsPanel } from "../../packages/ui/src/screens/builder/AgentSettingsPanel.js";
 import { ProblemsList } from "../../packages/ui/src/screens/builder/ProblemsList.js";
 import { StepSettingsPanel } from "../../packages/ui/src/screens/builder/StepSettingsPanel.js";
@@ -18,3 +19,4 @@ it("cannot enter a sixth review round and lists only the supplied models",()=>{
 
 afterEach(cleanup);
 it("shows inherited autonomy and tool grants before an override exists",()=>{const change=vi.fn();render(h(AgentSettingsPanel,{overlay:{},maxAutonomy:"run",skills:[],inherited:{autonomy:"run",allowMentions:true,tools:[{connector:{type:"github"},access:"read"}]},onChange:change}));expect((screen.getByLabelText("Autonomy") as HTMLSelectElement).value).toBe("run");fireEvent.click(screen.getByText("Tool grants and approval rules"));expect(screen.getByText("github",{selector:"p"})).toBeTruthy();expect(screen.getByRole("checkbox",{name:"Allow @-mentions in comments"}).getAttribute("aria-checked")).toBe("true");});
+it("keeps a trailing newline while entering another approval pattern",()=>{function Form(){const [overlay,setOverlay]=useState<Overlay>({});return h(AgentSettingsPanel,{overlay,maxAutonomy:"prepare",skills:[],onChange:setOverlay});}render(h(Form));fireEvent.click(screen.getByText("Tool grants and approval rules"));fireEvent.change(screen.getByLabelText("Always ask before"),{target:{value:"github.*\n"}});expect(screen.getByLabelText("Always ask before")).toHaveProperty("value","github.*\n");});
