@@ -23,6 +23,17 @@ import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { ADA, BEN, CARL, DEB, ORG_B, month, person, refusal, setup, type World } from "../support/spend-world.js";
 
+
+// These tests expire requests 7 days on. Run late in a month, that crosses the month end, the month's budget resets and the paused task resumes, which is the
+// product working and not what they check: so they run on a clock that is mid-month.
+describe("the clock these tests run on", () => {
+  it("is mid-month, far enough from the month end for a 7-day expiry to stay inside it", () => {
+    const now = new Date();
+    const monthEnd = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+    expect(monthEnd - now.getTime()).toBeGreaterThan(10 * 86_400_000);
+  });
+});
+
 const MEMBER: BudgetScope = { kind: "member", developerId: MAYA.developerId };
 const monthRequests = (t: World): SpendRequestRecord[] => t.requests().filter((record) => record.kind === "month");
 const pausedUnder = (t: World, scope: BudgetScope) => t.db.find((item) => item.pk === pausedTasksKey(TEST_ORG, scopeKeyOf(scope), "x").pk);
