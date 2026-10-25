@@ -204,7 +204,7 @@ describe("GET /v1/auth/join as JSON (agentx login --invite)", () => {
 });
 
 describe("the join sign-in", () => {
-  it("joins a new cloud identity: the done page says so, the invite is used, the person is a member, and no session or code exists", async () => {
+  it("joins a new cloud identity: the done page says so, the invite is used, the person is a member, and a browser session exists without a CLI code", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [bea], slack: false });
     const orgId = await acme(h);
     const token = await inviteTo(h, orgId);
@@ -215,12 +215,16 @@ describe("the join sign-in", () => {
     expect(done?.statusCode).toBe(200);
     expect(copy(done!)).toMatchObject({
       title: "You joined Acme",
-      paragraphs: ["You're now a member of Acme.", `Next: in your terminal, run agentx login ${API}`],
+      paragraphs: ["You're now a member of Acme.", `Using the terminal? Run: agentx login ${API}`],
     });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))).toMatchObject({ acceptedBy: idOf(bea) });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt).toBeDefined();
     expect(await h.orgs.orgForDeveloper(idOf(bea))).toEqual({ orgId, role: "member" });
-    expect(personItems(h, idOf(bea)).sessions).toHaveLength(0);
+    expect(personItems(h, idOf(bea)).sessions).toHaveLength(1);
+    const sessionCookie = callback.cookies?.find(value => value.startsWith("__Host-agentx_review_session="));
+    expect(sessionCookie).toMatch(/; Secure; HttpOnly; SameSite=Lax; Path=\/; Max-Age=2592000$/);
+    expect(copy(done!).hrefs).toContain("/app/welcome?joined=1");
+    expect(copy(done!).labels).toContain("Open Rovara");
     expect(done!.cookies ?? []).toEqual([]);
   });
 
@@ -231,6 +235,7 @@ describe("the join sign-in", () => {
     const chooser = await get(h, `/v1/auth/join/start?invite=${token}`);
     expect(chooser.statusCode).toBe(200);
     expect(chooser.cookies?.[0]).toMatch(new RegExp(`^${JOIN_COOKIE}=`));
+    expect(copy(chooser).title).toBe("Sign in to Rovara");
     expect(copy(chooser).labels).toEqual(["Sign in with Slack", "Sign in with Rovara"]);
     const { done } = await joinAs(h, token, bea);
     expect(copy(done!).paragraphs[0]).toBe("You're now an admin of Acme.");
@@ -260,7 +265,7 @@ describe("the join sign-in", () => {
       title: "You're already in Bea's team",
       paragraphs: [
         "For now, a person can belong to one Rovara organization. To join Acme, sign in with a different email address, or ask an owner of Bea's team to remove you.",
-        "If Bea's team is a team you made by mistake and no one else is in it, run agentx org leave, then open this invite again.",
+        "If Bea's team is a team you made by mistake and no one else is in it, leave it from your account menu in Rovara, then open this invite again.",
       ],
     });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt).toBeUndefined();
