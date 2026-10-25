@@ -180,12 +180,12 @@ describe("registering and listing devices", () => {
     expect(fresh.writes()).toBe(0);
   });
 
-  it("a failed take-back refuses the registration and never reports an eleventh device; the repeat finishes the take-back", async () => {
+  it.each([[2, "CONFIG_INVALID"], [3, "RUNTIME_UNAVAILABLE"]])("when %i take-back attempts fail the registration is refused (%s), never reports an eleventh device, and the repeat finishes the take-back", async (failures, firstCode) => {
     const w = world();
     const priya = w.as(PRIYA);
     for (let i = 0; i < 9; i += 1) await w.register(priya, `Mac ${String(i)}`);
     let racerLanded = false;
-    let deletesToFail = 3;
+    let deletesToFail = failures;
     const racing: DeviceRouteDependencies = {
       ...w.deps,
       documentClient: {
@@ -208,8 +208,8 @@ describe("registering and listing devices", () => {
       },
     };
     const payload = { requestId: randomUUID(), label: "Late one", platform: "mac" };
-    expect(await outcome(w.call(priya, "POST", "/v1/app/devices", payload, racing))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-    // The repeat finds the member over the limit, takes the device back, and refuses; it never answers the device.
+    expect(await outcome(w.call(priya, "POST", "/v1/app/devices", payload, racing))).toMatchObject({ code: firstCode });
+    // The repeat finds the member over the limit (or, when the first request took the device back, a full list), and never answers the device.
     expect(await outcome(w.call(priya, "POST", "/v1/app/devices", payload))).toEqual({ code: "CONFIG_INVALID", message: DEVICES_LIMIT_MESSAGE });
     const live = await w.devicesOf(priya);
     expect(live).toHaveLength(10);
@@ -234,6 +234,15 @@ describe("registering and listing devices", () => {
     expect(w.writes()).toBe(afterRemoval);
     expect(await w.devicesOf(priya)).toEqual([]);
     expect(w.meta(ORG_A, first.deviceId)).toHaveProperty("revokedAt");
+  });
+
+  it("a repeat whose stored answer is not a device is not answered", async () => {
+    const w = world();
+    const priya = w.as(PRIYA);
+    const requestId = randomUUID();
+    await w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" });
+    w.db.set({ ...w.db.get(agentRequestKey(ORG_A, PRIYA, requestId))!, result: { deviceId: "nope" } });
+    expect(await outcome(w.call(priya, "POST", "/v1/app/devices", { requestId, label: "Priya's MacBook", platform: "mac" }))).toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("the repeat of a request that raced and lost its request item answers the winner's outcome", async () => {
