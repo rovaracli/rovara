@@ -1454,6 +1454,16 @@ describe("no paid work is left unlinked", () => {
       expect(w.calls.systemCancels).toHaveLength(1);
     });
 
+    it("R2: a link whose pending record is gone (taken away by something else) is refused at once and cancels nothing it cannot prove is its own", async () => {
+      const w = world();
+      const { sessionId } = await w.onMac();
+      const input = w.body();
+      w.race.before = () => { w.db.delete(agentSessionKey(ORG_A, sessionId, `HANDOFF_PENDING#${input.requestId}`)); };
+      expect(await code(w.move(PRIYA, sessionId, input))).toEqual({ code: RUNTIME_UNAVAILABLE, message: "This session is busy right now. Try again." });
+      expect(w.calls.linkTries).toBe(1);
+      expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 1 });
+    });
+
     it("a missing task record is not forgotten: the runtime is asked to cancel it by its derived id each time, and only a long wait proves it was never made", async () => {
       const w = world();
       const mac = await w.onMac();
