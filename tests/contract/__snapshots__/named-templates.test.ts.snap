@@ -3466,94 +3466,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
-              "Action": [
-                "scheduler:CreateSchedule",
-                "scheduler:UpdateSchedule",
-                "scheduler:DeleteSchedule",
-                "scheduler:GetSchedule",
-              ],
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition",
-                    },
-                    ":scheduler:",
-                    {
-                      "Ref": "AWS::Region",
-                    },
-                    ":",
-                    {
-                      "Ref": "AWS::AccountId",
-                    },
-                    ":schedule/agentx-staging-chain-triggers/*",
-                  ],
-                ],
-              },
-              "Sid": "ManageChainSchedules",
-            },
-            {
-              "Action": "iam:PassRole",
-              "Condition": {
-                "StringEquals": {
-                  "iam:PassedToService": "scheduler.amazonaws.com",
-                },
-              },
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::GetAtt": [
-                  "ChainScheduleInvokeRole6FCCDCC3",
-                  "Arn",
-                ],
-              },
-              "Sid": "PassChainScheduleRole",
-            },
-            {
-              "Action": "appsync:EventPublish",
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::GetAtt": [
-                  "RealtimeApiNamespaceD999AC81",
-                  "ChannelNamespaceArn",
-                ],
-              },
-            },
-          ],
-          "Version": "2012-10-17",
-        },
-        "Roles": [
-          {
-            "Ref": "BrokerServiceRole1938BCC9",
-          },
-        ],
-      },
-      "Type": "AWS::IAM::ManagedPolicy",
-    },
-    "BrokerServiceRoleServiceRoleOrchestrationPolicy4038649D": {
-      "Properties": {
-        "Description": "AgentX broker grants (orchestration), moved out of the role's inline policy for size",
-        "ManagedPolicyName": "agentx-staging-broker-orchestration",
-        "Path": "/agentx/staging/",
-        "PolicyDocument": {
-          "Statement": [
-            {
-              "Action": [
-                "sts:AssumeRole",
-                "sts:TagSession",
-              ],
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::GetAtt": [
-                  "ConnectorSecretsRole",
-                  "Arn",
-                ],
-              },
-              "Sid": "AssumeConnectorSecretsRole",
-            },
-            {
               "Action": "ssm:GetParameters",
               "Effect": "Allow",
               "Resource": [
@@ -3838,6 +3750,94 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ],
                 },
               ],
+            },
+            {
+              "Action": [
+                "scheduler:CreateSchedule",
+                "scheduler:UpdateSchedule",
+                "scheduler:DeleteSchedule",
+                "scheduler:GetSchedule",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":scheduler:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":schedule/agentx-staging-chain-triggers/*",
+                  ],
+                ],
+              },
+              "Sid": "ManageChainSchedules",
+            },
+            {
+              "Action": "iam:PassRole",
+              "Condition": {
+                "StringEquals": {
+                  "iam:PassedToService": "scheduler.amazonaws.com",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ChainScheduleInvokeRole6FCCDCC3",
+                  "Arn",
+                ],
+              },
+              "Sid": "PassChainScheduleRole",
+            },
+            {
+              "Action": "appsync:EventPublish",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "RealtimeApiNamespaceD999AC81",
+                  "ChannelNamespaceArn",
+                ],
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Roles": [
+          {
+            "Ref": "BrokerServiceRole1938BCC9",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::ManagedPolicy",
+    },
+    "BrokerServiceRoleServiceRoleOrchestrationPolicy4038649D": {
+      "Properties": {
+        "Description": "AgentX broker grants (orchestration), moved out of the role's inline policy for size",
+        "ManagedPolicyName": "agentx-staging-broker-orchestration",
+        "Path": "/agentx/staging/",
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ConnectorSecretsRole",
+                  "Arn",
+                ],
+              },
+              "Sid": "AssumeConnectorSecretsRole",
             },
             {
               "Action": "states:StartExecution",
