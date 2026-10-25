@@ -14,6 +14,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { DescribeExecutionCommand, SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { getParametersInBatches } from "@agentx/contracts";
 import {
   activeBatchIds,
   finalizeBatch,
@@ -104,7 +105,7 @@ function productionDependencies(): EvalBatchDependencies {
     artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
     callbackSigningKey: requiredEnvironment("CALLBACK_SIGNING_KEY"),
     deployment: () => swebenchDeploymentFromParameters(settingsPrefix, async (names) => {
-      const response = await ssm.send(new GetParametersCommand({ Names: [...names] }));
+      const response = await getParametersInBatches(names, (batch) => ssm.send(new GetParametersCommand({ Names: batch })));
       return new Map((response.Parameters ?? []).flatMap((parameter) => parameter.Name && parameter.Value ? [[parameter.Name, parameter.Value] as const] : []));
     }),
     async startExecution(input) {

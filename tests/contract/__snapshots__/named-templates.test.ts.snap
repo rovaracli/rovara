@@ -3086,9 +3086,19 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   },
                   ",rt=",
                   {
-                    "Fn::GetAtt": [
-                      "RealtimeApiD4415F9E",
-                      "ApiId",
+                    "Fn::Select": [
+                      0,
+                      {
+                        "Fn::Split": [
+                          ".",
+                          {
+                            "Fn::GetAtt": [
+                              "RealtimeApiD4415F9E",
+                              "Dns.Http",
+                            ],
+                          },
+                        ],
+                      },
                     ],
                   },
                   ",sl=",

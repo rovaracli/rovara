@@ -34,12 +34,12 @@ import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { e2eModelCheckRunnerKey } from "../packages/broker/src/e2e/model-route-registry.js";
 import { ec2Binding } from "../packages/cli/src/setup/project-add.js";
 import { environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/environments.js";
+import { getParametersInBatches } from "../packages/contracts/src/ssm-parameters.js";
 import {
   BOOT_STAGE2_SHA256_PARAMETER,
   E2E_QUALIFICATION_PROFILE_ID,
   Ec2RuntimeBindingSchema,
   WORKER_SETTING_PARAMETERS,
-  chunkParameterNames,
   E2E_QUALIFICATION_ROLE_ID_PATTERN,
   e2eQualificationPrefix,
   ec2WorkerUserData,
@@ -616,10 +616,7 @@ function createAwsEffects(args: QualifyArgs, runner: Runner): QualificationEffec
       const prefix = environmentSettingsPrefix(args.env);
       const names = Object.fromEntries(Object.entries(WORKER_SETTING_PARAMETERS).map(([key, name]) => [key, `${prefix}${name}`]));
       const bootStage2Name = `${prefix}${BOOT_STAGE2_SHA256_PARAMETER}`;
-      const found = new Map<string | undefined, string | undefined>();
-      for (const chunk of chunkParameterNames([...Object.values(names), bootStage2Name])) {
-        for (const parameter of (await ssm.send(new GetParametersCommand({ Names: chunk }))).Parameters ?? []) found.set(parameter.Name, parameter.Value);
-      }
+      const found = new Map((await getParametersInBatches([...Object.values(names), bootStage2Name], (batch) => ssm.send(new GetParametersCommand({ Names: batch })))).Parameters.map((parameter) => [parameter.Name, parameter.Value]));
       const value = (key: keyof typeof WORKER_SETTING_PARAMETERS) => found.get(names[key] ?? "");
       const required = (key: keyof typeof WORKER_SETTING_PARAMETERS) => {
         const setting = value(key);

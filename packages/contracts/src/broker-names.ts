@@ -59,7 +59,7 @@ export type BrokerNameKind =
   | "cognitoIssuer"
   /** An HTTP API's id; the variable gets the control plane's sign-in issuer (`https://<id>.execute-api.<region>.amazonaws.com/v1/auth`). */
   | "apiIssuer"
-  /** An AppSync Events API's id; the variable gets its HTTP endpoint (`https://<id>.appsync-api.<region>.amazonaws.com/event`). */
+  /** An AppSync Events API's DNS prefix (the first label of its `Dns.Http` host, which is not the API's id); the variable gets its HTTP endpoint (`https://<prefix>.appsync-api.<region>.amazonaws.com/event`). */
   | "eventApiEndpoint"
   /** An internal load balancer's name (the first label of its DNS name); the variable gets `http://<name>.<region>.elb.amazonaws.com:<inference port>`. */
   | "modelProxyUrl"

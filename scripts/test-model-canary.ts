@@ -27,6 +27,7 @@ import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { DRIVING_TEST_BUDGET, E2E_MODEL_CHECK_REQUEST_SCHEMA, MODEL_CHECK_MAX_PER_RUNNER } from "../packages/contracts/src/e2e-model-check.js";
 import { E2E_AGENT_RECOMMENDED_MODELS } from "../packages/contracts/src/e2e-agent-models.js";
 import { environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/environments.js";
+import { getParametersInBatches } from "../packages/contracts/src/ssm-parameters.js";
 import { e2eQualificationPrefix } from "../packages/contracts/src/session.js";
 import type { ModelProvider } from "../packages/contracts/src/model-providers.js";
 import { recordDrivingTest, validateModelCheckResult, type ExpectedModelCheck } from "../packages/broker/src/e2e/model-checks.js";
@@ -172,7 +173,7 @@ function createAwsEffects(args: CanaryArgs, runner: Runner): CanaryEffects {
       const role = runner.aws(["iam", "get-role", "--role-name", roleNameFromArn(roleArn), "--query", "Role.RoleId", "--output", "text"], true);
       if (role.status !== 0) throw new Error(`reading the worker role failed (iam:GetRole on ${roleArn})`);
       const installation = await e2eAgentInstallationFromParameters(environmentSettingsPrefix(args.env), async (names) => {
-        const found = (await ssm.send(new GetParametersCommand({ Names: [...names] }))).Parameters ?? [];
+        const found = (await getParametersInBatches([...names], (batch) => ssm.send(new GetParametersCommand({ Names: batch })))).Parameters;
         return new Map(found.flatMap((parameter) => (parameter.Name !== undefined && parameter.Value !== undefined ? [[parameter.Name, parameter.Value] as const] : [])));
       }, args.region);
       return { bucket, stateTable: table, roleId: role.stdout.trim(), installation };

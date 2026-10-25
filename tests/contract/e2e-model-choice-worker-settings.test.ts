@@ -76,14 +76,14 @@ describe("the session steps' read of the worker settings", () => {
     expect(derive).not.toMatch(/AGENTX_E2E_/);
   });
 
-  it("pins the chunking: the worker settings are more than one GetParameters call, so every reader of all of them goes through chunkParameterNames", () => {
+  it("pins the chunking: the worker settings are more than one GetParameters call, so every reader of all of them goes through getParametersInBatches (which chunks as chunkParameterNames does)", () => {
     expect(Object.keys(WORKER_SETTING_PARAMETERS).length).toBeGreaterThan(10);
     expect(chunkParameterNames(Object.values(WORKER_SETTING_PARAMETERS)).every((names) => names.length <= 10)).toBe(true);
     expect(chunkParameterNames(Object.values(WORKER_SETTING_PARAMETERS)).flat()).toEqual(Object.values(WORKER_SETTING_PARAMETERS));
     expect(chunkParameterNames([])).toEqual([]);
     for (const file of ["packages/broker/src/aws/session-steps.ts", "scripts/test-qualify-runtime.ts", "scripts/ec2-preflight.ts"]) {
       const source = readFileSync(new URL(`../../${file}`, import.meta.url), "utf8");
-      expect(source, file).toContain("chunkParameterNames(");
+      expect(source, file).toContain("getParametersInBatches(");
       expect(source, file).not.toMatch(/Names: Object\.values\(\w*[nN]ames\)/);
     }
   });

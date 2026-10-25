@@ -86,7 +86,7 @@ function build(spec: BrokerNameSpec, value: string, env: MutableEnvironment): st
     case "deadLetterQueue": return queueUrl(requiredScope(env, needed), value);
     // The pool's issuer, to the text the control plane has always passed: the stack's region, `.amazonaws.com` in every partition (cloud-identity.ts).
     case "cognitoIssuer": return `https://cognito-idp.${requiredScope(env, needed).region}.amazonaws.com/${value}`;
-    // The events API's HTTP endpoint (Plan 5 Task 8): `<id>.appsync-api.<region>.amazonaws.com/event`, as AppSync gives every Events API.
+    // The events API's HTTP endpoint (Plan 5 Task 8): `<dns prefix>.appsync-api.<region>.amazonaws.com/event`; the value is the first label of the API's `Dns.Http` host, not the API's id.
     case "eventApiEndpoint": {
       const scope = requiredScope(env, needed);
       return `https://${value}.appsync-api.${scope.region}.amazonaws.com${scope.partition === "aws-cn" ? ".cn" : ""}/event`;

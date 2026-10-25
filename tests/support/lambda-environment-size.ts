@@ -18,6 +18,10 @@ export interface Template { Resources: Record<string, Resource>; Parameters?: Re
 export const LAMBDA_ENVIRONMENT_LIMIT_BYTES = 4096;
 const REGION = "ap-southeast-4";
 const ACCOUNT = "123456789012";
+/** What a stand-in AppSync Events API's Dns.Http and Dns.Realtime hosts start with (26 characters, like the real ones); the stand-in ApiId is different. */
+export const APPSYNC_DNS_PREFIX = "zyxwvutsrqponmlkjihgfedcba";
+export const APPSYNC_API_ID = "abcdefghijklmnopqrstuvwxyz";
+export const LAMBDA_RESOLVER_REGION = REGION;
 const PARAMETER_FALLBACK = "p".repeat(64);
 
 /** What a deploy gives the parameters that have no default, at a realistic worst length (the control plane's inputs from the other stacks, and the operator's). */
@@ -149,8 +153,10 @@ class Resolver {
       case "AWS::ElasticLoadBalancingV2::LoadBalancer.DNSName": return `internal-${"n".repeat(32)}-1234567890.${REGION}.elb.amazonaws.com`;
       case "AWS::Cognito::UserPool.Arn": return `arn:aws:cognito-idp:${REGION}:${ACCOUNT}:userpool/${REGION}_AbCdEfGhI`;
       // An AppSync Events API's id is 26 lowercase letters and digits (Plan 5 Task 8).
-      case "AWS::AppSync::Api.ApiId": return "abcdefghijklmnopqrstuvwxyz";
-      case "AWS::AppSync::Api.Dns.Http": return `abcdefghijklmnopqrstuvwxyz.appsync-api.${REGION}.amazonaws.com`;
+      case "AWS::AppSync::Api.ApiId": return APPSYNC_API_ID;
+      // The Events API's DNS prefix is not its id (staging 0.4.3: the id's host does not exist), so the stand-in differs from ApiId: a name built from the id cannot pass for one built from the DNS.
+      case "AWS::AppSync::Api.Dns.Http": return `${APPSYNC_DNS_PREFIX}.appsync-api.${REGION}.amazonaws.com`;
+      case "AWS::AppSync::Api.Dns.Realtime": return `${APPSYNC_DNS_PREFIX}.appsync-realtime-api.${REGION}.amazonaws.com`;
       case "AWS::ApiGatewayV2::Api.ApiEndpoint": return `https://abcdefghij.execute-api.${REGION}.amazonaws.com`;
       default: break;
     }

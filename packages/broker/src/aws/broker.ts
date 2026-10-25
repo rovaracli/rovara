@@ -289,6 +289,7 @@ import {
   ROVARA_CODE_AGENT_ID,
   ResolvedRecipeSchema,
   cloudwatchRoleAccount,
+  getParametersInBatches,
   type AgentId,
   type HookSource,
   type Payer,
@@ -16773,7 +16774,7 @@ export const handler = createAwsBrokerHandler({
   // AI navigation route cannot be derived and agent steps stay unavailable (`agent-route-not-approved`).
   ...(process.env.AGENTX_E2E_AGENT_SETTINGS_PREFIX
     ? { e2eAgentInstallation: () => e2eAgentInstallationFromParameters(requiredEnvironment("AGENTX_E2E_AGENT_SETTINGS_PREFIX"), async (names) => {
-        const response = await ssm.send(new GetParametersCommand({ Names: [...names] }));
+        const response = await getParametersInBatches([...names], (batch) => ssm.send(new GetParametersCommand({ Names: batch })));
         return new Map((response.Parameters ?? []).flatMap((parameter) => parameter.Name && parameter.Value ? [[parameter.Name, parameter.Value] as const] : []));
       }, process.env.AWS_REGION, { readShape: (modelId) => readE2EModelRouteShape({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }, E2E_DEFAULT_MODEL_ROUTE_ID, modelId) }) }
     : {}),
@@ -16816,7 +16817,7 @@ export const handler = createAwsBrokerHandler({
     ? {
         swebench: {
           deployment: () => swebenchDeploymentFromParameters(requiredEnvironment("SWEBENCH_SETTINGS_PREFIX"), async (names) => {
-            const response = await ssm.send(new GetParametersCommand({ Names: [...names] }));
+            const response = await getParametersInBatches(names, (batch) => ssm.send(new GetParametersCommand({ Names: batch })));
             return new Map((response.Parameters ?? []).flatMap((parameter) => parameter.Name && parameter.Value ? [[parameter.Name, parameter.Value] as const] : []));
           }),
           async startExecution(input) {

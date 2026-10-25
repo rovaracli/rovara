@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { gzipSync } from "node:zlib";
 import { z } from "zod";
+import { SSM_GET_PARAMETERS_MAX_NAMES } from "./ssm-parameters.js";
 import { KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN } from "./model-providers.js";
 
 // Contracts for ec2-ebs workspaces, whose compute the Session Manager provisions on self-managed
@@ -256,9 +257,6 @@ export const WORKER_SETTING_PARAMETERS = {
    */
   modelFallback: "worker-model-fallback",
 } as const;
-
-/** SSM GetParameters takes at most this many names in one call. */
-export const SSM_GET_PARAMETERS_MAX_NAMES = 10;
 
 /** Splits parameter names into calls of at most SSM_GET_PARAMETERS_MAX_NAMES, in order. */
 export function chunkParameterNames(names: readonly string[], size: number = SSM_GET_PARAMETERS_MAX_NAMES): string[][] {
