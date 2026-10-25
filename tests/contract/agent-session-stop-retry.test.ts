@@ -658,6 +658,12 @@ describe("Plan 3's own entry points keep the checks they had", () => {
 });
 
 describe("a workflow retry that fails after Plan 3 committed it (13 review I-1)", () => {
+  /** What Plan 3 writes in the transaction that starts the run: the idempotency item of the request that started it (here the fake writes it, or another person's). */
+  const planThreeRequest = (w: ReturnType<typeof world>, taskId: string, requestId: string) => {
+    const task = w.taskOf(taskId);
+    w.db.set({ pk: `IDEMPOTENCY#${String(task.ownerKey)}#${String(task.workspaceId)}`, sk: `REQUEST#${requestId}`, entityType: "IDEMPOTENCY", payloadHash: "h" });
+  };
+
   it("records the retry when the workflow moved on from the revision it read: the event, the request item and the audit item", async () => {
     const w = world({ audit: true });
     const { sessionId, taskId } = w.blocked();
@@ -665,6 +671,7 @@ describe("a workflow retry that fails after Plan 3 committed it (13 review I-1)"
     w.control.retryWorkflow = async (task, id) => {
       w.calls.workflow.push({ taskId: task.taskId, requestId: id });
       // Plan 3 committed the run, then failed on something after it.
+      planThreeRequest(w, taskId, id);
       w.patchTask(taskId, { workflow: { revision: 4, stage: "PLAN", state: "RUNNING" } });
       throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
     };
@@ -674,12 +681,47 @@ describe("a workflow retry that fails after Plan 3 committed it (13 review I-1)"
     expect(w.audit!.recordedBy("session.retried")).toHaveLength(1);
   });
 
-  it("does not read a workflow that changed in only one way as a retry that started: the revision alone, or the state alone, is not enough", async () => {
-    for (const after of [{ revision: 3, stage: "PLAN", state: "RUNNING" }, { revision: 4, stage: "PLAN", state: "BLOCKED" }]) {
+  it("records the retry of a run that stopped again before this call looked: the workflow is BLOCKED once more, with this request's own item (Task 14 review)", async () => {
+    const w = world({ audit: true });
+    const { sessionId, taskId } = w.blocked();
+    const requestId = randomUUID();
+    w.control.retryWorkflow = async (_task, id) => {
+      planThreeRequest(w, taskId, id);
+      w.patchTask(taskId, { workflow: { revision: 5, stage: "PLAN", state: "BLOCKED" } });
+      throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+    };
+    await w.retry(MAX, sessionId, requestId);
+    expect(w.eventTexts(sessionId)).toEqual(["Max retried this."]);
+    expect(w.db.get(agentSessionKey(ORG_A, sessionId, `REQUEST#${requestId}`))).toMatchObject({ action: "retry", by: MAX, sessionId });
+    expect(w.audit!.recordedBy("session.retried")).toHaveLength(1);
+  });
+
+  it("does not record a retry as the caller's when the workflow was moved by another request: no item of this request id (Task 14 review)", async () => {
+    for (const after of [{ revision: 4, stage: "PLAN", state: "RUNNING" }, { revision: 5, stage: "PLAN", state: "BLOCKED" }]) {
       const w = world({ audit: true });
       const { sessionId, taskId } = w.blocked();
       const requestId = randomUUID();
       w.control.retryWorkflow = async () => {
+        // Somebody else's retry (its own request id) started the run while this call was being refused.
+        planThreeRequest(w, taskId, randomUUID());
+        w.patchTask(taskId, { workflow: after });
+        throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+      };
+      expect(await code(w.retry(MAX, sessionId, requestId)), JSON.stringify(after)).toMatchObject({ code: "TASK_NOT_FOUND" });
+      expect(w.eventTexts(sessionId)).toEqual([]);
+      expect(w.db.get(agentSessionKey(ORG_A, sessionId, `REQUEST#${requestId}`))).toBeUndefined();
+      expect(w.audit!.recordedBy("session.retried")).toHaveLength(0);
+    }
+  });
+
+  it("does not read a workflow that changed in only one way as a retry that started: the revision alone, or the request item alone, is not enough", async () => {
+    for (const after of [{ revision: 3, stage: "PLAN", state: "RUNNING" }, { revision: 4, stage: "PLAN", state: "BLOCKED" }]) {
+      const w = world({ audit: true });
+      const { sessionId, taskId } = w.blocked();
+      const requestId = randomUUID();
+      w.control.retryWorkflow = async (_task, id) => {
+        // The item is there for the revision-unchanged case only; the other has a new revision and no item.
+        if (after.revision === 3) planThreeRequest(w, taskId, id);
         w.patchTask(taskId, { workflow: after });
         throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
       };

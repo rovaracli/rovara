@@ -410,6 +410,35 @@ describe("who is looking", () => {
     expect(JSON.stringify(await w.live(ARJUN, { filter: "all" }))).not.toContain("Elsewhere");
   });
 
+  it("leaves out a heartbeat whose own expiry has passed, although its time is fresh; one with no expiry still counts (Task 14 review)", async () => {
+    const { w, s1 } = company();
+    const put = (digit: string, name: string, extra: Record<string, unknown>) =>
+      w.db.set({ ...livePresenceKey(ORG_A, s1.sessionId, hex(digit)), entityType: "LIVE_PRESENCE", orgId: ORG_A, sessionId: s1.sessionId, developerId: hex(digit), name, at: iso(T0 - 10_000), ...extra });
+    put("1", "Live", { indexExpiresAt: Math.floor(T0 / 1000) + 60 });
+    put("2", "Expired", { indexExpiresAt: Math.floor(T0 / 1000) - 1 });
+    put("3", "Edge", { indexExpiresAt: Math.floor(T0 / 1000) });
+    put("4", "Undated", {});
+    const tile = (await w.live(ARJUN, { filter: "all" })).tiles.find((entry) => entry.sessionId === s1.sessionId)!;
+    expect(tile.viewingNow.map((who) => who.name)).toEqual(["Live", "Undated"]);
+    expect(tile.viewingNowCount).toBe(2);
+  });
+
+  it("logs when the presence index is cut at its row cap, without a name or a title (Task 14 review)", async () => {
+    const { w, s1 } = company();
+    for (let index = 0; index < 1001; index += 1) {
+      const digit = String(index).padStart(64, "0");
+      w.db.set({ ...livePresenceKey(ORG_A, s1.sessionId, digit), entityType: "LIVE_PRESENCE", orgId: ORG_A, sessionId: s1.sessionId, developerId: digit, name: "Crowd", at: iso(T0 - 1000), indexExpiresAt: Math.floor(T0 / 1000) + 60 });
+    }
+    const logs: Array<Record<string, unknown>> = [];
+    const answer = await liveSessions(w.deps({ log: (entry) => logs.push(entry) }), w.caller(ARJUN), { filter: "all" });
+    expect(logs.filter((entry) => entry.event === "agent_session.live_presence_truncated")).toEqual([{ event: "agent_session.live_presence_truncated", orgId: ORG_A }]);
+    expect(answer.tiles.length).toBeGreaterThan(0);
+    const quiet: Array<Record<string, unknown>> = [];
+    const small = company();
+    await liveSessions(small.w.deps({ log: (entry) => quiet.push(entry) }), small.w.caller(ARJUN), { filter: "all" });
+    expect(quiet.map((entry) => entry.event)).not.toContain("agent_session.live_presence_truncated");
+  });
+
   it("is written by the heartbeat, for the Live wall to read in one query", async () => {
     const { w, s1 } = company();
     const deps = w.deps();
@@ -422,6 +451,23 @@ describe("who is looking", () => {
     w.db.injectFault({ command: "PutCommand", match: (input) => JSON.stringify(input).includes("LIVE_PRESENCE") && !JSON.stringify(input).includes("AGENT_SESSION_PRESENCE"), error: { name: "InternalServerError" } });
     w.clock.now += 120_000;
     await expect(recordPresence(deps, { ...w.caller(ARJUN), name: "Arjun" }, s1.sessionId)).resolves.toMatchObject({ viewingNow: [{ developerId: ARJUN }] });
+  });
+});
+
+describe("a share partition cut at its row cap (Task 14 review)", () => {
+  it("logs which kind of partition was cut, and nothing of the sessions in it", async () => {
+    const { w } = company();
+    for (let index = 0; index < 1001; index += 1) {
+      const id = `ses_${String(700_000 + index).padStart(20, "0")}`;
+      w.db.set({ ...sharedSessionsKey(ORG_A, { kind: "member", developerId: ARJUN }, id), entityType: "SHARED_SESSION", orgId: ORG_A, sessionId: id, principal: { kind: "member", developerId: ARJUN }, level: "view" });
+    }
+    const logs: Array<Record<string, unknown>> = [];
+    await liveSessions(w.deps({ log: (entry) => logs.push(entry) }), w.caller(ARJUN), { filter: "all" });
+    expect(logs.filter((entry) => entry.event === "agent_session.live_shares_truncated")).toEqual([{ event: "agent_session.live_shares_truncated", orgId: ORG_A, principal: "member" }]);
+    const quiet: Array<Record<string, unknown>> = [];
+    const small = company();
+    await liveSessions(small.w.deps({ log: (entry) => quiet.push(entry) }), small.w.caller(ARJUN), { filter: "all" });
+    expect(quiet.map((entry) => entry.event)).not.toContain("agent_session.live_shares_truncated");
   });
 });
 
