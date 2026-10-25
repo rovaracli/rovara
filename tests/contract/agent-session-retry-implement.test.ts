@@ -68,7 +68,7 @@ describe("a session editor retries coding that stopped (13 review I-1)", () => {
     expect((t.db.get(agentSessionKey(TEST_ORG, sessionId, "META")) as { owner: { developerId: string } }).owner.developerId).toBe(MAYA.developerId);
   });
 
-  it("asks for the authority to restart coding again before it commits: an editor made a project viewer while the retry is being prepared queues no run", async () => {
+  it("queues no run for an editor who is made a project viewer while the retry is being prepared (the pre-commit check and requireMayGoOn both refuse)", async () => {
     const t = await setup();
     const { taskId, sessionId, workspaceId } = await t.blockedCoding();
     const before = t.operations(workspaceId).length;
