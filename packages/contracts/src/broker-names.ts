@@ -57,8 +57,6 @@ export const BROKER_NAMES = {
   modelAccessFunction: { code: "ma", variable: "MODEL_ACCESS_FUNCTION_NAME", kind: "name" },
   slackRequestQueue: { code: "sq", variable: "SLACK_REQUEST_QUEUE_URL", kind: "queueUrl" },
   slackOrchestratorRole: { code: "so", variable: "SLACK_ORCHESTRATOR_ROLE_ARN", kind: "roleArn" },
-  /** The broker's own role (the hosted cloud only): the principal a customer's trust policy names for the CloudWatch connector's cross-account assume (Plan 4 Task 16). */
-  brokerRole: { code: "br", variable: "BROKER_ROLE_ARN", kind: "roleArn" },
   chatGptConnectionKey: { code: "ck", variable: "CHATGPT_CONNECTION_KEY_ARN", kind: "kmsKeyArn" },
   provisionerStateMachine: { code: "pv", variable: "PROVISIONER_ARN", kind: "stateMachineArn" },
   deleterStateMachine: { code: "dl", variable: "DELETER_ARN", kind: "stateMachineArn" },

@@ -59,9 +59,11 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
     const broker = Object.entries(cloud.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
       .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))!;
     const variables = broker[1].Properties.Environment?.Variables;
-    // In AGENTX_NAMES, not a variable of its own: the broker's environment is held under Lambda's 4 KB (lambda-environment-size).
+    // Neither a variable of its own nor in AGENTX_NAMES: the broker's environment is held under Lambda's 4 KB (lambda-environment-size), and the role's name is fixed, so the broker
+    // builds the ARN from AGENTX_ENV where the cloud sign-in pool is passed (broker-environment.test.ts).
     expect(variables?.["BROKER_ROLE_ARN"]).toBeUndefined();
-    expect(brokerNamesIn(variables).brokerRole).toBe(brokerRoleName("staging"));
+    expect(JSON.stringify(brokerNamesIn(variables))).not.toContain(brokerRoleName("staging"));
+    expect(brokerNamesIn(variables)).toHaveProperty("cloudUserPool");
     const role = Object.values(cloud.findResources("AWS::IAM::Role")).find((entry) => (entry as { Properties: { RoleName?: string } }).Properties.RoleName === brokerRoleName("staging"));
     expect(role).toBeDefined();
   });

@@ -17,6 +17,7 @@
 import {
   BROKER_NAMES,
   BROKER_NAMES_VARIABLE,
+  brokerRoleName,
   chainScheduleQueueName,
   chainScheduleRoleName,
   connectorSecretsRoleName,
@@ -137,6 +138,12 @@ function derived(env: MutableEnvironment, name: string): Array<[string, () => st
       return `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(name)}${chainScheduleRoleName(name)}`;
     }],
     ["CHAIN_SCHEDULE_QUEUE_URL", () => queueUrl(requiredScope(env, "CHAIN_SCHEDULE_QUEUE_URL"), chainScheduleQueueName(name))],
+    // The broker's own role (the hosted cloud only, which is where the sign-in pool, and so DEVELOPER_CLOUD_ISSUER, exists): the principal a customer's trust policy names for the CloudWatch connector's cross-account assume (Plan 4 Task 16). Its name is fixed,
+    // so nothing is passed (it was an AGENTX_NAMES entry until the merge of Plans 4 and 5 took the broker's environment to its 3,800-byte ceiling).
+    ...(isSet(env.DEVELOPER_CLOUD_ISSUER) ? [["BROKER_ROLE_ARN", () => {
+      const scope = requiredScope(env, "BROKER_ROLE_ARN");
+      return `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(name)}${brokerRoleName(name)}`;
+    }] as [string, () => string]] : []),
     ["CONNECTOR_SECRETS_ROLE_ARN", () => {
       const scope = requiredScope(env, "CONNECTOR_SECRETS_ROLE_ARN");
       return `arn:${scope.partition}:iam::${scope.account}:role${environmentRolePath(name)}${connectorSecretsRoleName(name)}`;

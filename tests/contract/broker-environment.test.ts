@@ -34,7 +34,6 @@ const NAMES = {
   modelAccessFunction: "agentx-staging-control-plane-ModelAccessFunction1B50ECC9-1A2B3C4D5E6F7",
   slackRequestQueue: "agentx-staging-control-plane-SlackRequestQueueCC82C864-1A2B3C4D5E6F7",
   slackOrchestratorRole: "agentx-staging-control-plane-SlackOrchestratorTaskRole2372FE40-1A2B3C4D5E6F7",
-  brokerRole: "agentx-staging-broker-role",
   chatGptConnectionKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
   provisionerStateMachine: "agentx-staging-control-plane-SessionsProvisioner9C44055B-1A2B3C4D5E6F7",
   deleterStateMachine: "agentx-staging-control-plane-SessionsDeleterB48741EA-1A2B3C4D5E6F7",
@@ -75,6 +74,15 @@ describe("awsPartitionOf", () => {
   });
 });
 
+describe("hydrateBrokerEnvironment: the broker's own role", () => {
+  it("builds the ARN of the broker's role from the environment's name on the hosted cloud, in the environment's role path, and on no other install", () => {
+    const cloud = hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag() });
+    expect(cloud.BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role");
+    expect(hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag({ signInTable: "t" }) }).BROKER_ROLE_ARN).toBeUndefined();
+    expect(hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag(), BROKER_ROLE_ARN: "given" }).BROKER_ROLE_ARN).toBe("given");
+  });
+});
+
 describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
   it("puts every name back under the variable the broker reads, and builds a URL or an ARN from the name and the region, the account and the environment", () => {
     const env = hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: bag() });
@@ -94,7 +102,6 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       MODEL_ACCESS_FUNCTION_NAME: NAMES.modelAccessFunction,
       SLACK_REQUEST_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestQueue}`,
       SLACK_ORCHESTRATOR_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.slackOrchestratorRole}`,
-      BROKER_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.brokerRole}`,
       CHATGPT_CONNECTION_KEY_ARN: "arn:aws:kms:us-west-2:123456789012:key/1a2b3c4d-4e5f-6789-abcd-ef0123456789",
       PROVISIONER_ARN: `arn:aws:states:us-west-2:123456789012:stateMachine:${NAMES.provisionerStateMachine}`,
       DELETER_ARN: `arn:aws:states:us-west-2:123456789012:stateMachine:${NAMES.deleterStateMachine}`,
