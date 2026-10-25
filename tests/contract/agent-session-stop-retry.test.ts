@@ -2,6 +2,7 @@
 // "can edit" and a project role that starts work), stop is Plan 3's real cancel and idempotent by request id, a retry starts at most one run, and the chain parts stay behind
 // Plan 4's seams and fail closed. Part 1 runs the two functions over a fake company with recording stand-ins for Plan 3 (the host) and Plan 4 (the chain seam); part 2 goes
 // through the real broker, where stop is the cancel the dev route runs.
+import { chainRunViewOf } from "../support/chain-run-view.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { agentSessionKey, agentXError, changesKey, sessionChannel, sessionEventId, userChannel, type OrgId, type Payer } from "@agentx/contracts";
@@ -62,7 +63,7 @@ function world(options: { audit?: boolean } = {}) {
   const deps: SessionReadDependencies = {
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
     taskView: async (task) => ({ taskId: task.taskId, title: "Bump the Stripe SDK", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }) as never,
-    control, chainControl, chain: { runView: async (_actor, runId) => ({ runId, status: "running" }), stepTask: async () => { throw new Error("not asked"); } },
+    control, chainControl, chain: { runView: async (_actor, runId) => chainRunViewOf(runId), stepTask: async () => { throw new Error("not asked"); } },
     admitPayer: async (input) => { calls.admissions.push({ payer: input.payer, project: input.project }); if (live.budgetRefusal !== undefined) throw agentXError("BUDGET_EXCEEDED", live.budgetRefusal); },
     realtimePublish: {
       endpoint: "https://events.example.com/event", region: "us-east-1", credentials: async () => ({ accessKeyId: "AKIA", secretAccessKey: "secret" }),

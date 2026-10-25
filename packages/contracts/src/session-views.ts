@@ -34,6 +34,7 @@ import {
 import { AgentPrincipalSchema } from "./agent.js";
 import { DeveloperTaskViewSchema } from "./developer-tasks.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
+import { ChainRunViewSchema } from "./chain-session.js";
 import { forwardReader } from "./forward-reader.js";
 
 const InstantSchema = z.string().datetime();
@@ -48,12 +49,6 @@ const HOME_TEXT_MAX = 300;
 
 const LinkSchema = z.string().url().max(URL_MAX);
 const CountSchema = z.number().int().min(0);
-
-/**
- * What Plan 4's `chainRunView` answers for a chain session's body. Plan 4 is not on this branch, so the body is read as an object whose fields
- * are kept as they come. TODO(Plan 4 merge): replace with `ChainRunViewSchema` from `packages/contracts/src/chain-session.ts`.
- */
-export const ChainRunViewPlaceholderSchema = z.looseObject({});
 
 /** Who pays for a session: the kind and a name to show (a person, a project or an agent). */
 const PayerNameSchema = z.object({ kind: z.enum(["member", "project", "agent", "chain"]), name: z.string().min(1).max(200) }).strict();
@@ -108,7 +103,8 @@ export const SessionViewSchema = z
     endedAt: InstantSchema.optional(),
     body: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("task"), task: DeveloperTaskViewSchema }).strict(),
-      z.object({ kind: z.literal("chain"), chain: ChainRunViewPlaceholderSchema }).strict(),
+      // Plan 4's run view. A gate's `confirmUrl` is optional in it: it is there for a person who may decide the gate and left out for anyone else.
+      z.object({ kind: z.literal("chain"), chain: ChainRunViewSchema }).strict(),
       z.object({ kind: z.literal("local"), tool: LocalToolSchema }).strict(),
     ]),
   })

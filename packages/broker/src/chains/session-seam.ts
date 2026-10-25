@@ -103,7 +103,7 @@ export function chainSessionSource(deps: Deps): ChainSessionSource {
 /** Plan 4's `chainReadAccess`: whether `caller` reads the chain run a chain session is about. Their org role is read now. Anything that is not a chain run reads as no. */
 export function chainReadAccessFor(deps: Deps): (caller: { orgId: OrgId; developerId: string }, session: { subject: { kind: string; chainRunId?: string } }) => Promise<boolean> {
   return async (caller, session) => {
-    const id = session.subject.kind === "chain" ? ChainRunIdSchema.safeParse(session.subject.chainRunId) : undefined;
+    const id = session.subject?.kind === "chain" ? ChainRunIdSchema.safeParse(session.subject.chainRunId) : undefined;
     if (id === undefined || !id.success) return false;
     const run = await readChainRun(deps, caller.orgId, id.data);
     if (run === undefined) return false;

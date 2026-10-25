@@ -6,6 +6,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import {
   AGENT_SESSION_CONTRACT_VERSION,
   AGENTX_NAME_PATTERN,
+  ChainRunViewSchema,
   LIVE_INDEX_SCAN_MAX,
   LIVE_PAGE_MAX,
   SessionBindingSchema,
@@ -187,7 +188,10 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   } else if (session.subject.kind === "chain") {
     if (deps.chain === undefined) throw UNAVAILABLE();
     const chain = await deps.chain.runView({ kind: "session", developerId: caller.developerId }, session.subject.chainRunId);
-    body = { kind: "chain", chain: typeof chain === "object" && chain !== null ? chain as Record<string, unknown> : {} };
+    // Plan 4's run view, read against its own contract: a view that does not meet it is not shown (the screen would be handed something it can't read).
+    const view = ChainRunViewSchema.safeParse(chain);
+    if (!view.success) throw UNAVAILABLE();
+    body = { kind: "chain", chain: view.data };
   } else {
     body = { kind: "local", tool: session.subject.tool };
   }
