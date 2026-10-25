@@ -9,6 +9,7 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { applyAgentStep, stepForOperation } from "../../packages/broker/src/agents/dispatch.js";
 import { readGuardrailsWithRevision } from "../../packages/broker/src/agents/guardrails.js";
 import { WORKFLOW_PREAMBLE } from "../../packages/broker/src/aws/broker-shared.js";
+import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { createReaperHandler } from "../../packages/broker/src/aws/session-reaper.js";
 import { SessionManager } from "../../packages/broker/src/aws/sessions.js";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -701,6 +702,16 @@ describe("the owner's ways out of a blocked Understand: Slack and the task page 
     expect(taskPageStep(running(), false)).toBe("Coding plan");
     expect(taskPageStep(running({ path: "FULL", pathFrom: "request" }), false)).toBe("Requirements");
     expect(taskPageStep(blocked, true)).toBe("");
+  });
+});
+
+describe("a worker that cannot take Understand", () => {
+  it("fails the delivery and blocks the step with the reason a run that ended failed has, instead of leaving it running", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    const outbox = t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === run.operationId)[0]!;
+    await failOutboxOperation(t.db as never, "state", outbox as never, "RUNTIME_UNAVAILABLE: This agent needs a newer worker. Ask an admin to upgrade Rovara.");
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: "understanding operation ended failed" });
   });
 });
 
