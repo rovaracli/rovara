@@ -139,6 +139,7 @@ import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.j
 import { stopSession } from "../agent-sessions/stop.js";
 import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
+import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
@@ -1801,6 +1802,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
+  // Plan 5, Task 17: `/v1/app/devices*` and `/v1/app/org/local-agents`.
+  if (isDeviceRoute(url.pathname)) return routeDeviceRequest({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
