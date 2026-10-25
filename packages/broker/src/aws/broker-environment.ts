@@ -2,11 +2,11 @@
 //
 // Lambda holds all of a function's environment variables, keys and values together, to 4 KB, and the broker's passed it. So the
 // control plane does not give the broker what the code can build or derive:
-//  - the names CloudFormation generated come in one JSON variable, AGENTX_NAMES, under two-letter codes (BROKER_NAMES in
+//  - the names CloudFormation generated come in one variable, AGENTX_NAMES (`code=value` pairs: decodeBrokerList; the earlier JSON object is still read), under two-letter codes (BROKER_NAMES in
 //    @agentx/contracts), and a queue, a key, a state machine or a role arrives as its bare name or id;
 //  - the health route's dead-letter queues are names too, and the broker lists them as `{ label: URL }` (HEALTH_DEAD_LETTER_QUEUES);
 //  - the sign-in issuers arrive as the id of the pool or the API they are an address of, and the model proxy as its load balancer's name;
-//  - the settings that are constrained parameters (flags, limits, the Slack team) come in one JSON variable, AGENTX_SETTINGS (BROKER_SETTINGS), under two-letter codes;
+//  - the settings that are constrained parameters (flags, limits, the Slack team) come in one variable, AGENTX_SETTINGS (BROKER_SETTINGS), under two-letter codes;
 //  - what an environment's name decides (the alarm and secret prefixes, the metrics namespace, the runtime catalog ids, the
 //    connector secrets role, the broker's own role, the audit and schedule queues) is derived from AGENTX_ENV by the functions the infrastructure creates those with
 //    (DERIVED_BROKER_VARIABLES in @agentx/contracts: ENV-ROOM, the one place a derived name is written).
@@ -24,6 +24,7 @@ import {
   BROKER_SETTING_VALUE,
   DERIVED_BROKER_VARIABLES,
   MODEL_PROXY_INFERENCE_PORT,
+  decodeBrokerList,
   environmentRolePath,
   type BrokerNameSpec,
   type BrokerSettingSpec,
@@ -120,15 +121,10 @@ export function brokerNamesFromEnvironment(env: MutableEnvironment): Array<{ spe
   const raw = env[BROKER_NAMES_VARIABLE];
   if (!isSet(raw)) return [];
   const fail = (why: string): never => { throw new Error(`${BROKER_NAMES_VARIABLE} ${why}`); };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return fail("is not JSON");
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return fail("is not an object of names");
+  const decoded = decodeBrokerList(raw);
+  if ("error" in decoded) return fail(decoded.error);
   const unknown: string[] = [];
-  const known = Object.entries(parsed).flatMap(([code, value]) => {
+  const known = decoded.entries.flatMap(([code, value]) => {
     const spec = BY_CODE.get(code);
     if (spec === undefined) { unknown.push(code); return []; }
     if (typeof value !== "string" || !NAME.test(value)) return fail(`has no valid name for ${code} (${spec.variable})`);
@@ -166,15 +162,10 @@ export function brokerSettingsFromEnvironment(env: MutableEnvironment): Array<{ 
   const raw = env[BROKER_SETTINGS_VARIABLE];
   if (!isSet(raw)) return [];
   const fail = (why: string): never => { throw new Error(`${BROKER_SETTINGS_VARIABLE} ${why}`); };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return fail("is not JSON");
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return fail("is not an object of settings");
+  const decoded = decodeBrokerList(raw);
+  if ("error" in decoded) return fail(decoded.error);
   const unknown: string[] = [];
-  const known = Object.entries(parsed).flatMap(([code, value]) => {
+  const known = decoded.entries.flatMap(([code, value]) => {
     const spec = SETTING_BY_CODE.get(code);
     if (spec === undefined) { unknown.push(code); return []; }
     if (typeof value !== "string" || !BROKER_SETTING_VALUE.test(value)) return fail(`has no plain value for ${code} (${spec.variable})`);

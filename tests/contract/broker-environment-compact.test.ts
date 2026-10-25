@@ -14,7 +14,8 @@ import { skipLambdaBundling } from "../support/skip-bundling.js";
 skipLambdaBundling();
 
 const SCOPE = { AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging" };
-const hydrated = (env: MutableEnvironment): MutableEnvironment => { const copy = { ...env }; hydrateBrokerEnvironment(copy); return copy; };
+/** Hydrated, without the list variable itself (which differs in form between the two). */
+const hydrated = (env: MutableEnvironment): MutableEnvironment => { const copy = { ...env }; hydrateBrokerEnvironment(copy); delete copy[BROKER_NAMES_VARIABLE]; delete copy[BROKER_SETTINGS_VARIABLE]; return copy; };
 
 describe("the compact form (code=value, joined by commas)", () => {
   it("reads names, to the same variables as the JSON form did", () => {

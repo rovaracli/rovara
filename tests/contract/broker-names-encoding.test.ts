@@ -14,7 +14,7 @@ import { skipLambdaBundling } from "../support/skip-bundling.js";
 skipLambdaBundling();
 
 /** What must never reach the JSON: it ends a string, a pair or the object, or escapes. */
-const SEPARATORS = ['"', "\\", ",", "{", "}", "/", " ", "\n"];
+const SEPARATORS = ['"', "\\", ",", "=", "{", "}", "/", " ", "\n"];
 const probes = (valid: string): string[] => SEPARATORS.flatMap((separator) => [separator, `a${separator}b`, `${valid}${separator}`, `${separator}${valid}`, `${valid.slice(0, 3)}${separator}${valid.slice(3)}`]);
 
 type Node = unknown;

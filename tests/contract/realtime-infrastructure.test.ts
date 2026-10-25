@@ -143,7 +143,7 @@ describe("the broker", () => {
     const [apiId] = ofType(named, "AWS::AppSync::Api")[0]!;
     const [, broker] = ofType(named, "AWS::Lambda::Function").find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))!;
     const variables = (broker.Properties.Environment as { Variables: Json }).Variables;
-    expect(JSON.stringify(variables.AGENTX_NAMES)).toContain(`"rt\\":\\"`);
+    expect(JSON.stringify(variables.AGENTX_NAMES)).toMatch(/[",]rt=/);
     expect(JSON.stringify(variables.AGENTX_NAMES)).toContain(apiId);
     expect(variables.REALTIME_HTTP_ENDPOINT).toBeUndefined();
     for (const env of ["staging", "a1234567890123456789"]) {

@@ -3014,107 +3014,106 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Fn::Join": [
                 "",
                 [
-                  "{"ar":"",
+                  "ar=",
                   {
                     "Ref": "Artifacts82DD59A1",
                   },
-                  "","ck":"",
+                  ",ck=",
                   {
                     "Ref": "ChatGptConnectionKey03C49F9D",
                   },
-                  "","dl":"",
+                  ",dl=",
                   {
                     "Fn::GetAtt": [
                       "SessionsDeleterB48741EA",
                       "Name",
                     ],
                   },
-                  "","dn":"",
+                  ",dn=",
                   {
                     "Fn::GetAtt": [
                       "DeveloperTaskNotifierNoticeDeadLetterQueue3C87E1D7",
                       "QueueName",
                     ],
                   },
-                  "","dq":"",
+                  ",dq=",
                   {
                     "Fn::GetAtt": [
                       "DispatchDeadLetterQueue3E30F4B8",
                       "QueueName",
                     ],
                   },
-                  "","ds":"",
+                  ",ds=",
                   {
                     "Fn::GetAtt": [
                       "DeveloperTaskNotifierStreamFailureQueue58891933",
                       "QueueName",
                     ],
                   },
-                  "","if":"",
+                  ",if=",
                   {
                     "Ref": "DeveloperSignInFunction10B62B05",
                   },
-                  "","lt":"",
+                  ",lt=",
                   {
                     "Ref": "Ec2WorkerLaunchTemplateId",
                   },
-                  "","pe":"",
+                  ",pe=",
                   {
                     "Ref": "PlanEvidence3615C4CB",
                   },
-                  "","pv":"",
+                  ",pv=",
                   {
                     "Fn::GetAtt": [
                       "SessionsProvisioner9C44055B",
                       "Name",
                     ],
                   },
-                  "","rt":"",
+                  ",rt=",
                   {
                     "Fn::GetAtt": [
                       "RealtimeApiD4415F9E",
                       "ApiId",
                     ],
                   },
-                  "","sl":"",
+                  ",sl=",
                   {
                     "Ref": "SlackThreads36E14C1E",
                   },
-                  "","so":"",
+                  ",so=",
                   {
                     "Ref": "SlackOrchestratorTaskRole2372FE40",
                   },
-                  "","sq":"",
+                  ",sq=",
                   {
                     "Fn::GetAtt": [
                       "SlackRequestQueueCC82C864",
                       "QueueName",
                     ],
                   },
-                  "","sr":"",
+                  ",sr=",
                   {
                     "Fn::GetAtt": [
                       "SlackRequestDeadLetterQueueBBBDDF4E",
                       "QueueName",
                     ],
                   },
-                  "","st":"",
+                  ",st=",
                   {
                     "Ref": "DeveloperSignInTable26CE739E",
                   },
-                  "","ti":"",
+                  ",ti=",
                   {
                     "Ref": "HttpApi",
                   },
-                  "","tr":"",
+                  ",tr=",
                   {
                     "Ref": "TurnRecords69ECFCD9",
                   },
-                  "","ts":"",
+                  ",ts=",
                   {
                     "Ref": "State1C20CC9A",
                   },
-                  ""}",
                 ],
               ],
             },
@@ -3122,39 +3121,38 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Fn::Join": [
                 "",
                 [
-                  "{"mc":"",
+                  "mc=",
                   {
                     "Ref": "McpConfirmElicitation",
                   },
-                  "","ml":"",
+                  ",ml=",
                   {
                     "Ref": "SlackMemberWorkspaceLimit",
                   },
-                  "","ol":"",
+                  ",ol=",
                   {
                     "Ref": "SlackOrganizationWorkspaceLimit",
                   },
-                  "","os":"",
+                  ",os=",
                   {
                     "Ref": "DeveloperOidcSince",
                   },
-                  "","sn":"",
+                  ",sn=",
                   {
                     "Ref": "DeveloperSignInSlackSince",
                   },
-                  "","ss":"",
+                  ",ss=",
                   {
                     "Ref": "DeveloperSignInSlack",
                   },
-                  "","tm":"",
+                  ",tm=",
                   {
                     "Ref": "SlackTeamId",
                   },
-                  "","wd":"",
+                  ",wd=",
                   {
                     "Ref": "WorkflowDependenciesEnabled",
                   },
-                  ""}",
                 ],
               ],
             },

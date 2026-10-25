@@ -20,13 +20,21 @@ function joinedText(variable: Node): { text: string; nodes: Node[] } {
   return { text, nodes };
 }
 
+/** `code=value,code=value` as pairs (the form the control plane writes; a node stands as its `‹n›` mark). */
+function pairsOf(text: string): Array<[string, string]> {
+  return text === "" ? [] : text.split(",").map((pair) => {
+    const at = pair.indexOf("=");
+    if (at !== 2) throw new Error(`not a code=value pair: ${pair}`);
+    return [pair.slice(0, 2), pair.slice(3)];
+  });
+}
+
 /** The names the variable holds, by key. A name is a template node, or the literal text where the control plane wrote one. */
 export function brokerNamesIn(variables: Variables | undefined): Partial<Record<BrokerNameKey, Node>> {
   const variable = variables?.[BROKER_NAMES_VARIABLE];
   if (variable === undefined) return {};
   const { text, nodes } = joinedText(variable);
-  const parsed = JSON.parse(text) as Record<string, string>;
-  return Object.fromEntries(Object.entries(parsed).map(([code, value]) => {
+  return Object.fromEntries(pairsOf(text).map(([code, value]) => {
     const key = KEY_OF_CODE.get(code);
     if (key === undefined) throw new Error(`${BROKER_NAMES_VARIABLE} holds a code nobody sent: ${code}`);
     const marked = MARK.exec(value);
@@ -41,8 +49,7 @@ export function brokerSettingsIn(variables: Variables | undefined): Partial<Reco
   const variable = variables?.[BROKER_SETTINGS_VARIABLE];
   if (variable === undefined) return {};
   const { text, nodes } = joinedText(variable);
-  const parsed = JSON.parse(text) as Record<string, string>;
-  return Object.fromEntries(Object.entries(parsed).map(([code, value]) => {
+  return Object.fromEntries(pairsOf(text).map(([code, value]) => {
     const key = SETTING_KEY_OF_CODE.get(code);
     if (key === undefined) throw new Error(`${BROKER_SETTINGS_VARIABLE} holds a code nobody sent: ${code}`);
     const marked = MARK.exec(value);
@@ -50,11 +57,10 @@ export function brokerSettingsIn(variables: Variables | undefined): Partial<Reco
   }));
 }
 
-/** A JSON object of `code: node` pairs written back as a template node (the order is the code order, as the control plane writes it; adjacent literals are one piece). */
+/** `code=node` pairs written back as a template node (the order is the code order, as the control plane writes it; adjacent literals are one piece). */
 function joinedPairs(entries: Array<[string, Node]>): Node {
-  const pieces: Node[] = ["{"];
-  entries.sort(([a], [b]) => a.localeCompare(b)).forEach(([code, node], index) => { pieces.push(`${index === 0 ? "" : ","}"${code}":"`, node, '"'); });
-  pieces.push("}");
+  const pieces: Node[] = [];
+  entries.sort(([a], [b]) => a.localeCompare(b)).forEach(([code, node], index) => { pieces.push(`${index === 0 ? "" : ","}${code}=`, node); });
   const merged: Node[] = [];
   for (const piece of pieces) {
     const last = merged[merged.length - 1];

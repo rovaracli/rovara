@@ -14,6 +14,36 @@
  */
 export const BROKER_NAMES_VARIABLE = "AGENTX_NAMES";
 
+/**
+ * How AGENTX_NAMES and AGENTX_SETTINGS are written: `code=value` pairs joined by commas (`ts=agentx-staging-table,ar=agentx-staging-bucket`). Lambda counts a function's variables as
+ * the JSON of the map, so every quote inside a variable's value costs two bytes (`\"`), and the inner JSON this replaced had four per entry: about 8 bytes an entry, 300 for the
+ * broker. The values hold no quote, comma, equals sign, brace, slash or space (the control plane refuses a parameter or a literal that could, infra/lib/broker-names.ts), so
+ * nothing is escaped. The earlier revision's JSON object is still read (it starts with `{`) for one release, so a rollout in either direction starts; remove that branch after.
+ */
+export type BrokerListEntries = { entries: Array<[string, unknown]> } | { error: string };
+
+export function decodeBrokerList(raw: string): BrokerListEntries {
+  if (raw.startsWith("{")) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { error: "is not an object" };
+      return { entries: Object.entries(parsed) };
+    } catch {
+      return { error: "is not JSON" };
+    }
+  }
+  const entries: Array<[string, unknown]> = [];
+  const seen = new Set<string>();
+  for (const pair of raw.split(",")) {
+    const match = /^([a-z]{2})=([^=]*)$/.exec(pair);
+    if (match === null) return { error: "is not a list of code=value pairs" };
+    if (seen.has(match[1]!)) return { error: `names the code ${match[1]} twice` };
+    seen.add(match[1]!);
+    entries.push([match[1]!, match[2]!]);
+  }
+  return { entries };
+}
+
 export type BrokerNameKind =
   /** Used as it is. */
   | "name"
@@ -85,7 +115,7 @@ export type BrokerNameKey = keyof typeof BROKER_NAMES;
 
 /**
  * The broker's settings, in one variable, AGENTX_SETTINGS: a JSON object of values under two-letter codes, as AGENTX_NAMES is. A setting here is a CloudFormation parameter
- * whose value is constrained to plain text already (an enum, a number, a Slack team id), so the control plane can join the JSON from the parameters without escaping anything
+ * whose value is constrained to plain text already (an enum, a number, a Slack team id), so the control plane can join the pairs from the parameters without escaping anything
  * (infra/lib/broker-names.ts), and the broker checks each value is plain (`BROKER_SETTING_VALUE`) before it puts it back under the variable its code reads. A variable's
  * key is the longest part of a short value (`AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED` is 46 bytes, `"tv":` is 5), which is why these are folded.
  *
