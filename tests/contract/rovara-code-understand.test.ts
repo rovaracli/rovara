@@ -448,6 +448,21 @@ describe("what Understand answered becomes the next step", () => {
     }
   });
 
+  it("does not overwrite a limit that changed while the result was being decided: the raise holds only for the limit it read", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    let changed = false;
+    // Between the read and the commit, someone else sets the task's limit (a spend approval, say).
+    t.db.injectFault({ command: "TransactWriteCommand", error: { name: "unused" }, match: (input) => {
+      if (!changed && JSON.stringify(input).includes(":raisedLimit")) { changed = true; t.db.set({ ...t.meta(run.taskId), budgetUsd: 3.5 }); }
+      return false;
+    } });
+    await t.answers(run, ready({ path: "FULL" })).catch(() => undefined);
+    expect(changed).toBe(true);
+    expect(t.meta(run.taskId).budgetUsd).toBe(3.5);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING" });
+  });
+
   it("a Quick path given in the request wins over Understand's Full: the limit stays 2 and no phase is asked for", async () => {
     const t = await world();
     const run = await t.understanding({ path: "QUICK" });
