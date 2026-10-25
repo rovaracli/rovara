@@ -3,10 +3,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { normalizeEmail } from "./email.js";
+import { OrgIdSchema, type OrgId } from "./browser-ids.js";
 import { GITHUB_INSTALLATION_TAKEN_MESSAGE } from "./errors.js";
 
-export const OrgIdSchema = z.string().regex(/^org_[0-9a-z]{20}$/);
-export type OrgId = z.infer<typeof OrgIdSchema>;
+// Defined in browser-ids.ts (browser-safe contracts import it from there); re-exported here for everything else.
+export { OrgIdSchema, type OrgId };
 
 export const OrgRoleSchema = z.enum(["owner", "admin", "member"]);
 export type OrgRole = z.infer<typeof OrgRoleSchema>;

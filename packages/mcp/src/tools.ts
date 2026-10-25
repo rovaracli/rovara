@@ -4,7 +4,7 @@
 import {
   DEFAULT_DEVELOPER_TASK_POLICY, DEVELOPER_EVENTS_DEFAULT, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_LIST_DEFAULT, DEVELOPER_TASK_LIST_MAX,
   DEVELOPER_WAIT_MAX_SECONDS, DeveloperInstructionsSchema, DeveloperTaskStatusSchema, SHARED_BY_POLICY, VIEW_ONLY_BY_POLICY, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, WORKFLOW_REVIEW_FAILURE_REASONS,
-  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskView,
+  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
   TaskPeopleRoleSchema, RUN_CONTEXT_KINDS, RUN_INPUT_TEXT_MAX_BYTES, ApprovalIdSchema, RunInputSchema, type RunInput, type StartAgentSelection,
 } from "@agentx/contracts";
 import { z } from "zod";
@@ -12,7 +12,7 @@ import type { AdminControlPlaneClient } from "./admin-client.js";
 import type { ControlPlaneClient } from "./client.js";
 import { isExpiredNotice } from "./admin-expiry.js";
 import { adminApiFits, type Compatibility } from "./compatibility.js";
-import { ToolError, plainText } from "./errors.js";
+import { ToolError, UPGRADE_AGENTX_STEP, plainText } from "./errors.js";
 import type { RequestIdMemory } from "./request-ids.js";
 import { waitForTask } from "./wait.js";
 
@@ -138,7 +138,16 @@ const ActionShape = { ...TaskShape, request_id: z.string() };
 const RETRY = "If the call fails or times out, send your own request_id, or repeat the call unchanged: an identical call within 15 minutes is taken as the same request";
 
 /** The one place a wire view (camelCase) becomes a tool output (snake_case). */
-function taskOutput(task: DeveloperTaskView, timedOut?: boolean): Record<string, unknown> {
+function taskOutput(shown: DeveloperTaskClientView, timedOut?: boolean): Record<string, unknown> {
+  const task = knownTaskView(shown);
+  if (task === undefined) {
+    // A newer AgentX named a stage or outcome this build does not know: show the task without the parts that depend on it.
+    const { workflow, ...rest } = shown;
+    return {
+      ...taskOutput(rest, timedOut),
+      workflow: { stage: "unknown", state: typeof workflow?.state === "string" ? workflow.state : "unknown", revision: typeof workflow?.revision === "number" ? workflow.revision : 0 },
+    };
+  }
   const activeArtifactType = task.workflow?.path === "FULL" && task.workflow.reviewPhase === "REQUIREMENTS" ? "requirements"
     : task.workflow?.path === "FULL" && task.workflow.reviewPhase === "DESIGN" ? "design" : "plan";
   const activeArtifact = task.workflow?.artifacts.filter((artifact) => artifact.type === activeArtifactType).at(-1);
@@ -211,7 +220,9 @@ function taskOutput(task: DeveloperTaskView, timedOut?: boolean): Record<string,
 }
 
 /** What the AI tool can do next with a task in this state. */
-function nextFor(task: DeveloperTaskView): string {
+function nextFor(shown: DeveloperTaskClientView): string {
+  const task = knownTaskView(shown);
+  if (task === undefined) return `This task is at a step this version of the AgentX tools doesn't know, so it can't say what to do next: ${UPGRADE_AGENTX_STEP}.`;
   if (task.workflow?.state === "WAITING" && task.workflow.stage === "PLAN_REVIEW") {
     return "Review the current approval_document, then use agentx_decide_workflow with its exact sha256 and expected revision. If the task output includes work_breakdown_digest, include that exact value when choosing APPROVE; omit it for REQUEST_CHANGES. Quick has one approval; Full has requirements, design, and coding-plan approvals before implementation.";
   }
@@ -302,7 +313,7 @@ function nextFor(task: DeveloperTaskView): string {
 }
 
 /** C6, C21: where the task is shared, and why the policy changed what was asked. */
-function shareText(task: DeveloperTaskView): string {
+function shareText(task: DeveloperTaskClientView): string {
   const share = task.share;
   if (share === undefined) return "";
   // R10: AgentX sends a channel's name only when the developer may see it.
@@ -318,7 +329,7 @@ function shareText(task: DeveloperTaskView): string {
   return ` Shared in ${where}, ${mode}${why.length === 0 ? "" : ` (${why.join("; ")})`}.${thread}`;
 }
 
-function taskText(task: DeveloperTaskView, timedOut?: boolean): string {
+function taskText(task: DeveloperTaskClientView, timedOut?: boolean): string {
   const failure = task.failure === undefined ? "" : ` (${task.failure.category}: ${task.failure.message})`;
   const waited = timedOut === true ? " The wait ended first; the task keeps running." : "";
   const summary = task.summary === undefined ? "" : ` Summary: ${task.summary}`;
@@ -342,7 +353,7 @@ export function requestIdFor(context: ToolContext, call: ToolCall, input: Record
 }
 const optional = (value: unknown) => value ?? null;
 /** Issue 196: the statuses a cancel answers with only when the task had already finished. */
-const ALREADY_FINISHED: ReadonlySet<DeveloperTaskView["status"]> = new Set(["SUCCEEDED", "FAILED"]);
+const ALREADY_FINISHED: ReadonlySet<DeveloperTaskClientView["status"]> = new Set(["SUCCEEDED", "FAILED"]);
 /** What makes a cancel the same cancel: the tool and its task (final review M3). */
 const cancelContent = (taskId: unknown): readonly unknown[] => ["agentx_cancel_task", taskId];
 /** What makes a share the same share: the task, the mode asked for and the channel named. */
@@ -356,7 +367,7 @@ const eventsOf = (input: Record<string, unknown>) => (input.events as number | u
  * as a failed check rather than a timeout: after a start or continue, an error would make the AI
  * tool send the action again.
  */
-async function waitResult(context: ToolContext, call: ToolCall, tool: string, taskId: string, waitSeconds: number, events: number, first?: DeveloperTaskView): Promise<ToolResult> {
+async function waitResult(context: ToolContext, call: ToolCall, tool: string, taskId: string, waitSeconds: number, events: number, first?: DeveloperTaskClientView): Promise<ToolResult> {
   const waited = await waitForTask({
     client: context.client, taskId, waitSeconds, events, signal: call.signal, now: () => context.now(), sleep: (ms, signal) => context.sleep(ms, signal),
     ...(first === undefined ? {} : { first }),
@@ -373,7 +384,7 @@ async function waitResult(context: ToolContext, call: ToolCall, tool: string, ta
 }
 
 /** The optional wait after a start or continue, from the view the action returned. */
-async function afterAction(context: ToolContext, call: ToolCall, tool: string, task: DeveloperTaskView, waitSeconds: number, requestId: string): Promise<ToolResult> {
+async function afterAction(context: ToolContext, call: ToolCall, tool: string, task: DeveloperTaskClientView, waitSeconds: number, requestId: string): Promise<ToolResult> {
   const result = waitSeconds === 0 ? { structured: taskOutput(task), text: taskText(task) } : await waitResult(context, call, tool, task.taskId, waitSeconds, DEVELOPER_EVENTS_DEFAULT, task);
   return { structured: { ...result.structured, request_id: requestId }, text: result.text };
 }
@@ -555,7 +566,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       const tasks = await context.client.listTasks({
         limit: (input.limit as number | undefined) ?? DEVELOPER_TASK_LIST_DEFAULT,
         ...(input.project === undefined ? {} : { project: input.project as string }),
-        ...(input.status === undefined ? {} : { status: input.status as DeveloperTaskView["status"] }),
+        ...(input.status === undefined ? {} : { status: input.status as DeveloperTaskClientView["status"] }),
       });
       return {
         structured: { tasks: tasks.map((task) => ({ task_id: task.taskId, title: task.title, project: task.project, status: task.status, created_at: task.createdAt, updated_at: task.updatedAt, shared: task.shared })) },

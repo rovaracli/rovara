@@ -45,6 +45,12 @@ describe("knownTaskView", () => {
     expect(knownTaskView(unknown)).toBeUndefined();
   });
 
+  it("notices a value the reader could not know deep in the workflow, not only the stage", () => {
+    const task = DeveloperTaskResponseSchema.parse({ task: view(snapshot({ reviewPhase: "A_NEW_PHASE" })) }).task;
+    expect(task.workflow?.stage).toBe("PLAN");
+    expect(knownTaskView(task)).toBeUndefined();
+  });
+
   it("returns a task with no workflow as it is", () => {
     const plain = DeveloperTaskResponseSchema.parse({ task: view(undefined) }).task;
     expect(knownTaskView(plain)).toEqual(plain);

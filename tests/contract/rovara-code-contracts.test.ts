@@ -380,8 +380,8 @@ describe("a task read by an older client (Finding 13)", () => {
     const plain = { ...view({}), workflow: undefined };
     expect(taskViewForClient(plain as never, {})).toEqual(plain);
     const answer = { task: understanding(), closed: true };
-    expect((taskResponseForClient(answer, {}) as { task: { workflow: { stage: string } }; closed: boolean }).task.workflow.stage).toBe("PLAN");
-    expect((taskResponseForClient(answer, {}) as { closed: boolean }).closed).toBe(true);
+    expect(taskResponseForClient(answer, {}).task.workflow?.stage).toBe("PLAN");
+    expect(taskResponseForClient(answer, {}).closed).toBe(true);
     const events = { events: [] };
     expect(taskResponseForClient(events, {})).toBe(events);
     expect(taskResponseForClient("text", {})).toBe("text");

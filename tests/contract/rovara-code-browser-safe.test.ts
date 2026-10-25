@@ -3,6 +3,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import * as ids from "../../packages/contracts/src/browser-ids.js";
+import * as chains from "../../packages/contracts/src/chains.js";
+import * as org from "../../packages/contracts/src/org.js";
+import * as sessions from "../../packages/contracts/src/agent-sessions.js";
+import * as slack from "../../packages/contracts/src/slack.js";
 
 const root = process.cwd();
 const NODE_BUILTINS = ["fs", "path", "crypto", "util", "os", "zlib", "stream", "buffer", "child_process", "url"];
@@ -40,5 +45,13 @@ describe("rovara-code.ts is browser-safe", () => {
   it("would notice a Node import (positive control: the Node sibling reaches node:crypto)", async () => {
     const { nodeImports } = await importGraph("packages/contracts/src/rovara-code-node.ts");
     expect(nodeImports.some((entry) => entry.endsWith("node:crypto"))).toBe(true);
+  });
+
+  it("is the one definition the modules that used to hold the ids re-export", () => {
+    expect(org.OrgIdSchema).toBe(ids.OrgIdSchema);
+    expect(chains.ChainRunIdSchema).toBe(ids.ChainRunIdSchema);
+    expect(sessions.SessionIdSchema).toBe(ids.SessionIdSchema);
+    expect(sessions.SessionBindingSchema).toBe(ids.SessionBindingSchema);
+    for (const name of ["SlackTeamIdSchema", "SlackChannelIdSchema", "SlackMessageTimestampSchema"] as const) expect(slack[name]).toBe(ids[name]);
   });
 });

@@ -60,6 +60,7 @@ import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, versionSafety, type ChangeResult } from "./changes.js";
+import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
@@ -136,7 +137,7 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
  * `POST /v1/app/agents/{id}/runs` [`use`]: a person starts a run of the agent on a project. Access to the project, to the agent, the roster and the
  * guardrails are checked by the start itself, before anything is charged (an agent the caller can't see answers the same 404 as one that doesn't exist).
  */
-async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<StatusReply> {
+async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, headers: Record<string, string | undefined>): Promise<StatusReply> {
   if (deps.startRun === undefined) throw agentXError("NOT_FOUND", "starting runs is not set up in this deployment");
   const input = parseBody(RunBodySchema, body);
   // A version that is not the current one and is less safe than it waits for the agent's owner (owner decision 2026-10-22): nothing starts until they OK it.
@@ -146,7 +147,8 @@ async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agent
     requestId: input.requestId, project: input.project, input: input.input,
     agent: { agentId, ...(input.version === undefined ? {} : { version: input.version }) },
   });
-  return new StatusReply(202, { task: started.task });
+  // Rovara Code (Plan 6): a client that does not send `x-agentx-task-view: 2` reads a version 1 projection of the task.
+  return new StatusReply(202, taskResponseForClient({ task: started.task }, headers));
 }
 
 /** The answer for a change waiting on the page. */
@@ -1066,7 +1068,7 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     if (sub === "budget" && method === "PUT") return putAgentBudget(deps, caller, agentId, body());
     if (sub === "update-base" && method === "POST") return updateBase(deps, caller, agentId, body());
     if (sub === "adopt" && method === "POST") return adopt(deps, caller, agentId, body());
-    if (sub === "runs" && method === "POST") return startRun(deps, caller, agentId, body());
+    if (sub === "runs" && method === "POST") return startRun(deps, caller, agentId, body(), request.headers);
   }
   throw agentXError("NOT_FOUND", "route not found");
 }

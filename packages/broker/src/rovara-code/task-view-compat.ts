@@ -36,7 +36,7 @@ export function taskViewForClient(view: DeveloperTaskView, headers: Headers): De
 }
 
 /** A route's answer with its `task` (if it has one) projected for the client; any other answer is returned as it is. */
-export function taskResponseForClient(answer: unknown, headers: Headers): unknown {
+export function taskResponseForClient<T>(answer: T, headers: Headers): T {
   if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return answer;
   const task = (answer as { task?: unknown }).task;
   if (task === null || typeof task !== "object" || (task as { workflow?: unknown }).workflow === undefined) return answer;

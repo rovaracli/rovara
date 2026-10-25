@@ -11,7 +11,7 @@ import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
 import { sharedNoticeKey, slackThreadSubject, type SlackThread } from "./slack.js";
-import { WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotReaderShape, WorkflowSnapshotViewSchema } from "./task-workflow.js";
+import { WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotReaderShape, WorkflowSnapshotViewSchema, type WorkflowSnapshotReader } from "./task-workflow.js";
 import { WorkflowPathSchema } from "./task-workflow.js";
 import { E2ESharedViewSchema } from "./e2e-view.js";
 
@@ -367,17 +367,36 @@ export type DeveloperTaskListItem = z.infer<typeof DeveloperTaskListItemSchema>;
 /** `nextCursor` is opaque: pass it back as `cursor` for the next page; it is absent on the last page. */
 export const DeveloperTaskListResponseSchema = z.object({ tasks: z.array(DeveloperTaskListItemSchema), nextCursor: z.string().optional() });
 /**
- * The task as a client reads it: the same view, with the workflow read tolerantly (`WorkflowSnapshotReaderShape`), so a stage or outcome a newer
- * control plane added reads as "unknown" instead of failing the whole answer. Typed as `DeveloperTaskView` for the callers that exist; any code that
- * switches on a stage must keep a branch for one it does not know.
+ * The task as a client that sends `x-agentx-task-view: 2` reads it: the same view, with the workflow read tolerantly (`WorkflowSnapshotReaderShape`), so a stage or
+ * outcome a newer control plane added reads as "unknown" instead of failing the whole answer. The type says what the reader does: `stage` and `outcome` may be
+ * "unknown", so a caller has to decide what to do with a stage it does not know.
  */
+export type DeveloperTaskClientView = Omit<DeveloperTaskView, "workflow"> & {
+  workflow?: (WorkflowSnapshotReader & { planContent?: string | undefined; workBreakdownDigest?: string | undefined }) | undefined;
+};
 export const DeveloperTaskClientViewSchema = DeveloperTaskViewSchema.extend({
   workflow: z.looseObject({
     ...WorkflowSnapshotReaderShape,
     planContent: z.string().max(WORKFLOW_PLAN_MAX_BYTES).optional(),
     workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   }).optional(),
-}) as unknown as typeof DeveloperTaskViewSchema;
+}) as unknown as z.ZodType<DeveloperTaskClientView>;
+/** Whether a value read through the tolerant reader holds the word the reader gives a value it does not know, anywhere in it. */
+function readsAsUnknown(value: unknown): boolean {
+  if (value === "unknown") return true;
+  if (Array.isArray(value)) return value.some(readsAsUnknown);
+  return typeof value === "object" && value !== null && Object.values(value).some(readsAsUnknown);
+}
+
+/**
+ * The task as the strict view, or undefined when the control plane named a stage, outcome or other value this build does not know (a newer server), which the
+ * reader gave as "unknown". The reader differs from the strict view only by those markers and by keeping fields it does not know, so a task with no marker
+ * is the strict view. Code that decides what to do from a stage reads the task through this, and tells the person when it is undefined. A value that really
+ * is the word "unknown" reads as not known too, which only shows the task in its degraded form.
+ */
+export function knownTaskView(view: DeveloperTaskClientView): DeveloperTaskView | undefined {
+  return readsAsUnknown(view.workflow) ? undefined : (view as DeveloperTaskView);
+}
 export const DeveloperTaskResponseSchema = z.object({ task: DeveloperTaskClientViewSchema });
 export const DeveloperCloseResponseSchema = z.object({
   task: DeveloperTaskClientViewSchema,

@@ -1302,7 +1302,7 @@ export const WorkflowSnapshotReaderShape = {
   ...Object.fromEntries(Object.entries(WorkflowSnapshotShapeSchema.shape).map(([key, field]) => [key, readerOf(field as z.ZodType)])),
   definitionVersion: z.string().min(1).max(32),
 };
-export type WorkflowSnapshotReader = Omit<ForwardReader<z.output<typeof WorkflowSnapshotShapeSchema>>, "definitionVersion"> & { definitionVersion: string };
+export type WorkflowSnapshotReader = ForwardReader<Omit<z.output<typeof WorkflowSnapshotShapeSchema>, "definitionVersion"> & { definitionVersion: string }>;
 export const WorkflowSnapshotReaderSchema = z.looseObject(WorkflowSnapshotReaderShape) as unknown as z.ZodType<WorkflowSnapshotReader>;
 
 /** A workflow as it is stored and transitioned. */

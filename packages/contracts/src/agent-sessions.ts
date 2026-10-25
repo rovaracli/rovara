@@ -8,8 +8,8 @@ import { ChainRunIdSchema, TriggerIdSchema } from "./chains.js";
 import { cleanDisplayName } from "./display-name.js";
 import { PayerSchema, WorkOriginSchema } from "./agent-run.js";
 import { OrgIdSchema } from "./org.js";
+import { SessionBindingSchema, SessionIdSchema, type SessionBinding, type SessionId } from "./browser-ids.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
-import { SlackChannelIdSchema, SlackMessageTimestampSchema, SlackTeamIdSchema } from "./slack.js";
 
 /**
  * The version of the shapes clients read (`SessionViewSchema`, `SessionTileSchema`, `SessionEventSchema`). Removing or renaming a key
@@ -77,8 +77,6 @@ export const DEVICES_PER_MEMBER_MAX = 10;
 export const HANDOFF_SUMMARY_MAX_BYTES = 8192;
 
 const NAME_MAX_CHARS = 80;
-const LINEAR_ISSUE_ID_MAX = 64;
-const LINEAR_URL_MAX = 2048;
 const DIGEST_MAX = 128;
 const NEEDS_PERSON_MAX_CHARS = 200;
 const DELIVERY_REASON_MAX_CHARS = 200;
@@ -128,18 +126,15 @@ const CountSchema = z.number().int().min(0);
 
 // ---- ids
 
-const SESSION_ID_PATTERN = /^ses_[0-9a-z]{20}$/;
-
 /** What started a run no person started (Plan 4's trigger dispatch passes it; Plan 5 records it on the session). */
 export const SessionTriggerSchema = z.object({ kind: z.enum(["event", "schedule"]), triggerId: TriggerIdSchema }).strict();
 export type SessionTrigger = z.infer<typeof SessionTriggerSchema>;
 
-/** A session id: `ses_` for a task or local session, the chain run's own id for a chain session (Plan 4 pins `sessionId = ChainRunId`). */
-export const SessionIdSchema = z.union([z.string().regex(SESSION_ID_PATTERN), ChainRunIdSchema]);
+// SessionIdSchema, SessionBindingSchema and their types are defined in browser-ids.ts (browser-safe contracts import them there) and re-exported here.
+export { SessionIdSchema, SessionBindingSchema, type SessionId, type SessionBinding };
 export const DeviceIdSchema = z.string().regex(/^dvc_[0-9a-z]{20}$/);
 export const SessionMessageIdSchema = z.string().regex(/^msg_[0-9a-z]{20}$/);
 export const SessionEventIdSchema = z.string().regex(/^evt_[0-9a-f]{24}$/);
-export type SessionId = z.infer<typeof SessionIdSchema>;
 export type DeviceId = z.infer<typeof DeviceIdSchema>;
 export type SessionMessageId = z.infer<typeof SessionMessageIdSchema>;
 export type SessionEventId = z.infer<typeof SessionEventIdSchema>;
@@ -385,18 +380,6 @@ export const SessionMessageSchema = z
   .refine((message) => message.kind === "comment" || (message.anchor === undefined && message.anchorState === undefined && message.threadId === undefined), { message: "only a comment can be pinned or threaded", path: ["kind"] });
 export type SessionMessage = z.infer<typeof SessionMessageSchema>;
 
-/** The outside place a session is bound to: one Slack thread or one Linear issue, at `BINDING#<kind>` (Plan 9 posts through it). */
-export const SessionBindingSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("slack_thread"), teamId: SlackTeamIdSchema, channelId: SlackChannelIdSchema, threadTs: SlackMessageTimestampSchema }).strict(),
-  z
-    .object({
-      kind: z.literal("linear_issue"),
-      issueId: z.string().regex(new RegExp(`^[A-Za-z0-9_-]{1,${String(LINEAR_ISSUE_ID_MAX)}}$`)),
-      url: z.string().url().max(LINEAR_URL_MAX).refine((value) => value.startsWith("https://"), "must be an https link"),
-    })
-    .strict(),
-]);
-export type SessionBinding = z.infer<typeof SessionBindingSchema>;
 
 // ---- an agent remembers the task it was made from (Plan 5 Task 10c)
 

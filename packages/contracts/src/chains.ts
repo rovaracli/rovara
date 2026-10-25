@@ -4,6 +4,7 @@
 // its own pinned agent's permissions. The keys these records live under are in org-scoped-keys.ts.
 import { z } from "zod";
 import { AgentIdSchema } from "./agent.js";
+import { ChainRunIdSchema, type ChainRunId } from "./browser-ids.js";
 import { AGENT_REPORT_MAX_BYTES, RUN_INPUT_BODY_MAX_BYTES, RUN_INPUT_CONTEXT_MAX, RUN_INPUT_TITLE_MAX } from "./agent-run.js";
 import { APPROVAL_PROMPT_MAX, STEP_NAME_MAX, StepIdSchema } from "./agent-recipe.js";
 import { MAX_RUN_LIMIT_USD } from "./spend.js";
@@ -11,7 +12,7 @@ import { MAX_RUN_LIMIT_USD } from "./spend.js";
 // ---- ids
 
 export const ChainIdSchema = z.string().regex(/^chn_[0-9a-z]{20}$/);
-export const ChainRunIdSchema = z.string().regex(/^crn_[0-9a-z]{20}$/);
+export { ChainRunIdSchema, type ChainRunId }; // defined in browser-ids.ts, which browser-safe contracts import
 /** A trigger's id. Triggers themselves are Plan 4 Task 18; a run records the trigger that started it. */
 export const TriggerIdSchema = z.string().regex(/^ctr_[0-9a-z]{20}$/);
 /** Plan 3's step id (`ResultContract` branch ids use it too): a lower-case letter, then at most 23 of `a-z0-9_`. `"$end"` is not one. */
@@ -19,7 +20,6 @@ export const ChainStepIdSchema = StepIdSchema;
 export const BranchIdSchema = StepIdSchema;
 
 export type ChainId = z.infer<typeof ChainIdSchema>;
-export type ChainRunId = z.infer<typeof ChainRunIdSchema>;
 export type TriggerId = z.infer<typeof TriggerIdSchema>;
 export type ChainStepId = z.infer<typeof ChainStepIdSchema>;
 export type BranchId = z.infer<typeof BranchIdSchema>;

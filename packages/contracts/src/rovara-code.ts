@@ -2,9 +2,8 @@
 // that bound them. Browser-safe on purpose: the web app reads these, so nothing here imports a Node module. What needs `node:crypto` (the tracking item's
 // digest) lives in `rovara-code-node.ts`.
 import { z } from "zod";
-import { SessionBindingSchema, SessionIdSchema } from "./agent-sessions.js";
+import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
 import { ModelIdentifierSchema } from "./models.js";
-import { OrgIdSchema } from "./org.js";
 
 // ---- limits (placeholder values, exact names)
 
