@@ -1,0 +1,1390 @@
+AI agent detected
+Bundling asset AgentXControlPlane/Broker/Code/Stage...
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/host/executor-seccomp.js:12:38:
+      12 │ ...oin(dirname(fileURLToPath(import.meta.url)), "../../assets/exec...
+         ╵                              ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/executor/host-registry.js:29:75:
+      29 │ ...geRoot ?? join(dirname(fileURLToPath(import.meta.url)), "../.."));
+         ╵                                         ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/application-runtime-assets.js:15:47:
+      15 │ ...lve(dirname(fileURLToPath(import.meta.url)), "../assets/applica...
+         ╵                              ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/runtime-cli.js:22:54:
+      22 │ ...urn resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+         ╵                                                   ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/application-runtime-cli.js:17:71:
+      17 │ ...rn resolve(dirname(fileURLToPath(import.meta.url)), "../../.."); }
+         ╵                                     ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    packages/verifier/dist/application-runtime-cli.js:281:59:
+      281 │ ...t(resolve(dirname(fileURLToPath(import.meta.url)), ".."), input);
+          ╵                                    ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+6 of 12 warnings shown (disable the message limit with --log-limit=0)
+
+  ...1fd3acd236176127e6a5c17d3f525a2383a0d3a3040b5-building/index.js  11.5mb ⚠️
+  ...acd236176127e6a5c17d3f525a2383a0d3a3040b5-building/index.js.map  45.2mb
+
+⚡ Done in 410ms
+Bundling asset AgentXControlPlane/PlanEvidence/Code/Stage...
+
+  ...91265b7d0d4270c13d8e78e229046688ef47d8a067a51-building/index.js   5.2mb ⚠️
+  ...5b7d0d4270c13d8e78e229046688ef47d8a067a51-building/index.js.map  20.6mb
+
+⚡ Done in 316ms
+Bundling asset AgentXControlPlane/OutboxPublisher/Code/Stage...
+
+  ...da5697ec0726f02eca098a1b79dbdc905fabe77f2ce4e-building/index.js   5.3mb ⚠️
+  ...97ec0726f02eca098a1b79dbdc905fabe77f2ce4e-building/index.js.map  23.4mb
+
+⚡ Done in 314ms
+Bundling asset AgentXControlPlane/Dispatcher/Code/Stage...
+
+  ...d0960556d2b18f8ad8278fff6d8407106e2edc7ed46fd-building/index.js   5.4mb ⚠️
+  ...0556d2b18f8ad8278fff6d8407106e2edc7ed46fd-building/index.js.map  21.4mb
+
+⚡ Done in 305ms
+Bundling asset AgentXControlPlane/SlackIngress/Code/Stage...
+
+  ...ebe48a943fed10ee1876d014558625a0eb51f8d760f7f-building/index.js   5.2mb ⚠️
+  ...8a943fed10ee1876d014558625a0eb51f8d760f7f-building/index.js.map  20.7mb
+
+⚡ Done in 297ms
+Bundling asset AgentXControlPlane/DeveloperSignIn/Function/Code/Stage...
+
+  ...0503cb00d5d55fef0c898d00d294880f2306dcc2df3a1-building/index.js   5.5mb ⚠️
+  ...cb00d5d55fef0c898d00d294880f2306dcc2df3a1-building/index.js.map  21.5mb
+
+⚡ Done in 311ms
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+[WARNING] aws-cdk-lib.CfnResource#addDependency is deprecated.
+  Use `addResourceDependency` instead.
+  This API will be removed in the next major release.
+Bundling asset AgentXControlPlane/Realtime/Authorizer/Code/Stage...
+
+  ...d5778b22311a2e61fb823aeef7efc7db29f023e56a286-building/index.js   5.0mb ⚠️
+  ...8b22311a2e61fb823aeef7efc7db29f023e56a286-building/index.js.map  19.7mb
+
+⚡ Done in 310ms
+Bundling asset AgentXControlPlane/DeveloperTaskNotifier/Function/Code/Stage...
+
+  ...c5c8a5baf14c6505ed8e1eee674dcd8e4603977292d35-building/index.js   5.3mb ⚠️
+  ...a5baf14c6505ed8e1eee674dcd8e4603977292d35-building/index.js.map  21.2mb
+
+⚡ Done in 308ms
+Bundling asset AgentXControlPlane/AuditLedger/AuditExport/Code/Stage...
+
+  ...44a3ff5f95654cb162742b077c5437e653175687ae32b-building/index.js   5.2mb ⚠️
+  ...ff5f95654cb162742b077c5437e653175687ae32b-building/index.js.map  20.6mb
+
+⚡ Done in 309ms
+Bundling asset AgentXControlPlane/AuditLedger/AuditAppender/Code/Stage...
+
+  ...1f666fbc152c2edf6a86c001631f720cfd30b7acc21c3-building/index.js   5.0mb ⚠️
+  ...6fbc152c2edf6a86c001631f720cfd30b7acc21c3-building/index.js.map  19.5mb
+
+⚡ Done in 298ms
+Bundling asset AgentXControlPlane/AuditLedger/AuditAnchor/Code/Stage...
+
+  ...26d539cb74995c01e021d52a09f4fd1c44dee31bcf17f-building/index.js   5.4mb ⚠️
+  ...39cb74995c01e021d52a09f4fd1c44dee31bcf17f-building/index.js.map  20.9mb
+
+⚡ Done in 313ms
+Bundling asset AgentXControlPlane/Sessions/Steps/Code/Stage...
+
+  ...d9d90fc0b33ab3100e2abca82f077ea9ff944780b35ab-building/index.js   5.2mb ⚠️
+  ...0fc0b33ab3100e2abca82f077ea9ff944780b35ab-building/index.js.map  20.4mb
+
+⚡ Done in 313ms
+Bundling asset AgentXControlPlane/Sessions/Reaper/Code/Stage...
+
+  ...96df4d2373a98873a9dc6445b52d53009815e5750c8cd-building/index.js   6.0mb ⚠️
+  ...4d2373a98873a9dc6445b52d53009815e5750c8cd-building/index.js.map  23.2mb
+
+⚡ Done in 302ms
+Bundling asset AgentXControlPlane/Sessions/Reconciler/Code/Stage...
+
+  ...841a6655bcfb0015b93fe9404ae226bd85d48a8dcb6d6-building/index.js   6.1mb ⚠️
+  ...6655bcfb0015b93fe9404ae226bd85d48a8dcb6d6-building/index.js.map  24.2mb
+
+⚡ Done in 326ms
+Bundling asset AgentXControlPlane/ModelAccessFunction/Code/Stage...
+
+  ...e04d092fcd428ee801e0c4f13da088d52eea13692d61d-building/index.js   5.8mb ⚠️
+  ...092fcd428ee801e0c4f13da088d52eea13692d61d-building/index.js.map  26.2mb
+
+⚡ Done in 310ms
+Bundling asset AgentXControlPlane/EvalBatchTick/Code/Stage...
+
+  ...1057a20922bcaab28ba1d7b41c7c17d9a2c6865a0e574-building/index.js   6.4mb ⚠️
+  ...a20922bcaab28ba1d7b41c7c17d9a2c6865a0e574-building/index.js.map  24.4mb
+
+⚡ Done in 334ms
+[Warning] Template validation found issues in your templates (reported as warnings).
+Set feature flag "@aws-cdk/core:validateAgainstDefaultRules" to true to turn these into errors.
+file:///repo/infra/dist/lib/cloud-identity.js:99:22
+WARNING PermissionsBoundary: length 0 is below minimum 20 (CloudFormation Validate)
+   AgentXControlPlane/DeveloperSignIn/CloudIdentity/UserPool/Resource (DeveloperSignInCloudIdentityUserPoolAEDBF8D7) aws-cdk-lib.aws_cognito.CfnUserPool
+   Acknowledge with 'CloudFormation-Validate::F3033'
+
+file:///repo/infra/dist/lib/cloud-identity.js:99:22
+WARNING EmailConfiguration.SourceArn: '' does not match pattern '^arn:[\w+=/,.@-]+:[\w+=/,.@-]+:([\w+=/,.@-]*)?:[0-9]+:[\w+=/,.@-]+(:[\w+=/,.@-]+)?(:[\w+=/,.@-]+)?$' (CloudFormation Validate)
+   AgentXControlPlane/DeveloperSignIn/CloudIdentity/UserPool/Resource (DeveloperSignInCloudIdentityUserPoolAEDBF8D7) aws-cdk-lib.aws_cognito.CfnUserPool
+   Acknowledge with 'CloudFormation-Validate::F3031'
+
+file:///repo/infra/dist/lib/cloud-identity.js:127:24
+WARNING ProviderDetails.client_secret.Fn::If.2: ['Fn::If', 2] is not reachable. When setting condition 'GoogleSignInEnabled' to False from current status True (CloudFormation Validate)
+   AgentXControlPlane/DeveloperSignIn/CloudIdentity/Google/Resource (DeveloperSignInCloudIdentityGoogleD308A774) aws-cdk-lib.aws_cognito.CfnUserPoolIdentityProvider
+   Acknowledge with 'CloudFormation-Validate::W1028'
+
+file:///repo/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///repo/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///repo/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///repo/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///repo/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+
+file:///repo/infra/dist/lib/app.js:120:5
+WARNING Parameters/GitHubAppPrivateKeySecretArn: Parameter 'GitHubAppPrivateKeySecretArn' appears to be a password but does not have NoEcho set to true (CloudFormation Validate)
+   AgentXControlPlane aws-cdk-lib.Stack
+   Acknowledge with 'CloudFormation-Validate::W2509'
+Stack AgentXControlPlane (agentx-staging-control-plane) (aws://944937319445/us-west-2)
+IAM Statement Changes
+┌───┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬────────┬─────────────────────────────┬───────────────────────────────────────────────────┬───────────────────────────────────────────────────────┐
+│   │ Resource                                                                                                          │ Effect │ Action                      │ Principal                                         │ Condition                                             │
+├───┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼─────────────────────────────┼───────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ + │ ${Artifacts.Arn}/workflow-e2e-admissions/*                                                                        │ Allow  │ s3:GetObject                │ AWS:${Dispatcher/ServiceRole}                     │                                                       │
+├───┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼─────────────────────────────┼───────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ + │ ${State.Arn}                                                                                                      │ Allow  │ dynamodb:PutItem            │ AWS:${DeveloperTaskNotifier/Function/ServiceRole} │ "ForAllValues:StringLike": {                          │
+│   │                                                                                                                   │        │                             │                                                   │   "dynamodb:LeadingKeys": [                           │
+│   │                                                                                                                   │        │                             │                                                   │     "ORG#org_????????????????????#SESSION_BINDING#*", │
+│   │                                                                                                                   │        │                             │                                                   │     "ORG#org_????????????????????#SESSION_SURFACE"    │
+│   │                                                                                                                   │        │                             │                                                   │   ]                                                   │
+│   │                                                                                                                   │        │                             │                                                   │ },                                                    │
+│   │                                                                                                                   │        │                             │                                                   │ "Null": {                                             │
+│   │                                                                                                                   │        │                             │                                                   │   "dynamodb:LeadingKeys": "false"                     │
+│   │                                                                                                                   │        │                             │                                                   │ },                                                    │
+│   │                                                                                                                   │        │                             │                                                   │ "StringEqualsIfExists": {                             │
+│   │                                                                                                                   │        │                             │                                                   │   "dynamodb:ReturnValues": "NONE"                     │
+│   │                                                                                                                   │        │                             │                                                   │ }                                                     │
+│ + │ ${State.Arn}                                                                                                      │ Allow  │ dynamodb:ConditionCheckItem │ AWS:${DeveloperTaskNotifier/Function/ServiceRole} │ "ForAllValues:StringLike": {                          │
+│   │                                                                                                                   │        │                             │                                                   │   "dynamodb:LeadingKeys": [                           │
+│   │                                                                                                                   │        │                             │                                                   │     "ORG#org_????????????????????#AGENT_SESSION#*"    │
+│   │                                                                                                                   │        │                             │                                                   │   ]                                                   │
+│   │                                                                                                                   │        │                             │                                                   │ },                                                    │
+│   │                                                                                                                   │        │                             │                                                   │ "Null": {                                             │
+│   │                                                                                                                   │        │                             │                                                   │   "dynamodb:LeadingKeys": "false"                     │
+│   │                                                                                                                   │        │                             │                                                   │ }                                                     │
+├───┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼─────────────────────────────┼───────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ + │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/eval/runner-features          │ Allow  │ ssm:GetParameters           │ AWS:${Broker/ServiceRole}                         │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/eval/runner-image             │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/eval/settings                 │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-anthropic-secret-arn   │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-e2e-agent-model        │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-executor-image         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-image                  │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-fallback         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-id               │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-provider         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openai-secret-arn      │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openrouter-providers   │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openrouter-secret-arn  │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-prompt-cache-retention │        │                             │                                                   │                                                       │
+├───┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼─────────────────────────────┼───────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ - │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/eval/runner-features          │ Allow  │ ssm:GetParameters           │ AWS:${Broker/ServiceRole}                         │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/eval/runner-image             │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/eval/settings                 │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-anthropic-secret-arn   │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-executor-image         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-image                  │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-id               │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-provider         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openai-secret-arn      │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openrouter-providers   │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openrouter-secret-arn  │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-prompt-cache-retention │        │                             │                                                   │                                                       │
+├───┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼─────────────────────────────┼───────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ + │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/model-proxy-url               │ Allow  │ ssm:GetParameters           │ AWS:${Sessions/Steps/ServiceRole}                 │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-anthropic-secret-arn   │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-boot-stage2-sha256     │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-e2e-agent-model        │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-executor-image         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-image                  │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-fallback         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-id               │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-provider         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openai-secret-arn      │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openrouter-providers   │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openrouter-secret-arn  │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-prompt-cache-retention │        │                             │                                                   │                                                       │
+├───┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼────────┼─────────────────────────────┼───────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ - │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/model-proxy-url               │ Allow  │ ssm:GetParameters           │ AWS:${Sessions/Steps/ServiceRole}                 │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-anthropic-secret-arn   │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-boot-stage2-sha256     │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-executor-image         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-image                  │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-id               │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-model-provider         │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openai-secret-arn      │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openrouter-providers   │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-openrouter-secret-arn  │        │                             │                                                   │                                                       │
+│   │ arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/agentx/staging/worker-prompt-cache-retention │        │                             │                                                   │                                                       │
+└───┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┴────────┴─────────────────────────────┴───────────────────────────────────────────────────┴───────────────────────────────────────────────────────┘
+(NOTE: There may be security-related changes not in this list. See https://github.com/aws/aws-cdk/issues/1299)
+
+Parameters
+[~] Parameter ProjectAllowListId ProjectAllowListId: {"Type":"String","Description":"The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains"} to {"Type":"String","AllowedPattern":"^rslvr-fdl-[0-9a-zA-Z]{8,32}$","Description":"The foundation's DNS firewall project allow list (rule priority 150), which the broker updates with the approved egress domains"}
+[~] Parameter Ec2WorkerLaunchTemplateId Ec2WorkerLaunchTemplateId: {"Type":"String","Description":"The EC2 workers' launch template"} to {"Type":"String","AllowedPattern":"^lt-[0-9a-f]{17}$","Description":"The EC2 workers' launch template"}
+
+Resources
+[~] AWS::S3::Bucket Artifacts Artifacts82DD59A1
+ └─ [+] LifecycleConfiguration
+     └─ {"Rules":[{"ExpirationInDays":30,"Id":"ExpireE2EScreenshots","Status":"Enabled","TagFilters":[{"Key":"rovara-retention","Value":"e2e-screenshot"}]}]}
+[~] AWS::IAM::ManagedPolicy Broker/ServiceRole/ServiceRoleOrchestrationPolicy BrokerServiceRoleServiceRoleOrchestrationPolicy4038649D
+ └─ [~] PolicyDocument
+     └─ [~] .Statement:
+         └─ @@ -41,252 +41,6 @@
+            [ ]   "Sid": "AssumeCustomerCloudWatchRoles"
+            [ ] },
+            [ ] {
+            [-]   "Action": "ssm:GetParameters",
+            [-]   "Effect": "Allow",
+            [-]   "Resource": [
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/eval/settings"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/eval/runner-image"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/eval/runner-features"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-image"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-executor-image"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-model-provider"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-model-id"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-prompt-cache-retention"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-openrouter-secret-arn"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-openrouter-providers"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-anthropic-secret-arn"
+            [-]         ]
+            [-]       ]
+            [-]     },
+            [-]     {
+            [-]       "Fn::Join": [
+            [-]         "",
+            [-]         [
+            [-]           "arn:",
+            [-]           {
+            [-]             "Ref": "AWS::Partition"
+            [-]           },
+            [-]           ":ssm:",
+            [-]           {
+            [-]             "Ref": "AWS::Region"
+            [-]           },
+            [-]           ":",
+            [-]           {
+            [-]             "Ref": "AWS::AccountId"
+            [-]           },
+            [-]           ":parameter/agentx/staging/worker-openai-secret-arn"
+            [-]         ]
+            [-]       ]
+            [-]     }
+            [-]   ]
+            [-] },
+            [-] {
+            [ ]   "Action": "states:StartExecution",
+            [ ]   "Effect": "Allow",
+            [ ]   "Resource": [
+[~] AWS::IAM::ManagedPolicy Broker/ServiceRole/ServiceRoleIntegrationsPolicy BrokerServiceRoleServiceRoleIntegrationsPolicy942FF081
+ └─ [~] PolicyDocument
+     └─ [~] .Statement:
+         └─ @@ -123,6 +123,292 @@
+            [ ]   }
+            [ ] },
+            [ ] {
+            [+]   "Action": "ssm:GetParameters",
+            [+]   "Effect": "Allow",
+            [+]   "Resource": [
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/eval/settings"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/eval/runner-image"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/eval/runner-features"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-image"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-executor-image"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-model-provider"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-model-id"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-prompt-cache-retention"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-openrouter-secret-arn"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-openrouter-providers"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-anthropic-secret-arn"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-openai-secret-arn"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-e2e-agent-model"
+            [+]         ]
+            [+]       ]
+            [+]     },
+            [+]     {
+            [+]       "Fn::Join": [
+            [+]         "",
+            [+]         [
+            [+]           "arn:",
+            [+]           {
+            [+]             "Ref": "AWS::Partition"
+            [+]           },
+            [+]           ":ssm:",
+            [+]           {
+            [+]             "Ref": "AWS::Region"
+            [+]           },
+            [+]           ":",
+            [+]           {
+            [+]             "Ref": "AWS::AccountId"
+            [+]           },
+            [+]           ":parameter/agentx/staging/worker-model-fallback"
+            [+]         ]
+            [+]       ]
+            [+]     }
+            [+]   ]
+            [+] },
+            [+] {
+            [ ]   "Action": [
+            [ ]     "scheduler:CreateSchedule",
+            [ ]     "scheduler:UpdateSchedule",
+[~] AWS::Lambda::Function Broker BrokerE1355FD6
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 989730f319477e72f87bd513c867c52a5b80d2404e509e37ae00f3f50b449841.zip
+ │       └─ [+] e010b82f0b20dfbd524ea45dff0ca397e19767da10bfbb0b8da24eed99858f73.zip
+ ├─ [~] Environment
+ │   └─ [~] .Variables:
+ │       ├─ [~] .AGENTX_NAMES:
+ │       │   └─ [~] .Fn::Join:
+ │       │       └─ @@ -1,133 +1,168 @@
+ │       │          [ ] [
+ │       │          [ ]   "",
+ │       │          [ ]   [
+ │       │          [-]     "{\"ab\":\"",
+ │       │          [+]     "ab=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "AuditLedgerAuditExportsBucketDE99C0AF"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"af\":\"",
+ │       │          [+]     ",af=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "AuditLedgerAuditExportED90D71C"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"ak\":\"",
+ │       │          [+]     ",ak=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "AuditLedgerAuditKeysTableF5520AEA"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"al\":\"",
+ │       │          [+]     ",al=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "AuditLedgerAuditLedgerTableC60B8D3B"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"aq\":\"",
+ │       │          [+]     ",ar=",
+ │       │          [ ]     {
+ │       │          [-]       "Fn::GetAtt": [
+ │       │          [-]         "AuditLedgerAuditIntakeQueue75AB1024",
+ │       │          [-]         "QueueName"
+ │       │          [-]       ]
+ │       │          [+]       "Ref": "Artifacts82DD59A1"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"as\":\"",
+ │       │          [+]     ",as=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "AuditLedgerAuditSealsTableF2EABAF8"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"av\":\"",
+ │       │          [+]     ",av=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "AuditLedgerAuditVaultKey5D3720C8"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"ci\":\"",
+ │       │          [+]     ",ci=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "DeveloperSignInCloudIdentityUserPoolAEDBF8D7"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"ck\":\"",
+ │       │          [+]     ",ck=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "ChatGptConnectionKey03C49F9D"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"dl\":\"",
+ │       │          [+]     ",dl=",
+ │       │          [ ]     {
+ │       │          [ ]       "Fn::GetAtt": [
+ │       │          [ ]         "SessionsDeleterB48741EA",
+ │       │          [ ]         "Name"
+ │       │          [ ]       ]
+ │       │          [ ]     },
+ │       │          [-]     "\",\"dn\":\"",
+ │       │          [+]     ",dn=",
+ │       │          [ ]     {
+ │       │          [ ]       "Fn::GetAtt": [
+ │       │          [ ]         "DeveloperTaskNotifierNoticeDeadLetterQueue3C87E1D7",
+ │       │          [ ]         "QueueName"
+ │       │          [ ]       ]
+ │       │          [ ]     },
+ │       │          [-]     "\",\"dq\":\"",
+ │       │          [+]     ",dq=",
+ │       │          [ ]     {
+ │       │          [ ]       "Fn::GetAtt": [
+ │       │          [ ]         "DispatchDeadLetterQueue3E30F4B8",
+ │       │          [ ]         "QueueName"
+ │       │          [ ]       ]
+ │       │          [ ]     },
+ │       │          [-]     "\",\"ds\":\"",
+ │       │          [+]     ",ds=",
+ │       │          [ ]     {
+ │       │          [ ]       "Fn::GetAtt": [
+ │       │          [ ]         "DeveloperTaskNotifierStreamFailureQueue58891933",
+ │       │          [ ]         "QueueName"
+ │       │          [ ]       ]
+ │       │          [ ]     },
+ │       │          [-]     "\",\"if\":\"",
+ │       │          [+]     ",if=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "DeveloperSignInFunction10B62B05"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"ma\":\"",
+ │       │          [+]     ",lt=",
+ │       │          [ ]     {
+ │       │          [+]       "Ref": "Ec2WorkerLaunchTemplateId"
+ │       │          [+]     },
+ │       │          [+]     ",ma=",
+ │       │          [+]     {
+ │       │          [ ]       "Ref": "ModelAccessFunction1B50ECC9"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"pe\":\"",
+ │       │          [+]     ",mp=",
+ │       │          [ ]     {
+ │       │          [+]       "Fn::Select": [
+ │       │          [+]         0,
+ │       │          [+]         {
+ │       │          [+]           "Fn::Split": [
+ │       │          [+]             ".",
+ │       │          [+]             {
+ │       │          [+]               "Fn::GetAtt": [
+ │       │          [+]                 "ModelProxyLoadBalancer75BE716A",
+ │       │          [+]                 "DNSName"
+ │       │          [+]               ]
+ │       │          [+]             }
+ │       │          [+]           ]
+ │       │          [+]         }
+ │       │          [+]       ]
+ │       │          [+]     },
+ │       │          [+]     ",pe=",
+ │       │          [+]     {
+ │       │          [ ]       "Ref": "PlanEvidence3615C4CB"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"pv\":\"",
+ │       │          [+]     ",pl=",
+ │       │          [ ]     {
+ │       │          [+]       "Ref": "ProjectAllowListId"
+ │       │          [+]     },
+ │       │          [+]     ",pv=",
+ │       │          [+]     {
+ │       │          [ ]       "Fn::GetAtt": [
+ │       │          [ ]         "SessionsProvisioner9C44055B",
+ │       │          [ ]         "Name"
+ │       │          [ ]       ]
+ │       │          [ ]     },
+ │       │          [-]     "\",\"rt\":\"",
+ │       │          [+]     ",rt=",
+ │       │          [ ]     {
+ │       │          [-]       "Fn::GetAtt": [
+ │       │          [-]         "RealtimeApiD4415F9E",
+ │       │          [-]         "ApiId"
+ │       │          [+]       "Fn::Select": [
+ │       │          [+]         0,
+ │       │          [+]         {
+ │       │          [+]           "Fn::Split": [
+ │       │          [+]             ".",
+ │       │          [+]             {
+ │       │          [+]               "Fn::GetAtt": [
+ │       │          [+]                 "RealtimeApiD4415F9E",
+ │       │          [+]                 "Dns.Http"
+ │       │          [+]               ]
+ │       │          [+]             }
+ │       │          [+]           ]
+ │       │          [+]         }
+ │       │          [ ]       ]
+ │       │          [ ]     },
+ │       │          [-]     "\",\"sl\":\"",
+ │       │          [+]     ",sl=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "SlackThreads36E14C1E"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"so\":\"",
+ │       │          [+]     ",so=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "SlackOrchestratorTaskRole2372FE40"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"sq\":\"",
+ │       │          [+]     ",sq=",
+ │       │          [ ]     {
+ │       │          [ ]       "Fn::GetAtt": [
+ │       │          [ ]         "SlackRequestQueueCC82C864",
+ │       │          [ ]         "QueueName"
+ │       │          [ ]       ]
+ │       │          [ ]     },
+ │       │          [-]     "\",\"sr\":\"",
+ │       │          [+]     ",sr=",
+ │       │          [ ]     {
+ │       │          [ ]       "Fn::GetAtt": [
+ │       │          [ ]         "SlackRequestDeadLetterQueueBBBDDF4E",
+ │       │          [ ]         "QueueName"
+ │       │          [ ]       ]
+ │       │          [ ]     },
+ │       │          [-]     "\",\"st\":\"",
+ │       │          [+]     ",st=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "DeveloperSignInTable26CE739E"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"ti\":\"",
+ │       │          [+]     ",ti=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "HttpApi"
+ │       │          [ ]     },
+ │       │          [-]     "\",\"tr\":\"",
+ │       │          [+]     ",tr=",
+ │       │          [ ]     {
+ │       │          [ ]       "Ref": "TurnRecords69ECFCD9"
+ │       │          [ ]     },
+ │       │          [-]     "\"}"
+ │       │          [+]     ",ts=",
+ │       │          [+]     {
+ │       │          [+]       "Ref": "State1C20CC9A"
+ │       │          [+]     }
+ │       │          [ ]   ]
+ │       │          [ ] ]
+ │       ├─ [+] Added: .AGENTX_SETTINGS
+ │       ├─ [-] Removed: .AGENTX_TASK_PEOPLE_CHANGES_ENABLED
+ │       ├─ [-] Removed: .AGENTX_TASK_PEOPLE_PRIVATE_INVITATIONS_ENABLED
+ │       ├─ [-] Removed: .AGENTX_TASK_PEOPLE_PUBLIC_INVITATIONS_ENABLED
+ │       ├─ [-] Removed: .AGENTX_WORKFLOW_DEPENDENCIES_ENABLED
+ │       ├─ [-] Removed: .AGENT_PROJECT_ALLOW_LIST_ID
+ │       ├─ [-] Removed: .ARTIFACT_BUCKET_NAME
+ │       ├─ [-] Removed: .DEVELOPER_OIDC_SINCE
+ │       ├─ [-] Removed: .DEVELOPER_SIGNIN_SLACK
+ │       ├─ [-] Removed: .DEVELOPER_SIGNIN_SLACK_SINCE
+ │       ├─ [-] Removed: .EC2_WORKER_LAUNCH_TEMPLATE_ID
+ │       ├─ [-] Removed: .MCP_CONFIRM_ELICITATION
+ │       ├─ [-] Removed: .MODEL_PROXY_URL
+ │       ├─ [-] Removed: .SLACK_MEMBER_WORKSPACE_LIMIT
+ │       ├─ [-] Removed: .SLACK_ORGANIZATION_WORKSPACE_LIMIT
+ │       ├─ [-] Removed: .SLACK_TEAM_ID
+ │       └─ [-] Removed: .STATE_TABLE_NAME
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.989730f319477e72f87bd513c867c52a5b80d2404e509e37ae00f3f50b449841
+         └─ [+] asset.e010b82f0b20dfbd524ea45dff0ca397e19767da10bfbb0b8da24eed99858f73
+[~] AWS::Lambda::Function PlanEvidence PlanEvidence3615C4CB
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] e0c1b8085c24cd0b2df0225dbf6716bd496e436981f3f47faffb5ef06a19c3f0.zip
+ │       └─ [+] 6d8e66720d04e170eb41451fddfc043fea6db06433ef04d9e4652ab3ec260597.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.e0c1b8085c24cd0b2df0225dbf6716bd496e436981f3f47faffb5ef06a19c3f0
+         └─ [+] asset.6d8e66720d04e170eb41451fddfc043fea6db06433ef04d9e4652ab3ec260597
+[~] AWS::Lambda::Function OutboxPublisher OutboxPublisherD572F72E
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] f70b455227450822a9177bca7998e523e2ac31806ea90f44b189e86ab3c27cf0.zip
+ │       └─ [+] 6f081e7db898ced8c48ec2ed5567d8aa049f546007c1f29ed16237b1b8afd62c.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.f70b455227450822a9177bca7998e523e2ac31806ea90f44b189e86ab3c27cf0
+         └─ [+] asset.6f081e7db898ced8c48ec2ed5567d8aa049f546007c1f29ed16237b1b8afd62c
+[~] AWS::IAM::Policy Dispatcher/ServiceRole/DefaultPolicy DispatcherServiceRoleDefaultPolicyDA413007
+ └─ [~] PolicyDocument
+     └─ [~] .Statement:
+         └─ @@ -90,6 +90,24 @@
+            [ ]   ]
+            [ ] },
+            [ ] {
+            [+]   "Action": "s3:GetObject",
+            [+]   "Effect": "Allow",
+            [+]   "Resource": {
+            [+]     "Fn::Join": [
+            [+]       "",
+            [+]       [
+            [+]         {
+            [+]           "Fn::GetAtt": [
+            [+]             "Artifacts82DD59A1",
+            [+]             "Arn"
+            [+]           ]
+            [+]         },
+            [+]         "/workflow-e2e-admissions/*"
+            [+]       ]
+            [+]     ]
+            [+]   }
+            [+] },
+            [+] {
+            [ ]   "Action": "kms:Sign",
+            [ ]   "Effect": "Allow",
+            [ ]   "Resource": {
+[~] AWS::Lambda::Function Dispatcher DispatcherD4A12972
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 843b8f1f048a2c1e2458449b12ab14bd970d91c70647c7cb89b5b2d456326e5f.zip
+ │       └─ [+] 7f8599e98c765483f09024611e5c103e0b6134ea4332911a6d86b5a2c323269a.zip
+ ├─ [~] Environment
+ │   └─ [~] .Variables:
+ │       └─ [+] Added: .ARTIFACT_BUCKET_NAME
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.843b8f1f048a2c1e2458449b12ab14bd970d91c70647c7cb89b5b2d456326e5f
+         └─ [+] asset.7f8599e98c765483f09024611e5c103e0b6134ea4332911a6d86b5a2c323269a
+[~] AWS::Lambda::Function SlackIngress SlackIngress5C88FFA0
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 83fe32ad93ed9c52d69a37a31726df6181eeb8838cc58e00d731ee38c8222aa9.zip
+ │       └─ [+] a6f7c7a15dceb8c64f89e98eb7f5d66043062ed7c9734bcdb8eafb0c9969dcaa.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.83fe32ad93ed9c52d69a37a31726df6181eeb8838cc58e00d731ee38c8222aa9
+         └─ [+] asset.a6f7c7a15dceb8c64f89e98eb7f5d66043062ed7c9734bcdb8eafb0c9969dcaa
+[~] AWS::Lambda::Function DeveloperSignIn/Function DeveloperSignInFunction10B62B05
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 6a931dfb9713d38537263d18c8e24e76a1de597bd79939d8fd91d275a3fb7fb4.zip
+ │       └─ [+] c25ca847f5e7b54afbf1954b2044ee0a32bf2bd5c361264f69ddf035c25a4afe.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.6a931dfb9713d38537263d18c8e24e76a1de597bd79939d8fd91d275a3fb7fb4
+         └─ [+] asset.c25ca847f5e7b54afbf1954b2044ee0a32bf2bd5c361264f69ddf035c25a4afe
+[~] AWS::Lambda::Function Realtime/Authorizer RealtimeAuthorizer74F9F06D
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 1dc3b5916c37ca4c8fc8ccd8efee75359fa1be2fd42382609e8f50f5520fecec.zip
+ │       └─ [+] 1345e253f1f3017b319b41c94e33cc31a7066231713a5555ef52e087149fb3c2.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.1dc3b5916c37ca4c8fc8ccd8efee75359fa1be2fd42382609e8f50f5520fecec
+         └─ [+] asset.1345e253f1f3017b319b41c94e33cc31a7066231713a5555ef52e087149fb3c2
+[~] AWS::IAM::Policy DeveloperTaskNotifier/Function/ServiceRole/DefaultPolicy DeveloperTaskNotifierFunctionServiceRoleDefaultPolicyB88ED8BD
+ └─ [~] PolicyDocument
+     └─ [~] .Statement:
+         └─ @@ -183,6 +183,50 @@
+            [ ]   }
+            [ ] },
+            [ ] {
+            [+]   "Action": "dynamodb:PutItem",
+            [+]   "Condition": {
+            [+]     "ForAllValues:StringLike": {
+            [+]       "dynamodb:LeadingKeys": [
+            [+]         "ORG#org_????????????????????#SESSION_BINDING#*",
+            [+]         "ORG#org_????????????????????#SESSION_SURFACE"
+            [+]       ]
+            [+]     },
+            [+]     "Null": {
+            [+]       "dynamodb:LeadingKeys": "false"
+            [+]     },
+            [+]     "StringEqualsIfExists": {
+            [+]       "dynamodb:ReturnValues": "NONE"
+            [+]     }
+            [+]   },
+            [+]   "Effect": "Allow",
+            [+]   "Resource": {
+            [+]     "Fn::GetAtt": [
+            [+]       "State1C20CC9A",
+            [+]       "Arn"
+            [+]     ]
+            [+]   }
+            [+] },
+            [+] {
+            [+]   "Action": "dynamodb:ConditionCheckItem",
+            [+]   "Condition": {
+            [+]     "ForAllValues:StringLike": {
+            [+]       "dynamodb:LeadingKeys": [
+            [+]         "ORG#org_????????????????????#AGENT_SESSION#*"
+            [+]       ]
+            [+]     },
+            [+]     "Null": {
+            [+]       "dynamodb:LeadingKeys": "false"
+            [+]     }
+            [+]   },
+            [+]   "Effect": "Allow",
+            [+]   "Resource": {
+            [+]     "Fn::GetAtt": [
+            [+]       "State1C20CC9A",
+            [+]       "Arn"
+            [+]     ]
+            [+]   }
+            [+] },
+            [+] {
+            [ ]   "Action": [
+            [ ]     "dynamodb:GetItem",
+            [ ]     "dynamodb:UpdateItem"
+[~] AWS::Lambda::Function DeveloperTaskNotifier/Function DeveloperTaskNotifierFunction551419CC
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 1b88e1f3a3d5990a6267d7194b6880f05dd9d5048ac69a864b0c08f372106032.zip
+ │       └─ [+] 02f5428028c5210a8fab6fb1a78d1fe596130e5949fe092ca2b4e283034108b6.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.1b88e1f3a3d5990a6267d7194b6880f05dd9d5048ac69a864b0c08f372106032
+         └─ [+] asset.02f5428028c5210a8fab6fb1a78d1fe596130e5949fe092ca2b4e283034108b6
+[~] AWS::Lambda::Function AuditLedger/AuditExport AuditLedgerAuditExportED90D71C
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 8af028370a32950ef7e6f4a3f3738c5742de122810fbec5fe6be956e4e140252.zip
+ │       └─ [+] 17bc658a4dbcc64dc65c27d9b7b054ce6371059d1b38bf342b68bb5d344e6002.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.8af028370a32950ef7e6f4a3f3738c5742de122810fbec5fe6be956e4e140252
+         └─ [+] asset.17bc658a4dbcc64dc65c27d9b7b054ce6371059d1b38bf342b68bb5d344e6002
+[~] AWS::Lambda::Function AuditLedger/AuditAppender AuditLedgerAuditAppender4120E8F4
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 5d1747ac2574534036927ca0ca7a7545677f75c949a9f0d84d71dad921c7259a.zip
+ │       └─ [+] 95c5d8b5a7c173188df7130fa32f82b034872eb4f3fc8ffdd75c52bca8ec4e03.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.5d1747ac2574534036927ca0ca7a7545677f75c949a9f0d84d71dad921c7259a
+         └─ [+] asset.95c5d8b5a7c173188df7130fa32f82b034872eb4f3fc8ffdd75c52bca8ec4e03
+[~] AWS::Lambda::Function AuditLedger/AuditAnchor AuditLedgerAuditAnchorA02AF164
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] a8b82805f26112ad812bac005ee7475d30799c82f494c69fec289767fb7da1d2.zip
+ │       └─ [+] 3cc7b6ae5877b6301241f8050f8a2d582a2a1db23ba3557c0a606ae532f8db18.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.a8b82805f26112ad812bac005ee7475d30799c82f494c69fec289767fb7da1d2
+         └─ [+] asset.3cc7b6ae5877b6301241f8050f8a2d582a2a1db23ba3557c0a606ae532f8db18
+[~] AWS::IAM::Policy Sessions/Steps/ServiceRole/DefaultPolicy SessionsStepsServiceRoleDefaultPolicy9F4B87C9
+ └─ [~] PolicyDocument
+     └─ [~] .Statement:
+         └─ @@ -273,6 +273,46 @@
+            [ ]       {
+            [ ]         "Ref": "AWS::AccountId"
+            [ ]       },
+            [+]       ":parameter/agentx/staging/worker-e2e-agent-model"
+            [+]     ]
+            [+]   ]
+            [+] },
+            [+] {
+            [+]   "Fn::Join": [
+            [+]     "",
+            [+]     [
+            [+]       "arn:",
+            [+]       {
+            [+]         "Ref": "AWS::Partition"
+            [+]       },
+            [+]       ":ssm:",
+            [+]       {
+            [+]         "Ref": "AWS::Region"
+            [+]       },
+            [+]       ":",
+            [+]       {
+            [+]         "Ref": "AWS::AccountId"
+            [+]       },
+            [+]       ":parameter/agentx/staging/worker-model-fallback"
+            [+]     ]
+            [+]   ]
+            [+] },
+            [+] {
+            [+]   "Fn::Join": [
+            [+]     "",
+            [+]     [
+            [+]       "arn:",
+            [+]       {
+            [+]         "Ref": "AWS::Partition"
+            [+]       },
+            [+]       ":ssm:",
+            [+]       {
+            [+]         "Ref": "AWS::Region"
+            [+]       },
+            [+]       ":",
+            [+]       {
+            [+]         "Ref": "AWS::AccountId"
+            [+]       },
+            [ ]       ":parameter/agentx/staging/model-proxy-url"
+            [ ]     ]
+            [ ]   ]
+[~] AWS::Lambda::Function Sessions/Steps SessionsSteps3B98DD2B
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 9605974b06c0d0782db45fce3d33ddb65029a74ef4bb626a557af18f89ca45f8.zip
+ │       └─ [+] eacd661b20b85bc4f89c5520745327bd2da8749258998b5ca4d7307eaf23c073.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.9605974b06c0d0782db45fce3d33ddb65029a74ef4bb626a557af18f89ca45f8
+         └─ [+] asset.eacd661b20b85bc4f89c5520745327bd2da8749258998b5ca4d7307eaf23c073
+[~] AWS::Lambda::Function Sessions/Reaper SessionsReaper8FEF958E
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 36438867409e9638a0952266f4527fbef79a1140a7f8691f75cddce150606e38.zip
+ │       └─ [+] 910446b356b34391893b532d4773f0a3b5c473712b6430254880e087174a5781.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.36438867409e9638a0952266f4527fbef79a1140a7f8691f75cddce150606e38
+         └─ [+] asset.910446b356b34391893b532d4773f0a3b5c473712b6430254880e087174a5781
+[~] AWS::Lambda::Function Sessions/Reconciler SessionsReconciler4316A0A2
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 5c27421ac9c2cf5475f22c38d7f8984ed5af932eda8aa0a3aaa829028579acd3.zip
+ │       └─ [+] 38f5dc003215263308c12b36d4c7d51c59e45773371b203cc25c98ffa4c52d9f.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.5c27421ac9c2cf5475f22c38d7f8984ed5af932eda8aa0a3aaa829028579acd3
+         └─ [+] asset.38f5dc003215263308c12b36d4c7d51c59e45773371b203cc25c98ffa4c52d9f
+[~] AWS::ECS::TaskDefinition ModelProxy/TaskDefinition ModelProxyTaskDefinitionB9371A5F replace
+ └─ [~] ContainerDefinitions (requires replacement)
+     └─ @@ -26,6 +26,10 @@
+        [ ] {
+        [ ]   "Ref": "AWS::Region"
+        [ ] },
+        [+] "\"\n  - model_name: \"us.anthropic.claude-haiku-5-5\"\n    litellm_params:\n      model: \"bedrock/us.anthropic.claude-haiku-5-5\"\n      aws_region_name: \"",
+        [+] {
+        [+]   "Ref": "AWS::Region"
+        [+] },
+        [ ] "\"\n  - model_name: \"us.anthropic.claude-opus-4-1-20250805-v1:0\"\n    litellm_params:\n      model: \"bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0\"\n      aws_region_name: \"",
+        [ ] {
+        [ ]   "Ref": "AWS::Region"
+        @@ -66,6 +70,10 @@
+        [ ]     {
+        [ ]       "Ref": "AWS::Region"
+        [ ]     },
+        [+]     "\"\n  - model_name: \"us.anthropic.claude-sonnet-5-5\"\n    litellm_params:\n      model: \"bedrock/us.anthropic.claude-sonnet-5-5\"\n      aws_region_name: \"",
+        [+]     {
+        [+]       "Ref": "AWS::Region"
+        [+]     },
+        [ ]     "\"\nlitellm_settings:\n  callbacks: rovara_guard.proxy_handler_instance\ngeneral_settings:\n  master_key: os.environ/LITELLM_MASTER_KEY\n  database_url: os.environ/DATABASE_URL\n  user_api_key_cache_ttl: 10\n"
+        [ ]   ]
+        [ ] ]
+[~] AWS::Lambda::Function ModelAccessFunction ModelAccessFunction1B50ECC9
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 26130673d51e567ff4e9e7c5df221390b08c036aaf1d02756f115c363c96687d.zip
+ │       └─ [+] bb389ddc266cefc563cc8eb0640230fb7d1389337c2f8932c9cc460bdad4f3a4.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.26130673d51e567ff4e9e7c5df221390b08c036aaf1d02756f115c363c96687d
+         └─ [+] asset.bb389ddc266cefc563cc8eb0640230fb7d1389337c2f8932c9cc460bdad4f3a4
+[~] AWS::Lambda::Function EvalBatchTick EvalBatchTickA4585B04
+ ├─ [~] Code
+ │   └─ [~] .S3Key:
+ │       ├─ [-] 87fda0129de0c5667b9ab53ebaf4b9e919d55bcd68bc53ebee9c049a2dad51b0.zip
+ │       └─ [+] 65cb3bd39173ee52fed0d19a25649d5e020e8e6fa639d71d6dc9f3c894972dd3.zip
+ └─ [~] Metadata
+     └─ [~] .aws:asset:path:
+         ├─ [-] asset.87fda0129de0c5667b9ab53ebaf4b9e919d55bcd68bc53ebee9c049a2dad51b0
+         └─ [+] asset.65cb3bd39173ee52fed0d19a25649d5e020e8e6fa639d71d6dc9f3c894972dd3
+
+
+
+✨  Number of stacks with differences: 1
