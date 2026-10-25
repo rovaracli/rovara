@@ -22,10 +22,11 @@ export async function sessionDiff(deps: SessionDiffDependencies, caller: Session
  try { page = await deps.diff.files(repository, query.number, { page: query.page }, { orgId: caller.orgId }); }
  catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "GITHUB_NOT_CONNECTED") throw missing();throw error; }
  const files: SessionDiff["files"] = page.files.slice(0, DIFF_FILES_PAGE_MAX).map(file => {
-  if (!["added", "removed", "modified", "renamed"].includes(file.status)) throw agentXError("RUNTIME_UNAVAILABLE", "The diff contains an unsupported change type.");
+  const status = file.status === "copied" ? "added" : file.status === "changed" || file.status === "unchanged" ? "modified" : file.status;
+  if (!["added", "removed", "modified", "renamed"].includes(status)) throw agentXError("RUNTIME_UNAVAILABLE", "The diff contains an unsupported change type.");
   const patch = file.patch === undefined ? undefined : redactText(file.patch);
   const tooLarge = file.patch !== undefined && (Buffer.byteLength(file.patch, "utf8") > DIFF_PATCH_MAX_BYTES || Buffer.byteLength(patch!, "utf8") > DIFF_PATCH_MAX_BYTES);
-  return { path: file.filename, status: file.status as SessionDiff["files"][number]["status"], additions: file.additions, deletions: file.deletions,
+  return { path: file.filename, status: status as SessionDiff["files"][number]["status"], additions: file.additions, deletions: file.deletions,
    ...(file.previous_filename === undefined ? {} : { previousPath: file.previous_filename }),
    ...(tooLarge ? { patchOmitted: "too_large" as const } : patch === undefined ? {} : { patch }) };
  });
