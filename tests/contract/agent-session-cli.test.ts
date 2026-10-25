@@ -192,7 +192,8 @@ describe("agentx session take-over (202 NEEDS_CONFIRMATION)", () => {
   });
 
   it("does not print a link that is not a plain https address, and says what happened", async () => {
-    for (const confirmUrl of ["http://evil.example/approve", "https://evil.example/\u202eapprove", "https://evil.example/a b", `https://evil.example/${"a".repeat(2100)}`, "javascript:alert(1)"]) {
+    for (const confirmUrl of [`https://evil.example/v1/app/approve/apr_cccccccccccccccccccc`, "https://x@evil.example/", `${CELL.replace("https://", "https://user:pw@")}/v1/app/approve/x`, `${CELL.replace("https://", "https://user@")}/x`,
+      `${CELL}@evil.example/x`, `${CELL}.evil.example/x`, `${CELL.replace(":443", "")}:8443/x`, "http://evil.example/approve", "https://evil.example/\u202eapprove", "https://evil.example/a b", `https://evil.example/${"a".repeat(2100)}`, "javascript:alert(1)"]) {
       const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/take-over`]: confirmation({ confirmUrl }) });
       expect(await h.run(["session", "take-over", SES]), confirmUrl.slice(0, 30)).not.toBe(0);
       expect(h.stdout(), confirmUrl.slice(0, 30)).not.toContain("Confirm this in your browser");
@@ -221,6 +222,31 @@ describe("agentx session take-over (202 NEEDS_CONFIRMATION)", () => {
     const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/take-over`]: Response.json({ ok: true }, { status: 202 }) });
     expect(await h.run(["session", "take-over", SES])).not.toBe(0);
     expect(h.stdout()).not.toContain("Confirm this");
+  });
+});
+
+describe("links on another host, or with userinfo, are never printed", () => {
+  const OTHER = "https://evil.example/s/ses_aaaaaaaaaaaaaaaaaaaa";
+  const WITH_USER = `${CELL.replace("https://", "https://x@")}/v1/app/approve/apr_cccccccccccccccccccc`;
+
+  it("session show builds the link from the ID and leaves a foreign decision link out", async () => {
+    const approval = { approvalId: "apr_cccccccccccccccccccc", title: "Approve the plan", confirmUrl: WITH_USER };
+    const h = await agentsCli({ [`GET /v1/app/sessions/${SES}`]: Response.json(view({ link: OTHER, approvals: [approval, { ...approval, confirmUrl: "https://evil.example/approve" }] })) });
+    expect(await h.run(["session", "show", SES])).toBe(0);
+    expect(h.stdout()).toContain(LINK);
+    expect(h.stdout()).not.toContain("evil.example");
+    expect(h.stdout()).not.toContain("x@");
+  });
+
+  it("the Live wall and Home leave foreign decision and button links out", async () => {
+    const h = await agentsCli({
+      "GET /v1/app/live?filter=all": Response.json({ tiles: [liveTile(SES, "Fix", { approvalUrl: "https://evil.example/approve" }), liveTile(SES2, "Other", { approvalUrl: WITH_USER })] }),
+      "GET /v1/app/home": Response.json({ cards: [{ cardId: `failure:${SES}`, kind: "failure", title: "T", reason: "R", at: "2026-10-24T09:00:00.000Z", buttons: [{ label: "Open", action: "open", href: "https://evil.example/x", method: "GET" }, { label: "Review", action: "confirm", href: WITH_USER, method: "GET" }] }], total: 1 }),
+    });
+    expect(await h.run(["sessions", "--live", "all"])).toBe(0);
+    expect(await h.run(["home"])).toBe(0);
+    expect(h.stdout()).not.toContain("evil.example");
+    expect(h.stdout()).not.toContain("x@");
   });
 });
 

@@ -166,15 +166,25 @@ describe("agentx_get_session", () => {
 });
 
 describe("agentx_comment_on_session and agentx_tell_session_agent", () => {
-  it("comments, and the same call again within 15 minutes is the same request", async () => {
+  it("comments with a fresh request id for each call, so a deliberate second comment is a second comment; a request_id the caller gives is kept", async () => {
     const commentOnSession = vi.fn(async () => message("comment"));
     const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
     const mcp = await connect({ commentOnSession }, () => ids.shift()!);
     const first = await mcp.callTool({ name: "agentx_comment_on_session", arguments: { session_id: SES, text: "Looks good" } });
     await mcp.callTool({ name: "agentx_comment_on_session", arguments: { session_id: SES, text: "Looks good" } });
+    await mcp.callTool({ name: "agentx_comment_on_session", arguments: { session_id: SES, text: "Looks good", request_id: REQ } });
     expect(commentOnSession).toHaveBeenNthCalledWith(1, SES, { requestId: "11111111-1111-4111-8111-111111111111", text: "Looks good" });
-    expect(commentOnSession).toHaveBeenNthCalledWith(2, SES, { requestId: "11111111-1111-4111-8111-111111111111", text: "Looks good" });
+    expect(commentOnSession).toHaveBeenNthCalledWith(2, SES, { requestId: "22222222-2222-4222-8222-222222222222", text: "Looks good" });
+    expect(commentOnSession).toHaveBeenNthCalledWith(3, SES, { requestId: REQ, text: "Looks good" });
     expect(structured(first)).toMatchObject({ on_session: SES, message_id: "msg_aaaaaaaaaaaaaaaaaaaa", kind: "comment" });
+  });
+
+  it("tells the agent with a fresh request id for each call", async () => {
+    const tellSessionAgent = vi.fn(async () => message("steer", { state: "queued", at: "2026-10-24T09:06:00.000Z" }));
+    const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
+    const mcp = await connect({ tellSessionAgent }, () => ids.shift()!);
+    for (let n = 0; n < 2; n += 1) await mcp.callTool({ name: "agentx_tell_session_agent", arguments: { session_id: SES, text: "Keep it small" } });
+    expect(tellSessionAgent.mock.calls.map((call) => (call[1] as { requestId: string }).requestId)).toEqual(["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]);
   });
 
   it("tells the agent, and says whether the message was queued or delivered", async () => {
@@ -234,10 +244,81 @@ describe("agentx_stop_session", () => {
     expect(structured(result)).toMatchObject({ id: SES, status: "stopped", link: LINK });
   });
 
+  it("a second stop after the session was continued is a new request, not the first one's stored outcome", async () => {
+    const stopSession = vi.fn(async () => sessionView({ status: "stopped" }));
+    const made = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
+    const queue = [...made];
+    const mcp = await connect({ stopSession }, () => queue.shift()!);
+    await mcp.callTool({ name: "agentx_stop_session", arguments: { session_id: SES } });
+    await mcp.callTool({ name: "agentx_stop_session", arguments: { session_id: SES } });
+    expect(stopSession.mock.calls.map((call) => call[1])).toEqual(made);
+  });
+
   it("reaches POST /v1/app/sessions/{id}/stop with only a request id", async () => {
     const { mcp, calls } = await overHttp(() => Response.json({ session: sessionView({ status: "stopped" }) }));
     await mcp.callTool({ name: "agentx_stop_session", arguments: { session_id: SES, request_id: REQ } });
     expect(calls).toEqual([{ method: "POST", path: `/v1/app/sessions/${SES}/stop`, query: "", body: { requestId: REQ } }]);
+  });
+});
+
+describe("links are the control plane's own: https, its origin, no userinfo, whole", () => {
+  const ok = `${CELL}/v1/app/approve/apr_cccccccccccccccccccc`;
+  const approval = (confirmUrl: string) => ({ approvalId: "apr_cccccccccccccccccccc", title: "Approve the plan", confirmUrl });
+
+  it("keeps a link on the control plane's origin", async () => {
+    const { mcp } = await overHttp(() => Response.json({ session: sessionView({ approvals: [approval(ok)] }) }));
+    const result = await mcp.callTool({ name: "agentx_get_session", arguments: { session_id: SES } });
+    expect(structured(result)).toMatchObject({ link: LINK, approvals: [{ title: "Approve the plan", confirm_url: ok }] });
+  });
+
+  it.each([
+    ["another host", "https://evil.example/s/ses_aaaaaaaaaaaaaaaaaaaa"],
+    ["userinfo", `${CELL.replace("https://", "https://x@")}/s/${SES}`],
+    ["the real host as userinfo", `${CELL}@evil.example/s/${SES}`],
+    ["a longer host", `${CELL}.evil.example/s/${SES}`],
+    ["another port", `${CELL}:8443/s/${SES}`],
+    ["http", `${CELL.replace("https", "http")}/s/${SES}`],
+    ["javascript:", "javascript:alert(1)"],
+    ["more than 1,000 characters", `${CELL}/s/${SES}?${"a".repeat(1_000)}`],
+  ])("leaves the link and the decision links out for %s", async (_name, bad) => {
+    const { mcp } = await overHttp(() => Response.json({ session: sessionView({ link: bad, approvals: [approval(bad), approval(ok)] }) }));
+    for (const call of [{ name: "agentx_get_session", arguments: { session_id: SES } }, { name: "agentx_stop_session", arguments: { session_id: SES } }]) {
+      const result = await mcp.callTool(call);
+      expect(isError(result), call.name).toBe(false);
+      const out = structured(result);
+      expect(out, call.name).not.toHaveProperty("link");
+      expect(out["approvals"], call.name).toEqual([{ title: "Approve the plan" }, { title: "Approve the plan", confirm_url: ok }]);
+      expect(text(result), call.name).not.toContain("evil.example");
+      expect(text(result), call.name).not.toContain("javascript:");
+      expect(text(result), call.name).not.toContain("a".repeat(100));
+    }
+  });
+});
+
+describe("rate limits and kinds", () => {
+  it("gives a rate limit its own code and a step that says wait, not ask an admin", async () => {
+    const words = "You are sending messages too fast. Try again in a few minutes.";
+    const { mcp, calls } = await overHttp(() => Response.json({ error: { code: "TOO_MANY_REQUESTS", message: words } }, { status: 429 }));
+    const result = await mcp.callTool({ name: "agentx_tell_session_agent", arguments: { session_id: SES, text: "Go on" } });
+    expect(isError(result)).toBe(true);
+    expect(text(result)).toContain("RATE_LIMITED");
+    expect(text(result)).toContain(words.replace(/\.$/, ""));
+    expect(text(result)).not.toMatch(/admin/i);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("cleans the kind of a session, a tile and a message", async () => {
+    const bad = "task\u001b[2J";
+    const mcp = await connect({
+      getSession: vi.fn(async () => sessionView({ kind: bad })),
+      listSessions: vi.fn(async () => listOf([{ ...tileOf(SES, "x"), kind: bad }])),
+      commentOnSession: vi.fn(async () => ({ ...message("comment"), kind: bad }) as unknown as SessionMessageRead),
+    });
+    for (const call of [{ name: "agentx_get_session", arguments: { session_id: SES } }, { name: "agentx_list_sessions", arguments: {} }, { name: "agentx_comment_on_session", arguments: { session_id: SES, text: "hi" } }]) {
+      const dump = JSON.stringify(structured(await mcp.callTool(call)));
+      expect(dump, call.name).not.toContain("\\u001b");
+      expect(dump, call.name).toContain("task");
+    }
   });
 });
 
