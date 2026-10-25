@@ -4,7 +4,7 @@
 // level the session's shares give. A removed Mac ends its open sessions on both paths (the device route and the member's removal).
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   DEVICE_COMMAND_KEEP_DAYS,
   INDEX_EXPIRY_ATTRIBUTE,
@@ -12,6 +12,7 @@ import {
   LOCAL_UPDATE_TURNS_MAX,
   RealtimeNoticeSchema,
   agentSessionKey,
+  changesKey,
   deviceCommandCounterKey,
   deviceCommandKey,
   deviceKey,
@@ -19,6 +20,8 @@ import {
   liveSessionKey,
   openAgentSessionKey,
   orgSettingsKey,
+  projectArchivedMessage,
+  projectMetaKey,
   userChannel,
   type LiveResponse,
   type OrgId,
@@ -27,7 +30,9 @@ import {
 import { registerDevice } from "../../packages/broker/src/devices/store.js";
 import { endSessionsOfDevice, listDeviceCommands, recordLocalUpdate, registerLocalSession, type LocalSessionDependencies } from "../../packages/broker/src/devices/local-sessions.js";
 import { routeDeviceRequest } from "../../packages/broker/src/devices/routes.js";
-import { onSessionMemberRemoved } from "../../packages/broker/src/agent-sessions/lifecycle.js";
+import { installRealtimeSink } from "../../packages/broker/src/realtime/sink.js";
+import { registerSessionNoticeSink } from "../../packages/broker/src/agent-sessions/notice-sink.js";
+import { onSessionMemberRemoved, stopOrgSessions } from "../../packages/broker/src/agent-sessions/lifecycle.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { sendSessionMessage } from "../../packages/broker/src/agent-sessions/messages.js";
@@ -838,5 +843,197 @@ describe("a removed Mac ends its open sessions", () => {
     w.db.set({ ...w.device(deviceId)!, revokedAt: iso(T0 - MINUTE) });
     await onSessionMemberRemoved({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, developerId: PRIYA });
     expect(w.meta(sessionId)).toMatchObject({ summary: { status: "cancelled" } });
+  });
+});
+
+afterEach(() => registerSessionNoticeSink(undefined));
+
+describe("the company's rule and the person's role are read again on every update (review I1)", () => {
+  const TIGHT = "codex isn't allowed in your company. Ask an admin to allow it.";
+
+  it("refuses an update with turns after the tool is turned off, with the exact text and nothing written; an update that only ends the session still goes through", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started({ tool: "codex" });
+    w.setPolicy({ tools: ["claude-code"] });
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) }))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: TIGHT });
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { status: "running", step: "still going" }))).toMatchObject({ code: "LOCAL_AGENT_NOT_ALLOWED" });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    await expect(w.update(PRIYA, sessionId, deviceId, { status: "cancelled" })).resolves.toMatchObject({ status: "cancelled" });
+    expect(w.meta(sessionId)).toHaveProperty("endedAt");
+  });
+
+  it("refuses when the rule narrows to other projects, when local agents are switched off, and when the rule cannot be read (503), but never an end", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.setPolicy({ projects: ["api"] });
+    expect(await code(w.update(PRIYA, sessionId, deviceId))).toEqual({ code: "LOCAL_AGENT_NOT_ALLOWED", message: "Local agents aren't allowed on web. Ask an admin to allow them." });
+    w.setPolicy({ allowed: false });
+    expect(await code(w.update(PRIYA, sessionId, deviceId))).toMatchObject({ code: "LOCAL_AGENT_NOT_ALLOWED" });
+    w.db.set({ ...orgSettingsKey(ORG_A, "LOCAL_AGENTS"), entityType: "ORG_LOCAL_AGENTS", orgId: ORG_A, allowed: "yes", revision: 1 });
+    expect(await code(w.update(PRIYA, sessionId, deviceId))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(w.update(PRIYA, sessionId, deviceId, { status: "succeeded" })).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("refuses an update from someone who lost their role on the session's project, with a clear reason, and still takes an end", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.members.revoke(ORG_A, "web", PRIYA);
+    const refused = await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) }));
+    expect(refused).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    expect(refused!.message).toContain("web");
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    await expect(w.update(PRIYA, sessionId, deviceId, { status: "failed" })).resolves.toMatchObject({ status: "failed" });
+  });
+});
+
+describe("limits (review I2, M4)", () => {
+  it("allows 30 updates a minute for one session, refuses the 31st with TOO_MANY_REQUESTS writing nothing, takes an end anyway, and gives the next minute its own count", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    for (let i = 0; i < 30; i += 1) await w.update(PRIYA, sessionId, deviceId, { step: `step ${String(i)}` });
+    const before = w.local(sessionId)!;
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) }))).toEqual({ code: "TOO_MANY_REQUESTS", message: "This Mac is sending updates too fast; it will send the rest shortly." });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    expect(w.local(sessionId)).toMatchObject({ rev: before.rev });
+    w.clock.now += MINUTE;
+    await expect(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) })).resolves.toMatchObject({ accepted: 1 });
+    for (let i = 0; i < 29; i += 1) await w.update(PRIYA, sessionId, deviceId);
+    expect(await code(w.update(PRIYA, sessionId, deviceId))).toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    await expect(w.update(PRIYA, sessionId, deviceId, { status: "succeeded", turns: w.turns(2) })).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("allows 120 updates a minute for one device across its sessions", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const sessions: string[] = [];
+    for (let i = 0; i < 5; i += 1) sessions.push((await w.register(PRIYA, deviceId)).sessionId);
+    for (const sessionId of sessions.slice(0, 4)) for (let i = 0; i < 30; i += 1) await w.update(PRIYA, sessionId, deviceId);
+    expect(await code(w.update(PRIYA, sessions[4]!, deviceId))).toEqual({ code: "TOO_MANY_REQUESTS", message: "This Mac is sending updates too fast; it will send the rest shortly." });
+    await expect(w.update(PRIYA, sessions[4]!, deviceId, { status: "cancelled" })).resolves.toMatchObject({ status: "cancelled" });
+  });
+
+  it("tells followers of at most 12 status changes an hour: beyond that the status still saves and the session still shows it, but no follower is told; an end always tells", async () => {
+    const w = world();
+    installRealtimeSink({});
+    const { sessionId, deviceId } = await w.started();
+    w.follower(ORG_A, sessionId, ARJUN);
+    const feed = () => w.db.find((item) => String(item.pk).includes(`CHANGES#${ARJUN}`)).length;
+    for (let cycle = 0; cycle < 13; cycle += 1) {
+      w.clock.now += MINUTE;
+      await w.update(PRIYA, sessionId, deviceId, { status: "waiting" });
+      expect(w.meta(sessionId)).toMatchObject({ summary: { status: "waiting" } });
+      w.clock.now += MINUTE;
+      await w.update(PRIYA, sessionId, deviceId, { status: "running" });
+    }
+    expect(feed()).toBe(12);
+    w.clock.now += MINUTE;
+    await w.update(PRIYA, sessionId, deviceId, { status: "succeeded" });
+    expect(feed()).toBe(13);
+    // And the owner is still told of the quiet changes: the session's own channel and the owner's feed are not silenced.
+    expect(w.db.find((item) => String(item.pk).includes(`CHANGES#${PRIYA}`)).length).toBeGreaterThan(12);
+  });
+
+  it("allows 20 open sessions on a device: the 21st is refused with a clear text, nothing written, and an end frees a place", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const made: string[] = [];
+    for (let i = 0; i < 20; i += 1) made.push((await w.register(PRIYA, deviceId)).sessionId);
+    const before = w.writes();
+    expect(await code(w.register(PRIYA, deviceId))).toEqual({ code: "CONFIG_INVALID", message: "This Mac already has 20 open sessions. End one first." });
+    expect(w.writes()).toBe(before);
+    await w.update(PRIYA, made[0]!, deviceId, { status: "succeeded" });
+    await expect(w.register(PRIYA, deviceId)).resolves.toBeDefined();
+  });
+
+  it("allows 60 registrations an hour for one person: the 61st is TOO_MANY_REQUESTS, and the next hour has its own count", async () => {
+    const w = world();
+    const devices = [await w.mac(PRIYA, "a"), await w.mac(PRIYA, "b"), await w.mac(PRIYA, "c"), await w.mac(PRIYA, "d")];
+    for (let i = 0; i < 60; i += 1) await w.register(PRIYA, devices[Math.floor(i / 20)]!);
+    expect(await code(w.register(PRIYA, devices[3]!))).toEqual({ code: "TOO_MANY_REQUESTS", message: "You've started a lot of local sessions in the last hour. Try again later." });
+    w.clock.now += 3_600_000;
+    await expect(w.register(PRIYA, devices[3]!)).resolves.toBeDefined();
+    // Another person has their own count.
+    await expect(w.register(ARJUN, await w.mac(ARJUN, "Arjun's Mac"), { shares: [{ principal: { kind: "member", developerId: PRIYA }, level: "view" }] })).resolves.toBeDefined();
+  });
+
+  it("limits stops: 20 an hour for a session; the 21st (a new request id) is TOO_MANY_REQUESTS and adds no command", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    for (let i = 0; i < 20; i += 1) await w.stop(PRIYA, sessionId);
+    expect(w.commands(deviceId)).toHaveLength(20);
+    expect(await code(w.stop(PRIYA, sessionId))).toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    expect(w.commands(deviceId)).toHaveLength(20);
+    w.clock.now += 3_600_000;
+    await expect(w.stop(PRIYA, sessionId)).resolves.toBeDefined();
+  });
+});
+
+describe("review minors", () => {
+  it("M1: refuses an archived project at registration, writing nothing", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    w.db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "2026-10-02T00:00:00.000Z", createdBy: OLA });
+    expect(await code(w.register(PRIYA, deviceId))).toEqual({ code: "PROJECT_ARCHIVED", message: projectArchivedMessage("web") });
+    expect(w.db.find((item) => item.entityType === "AGENT_SESSION")).toHaveLength(0);
+  });
+
+  it("M2: a Mac silent for 24 hours ends its session (the sweep finds it); 23 hours does not; a late update is SESSION_ENDED; a removal before the sweep still finds the session", async () => {
+    const w = world();
+    const a = await w.started();
+    const b = await w.started({}, "Priya's Mac mini");
+    const c = await w.started({}, "Priya's third");
+    w.clock.now += 23 * 3_600_000;
+    await sweepAgentSessions({ documentClient: w.db, tableName: "state", now: () => w.clock.now, log: () => undefined }, w.clock.now);
+    expect(w.meta(a.sessionId)).not.toHaveProperty("endedAt");
+    await w.update(PRIYA, c.sessionId, c.deviceId);
+    w.clock.now += 2 * 3_600_000;
+    await w.removeDevice(PRIYA, b.deviceId); // silent for 25 hours and not yet swept: the removal still finds it
+    expect(w.meta(b.sessionId)).toMatchObject({ summary: { status: "cancelled", step: REMOVED_TEXT("Priya's Mac mini") } });
+    await sweepAgentSessions({ documentClient: w.db, tableName: "state", now: () => w.clock.now, log: () => undefined }, w.clock.now);
+    expect(w.meta(a.sessionId)).toMatchObject({ endedAt: iso(w.clock.now), summary: { status: "cancelled", step: "This Mac stopped responding, so this session ended." } });
+    expect(w.meta(c.sessionId)).not.toHaveProperty("endedAt");
+    expect(w.db.get(openAgentSessionKey(ORG_A, a.sessionId))).toBeUndefined();
+    expect(await code(w.update(PRIYA, a.sessionId, a.deviceId))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+  });
+
+  it("M2: an update keeps the device's entry for the session from lapsing", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    w.clock.now += 100 * 86_400_000;
+    await w.update(PRIYA, sessionId, deviceId);
+    expect(w.db.get(deviceSessionKey(ORG_A, deviceId, sessionId))![INDEX_EXPIRY_ATTRIBUTE]).toBe(Math.floor(w.clock.now / 1000) + 365 * 86_400);
+  });
+
+  it("M3: the command counter has no expiry while the device lives, so it never restarts below the Mac's cursor; removing the device lets it go", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    await w.stop(PRIYA, sessionId);
+    expect(w.db.get(deviceCommandCounterKey(ORG_A, deviceId))).not.toHaveProperty(INDEX_EXPIRY_ATTRIBUTE);
+    w.clock.now += 400 * 86_400_000;
+    w.db.set({ ...w.db.get(deviceCommandCounterKey(ORG_A, deviceId))!, seq: 57 });
+    await w.stop(PRIYA, sessionId);
+    expect(w.commands(deviceId).map((command) => command.seq)).toContain(58);
+    await w.removeDevice(PRIYA, deviceId);
+    expect(typeof w.db.get(deviceCommandCounterKey(ORG_A, deviceId))![INDEX_EXPIRY_ATTRIBUTE]).toBe("number");
+  });
+
+  it("M5: closing the company ends its open local sessions with a clear text and does not ask the stop of a cloud session for them", async () => {
+    const w = world();
+    const { sessionId } = await w.started();
+    const cloud = w.seedSession();
+    w.db.set({ ...openAgentSessionKey(ORG_A, cloud.sessionId), entityType: "OPEN_AGENT_SESSION", orgId: ORG_A, sessionId: cloud.sessionId });
+    const stopped: string[] = [];
+    await stopOrgSessions({ documentClient: w.db, tableName: "state", now: () => w.clock.now, log: () => undefined }, ORG_A, async (id) => { stopped.push(id); });
+    expect(stopped).toEqual([cloud.sessionId]);
+    expect(w.meta(sessionId)).toMatchObject({ endedAt: iso(T0), summary: { status: "cancelled", step: "Your company was closed, so this session stopped." } });
+    expect(w.db.get(openAgentSessionKey(ORG_A, sessionId))).toBeUndefined();
+  });
+
+  it("M7: bidi and zero-width characters are not kept in a turn or its event", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    await w.update(PRIYA, sessionId, deviceId, { turns: [{ at: iso(T0), role: "agent", text: "safe\u202etxt.exe\u200b done" }] });
+    expect(String(w.under(sessionId, "TURN#")[0]!.text)).not.toMatch(/[\u202e\u200b]/u);
+    expect(JSON.stringify(w.events(sessionId))).not.toMatch(/\\u202e|\\u200b|[\u202e\u200b]/u);
   });
 });
