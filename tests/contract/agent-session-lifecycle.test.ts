@@ -453,6 +453,37 @@ describe("two members are merged", () => {
       expect(w.get(agentSessionKey(ORG_A, followed.sessionId, "META"))!["payer"]).toEqual({ kind: "member", developerId: PRIYA });
     });
 
+    it("does not hand on a task that someone else created and nobody took over, though the duplicate's session names it, and keeps a third person's payer on a session the duplicate owns", async () => {
+      const { w, zedsOwn } = setup();
+      w.db.set({ ...w.taskOf(zedsOwn.taskId), developerId: PRIYA, developerName: "Priya", payer: { kind: "member", developerId: PRIYA } });
+      w.db.set({ ...w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!, payer: { kind: "member", developerId: PRIYA } });
+      const before = structuredClone(w.taskOf(zedsOwn.taskId));
+      await merge(w);
+      expect(w.taskOf(zedsOwn.taskId)).toEqual(before);
+      expect(w.get(taskIndexKey(ARJUN, zedsOwn.createdAt, zedsOwn.taskId))).toBeUndefined();
+      expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["payer"]).toEqual({ kind: "member", developerId: PRIYA });
+      expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["owner"]).toMatchObject({ developerId: ARJUN });
+    });
+
+    it("loses to a take-over that lands between the read and the write: the task is read again and left to its new owner", async () => {
+      const { w } = setup();
+      const solo = soloTask(w);
+      const send = w.db.send;
+      let raced = false;
+      w.db.send = (async (command: { constructor: { name: string }; input: { TransactItems?: Array<Record<string, { Key?: { pk: string } }>> } }) => {
+        const touchesTask = command.constructor.name === "TransactWriteCommand" && (command.input.TransactItems ?? []).some((entry) => Object.values(entry)[0]?.Key?.pk === taskKey(solo.taskId).pk);
+        if (touchesTask && !raced) {
+          raced = true;
+          w.db.set({ ...w.taskOf(solo.taskId), currentOwner: { developerId: PRIYA, name: "Priya", provider: "oidc", since: "2026-10-22T09:00:00.000Z" }, payer: { kind: "member", developerId: PRIYA } });
+        }
+        return send(command);
+      });
+      await merge(w);
+      expect(raced).toBe(true);
+      expect(effectiveTaskOwner(w.taskOf(solo.taskId)).developerId).toBe(PRIYA);
+      expect(paymentOfTask(w.taskOf(solo.taskId)).payer).toEqual({ kind: "member", developerId: PRIYA });
+    });
+
     it("makes the next dispatch's owner check follow the survivor: R60 names and tests the survivor, not the merged-away id", async () => {
       const { w, zedsOwn } = setup();
       await merge(w);
