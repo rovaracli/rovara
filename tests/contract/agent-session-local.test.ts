@@ -3,6 +3,7 @@
 // device's and the caller's, the company's rule for local agents allows the tool and the project, and what the Mac may do through the session (a person's message, a stop) needs the
 // level the session's shares give. A removed Mac ends its open sessions on both paths (the device route and the member's removal).
 import { randomUUID } from "node:crypto";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   DEVICE_COMMAND_KEEP_DAYS,
@@ -46,6 +47,21 @@ const REMOVED_TEXT = (label: string) => `${label} was removed, so this session s
 const NEEDS_SHARE = "Share a local session before it can appear in Rovara.";
 const TOO_MANY = "Add up to 10 people when you share; add more afterwards.";
 const FULL_TEXT = "This session's transcript is full; start a new one.";
+
+/** A table whose first consistent read of `key` answers `stale` (what was there before a change that lands a moment later), as a race would: the write that follows must still refuse. */
+function staleOnce(db: { send(command: unknown): Promise<unknown> }, key: { pk: string; sk: string }, stale: Item | undefined): { send(command: unknown): Promise<unknown> } {
+  let served = false;
+  return {
+    send: async (command: unknown) => {
+      const input = (command as { input?: { Key?: { pk?: string; sk?: string } } }).input;
+      if (!served && command instanceof GetCommand && input?.Key?.pk === key.pk && input.Key.sk === key.sk) {
+        served = true;
+        return { Item: stale };
+      }
+      return db.send(command);
+    },
+  };
+}
 
 function world() {
   const w = sessionWorld();
@@ -286,6 +302,91 @@ describe("registering a local session", () => {
     expect(reply.body.session).toMatchObject({ kind: "local", where: { kind: "mac", label: "Priya's MacBook" } });
     expect(await code(routeAgentSessionRequest(w.read, w.caller(BO, ORG_B), { method: "POST", path, headers: {}, requestId: "r", body: JSON.stringify(w.body(deviceId)) }, new URL(`${CELL}${path}`)))).toMatchObject({ code: "NOT_FOUND" });
     expect(await code(routeAgentSessionRequest(w.read, w.caller(PRIYA), { method: "GET", path, headers: {}, requestId: "r" }, new URL(`${CELL}${path}`)))).toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("a change that lands between the read and the write", () => {
+  it("does not register on a device that was removed a moment after it was read", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const live = { ...w.device(deviceId)! };
+    w.db.set({ ...live, revokedAt: iso(T0) });
+    const racing = { ...w.deps, documentClient: staleOnce(w.db, deviceKey(ORG_A, deviceId), live) };
+    expect(await code(registerLocalSession(racing, w.as(PRIYA), w.body(deviceId)))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.db.find((item) => item.entityType === "AGENT_SESSION")).toHaveLength(0);
+    expect(w.db.find((item) => item.entityType === "AGENT_SESSION_LOCAL")).toHaveLength(0);
+  });
+
+  it("does not take an update from a device removed a moment after it was read, nor into a session that ended a moment after it was read", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const live = { ...w.device(deviceId)! };
+    w.db.set({ ...live, revokedAt: iso(T0) });
+    const gone = { ...w.deps, documentClient: staleOnce(w.db, deviceKey(ORG_A, deviceId), live) };
+    expect(await code(recordLocalUpdate(gone, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "running", turns: w.turns(2) }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    w.db.set({ ...live });
+    const openMeta = { ...w.meta(sessionId)! };
+    w.db.set({ ...openMeta, endedAt: iso(T0), summary: { ...(openMeta.summary as Item), status: "cancelled" } });
+    const ended = { ...w.deps, documentClient: staleOnce(w.db, agentSessionKey(ORG_A, sessionId, "META"), openMeta) };
+    expect(await code(recordLocalUpdate(ended, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "running", turns: w.turns(2) }))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+  });
+
+  it("does not move a session to another device or owner between the read and the write: the update refuses and writes nothing", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const openMeta = { ...w.meta(sessionId)! };
+    w.db.set({ ...openMeta, subject: { kind: "task", taskId: randomUUID() }, kind: "task", where: { kind: "cloud" } });
+    const moved = { ...w.deps, documentClient: staleOnce(w.db, agentSessionKey(ORG_A, sessionId, "META"), openMeta) };
+    expect(await code(recordLocalUpdate(moved, w.as(PRIYA), sessionId, { requestId: randomUUID(), deviceId, status: "running", turns: w.turns(1) }))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.under(sessionId, "TURN#")).toHaveLength(0);
+    expect(w.local(sessionId)).toMatchObject({ rev: 0, turnCount: 0 });
+    w.db.set({ ...openMeta, owner: { developerId: ARJUN, name: "Arjun" } });
+    expect(await code(w.update(PRIYA, sessionId, deviceId, { turns: w.turns(1) }))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("does not hand a stop to a device removed a moment after it was read: nothing is written and the person is told the Mac is not there", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.started();
+    const live = { ...w.device(deviceId)! };
+    w.db.set({ ...live, revokedAt: iso(T0) });
+    const racing = { ...w.read, documentClient: staleOnce(w.db, deviceKey(ORG_A, deviceId), live) };
+    expect(await code(stopSession(racing, { ...w.as(PRIYA), name: "Priya" }, sessionId, { requestId: randomUUID() }))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: "This session's Mac isn't available right now." });
+    expect(w.commands(deviceId)).toHaveLength(0);
+    expect(w.events(sessionId).some((event) => event.type === "stopped")).toBe(false);
+  });
+});
+
+describe("the state a Mac left", () => {
+  it("is read only when it is the session's own: another device's item, another session's and another org's say nothing, and the summary stays", async () => {
+    const w = world();
+    const { sessionId } = await w.started();
+    const item = w.local(sessionId)!;
+    const summaryBefore = (w.meta(sessionId)!.summary as Item).digest;
+    for (const wrong of [{ deviceId: "dvc_zzzzzzzzzzzzzzzzzzzz" }, { orgId: ORG_B }, { sessionId: "ses_zzzzzzzzzzzzzzzzzzzz" }]) {
+      w.db.set({ ...item, ...wrong, status: "failed", step: "Planted by someone else", endedAt: iso(T0), updatedAt: iso(T0) });
+      await w.refresh(sessionId);
+      expect(w.meta(sessionId)).not.toHaveProperty("endedAt");
+      expect((w.meta(sessionId)!.summary as Item).digest).toBe(summaryBefore);
+    }
+    // A state that does not read (an unknown status) says nothing either.
+    w.db.set({ ...item, status: "exploded" });
+    await w.refresh(sessionId);
+    expect((w.meta(sessionId)!.summary as Item).digest).toBe(summaryBefore);
+    // And the session's own state is what the summary shows.
+    w.db.set({ ...item, step: "Reading the logs", status: "running", updatedAt: iso(T0) });
+    await w.refresh(sessionId);
+    expect((w.meta(sessionId)!.summary as Item).step).toBe("Reading the logs");
+  });
+
+  it("keeps the start of the work honest: a start in the future is today, and one older than a week is a week ago", async () => {
+    const w = world();
+    const deviceId = await w.mac(PRIYA);
+    const { sessionId } = await w.register(PRIYA, deviceId, { startedAt: iso(T0 - 30 * 86_400_000) });
+    expect((w.meta(sessionId)!.legs as Array<{ startedAt: string }>)[0]!.startedAt).toBe(iso(T0 - 7 * 86_400_000));
+    const second = await w.register(PRIYA, deviceId, { startedAt: iso(T0 + 86_400_000) });
+    expect((w.meta(second.sessionId)!.legs as Array<{ startedAt: string }>)[0]!.startedAt).toBe(iso(T0));
   });
 });
 
