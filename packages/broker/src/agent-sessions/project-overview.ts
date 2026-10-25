@@ -4,7 +4,7 @@
 // filter for this project, so each session in it passed the reader's own access check. Reads are bounded: one page of tiles, the roster capped, and four single-item reads.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AgentXNameSchema, LIVE_PAGE_MAX, OrgRoleSchema, PROJECT_OVERVIEW_AGENTS_MAX, ProjectOverviewSchema, agentXError, orgMemberKey, projectAllows, projectMonthStatsKey, scopeKey, spendCounterKey,
+  AgentXNameSchema, LIVE_PAGE_MAX, OrgRoleSchema, PROJECT_OVERVIEW_AGENTS_MAX, PROJECT_ROSTER_LIST_MAX, ProjectOverviewSchema, agentXError, orgMemberKey, projectAllows, projectMonthStatsKey, scopeKey, spendCounterKey,
   type BudgetScope, type ProjectOverview, type ProjectRole,
 } from "@agentx/contracts";
 import type { ApprovalDependencies } from "../agents/approvals.js";
@@ -92,7 +92,7 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
   let roster: Awaited<ReturnType<typeof listRoster>> = [];
   if (deps.approvals !== undefined) {
     try {
-      roster = await listRoster(deps.approvals, { orgId, developerId: caller.developerId, orgRole: orgRole.data }, name);
+      roster = await listRoster(deps.approvals, { orgId, developerId: caller.developerId, orgRole: orgRole.data }, name, { max: PROJECT_ROSTER_LIST_MAX });
     } catch (error) {
       // A roster that cannot be read leaves the page without agents, never with another person's.
       if (!isAgentXError(error)) throw error;
