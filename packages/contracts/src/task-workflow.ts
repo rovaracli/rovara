@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, StepIdSchema } from "./agent-recipe.js";
+import { readerOf, type ForwardReader } from "./forward-reader.js";
+import { FixSourceSchema, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, RiskAssessmentSchema } from "./rovara-code.js";
 import { E2EWorkflowProgressSchema, E2EQualifiedRoundSchema, E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { z } from "zod";
 import { ProjectCommandSchema } from "./project.js";
@@ -303,6 +305,8 @@ const WorkflowPullRequestSchema = z.object({
   required: z.boolean(),
   state: z.enum(["UNKNOWN", "OPEN", "CLOSED", "MERGED"]),
   observedAt: z.string().datetime().optional(),
+  /** Plan 6: the head this pull request had before Rovara merged the base branch into it (a sync); allowed on both definition versions. */
+  syncedFrom: z.string().regex(/^[a-f0-9]{40}$/).optional(),
 }).strict();
 export type WorkflowPullRequest = z.infer<typeof WorkflowPullRequestSchema>;
 
@@ -582,7 +586,9 @@ export function createCandidateManifest(input: readonly CandidateRepository[]): 
 }
 
 export const WorkflowStageSchema = z.enum([
+  "UNDERSTAND",
   "PLAN",
+  "PLAN_CRITIQUE",
   "PLAN_REVIEW",
   "IMPLEMENT",
   "VERIFY",
@@ -1018,6 +1024,8 @@ export function applyWorkflowFeedbackCheckChanges(currentInput: unknown, changes
 }
 
 export const WorkflowPathSchema = z.enum(["QUICK", "FULL"]);
+/** The definition versions a stored snapshot may have: Rovara Code v1 (today's engine) and v2. */
+export const WORKFLOW_DEFINITION_VERSIONS = ["1.0.0", "1.1.0"] as const;
 export const WorkflowReviewPhaseSchema = z.enum(["REQUIREMENTS", "DESIGN", "IMPLEMENTATION_PLAN"]);
 export type WorkflowPath = z.infer<typeof WorkflowPathSchema>;
 export type WorkflowReviewPhase = z.infer<typeof WorkflowReviewPhaseSchema>;
@@ -1107,7 +1115,8 @@ const WorkflowPullRequestUpdateFailureSchema = z.object({
 const WorkflowSnapshotShapeSchema = z.object({
   schemaVersion: z.literal(1),
   definitionId: z.literal("agentx-task-to-pr"),
-  definitionVersion: z.literal("1.0.0"),
+  /** "1.1.0" (Rovara Code v2) alone may hold the stages UNDERSTAND and PLAN_CRITIQUE, the outcome ANSWERED, and `intent`, `critique` and `risk`. */
+  definitionVersion: z.enum(WORKFLOW_DEFINITION_VERSIONS),
   taskId: z.string().uuid(),
   ownerId: ActorIdSchema,
   path: WorkflowPathSchema.default("QUICK"),
@@ -1121,7 +1130,7 @@ const WorkflowSnapshotShapeSchema = z.object({
    * and fail now. Kept through a send-back so the coder hears of them; the next block or verification replaces them.
    */
   regressedChecks: z.array(z.string().trim().min(1).max(WORKFLOW_REGRESSED_CHECK_MAX)).min(1).max(WORKFLOW_REGRESSED_CHECKS_MAX).optional(),
-  outcome: z.enum(["PASSED", "SKIPPED", "CHANGES_REQUESTED", "REJECTED", "MERGED", "CLOSED"]).optional(),
+  outcome: z.enum(["PASSED", "SKIPPED", "CHANGES_REQUESTED", "REJECTED", "MERGED", "CLOSED", "ANSWERED"]).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   artifacts: z.array(WorkflowArtifactSchema).max(100),
@@ -1166,7 +1175,25 @@ const WorkflowSnapshotShapeSchema = z.object({
   programStepId: StepIdSchema.optional(),
   /** How many review rounds each review step has finished, so a step that keeps finding problems blocks at its `maxRounds`. */
   programRounds: z.record(StepIdSchema, z.number().int().min(1).max(PROGRAM_ROUNDS_MAX)).optional(),
+  /** Rovara Code v2 (1.1.0 only): what Understand made of the request, the questions asked and the answers. */
+  intent: WorkflowIntentSchema.optional(),
+  /** Rovara Code v2 (1.1.0 only): the plan critic's points. */
+  critique: WorkflowCritiqueSchema.optional(),
+  /** Rovara Code v2 (1.1.0 only): the risk level of the pull request's code. */
+  risk: RiskAssessmentSchema.optional(),
+  /** Both versions: how many fix rounds of each kind ran, and which kind the round now running is. */
+  fixRounds: WorkflowFixRoundsSchema.optional(),
+  fixSource: FixSourceSchema.optional(),
 }).superRefine((workflow, context) => {
+  if (workflow.definitionVersion === "1.0.0") {
+    if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
+      context.addIssue({ code: "custom", path: ["stage"], message: "this stage needs definition version 1.1.0" });
+    }
+    if (workflow.outcome === "ANSWERED") context.addIssue({ code: "custom", path: ["outcome"], message: "this outcome needs definition version 1.1.0" });
+    for (const field of ["intent", "critique", "risk"] as const) {
+      if (workflow[field] !== undefined) context.addIssue({ code: "custom", path: [field], message: `${field} needs definition version 1.1.0` });
+    }
+  }
   if (workflow.program === undefined) {
     if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {
       context.addIssue({ code: "custom", path: ["program"], message: "a program position needs its program" });
@@ -1265,6 +1292,18 @@ const WorkflowSnapshotShapeSchema = z.object({
  * saved document failed its digest check (`WORKFLOW_BLOCK_REASONS.documentUnverified`); that state is never stored.
  */
 export const WorkflowSnapshotViewSchema = WorkflowSnapshotShapeSchema;
+
+/**
+ * A workflow as a client that sends `x-agentx-task-view: 2` reads it, tolerant of a newer server. A stage or outcome it does not know reads as
+ * "unknown" (a missing one is still an error), `definitionVersion` is any string, and fields it does not know are kept. Derived from the strict
+ * shape, so the two cannot drift apart. `WorkflowSnapshotReaderShape` is for a view that adds fields of its own.
+ */
+export const WorkflowSnapshotReaderShape = {
+  ...Object.fromEntries(Object.entries(WorkflowSnapshotShapeSchema.shape).map(([key, field]) => [key, readerOf(field as z.ZodType)])),
+  definitionVersion: z.string().min(1).max(32),
+};
+export type WorkflowSnapshotReader = Omit<ForwardReader<z.output<typeof WorkflowSnapshotShapeSchema>>, "definitionVersion"> & { definitionVersion: string };
+export const WorkflowSnapshotReaderSchema = z.looseObject(WorkflowSnapshotReaderShape) as unknown as z.ZodType<WorkflowSnapshotReader>;
 
 /** A workflow as it is stored and transitioned. */
 export const WorkflowSnapshotSchema = WorkflowSnapshotShapeSchema.superRefine((workflow, context) => {

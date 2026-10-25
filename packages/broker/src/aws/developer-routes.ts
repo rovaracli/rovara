@@ -2,6 +2,7 @@
 // routes use. /v1/dev/* has no API Gateway authorizer (D17): the broker verifies the developer
 // access token itself, then checks the environment, the method and the sign-in session on every
 // request (R12, R13), so a revoked session stops at once.
+import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { clearOrgHooks } from "../triggers/hooks.js";
 import { deleteOrgTriggers } from "../triggers/lifecycle.js";
 import { randomUUID } from "node:crypto";
@@ -1843,7 +1844,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     // An AI tool's start of an older version of an agent that is less safe than the current one waits for the agent's owner (owner decision 2026-10-22), as the app route's does.
     const waitingForOwner = request.method === "POST" && url.pathname === "/v1/dev/tasks" ? await gateDeveloperStart(deps, caller, request) : undefined;
     if (waitingForOwner !== undefined) return waitingForOwner;
-    return routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url);
+    // Rovara Code (Plan 6): a client that does not send `x-agentx-task-view: 2` reads a version 1 projection of any task in the answer.
+    return taskResponseForClient(await routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url), request.headers);
   }
   if (url.pathname === CHATGPT_CONNECTION_PATH || url.pathname === `${CHATGPT_CONNECTION_PATH}/finish`) {
     return routeChatGptConnection(deps, caller, request, url);

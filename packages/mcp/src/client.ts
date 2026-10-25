@@ -10,6 +10,8 @@ import {
   DeveloperPullRequestResponseSchema,
   DeveloperTaskListResponseSchema,
   DeveloperTaskResponseSchema,
+  TASK_VIEW_HEADER,
+  TASK_VIEW_VERSION,
   TaskPeopleChangeResponseSchema,
   TaskPeopleViewResponseSchema,
   type AgentXConfigurationConfirm,
@@ -206,7 +208,7 @@ export function httpControlPlaneClient(options: {
     };
     for (let attempt = 1; ; attempt += 1) {
       if (isCancelled()) throw cancelled();
-      const headers: Record<string, string> = { "x-agentx-trace-id": options.traceId?.() ?? randomUUID() };
+      const headers: Record<string, string> = { "x-agentx-trace-id": options.traceId?.() ?? randomUUID(), [TASK_VIEW_HEADER]: TASK_VIEW_VERSION };
       if (authorized) headers.authorization = `Bearer ${current.accessToken}`;
       if (body !== undefined) headers["content-type"] = "application/json";
       // Each try gets what is left of the deadline, at most 30 seconds, to answer in full.

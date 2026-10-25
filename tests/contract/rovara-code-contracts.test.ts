@@ -405,7 +405,8 @@ describe("a task read by an older client (Finding 13)", () => {
   });
 
   it("reads a stage that is missing as an error, not as unknown", () => {
-    const { stage: _stage, ...withoutStage } = v2({ state: "RUNNING" });
+    const withoutStage: Record<string, unknown> = v2({ state: "RUNNING" });
+    delete withoutStage.stage;
     expect(WorkflowSnapshotReaderSchema.safeParse(withoutStage).success).toBe(false);
   });
 });

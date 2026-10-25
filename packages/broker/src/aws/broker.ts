@@ -329,6 +329,7 @@ import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
+import { deliverDueCodeMilestones } from "../rovara-code/milestones.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
@@ -1804,13 +1805,18 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           console.log(JSON.stringify({ component: "broker", event: "plan_evidence.sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { attempted: 0, started: 0 };
         });
+        // Rovara Code milestones a handler was not told after their commit (or threw on) are told again; this too never hides the dispatches' result.
+        const codeMilestones = await deliverDueCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "broker", event: "code_milestone.sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
+          return { attempted: 0 };
+        });
         // Finished tasks whose release found the workspace busy, failed or never ran: their slot and workspace are given back.
         const releases = await releasePendingFinishedTasks({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) })
           .catch((error: unknown) => {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
           });
-        return json({ ...dispatches, planEvidence, releases }, "workflow-dispatch-recovery");
+        return json({ ...dispatches, planEvidence, codeMilestones, releases }, "workflow-dispatch-recovery");
       }
       catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));

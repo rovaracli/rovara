@@ -11,7 +11,7 @@ import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
 import { sharedNoticeKey, slackThreadSubject, type SlackThread } from "./slack.js";
-import { WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotViewSchema } from "./task-workflow.js";
+import { WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotReaderShape, WorkflowSnapshotViewSchema } from "./task-workflow.js";
 import { WorkflowPathSchema } from "./task-workflow.js";
 import { E2ESharedViewSchema } from "./e2e-view.js";
 
@@ -366,9 +366,21 @@ export const DeveloperTaskListItemSchema = DeveloperTaskViewSchema.pick({ taskId
 export type DeveloperTaskListItem = z.infer<typeof DeveloperTaskListItemSchema>;
 /** `nextCursor` is opaque: pass it back as `cursor` for the next page; it is absent on the last page. */
 export const DeveloperTaskListResponseSchema = z.object({ tasks: z.array(DeveloperTaskListItemSchema), nextCursor: z.string().optional() });
-export const DeveloperTaskResponseSchema = z.object({ task: DeveloperTaskViewSchema });
+/**
+ * The task as a client reads it: the same view, with the workflow read tolerantly (`WorkflowSnapshotReaderShape`), so a stage or outcome a newer
+ * control plane added reads as "unknown" instead of failing the whole answer. Typed as `DeveloperTaskView` for the callers that exist; any code that
+ * switches on a stage must keep a branch for one it does not know.
+ */
+export const DeveloperTaskClientViewSchema = DeveloperTaskViewSchema.extend({
+  workflow: z.looseObject({
+    ...WorkflowSnapshotReaderShape,
+    planContent: z.string().max(WORKFLOW_PLAN_MAX_BYTES).optional(),
+    workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  }).optional(),
+}) as unknown as typeof DeveloperTaskViewSchema;
+export const DeveloperTaskResponseSchema = z.object({ task: DeveloperTaskClientViewSchema });
 export const DeveloperCloseResponseSchema = z.object({
-  task: DeveloperTaskViewSchema,
+  task: DeveloperTaskClientViewSchema,
   closed: z.boolean(),
   discardedUnpublished: z.boolean().optional(),
   unpublished: z.array(z.object({ repository: z.string(), reasons: z.array(z.string()) })).optional(),
@@ -377,7 +389,7 @@ export const DeveloperCloseResponseSchema = z.object({
 });
 export type DeveloperCloseResponse = z.infer<typeof DeveloperCloseResponseSchema>;
 export const DeveloperPullRequestResponseSchema = z.object({
-  task: DeveloperTaskViewSchema,
+  task: DeveloperTaskClientViewSchema,
   operationId: z.string().uuid(),
   operationStatus: OperationStatusSchema,
   pullRequest: PullRequestSummarySchema.optional(),
