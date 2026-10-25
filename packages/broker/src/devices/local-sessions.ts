@@ -160,14 +160,14 @@ export async function limitStep(
 // ---- the checks every call makes
 
 /** The device, when it is this org's, the caller's own and not removed; otherwise `NOT_FOUND`, the same as a device that isn't there. */
-async function ownLiveDevice(deps: DeviceDependencies, caller: Pick<LocalCaller, "orgId" | "developerId">, deviceId: string) {
+export async function ownLiveDevice(deps: DeviceDependencies, caller: Pick<LocalCaller, "orgId" | "developerId">, deviceId: string) {
   const record = await readDevice(deps, caller.orgId, deviceId);
   if (record === undefined || record.developerId !== caller.developerId || record.revokedAt !== undefined) throw notFound("device");
   return record;
 }
 
 /** A transaction item that holds only while the device is still this person's and not removed (a removal between the read and the write cancels the write). */
-function deviceStillTheirs(table: Pick<TableInput, "tableName">, orgId: OrgId, deviceId: string, developerId: string): TransactItem {
+export function deviceStillTheirs(table: Pick<TableInput, "tableName">, orgId: OrgId, deviceId: string, developerId: string): TransactItem {
   return {
     ConditionCheck: {
       TableName: table.tableName, Key: deviceKey(orgId, deviceId),
@@ -294,7 +294,7 @@ export async function registerLocalSession(deps: LocalSessionDependencies, calle
  * How many of a device's sessions are open now, counting up to `stopAt`: its entries are confirmed by the sessions themselves (an entry of a session that ended without taking it away, or
  * that is gone, is not counted and is deleted).
  */
-async function openSessionsOnDevice(deps: DeviceDependencies, orgId: OrgId, deviceId: string, stopAt: number): Promise<number> {
+export async function openSessionsOnDevice(deps: DeviceDependencies, orgId: OrgId, deviceId: string, stopAt: number): Promise<number> {
   const store = new AgentSessionStore(deps);
   const pk = deviceKey(orgId, deviceId).pk;
   let open = 0;

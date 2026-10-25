@@ -11,10 +11,12 @@ import {
   agentXError,
   redactText,
   sessionEventSk,
+  sessionLegSk,
   type AgentSessionRecord,
   type OrgId,
   type SessionEvent,
   type SessionId,
+  type SessionLeg,
 } from "@agentx/contracts";
 import { NOT_EXISTS, errorName, strip, type Item, type TableInput, type TransactItem } from "../agents/table-writes.js";
 
@@ -67,6 +69,34 @@ export function sessionFromItem(item: Item): AgentSessionRecord | undefined {
   const { [INDEX_EXPIRY_ATTRIBUTE]: _expires, ...fields } = strip(item); // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
   const record = AgentSessionRecordSchema.safeParse(fields);
   return record.success ? record.data : undefined;
+}
+
+// ---- legs (a move between a Mac and the cloud, Plan 5 Task 19)
+
+/** What a new leg is on: the subject and the place, the rest is the move's. */
+export type NewLeg = Pick<SessionLeg, "subject" | "where">;
+
+/**
+ * The legs after a move at `at`: every leg still open is ended by the move (`endedBy: "handoff"`; there is one, but a stray second would otherwise stay open and the session
+ * would be in two places), and one new leg follows the highest number. `ended` are the legs this move ended, `started` the new one: the items to write.
+ */
+export function legsAfterMove(legs: readonly SessionLeg[], next: NewLeg, at: string): { legs: SessionLeg[]; ended: SessionLeg[]; started: SessionLeg } {
+  const ended: SessionLeg[] = [];
+  const kept = legs.map((leg): SessionLeg => {
+    if (leg.endedAt !== undefined) return leg;
+    const closed: SessionLeg = { ...leg, endedAt: at, endedBy: "handoff" };
+    ended.push(closed);
+    return closed;
+  });
+  const started: SessionLeg = { seq: legs.reduce((highest, leg) => Math.max(highest, leg.seq), 0) + 1, subject: next.subject, where: next.where, startedAt: at };
+  return { legs: [...kept, started], ended, started };
+}
+
+/** The `LEG#<seq>` items for these legs, each written whole (a leg is only ever written by a move, in the move's transaction). */
+export function legItems(table: Pick<TableInput, "tableName">, session: SessionRef, legs: readonly SessionLeg[]): TransactItem[] {
+  return legs.map((leg) => ({
+    Put: { TableName: table.tableName, Item: { ...agentSessionKey(session.orgId, session.sessionId, sessionLegSk(leg.seq)), entityType: "AGENT_SESSION_LEG", orgId: session.orgId, sessionId: session.sessionId, ...leg } },
+  }));
 }
 
 export class AgentSessionStore {

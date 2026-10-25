@@ -86,11 +86,14 @@ export function parseControlBody(body: unknown): z.infer<typeof BodySchema> {
 
 /** What a stop or a retry answered, kept under its request id on the session so a repeat answers it again and writes nothing. */
 export interface ControlRequest {
-  action: "stop" | "retry";
+  action: "stop" | "retry" | "handoff";
   by: string;
   at: string;
   /** The session that answers the request: the same session, or the new one a retry made. */
   sessionId: string;
+  /** A move between a Mac and the cloud (Task 19) keeps what it asked, so the same id with another body is refused, and what it answered to a move to a Mac. */
+  fingerprint?: string | undefined;
+  result?: unknown;
 }
 
 export const requestKey = (orgId: OrgId, sessionId: string, requestId: string) => agentSessionKey(orgId, sessionId, `REQUEST#${requestId}`);
@@ -98,9 +101,9 @@ export const requestKey = (orgId: OrgId, sessionId: string, requestId: string) =
 export async function readControlRequest(deps: SessionReadDependencies, session: Pick<AgentSessionRecord, "orgId" | "sessionId">, requestId: string): Promise<ControlRequest | undefined> {
   const item = await getItem(deps, requestKey(session.orgId, session.sessionId, requestId));
   if (item === undefined) return undefined;
-  const { action, by, at, sessionId } = item;
-  if ((action !== "stop" && action !== "retry") || typeof by !== "string" || typeof at !== "string" || typeof sessionId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
-  return { action, by, at, sessionId };
+  const { action, by, at, sessionId, fingerprint, result } = item;
+  if ((action !== "stop" && action !== "retry" && action !== "handoff") || typeof by !== "string" || typeof at !== "string" || typeof sessionId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
+  return { action, by, at, sessionId, ...(typeof fingerprint === "string" ? { fingerprint } : {}), ...(result === undefined ? {} : { result }) };
 }
 
 /** The request item for the transaction that records the action. */

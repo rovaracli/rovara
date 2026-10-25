@@ -45,7 +45,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
   const published: Array<{ channel: string; events: string[] }> = [];
   const deviceDeps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, log: (entry: Record<string, unknown>) => { log.push(entry); } };
   const calls = {
-    starts: [] as Array<Record<string, any>>, pushes: [] as Array<Record<string, any>>, cancels: [] as Array<{ taskId: string; requestId: string }>,
+    starts: [] as Array<Record<string, unknown>>, pushes: [] as Array<Record<string, unknown>>, cancels: [] as Array<{ taskId: string; requestId: string }>,
     admissions: [] as Array<{ payer: unknown; project: string; agentId: string; path: string }>, order: [] as string[],
   };
   const live = {
@@ -57,7 +57,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
   const runtime: HandoffRuntime = {
     startOnBranch: async (_deps, input) => {
       calls.order.push("start");
-      calls.starts.push(input as unknown as Record<string, any>);
+      calls.starts.push({ ...input });
       if (live.startFailure !== undefined) throw live.startFailure;
       await live.onStart?.(calls.starts.length);
       const prior = started.get(input.requestId);
@@ -73,7 +73,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     },
     pushToBranch: async (_deps, input) => {
       calls.order.push("push");
-      calls.pushes.push(input as unknown as Record<string, any>);
+      calls.pushes.push({ ...input });
       if (live.pushFailure !== undefined) throw live.pushFailure;
       return live.push as never;
     },
@@ -153,7 +153,8 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
   };
   const post = (who: string, sessionId: string, input: unknown, orgId: OrgId = ORG_A) => {
     const path = `/v1/app/sessions/${sessionId}/handoff`;
-    return routeAgentSessionRequest(deps, as(who, "member", orgId), { method: "POST", path, headers: {}, body: JSON.stringify(input), requestId: "r" }, new URL(`${CELL}${path}`));
+    // The route reads the project's repositories from Plan 3's approvals dependencies, as the broker supplies them.
+    return routeAgentSessionRequest({ ...deps, approvals: { ...deps } as never }, as(who, "member", orgId), { method: "POST", path, headers: {}, body: JSON.stringify(input), requestId: "r" }, new URL(`${CELL}${path}`));
   };
   /** Priya's Mac session, followed by Max (maintainer of web, not shared) and by Arjun (shared). */
   return { ...w, log, published, deviceDeps, calls, live, runtime, control, deps, as, mac, setPolicy, meta, local, under, commands, taskOf, patchSession, onMac, inCloud, body, toMac, move, view, writes, removeDevice, post };
@@ -318,8 +319,8 @@ describe("a session on a Mac moves to the cloud", () => {
     expect(w.calls.admissions).toHaveLength(1);
     expect(w.db.items.size).toBe(before);
     expect(w.writes()).toBe(writesBefore);
-    expect(again.session).toMatchObject({ sessionId, where: { kind: "cloud" } });
-    expect(first.session).toMatchObject({ sessionId });
+    expect(again).toMatchObject({ session: { sessionId, where: { kind: "cloud" } } });
+    expect(again).toEqual(first);
     expect(w.under(sessionId, "LEG#")).toHaveLength(2);
     // The same id with another body is a mistake; the same id for another action is one too.
     expect(await code(w.move(PRIYA, sessionId, { ...input, summary: "Something else entirely" }))).toMatchObject({ code: "CONFIG_INVALID" });
@@ -452,7 +453,7 @@ describe("a move to the cloud never loses the session", () => {
   it("refuses a task that is not the owner's, or not this org's, or has a session already (a runtime that misbehaves), cancels it and leaves the Mac session alone", async () => {
     const w = world();
     const { sessionId } = await w.onMac();
-    const original = w.runtime.startOnBranch;
+    const original = w.runtime.startOnBranch.bind(w.runtime);
     w.runtime.startOnBranch = async (deps, input) => {
       const made = await original(deps, input);
       const task = w.taskOf(made.taskId)!;
@@ -618,7 +619,7 @@ describe("a session in the cloud moves to a Mac", () => {
     expect(await store.getForTask(ORG_A, w.taskOf(taskId) as never)).toBeUndefined();
     // The task carries on in the cloud (cancelled, then said to be running again by a continue): the session on the Mac does not change.
     w.db.set({ ...w.taskOf(taskId)!, status: "COMPLETE", updatedAt: iso(T0 + 60_000) });
-    await refreshSessionSummary({ documentClient: w.db, tableName: "state", now: () => w.clock.now, log: () => undefined }, ORG_A, sessionId as never);
+    await refreshSessionSummary({ documentClient: w.db, tableName: "state", now: () => w.clock.now, log: () => undefined }, ORG_A, sessionId);
     expect(w.meta(sessionId)).toMatchObject({ kind: "local", where: { kind: "mac" } });
     expect((w.meta(sessionId).summary as Item)["status"]).not.toBe("succeeded");
   });
