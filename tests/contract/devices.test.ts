@@ -322,6 +322,25 @@ describe("removing a device", () => {
     expect(w.row(ORG_A, ARJUN, device.deviceId)).toBeUndefined();
   });
 
+  it("a method other than DELETE on a device does nothing to it", async () => {
+    const w = world();
+    const priya = w.as(PRIYA);
+    const device = await w.register(priya);
+    for (const method of ["GET", "POST", "PUT", "PATCH"]) {
+      expect(await outcome(w.call(priya, method, `/v1/app/devices/${device.deviceId}`, {}))).toMatchObject({ code: "NOT_FOUND" });
+    }
+    expect(w.meta(ORG_A, device.deviceId)).not.toHaveProperty("revokedAt");
+    expect(await w.devicesOf(priya)).toHaveLength(1);
+  });
+
+  it("a record whose own id differs from its key is not that device", async () => {
+    const w = world();
+    const device = await w.register(w.as(PRIYA));
+    w.db.set({ ...w.meta(ORG_A, device.deviceId)!, deviceId: "dvc_zzzzzzzzzzzzzzzzzzzz" });
+    expect(await readDevice(w.deps, ORG_A, device.deviceId)).toBeUndefined();
+    expect(await w.devicesOf(w.as(PRIYA))).toEqual([]);
+  });
+
   it("readDevice returns a live or revoked record of that org and refuses a malformed one", async () => {
     const w = world();
     const device = await w.register(w.as(PRIYA));
@@ -373,6 +392,8 @@ describe("the company's rules for local agents", () => {
     const admin = w.as(OLA, "admin");
     const results = await Promise.allSettled([w.putPolicy(admin, { allowed: false }, 0), w.putPolicy(admin, { tools: ["codex"] }, 0)]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const lost = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+    expect(lost.reason).toMatchObject({ code: "AGENT_REVISION_CONFLICT", message: expect.stringContaining(CONFLICT_TEXT) as string });
     expect((await w.policyOf(admin)).revision).toBe(1);
   });
 
@@ -398,6 +419,16 @@ describe("the company's rules for local agents", () => {
     // The first request arrives late, after the opposite change: it answers what it did and undoes nothing.
     expect(w.body(await w.putPolicy(admin, { allowed: false }, 0, requestId))).toEqual(first);
     expect(await w.policyOf(admin)).toMatchObject({ revision: 2, policy: { allowed: true } });
+  });
+
+  it("the same request arriving twice at once changes the rules once and answers both the same", async () => {
+    const w = world();
+    const admin = w.as(OLA, "admin");
+    const requestId = randomUUID();
+    const [a, b] = await Promise.all([w.putPolicy(admin, { allowed: false }, 0, requestId), w.putPolicy(admin, { allowed: false }, 0, requestId)]);
+    expect(w.body(a)).toEqual({ policy: { ...FULL, allowed: false }, revision: 1 });
+    expect(w.body(b)).toEqual(w.body(a));
+    expect((await w.policyOf(admin)).revision).toBe(1);
   });
 
   it("a repeat from someone who lost the right to change them is refused, not answered", async () => {
