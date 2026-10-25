@@ -6,11 +6,11 @@ import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
-  LIVE_PAGE_MAX, ProjectOverviewReaderSchema, ProjectOverviewSchema, agentSessionKey, liveSessionKey, projectAiKey, projectMonthStatsKey, spendCounterKey, type OrgId, type ProjectOverview, type SessionStatus,
+  LIVE_PAGE_MAX, ProjectOverviewReaderSchema, ProjectOverviewSchema, agentKey, agentSessionKey, liveSessionKey, projectAiKey, orgMemberKey, projectMonthStatsKey, spendCounterKey, type OrgId, type ProjectOverview, type SessionStatus,
 } from "../../packages/contracts/src/index.js";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
 import { isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
-import { reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
+import { mergedPullRequestStats, reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { addToRoster } from "../../packages/broker/src/agents/roster.js";
 import type { ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
@@ -167,6 +167,18 @@ describe("who may read it, and what each sees", () => {
     expect(await code(w.overview(PRIYA, "web", ORG_A, { projectPage: undefined }))).toMatchObject({ code: "NOT_FOUND" });
   });
 
+  it("gives a person who has left the org nothing, whatever grant they still hold", async () => {
+    const w = world();
+    expect((await w.overview(PRIYA)).project.name).toBe("web");
+    w.db.delete(orgMemberKey(ORG_A, PRIYA));
+    expect(await code(w.overview(PRIYA))).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+  });
+
+  it("answers PROJECT_NOT_FOUND when the project's card is of another project", async () => {
+    const w = world();
+    expect(await code(w.overview(PRIYA, "web", ORG_A, { projectPage: async () => ({ name: "api", status: "active", repositories: [], setup: { status: "ready" }, channels: [] }) }))).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+  });
+
   it("reads a revoked role at the next read", async () => {
     const w = world();
     expect((await w.overview(PRIYA)).you.role).toBe("contributor");
@@ -230,6 +242,23 @@ describe("the budget and the cost of a merged pull request", () => {
     expect((await w.overview(MAX)).budget).toEqual({ month: MONTH, spentUsd: 0, mergedPullRequests: 0 });
   });
 
+  it("takes a counter that names another org, or a figure that is negative or fractional, as nothing", async () => {
+    const w = world();
+    w.db.set({ ...spendCounterKey(ORG_A, MONTH, "PROJECT#web"), entityType: "SPEND_COUNTER", orgId: ORG_B, spentUsd: 500 });
+    w.db.set({ ...projectMonthStatsKey(ORG_A, "web", MONTH), entityType: "PROJECT_SESSION_STATS", orgId: ORG_B, mergedPullRequests: 5 });
+    expect((await w.overview(MAX)).budget).toEqual({ month: MONTH, spentUsd: 0, mergedPullRequests: 0 });
+    w.db.set({ ...spendCounterKey(ORG_A, MONTH, "PROJECT#web"), entityType: "SPEND_COUNTER", orgId: ORG_A, spentUsd: -3 });
+    w.db.set({ ...projectMonthStatsKey(ORG_A, "web", MONTH), entityType: "PROJECT_SESSION_STATS", orgId: ORG_A, mergedPullRequests: 2.5 });
+    expect((await w.overview(MAX)).budget).toEqual({ month: MONTH, spentUsd: 0, mergedPullRequests: 0 });
+  });
+
+  it("leaves the limit out, and still answers, when the project's AI settings cannot be read", async () => {
+    const w = world();
+    w.spend("web", 5);
+    w.db.set({ ...projectAiKey(ORG_A, "web"), entityType: "PROJECT_AI", projectPays: "maybe", monthlyBudgetUsd: "lots", revision: 1 });
+    expect((await w.overview(MAX)).budget).toEqual({ month: MONTH, spentUsd: 5, mergedPullRequests: 0 });
+  });
+
   it("shows the project's monthly limit when it has one, and none when it has none", async () => {
     const w = world();
     w.spend("web", 5);
@@ -256,6 +285,21 @@ describe("what is running", () => {
     // The team filter: the caller's own work is on the page too when it is a cloud session of the project.
     expect(ids.length).toBeGreaterThanOrEqual(1);
     void mine;
+  });
+
+  it("lists only this project's sessions, for a person who has a role in others too", async () => {
+    const w = world();
+    const here = w.open({ owner: ARJUN });
+    const there = w.open({ owner: ARJUN, project: "api" });
+    const ids = (await w.overview(MAX)).running.map((tile) => tile.sessionId);
+    expect(ids).toContain(here.sessionId);
+    expect(ids).not.toContain(there.sessionId);
+  });
+
+  it("does not list the caller's own local session, which the team has not been given", async () => {
+    const w = world();
+    const own = w.open({ owner: PRIYA, kind: "local" });
+    expect((await w.overview(PRIYA)).running.map((tile) => tile.sessionId)).not.toContain(own.sessionId);
   });
 
   it("never shows an unshared local session, nor a task the caller cannot view", async () => {
@@ -300,6 +344,23 @@ describe("the agents", () => {
     expect(asPriya.agents.map((agent) => agent.name)).not.toContain("Triage");
   });
 
+  it("leaves out an archived agent", async () => {
+    const w = world();
+    const gone = await addAgent(w, "Old helper", MAX);
+    expect((await w.overview(MAX)).agents.map((agent) => agent.name)).toContain("Old helper");
+    w.db.set({ ...(w.db.get(agentKey(ORG_A, gone.agentId, "META")) as Item), status: "archived" });
+    expect((await w.overview(MAX)).agents.map((agent) => agent.name)).not.toContain("Old helper");
+  });
+
+  it("answers without agents, not with a failure, when the roster cannot be read for the person", async () => {
+    const w = world();
+    await addAgent(w, "Triage", MAX);
+    const members = { roleOf: async (orgId: OrgId, project: string, who: { developerId: string; orgRole: string }) => (who.developerId === MAX && orgId === ORG_A && project === "web" ? undefined : "maintainer") };
+    const answer = await w.overview(MAX, "web", ORG_A, { approvals: { ...(w.approvals as object), projectMembers: members } as never });
+    expect(answer.agents).toEqual([]);
+    expect(answer.project.name).toBe("web");
+  });
+
   it("counts only the sessions the caller can view", async () => {
     const w = world();
     const triage = await addAgent(w, "Triage", MAX);
@@ -314,7 +375,7 @@ describe("a merged pull request adds one to the project's month, once", () => {
   const NOW = "2026-10-05T12:00:00.000Z";
 
   /** A task with two pull requests waiting for their merge, a webhook reconcile that writes through a fake table, and GitHub's answers. */
-  function harness(project = "web", orgId: OrgId | null = ORG_A) {
+  function harness(project = "web", orgId: OrgId | null = ORG_A, mode: "merge" | "feedback" = "merge") {
     const db = new FakeDynamoDb();
     const repositories = ["api", "ui"];
     const candidate = createCandidateManifest(repositories.map((repositoryId) => ({ repositoryId, commitSha: "a".repeat(40), treeSha: "b".repeat(40) })));
@@ -333,7 +394,7 @@ describe("a merged pull request adds one to the project's month, once", () => {
     let clock = Date.parse(NOW);
     const reconcile = (fullName: string, number: number, extra: { failTransaction?: boolean; now?: string; auditOrgId?: (taskId: string) => Promise<OrgId> } = {}) => reconcileTaskPullRequestFeedback({
       documentClient: { send: async (command: unknown) => ({ Item: rows.get(String(((command as { input: { Key: { pk: string } } }).input.Key).pk)) }) },
-      tableName: "state", repositoryFullName: fullName, number, deliveryId: randomUUID(), observationMode: "merge", now: extra.now ?? iso(clock += 1000),
+      tableName: "state", repositoryFullName: fullName, number, deliveryId: randomUUID(), ...(mode === "merge" ? { observationMode: "merge" as const } : {}), now: extra.now ?? iso(clock += 1000),
       loadTask: async () => ({ project, startingRevision: 1, ...(orgId === null ? {} : { orgId }), workflow }),
       repositoryUrl: async (_project: string, _revision: number, repositoryId: string) => `https://github.com/acme/${repositoryId}.git`,
       getCurrentFeedback: async (_url: string, prNumber: number) => ({
@@ -386,6 +447,28 @@ describe("a merged pull request adds one to the project's month, once", () => {
     await h.reconcile("acme/ui", 2, { now: "2026-11-01T00:00:01.000Z" });
     expect(h.count("2026-10")).toBe(1);
     expect(h.count("2026-11")).toBe(1);
+  });
+
+  it("counts a merge found by the full feedback delivery as well as by the merge poll", async () => {
+    const h = harness("web", ORG_A, "feedback");
+    h.remote.set(1, "merged");
+    h.remote.set(2, "merged");
+    expect(await h.reconcile("acme/api", 1)).toBe(true);
+    expect(h.count()).toBe(2);
+    expect(await h.reconcile("acme/api", 1)).toBe(false);
+    expect(h.count()).toBe(2);
+  });
+
+  it("builds no item when nothing is merged, whoever the org is", async () => {
+    const next = { pullRequests: [{ repositoryId: "api", number: 1, state: "OPEN" }] } as never;
+    const reads = [{ pr: { repositoryId: "api", number: 1, state: "OPEN" } }];
+    const input = { tableName: "state", now: NOW } as never;
+    expect(await mergedPullRequestStats(input, { orgId: ORG_A, project: "web" }, TASK, next, reads)).toEqual([]);
+    const merged = { pullRequests: [{ repositoryId: "api", number: 1, state: "MERGED" }] } as never;
+    expect(await mergedPullRequestStats(input, { orgId: ORG_A, project: "web" }, TASK, merged, [{ pr: { repositoryId: "api", number: 1, state: "MERGED" } }])).toEqual([]);
+    expect(await mergedPullRequestStats(input, { orgId: ORG_A, project: "web" }, TASK, merged, reads)).toHaveLength(1);
+    expect(await mergedPullRequestStats(input, { project: "web" }, TASK, merged, reads)).toEqual([]);
+    expect(await mergedPullRequestStats({ ...(input as object), auditOrgId: async () => { throw new Error("no"); } } as never, { project: "web" }, TASK, merged, reads)).toEqual([]);
   });
 
   it("counts nothing when the save does not commit, and nothing for a pull request that is still open", async () => {

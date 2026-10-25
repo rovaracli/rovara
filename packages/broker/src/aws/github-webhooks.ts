@@ -209,7 +209,7 @@ function newlyMerged<Read extends { pr: { repositoryId: string; number: number; 
  * redelivered merge (which changes nothing) adds nothing and a save that does not commit counts nothing. The month is the UTC month the merge was found. A task whose org is not known
  * is not counted (the count is the org's own); a failing lookup is the same, and never stops the save.
  */
-async function mergedPullRequestStats(
+export async function mergedPullRequestStats(
   input: ReconcileTaskPullRequestFeedbackInput,
   task: { orgId?: OrgId | undefined; project: string },
   taskId: string,
