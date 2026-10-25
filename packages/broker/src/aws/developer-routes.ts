@@ -1803,7 +1803,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
   // Plan 5, Task 17: `/v1/app/devices*` and `/v1/app/org/local-agents`.
-  if (isDeviceRoute(url.pathname)) return routeDeviceRequest({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller, request, url);
+  if (isDeviceRoute(url.pathname)) return routeDeviceRequest({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) }, caller, request, url);
   if (request.method === "GET" && url.pathname === "/v1/app/me") return getAppMe(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");

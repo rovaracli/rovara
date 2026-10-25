@@ -23,9 +23,10 @@ import {
   type OrgId,
   type OrgRole,
 } from "@agentx/contracts";
+import type { AuditDeps } from "../audit/outbox.js";
 import { commit, errorName, failedIndexes, readRequest, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 
-export interface DeviceDependencies extends TableInput {
+export interface DeviceDependencies extends TableInput, AuditDeps {
   log?: ((entry: Record<string, unknown>) => void) | undefined;
 }
 
