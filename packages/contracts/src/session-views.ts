@@ -60,7 +60,8 @@ export const SessionWhereViewSchema = z.discriminatedUnion("kind", [
 const PayerNameSchema = z.object({ kind: z.enum(["member", "project", "agent", "chain"]), name: z.string().min(1).max(200) }).strict();
 
 /**
- * One person's reading of one session: the header, its cost, what they may do, and the work itself (`body`). `approvals` are the caller's own
+ * One person's reading of one session: the header, its cost, what they may do, and the work itself (`body`). A session on a Mac (`kind: "local"`) always costs 0 and has no payer: it runs on the
+ * person's own machine and credentials, and a Mac can never report `paused` (a pause for budget is Rovara's, for cloud work). `approvals` are the caller's own
  * pending decisions on this session and `cost.paused.confirmUrl` is the link of a budget request they may decide: bare `/v1/app/approve/<id>`
  * links, never present for a person who may not decide, and never holding what is being approved (the confirmation page shows that).
  */

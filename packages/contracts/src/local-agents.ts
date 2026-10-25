@@ -124,7 +124,7 @@ export const DEVICE_COMMAND_KINDS = ["steer", "stop"] as const;
 const InstantText = z.string().datetime();
 const codePoints = (max: number) => (value: string) => [...value].length <= max;
 
-/** The statuses a Mac reports: all but `paused` (a pause for budget is Rovara's, and a Mac session has no payer). */
+/** The statuses a Mac reports: all but `paused` (a pause for budget is Rovara's, and a Mac session has no payer and costs 0: it runs on the person's own machine and credentials). */
 export const LOCAL_REPORTED_STATUSES = ["starting", "running", "needs_person", "waiting", "stopped", "succeeded", "failed", "cancelled"] as const satisfies ReadonlyArray<(typeof SESSION_STATUSES)[number]>;
 
 /** `POST /v1/app/sessions/local`. The counts of `shares` are checked with their own texts, after the shape. */
@@ -155,7 +155,7 @@ export const LocalUpdateBodySchema = z
     status: z.enum(LOCAL_REPORTED_STATUSES),
     step: z.string().max(1000).optional(),
     peek: z.string().max(2000).optional(),
-    turns: z.array(LocalTurnSchema).max(LOCAL_UPDATE_TURNS_MAX).optional(),
+    turns: z.array(LocalTurnSchema).max(LOCAL_UPDATE_TURNS_MAX, `An update holds at most ${String(LOCAL_UPDATE_TURNS_MAX)} turns; send the rest in the next update.`).optional(),
     tokens: z.object({ input: z.number().int().min(0).max(1e12), output: z.number().int().min(0).max(1e12) }).strict().optional(),
   })
   .strict();

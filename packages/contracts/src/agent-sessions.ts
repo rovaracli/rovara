@@ -69,7 +69,8 @@ export const REALTIME_PUBLISH_DEADLINE_MS = 1000;
 export const REALTIME_TOKEN_SECONDS = 900;
 export const LOCAL_HEARTBEAT_SECONDS = 60;
 export const LOCAL_OFFLINE_MINUTES = 10;
-export const LOCAL_UPDATE_TURNS_MAX = 50;
+/** The most turns in one update from a Mac: each is a `TURN#` item and a `local_turn` event, so 40 turns, the state, the device and the request stay under DynamoDB's 100 items in ONE transaction. */
+export const LOCAL_UPDATE_TURNS_MAX = 40;
 export const LOCAL_TURN_MAX_CHARS = 4000;
 export const LOCAL_TURNS_MAX = 2000;
 export const DEVICE_LABEL_MAX = 60;
@@ -231,6 +232,7 @@ export const SessionSummarySchema = z
     lastRunFailed: z.literal(true).optional(),
     /** The task's workflow is `BLOCKED` (it shows as `needs_person`): the session can be retried through Plan 3's workflow retry. Absent in summaries written before this existed. */
     workflowBlocked: z.literal(true).optional(),
+    /** What the session cost Rovara. Always 0 for a session on a Mac: it runs on the person's own machine and credentials, and a Mac can't report `paused`. */
     costUsd: z.number().min(0),
     runLimitUsd: z.number().min(0).optional(),
     stopAtUsd: z.number().min(0).optional(),

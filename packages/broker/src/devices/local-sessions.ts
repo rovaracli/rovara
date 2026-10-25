@@ -10,9 +10,8 @@
 //   - a removed device ends its open sessions (`endSessionsOfDevice`), found through the device's own entries and confirmed by each session's `subject.deviceId`.
 //
 // WHAT IS WRITTEN: a session's state from the Mac is one `LOCAL` item (status, step, peek, the count of turns, a revision every writer moves), its transcript is `TURN#<n>` items with a
-// `local_turn` event each, and its summary is worked out from the `LOCAL` item by `refreshSessionSummary` (`local-facts.ts`). An update that holds more turns than one transaction takes
-// (with their events) is written in segments, each moving the `LOCAL` revision and the count; the last segment carries the status, the device's last sight and the request's own item
-// (R18). A segment that was written before a failure is found by the repeat of the same request (`partial`) and not written twice.
+// `local_turn` event each, and its summary is worked out from the `LOCAL` item by `refreshSessionSummary` (`local-facts.ts`). An update is at most `LOCAL_UPDATE_TURNS_MAX` (40) turns,
+// so it, its events, the status, the device's last sight and the request's own item (R18) are ONE transaction: all or nothing.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
 import {
@@ -50,7 +49,7 @@ import {
   type OrgRole,
   type SessionStatus,
 } from "@agentx/contracts";
-import { NOT_EXISTS, commit, errorName, failedIndexes, isTransactionConflict, readRequest, transact, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
+import { NOT_EXISTS, commit, errorName, failedIndexes, isTransactionConflict, readRequest, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { inertTaskTitle } from "../aws/developer-tasks.js";
 import { LOCAL_TOOL_WORDS, createLocalSessionItems } from "../agent-sessions/create.js";
 import { checkPrincipal, type SessionShareDependencies } from "../agent-sessions/shares.js";
@@ -75,8 +74,6 @@ export interface LocalCaller {
   name: string;
 }
 
-/** Turns written in one transaction: each is two items (the turn and its event), and the rest of the transaction holds a handful. */
-export const TURNS_PER_TRANSACTION = 40;
 const ATTEMPTS = 3;
 const DAY_SECONDS = 86_400;
 /** The day a registered session's `LOCAL` item, turns and device entry expire if nothing moves them: as long as the session's records stay. */
@@ -275,11 +272,8 @@ export async function recordLocalUpdate(deps: LocalSessionDependencies, caller: 
     if (local !== undefined && isEndedStatus(local["status"])) throw agentXError("SESSION_ENDED", "This session has ended.");
     const rev = typeof local?.["rev"] === "number" ? local["rev"] : 0;
     const count = typeof local?.["turnCount"] === "number" ? local["turnCount"] : 0;
-    const partial = local?.["partial"] as { requestId?: unknown; done?: unknown } | undefined;
-    const done = partial?.requestId === input.requestId && typeof partial.done === "number" && partial.done >= 0 && partial.done <= turns.length ? partial.done : 0;
-    const todo = turns.slice(done);
-    if (count + todo.length > LOCAL_TURNS_MAX) throw agentXError("CONFIG_INVALID", LOCAL_TRANSCRIPT_FULL_MESSAGE);
-    const reply = await writeSegments(deps, { caller, session, device: { deviceId: device.deviceId, label: device.label }, input, mark, local, rev, count, done, todo, all: turns.length });
+    if (count + turns.length > LOCAL_TURNS_MAX) throw agentXError("CONFIG_INVALID", LOCAL_TRANSCRIPT_FULL_MESSAGE);
+    const reply = await writeUpdate(deps, { caller, session, device: { deviceId: device.deviceId, label: device.label }, input, mark, local, rev, count, turns });
     if (reply === "again") continue;
     await refreshQuietly(deps, orgId, session.sessionId);
     return reply;
@@ -296,7 +290,7 @@ async function refreshQuietly(deps: Pick<LocalSessionDependencies, "documentClie
   }
 }
 
-interface SegmentInput {
+interface UpdateInput {
   caller: LocalCaller;
   session: AgentSessionRecord;
   device: { deviceId: string; label: string };
@@ -305,14 +299,16 @@ interface SegmentInput {
   local: Item | undefined;
   rev: number;
   count: number;
-  done: number;
-  todo: ReadonlyArray<{ at: string; role: "person" | "agent"; text: string }>;
-  all: number;
+  turns: ReadonlyArray<{ at: string; role: "person" | "agent"; text: string }>;
 }
 
-/** Writes the turns in segments, the last with the status and the request's item. `"again"` when the `LOCAL` item moved under it (the caller reads it again). */
-async function writeSegments(deps: LocalSessionDependencies, s: SegmentInput): Promise<LocalUpdateReply | "again"> {
-  const { session, caller, input } = s;
+/**
+ * Writes one update as ONE transaction (at most `LOCAL_UPDATE_TURNS_MAX` turns, so with their events it stays under DynamoDB's 100 items): the device's `lastSeenAt` (conditional on it
+ * still being this person's and live), the session check, the `LOCAL` state, every turn and its event, the request's item and, for an end, the removal of the device's entry. All or
+ * nothing. `"again"` when the `LOCAL` item moved under it (the caller reads it again).
+ */
+async function writeUpdate(deps: LocalSessionDependencies, u: UpdateInput): Promise<LocalUpdateReply | "again"> {
+  const { session, caller, input } = u;
   const { orgId, developerId } = caller;
   const nowMs = deps.now();
   const now = isoOf(nowMs);
@@ -320,94 +316,65 @@ async function writeSegments(deps: LocalSessionDependencies, s: SegmentInput): P
   const owner = session.owner.name;
   const toolWords = session.subject.kind === "local" ? LOCAL_TOOL_WORDS[session.subject.tool] : "The agent";
   const speaker = (role: "person" | "agent") => (role === "person" ? owner : toolWords);
-  const segments: Array<typeof s.todo> = [];
-  for (let at = 0; at < s.todo.length; at += TURNS_PER_TRANSACTION) segments.push(s.todo.slice(at, at + TURNS_PER_TRANSACTION));
-  if (segments.length === 0) segments.push([]);
-
-  let rev = s.rev;
-  let count = s.count;
-  let done = s.done;
-  let current = s.local;
-  for (const [index, segment] of segments.entries()) {
-    const last = index === segments.length - 1;
-    const items: TransactItem[] = [];
-    // 0: the device (the last segment also moves its `lastSeenAt`); 1: the session; 2: the `LOCAL` item.
-    items.push(last
-      ? {
-        Update: {
-          TableName: deps.tableName, Key: deviceKey(orgId, s.device.deviceId), UpdateExpression: "SET lastSeenAt = :at",
-          ConditionExpression: "attribute_exists(pk) AND orgId = :org AND developerId = :developer AND attribute_not_exists(revokedAt)",
-          ExpressionAttributeValues: { ":at": now, ":org": orgId, ":developer": developerId },
-        },
-      }
-      : deviceStillTheirs(deps, orgId, s.device.deviceId, developerId));
-    items.push(sessionStillTheirs(deps, session, s.device.deviceId, developerId));
-    const ended = last && isEndedStatus(input.status);
-    const nextCount = count + segment.length;
-    const nextDone = done + segment.length;
-    const base = { ...agentSessionKey(orgId, session.sessionId, "LOCAL"), entityType: "AGENT_SESSION_LOCAL", orgId, sessionId: session.sessionId, deviceId: s.device.deviceId, costUsd: 0, turnCount: nextCount, rev: rev + 1, [INDEX_EXPIRY_ATTRIBUTE]: expires };
-    const document: Item = last
-      ? {
-        ...base, status: input.status, updatedAt: now,
-        ...(input.step === undefined ? {} : { step: input.step }), ...(input.peek === undefined ? {} : { peek: input.peek }),
-        ...(input.status === "failed" ? { lastRunFailed: true } : {}), ...(input.tokens === undefined ? {} : { tokens: input.tokens }), ...(ended ? { endedAt: now } : {}),
-      }
-      : { ...(current ?? { status: "running", updatedAt: now }), ...base, partial: { requestId: input.requestId, done: nextDone } };
-    // Keep what the item held and the base replaces only where it must (a non-last segment changes the count and the revision, not what the Mac said).
-    items.push({
+  const ended = isEndedStatus(input.status);
+  const document: Item = {
+    ...agentSessionKey(orgId, session.sessionId, "LOCAL"), entityType: "AGENT_SESSION_LOCAL", orgId, sessionId: session.sessionId, deviceId: u.device.deviceId, costUsd: 0,
+    turnCount: u.count + u.turns.length, rev: u.rev + 1, [INDEX_EXPIRY_ATTRIBUTE]: expires, status: input.status, updatedAt: now,
+    ...(input.step === undefined ? {} : { step: input.step }), ...(input.peek === undefined ? {} : { peek: input.peek }),
+    ...(input.status === "failed" ? { lastRunFailed: true } : {}), ...(input.tokens === undefined ? {} : { tokens: input.tokens }), ...(ended ? { endedAt: now } : {}),
+  };
+  // 0: the device; 1: the session; 2: the `LOCAL` item (conditional on the revision read).
+  const items: TransactItem[] = [
+    {
+      Update: {
+        TableName: deps.tableName, Key: deviceKey(orgId, u.device.deviceId), UpdateExpression: "SET lastSeenAt = :at",
+        ConditionExpression: "attribute_exists(pk) AND orgId = :org AND developerId = :developer AND attribute_not_exists(revokedAt)",
+        ExpressionAttributeValues: { ":at": now, ":org": orgId, ":developer": developerId },
+      },
+    },
+    sessionStillTheirs(deps, session, u.device.deviceId, developerId),
+    {
       Put: {
         TableName: deps.tableName, Item: document,
-        ...(current === undefined ? { ConditionExpression: NOT_EXISTS } : { ConditionExpression: "#rev = :rev", ExpressionAttributeNames: { "#rev": "rev" }, ExpressionAttributeValues: { ":rev": rev } }),
+        ...(u.local === undefined ? { ConditionExpression: NOT_EXISTS } : { ConditionExpression: "#rev = :rev", ExpressionAttributeNames: { "#rev": "rev" }, ExpressionAttributeValues: { ":rev": u.rev } }),
+      },
+    },
+  ];
+  u.turns.forEach((turn, offset) => {
+    const seq = u.count + offset + 1;
+    const text = turnText(turn.text);
+    items.push({
+      Put: {
+        TableName: deps.tableName, ConditionExpression: NOT_EXISTS,
+        Item: {
+          ...agentSessionKey(orgId, session.sessionId, sessionTurnSk(seq)), entityType: "AGENT_SESSION_LOCAL_TURN", orgId, sessionId: session.sessionId, seq, at: isoOf(Math.min(Date.parse(turn.at), nowMs)), role: turn.role, text,
+          [INDEX_EXPIRY_ATTRIBUTE]: expires,
+        },
       },
     });
-    segment.forEach((turn, offset) => {
-      const seq = count + offset + 1;
-      const globalOffset = done + offset;
-      const at = isoOf(nowMs + globalOffset);
-      const text = turnText(turn.text);
-      items.push({
-        Put: {
-          TableName: deps.tableName, ConditionExpression: NOT_EXISTS,
-          Item: {
-            ...agentSessionKey(orgId, session.sessionId, sessionTurnSk(seq)), entityType: "AGENT_SESSION_LOCAL_TURN", orgId, sessionId: session.sessionId, seq, at: isoOf(Math.min(Date.parse(turn.at), nowMs)), role: turn.role, text,
-            [INDEX_EXPIRY_ATTRIBUTE]: expires,
-          },
-        },
-      });
-      items.push(sessionEventItem(deps, session, {
-        eventId: sessionEventId("local_turn", `${session.sessionId}:${String(seq)}`), at, type: "local_turn",
-        actor: turn.role === "person" ? { kind: "member", developerId: session.owner.developerId, name: owner } : { kind: "agent" }, source: "mac", text: turnEventText(speaker(turn.role), text),
-      }));
-    });
-    // An end takes the device's entry for the session away, with the end.
-    if (ended) items.push({ Delete: { TableName: deps.tableName, Key: deviceSessionKey(orgId, s.device.deviceId, session.sessionId) } });
-    const reply: LocalUpdateReply = { sessionId: session.sessionId, status: input.status, accepted: s.all };
-    try {
-      if (last) {
-        await commit(deps, items, (failed) => refusalOf(failed), s.mark, reply);
-      } else {
-        await transact(deps, items, (failed) => refusalOf(failed));
-      }
-    } catch (error) {
-      if (isTransactionConflict(error)) return "again";
-      if ((error as { code?: string }).code === "IDEMPOTENCY_CONFLICT") {
-        // The same request committed while this ran: its answer is this one's.
-        const won = await earlierUpdate(deps, s.mark);
-        if (won !== undefined) return won;
-        return "again";
-      }
-      const failed = failedIndexes(error);
-      if (failed !== undefined && failed.size > 0 && !failed.has(0) && !failed.has(1)) return "again"; // the LOCAL item moved, or a turn is already there: read it again
-      if (failed !== undefined && failed.has(1)) await sessionGone(deps, session, s.device.deviceId, developerId);
-      throw error;
+    // Events are ordered by time, then id: a millisecond apart keeps the turns in the order they were said.
+    items.push(sessionEventItem(deps, session, {
+      eventId: sessionEventId("local_turn", `${session.sessionId}:${String(seq)}`), at: isoOf(nowMs + offset), type: "local_turn",
+      actor: turn.role === "person" ? { kind: "member", developerId: session.owner.developerId, name: owner } : { kind: "agent" }, source: "mac", text: turnEventText(speaker(turn.role), text),
+    }));
+  });
+  // An end takes the device's entry for the session away, with the end.
+  if (ended) items.push({ Delete: { TableName: deps.tableName, Key: deviceSessionKey(orgId, u.device.deviceId, session.sessionId) } });
+  const reply: LocalUpdateReply = { sessionId: session.sessionId, status: input.status, accepted: u.turns.length };
+  try {
+    await commit(deps, items, (failed) => refusalOf(failed), u.mark, reply);
+  } catch (error) {
+    if (isTransactionConflict(error)) return "again";
+    if ((error as { code?: string }).code === "IDEMPOTENCY_CONFLICT") {
+      // The same request committed while this ran: its answer is this one's.
+      return (await earlierUpdate(deps, u.mark)) ?? "again";
     }
-    rev += 1;
-    count = nextCount;
-    done = nextDone;
-    current = document;
-    if (last) return reply;
+    const failed = failedIndexes(error);
+    if (failed !== undefined && failed.size > 0 && !failed.has(0) && !failed.has(1)) return "again"; // the LOCAL item moved, or a turn is already there: read it again
+    if (failed !== undefined && failed.has(1)) await sessionGone(deps, session, u.device.deviceId, developerId);
+    throw error;
   }
-  return "again";
+  return reply;
 }
 
 /** What a refused segment means when it is the device or the session that failed its check. */
