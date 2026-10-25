@@ -6,6 +6,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENTX_NAME_PATTERN,
   LOCAL_AGENTS_CONFLICT_MESSAGE,
+  LOCAL_AGENTS_NEED_PROJECT_MESSAGE,
   LOCAL_TOOLS,
   LocalAgentPolicySchema,
   PutLocalAgentsBodySchema,
@@ -49,13 +50,15 @@ export async function readLocalAgentPolicy(deps: DeviceDependencies, orgId: OrgI
 
 /**
  * Refuses a tool, or a project, the company hasn't allowed: `LOCAL_AGENT_NOT_ALLOWED` with the tool's text (also while local agents are off altogether) or the
- * project's. The tool is checked first; no project (a session with no project) is not held to the project list. A tool the product doesn't know, or a project that
+ * project's. The tool is checked first; a session with no project passes only a rule that doesn't list projects (`"all"`). A tool the product doesn't know, or a project that
  * isn't a name, is refused as `CONFIG_INVALID` without repeating it.
  */
 export function checkLocalAgentAllowed(policy: LocalAgentPolicy, tool: string, project?: string): void {
   if (!(LOCAL_TOOLS as readonly string[]).includes(tool)) throw agentXError("CONFIG_INVALID", "tool: is not a tool Rovara knows");
   if (project !== undefined && !AGENTX_NAME_PATTERN.test(project)) throw agentXError("CONFIG_INVALID", "project: is not a valid project name");
   if (!policy.allowed || !policy.tools.includes(tool as (typeof LOCAL_TOOLS)[number])) throw agentXError("LOCAL_AGENT_NOT_ALLOWED", localToolNotAllowedMessage(tool));
+  // A rule that lists projects (even none) holds a session with no project too.
+  if (project === undefined && policy.projects !== "all") throw agentXError("LOCAL_AGENT_NOT_ALLOWED", LOCAL_AGENTS_NEED_PROJECT_MESSAGE);
   if (project !== undefined && policy.projects !== "all" && !policy.projects.includes(project)) throw agentXError("LOCAL_AGENT_NOT_ALLOWED", localAgentsNotAllowedOnProjectMessage(project));
 }
 

@@ -48,7 +48,7 @@ export const DEVICES_LIMIT_MESSAGE = `You can register up to ${String(DEVICES_PE
 
 const unique = (values: readonly string[]) => new Set(values).size === values.length;
 
-/** The company's rule: whether local agents are allowed at all, which tools, and on which projects (`"all"`, or a list; an empty list allows none). */
+/** The company's rule: whether local agents are allowed at all, which tools, and on which projects (`"all"`, or a list; an empty list allows none, and a session with no project is held to a list too). */
 export const LocalAgentPolicySchema = z
   .object({
     allowed: z.boolean(),
@@ -84,3 +84,6 @@ export interface StoredLocalAgentPolicy {
 
 /** AGENT_REVISION_CONFLICT, for the rule. */
 export const LOCAL_AGENTS_CONFLICT_MESSAGE = "Someone else changed your company's rules for local agents. Reload them and make your change again.";
+
+/** LOCAL_AGENT_NOT_ALLOWED, third text: the rule lists projects and the session has none. */
+export const LOCAL_AGENTS_NEED_PROJECT_MESSAGE = "Local agents need a project your company allows. Ask an admin to allow them.";

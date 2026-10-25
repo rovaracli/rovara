@@ -9,6 +9,7 @@ import {
   DEVICES_PER_MEMBER_MAX,
   DeviceIdSchema,
   DeviceRecordSchema,
+  DeviceViewSchema,
   INDEX_EXPIRY_ATTRIBUTE,
   RegisterDeviceBodySchema,
   agentRequestKey,
@@ -35,12 +36,14 @@ export interface DeviceCaller {
   orgRole: OrgRole;
 }
 
-/** How many list rows are read for one member. A member never has more than `DEVICES_PER_MEMBER_MAX` live ones; stale rows are deleted on removal. */
+/** How many list rows are read in one page, and how many pages at most. A removed device's row stays (marked `revokedAt`) for a year, so a member can have many rows and few live devices. */
 export const DEVICE_ROWS_READ_MAX = 50;
+export const DEVICE_ROW_PAGES_MAX = 20;
 /** How long a removed device's record is kept (the member lifecycle uses the same). */
 export const REVOKED_DEVICE_KEEP_DAYS = 365;
 const DAY_SECONDS = 86_400;
 const REMOVE_TRIES = 3;
+const TAKE_BACK_TRIES = 3;
 
 const isAdmin = (role: OrgRole) => role === "owner" || role === "admin";
 const secondsOf = (ms: number) => Math.floor(ms / 1000);
@@ -80,22 +83,32 @@ function parseDevice(deps: DeviceDependencies, item: Item | undefined, orgId: Or
   return parsed.data;
 }
 
-/** The member's live devices (this org's, theirs, well formed, not revoked), oldest first. `complete` is false when there are more list rows than were read. */
+/**
+ * The member's live devices (this org's, theirs, well formed, not revoked), oldest first, read through every page of the member's list rows (up to `DEVICE_ROW_PAGES_MAX`).
+ * A row marked `revokedAt` is skipped without reading its record; any other row is only a pointer, and the record decides. `complete` is false when the pages ran out first.
+ */
 async function readLiveDevices(deps: DeviceDependencies, orgId: OrgId, developerId: string): Promise<{ devices: DeviceRecord[]; complete: boolean }> {
-  const page = await deps.documentClient.send(new QueryCommand({
-    TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": memberDevicesKey(orgId, developerId, "dvc_00000000000000000000").pk },
-    Limit: DEVICE_ROWS_READ_MAX, ConsistentRead: true,
-  })) as { Items?: Item[]; LastEvaluatedKey?: unknown };
-  const ids: string[] = [];
-  for (const row of page.Items ?? []) {
-    const id = DeviceIdSchema.safeParse(row["sk"]);
-    if (id.success && row["orgId"] === orgId && row["developerId"] === developerId) ids.push(id.data);
-    else log(deps, { event: "devices.row_unreadable", orgId });
+  const devices: DeviceRecord[] = [];
+  let start: Record<string, unknown> | undefined;
+  let complete = false;
+  for (let pageNumber = 0; pageNumber < DEVICE_ROW_PAGES_MAX; pageNumber += 1) {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": memberDevicesKey(orgId, developerId, "dvc_00000000000000000000").pk },
+      Limit: DEVICE_ROWS_READ_MAX, ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    const ids: string[] = [];
+    for (const row of page.Items ?? []) {
+      const id = DeviceIdSchema.safeParse(row["sk"]);
+      if (!id.success || row["orgId"] !== orgId || row["developerId"] !== developerId) log(deps, { event: "devices.row_unreadable", orgId });
+      else if (row["revokedAt"] === undefined) ids.push(id.data);
+    }
+    const records = await Promise.all(ids.map((id) => readDevice(deps, orgId, id)));
+    for (const record of records) if (record !== undefined && record.developerId === developerId && record.revokedAt === undefined) devices.push(record);
+    start = page.LastEvaluatedKey;
+    if (start === undefined) { complete = true; break; }
   }
-  const records = await Promise.all(ids.map((id) => readDevice(deps, orgId, id)));
-  const devices = records.filter((record): record is DeviceRecord => record !== undefined && record.developerId === developerId && record.revokedAt === undefined);
   devices.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.deviceId.localeCompare(b.deviceId));
-  return { devices, complete: page.LastEvaluatedKey === undefined };
+  return { devices, complete };
 }
 
 /** `GET /v1/app/devices`: the caller's own live devices. */
@@ -112,7 +125,24 @@ async function earlierAnswer(deps: DeviceDependencies, mark: RequestMark): Promi
   const earlier = await readRequest(deps, mark.orgId, mark.developerId, mark.requestId);
   if (earlier === undefined) return undefined;
   if (earlier.fingerprint !== mark.fingerprint) throw agentXError("CONFIG_INVALID", "requestId: this request ID was already used for a different request");
-  return earlier.result as DeviceView;
+  const view = DeviceViewSchema.safeParse(earlier.result);
+  if (!view.success) throw notFound();
+  return view.data;
+}
+
+/**
+ * A repeat of a registration answers its device only while that device is still the caller's and live: after it was removed the repeat is `NOT_FOUND`, so a client never
+ * takes a removed Mac for a live one. A repeat that finds the member over the limit (an earlier take-back failed) finishes the take-back and is refused.
+ */
+async function answerRepeat(deps: DeviceDependencies, caller: DeviceCaller, mark: RequestMark, view: DeviceView): Promise<DeviceView> {
+  const record = await readDevice(deps, caller.orgId, view.deviceId);
+  if (record === undefined || record.developerId !== caller.developerId || record.revokedAt !== undefined) throw notFound();
+  const live = await readLiveDevices(deps, caller.orgId, caller.developerId);
+  if (!live.complete || live.devices.length > DEVICES_PER_MEMBER_MAX) {
+    await takeBack(deps, record, mark);
+    throw agentXError("CONFIG_INVALID", DEVICES_LIMIT_MESSAGE);
+  }
+  return view;
 }
 
 /**
@@ -126,7 +156,7 @@ export async function registerDevice(deps: DeviceDependencies, caller: DeviceCal
   const { orgId, developerId } = caller;
   const mark: RequestMark = { orgId, developerId, requestId: input.requestId, fingerprint: sha256({ route: "device_register", label: input.label, platform: input.platform }) };
   const replay = await earlierAnswer(deps, mark);
-  if (replay !== undefined) return replay;
+  if (replay !== undefined) return answerRepeat(deps, caller, mark, replay);
 
   const before = await readLiveDevices(deps, orgId, developerId);
   if (!before.complete || before.devices.length >= DEVICES_PER_MEMBER_MAX) throw agentXError("CONFIG_INVALID", DEVICES_LIMIT_MESSAGE);
@@ -145,7 +175,7 @@ export async function registerDevice(deps: DeviceDependencies, caller: DeviceCal
     // Lost to the same request running at the same time: its answer is this one's.
     if (error instanceof Error && (error as { code?: string }).code === "IDEMPOTENCY_CONFLICT") {
       const won = await earlierAnswer(deps, mark);
-      if (won !== undefined) return won;
+      if (won !== undefined) return answerRepeat(deps, caller, mark, won);
     }
     throw error;
   }
@@ -158,19 +188,26 @@ export async function registerDevice(deps: DeviceDependencies, caller: DeviceCal
   return view;
 }
 
-/** Deletes a device registered a moment ago and its request item, as if it never was. A failure is logged: the device then stays, and the member can remove it. */
+/**
+ * Deletes a device registered a moment ago and its request item, as if it never was, trying `TAKE_BACK_TRIES` times. If it can't, the registration fails closed with a
+ * retryable error (the repeat of the same request finishes the take-back, see `answerRepeat`), so the member is never told they have an eleventh device.
+ */
 async function takeBack(deps: DeviceDependencies, record: DeviceRecord, mark: RequestMark): Promise<void> {
-  try {
-    await deps.documentClient.send(new TransactWriteCommand({
-      TransactItems: [
-        { Delete: { TableName: deps.tableName, Key: deviceKey(record.orgId, record.deviceId) } },
-        { Delete: { TableName: deps.tableName, Key: memberDevicesKey(record.orgId, record.developerId, record.deviceId) } },
-        { Delete: { TableName: deps.tableName, Key: agentRequestKey(mark.orgId, mark.developerId, mark.requestId) } },
-      ],
-    }));
-  } catch (error) {
-    log(deps, { event: "devices.take_back_failed", orgId: record.orgId, error: errorName(error) ?? "unknown" });
+  for (let attempt = 0; attempt < TAKE_BACK_TRIES; attempt += 1) {
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          { Delete: { TableName: deps.tableName, Key: deviceKey(record.orgId, record.deviceId) } },
+          { Delete: { TableName: deps.tableName, Key: memberDevicesKey(record.orgId, record.developerId, record.deviceId) } },
+          { Delete: { TableName: deps.tableName, Key: agentRequestKey(mark.orgId, mark.developerId, mark.requestId) } },
+        ],
+      }));
+      return;
+    } catch (error) {
+      log(deps, { event: "devices.take_back_failed", orgId: record.orgId, error: errorName(error) ?? "unknown" });
+    }
   }
+  throw agentXError("RUNTIME_UNAVAILABLE", "Couldn't finish registering that device. Try again.");
 }
 
 // ---- removing
@@ -189,6 +226,7 @@ export async function revokeDevice(deps: DeviceDependencies, caller: DeviceCalle
     if (record.revokedAt !== undefined) return record;
     const nowMs = deps.now();
     const at = isoOf(nowMs);
+    const expires = secondsOf(nowMs) + REVOKED_DEVICE_KEEP_DAYS * DAY_SECONDS;
     try {
       await deps.documentClient.send(new TransactWriteCommand({
         TransactItems: [
@@ -197,10 +235,19 @@ export async function revokeDevice(deps: DeviceDependencies, caller: DeviceCalle
               TableName: deps.tableName, Key: deviceKey(caller.orgId, id.data), UpdateExpression: "SET revokedAt = :at, #expires = :expires",
               ConditionExpression: "attribute_exists(pk) AND orgId = :org AND developerId = :developer AND attribute_not_exists(revokedAt)",
               ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE },
-              ExpressionAttributeValues: { ":at": at, ":expires": secondsOf(nowMs) + REVOKED_DEVICE_KEEP_DAYS * DAY_SECONDS, ":org": caller.orgId, ":developer": record.developerId },
+              ExpressionAttributeValues: { ":at": at, ":expires": expires, ":org": caller.orgId, ":developer": record.developerId },
             },
           },
-          { Delete: { TableName: deps.tableName, Key: memberDevicesKey(caller.orgId, record.developerId, id.data) } },
+          // The member's list row stays, marked, so the member lifecycle (org close) still finds this device; it goes with the record.
+          {
+            Put: {
+              TableName: deps.tableName,
+              Item: {
+                ...memberDevicesKey(caller.orgId, record.developerId, id.data), entityType: "MEMBER_DEVICE", orgId: caller.orgId, developerId: record.developerId, deviceId: id.data,
+                createdAt: record.createdAt, revokedAt: at, [INDEX_EXPIRY_ATTRIBUTE]: expires,
+              },
+            },
+          },
         ],
       }));
       return { ...record, revokedAt: at };
