@@ -120,7 +120,7 @@ function sessionsWorld(capture: CaptureKind = "capturing") {
 }
 type SessionsWorld = ReturnType<typeof sessionsWorld>;
 
-const isPending = (entry: Entry): boolean => String(entry.Put?.Item?.pk ?? "").startsWith("AUDIT_PENDING#");
+const isPending = (entry: Entry): boolean => { const pk = entry.Put?.Item?.pk; return typeof pk === "string" && pk.startsWith("AUDIT_PENDING#"); };
 const pendingEvents = (entries: Entry[]): AuditEventInput[] => entries.filter(isPending).map((entry) => (entry.Put!.Item as unknown as { event: AuditEventInput }).event);
 /** The transaction that holds an item the test names: the audit item must be in this very one. */
 const transactionWith = (w: SessionsWorld, has: (entry: Entry) => boolean): Entry[] => {
@@ -128,7 +128,7 @@ const transactionWith = (w: SessionsWorld, has: (entry: Entry) => boolean): Entr
   expect(found).toHaveLength(1);
   return found[0]!;
 };
-const putsSk = (prefix: string) => (entry: Entry) => String(entry.Put?.Item?.sk ?? "").startsWith(prefix);
+const putsSk = (prefix: string) => (entry: Entry) => { const sk = entry.Put?.Item?.sk; return typeof sk === "string" && sk.startsWith(prefix); };
 
 describe("the catalog", () => {
   it("lists the three new actions with their facts, and the session target kind", () => {
