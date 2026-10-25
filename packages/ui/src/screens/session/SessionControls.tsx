@@ -1,0 +1,37 @@
+import { useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { SessionIdSchema } from "@agentx/contracts/web";
+import { useAppHost } from "../../host.js";
+import { createSessionActions } from "../../api/session-actions.js";
+import { createSessionApi, acceptSessionRead } from "../../api/sessions.js";
+import { ApiError } from "../../api/errors.js";
+import type { SendResult } from "../../api/client.js";
+import type { ReadSession } from "./SessionHeader.js";
+import { ConfirmInBrowser } from "../../confirm/ConfirmInBrowser.js";
+import { Button } from "../../design/Button.js";
+import { Dialog } from "../../design/Dialog.js";
+import { VisibleText } from "../../design/VisibleText.js";
+export function SessionControls({ id, agent, actions, following, onChanged }: { id: string; agent: string; actions: readonly string[]; following: boolean; onChanged: () => Promise<unknown> }) {
+ const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionActions(host), [host]), sessions = useMemo(() => createSessionApi(host), [host]);
+ const [busy, setBusy] = useState(false), [stopOpen, setStopOpen] = useState(false), [error, setError] = useState<string>(), [message, setMessage] = useState<string>();
+ const [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>(), sending = useRef(false), key = ["session", id];
+ const ownerRead = useQuery({ queryKey: key, enabled: pending !== undefined, queryFn: async () => acceptSessionRead(query.getQueryData<ReadSession>(key), await sessions.read(id)) });
+ async function run(action: "watch" | "stop" | "retry" | "take_over") {
+  if (!actions.includes(action) || sending.current || pending !== undefined) return;
+  sending.current = true;setBusy(true);setError(undefined);setMessage(undefined);
+  try {
+   if (action === "watch") {
+    const result = await (following ? api.unfollow(id) : api.follow(id));if (result.kind !== "done") throw new ApiError(409, "PENDING", "Following hasn't changed. Refresh to check its status.");
+   } else {
+    const result = await (action === "stop" ? api.stop(id) : action === "retry" ? api.retry(id) : api.takeOver(id));
+    if (result.kind !== "done") { if (action === "take_over") { setPending(result);return; }throw new ApiError(409, "PENDING", "This action is waiting for confirmation. Open the session to continue."); }
+    if (action === "retry") { await onChanged();host.navigate("/s/" + SessionIdSchema.parse(result.value.session.sessionId));return; }
+    if (action === "stop") { setStopOpen(false);setMessage("Stop requested."); }
+   }
+   await query.invalidateQueries({ queryKey: key });await onChanged();
+  } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't change this session. Try again."); }
+  finally { sending.current = false;setBusy(false); }
+ }
+ const disabled = busy || pending !== undefined;
+ return <div className="rv-session-controls"><div className="rv-actions">{actions.includes("watch") && <Button disabled={disabled} onClick={() => { void run("watch"); }}>{following ? "Following" : "Follow"}</Button>}{actions.includes("take_over") && <Button disabled={disabled} onClick={() => { void run("take_over"); }}>Take over</Button>}{actions.includes("retry") && <Button disabled={disabled} onClick={() => { void run("retry"); }}>Retry</Button>}{actions.includes("stop") && <Dialog title="Stop this session?" description={agent + " stops after its current step."} open={stopOpen} onOpenChange={value => { if (!busy) setStopOpen(value); }} trigger={<Button disabled={disabled}>Stop</Button>}><div className="rv-actions"><Button disabled={busy} onClick={() => setStopOpen(false)}>Keep running</Button><Button variant="danger" busy={busy} onClick={() => { void run("stop"); }}>Stop session</Button></div>{error && <p role="alert"><VisibleText text={error} /></p>}</Dialog>}</div>{error && !stopOpen && <p role="alert"><VisibleText text={error} /></p>}{message && <p role="status"><VisibleText text={message} /></p>}{pending && (ownerRead.isError ? <p role="alert"><VisibleText text={ownerRead.error instanceof ApiError ? ownerRead.error.message : "Couldn't check ownership. Refresh this page."} /></p> : <ConfirmInBrowser<ReadSession> result={pending} subjectKey={key} isApplied={view => view.you.owner} onApplied={() => { setPending(undefined);setMessage("You now own this session.");void onChanged(); }} />)}</div>;
+}

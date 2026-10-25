@@ -1,4 +1,4 @@
-import { NAV_REFETCH_MIN_INTERVAL_MS } from "../constants.js";
+import { LIVE_REFETCH_DEBOUNCE_MS, NAV_REFETCH_MIN_INTERVAL_MS } from "../constants.js";
 import type { QueryClient } from "@tanstack/react-query";
 import type { RealtimeNotice } from "@agentx/contracts/web";
 export function queryKeysFor(notice: RealtimeNotice): unknown[][] {
@@ -10,13 +10,18 @@ export function queryKeysFor(notice: RealtimeNotice): unknown[][] {
  }
 }
 export function createNoticeInvalidator(query: QueryClient) {
- let last = -Infinity;
+ let last = -Infinity, stopped = false;
+ let liveTimer: ReturnType<typeof setTimeout> | undefined;
  return {
  notice(notice: RealtimeNotice) {
- for (const queryKey of queryKeysFor(notice)) void query.invalidateQueries({ queryKey });
+ if (stopped) return;
+ for (const queryKey of queryKeysFor(notice)) {
+ if (queryKey[0] === "live") { if (liveTimer === undefined) liveTimer = setTimeout(() => { liveTimer = undefined;void query.invalidateQueries({ queryKey: ["live"] }); }, LIVE_REFETCH_DEBOUNCE_MS); }
+ else void query.invalidateQueries({ queryKey });
+ }
  if ((notice.type === "session.updated" || notice.type === "home.changed") && Date.now() - last >= NAV_REFETCH_MIN_INTERVAL_MS) { last = Date.now();void query.invalidateQueries({ queryKey: ["nav"] }); }
  },
- reset() { void query.invalidateQueries(); },
- stop() { last = Infinity; },
+ reset() { if (stopped) return;clearTimeout(liveTimer);liveTimer = undefined;void query.invalidateQueries(); },
+ stop() { stopped = true;last = Infinity;clearTimeout(liveTimer);liveTimer = undefined; },
  };
 }
