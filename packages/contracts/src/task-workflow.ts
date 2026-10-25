@@ -1301,6 +1301,9 @@ export const WorkflowSnapshotViewSchema = WorkflowSnapshotShapeSchema;
 export const WorkflowSnapshotReaderShape = {
   ...Object.fromEntries(Object.entries(WorkflowSnapshotShapeSchema.shape).map(([key, field]) => [key, readerOf(field as z.ZodType)])),
   definitionVersion: z.string().min(1).max(32),
+  // `readerOf` hands a field with a default, or a literal, back unchanged, so a value a newer server added would fail the whole read: these two read it as "unknown".
+  definitionId: z.string().transform((value): "agentx-task-to-pr" | "unknown" => (value === "agentx-task-to-pr" ? value : "unknown")),
+  path: z.string().optional().transform((value): WorkflowPath | "unknown" => (value === undefined ? "QUICK" : (WorkflowPathSchema.options as readonly string[]).includes(value) ? value as WorkflowPath : "unknown")),
 };
 export type WorkflowSnapshotReader = ForwardReader<Omit<z.output<typeof WorkflowSnapshotShapeSchema>, "definitionVersion"> & { definitionVersion: string }>;
 export const WorkflowSnapshotReaderSchema = z.looseObject(WorkflowSnapshotReaderShape) as unknown as z.ZodType<WorkflowSnapshotReader>;

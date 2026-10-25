@@ -37,8 +37,20 @@ export function taskViewForClient(view: DeveloperTaskView, headers: Headers): De
 
 /** A route's answer with its `task` (if it has one) projected for the client; any other answer is returned as it is. */
 export function taskResponseForClient<T>(answer: T, headers: Headers): T {
-  if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return answer;
+  if (readsTaskViewVersion2(headers) || answer === null || typeof answer !== "object" || Array.isArray(answer)) return answer;
   const task = (answer as { task?: unknown }).task;
   if (task === null || typeof task !== "object" || (task as { workflow?: unknown }).workflow === undefined) return answer;
   return { ...answer, task: taskViewForClient(task as DeveloperTaskView, headers) };
+}
+
+/** A session route's answer (`{ session }`) with the task of a task session's body projected for the client; a chain or local body, and any other answer, is returned as it is. */
+export function sessionResponseForClient<T>(answer: T, headers: Headers): T {
+  if (readsTaskViewVersion2(headers) || answer === null || typeof answer !== "object" || Array.isArray(answer)) return answer;
+  const session = (answer as { session?: unknown }).session;
+  if (session === null || typeof session !== "object") return answer;
+  const body = (session as { body?: unknown }).body;
+  if (body === null || typeof body !== "object" || (body as { kind?: unknown }).kind !== "task") return answer;
+  const task = (body as { task?: unknown }).task;
+  if (task === null || typeof task !== "object" || (task as { workflow?: unknown }).workflow === undefined) return answer;
+  return { ...answer, session: { ...session, body: { ...body, task: taskViewForClient(task as DeveloperTaskView, headers) } } };
 }

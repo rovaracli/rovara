@@ -217,6 +217,13 @@ async function forWorker(
   if (invocation.kind === "task" && invocation.payload.workflowMode === "CHECKS" && !features.includes("task.workflowChecks")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "verification retry requires a compatible worker that runs checks without code-editing tools");
   }
+  // Rovara Code v2's Understand and plan-critic runs: a worker that does not list the feature would fail the mode at its own parse, so the mode is never sent to it.
+  if (invocation.kind === "task" && invocation.payload.workflowMode === "UNDERSTAND" && !features.includes("task.workflowUnderstand")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  if (invocation.kind === "task" && invocation.payload.workflowMode === "PLAN_CRITIQUE" && !features.includes("task.workflowPlanCritique")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
   if (carriesFeedbackReview && !features.includes("task.workflowFeedbackReview")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "PR feedback critic requires a compatible worker");
   }

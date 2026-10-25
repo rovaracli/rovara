@@ -2,7 +2,6 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
 import {
   CODE_REVIEWERS_MAX,
   CodeMilestoneSchema,
@@ -319,6 +318,9 @@ describe("keys", () => {
   });
 });
 
+/** The part of Ajv this test uses (the package is CommonJS and exports the class itself). */
+type AjvClass = new (options: object) => { compile(schema: object): ((value: unknown) => boolean) & { errors?: unknown } };
+
 describe("a task read by an older client (Finding 13)", () => {
   const view = (workflow: Record<string, unknown>) => ({
     taskId, title: "Add a retry flag", project: "payments", status: "RUNNING", startingRevision: 1, client: "Claude Code", shared: false,
@@ -330,8 +332,8 @@ describe("a task read by an older client (Finding 13)", () => {
   // target: "draft-7" })` and frozen in tests/fixtures. It is the whole view, so a later task that adds a field to any strict object of it fails here until
   // `taskViewForClient` projects it away.
   const legacySchema = JSON.parse(readFileSync("tests/fixtures/pre-plan6-task-response.schema.json", "utf8")) as object;
-  const validateLegacy = new (createRequire(import.meta.url)("ajv") as typeof import("ajv").default)({ strict: false, validateFormats: false }).compile(legacySchema);
-  const LegacyResponse = { safeParse: (value: unknown) => ({ success: validateLegacy(value) as boolean, errors: validateLegacy.errors }) };
+  const validateLegacy = new (createRequire(import.meta.url)("ajv") as AjvClass)({ strict: false, validateFormats: false }).compile(legacySchema);
+  const LegacyResponse = { safeParse: (value: unknown) => ({ success: validateLegacy(value), errors: validateLegacy.errors }) };
   const pullRequest = { repositoryId: "payments", number: 7, url: "https://github.com/acme/payments/pull/7", candidateDigest: "d".repeat(64), required: true, state: "OPEN", syncedFrom: "e".repeat(40) };
 
   const understanding = () => view(v2({ stage: "UNDERSTAND", state: "WAITING", intent, fixRounds: { ci: 0, conflict: 0, feedbackAuto: 0 }, fixSource: "ci", pullRequests: [pullRequest] }));

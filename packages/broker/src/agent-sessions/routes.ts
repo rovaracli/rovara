@@ -1,5 +1,6 @@
 // The session routes (Plan 5 Task 5): `/v1/app/sessions*` for the app, CLI and MCP, and `/s/<sessionId>` for a person's browser. Each maps to a function
 // that checks the caller's level first; the reads are in read.ts and the shares in shares.ts. A session the caller can't view is `NOT_FOUND` everywhere.
+import { sessionResponseForClient, taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { LIVE_PAGE_MAX, SessionIdSchema, STATUS_WORDS, agentXError, type AgentSessionRecord, type OrgId, type OrgRole, type SessionId } from "@agentx/contracts";
 import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
 import { listApprovalsFor, mayDecideApproval, shownText } from "../agents/approvals.js";
@@ -251,11 +252,11 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   if (shares === undefined && rawSeq === undefined) {
     if (method !== "GET") throw notFound();
-    return { session: await sessionView(read, caller, sessionId) };
+    return sessionResponseForClient({ session: await sessionView(read, caller, sessionId) }, request.headers);
   }
   if (rawSeq !== undefined) {
     if (method !== "GET") throw notFound();
-    return sessionStepTask(read, caller, sessionId, Number(rawSeq));
+    return taskResponseForClient(await sessionStepTask(read, caller, sessionId, Number(rawSeq)), request.headers);
   }
   if (rawKey === undefined) {
     if (method === "GET") return listSessionShares(read, caller, sessionId);

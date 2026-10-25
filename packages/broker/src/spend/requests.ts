@@ -4,6 +4,7 @@
 // is read live (`spendApprovers`, R68), never from the stored list, which is kept for the lists and the movers. Deciding goes only through the confirmation
 // page (Task 21a's `requireDecideSession`, R66); an approval changes the limit in the same transaction that ends the request, and then the task goes on where
 // it stopped (`SpendRequestHost.resumeTask`, which is `resumeTaskAfterSpendApproval` in developer-tasks.ts).
+import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -2257,7 +2258,8 @@ export async function routeSpendRequests(deps: SpendRequestDependencies, caller:
   if (continued !== null) {
     if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
     if (deps.spendRequests?.continueAsTask === undefined) throw agentXError("NOT_FOUND", "that isn't available yet");
-    return deps.spendRequests.continueAsTask(caller, taskIdOfPath(continued[1]!), jsonBody(request));
+    // Rovara Code (Plan 6): a client that does not send `x-agentx-task-view: 2` reads a version 1 projection of the task.
+    return taskResponseForClient(await deps.spendRequests.continueAsTask(caller, taskIdOfPath(continued[1]!), jsonBody(request)), request.headers);
   }
   const asked = RUN_LIMIT_REQUEST_PATH.exec(url.pathname);
   if (asked !== null) {

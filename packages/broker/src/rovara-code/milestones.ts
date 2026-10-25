@@ -45,7 +45,7 @@ export interface CodeMilestoneHandler {
 
 const handlers: CodeMilestoneHandler[] = [];
 
-/** Registers a handler for every milestone. Handlers are told in the order registered. Returns the function that removes it again (tests use it; a deployment registers once at start-up). */
+/** Registers a handler for every milestone. Register at module start, in the same Lambda that runs the sweep: a milestone written while no handler is registered is marked delivered and a handler registered later never hears it. Handlers are told in the order registered. Returns the function that removes it again (tests use it; a deployment registers once at start-up). */
 export function registerCodeMilestoneHandler(handler: CodeMilestoneHandler): () => void {
   if (!/^[a-z][a-z0-9_]{0,30}$/u.test(handler.name)) throw new Error("a milestone handler's name is lowercase letters, digits and underscores");
   if (handlers.some((existing) => existing.name === handler.name)) throw new Error("a milestone handler with this name is already registered");
@@ -66,11 +66,15 @@ const dueKey = (time: number): string => String(Math.max(0, Math.trunc(time))).p
 
 /**
  * The items that record the `n`th milestone of its kind: a Put that only succeeds when absent, and, when the milestone names a session, one line on that session's
- * timeline (the same line again on a repeat). Add them to the transaction of the change that caused the milestone. With `options.definitionVersion`, a
- * milestone that version does not get gives no items.
+ * timeline (the same line again on a repeat). Add them to the transaction of the change that caused the milestone. A milestone before the pull request needs
+ * `options.definitionVersion` (it throws without), and one that version does not get gives no items.
  */
 export function codeMilestoneItems(table: Pick<TableInput, "tableName">, milestone: CodeMilestone, n: number, options: { definitionVersion?: string } = {}): TransactItem[] {
   const clean = CodeMilestoneSchema.parse(milestone);
+  // Fail closed: a milestone before the pull request is written only for a 1.1.0 task, so a caller that does not say which version the task is does not get to guess.
+  if (options.definitionVersion === undefined && CODE_MILESTONES_BEFORE_PR.includes(clean.kind)) {
+    throw new Error(`a ${clean.kind} milestone needs the task's definition version`);
+  }
   if (options.definitionVersion !== undefined && !codeMilestoneWrittenFor(clean.kind, options.definitionVersion)) return [];
   const key = codeMilestoneKey(clean.taskId, clean.kind, n);
   const at = Date.parse(clean.at);

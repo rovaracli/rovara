@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { arch, hostname } from "node:os";
 import { isDeepStrictEqual } from "node:util";
-import { ProjectDefinitionSchema, type ProjectDefinition } from "@agentx/contracts";
+import { ProjectDefinitionSchema, TASK_VIEW_HEADER, TASK_VIEW_VERSION, type ProjectDefinition } from "@agentx/contracts";
 import { developerAccessToken } from "../developer/session.js";
 import { GitHub } from "./github.js";
 import { createRegisteredEnrollment, createRegisteredPendingEnrollment, PublicationJoinRequestSchema, type PublicationJoinTransport } from "./enrollment.js";
@@ -36,7 +36,8 @@ export function createDeveloperPublicationJoinTransport(input: { home: string; e
       const { session, baseUrl } = await sessionFor(projectName, expectedAuthorityNamespace);
       if (!/^[0-9a-f-]{36}$/iu.test(taskRef)) throw new Error("task selector is invalid");
       const response = await input.fetch(`${baseUrl}/v1/dev/tasks/${encodeURIComponent(taskRef)}`, {
-        method: "GET", headers: { authorization: `Bearer ${session.accessToken}` },
+        // Ask for the full task view: a task at a step the older view hides (Understand, the plan critic) must read as it is, or as unknown, never as another step.
+        method: "GET", headers: { authorization: `Bearer ${session.accessToken}`, [TASK_VIEW_HEADER]: TASK_VIEW_VERSION },
       });
       if (!response.ok) throw new Error(`native task read refused with HTTP ${response.status}`);
       const text = await response.text();

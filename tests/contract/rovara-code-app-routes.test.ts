@@ -12,7 +12,7 @@ import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
 import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
 import { sessionResponseForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
-import { ARJUN, CELL, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
+import { CELL, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
 
 const now = "2026-10-24T12:00:00.000Z";
 const understanding = (taskId: string, project = "web") => ({
@@ -63,7 +63,6 @@ describe("the session routes", () => {
   it("serves a chain step's task the same way", async () => {
     const { w, get } = world();
     const chain = w.seedSession({ kind: "chain" });
-    w.grant?.(ORG_A, "web", ARJUN, "contributor");
     const path = `/v1/app/sessions/${chain.sessionId}/sections/1/task`;
     const plain = await get(PRIYA, chain.sessionId, path) as { task: unknown };
     expect(stageOf(plain.task)).toBe("PLAN");
@@ -101,7 +100,7 @@ describe("the CLI's native task reader", () => {
     }) as typeof fetch;
     const transport = createDeveloperPublicationJoinTransport({ home, env: "dev", tokenStore, fetch: fetchStub });
     const taskRef = randomUUID();
-    await transport.loadTask(taskRef, `${baseUrl}/env/dev/project/payments`, "payments");
+    await transport.loadTask?.(taskRef, `${baseUrl}/env/dev/project/payments`, "payments");
     const read = seen.find((headers) => headers.authorization === "Bearer synthetic-cli-session");
     expect(read).toMatchObject({ "x-agentx-task-view": "2" });
   });

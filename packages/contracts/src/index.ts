@@ -99,6 +99,7 @@ export * from "./egress.js";
 export * from "./refusal-words.js";
 export * from "./chains.js";
 export * from "./forward-reader.js";
+export * from "./forward-reader-unknown.js";
 export * from "./chain-session.js";
 export * from "./trigger-specs.js";
 export * from "./triggers.js";

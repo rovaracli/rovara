@@ -184,7 +184,7 @@ describe("delivering milestones", () => {
   it("hears milestones in order and leaves another task's alone", async () => {
     const heard = handler("slack");
     const otherTask = "11111111-1111-4111-8111-111111111111";
-    await commit(codeMilestoneItems(table, milestone({ kind: "plan_ready" }), 1));
+    await commit(codeMilestoneItems(table, milestone({ kind: "plan_ready" }), 1, { definitionVersion: "1.1.0" }));
     await commit(codeMilestoneItems(table, milestone({ kind: "pr_ready" }), 1));
     await commit(codeMilestoneItems(table, milestone({ taskId: otherTask }), 1));
     await deliverCodeMilestones(deps(), taskId);

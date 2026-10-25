@@ -11,6 +11,7 @@ import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
 import { sharedNoticeKey, slackThreadSubject, type SlackThread } from "./slack.js";
+import { readsAsUnknown } from "./forward-reader-unknown.js";
 import { WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotReaderShape, WorkflowSnapshotViewSchema, type WorkflowSnapshotReader } from "./task-workflow.js";
 import { WorkflowPathSchema } from "./task-workflow.js";
 import { E2ESharedViewSchema } from "./e2e-view.js";
@@ -381,21 +382,14 @@ export const DeveloperTaskClientViewSchema = DeveloperTaskViewSchema.extend({
     workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   }).optional(),
 }) as unknown as z.ZodType<DeveloperTaskClientView>;
-/** Whether a value read through the tolerant reader holds the word the reader gives a value it does not know, anywhere in it. */
-function readsAsUnknown(value: unknown): boolean {
-  if (value === "unknown") return true;
-  if (Array.isArray(value)) return value.some(readsAsUnknown);
-  return typeof value === "object" && value !== null && Object.values(value).some(readsAsUnknown);
-}
-
 /**
  * The task as the strict view, or undefined when the control plane named a stage, outcome or other value this build does not know (a newer server), which the
  * reader gave as "unknown". The reader differs from the strict view only by those markers and by keeping fields it does not know, so a task with no marker
- * is the strict view. Code that decides what to do from a stage reads the task through this, and tells the person when it is undefined. A value that really
- * is the word "unknown" reads as not known too, which only shows the task in its degraded form.
+ * is the strict view. Code that decides what to do from a stage reads the task through this, and tells the person when it is undefined. Only the places the
+ * reader can write the marker count (`readsAsUnknown` walks the strict schema), so free text that is the word "unknown" does not.
  */
 export function knownTaskView(view: DeveloperTaskClientView): DeveloperTaskView | undefined {
-  return readsAsUnknown(view.workflow) ? undefined : (view as DeveloperTaskView);
+  return readsAsUnknown(DeveloperTaskViewSchema.shape.workflow, view.workflow) ? undefined : (view as DeveloperTaskView);
 }
 export const DeveloperTaskResponseSchema = z.object({ task: DeveloperTaskClientViewSchema });
 export const DeveloperCloseResponseSchema = z.object({
