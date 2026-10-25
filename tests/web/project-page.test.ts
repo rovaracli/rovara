@@ -74,3 +74,8 @@ it("hides project data and controls after a non-404 permission refusal too", asy
 it("does not invent a per-merge cost before any pull request merged this month", async () => {
  const value = projectFixture();value.budget = { month: "2026-10", spentUsd: 812, limitUsd: 2000, mergedPullRequests: 0 };const f = setup(value);await screen.findByText("No merged pull requests yet this month");expect(screen.queryByText("$3.90")).toBeNull();f.close();
 });
+it("starts through the canonical runs API with a fresh default request id for each new intent", async () => {
+ const f = fakeHost(async () => ({ status: 202, body: { task: taskFixture({ sessionId: id }) } })), api = createRunApi(f.host);
+ const result = await api.startWork("agt_aaaaaaaaaaaaaaaaaaaa", { project: "payments", text: "Investigate refunds" });await api.startWork("agt_aaaaaaaaaaaaaaaaaaaa", { project: "payments", text: "Investigate refunds" });expect(result.kind).toBe("done");
+ const writes = f.request.mock.calls.map(([request]) => request.body as { requestId: string });expect(writes.every(body => /^[0-9a-f-]{36}$/u.test(body.requestId))).toBe(true);expect(new Set(writes.map(body => body.requestId)).size).toBe(2);expect(f.request.mock.calls.every(([request]) => request.path === "/v1/app/agents/agt_aaaaaaaaaaaaaaaaaaaa/runs")).toBe(true);
+});
