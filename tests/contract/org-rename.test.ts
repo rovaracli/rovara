@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { orgMetaKey, type OrgRole } from "@agentx/contracts";
 import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
+import { RenameOrganizationBodySchema } from "../../packages/contracts/src/onboarding.js";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { TEST_ORG } from "../support/orgs.js";
 async function setup(role: OrgRole = "owner") {
  const audit = capturingAuditDeps(), h = await createDeveloperTaskBroker({ audit });
@@ -23,7 +25,9 @@ describe("organization rename", () => {
  });
  it.each(["admin", "member"] as const)("refuses %s", async role => {
   const h = await setup(role);
+  const before=h.db.commandNames().length;
   expect((await h.rename({ requestId: randomUUID(), name: "Acme" })).status).toBe(403);
+  expect(h.db.commandNames().slice(before)).not.toContain("TransactWriteCommand");
   expect(h.db.get(orgMetaKey(TEST_ORG))).toMatchObject({ nameIsDefault: true });
  });
  it.each(["x".repeat(81), "   ", "\u200b"])("refuses an invalid company name", async name => {
@@ -32,3 +36,7 @@ describe("organization rename", () => {
   expect(h.audit.recorded()).toHaveLength(0);
  });
 });
+
+it("checks the owner's live membership inside the rename transaction",async()=>{const h=await setup("admin"),store=new OrgStore({documentClient:h.db,tableName:"state",now:Date.now});await expect(store.renameOrg({orgId:TEST_ORG,developerId:MAYA.developerId,requestId:randomUUID(),name:"Acme"})).rejects.toMatchObject({code:"FORBIDDEN"});});
+it("retains rename audit evidence when the intake queue is unavailable",async()=>{const h=await setup();h.audit.queueDown();expect((await h.rename({requestId:randomUUID(),name:"Acme"})).status).toBe(200);expect(h.audit.pending()).toHaveLength(1);expect(h.audit.pending()[0]).toMatchObject({action:"org.renamed",target:{kind:"org",id:TEST_ORG}});});
+it("pins canonical company-name bounds and cleaning",()=>{for(const name of ["x".repeat(81),"   ","\u200b"])expect(RenameOrganizationBodySchema.safeParse({requestId:randomUUID(),name}).success).toBe(false);expect(RenameOrganizationBodySchema.parse({requestId:randomUUID(),name:" Acme\nLabs "}).name).toBe("Acme Labs");});
