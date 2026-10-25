@@ -1,0 +1,658 @@
+// What happens to sessions when a member leaves or merges into another, and when the company closes (Plan 5 Task 21).
+//
+// A member REMOVED: their follows, their presence and the shares made with them go (each with its index row; a follow is counted off the session), and their devices are revoked
+// (Task 18 ends the sessions of a revoked device). NOTHING passes to the successor: a session they started keeps them as its owner, and a task session they own follows ruling
+// R60 through `effectiveTaskOwner` (the next dispatch finds the owner is no longer a member and ends the task). A member MERGED into another: their follows, shares, the sessions
+// they own (the session record, its live tile, its "mine" row, and the task's current owner with the task-list row of a taker) and their devices become the survivor's.
+//
+// Both run as members of Plan 3's member lifecycle (`registerMemberMover`): the removal's marker and the merge's marker stay until every mover has finished, a mover that runs out of
+// the time its caller gave it (`checkTime`) leaves the marker for the settlement run's drain, and every step can be repeated: a step looks at what is there now and writes
+// conditionally on it. Every key is built from the org the marker names, and only keys of the person are read or written.
+//
+// An org CLOSED: `clearOrgSessions` deletes the org's live index and presence, its open and ended work entries, its devices and its change feeds, and gives everything else of the
+// sessions an expiry 30 days on (vision 11b). An expiry is only ever shortened, so a repeat never pushes one out.
+import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  AGENTX_NAME_PATTERN,
+  DeviceIdSchema,
+  INDEX_EXPIRY_ATTRIBUTE,
+  LIVE_INDEX_SCAN_MAX,
+  OrgIdSchema,
+  SessionIdSchema,
+  SlackUserIdSchema,
+  agentSessionKey,
+  agentXError,
+  changesKey,
+  cleanSessionName,
+  deviceKey,
+  livePresenceKey,
+  liveSessionKey,
+  memberDevicesKey,
+  mySessionsKey,
+  openAgentSessionKey,
+  orgPk,
+  orgProjectCatalogPk,
+  projectMonthStatsKey,
+  projectSessionsKey,
+  sessionSurfaceKey,
+  sharedSessionsKey,
+  type AgentPrincipal,
+  type OrgId,
+  type SessionBinding,
+  type SessionLevel,
+} from "@agentx/contracts";
+import { checkTime, registerMemberMover } from "../agents/lifecycle.js";
+import { errorName, failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
+import type { DeveloperSignInStore } from "../developer/store.js";
+import { UNNAMED_MEMBER, effectiveTaskOwner, ownerFenceOf, taskIndexKey, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { removeFollower } from "./followers.js";
+import { batchGetItems, keyText } from "./live.js";
+import { ENDED_DRAIN_CURSOR_KEY } from "./summary.js";
+
+/** What these steps need of the broker. `deadline` is the time `checkTime` stops the steps at, between two items. */
+export interface SessionLifecycleDeps {
+  documentClient: { send(command: unknown): Promise<unknown> };
+  tableName: string;
+  now: () => number;
+  /** Where a survivor's name is read (a merge). */
+  signInStore?: Pick<DeveloperSignInStore, "getDeveloper">;
+  deadline?: number;
+  log?: (event: string, fields: Record<string, unknown>) => void;
+}
+
+const MEMBER_ID = /^[a-f0-9]{64}$/;
+const PAGE = 100;
+/** The most pages one person's rows are read in a run: more than this is finished by the next run (what was handled is gone from the partition by then). */
+const PAGES_MAX = 50;
+const DAY_SECONDS = 86_400;
+/** How long a closed org's session data stays before the table's TTL deletes it (vision 11b). */
+const CLOSED_ORG_KEEP_DAYS = 30;
+/** How long a revoked device's record stays: as long as the sessions that name it. */
+const REVOKED_DEVICE_KEEP_DAYS = 365;
+const CONFLICT_RETRIES = 3;
+/** How much of one run a close may take before it stops and asks to be run again. */
+const CLOSE_BUDGET_MS = 15_000;
+/** The most days of ended-session work entries looked at for an org (the drain keeps well inside this). */
+const ENDED_DAYS_MAX = 400;
+const LEVEL_RANK: Record<SessionLevel, number> = { view: 1, use: 2, edit: 3 };
+const SHARE_PREFIX = "SHARE#";
+const FOLLOWER_PREFIX = "FOLLOWER#";
+const BINDING_PREFIX = "BINDING#";
+
+const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
+const unavailable = (message: string) => agentXError("RUNTIME_UNAVAILABLE", message);
+const log = (deps: Pick<SessionLifecycleDeps, "log">, event: string, fields: Record<string, unknown>): void =>
+  (deps.log ?? ((name, detail) => console.log(JSON.stringify({ component: "broker", event: name, ...detail }))))(event, fields);
+const isoOf = (ms: number) => new Date(ms).toISOString();
+const text = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Refuses what is not an org id or a member id, before anything is read: the keys below are built from these. */
+function requireIds(orgId: string, ...developerIds: string[]): OrgId {
+  const org = OrgIdSchema.safeParse(orgId);
+  if (!org.success) throw invalid("orgId: is not an organization id");
+  for (const id of developerIds) if (!MEMBER_ID.test(id)) throw invalid("developerId: is not a member id");
+  return org.data;
+}
+
+// ---- reading
+
+async function getItem(deps: SessionLifecycleDeps, key: { pk: string; sk: string }): Promise<Item | undefined> {
+  return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
+}
+
+/**
+ * Reads the items of one partition a page at a time and hands each page to `visit`, stopping between pages when the caller's time has run out. `maxPages` bounds a run that deletes
+ * or moves what it reads (it goes on from the start next time, the handled rows being gone); without it only the deadline bounds the read.
+ */
+async function eachPage(deps: SessionLifecycleDeps, query: { pk: string; prefix?: string }, visit: (items: Item[]) => Promise<void>, maxPages?: number): Promise<void> {
+  let start: Record<string, unknown> | undefined;
+  let pages = 0;
+  do {
+    checkTime(deps);
+    if (maxPages !== undefined && pages >= maxPages) throw unavailable("There is more to move than one run does; the next run goes on.");
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, ConsistentRead: true, Limit: PAGE,
+      KeyConditionExpression: query.prefix === undefined ? "pk = :pk" : "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: { ":pk": query.pk, ...(query.prefix === undefined ? {} : { ":prefix": query.prefix }) },
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    await visit(page.Items ?? []);
+    start = page.LastEvaluatedKey;
+    pages += 1;
+  } while (start !== undefined);
+}
+
+/** One transaction; a lost race on the items (conditions or other transactions) answers false so the caller reads again, any other fault is thrown. */
+async function transact(deps: SessionLifecycleDeps, items: TransactItem[]): Promise<boolean> {
+  try {
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    return true;
+  } catch (error) {
+    if (failedIndexes(error) === undefined) throw error;
+    return false;
+  }
+}
+
+const sessionIdOf = (row: Item, orgId: OrgId): string | undefined => {
+  const sessionId = SessionIdSchema.safeParse(row["sessionId"]);
+  return row["orgId"] === orgId && sessionId.success && row["sk"] === sessionId.data ? sessionId.data : undefined;
+};
+
+/** The sessions the org lists as live (open, or ended in the last day), at most what the Live wall reads. */
+async function liveSessionIds(deps: SessionLifecycleDeps, orgId: OrgId): Promise<string[]> {
+  const ids: string[] = [];
+  let capped = false;
+  try {
+    await eachPage(deps, { pk: liveSessionKey(orgId, "ses_00000000000000000000").pk }, async (items) => {
+      for (const item of items) if (typeof item["sk"] === "string") ids.push(item["sk"]);
+      if (ids.length >= LIVE_INDEX_SCAN_MAX) throw new Error("capped");
+    });
+  } catch (error) {
+    if (!(error instanceof Error && error.message === "capped")) throw error;
+    capped = true;
+  }
+  if (capped) log(deps, "agent_session.lifecycle_live_scan_capped", { orgId, max: LIVE_INDEX_SCAN_MAX });
+  return ids.slice(0, LIVE_INDEX_SCAN_MAX);
+}
+
+// ---- a member is removed
+
+/**
+ * Takes a removed member out of the sessions of the org: the shares made with them (the item on the session and its index row, together), their follows (counted off the
+ * session) and presence on every session they had a share on or that is live, and their devices (revoked). Nothing passes to anyone. Repeatable.
+ */
+export async function onSessionMemberRemoved(deps: SessionLifecycleDeps, removal: { orgId: string; developerId: string }): Promise<void> {
+  const orgId = requireIds(removal.orgId, removal.developerId);
+  const { developerId } = removal;
+  const principal: AgentPrincipal = { kind: "member", developerId };
+  const touched = new Set<string>();
+  await eachPage(deps, { pk: sharedSessionsKey(orgId, principal, "ses_00000000000000000000").pk }, async (rows) => {
+    for (const row of rows) {
+      checkTime(deps);
+      const sessionId = sessionIdOf(row, orgId);
+      if (sessionId === undefined) {
+        // Not a row this partition writes: it is the person's own partition, so it goes with them.
+        log(deps, "agent_session.lifecycle_share_row_unreadable", { orgId });
+        await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: String(row["pk"]), sk: String(row["sk"]) } }));
+        continue;
+      }
+      touched.add(sessionId);
+      // Both go or neither: an index row with no share (or the reverse) would list a session to someone who cannot open it, or open one nobody lists.
+      await deps.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          { Delete: { TableName: deps.tableName, Key: agentSessionKey(orgId, sessionId, `${SHARE_PREFIX}MEMBER#${developerId}`) } },
+          { Delete: { TableName: deps.tableName, Key: sharedSessionsKey(orgId, principal, sessionId) } },
+        ],
+      }));
+    }
+  }, PAGES_MAX);
+  for (const sessionId of await liveSessionIds(deps, orgId)) touched.add(sessionId);
+  await dropFollowsAndPresence(deps, orgId, developerId, [...touched]);
+  await revokeDevices(deps, orgId, developerId);
+}
+
+/** Deletes the person's follow (with the count) and presence items on these sessions. A follow another request removed first is gone, which is what is wanted. */
+async function dropFollowsAndPresence(deps: SessionLifecycleDeps, orgId: OrgId, developerId: string, sessionIds: readonly string[]): Promise<void> {
+  const keys = sessionIds.flatMap((sessionId) => [
+    agentSessionKey(orgId, sessionId, `${FOLLOWER_PREFIX}${developerId}`), agentSessionKey(orgId, sessionId, `PRESENCE#${developerId}`), livePresenceKey(orgId, sessionId, developerId),
+  ]);
+  const found = await batchGetItems(deps, keys);
+  for (const sessionId of sessionIds) {
+    checkTime(deps);
+    if (found.has(keyText(agentSessionKey(orgId, sessionId, `${FOLLOWER_PREFIX}${developerId}`)))) await removeFollower(deps, { orgId, sessionId }, developerId);
+    for (const key of [agentSessionKey(orgId, sessionId, `PRESENCE#${developerId}`), livePresenceKey(orgId, sessionId, developerId)]) {
+      if (found.has(keyText(key))) await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
+    }
+  }
+}
+
+/** Marks each of the person's devices revoked (Task 17's `revokedAt`), once, and lets the record go a year later. Task 18 ends the open sessions of a revoked device. */
+async function revokeDevices(deps: SessionLifecycleDeps, orgId: OrgId, developerId: string): Promise<void> {
+  const at = isoOf(deps.now());
+  const expires = Math.floor(deps.now() / 1000) + REVOKED_DEVICE_KEEP_DAYS * DAY_SECONDS;
+  await eachPage(deps, { pk: memberDevicesKey(orgId, developerId, "dvc_00000000000000000000").pk }, async (rows) => {
+    for (const row of rows) {
+      checkTime(deps);
+      const deviceId = DeviceIdSchema.safeParse(row["sk"]);
+      if (!deviceId.success || row["orgId"] !== orgId) continue;
+      try {
+        await deps.documentClient.send(new UpdateCommand({
+          TableName: deps.tableName, Key: deviceKey(orgId, deviceId.data), UpdateExpression: "SET revokedAt = :at, #expires = :expires",
+          ConditionExpression: "attribute_exists(pk) AND orgId = :org AND developerId = :developer AND attribute_not_exists(revokedAt)",
+          ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":at": at, ":expires": expires, ":org": orgId, ":developer": developerId },
+        }));
+      } catch (error) {
+        // Already revoked, gone, or no longer theirs: nothing to do.
+        if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      }
+    }
+  }, PAGES_MAX);
+}
+
+// ---- two members are merged
+
+interface Survivor { developerId: string; name: string; provider: string; slackUserId?: string }
+
+async function survivorOf(deps: SessionLifecycleDeps, developerId: string): Promise<Survivor> {
+  const record = deps.signInStore === undefined ? undefined : await deps.signInStore.getDeveloper(developerId);
+  if (record === undefined) throw agentXError("NOT_FOUND", "the member the sessions move to could not be found");
+  return {
+    developerId, name: cleanSessionName(record.displayName) ?? UNNAMED_MEMBER, provider: record.provider,
+    ...(record.slackUserId !== undefined && SlackUserIdSchema.safeParse(record.slackUserId).success ? { slackUserId: record.slackUserId } : {}),
+  };
+}
+
+/**
+ * Makes a merged duplicate's sessions the survivor's, in this order (each step repeatable, and a run that stopped is finished by the next): the sessions they own, then the shares
+ * made with them, their follows, and their devices. Nothing is read or written outside the org the marker names.
+ */
+export async function onSessionMembersMerged(deps: SessionLifecycleDeps, merge: { orgId: string; survivorId: string; duplicateId: string }): Promise<void> {
+  const orgId = requireIds(merge.orgId, merge.survivorId, merge.duplicateId);
+  const { survivorId, duplicateId } = merge;
+  if (survivorId === duplicateId) throw invalid("a member cannot be merged into itself");
+  const survivor = await survivorOf(deps, survivorId);
+  await moveOwnedSessions(deps, orgId, duplicateId, survivor);
+  const touched = new Set<string>();
+  await moveShares(deps, orgId, duplicateId, survivor, touched);
+  for (const sessionId of await liveSessionIds(deps, orgId)) touched.add(sessionId);
+  await moveFollows(deps, orgId, duplicateId, survivorId, [...touched]);
+  await moveDevices(deps, orgId, duplicateId, survivorId);
+}
+
+/** The duplicate's "mine" rows: each session's owner, its live tile, its row and (for a task) the task's current owner and the taker's task-list row, in one transaction on what was read. */
+async function moveOwnedSessions(deps: SessionLifecycleDeps, orgId: OrgId, duplicateId: string, survivor: Survivor): Promise<void> {
+  await eachPage(deps, { pk: mySessionsKey(orgId, duplicateId, "2026-01-01T00:00:00.000Z", "ses_00000000000000000000").pk }, async (rows) => {
+    for (const row of rows) {
+      checkTime(deps);
+      const sessionId = sessionIdOf({ ...row, sk: String(row["sk"]).split("#").slice(1).join("#") }, orgId);
+      if (sessionId === undefined || typeof row["createdAt"] !== "string") {
+        log(deps, "agent_session.lifecycle_mine_row_unreadable", { orgId });
+        continue;
+      }
+      await moveOwnedSession(deps, orgId, duplicateId, survivor, sessionId, row);
+    }
+  }, PAGES_MAX);
+}
+
+async function moveOwnedSession(deps: SessionLifecycleDeps, orgId: OrgId, duplicateId: string, survivor: Survivor, sessionId: string, row: Item): Promise<void> {
+  const metaKey = agentSessionKey(orgId, sessionId, "META");
+  const rowKey = { pk: String(row["pk"]), sk: String(row["sk"]) };
+  const createdAt = String(row["createdAt"]);
+  for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
+    const meta = await getItem(deps, metaKey);
+    const owner = isRecord(meta?.["owner"]) ? meta["owner"] : undefined;
+    // Not theirs any more (a take-over, or an earlier run moved it): only the stale row is left to go.
+    if (meta === undefined || meta["orgId"] !== orgId || owner?.["developerId"] !== duplicateId || typeof meta["revision"] !== "number") {
+      await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: rowKey }));
+      return;
+    }
+    const revision = meta["revision"];
+    const at = isoOf(deps.now());
+    const newOwner = { developerId: survivor.developerId, name: survivor.name };
+    const items: TransactItem[] = [
+      {
+        Update: {
+          TableName: deps.tableName, Key: metaKey, UpdateExpression: "SET #owner = :owner, updatedAt = :at ADD #revision :one",
+          ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #owner.developerId = :duplicate AND #revision = :revision",
+          ExpressionAttributeNames: { "#owner": "owner", "#revision": "revision" },
+          ExpressionAttributeValues: { ":owner": newOwner, ":at": at, ":one": 1, ":org": orgId, ":duplicate": duplicateId, ":revision": revision },
+        },
+      },
+      { Delete: { TableName: deps.tableName, Key: rowKey } },
+      { Put: { TableName: deps.tableName, Item: { ...row, ...mySessionsKey(orgId, survivor.developerId, createdAt, sessionId), developerId: survivor.developerId } } },
+    ];
+    if (await getItem(deps, liveSessionKey(orgId, sessionId)) !== undefined) {
+      items.push({
+        Update: {
+          TableName: deps.tableName, Key: liveSessionKey(orgId, sessionId), UpdateExpression: "SET ownerId = :ownerId, #owner = :owner, #revision = :revision",
+          ConditionExpression: "attribute_exists(pk)", ExpressionAttributeNames: { "#owner": "owner", "#revision": "revision" },
+          ExpressionAttributeValues: { ":ownerId": survivor.developerId, ":owner": newOwner, ":revision": revision + 1 },
+        },
+      });
+    }
+    const subject = isRecord(meta["subject"]) ? meta["subject"] : undefined;
+    if (subject?.["kind"] === "task" && typeof subject["taskId"] === "string") items.push(...await taskItems(deps, orgId, subject["taskId"], duplicateId, survivor, at));
+    if (await transact(deps, items)) return;
+  }
+  throw unavailable("This session is busy right now; the next run moves it.");
+}
+
+/** The task's current owner, when the duplicate is it, and the taker's task-list row (a creator's row stays as history). */
+async function taskItems(deps: SessionLifecycleDeps, orgId: OrgId, taskId: string, duplicateId: string, survivor: Survivor, at: string): Promise<TransactItem[]> {
+  const found = await getItem(deps, taskKey(taskId));
+  if (found === undefined || found["orgId"] !== orgId || !isRecord(found["currentOwner"]) || found["currentOwner"]["developerId"] !== duplicateId) return [];
+  const task = found as unknown as DeveloperTaskRecord & Item;
+  const fence = ownerFenceOf(task);
+  const { slackUserId: _gone, ...kept } = task.currentOwner as unknown as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the duplicate's Slack link is not the survivor's
+  const currentOwner = { ...kept, developerId: survivor.developerId, name: survivor.name, provider: survivor.provider, ...(survivor.slackUserId === undefined ? {} : { slackUserId: survivor.slackUserId }) };
+  const items: TransactItem[] = [{
+    Update: {
+      TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET currentOwner = :currentOwner, updatedAt = :at",
+      ConditionExpression: `attribute_exists(pk) AND orgId = :org AND ${fence.expression}`, ExpressionAttributeNames: fence.names,
+      ExpressionAttributeValues: { ...fence.values, ":currentOwner": currentOwner, ":at": at, ":org": orgId },
+    },
+  }];
+  // The row of a task someone took over: it was copied for the taker, so it moves with them. The creator's own row is history and stays.
+  if (typeof task.createdAt === "string" && effectiveTaskOwner(task).developerId === duplicateId && task.developerId !== duplicateId) {
+    const row = await getItem(deps, taskIndexKey(duplicateId, task.createdAt, taskId));
+    if (row !== undefined) {
+      items.push({ Delete: { TableName: deps.tableName, Key: taskIndexKey(duplicateId, task.createdAt, taskId) } });
+      items.push({ Put: { TableName: deps.tableName, Item: { ...row, ...taskIndexKey(survivor.developerId, task.createdAt, taskId) } } });
+    }
+  }
+  return items;
+}
+
+/** Each share made with the duplicate becomes the survivor's at the higher of the two levels; on a session the survivor owns it is dropped (no one shares with themselves). */
+async function moveShares(deps: SessionLifecycleDeps, orgId: OrgId, duplicateId: string, survivor: Survivor, touched: Set<string>): Promise<void> {
+  const from: AgentPrincipal = { kind: "member", developerId: duplicateId };
+  const to: AgentPrincipal = { kind: "member", developerId: survivor.developerId };
+  await eachPage(deps, { pk: sharedSessionsKey(orgId, from, "ses_00000000000000000000").pk }, async (rows) => {
+    for (const row of rows) {
+      checkTime(deps);
+      const sessionId = sessionIdOf(row, orgId);
+      if (sessionId === undefined) {
+        log(deps, "agent_session.lifecycle_share_row_unreadable", { orgId });
+        await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: String(row["pk"]), sk: String(row["sk"]) } }));
+        continue;
+      }
+      touched.add(sessionId);
+      await moveShare(deps, orgId, sessionId, from, to);
+    }
+  }, PAGES_MAX);
+}
+
+async function moveShare(deps: SessionLifecycleDeps, orgId: OrgId, sessionId: string, from: Extract<AgentPrincipal, { kind: "member" }>, to: Extract<AgentPrincipal, { kind: "member" }>): Promise<void> {
+  const oldShare = agentSessionKey(orgId, sessionId, `${SHARE_PREFIX}MEMBER#${from.developerId}`);
+  const newShare = agentSessionKey(orgId, sessionId, `${SHARE_PREFIX}MEMBER#${to.developerId}`);
+  for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
+    const [dup, own, meta] = await Promise.all([getItem(deps, oldShare), getItem(deps, newShare), getItem(deps, agentSessionKey(orgId, sessionId, "META"))]);
+    const dupLevel = text(dup?.["level"]) as SessionLevel | undefined;
+    // The share is gone already (an earlier run moved it, or it was removed), or no longer reads: the index row alone is left to delete.
+    if (dup === undefined || dup["orgId"] !== orgId || dupLevel === undefined || LEVEL_RANK[dupLevel] === undefined) {
+      await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: sharedSessionsKey(orgId, from, sessionId) }));
+      return;
+    }
+    const survivorOwns = isRecord(meta?.["owner"]) && meta["owner"]["developerId"] === to.developerId;
+    // The share the duplicate had is still what was read when it goes (a share changed since is read again).
+    const dropped: TransactItem[] = [
+      { Delete: { TableName: deps.tableName, Key: oldShare, ConditionExpression: "attribute_exists(pk) AND #level = :dupLevel", ExpressionAttributeNames: { "#level": "level" }, ExpressionAttributeValues: { ":dupLevel": dupLevel } } },
+      { Delete: { TableName: deps.tableName, Key: sharedSessionsKey(orgId, from, sessionId) } },
+    ];
+    if (survivorOwns) {
+      if (await transact(deps, dropped)) return;
+      continue;
+    }
+    const ownLevel = text(own?.["level"]) as SessionLevel | undefined;
+    const level = ownLevel !== undefined && LEVEL_RANK[ownLevel] !== undefined && LEVEL_RANK[ownLevel] >= LEVEL_RANK[dupLevel] ? ownLevel : dupLevel;
+    const base = own !== undefined && ownLevel === level ? own : { ...dup, ...newShare, principal: to };
+    const index = await getItem(deps, sharedSessionsKey(orgId, to, sessionId));
+    const indexBase = index ?? { ...sharedSessionsKey(orgId, to, sessionId), entityType: "SHARED_SESSION", orgId, sessionId, sharedAt: dup["sharedAt"], ...(dup[INDEX_EXPIRY_ATTRIBUTE] === undefined ? {} : { [INDEX_EXPIRY_ATTRIBUTE]: dup[INDEX_EXPIRY_ATTRIBUTE] }) };
+    const items: TransactItem[] = [
+      // The survivor's own share is still as it was read (absent, or at the level it was).
+      own === undefined
+        ? { Put: { TableName: deps.tableName, Item: { ...base, level }, ConditionExpression: "attribute_not_exists(pk)" } }
+        : { Put: { TableName: deps.tableName, Item: { ...base, level }, ConditionExpression: "#level = :ownLevel", ExpressionAttributeNames: { "#level": "level" }, ExpressionAttributeValues: { ":ownLevel": ownLevel } } },
+      { Put: { TableName: deps.tableName, Item: { ...indexBase, principal: to, level } } },
+      ...dropped,
+    ];
+    if (await transact(deps, items)) return;
+  }
+  throw unavailable("This session is busy right now; the next run moves its share.");
+}
+
+/** The duplicate's follows on these sessions become the survivor's (the count stays); where the survivor follows already, or owns the session, the duplicate's goes and the count drops. */
+async function moveFollows(deps: SessionLifecycleDeps, orgId: OrgId, duplicateId: string, survivorId: string, sessionIds: readonly string[]): Promise<void> {
+  const keys = sessionIds.map((sessionId) => agentSessionKey(orgId, sessionId, `${FOLLOWER_PREFIX}${duplicateId}`));
+  const found = await batchGetItems(deps, keys);
+  for (const sessionId of sessionIds) {
+    checkTime(deps);
+    if (!found.has(keyText(agentSessionKey(orgId, sessionId, `${FOLLOWER_PREFIX}${duplicateId}`)))) continue;
+    await moveFollow(deps, orgId, sessionId, duplicateId, survivorId);
+  }
+}
+
+async function moveFollow(deps: SessionLifecycleDeps, orgId: OrgId, sessionId: string, duplicateId: string, survivorId: string): Promise<void> {
+  const oldKey = agentSessionKey(orgId, sessionId, `${FOLLOWER_PREFIX}${duplicateId}`);
+  const newKey = agentSessionKey(orgId, sessionId, `${FOLLOWER_PREFIX}${survivorId}`);
+  for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
+    const [dup, own, meta] = await Promise.all([getItem(deps, oldKey), getItem(deps, newKey), getItem(deps, agentSessionKey(orgId, sessionId, "META"))]);
+    if (dup === undefined) return;
+    // The session's owner follows without an item (Task 9): a follow of the survivor's own session is only dropped.
+    const survivorOwns = isRecord(meta?.["owner"]) && meta["owner"]["developerId"] === survivorId;
+    if (own !== undefined || survivorOwns || meta === undefined) {
+      await removeFollower(deps, { orgId, sessionId }, duplicateId);
+      return;
+    }
+    const moved = await transact(deps, [
+      { Delete: { TableName: deps.tableName, Key: oldKey, ConditionExpression: "attribute_exists(pk)" } },
+      { Put: { TableName: deps.tableName, Item: { ...dup, ...newKey, developerId: survivorId }, ConditionExpression: "attribute_not_exists(pk)" } },
+    ]);
+    if (moved) return;
+  }
+  throw unavailable("This session is busy right now; the next run moves its follower.");
+}
+
+/** The duplicate's devices become the survivor's: the record's owner and the member's list row. A device is kept whole, so the survivor may end up past the per-member limit; registering another is what the limit stops. */
+async function moveDevices(deps: SessionLifecycleDeps, orgId: OrgId, duplicateId: string, survivorId: string): Promise<void> {
+  await eachPage(deps, { pk: memberDevicesKey(orgId, duplicateId, "dvc_00000000000000000000").pk }, async (rows) => {
+    for (const row of rows) {
+      checkTime(deps);
+      const deviceId = DeviceIdSchema.safeParse(row["sk"]);
+      const rowKey = { pk: String(row["pk"]), sk: String(row["sk"]) };
+      if (!deviceId.success || row["orgId"] !== orgId) {
+        await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: rowKey }));
+        continue;
+      }
+      const record = await getItem(deps, deviceKey(orgId, deviceId.data));
+      if (record === undefined || record["orgId"] !== orgId || (record["developerId"] !== duplicateId && record["developerId"] !== survivorId)) {
+        await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: rowKey }));
+        continue;
+      }
+      const items: TransactItem[] = [
+        { Delete: { TableName: deps.tableName, Key: rowKey } },
+        { Put: { TableName: deps.tableName, Item: { ...row, ...memberDevicesKey(orgId, survivorId, deviceId.data), developerId: survivorId } } },
+        record["developerId"] === duplicateId
+          ? { Update: { TableName: deps.tableName, Key: deviceKey(orgId, deviceId.data), UpdateExpression: "SET developerId = :survivor", ConditionExpression: "attribute_exists(pk) AND developerId = :duplicate", ExpressionAttributeValues: { ":survivor": survivorId, ":duplicate": duplicateId } } }
+          : { ConditionCheck: { TableName: deps.tableName, Key: deviceKey(orgId, deviceId.data), ConditionExpression: "attribute_exists(pk) AND developerId = :survivor", ExpressionAttributeValues: { ":survivor": survivorId } } },
+      ];
+      if (!await transact(deps, items)) throw unavailable("A device changed while it was moved; the next run goes on.");
+    }
+  }, PAGES_MAX);
+}
+
+// ---- an org is closed
+
+/**
+ * Closes the org's session data. Order matters for a run that stops half-way: first every item that is not deleted gets its expiry (found through the live index, each project's
+ * sessions and the members' own lists, all still there), then the org's lists and per-person partitions are deleted, the live index last. An expiry is only shortened, so a repeat
+ * (at any later time) changes nothing it already did. Everything is found by keys built from `orgId`, and the global lists by the org's own prefix.
+ */
+export async function clearOrgSessions(deps: SessionLifecycleDeps, orgId: string): Promise<void> {
+  const org = requireIds(orgId);
+  const expires = Math.floor(deps.now() / 1000) + CLOSED_ORG_KEEP_DAYS * DAY_SECONDS;
+  const people = new Set<string>();
+  const sessions = new Set<string>(await liveSessionIds(deps, org));
+
+  // The members' own lists and the projects' lists name the sessions that ended long ago.
+  const memberIds: string[] = [];
+  await eachPage(deps, { pk: orgPk(org), prefix: "MEMBER#" }, async (items) => {
+    for (const item of items) if (typeof item["developerId"] === "string" && MEMBER_ID.test(item["developerId"])) memberIds.push(item["developerId"]);
+  });
+  for (const developerId of memberIds) {
+    people.add(developerId);
+    await stampPartition(deps, mySessionsKey(org, developerId, "2026-01-01T00:00:00.000Z", "ses_00000000000000000000").pk, undefined, expires, (item) => collect(item, org, sessions));
+  }
+  const projects: string[] = [];
+  await eachPage(deps, { pk: orgProjectCatalogPk(org), prefix: "PROJECT#" }, async (items) => {
+    for (const item of items) if (typeof item["sk"] === "string" && AGENTX_NAME_PATTERN.test(item["sk"].slice("PROJECT#".length))) projects.push(item["sk"].slice("PROJECT#".length));
+  });
+  for (const project of projects) {
+    await stampPartition(deps, projectSessionsKey(org, project, "2026-01-01T00:00:00.000Z", "ses_00000000000000000000").pk, undefined, expires, (item) => collect(item, org, sessions));
+    await stampPartition(deps, projectMonthStatsKey(org, project, "2026-01").pk, undefined, expires);
+  }
+  for (const sessionId of sessions) await stampSession(deps, org, sessionId, expires, people);
+
+  // What is deleted: the org's entries in the global lists, the live presence, each person's change feed and devices, and the live index last.
+  await deleteByPrefix(deps, openAgentSessionKey(org, "ses_00000000000000000000").pk, `${org}#`);
+  for (const day of await endedDays(deps)) await deleteByPrefix(deps, `ENDED_AGENT_SESSIONS#${day}`, `${org}#`);
+  await deleteWholePartition(deps, livePresenceKey(org, "ses_00000000000000000000", "0".repeat(64)).pk);
+  for (const developerId of people) {
+    await deleteWholePartition(deps, changesKey(org, developerId, "2026-01-01T00:00:00.000Z", 0).pk);
+    await deleteDevices(deps, org, developerId);
+  }
+  await deleteWholePartition(deps, liveSessionKey(org, "ses_00000000000000000000").pk);
+}
+
+/** A closing run: stops and says so after `budgetMs` (a retryable refusal), so the leave that called it can be run again to finish. */
+export async function closeOrgSessions(deps: Pick<SessionLifecycleDeps, "documentClient" | "tableName" | "now" | "log">, orgId: string, options: { budgetMs?: number } = {}): Promise<void> {
+  try {
+    await clearOrgSessions({ ...deps, deadline: deps.now() + (options.budgetMs ?? CLOSE_BUDGET_MS) }, orgId);
+  } catch (error) {
+    if (errorName(error) === "LifecycleDeadline") throw unavailable("Closing the company's sessions is taking a while. Leave again to finish.");
+    throw error;
+  }
+}
+
+/** Adds the sessions an item of a list names (its `sessionId`, when the item is this org's). */
+function collect(item: Item, orgId: OrgId, sessions: Set<string>): void {
+  const sessionId = SessionIdSchema.safeParse(item["sessionId"]);
+  if (item["orgId"] === orgId && sessionId.success) sessions.add(sessionId.data);
+}
+
+/** Gives an item that exists an expiry, only if it has none or a later one. */
+async function shorten(deps: SessionLifecycleDeps, key: { pk: string; sk: string }, expires: number): Promise<void> {
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: key, UpdateExpression: "SET #expires = :expires",
+      ConditionExpression: "attribute_exists(pk) AND (attribute_not_exists(#expires) OR #expires > :expires)",
+      ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":expires": expires },
+    }));
+  } catch (error) {
+    if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+  }
+}
+
+const needsExpiry = (item: Item, expires: number): boolean => typeof item[INDEX_EXPIRY_ATTRIBUTE] !== "number" || item[INDEX_EXPIRY_ATTRIBUTE] > expires;
+
+/** Gives every item of a partition the expiry (an item already past it is not written), and shows each to `also`. */
+async function stampPartition(deps: SessionLifecycleDeps, pk: string, prefix: string | undefined, expires: number, also?: (item: Item) => void): Promise<void> {
+  await eachPage(deps, { pk, ...(prefix === undefined ? {} : { prefix }) }, async (items) => {
+    for (const item of items) {
+      checkTime(deps);
+      also?.(item);
+      if (needsExpiry(item, expires)) await shorten(deps, { pk: String(item["pk"]), sk: String(item["sk"]) }, expires);
+    }
+  });
+}
+
+/** One session: every item of its partition, and the index items that name it (its owner's and starter's rows, its project's row, each share's and each binding's). */
+async function stampSession(deps: SessionLifecycleDeps, orgId: OrgId, sessionId: string, expires: number, people: Set<string>): Promise<void> {
+  const index: Array<{ pk: string; sk: string }> = [];
+  let meta: Item | undefined;
+  await stampPartition(deps, agentSessionKey(orgId, sessionId, "META").pk, undefined, expires, (item) => {
+    if (item["orgId"] !== orgId) return;
+    const sk = String(item["sk"]);
+    if (sk === "META") meta = item;
+    else if (sk.startsWith(SHARE_PREFIX) && isRecord(item["principal"])) {
+      const principal = item["principal"] as unknown as AgentPrincipal;
+      try { index.push(sharedSessionsKey(orgId, principal, sessionId)); } catch { /* a share that does not read has no index row to find */ }
+      if (principal.kind === "member" && MEMBER_ID.test(principal.developerId)) people.add(principal.developerId);
+    } else if (sk.startsWith(FOLLOWER_PREFIX) && MEMBER_ID.test(sk.slice(FOLLOWER_PREFIX.length))) people.add(sk.slice(FOLLOWER_PREFIX.length));
+    else if (sk.startsWith(BINDING_PREFIX) && isRecord(item["binding"])) {
+      try { index.push(sessionSurfaceKey(orgId, item["binding"] as unknown as SessionBinding)); } catch { /* a binding that does not read has no surface row to find */ }
+    }
+  });
+  const found = meta as Item | undefined;
+  if (found !== undefined) {
+    const createdAt = text(found["createdAt"]);
+    const ownerId = isRecord(found["owner"]) ? text(found["owner"]["developerId"]) : undefined;
+    const startedBy = isRecord(found["startedBy"]) ? text(found["startedBy"]["developerId"]) : undefined;
+    for (const developerId of [ownerId, startedBy]) {
+      if (developerId === undefined || !MEMBER_ID.test(developerId) || createdAt === undefined) continue;
+      people.add(developerId);
+      index.push(mySessionsKey(orgId, developerId, createdAt, sessionId));
+    }
+    const project = text(found["project"]);
+    if (project !== undefined && createdAt !== undefined && AGENTX_NAME_PATTERN.test(project)) index.push(projectSessionsKey(orgId, project, createdAt, sessionId));
+  }
+  for (const key of index) {
+    checkTime(deps);
+    await shorten(deps, key, expires);
+  }
+}
+
+/** The UTC days whose ended-session work entries can still be waiting: from the day the drain has reached (at most `ENDED_DAYS_MAX` back) to tomorrow. A parked entry older than that expires on its own. */
+async function endedDays(deps: SessionLifecycleDeps): Promise<string[]> {
+  const dayOf = (ms: number) => isoOf(ms).slice(0, 10);
+  const cursor = text((await getItem(deps, ENDED_DRAIN_CURSOR_KEY))?.["day"]);
+  const oldest = dayOf(deps.now() - ENDED_DAYS_MAX * DAY_SECONDS * 1000);
+  const reached = cursor !== undefined && /^\d{4}-\d{2}-\d{2}$/u.test(cursor) ? cursor : dayOf(deps.now() - 2 * DAY_SECONDS * 1000);
+  const last = dayOf(deps.now() + DAY_SECONDS * 1000);
+  const days: string[] = [];
+  for (let day = reached < oldest ? oldest : reached; day <= last && days.length <= ENDED_DAYS_MAX + 2; day = dayOf(Date.parse(`${day}T00:00:00.000Z`) + DAY_SECONDS * 1000)) days.push(day);
+  return days;
+}
+
+/** Deletes the items of a partition whose sort key starts with `prefix` (the org's own entries in a global list). */
+async function deleteByPrefix(deps: SessionLifecycleDeps, pk: string, prefix: string): Promise<void> {
+  let start: Record<string, unknown> | undefined;
+  do {
+    checkTime(deps);
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": pk, ":prefix": prefix },
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      checkTime(deps);
+      await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: String(item["pk"]), sk: String(item["sk"]) } }));
+    }
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
+}
+
+/** Deletes every item of a partition that is one org's by its key (`orgScoped`). */
+async function deleteWholePartition(deps: SessionLifecycleDeps, pk: string): Promise<void> {
+  if (!pk.startsWith("ORG#org_")) throw new Error("only an org's own partition is deleted whole");
+  let start: Record<string, unknown> | undefined;
+  do {
+    checkTime(deps);
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": pk },
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      checkTime(deps);
+      await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk, sk: String(item["sk"]) } }));
+    }
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
+}
+
+/** A person's devices: each device's own partition (record and queued commands), then the row in their list. */
+async function deleteDevices(deps: SessionLifecycleDeps, orgId: OrgId, developerId: string): Promise<void> {
+  const listPk = memberDevicesKey(orgId, developerId, "dvc_00000000000000000000").pk;
+  const rows: Item[] = [];
+  await eachPage(deps, { pk: listPk }, async (items) => { rows.push(...items); });
+  for (const row of rows) {
+    const deviceId = DeviceIdSchema.safeParse(row["sk"]);
+    if (deviceId.success) await deleteWholePartition(deps, deviceKey(orgId, deviceId.data).pk);
+  }
+  await deleteWholePartition(deps, listPk);
+}
+
+// ---- joining the member lifecycle
+
+/** Registers the sessions' mover with Plan 3's member lifecycle (name `agent_sessions`). Registering again replaces it; the returned function removes it. */
+export function registerSessionMemberMover(): () => void {
+  return registerMemberMover({
+    name: "agent_sessions",
+    merged: (deps, merge) => onSessionMembersMerged(deps, merge),
+    removed: (deps, removal) => onSessionMemberRemoved(deps, removal),
+    orphaned: (deps, removal) => onSessionMemberRemoved(deps, removal),
+  });
+}
+
+registerSessionMemberMover();
+

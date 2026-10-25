@@ -26,7 +26,7 @@ const DAY = 86_400;
 const DEVICE_A = "dvc_aaaaaaaaaaaaaaaaaaaa";
 const DEVICE_B = "dvc_bbbbbbbbbbbbbbbbbbbb";
 const DEVICE_C = "dvc_cccccccccccccccccccc";
-const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; name?: string; message: string }) => ({ code: error.code, name: error.name, message: error.message }));
+const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; name?: string; message: string }) => ({ code: error.code, name: error.name, message: error.message.replace(`${String(error.code)}: `, "") }));
 
 function world() {
   const w = sessionWorld();
