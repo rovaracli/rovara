@@ -254,11 +254,16 @@ export async function mergedPullRequestStats(
 ): Promise<TransactItem[]> {
   const merged = newlyMerged(next, reads);
   if (merged.length === 0) return [];
+  // The save goes on without the count; the log is the only trace of an undercount.
+  const skipped = (reason: string, error?: unknown) => console.log(JSON.stringify({
+    component: "broker", event: "merged_count.skipped", reason, taskId, project: task.project, ...(error instanceof Error ? { error: error.name } : {}),
+  }));
   try {
     const orgId = task.orgId ?? await input.auditOrgId?.(taskId);
-    if (orgId === undefined) return [];
+    if (orgId === undefined) { skipped("org_unknown"); return []; }
     return [mergedPullRequestCountItem(input.tableName, orgId, task.project, input.now, merged.length)];
-  } catch {
+  } catch (error) {
+    skipped("lookup_failed", error);
     return [];
   }
 }
