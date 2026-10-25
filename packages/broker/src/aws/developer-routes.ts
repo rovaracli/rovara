@@ -92,6 +92,7 @@ import {
   type TaskChannelPeopleResponse,
   type TaskPeopleDisplayReadRequest,
   type TaskPeopleDisplayReadResponse,
+  SESSION_PROJECT_BINDINGS_MAX,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
@@ -646,7 +647,7 @@ export async function authenticateDeveloperSessionId(deps: DeveloperRouteDepende
 }
 
 /** Every item under `pk` with the sort key prefix, following LastEvaluatedKey through each page. */
-async function queryAll<T>(deps: DeveloperRouteDependencies, pk: string, prefix: string): Promise<T[]> {
+async function queryAll<T>(deps: DeveloperRouteDependencies, pk: string, prefix: string, bound?: { max: number; onCut: () => void }): Promise<T[]> {
   const items: T[] = [];
   let start: Record<string, unknown> | undefined;
   do {
@@ -659,6 +660,11 @@ async function queryAll<T>(deps: DeveloperRouteDependencies, pk: string, prefix:
     })) as { Items?: T[]; LastEvaluatedKey?: Record<string, unknown> };
     items.push(...(response.Items ?? []));
     start = response.LastEvaluatedKey;
+    // A bounded read stops at its cap, with what it has: the rest is not read, and the caller is told it was cut.
+    if (bound !== undefined && items.length >= bound.max && (start !== undefined || items.length > bound.max)) {
+      bound.onCut();
+      return items.slice(0, bound.max);
+    }
   } while (start !== undefined);
   return items;
 }
@@ -776,8 +782,11 @@ async function grantRowsOf(deps: DeveloperRouteDependencies, caller: ProjectAcce
 type GrantRow = { role?: unknown; projectRole?: unknown; grantedBy?: unknown };
 
 /** The install's Slack team's channel bindings inside one org. */
-async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId): Promise<SlackChannelBinding[]> {
-  return deps.developer.slackTeamId === undefined ? [] : queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX);
+async function bindingsOf(deps: DeveloperRouteDependencies, orgId: OrgId, event = "slack_bindings.truncated"): Promise<SlackChannelBinding[]> {
+  return deps.developer.slackTeamId === undefined ? [] : queryAll<SlackChannelBinding>(deps, slackBindingPk(orgId, deps.developer.slackTeamId), SLACK_BINDING_SK_PREFIX, {
+    // Bounded (Plan 5 Task 16 review): an org with more channels than this reads the first of them, and the cut is logged with the org's id and no other detail.
+    max: SESSION_PROJECT_BINDINGS_MAX, onCut: () => logDeveloperEvent({ event, orgId }),
+  });
 }
 
 /** A developer's name for display: their sign-in record's, else "Unknown". */
@@ -1534,7 +1543,7 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
       const [record, meta] = await Promise.all([latestProjectRecord(deps, who.orgId, name), readProjectMeta(deps, who.orgId, name)]);
       if (record === undefined) return undefined;
       const summary = await appProjectSummary(deps, name, "viewer", record, meta);
-      const channels = (await bindingsOf(deps, who.orgId)).filter((binding) => binding.projectName === name).map((binding) => binding.channelId);
+      const channels = (await bindingsOf(deps, who.orgId, "project_page.bindings_truncated")).filter((binding) => binding.projectName === name).map((binding) => binding.channelId);
       return {
         name, ...(summary.description === undefined ? {} : { description: summary.description }), status: summary.status, latestRevision: summary.latestRevision, repositories: summary.repositories,
         setup: summary.setup, channels: [...new Set(channels)].slice(0, 20),
