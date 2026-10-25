@@ -514,6 +514,34 @@ describe("the view schemas", () => {
     expect(SessionViewReaderSchema.parse(view).status).toBe("running");
   });
 
+  // Plan 4's run view is the body of a chain session (the merge replaced Plan 5's loose placeholder). A gate's confirmUrl is Plan 4's to leave out: it is absent for a person who may not decide it.
+  describe("the body of a chain session", () => {
+    const run = {
+      contractVersion: 1, sessionId: CHAIN_RUN, kind: "chain", chain: { chainId: "chn_0123456789abcdefghij", name: "Investigate", version: 2 }, project: "web",
+      chainOwner: { kind: "member", id: DEV, name: "Priya" }, owner: { developerId: DEV, name: "Priya" }, startedBy: { kind: "member", developerId: DEV, name: "Priya" },
+      status: "waiting", currentSeq: 2, createdAt: NOW, updatedAt: LATER, cost: { spentUsd: 0.5, runLimitUsd: 30 },
+      sections: [
+        { seq: 1, stepId: "investigate", name: "Find the cause", kind: "agent", status: "succeeded", attempt: 1, startedAt: NOW },
+        { seq: 2, stepId: "approve", name: "Approve the fix", kind: "gate", status: "waiting", attempt: 1, startedAt: NOW, gate: { prompt: "Fix it?", status: "PENDING", approvers: "Max" } },
+      ],
+    };
+    const chainView = (chain: unknown) => ({ ...view, sessionId: CHAIN_RUN, kind: "chain", body: { kind: "chain", chain } });
+
+    it("takes the run view with a gate that has no confirmUrl, and with one", () => {
+      for (const schema of [SessionViewSchema, SessionViewReaderSchema]) {
+        expect(schema.safeParse(chainView(run)).success).toBe(true);
+        const withLink = { ...run, sections: [run.sections[0], { ...run.sections[1], gate: { ...run.sections[1]!.gate, confirmUrl: "https://app.rovara.example/v1/app/approve/apr_0123456789abcdefg" } }] };
+        expect(schema.safeParse(chainView(withLink)).success).toBe(true);
+      }
+    });
+
+    it("refuses a body that is not a run view, and reads a newer run's status as unknown", () => {
+      expect(SessionViewSchema.safeParse(chainView({})).success).toBe(false);
+      expect(SessionViewSchema.safeParse(chainView({ ...run, status: "frozen" })).success).toBe(false);
+      expect(SessionViewReaderSchema.parse(chainView({ ...run, status: "frozen", extra: 1 })).body).toMatchObject({ kind: "chain", chain: { status: "unknown", extra: 1 } });
+    });
+  });
+
   it("reads a newer server's event page and tile", () => {
     const newerEvent = { ...event, type: "pair_started", extra: "kept", actor: { kind: "robot", model: "x" } };
     const page = { events: [newerEvent], next: "n", more: true };
