@@ -9,6 +9,8 @@ import { z } from "zod";
 import {
   ENDED_SESSION_STATUSES,
   INDEX_EXPIRY_ATTRIBUTE,
+  LOCAL_STOPS_PER_HOUR,
+  LOCAL_STOP_RATE_MESSAGE,
   SESSION_ENDED_MESSAGE,
   agentSessionKey,
   agentXError,
@@ -26,7 +28,7 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { MAC_NOT_AVAILABLE_MESSAGE, commandableDevice } from "../devices/local-facts.js";
-import { announceDeviceCommand, deviceCommandItems } from "../devices/local-sessions.js";
+import { LOCAL_HOUR_MS, announceDeviceCommand, deviceCommandItems, limitStep } from "../devices/local-sessions.js";
 import { requireSessionLevel, type ChainSessionActor, type SessionAccess } from "./access.js";
 import { sessionView, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import { tell } from "./take-over.js";
@@ -230,11 +232,15 @@ async function stopLocalSession(deps: SessionReadDependencies, caller: ControlCa
     const command = await deviceCommandItems(deps, { orgId, deviceId: device.deviceId, ownerId: session.owner.developerId }, {
       kind: "stop", sessionId: session.sessionId, by: { developerId: caller.developerId, name },
     }, nowMs);
+    // 20 stops an hour for a session, counted in this transaction: a stop that is asked again with a new request id still adds a command.
+    const rate = await limitStep(deps, { kind: "session", orgId, sessionId: session.sessionId }, "stop", LOCAL_STOPS_PER_HOUR, LOCAL_HOUR_MS, nowMs);
+    if (!rate.room) throw agentXError("TOO_MANY_REQUESTS", LOCAL_STOP_RATE_MESSAGE);
     const events = await tryAuditEvents(deps, () => [auditSessionStopped({
       orgId, actor: auditActorOf(caller.developerId), occurredAt: at, occurrence: requestId, related: [device.deviceId], sessionId: session.sessionId, sessionKind: session.kind,
     })]);
     const items: TransactItem[] = [
       ...command.items,
+      rate.item,
       controlRequestItem(deps, session, requestId, { action: "stop", by: caller.developerId, at, sessionId: session.sessionId }, Math.floor(nowMs / 1000) + 30 * 86_400),
       sessionEventItem(deps, { orgId, sessionId: session.sessionId }, {
         eventId: sessionEventId("stopped", requestId), at, type: "stopped", actor: { kind: "member", developerId: caller.developerId, name }, text: `${name} stopped this session.`,

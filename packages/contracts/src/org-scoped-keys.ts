@@ -697,7 +697,7 @@ export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: 
  * The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window, or their messages to the agent
  * ("steer") in the current hour: `<kind>#<developerId>` in the session's rate partition. `steer_all` counts every person's messages to the agent on the session (its `developerId` is the word `session`).
  */
-export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all"): OrgKey {
+export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all" | "local_update" | "local_status" | "local_stop"): OrgKey {
   return { pk: orgScoped(orgId, `SESSION_RATE#${keyPart(sessionId, "a session id")}`), sk: `${kind}#${keyPart(developerId, "a developer id")}` };
 }
 
@@ -777,6 +777,16 @@ export function deviceCommandCounterKey(orgId: OrgId, deviceId: DeviceId): OrgKe
 /** Which sessions run on a device, one item per session (`SESSION#<sessionId>`), so removing the device finds them without reading its owner's whole list. */
 export function deviceSessionKey(orgId: OrgId, deviceId: DeviceId, sessionId: SessionId): OrgKey {
   return { pk: devicePk(orgId, deviceId), sk: `SESSION#${keyPart(sessionId, "a session id")}` };
+}
+
+/** A window's count of one kind of write by a Mac (`update`), in the device's own partition so it goes with the device. */
+export function deviceRateKey(orgId: OrgId, deviceId: DeviceId, kind: "update"): OrgKey {
+  return { pk: devicePk(orgId, deviceId), sk: `RATE#${kind}` };
+}
+
+/** A window's count of one kind of write by one person (`local_register`: local sessions started), in a partition of their own. */
+export function personRateKey(orgId: OrgId, developerId: string, kind: "local_register"): OrgKey {
+  return { pk: orgScoped(orgId, `PERSON_RATE#${keyPart(developerId, "a developer id")}`), sk: kind };
 }
 
 /** One command waiting for a device (stop, move to the cloud, a steering message); six digits keep them in order. */

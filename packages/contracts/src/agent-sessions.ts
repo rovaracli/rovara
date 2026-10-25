@@ -69,6 +69,8 @@ export const REALTIME_PUBLISH_DEADLINE_MS = 1000;
 export const REALTIME_TOKEN_SECONDS = 900;
 export const LOCAL_HEARTBEAT_SECONDS = 60;
 export const LOCAL_OFFLINE_MINUTES = 10;
+/** A Mac that has said nothing for this long has gone for good: its session ends `cancelled` (the session sweep finds it). */
+export const LOCAL_ABANDONED_HOURS = 24;
 /** The most turns in one update from a Mac: each is a `TURN#` item and a `local_turn` event, so 40 turns, the state, the device and the request stay under DynamoDB's 100 items in ONE transaction. */
 export const LOCAL_UPDATE_TURNS_MAX = 40;
 export const LOCAL_TURN_MAX_CHARS = 4000;

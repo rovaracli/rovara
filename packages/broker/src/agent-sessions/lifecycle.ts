@@ -20,6 +20,7 @@ import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCo
 import {
   AGENTX_NAME_PATTERN,
   DeviceIdSchema,
+  LOCAL_ORG_CLOSED_MESSAGE,
   INDEX_EXPIRY_ATTRIBUTE,
   LIVE_INDEX_SCAN_MAX,
   OrgIdSchema,
@@ -54,8 +55,9 @@ import { errorName, failedIndexes, type Item, type TransactItem } from "../agent
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { paymentOfTask } from "../spend/payer.js";
 import { UNNAMED_MEMBER, currentOwnerAfterMerge, holdsTaskByTakeOver, ownerFenceOf, taskIndexKey, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { endSessionsOfDevice } from "../devices/local-sessions.js";
+import { endLocalSession, endSessionsOfDevice } from "../devices/local-sessions.js";
 import { removeFollower } from "./followers.js";
+import { AgentSessionStore } from "./store.js";
 import { batchGetItems, keyText } from "./live.js";
 import { ENDED_DRAIN_CURSOR_KEY } from "./summary.js";
 
@@ -693,6 +695,12 @@ export async function stopOrgSessions(deps: SessionLifecycleDeps, orgId: string,
       break;
     }
     try {
+      // A session on a Mac has no cloud work to stop: it is ended here, with the company's words, and the Mac is told by its next update being refused.
+      const session = await new AgentSessionStore(deps).get(org, sessionId);
+      if (session !== undefined && session.subject.kind === "local") {
+        if (session.endedAt === undefined) await endLocalSession({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: (entry) => log(deps, typeof entry["event"] === "string" ? entry["event"] : "devices.end_sessions", entry) }, session, LOCAL_ORG_CLOSED_MESSAGE, "org-closed");
+        continue;
+      }
       await stop(sessionId, closeStopRequestId(org, sessionId));
     } catch (error) {
       log(deps, "agent_session.close_stop_failed", { orgId: org, sessionId, error: errorName(error) ?? "unknown" });

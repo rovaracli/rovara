@@ -6,21 +6,33 @@
 //     whole company, which needs the confirmation page); at least one share and at most `LOCAL_REGISTER_SHARES_MAX`. The project is for rules and budgets only: it shares nothing.
 //   - update (`POST …/local/updates`): the device is the caller's own and live, the session names that device, and the caller owns the session. Anything else is `NOT_FOUND` and writes
 //     nothing, so a device id (which is no secret until Plan 8 adds device keys) opens nothing of anyone else's, and a session that moved to the cloud can't be touched by a late Mac update.
+//     The company's rule for the session's tool and project, and the person's role on the project, are read again on every update; one that only ends the session is always taken.
+//   - limits (an end is never limited): 30 updates a minute for a session and 120 for a device, 12 status changes an hour that tell followers (past it the status saves and only
+//     followers are left out), 20 open sessions on a device, 60 registrations an hour for a person. Each count is moved in the write's own transaction. A Mac silent for
+//     `LOCAL_ABANDONED_HOURS` has its session ended by the summary (`summary.ts`, found by the session sweep).
 //   - commands (`GET /v1/app/devices/{id}/commands`): the device's own person only. The commands are written by the session's steer and stop, after those read the sender's level.
 //   - a removed device ends its open sessions (`endSessionsOfDevice`), found through the device's own entries and confirmed by each session's `subject.deviceId`.
 //
 // WHAT IS WRITTEN: a session's state from the Mac is one `LOCAL` item (status, step, peek, the count of turns, a revision every writer moves), its transcript is `TURN#<n>` items with a
 // `local_turn` event each, and its summary is worked out from the `LOCAL` item by `refreshSessionSummary` (`local-facts.ts`). An update is at most `LOCAL_UPDATE_TURNS_MAX` (40) turns,
 // so it, its events, the status, the device's last sight and the request's own item (R18) are ONE transaction: all or nothing.
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
 import {
   DEVICE_COMMAND_KEEP_DAYS,
   DEVICE_COMMANDS_PAGE_MAX,
   DeviceCommandViewSchema,
   INDEX_EXPIRY_ATTRIBUTE,
+  LOCAL_FOLLOWER_STATUS_PER_HOUR,
   LOCAL_NEEDS_SHARE_MESSAGE,
+  LOCAL_OPEN_MAX_MESSAGE,
+  LOCAL_OPEN_PER_DEVICE_MAX,
+  LOCAL_REGISTER_RATE_MESSAGE,
   LOCAL_REGISTER_SHARES_MAX,
+  LOCAL_REGISTRATIONS_PER_HOUR,
+  LOCAL_UPDATES_PER_MINUTE_DEVICE,
+  LOCAL_UPDATES_PER_MINUTE_SESSION,
+  LOCAL_UPDATE_RATE_MESSAGE,
   LOCAL_TOO_MANY_SHARES_MESSAGE,
   LOCAL_TRANSCRIPT_FULL_MESSAGE,
   LOCAL_TURNS_MAX,
@@ -37,20 +49,26 @@ import {
   deviceKey,
   deviceRemovedMessage,
   deviceSessionKey,
+  deviceRateKey,
   newPrefixedId,
+  personRateKey,
   principalKey,
+  projectArchivedMessage,
   redactText,
   sessionEventId,
+  sessionRateKey,
   sessionTurnSk,
   userChannel,
   type AgentSessionRecord,
   type DeviceCommandView,
   type OrgId,
+  type OrgKey,
   type OrgRole,
   type SessionStatus,
 } from "@agentx/contracts";
 import { NOT_EXISTS, commit, errorName, failedIndexes, isTransactionConflict, readRequest, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { inertTaskTitle } from "../aws/developer-tasks.js";
+import { readProjectMeta } from "../developer/project-roles.js";
 import { LOCAL_TOOL_WORDS, createLocalSessionItems } from "../agent-sessions/create.js";
 import { checkPrincipal, type SessionShareDependencies } from "../agent-sessions/shares.js";
 import { deliverSteerToDevice } from "../agent-sessions/steer.js";
@@ -93,6 +111,51 @@ const isoOf = (ms: number) => new Date(ms).toISOString();
 const secondsOf = (ms: number) => Math.floor(ms / 1000);
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 const logOf = (deps: Pick<LocalSessionDependencies, "log">) => deps.log ?? ((entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry })));
+
+// ---- limits
+
+/** What a count is kept for: a session, a device, or a person. */
+export type LimitScope = { kind: "session"; orgId: OrgId; sessionId: string } | { kind: "device"; orgId: OrgId; deviceId: string } | { kind: "person"; orgId: OrgId; developerId: string };
+export const LOCAL_HOUR_MS = 3_600_000;
+const HOUR_MS = LOCAL_HOUR_MS;
+const MINUTE_MS = 60_000;
+
+function limitKey(scope: LimitScope, name: "update" | "status" | "stop" | "register"): OrgKey {
+  if (scope.kind === "device") return deviceRateKey(scope.orgId, scope.deviceId, "update");
+  if (scope.kind === "person") return personRateKey(scope.orgId, scope.developerId, "local_register");
+  return sessionRateKey(scope.orgId, scope.sessionId, "session", name === "status" ? "local_status" : name === "stop" ? "local_stop" : "local_update");
+}
+
+/**
+ * One count of a fixed window (a minute or an hour), as a step of the write's own transaction: the new count is set from the count that was read and is conditional on it, so two writes
+ * can't both take the last place (the loser reads again). `room` is false when the window is full. The item expires with its window.
+ */
+export async function limitStep(
+  deps: Pick<TableInput, "documentClient" | "tableName">, scope: LimitScope, name: "update" | "status" | "stop" | "register", limit: number, windowMs: number, nowMs: number,
+): Promise<{ room: boolean; item: TransactItem }> {
+  const key = limitKey(scope, name);
+  const stored = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
+  const window = Math.floor(nowMs / windowMs) * windowMs;
+  const seenWindow = stored?.["windowStart"];
+  const seenCount = stored?.["count"];
+  if (stored !== undefined && (typeof seenWindow !== "number" || typeof seenCount !== "number")) throw agentXError("RUNTIME_UNAVAILABLE", "This session is busy right now. Try again.");
+  const count = typeof seenWindow === "number" && seenWindow === window && typeof seenCount === "number" ? seenCount : 0;
+  return {
+    room: count < limit,
+    item: {
+      Update: {
+        TableName: deps.tableName, Key: key,
+        UpdateExpression: "SET entityType = :type, orgId = :org, windowStart = :window, #count = :next, #expires = :expires",
+        ConditionExpression: stored === undefined ? "attribute_not_exists(pk)" : "windowStart = :seenWindow AND #count = :seenCount",
+        ExpressionAttributeNames: { "#count": "count", "#expires": INDEX_EXPIRY_ATTRIBUTE },
+        ExpressionAttributeValues: {
+          ":type": "LOCAL_RATE", ":org": scope.orgId, ":window": window, ":next": count + 1, ":expires": secondsOf(window + 2 * windowMs),
+          ...(stored === undefined ? {} : { ":seenWindow": seenWindow, ":seenCount": seenCount }),
+        },
+      },
+    },
+  };
+}
 
 // ---- the checks every call makes
 
@@ -162,6 +225,8 @@ export async function registerLocalSession(deps: LocalSessionDependencies, calle
     // The role first: the rule's refusal names the project, so it is only said to someone who has a role on it. A project that isn't there reads the same as one without a role.
     const role = await deps.projectMembers.roleOf(orgId, input.project, { developerId, orgRole: caller.orgRole });
     if (role === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
+    // New work is not started on an archived project.
+    if ((await readProjectMeta(deps, orgId, input.project))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(input.project));
   }
   checkLocalAgentAllowed(await readLocalAgentPolicy(deps, orgId), input.tool, input.project);
 
@@ -175,42 +240,83 @@ export async function registerLocalSession(deps: LocalSessionDependencies, calle
     await checkPrincipal(deps, orgId, input.project === undefined ? {} : { project: input.project }, principal, level);
   }
 
+  if (await openSessionsOnDevice(deps, orgId, device.deviceId, LOCAL_OPEN_PER_DEVICE_MAX) >= LOCAL_OPEN_PER_DEVICE_MAX) throw agentXError("CONFIG_INVALID", LOCAL_OPEN_MAX_MESSAGE);
+
   const nowMs = deps.now();
   const now = isoOf(nowMs);
   // The Mac's own clock only says when the work began: never in the future, and not further back than a week.
   const startedAt = isoOf(Math.max(Math.min(Date.parse(input.startedAt), nowMs), nowMs - START_LOOKBACK_MS));
   const sessionId = newPrefixedId("ses");
   const expires = secondsOf(nowMs) + KEEP_SECONDS;
-  const items: TransactItem[] = [
-    deviceStillTheirs(deps, orgId, device.deviceId, developerId),
-    ...createLocalSessionItems(deps, {
-      orgId, sessionId, deviceId: device.deviceId, deviceLabel: device.label, tool: input.tool, ...(input.project === undefined ? {} : { project: input.project }),
-      title: inertTaskTitle(input.title), owner: { developerId, name: caller.name }, startedAt, shares: input.shares, now,
-    }),
-    {
-      Put: {
-        TableName: deps.tableName, ConditionExpression: NOT_EXISTS,
-        Item: { ...agentSessionKey(orgId, sessionId, "LOCAL"), entityType: "AGENT_SESSION_LOCAL", orgId, sessionId, deviceId: device.deviceId, status: "running", costUsd: 0, turnCount: 0, rev: 0, updatedAt: now, [INDEX_EXPIRY_ATTRIBUTE]: expires },
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+    // 60 registrations an hour for a person, counted in this transaction.
+    const rate = await limitStep(deps, { kind: "person", orgId, developerId }, "register", LOCAL_REGISTRATIONS_PER_HOUR, HOUR_MS, nowMs);
+    if (!rate.room) throw agentXError("TOO_MANY_REQUESTS", LOCAL_REGISTER_RATE_MESSAGE);
+    const items: TransactItem[] = [
+      deviceStillTheirs(deps, orgId, device.deviceId, developerId),
+      rate.item,
+      ...createLocalSessionItems(deps, {
+        orgId, sessionId, deviceId: device.deviceId, deviceLabel: device.label, tool: input.tool, ...(input.project === undefined ? {} : { project: input.project }),
+        title: inertTaskTitle(input.title), owner: { developerId, name: caller.name }, startedAt, shares: input.shares, now,
+      }),
+      {
+        Put: {
+          TableName: deps.tableName, ConditionExpression: NOT_EXISTS,
+          Item: { ...agentSessionKey(orgId, sessionId, "LOCAL"), entityType: "AGENT_SESSION_LOCAL", orgId, sessionId, deviceId: device.deviceId, status: "running", costUsd: 0, turnCount: 0, rev: 0, updatedAt: now, [INDEX_EXPIRY_ATTRIBUTE]: expires },
+        },
       },
-    },
-    {
-      Put: {
-        TableName: deps.tableName, ConditionExpression: NOT_EXISTS,
-        Item: { ...deviceSessionKey(orgId, device.deviceId, sessionId), entityType: "DEVICE_SESSION", orgId, deviceId: device.deviceId, sessionId, createdAt: now, [INDEX_EXPIRY_ATTRIBUTE]: expires },
+      {
+        Put: {
+          TableName: deps.tableName, ConditionExpression: NOT_EXISTS,
+          Item: { ...deviceSessionKey(orgId, device.deviceId, sessionId), entityType: "DEVICE_SESSION", orgId, deviceId: device.deviceId, sessionId, createdAt: now, [INDEX_EXPIRY_ATTRIBUTE]: expires },
+        },
       },
-    },
-  ];
-  try {
-    await commit(deps, items, (failed) => (failed.has(0) ? notFound("device") : undefined), mark, { sessionId });
-  } catch (error) {
-    // Lost to the same request running at the same time: its answer is this one's.
-    if ((error as { code?: string }).code === "IDEMPOTENCY_CONFLICT") {
-      const won = await earlierRegistration(deps, mark);
-      if (won !== undefined) return won;
+    ];
+    try {
+      await commit(deps, items, (failed) => (failed.has(0) ? notFound("device") : undefined), mark, { sessionId });
+      return { sessionId };
+    } catch (error) {
+      // Lost to the same request running at the same time: its answer is this one's.
+      if ((error as { code?: string }).code === "IDEMPOTENCY_CONFLICT") {
+        const won = await earlierRegistration(deps, mark);
+        if (won !== undefined) return won;
+      }
+      // The person's count moved under it (another registration took a place): read it again.
+      const failed = failedIndexes(error);
+      if (isTransactionConflict(error) || (failed !== undefined && failed.has(1))) continue;
+      throw error;
     }
-    throw error;
   }
-  return { sessionId };
+  throw agentXError("RUNTIME_UNAVAILABLE", "Starting a session is busy right now. Try again.");
+}
+
+/**
+ * How many of a device's sessions are open now, counting up to `stopAt`: its entries are confirmed by the sessions themselves (an entry of a session that ended without taking it away, or
+ * that is gone, is not counted and is deleted).
+ */
+async function openSessionsOnDevice(deps: DeviceDependencies, orgId: OrgId, deviceId: string, stopAt: number): Promise<number> {
+  const store = new AgentSessionStore(deps);
+  const pk = deviceKey(orgId, deviceId).pk;
+  let open = 0;
+  let start: Record<string, unknown> | undefined;
+  for (let page = 0; page < DEVICE_ENTRY_PAGES_MAX && open < stopAt; page += 1) {
+    const found = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, ConsistentRead: true, Limit: DEVICE_ENTRY_PAGE, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: { ":pk": pk, ":prefix": "SESSION#" }, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const row of found.Items ?? []) {
+      const id = SessionIdSchema.safeParse(row["sessionId"]);
+      const session = id.success && row["orgId"] === orgId ? await store.get(orgId, id.data) : undefined;
+      if (session !== undefined && session.subject.kind === "local" && session.subject.deviceId === deviceId && session.endedAt === undefined) {
+        open += 1;
+        continue;
+      }
+      await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: String(row["pk"]), sk: String(row["sk"]) } })).catch(() => undefined);
+    }
+    start = found.LastEvaluatedKey;
+    if (start === undefined) break;
+  }
+  return open;
 }
 
 // ---- updates from the Mac
@@ -222,9 +328,9 @@ export interface LocalUpdateReply {
   accepted: number;
 }
 
-/** A turn's words as they are kept: redacted first (so a cut can't leave half a token), control characters other than line breaks turned into spaces, cut to the turn limit. */
+/** A turn's words as they are kept: redacted first (so a cut can't leave half a token), control and invisible-format characters other than line breaks (and the two joiners names and emoji need) turned into spaces, cut to the turn limit. */
 function turnText(text: string): string {
-  return [...redactText(text).replace(/(?![\n\t\r])\p{Cc}/gu, " ")].slice(0, LOCAL_TURN_MAX_CHARS).join("");
+  return [...redactText(text).replace(/(?![\n\t\r\u200C\u200D])[\p{Cc}\p{Cf}]/gu, " ")].slice(0, LOCAL_TURN_MAX_CHARS).join("");
 }
 
 /** One turn on the timeline: who said it and the start of what they said, redacted and cut to the event limit. */
@@ -267,23 +373,60 @@ export async function recordLocalUpdate(deps: LocalSessionDependencies, caller: 
   if (replay !== undefined) return replay;
   if (session.endedAt !== undefined || isEndedStatus(session.summary.status)) throw agentXError("SESSION_ENDED", "This session has ended.");
 
+  const ended = isEndedStatus(input.status);
+  // An update that only ends the session is always taken (the Mac can close cleanly whatever the rule says now), and no end is ever limited.
+  const endOnly = ended && turns.length === 0;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     const local = await readLocalState(deps, session);
     if (local !== undefined && isEndedStatus(local["status"])) throw agentXError("SESSION_ENDED", "This session has ended.");
     const rev = typeof local?.["rev"] === "number" ? local["rev"] : 0;
     const count = typeof local?.["turnCount"] === "number" ? local["turnCount"] : 0;
     if (count + turns.length > LOCAL_TURNS_MAX) throw agentXError("CONFIG_INVALID", LOCAL_TRANSCRIPT_FULL_MESSAGE);
-    const reply = await writeUpdate(deps, { caller, session, device: { deviceId: device.deviceId, label: device.label }, input, mark, local, rev, count, turns });
+    if (!endOnly) await requireStillAllowed(deps, caller, session);
+    const extras: TransactItem[] = [];
+    let quiet = false;
+    if (!ended) {
+      const nowMs = deps.now();
+      for (const [scope, limit] of [[{ kind: "session", orgId, sessionId: session.sessionId }, LOCAL_UPDATES_PER_MINUTE_SESSION], [{ kind: "device", orgId, deviceId: device.deviceId }, LOCAL_UPDATES_PER_MINUTE_DEVICE]] as const) {
+        const step = await limitStep(deps, scope, "update", limit, MINUTE_MS, nowMs);
+        if (!step.room) throw agentXError("TOO_MANY_REQUESTS", LOCAL_UPDATE_RATE_MESSAGE);
+        extras.push(step.item);
+      }
+      // A change into a status that tells followers is counted; past the hour's limit it saves and tells no follower.
+      if (FOLLOWER_STATUSES.has(input.status) && local?.["status"] !== input.status) {
+        const step = await limitStep(deps, { kind: "session", orgId, sessionId: session.sessionId }, "status", LOCAL_FOLLOWER_STATUS_PER_HOUR, HOUR_MS, nowMs);
+        if (step.room) extras.push(step.item);
+        else quiet = true;
+      }
+    }
+    const reply = await writeUpdate(deps, { caller, session, device: { deviceId: device.deviceId, label: device.label }, input, mark, local, rev, count, turns, extras });
     if (reply === "again") continue;
-    await refreshQuietly(deps, orgId, session.sessionId);
+    await refreshQuietly(deps, orgId, session.sessionId, quiet);
     return reply;
   }
   throw agentXError("RUNTIME_UNAVAILABLE", "This session is busy right now. Try again.");
 }
 
-async function refreshQuietly(deps: Pick<LocalSessionDependencies, "documentClient" | "tableName" | "now" | "log">, orgId: OrgId, sessionId: string): Promise<void> {
+/** The statuses that tell a session's followers when a Mac reports a change into them (an end tells them too, and is never limited). */
+const FOLLOWER_STATUSES: ReadonlySet<string> = new Set(["needs_person", "waiting", "stopped"]);
+
+/**
+ * The company's rule and the person's role, read again for an update that does more than end the session: a rule that was tightened (the tool turned off, the project left out, local
+ * agents switched off) or a role that was lost refuses further work, with the reason; a rule that can't be read refuses with a retryable 503. Role first, so the rule's words never name a
+ * project the person has lost.
+ */
+async function requireStillAllowed(deps: LocalSessionDependencies, caller: LocalCaller, session: AgentSessionRecord): Promise<void> {
+  if (session.subject.kind !== "local") throw notFound("session");
+  if (session.project !== undefined) {
+    const role = await deps.projectMembers.roleOf(caller.orgId, session.project, { developerId: caller.developerId, orgRole: caller.orgRole });
+    if (role === undefined) throw agentXError("PROJECT_ACCESS_DENIED", `You no longer have a role on ${session.project}, so this session can't send more updates. End it from your Mac.`);
+  }
+  checkLocalAgentAllowed(await readLocalAgentPolicy(deps, caller.orgId), session.subject.tool, session.project);
+}
+
+async function refreshQuietly(deps: Pick<LocalSessionDependencies, "documentClient" | "tableName" | "now" | "log">, orgId: OrgId, sessionId: string, quiet = false): Promise<void> {
   try {
-    await refreshSessionSummary({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: logOf(deps) }, orgId, sessionId);
+    await refreshSessionSummary({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: logOf(deps), ...(quiet ? { quiet: true } : {}) }, orgId, sessionId);
   } catch (error) {
     // The write is committed: the sweep corrects the summary.
     logOf(deps)({ event: "agent_session.local_refresh_failed", orgId, sessionId, error: errorName(error) ?? "unknown" });
@@ -300,6 +443,8 @@ interface UpdateInput {
   rev: number;
   count: number;
   turns: ReadonlyArray<{ at: string; role: "person" | "agent"; text: string }>;
+  /** The limits' steps (their counts move with the write). */
+  extras: readonly TransactItem[];
 }
 
 /**
@@ -339,6 +484,7 @@ async function writeUpdate(deps: LocalSessionDependencies, u: UpdateInput): Prom
         ...(u.local === undefined ? { ConditionExpression: NOT_EXISTS } : { ConditionExpression: "#rev = :rev", ExpressionAttributeNames: { "#rev": "rev" }, ExpressionAttributeValues: { ":rev": u.rev } }),
       },
     },
+    ...u.extras,
   ];
   u.turns.forEach((turn, offset) => {
     const seq = u.count + offset + 1;
@@ -358,8 +504,10 @@ async function writeUpdate(deps: LocalSessionDependencies, u: UpdateInput): Prom
       actor: turn.role === "person" ? { kind: "member", developerId: session.owner.developerId, name: owner } : { kind: "agent" }, source: "mac", text: turnEventText(speaker(turn.role), text),
     }));
   });
-  // An end takes the device's entry for the session away, with the end.
-  if (ended) items.push({ Delete: { TableName: deps.tableName, Key: deviceSessionKey(orgId, u.device.deviceId, session.sessionId) } });
+  // An end takes the device's entry for the session away, with the end; any other update keeps it from lapsing (and puts it back if it was lost).
+  items.push(ended
+    ? { Delete: { TableName: deps.tableName, Key: deviceSessionKey(orgId, u.device.deviceId, session.sessionId) } }
+    : { Put: { TableName: deps.tableName, Item: { ...deviceSessionKey(orgId, u.device.deviceId, session.sessionId), entityType: "DEVICE_SESSION", orgId, deviceId: u.device.deviceId, sessionId: session.sessionId, createdAt: session.createdAt, [INDEX_EXPIRY_ATTRIBUTE]: expires } } });
   const reply: LocalUpdateReply = { sessionId: session.sessionId, status: input.status, accepted: u.turns.length };
   try {
     await commit(deps, items, (failed) => refusalOf(failed), u.mark, reply);
@@ -426,7 +574,8 @@ export async function deviceCommandItems(
       {
         Put: {
           TableName: deps.tableName,
-          Item: { ...counterKey, entityType: "DEVICE_COMMAND_COUNTER", orgId: target.orgId, deviceId: target.deviceId, seq, [INDEX_EXPIRY_ATTRIBUTE]: secondsOf(nowMs) + KEEP_SECONDS },
+          // No expiry while the device lives: a counter that lapsed would restart below the Mac's cursor and hide new commands. It is given one when the device is removed.
+          Item: { ...counterKey, entityType: "DEVICE_COMMAND_COUNTER", orgId: target.orgId, deviceId: target.deviceId, seq },
           ...(stored === undefined ? { ConditionExpression: NOT_EXISTS } : { ConditionExpression: "#seq = :read", ExpressionAttributeNames: { "#seq": "seq" }, ExpressionAttributeValues: { ":read": current } }),
         },
       },
@@ -512,6 +661,13 @@ export async function endSessionsOfDevice(deps: DeviceDependencies, orgId: OrgId
   const store = new AgentSessionStore(deps);
   const result: Ended = { sessions: 0, failed: 0 };
   const pk = deviceKey(orgId, record.deviceId).pk;
+  // The device's command counter has no expiry while it lives; now that it is removed the counter goes with its record.
+  await deps.documentClient.send(new UpdateCommand({
+    TableName: deps.tableName, Key: deviceCommandCounterKey(orgId, record.deviceId), UpdateExpression: "SET #expires = :expires", ConditionExpression: "attribute_exists(pk)",
+    ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":expires": secondsOf(deps.now()) + KEEP_SECONDS },
+  })).catch((error: unknown) => {
+    if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+  });
   let start: Record<string, unknown> | undefined;
   for (let page = 0; page < DEVICE_ENTRY_PAGES_MAX; page += 1) {
     const found = await deps.documentClient.send(new QueryCommand({
@@ -524,7 +680,7 @@ export async function endSessionsOfDevice(deps: DeviceDependencies, orgId: OrgId
       try {
         const session = await store.get(orgId, id.data);
         if (session === undefined || session.subject.kind !== "local" || session.subject.deviceId !== record.deviceId || session.endedAt !== undefined) continue;
-        if (await endOne(deps, session, record.label)) result.sessions += 1;
+        if (await endLocalSession(deps, session, deviceRemovedMessage(record.label), "device-removed")) result.sessions += 1;
       } catch (error) {
         result.failed += 1;
         logOf(deps)({ event: "devices.end_session_failed", orgId, error: errorName(error) ?? "unknown" });
@@ -538,12 +694,15 @@ export async function endSessionsOfDevice(deps: DeviceDependencies, orgId: OrgId
   return result.sessions;
 }
 
-async function endOne(deps: DeviceDependencies, session: AgentSessionRecord, label: string): Promise<boolean> {
+/**
+ * Ends one open local session `cancelled` with `text` (its summary's step and an `ended` event named by `reason`), in one transaction with its `LOCAL` state and the removal of the device's
+ * entry, then works its summary out again. For a removed device and for a closed company. Repeatable: a session already ended by its `LOCAL` state is only refreshed.
+ */
+export async function endLocalSession(deps: DeviceDependencies, session: AgentSessionRecord, text: string, reason: "device-removed" | "org-closed"): Promise<boolean> {
   const { orgId, sessionId } = session;
   const deviceId = (session.subject as { deviceId: string }).deviceId;
   const nowMs = deps.now();
   const at = isoOf(nowMs);
-  const text = deviceRemovedMessage(label);
   const local = await readLocalState(deps, session);
   if (local === undefined || !isEndedStatus(local["status"])) {
     const items: TransactItem[] = [
@@ -566,7 +725,7 @@ async function endOne(deps: DeviceDependencies, session: AgentSessionRecord, lab
           },
         },
       },
-      sessionEventItem(deps, { orgId, sessionId }, { eventId: sessionEventId("ended", `${sessionId}:device-removed`), at, type: "ended", actor: { kind: "system" }, text }),
+      sessionEventItem(deps, { orgId, sessionId }, { eventId: sessionEventId("ended", `${sessionId}:${reason}`), at, type: "ended", actor: { kind: "system" }, text }),
       { Delete: { TableName: deps.tableName, Key: deviceSessionKey(orgId, deviceId, sessionId) } },
     ];
     try {

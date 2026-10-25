@@ -12,6 +12,8 @@ import {
   AgentSessionRecordSchema,
   ENDED_SESSION_STATUSES,
   INDEX_EXPIRY_ATTRIBUTE,
+  LOCAL_ABANDONED_HOURS,
+  LOCAL_ABANDONED_MESSAGE,
   LIVE_ENDED_KEEP_HOURS,
   LOCAL_OFFLINE_MINUTES,
   SESSION_NEEDS_PEOPLE_MAX,
@@ -134,6 +136,8 @@ export interface SummaryDependencies extends TableInput {
   local?: LocalSessionSource | undefined;
   /** The time (epoch ms) the caller must be done by: the notice sink's checks stop there. Set by the projector. */
   deadline?: number | undefined;
+  /** Set by a local session's update that is over the limit on status changes that tell followers: the change is saved and the owner is told as usual, but no follower is (an end still tells them). */
+  quiet?: boolean | undefined;
 }
 
 // ---- digest and small helpers
@@ -426,6 +430,10 @@ async function localState(deps: SummaryDependencies, session: AgentSessionRecord
   const over = (ENDED_SESSION_STATUSES as readonly string[]).includes(facts.status);
   const step = facts.step === undefined ? undefined : stepText(facts.step);
   const peek = facts.peek === undefined ? undefined : [...redactText(facts.peek).replace(/[\p{Cc}\p{Cf}]+/gu, " ")].slice(0, SESSION_PEEK_MAX_CHARS).join("");
+  // A Mac silent for `LOCAL_ABANDONED_HOURS` has gone for good: the session ends `cancelled` (the sweep reaches every open session, so this is where it is found).
+  if (!over && now - Date.parse(facts.updatedAt) > LOCAL_ABANDONED_HOURS * 3_600_000) {
+    return { summary: assemble({ status: "cancelled", step: stepText(LOCAL_ABANDONED_MESSAGE), costUsd: facts.costUsd }, now), ended: { status: "cancelled", at: iso(now) } };
+  }
   const offline = !over && now - Date.parse(facts.updatedAt) > LOCAL_OFFLINE_MINUTES * 60_000 ? true as const : undefined;
   const summary = assemble({ status: facts.status, step, peek, lastRunFailed: facts.lastRunFailed, costUsd: facts.costUsd, offline }, now);
   return over ? { summary, ended: { status: facts.status as Ended["status"], at: facts.endedAt ?? iso(now) } } : { summary };
@@ -574,6 +582,7 @@ async function refreshSummaryOnly(deps: SummaryDependencies, orgId: OrgId, sessi
     await notifySessionChange(deps, {
       orgId, sessionId, session: written,
       previous: session.summary, summary, summaryRevision: revision, statusChanged, stepChanged, ended: ending, at: summary.computedAt,
+      ...(deps.quiet === true ? { quiet: true as const } : {}),
     });
     return "updated";
   }

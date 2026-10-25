@@ -115,6 +115,23 @@ export function deviceRemovedMessage(label: string): string {
   return `${label} was removed, so this session stopped.`;
 }
 
+/** What a session says when its Mac went silent for `LOCAL_ABANDONED_HOURS`, and when the company closed. */
+export const LOCAL_ABANDONED_MESSAGE = "This Mac stopped responding, so this session ended.";
+export const LOCAL_ORG_CLOSED_MESSAGE = "Your company was closed, so this session stopped.";
+
+/** Limits on what a Mac may write (an end is never limited). Fixed windows, counted in the write's own transaction. */
+export const LOCAL_UPDATES_PER_MINUTE_SESSION = 30;
+export const LOCAL_UPDATES_PER_MINUTE_DEVICE = 120;
+/** Status changes that tell followers (needs a person, waiting, stopped), per session and hour; past it the status still saves but no follower is told. */
+export const LOCAL_FOLLOWER_STATUS_PER_HOUR = 12;
+export const LOCAL_OPEN_PER_DEVICE_MAX = 20;
+export const LOCAL_REGISTRATIONS_PER_HOUR = 60;
+export const LOCAL_STOPS_PER_HOUR = 20;
+export const LOCAL_UPDATE_RATE_MESSAGE = "This Mac is sending updates too fast; it will send the rest shortly.";
+export const LOCAL_REGISTER_RATE_MESSAGE = "You've started a lot of local sessions in the last hour. Try again later.";
+export const LOCAL_STOP_RATE_MESSAGE = "This session has been asked to stop a lot in the last hour. Try again later.";
+export const LOCAL_OPEN_MAX_MESSAGE = `This Mac already has ${String(LOCAL_OPEN_PER_DEVICE_MAX)} open sessions. End one first.`;
+
 /** How long a command waits for its device, and the most one poll gives. */
 export const DEVICE_COMMAND_KEEP_DAYS = 30;
 export const DEVICE_COMMANDS_PAGE_MAX = 100;

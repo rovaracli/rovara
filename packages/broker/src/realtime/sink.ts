@@ -110,7 +110,7 @@ export function createRealtimeSink(options: RealtimeSinkOptions): SessionNoticeS
     const owner = await effectiveOwnerOf(access, session);
     const planned = noticesFor(session, change, {
       owner,
-      followers: followersHear(change) ? await checkedFollowers(deps, access, session, owner) : [],
+      followers: followersHear(change) && (change.quiet !== true || change.ended) ? await checkedFollowers(deps, access, session, owner) : [],
       projectNotice: await projectMayHear(access, session),
     });
     // The feed first: a client that connects after this still finds the notice, whatever happens to the publish.

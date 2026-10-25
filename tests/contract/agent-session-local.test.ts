@@ -12,7 +12,6 @@ import {
   LOCAL_UPDATE_TURNS_MAX,
   RealtimeNoticeSchema,
   agentSessionKey,
-  changesKey,
   deviceCommandCounterKey,
   deviceCommandKey,
   deviceKey,
@@ -668,7 +667,8 @@ describe("messages and stops for a session on a Mac", () => {
     expect(command![INDEX_EXPIRY_ATTRIBUTE]).toBe(Math.floor(T0 / 1000) + DEVICE_COMMAND_KEEP_DAYS * 86_400);
     expect(w.db.get(deviceCommandKey(ORG_A, deviceId, 1))).toBeDefined();
     expect(w.db.get(deviceCommandCounterKey(ORG_A, deviceId))).toMatchObject({ seq: 1 });
-    expect(typeof w.db.get(deviceCommandCounterKey(ORG_A, deviceId))![INDEX_EXPIRY_ATTRIBUTE]).toBe("number");
+    // No expiry while the device lives (review M3: a lapsed counter would restart below the Mac's cursor).
+    expect(w.db.get(deviceCommandCounterKey(ORG_A, deviceId))).not.toHaveProperty(INDEX_EXPIRY_ATTRIBUTE);
     // A command past its time is not given although the table has not deleted it yet.
     w.clock.now += (DEVICE_COMMAND_KEEP_DAYS + 1) * 86_400_000;
     expect((await w.commandPoll(PRIYA, deviceId)).commands).toEqual([]);
