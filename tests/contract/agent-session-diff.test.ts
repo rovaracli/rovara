@@ -76,3 +76,12 @@ it("caps output to one file page and counts UTF-8 bytes", async () => {
  const f = setup();f.files.mockResolvedValue({ files: Array.from({ length: 101 }, (_, i) => ({ filename: "file" + i, status: "modified", additions: 1, deletions: 0, patch: "é".repeat(33_000) })), nextPage: 2 });
  const diff = await sessionDiff(f.deps, f.w.caller(ARJUN), f.sessionId, { repository: "app", number: 42, page: 1 });expect(diff.files).toHaveLength(100);expect(diff.files.every(file => file.patch === undefined && file.patchOmitted === "too_large")).toBe(true);
 });
+
+it("normalizes copied, changed and unchanged GitHub files without losing the page", async () => {
+ const f = setup();
+ f.files.mockResolvedValue({ files: ["copied", "changed", "unchanged"].map(status => ({ filename: status + ".ts", status, previous_filename: "original.ts", additions: 1, deletions: 0, patch: "+safe" })), nextPage: 2 });
+ const result = await sessionDiff(f.deps, f.w.caller(ARJUN), f.sessionId, { repository: "app", number: 42, page: 1 });
+ expect(result.files.map(file => file.status)).toEqual(["added", "modified", "modified"]);
+ expect(result.files[0]).toMatchObject({ path: "copied.ts", previousPath: "original.ts", patch: "+safe" });
+ expect(result.nextPage).toBe(2);
+});
