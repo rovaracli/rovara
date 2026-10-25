@@ -17,7 +17,7 @@ import { taskFixture } from "./support/session-fixture.js";
 const id = "ses_bbbbbbbbbbbbbbbbbbbb";
 function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse> } = {}) {
  let body: unknown = value, status = 200;
- const f = fakeHost(async request => request.method === "GET" ? { status, body } : options.send ? options.send(request) : { status: 202, body: { task: taskFixture({ sessionId: id }) } });
+ const f = fakeHost(async request => request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.method === "GET" ? { status, body } : options.send ? options.send(request) : { status: 202, body: { task: taskFixture({ sessionId: id }) } });
  const query = createQueryClient(), ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
  return { ...f, ...ui, query, answer(next: unknown, code = 200) { body = next;status = code; }, close() { ui.unmount();query.clear(); } };
 }
@@ -56,4 +56,9 @@ it("validates start identities and refuses the excluded code route before transp
 for (const theme of ["light", "dark"] as const) it("has an accessible project overview in " + theme, async () => { const f = setup(undefined, { theme });await screen.findByRole("heading", { name: "payments" });await expectNoAxeViolations(f.container);f.close(); });
 it("keeps an unrecognized future agent readable without inventing a profile or start target", async () => {
  const value = projectFixture();value.agents[0]!.agentId = "future-builtin";const f = setup(value);await screen.findByRole("heading", { name: "payments" });expect(screen.getByText("Payments expert", { selector: ".rv-project-agents span" })).toBeTruthy();expect(screen.queryByRole("link", { name: "Payments expert" })).toBeNull();fireEvent.click(screen.getByRole("button", { name: "New session" }));expect(screen.queryByRole("button", { name: "Payments expert" })).toBeNull();expect(f.request.mock.calls.every(([request]) => request.method === "GET")).toBe(true);f.close();
+});
+
+it("refreshes running work on an authenticated session update without leaving the project", async () => {
+ const f = setup();await screen.findByText("Planning");await waitFor(() => expect(f.sockets).toHaveLength(1));const socket = f.sockets[0]!.socket;socket.open();socket.message({ type: "connection_ack", connectionTimeoutMs: 900_000 });const subscription = socket.sent.find(frame => frame.type === "subscribe")!;
+ const next = projectFixture();next.running[0]!.step = "Building";f.answer(next);socket.message({ type: "data", id: subscription.id, event: [JSON.stringify({ type: "session.updated", sessionId: next.running[0]!.sessionId, revision: 2 })] });await screen.findByText("Building");expect(screen.getByRole("heading", { name: "payments" })).toBeTruthy();f.close();expect(socket.closed).toBe(true);
 });
