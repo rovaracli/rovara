@@ -2,6 +2,7 @@
 // owner's alone, the destination's rules apply (the company's rule for local agents on a Mac; the project role, the archive state and the owner's budget for the cloud, which is paid
 // work), and the legs are atomic: the session is never in two places and never lost if one side fails. Plan 6's `HandoffRuntime` is a fake here.
 import { randomUUID } from "node:crypto";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   SESSION_LEGS_MAX,
@@ -53,6 +54,18 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     proxyDown: false, onStart: undefined as undefined | ((call: number) => Promise<void>), push: { repository: "acme/web", branch: "rovara/fix-checkout", headSha: SHA_PUSHED } as unknown,
     repositories: [{ name: "web", url: "https://github.com/acme/web" }] as Array<{ name: string; url: string }>, repositoriesBroken: false,
   };
+  /** Runs once, just before the next move's transaction is sent: what another request or the Mac does in the moment between the move's last read and its write. */
+  const race = { before: undefined as undefined | (() => Promise<void> | void) };
+  const client = {
+    send: async (command: unknown) => {
+      if (command instanceof TransactWriteCommand && race.before !== undefined && JSON.stringify(command.input).includes("LEG#0000")) {
+        const run = race.before;
+        race.before = undefined;
+        await run();
+      }
+      return w.db.send(command);
+    },
+  };
   const started = new Map<string, string>();
   const runtime: HandoffRuntime = {
     startOnBranch: async (_deps, input) => {
@@ -88,7 +101,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     startAgentRun: async () => { throw new Error("not asked"); },
   };
   const deps: HandoffDependencies = {
-    documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64), log: (entry) => { log.push(entry); },
+    documentClient: client, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64), log: (entry) => { log.push(entry); },
     taskView: async (task) => ({ taskId: task.taskId, title: "Fix the flaky checkout test", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: iso(T0), updatedAt: iso(T0), events: [] }) as never,
     ...(options.runtime === false ? {} : { handoff: runtime }),
     ...(options.control === false ? {} : { control }),
@@ -157,7 +170,7 @@ function world(options: { runtime?: boolean; admit?: boolean; control?: boolean 
     return routeAgentSessionRequest({ ...deps, approvals: { ...deps } as never }, as(who, "member", orgId), { method: "POST", path, headers: {}, body: JSON.stringify(input), requestId: "r" }, new URL(`${CELL}${path}`));
   };
   /** Priya's Mac session, followed by Max (maintainer of web, not shared) and by Arjun (shared). */
-  return { ...w, log, published, deviceDeps, calls, live, runtime, control, deps, as, mac, setPolicy, meta, local, under, commands, taskOf, patchSession, onMac, inCloud, body, toMac, move, view, writes, removeDevice, post };
+  return { ...w, log, published, deviceDeps, calls, live, race, runtime, control, deps, as, mac, setPolicy, meta, local, under, commands, taskOf, patchSession, onMac, inCloud, body, toMac, move, view, writes, removeDevice, post };
 }
 
 describe("a session on a Mac moves to the cloud", () => {
@@ -817,6 +830,146 @@ describe("a session in the cloud moves to a Mac", () => {
     const deviceId = await w.mac(PRIYA);
     expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toMatchObject({ code: "NOT_FOUND" });
     expect(w.calls.cancels).toEqual([]);
+  });
+});
+
+describe("a move that races another write is decided by the table, not by what it read", () => {
+  it("to the cloud: a session that ended between the last read and the write is not moved; the task is cancelled and nothing of the move is written", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.onMac();
+    w.race.before = () => w.patchSession(sessionId, { endedAt: iso(T0), summary: { ...(w.meta(sessionId).summary as Item), status: "succeeded" } });
+    expect(await code(w.move(PRIYA, sessionId, w.body()))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 1 });
+    expect(w.under(sessionId, "LEG#")).toHaveLength(1);
+    expect(w.commands(deviceId)).toEqual([]);
+    expect(w.calls.cancels).toHaveLength(1);
+    expect(w.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]).not.toHaveProperty("sessionId");
+  });
+
+  it("to the cloud: a session that changed owner in that moment is not moved by its old owner", async () => {
+    const w = world();
+    const { sessionId } = await w.onMac();
+    w.race.before = () => w.patchSession(sessionId, { owner: { developerId: ARJUN, name: "Arjun" } });
+    expect(await code(w.move(PRIYA, sessionId, w.body()))).toEqual({ code: "FORBIDDEN", message: "Only Arjun can move this session." });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local", owner: { developerId: ARJUN } });
+    expect(w.calls.cancels).toHaveLength(1);
+  });
+
+  it("to the cloud: the very same request landing twice at once commits once and both calls answer the session; no task is cancelled", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.onMac();
+    const input = w.body();
+    w.race.before = async () => { await w.move(PRIYA, sessionId, input); };
+    const reply = await w.move(PRIYA, sessionId, input);
+    expect(reply).toMatchObject({ session: { sessionId, where: { kind: "cloud" } } });
+    expect(w.calls.cancels).toEqual([]);
+    expect(w.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(1);
+    expect(w.under(sessionId, "EVENT#").filter((event) => event.type === "handoff")).toHaveLength(1);
+    expect(w.under(sessionId, "LEG#")).toHaveLength(2);
+    expect(w.commands(deviceId)).toHaveLength(1);
+    expect(w.meta(sessionId)).toMatchObject({ revision: 2 });
+  });
+
+  it("to the cloud: a task that was given a session of someone else in that moment is not taken; the move is refused as busy and the Mac session is untouched", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.onMac();
+    w.race.before = () => { const task = w.db.find((item) => item.entityType === "DEVELOPER_TASK")[0]!; w.db.set({ ...task, sessionId: "ses_00000000000000000042" }); };
+    expect(await code(w.move(PRIYA, sessionId, w.body()))).toEqual({ code: RUNTIME_UNAVAILABLE, message: "This session is busy right now. Try again." });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 1 });
+    expect(w.under(sessionId, "LEG#")).toHaveLength(1);
+    expect(w.commands(deviceId)).toEqual([]);
+    expect(w.db.get(deviceSessionKey(ORG_A, deviceId, sessionId))).toBeDefined();
+  });
+
+  it("to the cloud: the Mac removed in that moment still lets the move happen, with no command for it", async () => {
+    const w = world();
+    const { sessionId, deviceId } = await w.onMac();
+    w.race.before = () => { w.db.set({ ...(w.db.get(deviceKey(ORG_A, deviceId)) as Item), revokedAt: iso(T0) }); };
+    await w.move(PRIYA, sessionId, w.body());
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task" });
+    expect(w.commands(deviceId)).toEqual([]);
+  });
+
+  it("to a Mac: a session that ended in that moment is not moved; its state, its legs and its task are as they were", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    w.race.before = () => w.patchSession(sessionId, { endedAt: iso(T0), summary: { ...(w.meta(sessionId).summary as Item), status: "succeeded" } });
+    expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toEqual({ code: "SESSION_ENDED", message: "This session has ended." });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task", subject: { taskId } });
+    expect(w.under(sessionId, "LEG#")).toHaveLength(1);
+    expect(w.taskOf(taskId)).toMatchObject({ sessionId });
+    expect(w.local(sessionId)).toBeUndefined();
+    expect(w.db.get(deviceSessionKey(ORG_A, deviceId, sessionId))).toBeUndefined();
+  });
+
+  it("to a Mac: a session that changed owner in that moment is not moved by its old owner", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    w.race.before = () => w.patchSession(sessionId, { owner: { developerId: ARJUN, name: "Arjun" } });
+    expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toEqual({ code: "FORBIDDEN", message: "Only Arjun can move this session." });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task" });
+    expect(w.local(sessionId)).toBeUndefined();
+  });
+
+  it("to a Mac: a person who followed in that moment is judged too (the count it read no longer holds), and the count ends right", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    w.follower(ORG_A, sessionId, MAX);
+    w.patchSession(sessionId, { followerCount: 1 });
+    const deviceId = await w.mac(PRIYA);
+    w.race.before = () => { w.follower(ORG_A, sessionId, MIA); w.patchSession(sessionId, { followerCount: 2 }); };
+    await w.move(PRIYA, sessionId, w.toMac(deviceId));
+    expect(w.under(sessionId, "FOLLOWER#")).toEqual([]);
+    expect(w.meta(sessionId)["followerCount"]).toBe(0);
+  });
+
+  it("to a Mac: the Mac removed in that moment is refused, with nothing written for it", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    w.race.before = () => { w.db.set({ ...(w.db.get(deviceKey(ORG_A, deviceId)) as Item), revokedAt: iso(T0) }); };
+    expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId)))).toMatchObject({ code: "NOT_FOUND" });
+    expect(w.meta(sessionId)).toMatchObject({ kind: "task", revision: 1 });
+    expect(w.local(sessionId)).toBeUndefined();
+    expect(w.db.get(deviceSessionKey(ORG_A, deviceId, sessionId))).toBeUndefined();
+  });
+
+  it("to a Mac: the Mac's state changed in that moment (a late write of an earlier leg), the new leg starts from what is there now", async () => {
+    const w = world();
+    const mac = await w.onMac();
+    await w.move(PRIYA, mac.sessionId, w.body());
+    w.race.before = () => { w.db.set({ ...(w.local(mac.sessionId) as Item), rev: 9, turnCount: 7 }); };
+    await w.move(PRIYA, mac.sessionId, w.toMac(mac.deviceId));
+    expect(w.local(mac.sessionId)).toMatchObject({ rev: 10, turnCount: 7, status: "running" });
+  });
+
+  it("to a Mac: the very same request landing twice at once commits once and both calls answer the same branch", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    const input = w.toMac(deviceId);
+    w.race.before = async () => { await w.move(PRIYA, sessionId, input); };
+    const reply = await w.move(PRIYA, sessionId, input);
+    expect(reply).toMatchObject({ headSha: SHA_PUSHED });
+    expect(w.under(sessionId, "EVENT#").filter((event) => event.type === "handoff")).toHaveLength(1);
+    expect(w.under(sessionId, "LEG#")).toHaveLength(2);
+    expect(w.meta(sessionId)).toMatchObject({ kind: "local", revision: 2 });
+  });
+});
+
+describe("a request id belongs to one action", () => {
+  it("a stop's request id cannot be used for a move, and a move's cannot be used for a stop; the task is not cancelled again", async () => {
+    const w = world();
+    const { sessionId } = w.inCloud();
+    const deviceId = await w.mac(PRIYA);
+    const requestId = randomUUID();
+    await stopSession(w.deps, { ...w.as(PRIYA), name: "Priya" }, sessionId, { requestId });
+    expect(w.calls.cancels).toHaveLength(1);
+    expect(await code(w.move(PRIYA, sessionId, w.toMac(deviceId, { requestId })))).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(w.calls.cancels).toHaveLength(1);
+    expect(w.calls.pushes).toEqual([]);
   });
 });
 

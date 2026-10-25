@@ -181,6 +181,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/devices/store.ts",
       // Plan 5, Task 18: a local session's state, its turns, its device entry and a device's commands (and the counter beside them) expire on it (local-sessions.ts writes them; a command past its time is left out of a poll).
       "packages/broker/src/devices/local-sessions.ts",
+      // Plan 5, Task 19: a move to a Mac starts the Mac's state and entry for the session with the same expiry (handoff.ts writes them), and the move's request item expires like a stop's.
+      "packages/broker/src/agent-sessions/handoff.ts",
       // Plan 5, Task 8: each person's change notices (the catch-up feed) expire a week after they are written.
       "packages/broker/src/realtime/changes.ts",
       // A plan's "asked again" cooldown item (Plan 3, Task 35b): kept a day, then deleted by the TTL.
