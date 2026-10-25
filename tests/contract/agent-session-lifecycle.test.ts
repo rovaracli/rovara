@@ -326,7 +326,7 @@ describe("two members are merged", () => {
   it("gives up with a retryable refusal when the session keeps changing, and the marker stays", async () => {
     const { w, zedsOwn } = setup();
     w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }] }, times: 50 });
-    expect(await code(merge(w))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(await code(merge(w))).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: "This session is busy right now; the next run moves it." });
     expect(w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!["owner"]).toMatchObject({ developerId: ZED });
   });
 
@@ -378,7 +378,7 @@ describe("two members are merged", () => {
   it("refuses a survivor that has no sign-in record, and moves nothing", async () => {
     const { w, followed } = setup();
     w.db.delete({ pk: `DEVELOPER#${ARJUN}`, sk: "META" });
-    expect(await code(merge(w))).toBeDefined();
+    expect(await code(merge(w))).toMatchObject({ code: "NOT_FOUND", message: "the member the sessions move to could not be found" });
     expect(w.followers(ORG_A, followed.sessionId)).toContain(ZED);
   });
 
@@ -455,6 +455,9 @@ describe("an org is closed", () => {
       w.db.set({ ...changesKey(ORG_A, developerId, CREATED_AT, 2), entityType: "CHANGE_NOTICE", orgId: ORG_A, type: "session_shared", sessionId: a.sessionId });
     }
     w.db.set({ ...projectMonthStatsKey(ORG_A, "web", "2026-10"), entityType: "PROJECT_SESSION_STATS", orgId: ORG_A, started: 2 });
+    // A long-ended session of a person who has left: no live tile, and no member whose own list names it; only its project's list does.
+    const gone = w.session({ owner: hex("8"), ended: true });
+    w.db.delete(liveSessionKey(ORG_A, gone.sessionId));
     // Org B's own rows of every kind.
     const b = w.session({ orgId: ORG_B, owner: BO, project: "web", followers: [BO] });
     w.share(ORG_B, b.sessionId, BO, "view");
@@ -466,7 +469,7 @@ describe("an org is closed", () => {
     w.db.set({ ...endedSessionWorkKey("2026-10-20", ORG_A, "ses_cccccccccccccccccccc"), entityType: "ENDED_AGENT_SESSION", orgId: ORG_A, sessionId: "ses_cccccccccccccccccccc" });
     w.db.set({ ...endedSessionWorkKey("2026-10-20", ORG_B, "ses_dddddddddddddddddddd"), entityType: "ENDED_AGENT_SESSION", orgId: ORG_B, sessionId: "ses_dddddddddddddddddddd" });
     w.db.set({ pk: "ENDED_DRAIN_CURSOR", sk: "META", entityType: "ENDED_DRAIN_CURSOR", day: "2026-10-20" });
-    return { w, a, ended, b };
+    return { w, a, ended, b, gone };
   };
   const rowsOf = (w: World, orgId: OrgId) => JSON.stringify(w.db.find((item) => String(item.pk).includes(orgId) || String(item.sk).includes(orgId)));
   const orgAPartitions = (w: World) => w.db.find((item) => String(item.pk).startsWith(`ORG#${ORG_A}#`) && /LIVE_SESSIONS|LIVE_PRESENCE|CHANGES#|DEVICE#|MEMBER_DEVICES#/.test(String(item.pk)));
@@ -490,7 +493,7 @@ describe("an org is closed", () => {
   });
 
   it("gives the rest an expiry 30 days on, and never lengthens a shorter one", async () => {
-    const { w, a, ended } = setup();
+    const { w, a, ended, gone } = setup();
     w.db.set({ ...agentSessionKey(ORG_A, a.sessionId, "EVENT#2026-10-22T08:00:00.000Z#evt_1"), entityType: "AGENT_SESSION_EVENT", orgId: ORG_A, indexExpiresAt: EXPIRES - 5 });
     w.db.set({ ...agentSessionKey(ORG_A, a.sessionId, "EVENT#2026-10-22T08:01:00.000Z#evt_2"), entityType: "AGENT_SESSION_EVENT", orgId: ORG_A, indexExpiresAt: EXPIRES + 1_000_000 });
     await clearOrgSessions(w.deps, ORG_A);
@@ -503,6 +506,8 @@ describe("an org is closed", () => {
     expect(w.get(agentSessionKey(ORG_A, a.sessionId, `SHARE#MEMBER#${MIA}`))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(sharedSessionsKey(ORG_A, { kind: "member", developerId: MIA }, a.sessionId))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(projectMonthStatsKey(ORG_A, "web", "2026-10"))!["indexExpiresAt"]).toBe(EXPIRES);
+    expect(w.get(agentSessionKey(ORG_A, gone.sessionId, "META"))!["indexExpiresAt"]).toBe(EXPIRES);
+    expect(w.get(mySessionsKey(ORG_A, hex("8"), gone.createdAt, gone.sessionId))!["indexExpiresAt"]).toBe(EXPIRES);
     expect(w.get(agentSessionKey(ORG_A, a.sessionId, "EVENT#2026-10-22T08:00:00.000Z#evt_1"))!["indexExpiresAt"]).toBe(EXPIRES - 5);
     expect(w.get(agentSessionKey(ORG_A, a.sessionId, "EVENT#2026-10-22T08:01:00.000Z#evt_2"))!["indexExpiresAt"]).toBe(EXPIRES);
   });
