@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -28,7 +28,7 @@ function setup(element: ReactElement, options: { path?:string; member?:boolean; 
  });
  const navigate=vi.fn<(url:string)=>void>();f.host.navigate=navigate;const query=createQueryClient();
  const ui=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(MemoryRouter,{initialEntries:[options.path??"/app/onboard"],children:element})})}),{theme:options.theme??"light"});
- return {...f,navigate,close(){ui.unmount();query.clear();}};
+ return {...f,navigate,query,close(){ui.unmount();query.clear();}};
 }
 it("signup explains the trial and performs no API read",()=>{const f=setup(h(SignupScreen));expect(screen.getByRole("heading",{name:"Start with Rovara"})).toBeTruthy();expect(screen.getByText("A free trial starts when you connect GitHub.")).toBeTruthy();fireEvent.click(screen.getByRole("button",{name:"Sign up or sign in"}));expect(f.host.signIn).toHaveBeenCalledWith("/app/welcome");expect(f.request).not.toHaveBeenCalled();f.close();});
 it("joined people go home even with a default name",async()=>{const f=setup(h(WelcomeScreen),{path:"/app/welcome?joined=1",defaultName:true});await waitFor(()=>expect(f.navigate).toHaveBeenCalledWith("/app"));expect(screen.queryByLabelText("Company name")).toBeNull();f.close();});
@@ -45,3 +45,5 @@ it("keeps a requested installation pending with honest recovery",async()=>{const
 it("a ready project can finish without manufacturing a first code session",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?project=web&step=first"});await screen.findByRole("link",{name:"Open project"});expect(screen.queryByRole("button",{name:/Start/})).toBeNull();expect(f.request.mock.calls.some(([r])=>r.path.endsWith("/runs"))).toBe(false);f.close();});
 
 it("saves setup against the read revision and checks the actual project",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?project=web&step=setup"});fireEvent.change(await screen.findByLabelText("Setup commands"),{target:{value:"npm ci\nnpm run generate"}});fireEvent.click(screen.getByRole("button",{name:"Check again"}));await waitFor(()=>expect(f.request.mock.calls.some(([r])=>r.method==="POST"&&r.path==="/v1/app/projects/web/setup-check")).toBe(true));expect(f.request.mock.calls.find(([r])=>r.method==="PUT")?.[0].body).toMatchObject({expectedRevision:2,setupCommands:["npm ci","npm run generate"],testCommands:["npm test"],devcontainer:null});f.close();});
+
+it("keeps setup edits pinned to the form revision when a background read advances",async()=>{const f=setup(h(OnboardScreen),{path:"/app/onboard?project=web&step=setup"});fireEvent.change(await screen.findByLabelText("Setup commands"),{target:{value:"npm ci\nnpm run generate"}});await act(async()=>{f.query.setQueryData(["onboard","project","web"],{...project,latestRevision:3,setup:{...project.setup,failedStep:"A newer setup check failed."},settings:{...project.settings,setupCommands:["npm run someone-elses-setup"]}});});await screen.findByText("A newer setup check failed.");expect(screen.getByLabelText("Setup commands")).toHaveProperty("value","npm ci\nnpm run generate");fireEvent.click(screen.getByRole("button",{name:"Check again"}));await waitFor(()=>expect(f.request.mock.calls.some(([r])=>r.method==="PUT")).toBe(true));expect(f.request.mock.calls.find(([r])=>r.method==="PUT")?.[0].body).toMatchObject({expectedRevision:2});f.close();});
