@@ -2,7 +2,7 @@ import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 test("the realtime harness delivers subscribed notices and drops connections", async ({ page, context, request, baseURL }) => {
  const realtime = await mockRealtime(page);await request.post("/__mock/scenario", { data: { name: "shell" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
- await page.goto("/app");await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+ await page.goto("/app/signed-out");await expect(page.getByRole("heading", { name: "Sign in to Rovara", exact: true })).toBeVisible();
  await page.evaluate(() => {
  window.__fixtureNotices = [];window.__fixtureClosed = false;
  const socket = new WebSocket("wss://localhost/event/realtime");

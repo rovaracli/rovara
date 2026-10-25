@@ -978,7 +978,7 @@ describe("the link /s/<id>", () => {
     expect(link.headers.location).toBeUndefined();
     const page = await t.browser(`/review/${taskId}/task`, OMAR);
     expect(page.status, page.body.slice(0, 300)).toBe(200);
-    expect(page.body).toContain(`href="/s/${sessionId}">Open this session in Rovara</a>`);
+    expect(page.body).toContain(`href="/s/${sessionId}">Back to the session</a>`);
     const state = await t.browser(`/review/${taskId}/task/api/state`, OMAR);
     expect(state.status, state.body).toBe(200);
     expect(JSON.parse(state.body)).toMatchObject({ canRead: true, canComment: false, canSuggest: false, canDecide: false, canAsk: false, canTakeOwnership: false, canManagePeople: false });
@@ -1021,7 +1021,7 @@ describe("the link /s/<id>", () => {
     expect(link.headers.location).toBeUndefined();
     const page = await t.browser(`/review/${taskId}/task`, OMAR);
     expect(page.status, page.body.slice(0, 300)).toBe(200);
-    expect(page.body).toContain(`href="/s/${sessionId}">Open this session in Rovara</a>`);
+    expect(page.body).toContain(`href="/s/${sessionId}">Back to the session</a>`);
     expect(page.body).not.toContain("Quentin Peoplesworth");
     const state = await t.browser(`/review/${taskId}/task/api/state`, OMAR);
     expect(state.status, state.body).toBe(200);
