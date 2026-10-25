@@ -3282,7 +3282,11 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   try {
     await withCurrentThreadNotes(deps, task, request.requestId, (current, notes) => {
       const fed = fedThroughUpdate(notes);
-      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: retryInstructions + notes.suffix }, (operation) => [
+      // A version 2 plan that has Understand's findings is asked with what the first plan run is asked (the request, the assumptions, the people's answers), then the retry's text: a plan
+      // that never ran (cancelled, or its start failed) would otherwise start without them.
+      const understood = current.workflow?.definitionVersion === "1.1.0" && current.workflow.intent?.assessment?.kind === "ready"
+        ? `${understandPrompt({ requestText: current.requestText ?? "", intent: current.workflow.intent, notes: "", forPlan: true })}\n\n` : "";
+      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: understood + retryInstructions + notes.suffix }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
           UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}${cap.clause}`,
@@ -7007,6 +7011,15 @@ interface FinishedReleaseMark { taskId: string; markedAt?: string; attempts?: nu
  * Durably queues a finished task for the existing release worker. This intentionally performs no workspace or compute
  * work: a merge-recovery poll only establishes the hand-off, and the release sweep owns the destructive operation.
  */
+/** The mark `enqueueFinishedTaskRelease` writes, as a transaction item, for a caller that ends a task in a commit of its own and must not lose the release if it stops right after. */
+export function finishedReleaseMarkItem(tableName: string, taskId: string, now: string): TransactItems[number] {
+  return { Update: {
+    TableName: tableName, Key: finishedReleaseKey(taskId),
+    UpdateExpression: "SET entityType = :entity, taskId = :task, markedAt = if_not_exists(markedAt, :now)",
+    ExpressionAttributeValues: { ":entity": FINISHED_RELEASE_PK, ":task": taskId, ":now": now },
+  } };
+}
+
 export async function enqueueFinishedTaskRelease(deps: Pick<ReleaseDeps, "documentClient" | "tableName">, taskId: string): Promise<void> {
   await deps.documentClient.send(new UpdateCommand({
     TableName: deps.tableName,

@@ -253,9 +253,10 @@ describe("what Understand is asked", () => {
 
 // ---- the step through the broker
 
-async function world(options: { proxy?: boolean; live?: boolean } = {}) {
+async function world(options: { proxy?: boolean; live?: boolean; many?: boolean } = {}) {
   const access = options.proxy === false ? undefined : fakeModelAccess();
   const h = await createDeveloperTaskBroker({
+    ...(options.many === true ? { memberLimit: 200, organizationLimit: 200 } : {}),
     brokerExtra: { agents: { ...(options.live === false ? {} : { rovaraCodeV2Live: true }) }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) },
   });
   if (access !== undefined) {
@@ -604,16 +605,38 @@ describe("an Understand that never comes back gives its workspace slot back", ()
     expect(t.rows().filter((item) => item.kind === "UNDERSTAND")).toHaveLength(1);
   });
 
-  it("ends the task, closed with the reason, when it is due and Understand is still running; the workspace slot goes back", async () => {
+  it("ends the task when it is due and the run is still on record as active: the run is asked to stop, the release is marked in the same commit, and the slot comes back once the run has ended", async () => {
     const t = await world();
     const run = await t.understanding();
-    // The operation ended without a result reaching the broker, so the workspace is free again.
-    t.db.set({ ...(t.db.get(`WORKSPACE#${run.workspaceId}`, "META") as Record<string, unknown>), status: "READY", activeOperationId: undefined });
+    // The normal case: no result ever came, so the workspace still has the run as its active operation. Nothing here clears it.
+    expect(t.db.get(`WORKSPACE#${run.workspaceId}`, "META")?.activeOperationId).toBe(run.operationId);
     t.makeDue(t.rows().find((item) => item.kind === "UNDERSTAND")!);
     await t.sweep();
     expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", blockReason: UNDERSTAND_TIMED_OUT_MESSAGE });
+    const revision = t.meta(run.taskId).workflow.revision;
     expect(t.rows().filter((item) => item.kind === "UNDERSTAND")).toEqual([]);
-    expect(t.meta(run.taskId).releasedAt ?? t.meta(run.taskId).closedAt).toBeDefined();
+    const cancel = t.operations(run.workspaceId).find((item) => item.kind === "cancel");
+    expect(cancel).toMatchObject({ targetOperationId: run.operationId });
+    // The slot is held while the run is, and the mark that makes the sweep retry the release is there.
+    expect(t.meta(run.taskId).releasedAt).toBeUndefined();
+    expect(t.db.get("FINISHED_RELEASE", `TASK#${run.taskId}`)).toMatchObject({ taskId: run.taskId });
+    await t.finish(run.workspaceId, String(cancel!.id), "SUCCEEDED");
+    expect(t.meta(run.taskId).releasedAt).toBeDefined();
+    expect(t.db.get("FINISHED_RELEASE", `TASK#${run.taskId}`)).toBeUndefined();
+    // Nothing ended the task a second time.
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "CLOSED", revision });
+    expect(t.operations(run.workspaceId).filter((item) => item.kind === "cancel")).toHaveLength(1);
+  });
+
+  it("marks the release in the watchdog's own commit, so a stop between the commit and the release loses nothing", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    t.makeDue(t.rows().find((item) => item.kind === "UNDERSTAND")!);
+    await t.sweep();
+    const ending = t.db.transactions().filter((entries) => JSON.stringify(entries).includes(UNDERSTAND_TIMED_OUT_MESSAGE));
+    expect(ending).toHaveLength(1);
+    expect(JSON.stringify(ending[0])).toContain("FINISHED_RELEASE");
+    expect(JSON.stringify(ending[0])).toContain(run.taskId);
   });
 
   it("does nothing when Understand answered in time: the row is stale and goes", async () => {
@@ -727,6 +750,108 @@ describe("a worker that cannot take Understand", () => {
     const outbox = t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === run.operationId)[0]!;
     await failOutboxOperation(t.db as never, "state", outbox as never, "RUNTIME_UNAVAILABLE: This agent needs a newer worker. Ask an admin to upgrade Rovara.");
     expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: "understanding operation ended failed" });
+  });
+});
+
+describe("rows that wait for a machine", () => {
+  it("are put off without counting an attempt, so 26 of them do not fill the sweep and starve the next task's row", async () => {
+    const t = await world({ proxy: false, many: true });
+    const waiting: string[] = [];
+    for (let n = 0; n < 26; n += 1) waiting.push((await t.start({}, `Fix the retry bug ${String(n)}`)).taskId);
+    const last = await t.start({}, "Fix the last bug");
+    // The last task's machine is ready (the oldest 26 rows are older and sort first).
+    t.db.set({ ...(t.db.get(`WORKSPACE#${last.workspaceId}`, "META") as Record<string, unknown>), status: "READY", activeOperationId: undefined });
+    await t.sweep();
+    await t.sweep();
+    expect(t.operationOf(last.workspaceId, "UNDERSTAND")).toBeDefined();
+    expect(t.meta(last.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "RUNNING" });
+    for (const taskId of waiting) {
+      const row = t.rows().find((item) => item.kind === "UNDERSTAND" && item.taskId === taskId)!;
+      expect(row.attempts, taskId).toBe(0);
+      expect(Date.parse(String(row.nextAttemptAt))).toBeGreaterThan(Date.now() + 60_000);
+    }
+  });
+});
+
+describe("retrying a plan of a version 2 task", () => {
+  const priya = { round: 1, by: { actorId: "c".repeat(64), name: "Priya Nair" }, source: "app", answers: [{ questionId: "q1", text: "the billing service" }], at: NOW };
+
+  it("after a cancel at PLAN/READY (the plan never ran) sends what the first plan run gets, then the retry's text", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    t.planStartBlocked();
+    await t.answers(run, ready());
+    const task = t.meta(run.taskId);
+    t.db.set({ ...task, workflow: { ...task.workflow, intent: { ...task.workflow.intent, answers: [priya] } } });
+    expect((await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/cancel`, { requestId: randomUUID() })).status).toBe(200);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED" });
+    const retried = await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Plan it again.", expectedRevision: t.meta(run.taskId).workflow.revision });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    const prompt = t.invocationOf(String(t.operationOf(run.workspaceId, "PLAN")!.id)).payload.prompt;
+    expect(prompt).toContain(UNDERSTAND_REQUEST_HEADER);
+    expect(prompt).toContain(PLAN_UNDERSTANDING_HEADER);
+    expect(prompt).toContain("- The config file is config/retry.json.");
+    expect(prompt).toContain(ANSWERS_BLOCK_HEADER);
+    expect(prompt).toContain("Priya Nair");
+    expect(prompt.indexOf("Plan it again.")).toBeGreaterThan(prompt.indexOf(PLAN_UNDERSTANDING_HEADER));
+  });
+
+  it("after a plan that could not be read sends the same, then the problems found", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    await t.answers(run, ready());
+    const planning = t.operationOf(run.workspaceId, "PLAN")!;
+    await t.artifact(run.workspaceId, String(planning.id), "plan.md", "this is not a plan");
+    await t.finish(run.workspaceId, String(planning.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "PLAN", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.planUnreadable });
+    const retried = await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Again.", expectedRevision: t.meta(run.taskId).workflow.revision });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    const second = t.operations(run.workspaceId).filter((item) => item.workflowMode === "PLAN").at(-1)!;
+    const prompt = t.invocationOf(String(second.id)).payload.prompt;
+    expect(prompt).toContain(PLAN_UNDERSTANDING_HEADER);
+    expect(prompt).toContain("Make the retry flag read the config file.");
+    expect(prompt.indexOf("Your last answer could not be read as an AgentX plan")).toBeGreaterThan(prompt.indexOf(PLAN_UNDERSTANDING_HEADER));
+  });
+
+  it("leaves a version 1 plan retry exactly as it was: no Understand blocks", async () => {
+    const h = await createDeveloperTaskBroker({});
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = String((h.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId);
+    await h.finish(workspaceId, String(h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.kind === "prepare")[0]!.id), "SUCCEEDED", PREPARED);
+    const planning = h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.workflowMode === "PLAN")[0]!;
+    await h.finish(workspaceId, String(planning.id), "FAILED", { error: "ended by the test" });
+    const blocked = (h.db.get(`DEVTASK#${taskId}`, "META") as unknown as { workflow: { revision: number } }).workflow;
+    const retried = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/retry`, { requestId: randomUUID(), instructions: "Plan it again.", expectedRevision: blocked.revision });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    const second = h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.workflowMode === "PLAN").at(-1)!;
+    const prompt = (h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === second.id)[0]!.invocation as { payload: { prompt: string } }).payload.prompt;
+    expect(prompt).toContain("Plan it again.");
+    expect(prompt).not.toContain(PLAN_UNDERSTANDING_HEADER);
+  });
+});
+
+describe("a Full path chosen by Understand is admitted as a Full start is", () => {
+  it("is refused, with a plain reason and no raise, when a budget the task counts against has less than the Full path's minimum left", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    const member = t.access!.limits().members.get(MAYA.developerId)!;
+    // A Quick start needs 50 cents left, a Full start 2 dollars: 1 dollar is enough for one and not the other.
+    t.access!.setMemberSpent(TEST_ORG, MAYA.developerId, member - 1);
+    await t.answers(run, ready({ path: "FULL" }));
+    expect(t.meta(run.taskId)).toMatchObject({ budgetUsd: 2, workflow: { stage: "UNDERSTAND", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.understandFullNotAdmitted } });
+    expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
+    expect(t.rows().filter((item) => item.kind === "PLAN")).toEqual([]);
+    expect(workflowMessage({ taskId: TASK_ID, workflow: WorkflowSnapshotSchema.parse({ ...t.meta(run.taskId).workflow }) })?.text).toContain("isn't enough AI budget left");
+  });
+
+  it("and a Quick path chosen by Understand needs only the Quick minimum", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    const member = t.access!.limits().members.get(MAYA.developerId)!;
+    t.access!.setMemberSpent(TEST_ORG, MAYA.developerId, member - 1);
+    await t.answers(run, ready({ path: "QUICK" }));
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "PLAN" });
   });
 });
 

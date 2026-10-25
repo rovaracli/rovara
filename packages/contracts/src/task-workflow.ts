@@ -182,6 +182,8 @@ export const WORKFLOW_BLOCK_REASONS = {
   /** Rovara Code version 2: the dispatch could not start Understand, or the plan step after it, within its attempts. */
   understandNotStarted: "I couldn't start reading your request. Retry it.",
   planNotStarted: "I couldn't start the plan. Retry planning.",
+  /** Rovara Code version 2: Understand chose the Full path, but a Full start would not be admitted on the budgets that are left. */
+  understandFullNotAdmitted: "I chose the Full path for this task, but there isn't enough AI budget left to start a Full plan. Raise the budget, then retry.",
 } as const;
 
 /** What the coder is told about tests a review-only rerun found regressed (`regressedChecks`). */

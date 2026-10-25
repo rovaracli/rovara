@@ -496,7 +496,7 @@ import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
@@ -13131,9 +13131,13 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
 }
 
 /**
- * Plan 6 Task 4: Understand never came back by its time limit (its worker was lost, or its result never reached the broker). The task ends, closed, with the reason, so it gives its
- * workspace slot back like a task whose plan was rejected; the row goes in the same commit. A task that moved on meanwhile (the result arrived) makes the commit fail its condition: the row is
- * stale and goes. The release itself is best effort and is tried again by every later result, the recovery sweep and the owner's next start.
+ * Plan 6 Task 4: Understand never came back by its time limit (its worker was lost, or its result never reached the broker). The task ends, closed, with the reason; the row goes and the
+ * task is marked as waiting for its release, all in the same commit, so a stop right after it loses neither. A task that moved on meanwhile (the result arrived) makes the commit fail its
+ * condition: the row is stale and goes.
+ *
+ * The run is normally still on record as active (that is why no result came), and a workspace with an active run is not released ("busy"). So the run is stopped through the cancel
+ * every owner's Cancel uses; its result (or, for a worker that is gone, the existing stuck-cancel handling) ends the operation, and the release then goes through, by that result and by the
+ * release sweep's mark. Until the run has ended the slot is held.
  */
 async function endStuckUnderstanding(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
   const now = new Date().toISOString();
@@ -13147,6 +13151,7 @@ async function endStuckUnderstanding(dependencies: AwsBrokerDependencies, task: 
         ExpressionAttributeValues: { ":workflow": endStuckUnderstand(task.workflow, now), ":now": now, ":revision": task.workflow.revision, ":understand": "UNDERSTAND", ":running": "RUNNING" },
       } },
       { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } },
+      finishedReleaseMarkItem(dependencies.tableName, task.taskId, now),
     ] }));
   } catch (error) {
     if (!isConditional(error)) throw error;
@@ -13154,8 +13159,33 @@ async function endStuckUnderstanding(dependencies: AwsBrokerDependencies, task: 
     return "STALE";
   }
   console.log(JSON.stringify({ component: "broker", event: "workflow.understand_timed_out", taskId: task.taskId }));
+  try {
+    const workspace = await requireWorkspace(dependencies, task.workspaceId);
+    if (workspace.activeOperationId) await cancelRunningTask(dependencies, workspace, {});
+  } catch (error) {
+    // The task has ended; a run that could not be asked to stop is the release sweep's to find (its mark is written), and the reaper's.
+    console.log(JSON.stringify({ component: "broker", event: "workflow.understand_stop_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
   await releaseIfFinished(dependencies, task.taskId);
   return "DISPATCHED";
+}
+
+/** How long a row that is waiting for its machine to be prepared is put off. */
+const WAIT_FOR_MACHINE_MS = 2 * 60_000;
+
+/** Puts a waiting dispatch row's next sweep off, conditional on the attempts it was read with (a row someone else moved is left to them). */
+async function waitForMachine(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+  const next = new Date(Date.now() + WAIT_FOR_MACHINE_MS).toISOString();
+  try {
+    await dependencies.documentClient.send(new UpdateCommand({
+      TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk },
+      UpdateExpression: "SET nextAttemptAt = :next, dispatchDueSk = :due",
+      ConditionExpression: "attribute_exists(pk) AND (attempts = :attempts OR (attribute_not_exists(attempts) AND :attempts = :zero))",
+      ExpressionAttributeValues: { ":next": next, ":due": `${next}#${item.sk}`, ":attempts": item.attempts ?? 0, ":zero": 0 },
+    }));
+  } catch (error) {
+    if (!isConditional(error)) throw error;
+  }
 }
 
 /** The assessment a finished Understand run saved, read from its artifact and checked here (never taken from the worker's word): undefined when it is missing, too long, not JSON or not valid. */
@@ -13203,7 +13233,8 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     // The watchdog needs no caller: it is due only after the step's time limit, and then it ends the task if the step never answered. Other work (a result of this task) runs the task's rows at
     // once, due or not, so a watchdog that is not due yet stays as it is.
     if (item.kind === "UNDERSTAND" && workflow.state === "RUNNING") {
-      if (Date.now() < Date.parse(item.nextAttemptAt)) return "DISPATCHED";
+      // Not a dispatch (and not a stale row: it stays); the sweep never reads it before it is due.
+      if (Date.now() < Date.parse(item.nextAttemptAt)) return "STALE";
       return await endStuckUnderstanding(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     }
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
@@ -13228,8 +13259,12 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       if (outcome === "WAITING") return "DISPATCHED";
     } else if (item.kind === "UNDERSTAND") {
       outcome = await startTaskWorkflowUnderstandFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision });
-      // The machine is still being prepared: the row stays, and the prepare's result runs it at once.
-      if (outcome === "WAITING") return "DISPATCHED";
+      // The machine is still being prepared: the row stays, and the prepare's result runs it at once. Its due time moves on, with no attempt counted, so rows that wait for a machine
+      // cannot fill the sweep's page and starve the others (the sweep reads the oldest due rows first).
+      if (outcome === "WAITING") {
+        await waitForMachine(dependencies, item);
+        return "DISPATCHED";
+      }
     } else if (item.kind === "PLAN") {
       outcome = await startTaskWorkflowPlanFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision });
     } else {
@@ -14704,6 +14739,24 @@ async function completedWorkflowItems(
         next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.understandUnreadable, now);
       }
       // Understand chose the Full path for a task admitted under the Quick limit: the planning limit rises to the Full one, in this same commit (bounded: a request's own lower limit still wins).
+      if (next.stage === "PLAN" && next.path === "FULL" && current.path === "QUICK" && task.budgetUsd !== undefined) {
+        // It is a Full plan from here, so it must be admitted as a Full start is: the budgets it counts against must have the Full path's minimum left (it reads and writes nothing but the proxy's
+        // limits). Refused, the step is blocked with a plain reason, as a Full start would have been refused; the payer's words are in the log's error code only.
+        if (dependencies.modelAccess !== undefined) {
+          try {
+            await admitWork(
+              { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, cloud: dependencies.cloud === true },
+              { orgId: requireOrgId(task.orgId), project: task.project, payer: task.payer ?? { kind: "member", developerId: task.developerId },
+                agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, agentName: task.agent?.name ?? ROVARA_CODE_NAME, path: "FULL",
+                ...(task.origin === "test_run" ? { testRunBy: task.startedBy?.developerId ?? task.developerId } : {}) },
+            );
+          } catch (error) {
+            if (!(error instanceof AgentXError) || !ADMISSION_REFUSALS.has(error.code)) throw error;
+            console.log(JSON.stringify({ component: "broker", event: "workflow.understand_full_not_admitted", taskId: task.taskId, error: error.code }));
+            next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.understandFullNotAdmitted, now);
+          }
+        }
+      }
       if (next.stage === "PLAN" && next.path === "FULL" && current.path === "QUICK" && task.budgetUsd !== undefined) {
         const full = planningLimit(await readProjectAi({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, requireOrgId(task.orgId), task.project), "FULL");
         const limit = Math.max(task.budgetUsd, task.requestedRunLimitUsd === undefined ? full : Math.min(full, task.requestedRunLimitUsd));
