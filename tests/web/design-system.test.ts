@@ -138,3 +138,12 @@ it("also clears a secret after a rejected submission and hides internal errors",
  await user.type(input, "test-only-value");await user.click(screen.getByRole("button", { name: "Save" }));
  await waitFor(() => expect(input.value).toBe(""));expect(screen.getByRole("alert").textContent).not.toContain("internal details");
 });
+it("makes invisible controls visible in page headings and descriptions", async () => {
+ const { PageHeader } = await import("../../packages/ui/src/design/PageHeader.js");renderUi(h(PageHeader, { title: "Workflow\u202E", description: "Details\u0001" }));expect(screen.getByRole("heading", { name: "Workflow[U+202E]" })).toBeTruthy();expect(screen.getByText("Details[U+0001]")).toBeTruthy();
+});
+it("makes invisible controls visible in dialog identity and description", async () => {
+ renderUi(h(Dialog, { title: "Workflow\u202E", description: "Details\u0001", trigger: h(Button, null, "Inspect"), children: h("p", null, "Method") }));await userEvent.click(screen.getByRole("button", { name: "Inspect" }));expect(await screen.findByRole("dialog", { name: "Workflow[U+202E]" })).toBeTruthy();expect(screen.getByText("Details[U+0001]")).toBeTruthy();
+});
+it("prints invisible controls in native choice labels without changing their values", () => {
+ renderUi(h(Select, { label: "Owner\u202E", placeholder: "Choose\u0001", options: [{ value: "member-a", label: "Priya\u202E" }] }));expect(screen.getByRole("combobox", { name: "Owner[U+202E]" })).toBeTruthy();expect(screen.getByRole<HTMLOptionElement>("option", { name: "Priya[U+202E]" }).value).toBe("member-a");expect(screen.getByRole("option", { name: "Choose[U+0001]" })).toBeTruthy();
+});
