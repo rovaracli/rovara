@@ -390,6 +390,7 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
 
   it("a start from another org's caller cannot reach this org's project", async () => {
     const t = await setup({ v2: true });
+    await t.member(KIT, undefined);
     seedMembership(t.db, KIT.developerId, { orgId: ORG_B, role: "member" });
     const result = await refusal(t.start(KIT, t.intent(), ORG_B));
     expect(result?.code).toBe("PROJECT_NOT_FOUND");

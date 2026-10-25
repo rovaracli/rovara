@@ -68,6 +68,7 @@ import {
   type WorkflowDecisionDetail,
   type DeveloperTaskView,
   type CodeIntentResult,
+  RUN_INPUT_TEXT_MAX_BYTES,
   retiredClaimIds,
   canonicalPlanJson,
   canonicalJson,
@@ -528,7 +529,7 @@ import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSl
 import { batchResults, parseStartBody, requireBatchProject, showBatch, startBatch, stopBatchById } from "./eval-batch-admin.js";
 import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { slackWorkflowCaller } from "./slack-workflow-caller.js";
-import { startCodeIntent } from "../rovara-code/intent.js";
+import { startCodeIntent, type CodeIntentDependencies } from "../rovara-code/intent.js";
 import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 
@@ -740,7 +741,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory; /** Plan 4 Task 25: which AWS accounts an org connected (default: its CloudWatch connections) and the fetch under SNS certificate and confirmation requests. */ awsAccounts?: ConnectedAwsAccounts; snsFetch?: typeof fetch }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; /** Plan 4 Task 26: the queue that keeps the schedule invocations that failed, drained by the chain sweep. */ scheduleDeadLetters?: ScheduleDeadLetters; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions; sessions?: Pick<SessionAccessDependencies, "chainReadAccess" | "chain"> & Pick<SessionTakeOverDependencies, "chainOwner"> } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory; /** Plan 4 Task 25: which AWS accounts an org connected (default: its CloudWatch connections) and the fetch under SNS certificate and confirmation requests. */ awsAccounts?: ConnectedAwsAccounts; snsFetch?: typeof fetch }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; /** Plan 6: whether Rovara Code version 2 is available (default off until Task 8); tests turn it on. */ rovaraCodeV2Live?: boolean; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; /** Plan 4 Task 26: the queue that keeps the schedule invocations that failed, drained by the chain sweep. */ scheduleDeadLetters?: ScheduleDeadLetters; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions; sessions?: Pick<SessionAccessDependencies, "chainReadAccess" | "chain"> & Pick<SessionTakeOverDependencies, "chainOwner"> } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -1136,6 +1137,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
+    ...(agents.rovaraCodeV2Live === undefined ? {} : { rovaraCodeV2Live: agents.rovaraCodeV2Live }),
     // Where the install runs the model proxy, the models a recipe may name and the order a project may reorder are the org's own sources' (Task 26).
     ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),
     ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
@@ -1455,14 +1457,32 @@ function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: Develop
 }
 
 /**
- * Plan 6 Task 3: Rovara Code's one entry point for an intent, as a function of the person who asks (`startCodeIntent`); the entry for Plan 9's Linear and offer starts and for tests.
- * Undefined where developer sign-in is not set up.
+ * Plan 6 Task 3: what `startCodeIntent` needs for a caller that is already authenticated (the app route's session, the Slack workflow's own caller). Undefined where developer sign-in is
+ * not set up. Plan 9 does not use this: it calls `createCodeIntentStarter`, which names the person and reads them again.
  */
-export function createCodeIntentStarter(input: AwsBrokerInput): ((caller: DeveloperCaller, request: unknown) => Promise<CodeIntentResult<DeveloperTaskView>>) | undefined {
+export function createCodeIntentDependencies(input: AwsBrokerInput, caller: DeveloperCaller): CodeIntentDependencies | undefined {
   const dependencies = brokerDependencies(input);
   const tasks = developerTaskActions(dependencies);
   const routeDependencies = startRouteDependencies(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
-  return routeDependencies === undefined ? undefined : (caller, request) => startCodeIntent(codeIntentDependenciesOf(routeDependencies, caller), caller, request);
+  return routeDependencies === undefined ? undefined : codeIntentDependenciesOf(routeDependencies, caller);
+}
+
+/**
+ * Plan 6 Task 3: Rovara Code's one entry point for an intent, for Plan 9's Linear and offer starts. It takes the person as an org and a developer id and reads them again on every
+ * call (sign-in, revocation, org membership and role), so a caller can't be built stale or with a role it doesn't hold. A person who is revoked, removed or in another org is
+ * refused `FORBIDDEN`. `source: "slack"` is refused here: only the Slack workflow's own start builds the Slack caller. It needs agents to be set up.
+ */
+export function createCodeIntentStarter(input: AwsBrokerInput): ((orgId: OrgId, developerId: string, request: unknown) => Promise<CodeIntentResult<DeveloperTaskView>>) {
+  const dependencies = brokerDependencies(input);
+  const tasks = developerTaskActions(dependencies);
+  const routeDependencies = startRouteDependencies(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
+  const starter = routeDependencies === undefined ? undefined : agentRunStarterOf(routeDependencies);
+  return async (orgId, developerId, request) => {
+    if (routeDependencies === undefined || starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting work is not set up in this deployment");
+    const caller = await starter.callerFor(orgId, developerId);
+    if (caller === undefined) throw agentXError("FORBIDDEN", "The person this run is for isn't a member of the organization.");
+    return startCodeIntent(codeIntentDependenciesOf(routeDependencies, caller), caller, request);
+  };
 }
 
 /** The latest broker's chain runner dependencies, which the one registration of the chain runner's end and pause handlers reads (Plan 4 Task 6). */
@@ -7904,7 +7924,7 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
   const userId = SlackRequesterSchema.shape.userId.parse(event.userId);
   const requestId = randomUUIDSchema.parse(event.requestId);
   const instructions = event.instructions.trim();
-  if (!instructions || Buffer.byteLength(instructions, "utf8") > 65_536) throw agentXError("CONFIG_INVALID", "workflow request is empty or too long");
+  if (!instructions || Buffer.byteLength(instructions, "utf8") > RUN_INPUT_TEXT_MAX_BYTES) throw agentXError("CONFIG_INVALID", "workflow request is empty or too long");
   if (dependencies.developer.slackTeamId !== thread.teamId) throw agentXError("FORBIDDEN", "Slack workspace is not enabled for developer tasks");
   const binding = await getSlackBinding(dependencies, await slackTeamOrg(dependencies, thread.teamId), thread.teamId, thread.channelId);
   if (binding === undefined) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");

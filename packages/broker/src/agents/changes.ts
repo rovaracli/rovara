@@ -6,6 +6,7 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   EMPTY_RECIPE,
+  ROVARA_CODE_V2_FOR_NEW_ORGS,
   agentXError,
   atLeast,
   canonicalJson,
@@ -220,6 +221,8 @@ export async function adoptBuiltin(
   const pinned = await deps.store.pinnedBuiltinVersion(caller.orgId, agentId);
   const target = deps.store.builtinRecipe(agentId, input.version);
   if (input.version === pinned) return { applied: true, value: { pinnedVersion: pinned, changes: [] } };
+  // Plan 6 Task 3: a release beyond the one new orgs start on (Rovara Code version 2) can't be adopted until it is available, so no org reaches it by hand before it works.
+  if (input.version > deps.store.builtinDefaultPin(agentId) && !(deps.rovaraCodeV2Live ?? ROVARA_CODE_V2_FOR_NEW_ORGS)) throw agentXError("CONFIG_INVALID", "Version 2 of Rovara Code is not available yet.");
   const current = deps.store.builtinRecipe(agentId, pinned);
   const changes = lessSafeChanges(current, target);
   if (changes.length === 0) {

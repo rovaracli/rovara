@@ -175,6 +175,7 @@ import {
   workflowVerificationPosition,
   capText,
   ROVARA_CODE_AGENT_ID,
+  ROVARA_CODE_V2_FOR_NEW_ORGS,
   newPrefixedId,
   sessionLink,
   sessionSurfaceKey,
@@ -1791,10 +1792,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     return refused(agentXError("CONFIG_INVALID", "agents are not set up in this deployment"));
   }
   const paused = prepared?.paused === true;
-  // Plan 6 Task 3: the binding a Rovara Code intent asks for. Without agents there is no session to bind, and a Slack thread is bound only by the share this start makes
+  // Plan 6 Task 3: the binding a Rovara Code intent asks for. A Slack thread is bound only by the share this start makes
   // to that very thread, so a start that could not share to it is refused rather than left unbound.
   const codeBinding = run?.codeIntent?.binding;
-  if (codeBinding !== undefined && prepared === undefined) return refused(agentXError("RUNTIME_UNAVAILABLE", "this start can't follow a Slack thread or a Linear issue here"));
   if (codeBinding?.kind === "slack_thread" && (share?.threadTs !== codeBinding.threadTs || share.teamId !== codeBinding.teamId)) {
     return refused(agentXError("CONFIG_INVALID", "this task can't be shared to that Slack thread"));
   }
@@ -1803,6 +1803,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // Plan 5, Task 2: every run is a session, created in this start transaction. A chain step's task is not (its chain run is the session), and a
   // run no person started and no trigger names has no starter to record, so it has none either.
   const sessionStartedBy = prepared === undefined ? undefined : sessionStarterFor({ trigger: run?.trigger, startedBy, chain: prepared.chain });
+  // A Rovara Code intent answers with its session, so one that would start without it is refused before anything is saved.
+  if (run?.codeIntent !== undefined && sessionStartedBy === undefined) return refused(agentXError("RUNTIME_UNAVAILABLE", "this start can't be followed in a session here"));
   const sessionId = sessionStartedBy === undefined ? undefined : newPrefixedId("ses");
   // When another member started the run on the owner's behalf, the session's first event names them; a name that can't be read is left out, never an error.
   const starterName = sessionStartedBy?.kind === "member" && sessionStartedBy.developerId !== caller.developerId
@@ -1810,7 +1812,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
   const asWorkflow = request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding");
   // Plan 6: a recipe with a plan check step (Rovara Code version 2, or an agent built on it) makes a 1.1.0 workflow, which starts by understanding the intent. Every other task stays 1.0.0.
-  const understandsFirst = asWorkflow && prepared?.recipe.steps.some((step) => step.kind === "plan_critic") === true;
+  const hasPlanCheck = asWorkflow && prepared?.recipe.steps.some((step) => step.kind === "plan_critic") === true;
+  // It starts by understanding the intent only once Understand runs (Task 4); until then (`rovaraCodeV2Live`, off) a 1.1.0 task starts on the plan step as before, and needs an explicit path.
+  const understandsFirst = hasPlanCheck && (deps.agentRuns?.rovaraCodeV2Live ?? ROVARA_CODE_V2_FOR_NEW_ORGS);
   // A workflow asked for with no Quick or Full path is Understand's to choose on version 2; anywhere else the explicit path is still required, in the words the request schema used to give.
   if (request.workflow === true && request.workflowPath === undefined && !understandsFirst) return refused(agentXError("CONFIG_INVALID", WORKFLOW_PATH_REQUIRED));
   const workflowPath = request.workflowPath ?? "QUICK";
@@ -1872,7 +1876,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       taskId, ownerId: identity.ownerKey, now: receivedAt, path: workflowPath, checkPolicy: taskWorkflowCheckPolicy(project.definition),
       ...(prepared?.program === undefined ? {} : { program: prepared.program }),
       // A 1.1.0 workflow alone may hold the new stages: it starts at UNDERSTAND/READY, and says whether the request or Understand chose the path.
-      ...(understandsFirst ? { definitionVersion: "1.1.0" as const, understand: true, pathFrom: request.workflowPath === undefined ? "understand" as const : "request" as const } : {}),
+      ...(hasPlanCheck ? { definitionVersion: "1.1.0" as const } : {}),
+      ...(understandsFirst ? { understand: true, pathFrom: request.workflowPath === undefined ? "understand" as const : "request" as const } : {}),
     }) } : {}),
     ...(prepared === undefined ? {} : {
       agent: prepared.ref, origin: prepared.origin, payer: prepared.payer, place: prepared.place,

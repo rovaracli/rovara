@@ -37,6 +37,11 @@ export interface ApprovalDependencies extends AgentAccessDeps {
   hooks?: TriggerHookReader;
   triggerSchedules?: TriggerScheduler;
   now: () => number;
+  /**
+   * Plan 6 Task 3: whether Rovara Code version 2 is available (default `ROVARA_CODE_V2_FOR_NEW_ORGS`, off until Task 8). While it is off no admin can adopt version 2 and a
+   * version 2 task does not start at Understand, which does not run yet. Tests set it to try version 2.
+   */
+  rovaraCodeV2Live?: boolean;
   /** The cell's origin, where `/v1/app/approve/<id>` is served. */
   confirmOrigin: string;
   /** Looks up an added skill's name and digest (Task 9); without it, a recipe that adds a skill can't be resolved. */
