@@ -876,6 +876,25 @@ export class ControlPlaneStack extends Stack {
       target: `integrations/${integration.ref}`,
       authorizationType: "NONE",
     });
+    // The agent step's two GET callbacks. Like the setup read above, a GET is not covered by the POST-only internal route and would fall to the JWT route, where API
+    // Gateway answers 401 before the broker is reached (staging 0.4.5: no agent or chain step with tools could run). No authorizer: the broker authenticates each
+    // call itself, verifying the HMAC-signed `x-agentx-callback-capability` header (signature, expiry, the `agent-skills` or `agent-tools` action, the operation's fence)
+    // before it reads anything (handleAgentSkills, handleAgentTools). tests/contract/internal-routes-infrastructure.test.ts keeps every broker internal GET routed.
+    // A named environment only: the legacy template has no agent steps and stays as it was.
+    if (naming.env !== undefined) {
+      new apigwv2.CfnRoute(this, "AgentToolsListRoute", {
+        apiId: api.ref,
+        routeKey: "GET /v1/internal/agent-tools",
+        target: `integrations/${integration.ref}`,
+        authorizationType: "NONE",
+      });
+      new apigwv2.CfnRoute(this, "AgentSkillsReadRoute", {
+        apiId: api.ref,
+        routeKey: "GET /v1/internal/agent-skills",
+        target: `integrations/${integration.ref}`,
+        authorizationType: "NONE",
+      });
+    }
     // GitHub signs webhook bodies itself; the broker verifies its HMAC and linked repository scope.
     new apigwv2.CfnRoute(this, "GithubWebhookRoute", {
       apiId: api.ref,
