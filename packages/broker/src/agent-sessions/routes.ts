@@ -16,6 +16,7 @@ import { followSession, recordPresence, unfollowSession } from "./followers.js";
 import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage, editSessionMessage, listSessionMessages, parseMessageBody, sendSessionMessage } from "./messages.js";
 import { dismissHomeCard, homeCards, type HomeDependencies } from "./home.js";
 import { liveSessions, type LiveQuery } from "./live.js";
+import { projectOverview, type ProjectPageReader } from "./project-overview.js";
 import { listSessions, sessionLinkTarget, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import type { ChainSteerReads } from "./steer.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
@@ -37,6 +38,8 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
   chainSteer?: ChainSteerReads | undefined;
   /** How long one of Home's sources may take (Task 15; default two seconds). */
   homeSourceTimeoutMs?: number | undefined;
+  /** Task 16: the project's card (repositories, setup, channels) for a person who already has a role in it. Without it the project page answers `NOT_FOUND`. */
+  projectPage?: ProjectPageReader | undefined;
 }
 
 /** The caller of a route. */
@@ -45,6 +48,7 @@ export type SessionRouteCaller = DeveloperCaller;
 const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry))?)?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const LIVE_PATH = "/v1/app/live";
+const PROJECT_OVERVIEW_PATH = /^\/v1\/app\/projects\/([^/]+)\/overview$/;
 const HOME_PATH = "/v1/app/home";
 const HOME_DISMISS_PATH = /^\/v1\/app\/home\/cards\/([^/]*)\/dismiss$/;
 const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
@@ -52,7 +56,7 @@ const LINK_PATH = /^\/s\/((?:ses|crn)_[0-9a-z]{20})$/;
 
 /** The paths this module owns under `/v1/app/`: the sessions, the Live wall (Task 14), the changes feed and the realtime token (Task 8). */
 export function isAgentSessionRoute(pathname: string): boolean {
-  return /^\/v1\/app\/sessions(\/|$)/.test(pathname) || pathname === CHANGES_PATH || pathname === REALTIME_TOKEN_PATH || pathname === LIVE_PATH || /^\/v1\/app\/home(\/|$)/.test(pathname);
+  return /^\/v1\/app\/sessions(\/|$)/.test(pathname) || pathname === CHANGES_PATH || pathname === REALTIME_TOKEN_PATH || pathname === LIVE_PATH || /^\/v1\/app\/home(\/|$)/.test(pathname) || PROJECT_OVERVIEW_PATH.test(pathname);
 }
 
 /** `/s/<anything>`: a session's link, served to a browser. */
@@ -154,6 +158,18 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   if (url.pathname === LIVE_PATH) {
     if (request.method !== "GET") throw notFound();
     return liveSessions(read, caller, liveQueryOf(url));
+  }
+  const overviewOf = PROJECT_OVERVIEW_PATH.exec(url.pathname);
+  if (overviewOf !== null) {
+    // Task 16: a project's page. A name that cannot be decoded is a project that is not there.
+    if (request.method !== "GET") throw notFound();
+    let project: string;
+    try {
+      project = decodeURIComponent(overviewOf[1]!);
+    } catch {
+      throw agentXError("PROJECT_NOT_FOUND", "project not found");
+    }
+    return projectOverview({ ...read, ...(approvals === undefined ? {} : { approvals }), ...(deps.projectPage === undefined ? {} : { projectPage: deps.projectPage }) }, caller, project);
   }
   if (url.pathname === HOME_PATH || url.pathname.startsWith(`${HOME_PATH}/`)) {
     // Task 15: Home's cards, and a dismissal of one of them.

@@ -532,8 +532,8 @@ describe("a save that records landed fix pushes and merges together", () => {
     expect(saved().pullRequests.every((pr) => pr.candidateDigest === fix.digest)).toBe(true);
     const landed = transactions.filter((transaction) => transaction.length > 1);
     expect(landed).toHaveLength(1);
-    // The task update, a link update and a record update for each landed push, and one pending item for each merge.
-    expect(landed[0]).toHaveLength(1 + 2 * (COUNT - mergedCount) + mergedCount);
+    // The task update, a link update and a record update for each landed push, one pending item for each merge, and the project's merged count (one item, however many merged).
+    expect(landed[0]).toHaveLength(1 + 2 * (COUNT - mergedCount) + mergedCount + 1);
     expect(landed[0]!.length).toBeLessThanOrEqual(100);
     expect(pendingIn(landed[0]!)).toHaveLength(mergedCount);
     expect(capture.pending().map((event) => event.action)).toEqual(Array(mergedCount).fill("pull_request.merged"));

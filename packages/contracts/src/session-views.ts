@@ -31,7 +31,8 @@ import {
   SessionWhereSchema,
   SESSION_LEGS_MAX,
 } from "./agent-sessions.js";
-import { AgentPrincipalSchema } from "./agent.js";
+import { AgentIdSchema, AgentPrincipalSchema } from "./agent.js";
+import { ProjectRoleSchema, ProjectSetupStatusSchema, ProjectStatusSchema } from "./app-projects.js";
 import { DeveloperTaskViewSchema } from "./developer-tasks.js";
 import { AGENTX_NAME_PATTERN } from "./names.js";
 
@@ -305,11 +306,61 @@ export const SessionMessagePageSchema = z
 export type SessionMessagePage = z.infer<typeof SessionMessagePageSchema>;
 export const SessionMessagePageReaderSchema = forwardReader(SessionMessagePageSchema);
 
-// ---- the project page (declared here; Task 16 fills it in; Home's shapes are in home.ts)
+// ---- the project page (Plan 5 Task 16; Home's shapes are in home.ts)
 
-/** A project's page of sessions. Task 16 adds counts and cost; until then it lists what is running. */
+/** The most repositories, channels and agents a project page lists. */
+export const PROJECT_OVERVIEW_REPOSITORIES_MAX = 50;
+export const PROJECT_OVERVIEW_CHANNELS_MAX = 20;
+export const PROJECT_OVERVIEW_AGENTS_MAX = 100;
+
+/** The project's card: what it is, where its code is, how ready it is, and the Slack channels that reach it. */
+export const ProjectOverviewProjectSchema = z
+  .object({
+    name: z.string().regex(AGENTX_NAME_PATTERN),
+    description: z.string().max(2000).optional(),
+    status: ProjectStatusSchema,
+    latestRevision: z.number().int().positive().optional(),
+    repositories: z.array(z.object({ fullName: z.string().min(1).max(200), defaultBranch: z.string().min(1).max(200) }).strict()).max(PROJECT_OVERVIEW_REPOSITORIES_MAX),
+    setup: z
+      .object({ status: ProjectSetupStatusSchema, checkedRevision: z.number().int().positive().optional(), checkedAt: InstantSchema.optional(), failedStep: z.string().max(300).optional() })
+      .strict(),
+    channels: z.array(z.string().min(1).max(40)).max(PROJECT_OVERVIEW_CHANNELS_MAX),
+  })
+  .strict();
+
+/** What the reader may do on the project, from their role now: a flag is true only when the action is allowed. */
+export const ProjectOverviewYouSchema = z
+  .object({ role: ProjectRoleSchema, canStartWork: z.boolean(), canEditSettings: z.boolean(), canViewSpend: z.boolean() })
+  .strict();
+
+/** An agent on the project, with how many of the sessions the reader can see it is running now. */
+export const ProjectOverviewAgentSchema = z
+  .object({ agentId: AgentIdSchema, name: z.string().min(1).max(200), description: z.string().max(2000), running: z.number().int().min(0) })
+  .strict();
+
+/** The month's money on the project. Present only for a reader who may see the project's spend. `costPerMergedPullRequestUsd` is absent until a pull request has merged this month. */
+export const ProjectOverviewBudgetSchema = z
+  .object({
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/u),
+    spentUsd: z.number().min(0),
+    limitUsd: z.number().min(0).optional(),
+    mergedPullRequests: z.number().int().min(0),
+    costPerMergedPullRequestUsd: z.number().min(0).optional(),
+  })
+  .strict();
+
+/**
+ * `GET /v1/app/projects/{name}/overview`: a project's page. Read now for the reader: a person with no role in the project gets `PROJECT_NOT_FOUND`; `budget` is present only for a reader
+ * who may see spend; `agents` are the agents the reader may see; `running` is the Live wall's `team` filter for this project (at most one page of `LiveTile`s the reader can view).
+ */
 export const ProjectOverviewSchema = z
-  .object({ project: z.string().regex(AGENTX_NAME_PATTERN), running: z.array(SessionTileSchema).max(LIVE_PAGE_MAX) })
+  .object({
+    project: ProjectOverviewProjectSchema,
+    you: ProjectOverviewYouSchema,
+    agents: z.array(ProjectOverviewAgentSchema).max(PROJECT_OVERVIEW_AGENTS_MAX),
+    budget: ProjectOverviewBudgetSchema.optional(),
+    running: z.array(LiveTileSchema).max(LIVE_PAGE_MAX),
+  })
   .strict();
 export type ProjectOverview = z.infer<typeof ProjectOverviewSchema>;
 export const ProjectOverviewReaderSchema = forwardReader(ProjectOverviewSchema);

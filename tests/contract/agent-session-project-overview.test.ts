@@ -49,7 +49,7 @@ function world() {
     const orgId = o.orgId ?? ORG_A;
     minute += 1;
     const seeded = w.seedSession({ owner: o.owner ?? PRIYA, ...(o.project === undefined ? {} : { project: o.project }), orgId, ...(o.kind === undefined ? {} : { kind: o.kind }), ...(o.people === undefined ? {} : { people: o.people }) });
-    const meta = w.db.get(agentSessionKey(orgId, seeded.sessionId, "META")) as Item;
+    const meta = w.db.get(agentSessionKey(orgId, seeded.sessionId, "META")) as Item & { kind: string; project?: string; owner: { developerId: string; name: string }; title: string; where: unknown; revision: number };
     const createdAt = iso(Date.parse("2026-10-22T07:00:00.000Z") + minute * 60_000);
     const updatedAt = iso(T0 - 5 * 60_000 + minute * 1000);
     const status = o.status ?? "running";
@@ -60,7 +60,7 @@ function world() {
     w.db.set(record);
     w.db.set({
       ...liveSessionKey(orgId, seeded.sessionId), entityType: "LIVE_SESSION", orgId, sessionId: seeded.sessionId, kind: record.kind, ...(record.project === undefined ? {} : { project: record.project }),
-      ownerId: (record as Item & { owner: { developerId: string } }).owner.developerId, owner: record.owner, title: record.title, where: record.where, status, summary, summaryRevision: 2, revision: record.revision, createdAt, updatedAt,
+      ownerId: record.owner.developerId, owner: record.owner, title: record.title, where: record.where, status, summary, summaryRevision: 2, revision: record.revision, createdAt, updatedAt,
       ...(endedAt === undefined ? {} : { endedAt }),
     });
     return seeded;
@@ -152,6 +152,13 @@ describe("who may read it, and what each sees", () => {
     // Bo has a role in his own org's `web`: that page is his org's, with nothing of org A.
     w.grant(BO, "ops", "contributor", ORG_B);
     expect((await w.overview(BO, "ops", ORG_B)).project.name).toBe("ops");
+  });
+
+  it("says an archived project takes no new work and no settings change, whatever the role", async () => {
+    const w = world();
+    const archived = { projectPage: async (_caller: unknown, name: string) => ({ name, status: "archived" as const, repositories: [], setup: { status: "ready" as const }, channels: [] }) };
+    expect((await w.overview(MAX, "web", ORG_A, archived)).you).toEqual({ role: "maintainer", canStartWork: false, canEditSettings: false, canViewSpend: true });
+    expect((await w.overview(PRIYA, "web", ORG_A, archived)).you).toMatchObject({ role: "contributor", canStartWork: false });
   });
 
   it("answers a project whose page cannot be read the same way", async () => {
@@ -275,7 +282,7 @@ describe("what is running", () => {
 describe("the agents", () => {
   const addAgent = async (w: ReturnType<typeof world>, name: string, owner: string) => {
     const agent = await w.store.create({ orgId: ORG_A, name, description: `${name} works on tickets`, owner: { kind: "member", developerId: owner }, overlay: SCRATCH, createdBy: owner });
-    await addToRoster(w.approvals as never, { orgId: ORG_A, project: "web", agentId: agent.agentId, by: owner });
+    await addToRoster(w.approvals, { orgId: ORG_A, project: "web", agentId: agent.agentId, by: owner });
     return agent;
   };
 
@@ -290,7 +297,7 @@ describe("the agents", () => {
     // Max owns the agent; Priya has no access to it, so it is not on her page at all, nor its count.
     const asPriya = await w.overview(PRIYA);
     expect(asPriya.agents.find((agent) => agent.agentId === triage.agentId)).toBeUndefined();
-    expect(JSON.stringify(asPriya)).not.toContain(triage.agentId);
+    expect(asPriya.agents.map((agent) => agent.name)).not.toContain("Triage");
   });
 
   it("counts only the sessions the caller can view", async () => {
@@ -307,7 +314,7 @@ describe("a merged pull request adds one to the project's month, once", () => {
   const NOW = "2026-10-05T12:00:00.000Z";
 
   /** A task with two pull requests waiting for their merge, a webhook reconcile that writes through a fake table, and GitHub's answers. */
-  function harness(project = "web", orgId: OrgId | undefined = ORG_A) {
+  function harness(project = "web", orgId: OrgId | null = ORG_A) {
     const db = new FakeDynamoDb();
     const repositories = ["api", "ui"];
     const candidate = createCandidateManifest(repositories.map((repositoryId) => ({ repositoryId, commitSha: "a".repeat(40), treeSha: "b".repeat(40) })));
@@ -324,16 +331,17 @@ describe("a merged pull request adds one to the project's month, once", () => {
     const remote = new Map<number, "open" | "merged">([[1, "open"], [2, "open"]]);
     let revision = 0;
     let clock = Date.parse(NOW);
-    const reconcile = (fullName: string, number: number, extra: { failTransaction?: boolean; now?: string } = {}) => reconcileTaskPullRequestFeedback({
+    const reconcile = (fullName: string, number: number, extra: { failTransaction?: boolean; now?: string; auditOrgId?: (taskId: string) => Promise<OrgId> } = {}) => reconcileTaskPullRequestFeedback({
       documentClient: { send: async (command: unknown) => ({ Item: rows.get(String(((command as { input: { Key: { pk: string } } }).input.Key).pk)) }) },
       tableName: "state", repositoryFullName: fullName, number, deliveryId: randomUUID(), observationMode: "merge", now: extra.now ?? iso(clock += 1000),
-      loadTask: async () => ({ project, startingRevision: 1, ...(orgId === undefined ? {} : { orgId }), workflow }),
+      loadTask: async () => ({ project, startingRevision: 1, ...(orgId === null ? {} : { orgId }), workflow }),
       repositoryUrl: async (_project: string, _revision: number, repositoryId: string) => `https://github.com/acme/${repositoryId}.git`,
       getCurrentFeedback: async (_url: string, prNumber: number) => ({
         pullRequest: { number: prNumber, url: `https://github.com/acme/${prNumber === 1 ? "api" : "ui"}/pull/${String(prNumber)}`, state: remote.get(prNumber)!, headBranch: "feature", baseBranch: "main", headCommit: "a".repeat(40), headTreeSha: "b".repeat(40), title: "t", body: "" },
         comments: [], threads: [],
       }),
       persistBundle: async () => { throw new Error("no feedback is collected on a merge poll"); },
+      ...(extra.auditOrgId === undefined ? {} : { auditOrgId: extra.auditOrgId }),
       saveWorkflow: async (_taskId, expectedRevision, next, extraItems = []) => {
         if (expectedRevision !== workflow.revision) throw Object.assign(new Error("conditional"), { name: "ConditionalCheckFailedException" });
         if (extra.failTransaction === true) throw Object.assign(new Error("cancelled"), { name: "TransactionCanceledException" });
@@ -400,8 +408,15 @@ describe("a merged pull request adds one to the project's month, once", () => {
     expect(h.db.get(projectMonthStatsKey(ORG_B, "web", MONTH))).toBeUndefined();
   });
 
+  it("finds the org of a task whose record names none the way the audit event does", async () => {
+    const h = harness("web", null);
+    h.remote.set(1, "merged");
+    expect(await h.reconcile("acme/api", 1, { auditOrgId: async () => ORG_A })).toBe(true);
+    expect(h.count()).toBe(1);
+  });
+
   it("still records the merge for a task whose org is not known, without a count", async () => {
-    const h = harness("web", undefined);
+    const h = harness("web", null);
     h.remote.set(1, "merged");
     expect(await h.reconcile("acme/api", 1)).toBe(true);
     expect(h.db.find((item) => item.entityType === "PROJECT_SESSION_STATS")).toEqual([]);

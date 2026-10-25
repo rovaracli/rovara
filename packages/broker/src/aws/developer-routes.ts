@@ -1487,6 +1487,17 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
     ...(deps.audit === undefined ? {} : { audit: deps.audit }),
     taskView: (task, options) => taskView(taskDeps, task, options),
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
+    // Plan 5 Task 16: the project's card, read after the page has checked the person's role in the project.
+    projectPage: async (who, name) => {
+      const [record, meta] = await Promise.all([latestProjectRecord(deps, who.orgId, name), readProjectMeta(deps, who.orgId, name)]);
+      if (record === undefined) return undefined;
+      const summary = await appProjectSummary(deps, name, "viewer", record, meta);
+      const channels = (await bindingsOf(deps, who.orgId)).filter((binding) => binding.projectName === name).map((binding) => binding.channelId);
+      return {
+        name, ...(summary.description === undefined ? {} : { description: summary.description }), status: summary.status, latestRevision: summary.latestRevision, repositories: summary.repositories,
+        setup: summary.setup, channels: [...new Set(channels)].slice(0, 20),
+      };
+    },
     // Plan 5 Task 9: a person arriving on a session is told to its channel through the same API the sink publishes to.
     realtimePublish: realtimeConfigFromEnvironment(),
     // Plan 5 Task 8: the realtime token. Without the sign-in function's signing, or without an events API, the route says live updates are unavailable.
