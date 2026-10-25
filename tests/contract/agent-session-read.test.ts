@@ -6,7 +6,7 @@ import { chainRunViewOf } from "../support/chain-run-view.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
-import { LIVE_INDEX_SCAN_MAX, agentXError, agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sharedSessionsKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { LIVE_INDEX_SCAN_MAX, agentXError, agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sessionBindingKey, sharedSessionsKey, type OrgId } from "../../packages/contracts/src/index.js";
 import {
   NeedsConfirmationSchema,
   SessionListReaderSchema,
@@ -234,11 +234,11 @@ describe("reading a task session", () => {
     r.patch(sessionId, { followerCount: 3 });
     r.w.follower(ORG_A, sessionId, ARJUN);
     r.w.db.set({
-      ...agentSessionKey(ORG_A, sessionId, "BINDING#slack_thread"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
+      ...sessionBindingKey(ORG_A, sessionId, "slack_thread"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
       binding: { kind: "slack_thread", teamId: "T0123ABC", channelId: "C0123ABC", threadTs: "1760000000.123456" }, at: "2026-10-22T08:00:00.000Z",
     });
     r.w.db.set({
-      ...agentSessionKey(ORG_A, sessionId, "BINDING#linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
+      ...sessionBindingKey(ORG_A, sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId,
       binding: { kind: "linear_issue", issueId: "ENG-1", url: "https://linear.app/acme/issue/ENG-1" }, at: "2026-10-22T08:00:00.000Z",
     });
     const asArjun = await view(r, ARJUN, sessionId);

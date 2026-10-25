@@ -18,6 +18,8 @@ import { readStream, type Notice, type StreamRecord } from "../developer/notific
 import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
 import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
 import { deriveTaskStatus, failureCategory, plannerRepliesKey, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type OperationFacts, type TaskShare } from "../developer/task-records.js";
+import { bindingItemsForOpenSession } from "../agent-sessions/bindings.js";
+import { failedIndexes } from "../agents/table-writes.js";
 import { isConditional } from "./broker-shared.js";
 import { requiredEnvironment } from "./lambda.js";
 import { parseSlackSecrets } from "./slack-ingress.js";
@@ -529,13 +531,19 @@ async function currentStatus(deps: NotifierDependencies, task: DeveloperTaskReco
   return deriveTaskStatus({ closedAt: task.closedAt, outcome: task.outcome, workspaceStatus: workspace?.status ?? "PREPARING", pointer, operations: operations as unknown as OperationFacts[] }).status;
 }
 
+/** How many items `recordThread` writes before the session's binding items: the task's share, the thread's record and the notice marker. */
+const THREAD_RECORD_ITEMS = 3;
+
 /**
  * C1, C2: the thread on the task and its record, in ONE transaction, so the close and the share
  * routes (which condition on the record existing) never find a thread without its record. Retried
  * on a share change or a close meanwhile; a task closed first gets a closed record at once (C24).
  */
 async function recordThread(deps: NotifierDependencies, taskId: string, threadTs: string, marker: { pk: string; sk: string }): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  // Plan 5 Task 20: the session follows the thread, written in this same transaction. The thread's record is the core of the share, so a binding that can't be
+  // made (the thread already follows another session, the session has ended) is left out and logged, and the thread is recorded without it.
+  let bindToSession = true;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     const task = await getItem<DeveloperTaskRecord>(deps, taskKey(taskId));
     if (task?.share === undefined) return;
     if (task.share.threadTs !== undefined) {
@@ -548,15 +556,19 @@ async function recordThread(deps: NotifierDependencies, taskId: string, threadTs
     const share: TaskShare = { ...task.share, threadTs };
     const version = task.shareVersion ?? 0;
     const now = new Date(deps.now()).toISOString();
+    const binding = bindToSession && task.sessionId !== undefined && task.orgId !== undefined
+      ? bindingItemsForOpenSession(deps, task.orgId, task.sessionId, { kind: "slack_thread", teamId: share.teamId, channelId: share.channelId, threadTs }, now)
+      : [];
     try {
       await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
           UpdateExpression: "SET #share = :share, shareVersion = :next, updatedAt = :now",
-          // A close does not move shareVersion, so the close state read here is a condition too.
-          ConditionExpression: task.closedAt === undefined ? "shareVersion = :current AND attribute_not_exists(closedAt)" : "shareVersion = :current",
+          // A close does not move shareVersion, so the close state read here is a condition too. So is the task's session (or its absence): one given to the task meanwhile
+          // (a lazy creation) refuses this write, and the read again binds it.
+          ConditionExpression: `shareVersion = :current AND ${task.sessionId === undefined ? "attribute_not_exists(sessionId)" : "sessionId = :sessionId"}${task.closedAt === undefined ? " AND attribute_not_exists(closedAt)" : ""}`,
           ExpressionAttributeNames: { "#share": "share" },
-          ExpressionAttributeValues: { ":share": share, ":next": version + 1, ":current": version, ":now": now },
+          ExpressionAttributeValues: { ":share": share, ":next": version + 1, ":current": version, ":now": now, ...(task.sessionId === undefined ? {} : { ":sessionId": task.sessionId }) },
         } },
         { Put: {
           TableName: deps.tableName,
@@ -570,10 +582,17 @@ async function recordThread(deps: NotifierDependencies, taskId: string, threadTs
           ConditionExpression: "attribute_not_exists(pk)",
         } },
         { Put: { TableName: deps.tableName, Item: { ...marker, entityType: "NOTICE", deliveredAt: now, ...noticeExpiry(deps) }, ConditionExpression: MARKER_CONDITION } },
+        ...binding,
       ] }));
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
+      // The binding's items come last: a refusal at any of them (whether or not the thread's own items were refused too) drops the binding, and the thread is tried again
+      // after reading the task again, without the binding. If the thread's own items were the only cause the next attempt records it; if not, nothing is lost.
+      if (binding.length > 0 && [...(failedIndexes(error) ?? [])].some((index) => index >= THREAD_RECORD_ITEMS)) {
+        bindToSession = false;
+        deps.log({ event: "developer_notifier.session_binding_skipped", taskId });
+      }
     }
   }
   deps.log({ event: "developer_notifier.thread_record_failed", taskId });

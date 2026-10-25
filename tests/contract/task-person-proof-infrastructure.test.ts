@@ -272,18 +272,19 @@ describe("the named TEST proof-only installation gate", () => {
     // bucket, the launch template, the allow list and the model proxy joined AGENTX_NAMES, the audit queue's URL is derived, and eleven constrained parameters joined AGENTX_SETTINGS
     // (the workflow flag and the launch template stay out of the hash, as before). The legacy digests did not move: its broker is given its variables whole.
     // ENV-ROOM review fix: the named and foreign digests were taken again after Ec2WorkerLaunchTemplateId gained its AllowedPattern (named environments only); the legacy digests did not move.
+    // Plan 5, Task 20: the notifier's role gained two statements (put the session binding and surface items, check the session record), so the named and foreign digests were taken again; legacy has no notifier and did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "dfbd1e9fbb9f594ace8dd57d68ad0cebb506a4d5cfd7334d710bc408fa5a1d14",
-        withoutRoute: "f8205e2e17692db781d41c20596651353670379ddac38a4137ac8f7172a785e5",
+        withRoute: "b136c4a42428af893e64cda4acf550a1d95f56704662b1f1c2e3a1905bcb4007",
+        withoutRoute: "f793025f4f8b11aab72241b5e492bbdb8ce7861821c899bf2ed202929e5b1a68",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "c8909ed65858b3b264af6d17af523df87d78c75100aa0e85513e74bd69682699",
-        withoutRoute: "2dc6ae1c889c233f44c4f9f095b026db09d02485eed3249b4f63b686a2ecb8e5",
+        withRoute: "468ff8e934a789dd7c762060b644d6b153b1c7f68a0cfcf9a6eda3dc655d0ed6",
+        withoutRoute: "e5add4f41e16e012435d071a6b1126102a577ccd7be772b6b31a106520f30c9c",
       },
       {
         label: "legacy",

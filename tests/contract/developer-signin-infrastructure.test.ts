@@ -392,6 +392,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       // Deleting: the duplicate's member row (bare partition; IAM cannot tell it from the org record) and grants, and its org pointer.
       // Plan 2, Task 4: accepting an invite checks the org is open (ConditionCheckItem on the org record, nothing wider).
       ["dynamodb:ConditionCheckItem", [ORG]],
+      // Plan 5, Task 20 (the notifier's, not DeveloperIdentity's): recording a task's thread checks the session's own record.
+      ["dynamodb:ConditionCheckItem", [`${ORG}#AGENT_SESSION#*`]],
       // Plan 2, Task 4: it also names the ban key, which accepting an invite deletes.
       ["dynamodb:DeleteItem", [`${ORG}#MEMBER#*`, ORG, `${ORG}#BAN`, "DEVELOPER_ORG#*"]],
       // Plan 2, Task 4: a sign-in reads the ban (a removed member of a single-org install is refused); nothing else, and never a write.
@@ -404,6 +406,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       ["dynamodb:Query", [`${ORG}#MEMBER#*`, ORG, `${ORG}#PROJECT_CATALOG`]],
       // A member's grants copied to the survivor.
       ["dynamodb:PutItem", [`${ORG}#MEMBER#*`]],
+      // Plan 5, Task 20 (the notifier's): the session's binding to the thread (in its own partition, never the session's) and the thread's reverse item, put with the thread's record.
+      ["dynamodb:PutItem", [`${ORG}#SESSION_BINDING#*`, `${ORG}#SESSION_SURFACE`]],
     ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
     for (const statement of stateGrants) {
       expect(statement.Effect).toBe("Allow");
@@ -575,15 +579,16 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
     expect(actionsOf(reads[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:Query"]);
     const keysOf = (statement: Statement) => leadingKeysOf(statement);
     const writes = dynamo.filter((statement) => allows(statement, "dynamodb:PutItem") || allows(statement, "dynamodb:UpdateItem"));
-    expect(writes).toHaveLength(4);
+    expect(writes).toHaveLength(5);
     // The task and its notice markers are put and updated; a shared thread record is only put;
     // an admin change (spec 025 E13) is only read and updated, never put; a ChatGPT fallback's notice
-    // marker (#342) is only put.
+    // marker (#342) is only put; a session's binding to the thread (Plan 5 Task 20) is only put, in an org's own keys.
     expect(writes.map((statement) => ({ actions: actionsOf(statement).sort(), keys: keysOf(statement) }))).toEqual(expect.arrayContaining([
       { actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"], keys: ["DEVTASK#*"] },
       { actions: ["dynamodb:PutItem"], keys: ["SHARED_TASK#*"] },
       { actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"], keys: ["ADMIN_CHANGE#*"] },
       { actions: ["dynamodb:PutItem"], keys: ["CHATGPT_NOTICE#*"] },
+      { actions: ["dynamodb:PutItem"], keys: ["ORG#org_????????????????????#SESSION_BINDING#*", "ORG#org_????????????????????#SESSION_SURFACE"] },
     ]));
   });
 
