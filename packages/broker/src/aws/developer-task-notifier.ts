@@ -230,6 +230,8 @@ export function feedbackReviewSlackMessage(input: {
    * command): Approve covers them, so the card shows each added command exactly, inert and in code style.
    */
   checkChanges?: ReadonlyArray<{ obsolete: readonly string[]; added: ReadonlyArray<{ label: string; command: { cwd: string; executable: string; args: readonly string[] } }> }>;
+  /** The failing checks added to the card while it waits (Plan 6 Task 16): CI's own names, made inert; approving fixes them in the same round. */
+  ciFailures?: readonly string[];
   detailUrl: string;
 }): { text: string; blocks: unknown[] } {
   const url = new URL(input.detailUrl);
@@ -278,6 +280,8 @@ export function feedbackReviewSlackMessage(input: {
       `Answer with instructions and I'll make that change.${scope} ${details}`,
     ].join("\n");
   }
+  const failing = (input.ciFailures ?? []).slice(0, 3).map((name) => escapedLine(name, 100));
+  if (failing.length > 0) before = `${before}\nCI is failing on ${failing.join(", ")}${(input.ciFailures ?? []).length > 3 ? ` and ${String((input.ciFailures ?? []).length - 3)} more` : ""}. Approving fixes it in the same round.`;
   const text = [before, ...checkLines, after].filter((part) => part.length > 0).join("\n");
   const bundleSetDigest = createHash("sha256").update(JSON.stringify(input.bundleDigests), "utf8").digest("hex");
   const card = { taskId: input.taskId, expectedRevision: input.revision, reviewDigest: input.reviewDigest, proposalDigest: input.proposalDigest, bundleSetDigest };
@@ -1009,6 +1013,7 @@ async function feedbackReviewNotification(deps: NotifierDependencies, task: Deve
     ownerQuestions: findings.filter(finding => finding.proposedDisposition === "OWNER_DECISION")
       .map(finding => ({ findingId: finding.id, question: finding.fixProposal?.summary ?? finding.rationale })),
     checkChanges: feedbackCardCheckChanges(workflow!.checkPolicy, findings.filter(finding => finding.recommended)),
+    ...(workflow!.feedbackCiFailures === undefined ? {} : { ciFailures: workflow!.feedbackCiFailures.checks }),
     detailUrl: new URL(`/review/${encodeURIComponent(task.taskId)}`, base).href,
   });
 }

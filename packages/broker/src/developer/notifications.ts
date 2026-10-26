@@ -66,8 +66,10 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       const newNotes = Array.isArray(afterWorkflow?.feedbackNotes) ? afterWorkflow.feedbackNotes.length : 0;
       // A complete report is said again after a new note; any other (failed, timed out, interrupted: said with Retry
       // review) once, by its report.
+      // The failing checks added to (or taken off) a waiting card change what the owner decides on, so the card is said again (Plan 6 Task 16).
+      const ciChanged = beforeReview?.status === "PENDING" && record(afterWorkflow?.feedbackCiFailures)?.digest !== record(beforeWorkflow?.feedbackCiFailures)?.digest;
       if (afterReview?.status === "PENDING" && typeof afterReviewRef?.sha256 === "string"
-        && ((afterReviewRef.status === "COMPLETE" && (afterReviewRef.sha256 !== beforeReviewRef?.sha256 || newNotes !== oldNotes))
+        && ((afterReviewRef.status === "COMPLETE" && (afterReviewRef.sha256 !== beforeReviewRef?.sha256 || newNotes !== oldNotes || ciChanged))
           || (afterReviewRef.status !== "COMPLETE" && afterReviewRef.sha256 !== beforeReviewRef?.sha256))) {
         notices.push({ id: feedbackReviewNoticeId(taskId, afterReviewRef.sha256, Number(afterWorkflow?.revision)), kind: "github_feedback", taskId, at,
           feedbackReviewDigest: afterReviewRef.sha256 });
