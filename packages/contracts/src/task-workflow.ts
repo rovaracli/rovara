@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, StepIdSchema } from "./agent-recipe.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
-import { FixSourceSchema, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, RiskAssessmentSchema, type WorkflowIntent } from "./rovara-code.js";
+import { FixSourceSchema, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, RiskAssessmentSchema, type PlanCritique, type WorkflowCritique, type WorkflowIntent } from "./rovara-code.js";
 import { E2EWorkflowProgressSchema, E2EQualifiedRoundSchema, E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { z } from "zod";
 import { ProjectCommandSchema } from "./project.js";
@@ -2089,16 +2089,73 @@ export function submitWorkflowArtifact(
   void _oldDependencyApproval;
   void _oldDependencyOperationId;
   void _oldDependencyProgress;
+  // Plan 6 Task 8: a Rovara Code version 2 coding plan is checked by a second model before a person sees it (a Full task's requirements and design are not).
+  const checked = planCritiqued(current, artifact.data.type);
   const next = WorkflowSnapshotSchema.parse({
     ...withoutOldDependencyApproval,
     revision: current.revision + 1,
-    stage: "PLAN_REVIEW",
-    state: "WAITING",
+    stage: checked ? "PLAN_CRITIQUE" : "PLAN_REVIEW",
+    state: checked ? "READY" : "WAITING",
     artifacts: [...current.artifacts, artifact.data],
     ...(policy === undefined ? {} : { checkPolicy: policy }),
     updatedAt: input.now,
   });
   return next;
+}
+
+/** Whether a plan of this type, made by this workflow, goes through the plan check: a version 2 coding plan of a sequence that has a plan check step. */
+function planCritiqued(workflow: Pick<WorkflowSnapshot, "definitionVersion" | "program">, type: WorkflowArtifact["type"]): boolean {
+  return workflow.definitionVersion === "1.1.0" && type === "plan" && workflow.program?.steps.some((step) => step.kind === "plan_critic") === true;
+}
+
+function runningPlanCheck(currentInput: unknown, expectedRevision: number): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  if (current.stage !== "PLAN_CRITIQUE" || current.state !== "RUNNING") throw new WorkflowTransitionError("the workflow is not running the plan check");
+  return current;
+}
+
+/**
+ * The plan check's result (Rovara Code version 2). The critic's points are advice: they are kept for the person and can neither approve the plan nor move it past
+ * PLAN_REVIEW. A `revise` verdict with a blocking point sends the plan back to the planner once (`PLAN_CRITIC_REVISIONS_MAX`), with the points kept; the revised plan is checked
+ * again. Every other result, and the second check whatever it says, goes to the person at PLAN_REVIEW with the critiques. `sameModelAsPlanner` notes that the project allows only one model.
+ */
+export function submitPlanCritique(
+  currentInput: unknown,
+  input: { expectedRevision: number; critique: PlanCritique; sameModelAsPlanner?: true; now: string },
+): WorkflowSnapshot {
+  const current = runningPlanCheck(currentInput, input.expectedRevision);
+  const critique = PlanCritiqueSchema.safeParse(input.critique);
+  if (!critique.success) throw new WorkflowTransitionError("the plan critique is invalid");
+  const earlier = current.critique;
+  const revisions = earlier?.revisions ?? 0;
+  const critiques = [...(earlier?.critiques ?? []), critique.data];
+  if (critiques.length > PLAN_CRITIC_REVISIONS_MAX + 1) throw new WorkflowTransitionError("the plan critique is invalid");
+  const sendBack = critique.data.verdict === "revise" && critique.data.points.some((point) => point.severity === "blocking") && revisions < PLAN_CRITIC_REVISIONS_MAX;
+  const kept: WorkflowCritique = {
+    status: "done", critiques, revisions: sendBack ? revisions + 1 : revisions,
+    ...(input.sameModelAsPlanner === true ? { sameModelAsPlanner: true as const } : {}),
+  };
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, stage: sendBack ? "PLAN" : "PLAN_REVIEW", state: sendBack ? "READY" : "WAITING", critique: kept, updatedAt: input.now,
+  });
+}
+
+/**
+ * The plan check ended with no critique to add: it stopped at the planning limit (`stopped_at_limit`), or it could not run or give an answer (`done`, so the plan is shown
+ * as it was checked so far, which may be not at all). The plan goes to the person; whatever was critiqued before is kept. A check is advice, so it never holds a plan back.
+ */
+export function closePlanCritique(
+  currentInput: unknown,
+  input: { expectedRevision: number; status: WorkflowCritique["status"]; sameModelAsPlanner?: true; now: string },
+): WorkflowSnapshot {
+  const current = runningPlanCheck(currentInput, input.expectedRevision);
+  const earlier = current.critique;
+  const kept: WorkflowCritique = {
+    status: input.status, critiques: earlier?.critiques ?? [], revisions: earlier?.revisions ?? 0,
+    ...(input.sameModelAsPlanner === true || earlier?.sameModelAsPlanner === true ? { sameModelAsPlanner: true as const } : {}),
+  };
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, stage: "PLAN_REVIEW", state: "WAITING", critique: kept, updatedAt: input.now });
 }
 
 /** Blocks the current step with `reason`; `regressedChecks` names the tests a review-only rerun found regressed. */
@@ -2641,8 +2698,11 @@ export function decideWorkflow(
     : request.data.decision === "REQUEST_CHANGES" ? "CHANGES_REQUESTED"
       : request.data.decision === "REJECT" ? "REJECTED"
         : request.data.decision === "SKIP" ? "SKIPPED" : undefined;
+  // Changes the person asks for make a new plan, which is checked afresh: the critique of the plan they sent back is dropped (the approved plan's stays for the record).
+  const { critique: _sentBackCritique, ...withoutCritique } = current;
+  void _sentBackCritique;
   return WorkflowSnapshotSchema.parse({
-    ...current,
+    ...(request.data.decision === "REQUEST_CHANGES" ? withoutCritique : current),
     revision: current.revision + 1,
     stage: nextStage,
     state: request.data.decision === "REJECT" ? "COMPLETE" : "READY",
