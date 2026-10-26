@@ -16691,7 +16691,7 @@ async function adminTaskShareMode(dependencies: AwsBrokerDependencies, identity:
   if (membership?.role !== "administrator") throw agentXError("FORBIDDEN", "administrator project membership is required");
   const claimed = [identity.claims.name, identity.claims.email].find((claim): claim is string => typeof claim === "string" && claim.trim() !== "");
   return adminShareMode(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, orgId, now: Date.now },
+    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, orgId, now: Date.now, ...(dependencies.developer === undefined ? {} : { issuer: dependencies.developer.issuer }) },
     { issuer: identity.issuer, subject: identity.subject, ...(claimed === undefined ? {} : { displayName: claimed.trim() }) },
     task,
     value,

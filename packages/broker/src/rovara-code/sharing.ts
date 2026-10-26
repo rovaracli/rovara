@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 // Legacy Slack shares use the session's live authority and the existing share DELETE route.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentSessionKey, agentXError, changesKey, sharedTaskKey, sessionBindingKey, sessionSurfaceKey, sessionEventId, INDEX_EXPIRY_ATTRIBUTE, cleanSessionName, type OrgId } from "@agentx/contracts";
@@ -11,10 +12,11 @@ import { aiToolTurn, effectiveTaskOwner, taskIndexKey, taskKey, type DeveloperTa
 export const codeTask = (task: DeveloperTaskRecord): task is DeveloperTaskRecord & { orgId: OrgId; sessionId: string } => task.orgId !== undefined && task.sessionId !== undefined && task.workflow?.definitionId === "agentx-task-to-pr";
 
 /** Ids only in the owner feed; names and the title are resolved by the consuming surface. */
-export function codeShareItems(tableName: string, task: DeveloperTaskRecord, share: TaskShare, requestId: string, actorId: string, at: string, actorName = "A member"): TransactItem[] {
+export function codeShareItems(tableName: string, task: DeveloperTaskRecord, share: TaskShare, requestId: string, actorId: string, at: string, actorName = "A member", origin?: string): TransactItem[] {
   if (!codeTask(task) || (task.share !== undefined && (task.share.mode === "continue" || share.mode === "view"))) return [];
   const key = `SLACK#${requestId}`;
-  const undoUrl = `/v1/app/sessions/${task.sessionId}/shares/${encodeURIComponent(key)}`;
+  const undoPath = `/v1/app/sessions/${task.sessionId}/shares/${encodeURIComponent(key)}`;
+  const undoUrl = origin === undefined ? undoPath : new URL(undoPath, origin).href;
   return [
     sessionEventItem({ tableName }, { orgId: task.orgId, sessionId: task.sessionId }, {
       eventId: sessionEventId("shared", `code-share|${requestId}`), at, type: "shared",
@@ -27,7 +29,7 @@ export function codeShareItems(tableName: string, task: DeveloperTaskRecord, sha
       [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(at) / 1000) + 7 * 86_400,
     }, ConditionExpression: "attribute_not_exists(pk)" } },
     { Put: { TableName: tableName, Item: {
-      ...changesKey(task.orgId, effectiveTaskOwner(task).developerId, at, Number.parseInt(requestId.replaceAll("-", "").slice(0, 5), 16) % 1_000_000),
+      ...changesKey(task.orgId, effectiveTaskOwner(task).developerId, at, Number.parseInt(createHash("sha256").update(`${task.sessionId}|${requestId}`).digest("hex").slice(0, 6), 16) % 1_000_000),
       entityType: "CHANGE_NOTICE", orgId: task.orgId, type: "session_shared", sessionId: task.sessionId,
       revision: task.shareVersion === undefined ? 1 : task.shareVersion + 1, by: actorId, undo: { principalKey: key }, at,
       expiresAt: Math.floor(Date.parse(at) / 1000) + 7 * 86_400,

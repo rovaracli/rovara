@@ -7737,7 +7737,7 @@ function withMode(current: TaskShare, mode: { mode: "view" | "continue"; modeRea
 
 /** An AgentX admin who changed a task's share mode (C25), named on the audit record. */
 export interface ShareAdmin { issuer: string; subject: string; displayName?: string }
-export type ShareModeDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "orgId" | "now" | "log">;
+export type ShareModeDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions" | "orgId" | "now" | "log" | "issuer">;
 
 /**
  * C1, C5, C25: one share change's items: the task's whole share map under shareVersion, the index
@@ -7779,7 +7779,7 @@ function shareItems(
       ExpressionAttributeNames: { "#mode": "mode" }, ExpressionAttributeValues: { ":mode": share.mode },
     } }]),
     putNew(deps.tableName, { ...audit.idempotencyKey, entityType: "IDEMPOTENCY", action: "share", payloadHash: audit.payloadHash }),
-    ...codeShareItems(deps.tableName, task, share, audit.idempotencyKey.sk.slice(8), audit.actor?.developerId ?? hashJson({ issuer: audit.admin?.issuer, subject: audit.admin?.subject }), audit.receivedAt, audit.actor?.name ?? audit.admin?.displayName ?? "An administrator"),
+    ...codeShareItems(deps.tableName, task, share, audit.idempotencyKey.sk.slice(8), audit.actor?.developerId ?? hashJson({ issuer: audit.admin?.issuer, subject: audit.admin?.subject }), audit.receivedAt, audit.actor?.name ?? audit.admin?.displayName ?? "An administrator", deps.issuer),
     // Q9: a share or mode change is audited like the task's other actions.
     putNew(turns, aiToolTurn({
       party: audit.actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, audit.actor), turnId: randomUUID(), action: "share", phase: "accepted", outcome: "accepted", receivedAt: audit.receivedAt, finishedAt: iso(deps),
