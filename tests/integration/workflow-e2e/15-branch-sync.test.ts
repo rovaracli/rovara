@@ -312,6 +312,29 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(milestones(e2e, "stuck")).toHaveLength(1);
   }, 240_000);
 
+  it("15.11 a merge that keeps failing is tried twice on the same head, then stops with a plain text: not four times a day, every day", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const head = pullRequest.commit;
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    const maintains = () => e2e.invocations.filter((invocation) => invocation.kind === "maintain").length;
+    e2e.worker.failNext("maintain", "CONFIG_INVALID: one or more registered readiness checks failed");
+    await trackAndRun(e2e, 3);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", syncFailures: { headSha: head, count: 1 } });
+    expect(milestones(e2e, "stuck")).toEqual([]);
+    e2e.worker.failNext("maintain", "CONFIG_INVALID: one or more registered readiness checks failed");
+    await trackAndRun(e2e, 3);
+    const stopped = "Rovara couldn't bring the branch up to date: the project's checks fail once the base is merged in. Update it on GitHub.";
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: stopped });
+    expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text: stopped })]);
+    expect(maintains()).toBe(2);
+    // And a day later it is still not tried again.
+    e2e.clock.advance(26 * 60 * 60_000);
+    await trackAndRun(e2e, 2);
+    expect(maintains()).toBe(2);
+    expect(dispatchRows(e2e)).toEqual([]);
+  }, 240_000);
+
   it("15.8 a merge whose machine is lost after its push is judged from what GitHub shows: the merge is recorded as Rovara's own (with no approval to carry), and nothing false is said", async () => {
     const { e2e, github, pullRequest } = await waitingForMerge();
     const before = pullRequest.commit;

@@ -153,11 +153,28 @@ describe("a workflow task's merge of the base branch", () => {
     expect(result.conflicts).toEqual(['odd "name" here.md']);
   });
 
-  it("refuses a workspace with changes in it, as any sync", async () => {
+  it("starts from the recorded head whatever an abandoned conflict round left in the workspace (markers, edits, files)", async () => {
+    const fixture = await createFixture({ conflict: true });
+    await maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, fixture.conflictBase!), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
+    await writeFile(join(fixture.checkout, "README.md"), "half way\n", "utf8");
+    await writeFile(join(fixture.checkout, "LEFTOVER.md"), "from the coder\n", "utf8");
+    const result = await maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, fixture.conflictBase!), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
+    expect(result).toMatchObject({ conflicts: ["README.md"], previousCommit: fixture.pullRequestHead });
+    await expect(readFile(join(fixture.checkout, "LEFTOVER.md"), "utf8")).rejects.toThrow();
+    expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
+  });
+
+  it("runs no readiness check for a merge that has nothing to merge (the branch already has the base)", async () => {
+    const fixture = await createFixture({ failingReadiness: true });
+    const result = await maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, fixture.baseCommit), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
+    expect(result).toMatchObject({ reconciled: true, checks: [] });
+  });
+
+  it("refuses a workspace with changes in it, as a sync that is not a workflow task's", async () => {
     const fixture = await createFixture();
     const base = await advanceBase(fixture, "UPSTREAM.md", "first change\n");
     await writeFile(join(fixture.checkout, "UNSAVED.md"), "work\n", "utf8");
-    await expect(maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() })).rejects.toThrow(/clean repository/);
+    await expect(maintainPullRequest({ rootPath: fixture.root, invocation: { ...fixture.invocation, payload: { ...fixture.invocation.payload, action: "sync" } } as Maintain, credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() })).rejects.toThrow(/clean repository/);
     expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
   });
 
@@ -186,7 +203,7 @@ describe("a workflow task's merge of the base branch", () => {
 
 describe("a conflict round's fix, pushed as a merge commit", () => {
   /** The conflict round up to the fix: the merge conflicted, and the coder resolved the file. */
-  async function resolved(options: { resolution?: string; ignored?: boolean; extras?: boolean } = {}) {
+  async function resolved(options: { resolution?: string; ignored?: boolean; extras?: boolean; failingReadiness?: boolean } = {}) {
     const fixture = await createFixture({ conflict: true, ...(options.ignored === true ? { ignored: true } : {}), ...(options.extras === true ? { extras: true } : {}) });
     const base = fixture.conflictBase!;
     await maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
@@ -366,7 +383,7 @@ async function createFixture(options: { conflict?: boolean; conflictFile?: strin
     name: "demo", revision: 1,
     repositories: [{ name: "demo", url: remoteUrl, path: "repo/demo", defaultBranch: "main", credentialRef: "github-app",
       ...(options.gates === true ? { codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality", timeoutMinutes: 5 }] } : {}) }],
-    setup: [], readiness: [{ cwd: "repo/demo", executable: process.execPath, args: ["-e", "process.exit(0)"], timeoutSeconds: 10 }],
+    setup: [], readiness: [{ cwd: "repo/demo", executable: process.execPath, args: ["-e", options.failingReadiness === true ? "process.exit(1)" : "process.exit(0)"], timeoutSeconds: 10 }],
     orchestratorInstructions: "Delegate coding work.",
   };
   await mkdir(join(root, ".agentx"), { recursive: true });
