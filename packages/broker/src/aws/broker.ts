@@ -515,7 +515,7 @@ import { createDeveloperApiConfiguration } from "./workflow-dependencies-configu
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
 import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
 import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
-import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy } from "../rovara-code/ci-fix.js";
+import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy, taskAutonomyBinding } from "../rovara-code/ci-fix.js";
 import { autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies } from "../rovara-code/feedback-autonomy.js";
 import { backfillGithubMembers } from "../rovara-code/github-members.js";
 import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
@@ -11094,12 +11094,17 @@ async function authorizeWorkflowFeedbackApproval(dependencies: AwsBrokerDependen
   }
 }
 
+/** How far the company allows agents to act on their own, now (its guardrails' `maxAutonomy`); an unreadable document throws, which the callers read as `suggest`. */
+async function companyAutonomyLimit(dependencies: AwsBrokerDependencies, orgId: OrgId): Promise<"suggest" | "prepare" | "run"> {
+  return (await readGuardrails(dependencies, orgId)).maxAutonomy;
+}
+
 /** What the worker-start check reads, wired to the broker's live stores (Plan 6 Task 16). */
 function autonomyStillHoldsFor(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, binding: WorkflowFeedbackApprovalBinding): Promise<boolean> {
   const orgId = task.orgId;
   const github = dependencies.githubPullRequests;
   return autonomyStillHolds({
-    autonomy: () => orgId === undefined ? Promise.resolve("suggest" as const) : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, orgId)),
+    autonomy: () => orgId === undefined ? Promise.resolve({ autonomy: "suggest" as const }) : taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, orgId), undefined, () => companyAutonomyLimit(dependencies, orgId)),
     repositoryUrl: (repositoryId) => orgId === undefined ? Promise.resolve(undefined) : webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, repositoryId, orgId),
     standing: github.getRepositoryStanding !== undefined && orgId !== undefined
       ? (url, login) => github.getRepositoryStanding!(url, login, githubScope(dependencies, orgId))
@@ -12712,9 +12717,9 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
       ...(github.getJobLogTail === undefined ? {} : { getJobLogTail: (...args: Parameters<NonNullable<typeof github.getJobLogTail>>) => github.getJobLogTail!.call(github, ...args) }),
     },
     // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).
-    autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))),
-    // The digest of the recipe that gave the autonomy: an automatic decision on review comments is bound to it (Plan 6 Task 16).
-    recipeDigest: (task) => task.agent?.digest,
+    autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, task.orgId!)),
+    // The digest of the task's frozen recipe, the one that gave the autonomy: an automatic decision on review comments is bound to it (Plan 6 Task 16).
+    recipeDigest: async (task) => task.orgId === undefined ? undefined : (await taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), undefined, () => companyAutonomyLimit(dependencies, task.orgId!))).recipeDigest,
     // Whether the waiting round's stored report and comments are sound enough for Rovara to decide it (Plan 6 Task 16); the report is read and checked as the owner's card reads it.
     feedbackRoundCheck: (task) => automaticFeedbackRoundIsSound(dependencies, task.taskId),
     ...(github.replyToReviewThread === undefined ? {} : { sendFeedbackReplies: (task: Parameters<typeof sendFeedbackReplies>[1], budget?: GithubMergeReadBudget) => sendFeedbackReplies({

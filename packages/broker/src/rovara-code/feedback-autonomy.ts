@@ -296,8 +296,8 @@ export function feedbackApprovalMatchesDecision(
 }
 
 export interface AutonomyHoldDependencies {
-  /** The task's autonomy, read now from its frozen recipe (`suggest` when it cannot be read). */
-  autonomy(): Promise<Autonomy>;
+  /** The task's autonomy and the digest of its frozen recipe, read now: the stricter of the recipe and the company's limit (`suggest` when it cannot be read). */
+  autonomy(): Promise<{ autonomy: Autonomy; recipeDigest?: string | undefined }>;
   repositoryUrl(repositoryId: string): Promise<string | undefined>;
   /** A person's standing on a repository, read now; undefined where this provider cannot ask. */
   standing: ((repositoryUrl: string, login: string) => Promise<RepositoryStanding>) | undefined;
@@ -309,15 +309,15 @@ export interface AutonomyHoldDependencies {
  */
 export async function autonomyStillHolds(
   deps: AutonomyHoldDependencies,
-  task: { agent?: { digest?: string | undefined } | undefined; workflow?: Pick<WorkflowSnapshot, "feedbackReview"> | undefined },
+  task: { workflow?: Pick<WorkflowSnapshot, "feedbackReview"> | undefined },
   binding: { autonomy?: { level: string; recipeDigest?: string | undefined } | undefined },
 ): Promise<boolean> {
   const bound = binding.autonomy;
   const review = task.workflow?.feedbackReview;
   if (bound === undefined || review === undefined || deps.standing === undefined) return false;
-  if (task.agent?.digest !== bound.recipeDigest) return false;
   const live = await deps.autonomy();
-  if (live !== "prepare" && live !== "run") return false;
+  if (live.autonomy !== "prepare" && live.autonomy !== "run") return false;
+  if (live.recipeDigest !== bound.recipeDigest) return false;
   try {
     for (const bundle of review.bundleRefs) {
       const url = await deps.repositoryUrl(bundle.repositoryId);
