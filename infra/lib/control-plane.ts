@@ -1155,9 +1155,13 @@ export class ControlPlaneStack extends Stack {
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
     let signInFunction: DeveloperSignIn["signInFunction"] | undefined;
     if (naming.env !== undefined && signInParameters !== undefined) {
+      // A bootstrap-free (legacy-synthesizer) template is the released one: the release pipeline packages zip Lambda code only, and CloudFront hosting adds a BucketDeployment and its AWS CLI layer (a file asset), so a released template has the cell serve the web files.
+      // Every other named environment (deployed with the CDK engine, bootstrapped) defaults to CloudFront, as Plan 7 Task 4 specifies.
       const configuredHosting: unknown = this.node.tryGetContext("agentxWebAssetHosting");
       if (configuredHosting !== undefined && configuredHosting !== "cloudfront" && configuredHosting !== "cell") throw new Error("agentxWebAssetHosting must be cloudfront or cell");
-      const web = new WebApp(this, "WebApp", { naming, api, assetHosting: configuredHosting === "cell" ? "cell" : "cloudfront" });
+      const releasable = this.node.tryGetContext("agentxSynthesizer") === "legacy";
+      if (releasable && configuredHosting === "cloudfront") throw new Error("agentxWebAssetHosting=cloudfront cannot be used with agentxSynthesizer=legacy: a bootstrap-free (released) template cannot carry the CloudFront upload's file asset; use cell");
+      const web = new WebApp(this, "WebApp", { naming, api, assetHosting: configuredHosting === "cell" || releasable ? "cell" : "cloudfront" });
       const developerSignIn = new DeveloperSignIn(this, "DeveloperSignIn", {
         naming, env: naming.env, api, stage: defaultStage, brokerIntegration: integration, broker, slackSecret, parameters: signInParameters, turnRecords, state, throttledRoutes: [...githubInstallRoutes.map(route => ({ route, burst: 50, rate: 20 })), ...web.routes], ...(eventHookRoute === undefined ? {} : { hookRoute: eventHookRoute }),
         ...(props?.cloud === true ? { cloud: true } : {}),

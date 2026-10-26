@@ -16,8 +16,12 @@ function build(mode: "cloudfront" | "cell"): TemplateJson {
  const app = buildAgentXApp({ agentxEnv: "staging", agentxRegion: "us-west-2", agentxCloud: true, agentxWebAssetHosting: mode });
  const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane");if (stack === undefined) throw new Error("Missing control-plane fixture");return Template.fromStack(stack).toJSON() as TemplateJson;
 }
-let hosted: TemplateJson, cell: TemplateJson;
-beforeAll(() => { hosted = build("cloudfront");cell = build("cell"); }, 300_000);
+function stackOf(context: Record<string, unknown>): TemplateJson {
+ const app = buildAgentXApp({ agentxEnv: "staging", agentxRegion: "us-west-2", agentxCloud: true, ...context });
+ const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane");if (stack === undefined) throw new Error("Missing control-plane fixture");return Template.fromStack(stack).toJSON() as TemplateJson;
+}
+let hosted: TemplateJson, cell: TemplateJson, defaulted: TemplateJson, released: TemplateJson;
+beforeAll(() => { hosted = build("cloudfront");cell = build("cell");defaulted = stackOf({});released = stackOf({ agentxSynthesizer: "legacy" }); }, 600_000);
 const webFunction = (template: TemplateJson) => ofType(template, "AWS::Lambda::Function").find(([, resource]) => resource.Properties.FunctionName === "agentx-staging-web")!;
 const webBucket = () => ofType(hosted, "AWS::S3::Bucket").find(([, resource]) => JSON.stringify(resource.Properties.BucketName ?? "").includes("web-assets"))!;
 describe("named web hosting and isolated throttle budgets", () => {
@@ -81,6 +85,27 @@ describe("named web hosting and isolated throttle budgets", () => {
   expect(ofType(cell, "AWS::CloudFront::Distribution")).toHaveLength(0);expect(ofType(cell, "AWS::S3::Bucket").some(([, resource]) => JSON.stringify(resource.Properties.BucketName ?? "").includes("web-assets"))).toBe(false);expect(record(record(webFunction(cell)[1].Properties.Environment).Variables).ASSET_ORIGIN).toBe("");
  });
  it("includes the hosting service actions in the existing deployment boundary", () => { for (const service of ["s3", "cloudfront", "lambda", "logs"]) { expect(SERVICE_ROLE_SERVICES).toContain(service);expect(BOUNDARY_SERVICES).toContain(service); } });
+});
+
+describe("which hosting each way of synthesizing gets", () => {
+ it("hosts the files on CloudFront in a named environment deployed with the CDK engine, when nothing is chosen", () => {
+  expect(ofType(defaulted, "AWS::CloudFront::Distribution")).toHaveLength(1);expect(ofType(defaulted, "Custom::CDKBucketDeployment")).toHaveLength(1);
+ });
+ it("hosts the files from the cell in a released template (bootstrap-free), with no CloudFront, bucket, BucketDeployment or AWS CLI layer", () => {
+  for (const type of ["AWS::CloudFront::Distribution", "AWS::CloudFront::OriginAccessControl", "AWS::CloudFront::ResponseHeadersPolicy", "Custom::CDKBucketDeployment", "AWS::Lambda::LayerVersion"]) expect(ofType(released, type), type).toHaveLength(0);
+  expect(ofType(released, "AWS::S3::Bucket").some(([, resource]) => JSON.stringify(resource.Properties.BucketName ?? "").includes("web-assets"))).toBe(false);
+  expect(record(record(webFunction(released)[1].Properties.Environment).Variables).ASSET_ORIGIN).toBe("");
+  expect(JSON.stringify(released)).not.toContain("AwsCliLayer");
+ });
+ it("refuses CloudFront hosting for a bootstrap-free template, which could not be released", () => {
+  expect(() => buildAgentXApp({ agentxEnv: "staging", agentxRegion: "us-west-2", agentxCloud: true, agentxSynthesizer: "legacy", agentxWebAssetHosting: "cloudfront" })).toThrow(/CloudFront.*bootstrap-free|bootstrap-free.*CloudFront/);
+ });
+ it("keeps the environment name in the CloudFront names, so a rendered template names them for its own environment", () => {
+  const [, headers] = ofType(hosted, "AWS::CloudFront::ResponseHeadersPolicy")[0]!, [, control] = ofType(hosted, "AWS::CloudFront::OriginAccessControl")[0]!;
+  const named = (value: unknown) => evaluate(value, { parameters: {}, conditions: {}, pseudo: { "AWS::AccountId": "123456789012", "AWS::Region": "us-west-2" } });
+  expect(named(record(headers.Properties.ResponseHeadersPolicyConfig).Name)).toBe("agentx-staging-web-assets-headers-us-west-2");
+  expect(named(record(control.Properties.OriginAccessControlConfig).Name)).toBe("agentx-staging-web-assets-us-west-2");
+ });
 });
 
 it("threads the real realtime DNS hosts into both web hosting modes", () => {

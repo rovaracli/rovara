@@ -13640,6 +13640,27 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::ApiGatewayV2::Route",
     },
+    "WebAppAssetAccess44D7FD6A": {
+      "Properties": {
+        "OriginAccessControlConfig": {
+          "Name": {
+            "Fn::Join": [
+              "",
+              [
+                "agentx-staging-web-assets-",
+                {
+                  "Ref": "AWS::Region",
+                },
+              ],
+            ],
+          },
+          "OriginAccessControlOriginType": "s3",
+          "SigningBehavior": "always",
+          "SigningProtocol": "sigv4",
+        },
+      },
+      "Type": "AWS::CloudFront::OriginAccessControl",
+    },
     "WebAppAssetHeaders5FBFFD13": {
       "Properties": {
         "ResponseHeadersPolicyConfig": {
@@ -13668,7 +13689,17 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
             "OriginOverride": true,
           },
-          "Name": "agentxstagingcontrolplaneWebAppAssetHeaders5A19DBA1",
+          "Name": {
+            "Fn::Join": [
+              "",
+              [
+                "agentx-staging-web-assets-headers-",
+                {
+                  "Ref": "AWS::Region",
+                },
+              ],
+            ],
+          },
           "SecurityHeadersConfig": {
             "ContentTypeOptions": {
               "Override": true,
@@ -13842,7 +13873,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Id": "AgentXControlPlaneWebAppDistributionOrigin12155C770",
               "OriginAccessControlId": {
                 "Fn::GetAtt": [
-                  "WebAppDistributionOrigin1S3OriginAccessControlB8B0EE07",
+                  "WebAppAssetAccess44D7FD6A",
                   "Id",
                 ],
               },
@@ -13861,17 +13892,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         ],
       },
       "Type": "AWS::CloudFront::Distribution",
-    },
-    "WebAppDistributionOrigin1S3OriginAccessControlB8B0EE07": {
-      "Properties": {
-        "OriginAccessControlConfig": {
-          "Name": "agentxstagingcontrolplaneWebOrigin1S3OriginAccessControl90FA081E",
-          "OriginAccessControlOriginType": "s3",
-          "SigningBehavior": "always",
-          "SigningProtocol": "sigv4",
-        },
-      },
-      "Type": "AWS::CloudFront::OriginAccessControl",
     },
     "WebAppFunction611CC907": {
       "DependsOn": [

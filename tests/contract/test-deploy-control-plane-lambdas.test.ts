@@ -47,7 +47,10 @@ describe("test-deploy's control-plane code units", () => {
     // The proof function is invoked through a published version: new code in the function would not change what runs.
     // The others are Rovara Cloud's own functions (round 4 merge), shipped with a CDK deploy.
     const cloud = ["AuditLedgerAuditAnchorA02AF164", "AuditLedgerAuditAppender4120E8F4", "AuditLedgerAuditExportED90D71C", "ModelAccessFunction1B50ECC9", "RealtimeAuthorizer74F9F06D"];
-    expect(Object.keys(CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED)).toEqual(["TaskPersonProofFunction817A5A36", ...cloud]);
+    // The web app's page function and CDK's BucketDeployment handler (its asset upload): the page function serves a directory of hashed assets the upload puts in a bucket.
+    const web = ["WebAppFunction611CC907", "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536"];
+    expect(Object.keys(CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED)).toEqual(["TaskPersonProofFunction817A5A36", ...cloud, ...web]);
+    for (const logicalId of web) expect(CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED[logicalId]).toMatch(/CDK deploy/);
     expect(CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED["TaskPersonProofFunction817A5A36"]).toMatch(/version/i);
     for (const logicalId of cloud) expect(CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED[logicalId]).toMatch(/Rovara Cloud function.*CDK deploy/);
   });

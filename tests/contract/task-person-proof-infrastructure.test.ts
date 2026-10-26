@@ -279,18 +279,19 @@ describe("the named TEST proof-only installation gate", () => {
     // verifies the callback capability), so the named and foreign digests were retaken from the test's output; the legacy digests did not move (named environments only).
     // M3: regenerated named/foreign pins from the merged template; web routes and chain hook throttles coexist. Legacy unchanged.
     // Round 8 merge (staging v046 fixes and the web app Part A onto the chains-sessions merge): the named and foreign digests were retaken from the test's output; legacy did not move.
+    // Round 8 release-path fixes: the web app's ResponseHeadersPolicy and OriginAccessControl got explicit prefixed names, so the named and foreign digests were retaken from the test's output; legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "bd021029d0625dc4693ec48b5c85a241832109d066a5505ae78f38a53150f029",
-        withoutRoute: "34eedce03e2caff80651cf4c1c4d58a5250ce7a896c29cf9b2f37e6905470004",
+        withRoute: "cb046268fc069e1fb825e3328198769bcb521c1fe7346f6ffb1e5d87978a1791",
+        withoutRoute: "8134eadbe8d8f1f63201204ed687b87b6b68688e2c87e9881a2631faf2274932",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "094f78141f594ec1ee9f09388ffecefe025a81aef5ba8f0e57009e28ba4c3ec3",
-        withoutRoute: "9f6e4d9228601a198402842e23cec59dd8f6ecc08e598855ff091da184aeed70",
+        withRoute: "e14d31affaddd573ba1ffc35916812b022c2a052ba36a43b1119790e5be2831b",
+        withoutRoute: "92b3433d1a8eac3a225590b228daf5bb1b549502df08afa5557a16d4f21fc72b",
       },
       {
         label: "legacy",

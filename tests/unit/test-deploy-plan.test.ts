@@ -900,6 +900,8 @@ describe("the control-plane-code unit", () => {
     // Rovara Cloud's functions are not TEST units (CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED names them).
     entries.delete("packages/broker/src/model-proxy/handler.ts");
     entries.delete("packages/broker/src/realtime/authorizer.ts");
+    // The web app's page function serves a directory of assets a BucketDeployment uploads: a CDK deploy moves it (also named in CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED).
+    entries.delete("packages/web/src/server/handler.ts");
     expect([...entries].sort()).toEqual(Object.values(CONTROL_PLANE_LAMBDAS).map((lambda) => lambda.entry).sort());
   });
 
