@@ -2,6 +2,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   AgentXError,
+  CONFLICT_PATHS_MAX,
   PullRequestLifecycleResultSchema,
   WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE,
   agentXError,
@@ -66,8 +67,9 @@ export async function maintainPullRequest(options: {
   if (remoteUrl !== repository.url) throw agentXError("CONFIG_INVALID", "repository remote does not match the registered project");
 
   // A workflow task's fix runs no readiness checks, so nothing but leftover programs from the fix's own run could
-  // reach the push token. As in publication, none is left before the credential is fetched.
-  if (invocation.payload.workflowCandidateTreeSha !== undefined) {
+  // reach the push token. As in publication, none is left before the credential is fetched. (A merge of the base branch runs the checks, but the
+  // coder's leftovers are just as unwelcome.)
+  if (invocation.payload.workflowCandidateTreeSha !== undefined || invocation.payload.workflowSync !== undefined) {
     await containWorkspace(rootPath, {
       sweep: options.sweepWorkspaceContainers ?? ((root: string) => sweepWorkspaceContainers({ rootPath: root })),
       stop: options.stopWorkspaceProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })),
@@ -84,8 +86,10 @@ export async function maintainPullRequest(options: {
   if (remoteHead !== invocation.payload.expectedHeadCommit) {
     throw agentXError("STALE_FENCE", "pull request head changed since AgentX last observed it");
   }
+  // A conflict round's fix is pushed from the workspace the conflicting merge left (its tree is the reviewed one, whatever the index says), so only that push may start with unmerged paths.
   const conflicts = await git(repositoryPath, ["diff", "--name-only", "--diff-filter=U", "--ignore-submodules=dirty"]);
-  if (conflicts.trim()) throw agentXError("CONFIG_INVALID", "repository has unresolved merge conflicts");
+  const mergeBase = invocation.payload.workflowMergeBase;
+  if (conflicts.trim() && mergeBase === undefined) throw agentXError("CONFIG_INVALID", "repository has unresolved merge conflicts");
 
   let commit: string;
   let reconciled = false;
@@ -95,8 +99,17 @@ export async function maintainPullRequest(options: {
       throw agentXError("STALE_FENCE", "workspace history is not a fast-forward of the pull request head");
     }
     const status = await git(repositoryPath, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=dirty"]);
-    if (currentHead === remoteHead && !status.trim()) {
+    if (currentHead === remoteHead && !status.trim() && mergeBase === undefined) {
       throw agentXError("CONFIG_INVALID", "repository has no new changes to append");
+    }
+    // A conflict round's fix is a merge commit of the base: the commit it merges must be one the workspace has and the base branch holds, so the push cannot name any other commit as a parent.
+    if (mergeBase !== undefined) {
+      await git(repositoryPath, ["cat-file", "-e", `${mergeBase}^{commit}`]).catch(() => {
+        throw agentXError("WORKSPACE_NOT_READY", "the base commit of the merge is missing from the workspace");
+      });
+      if (!(await isAncestor(repositoryPath, mergeBase, `refs/remotes/origin/${invocation.payload.baseBranch}`))) {
+        throw agentXError("CONFIG_INVALID", "the base commit of the merge is not part of the base branch");
+      }
     }
     // A workflow task's fix runs no project command here: its checks already ran, on this same tree, before its
     // reviews, and the tree is checked again below. Any other append runs the project's readiness checks.
@@ -130,12 +143,13 @@ export async function maintainPullRequest(options: {
       if (workspaceTree !== reviewedTree) throw agentXError("CONFIG_INVALID", WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE);
     }
     const publishedTree = (await git(repositoryPath, ["rev-parse", `${remoteHead}^{tree}`])).trim();
-    if (workspaceTree === publishedTree) {
+    // A merge commit is worth recording even when its tree is the head's own (the conflict was resolved to the pull request's side).
+    if (workspaceTree === publishedTree && mergeBase === undefined) {
       throw agentXError("CONFIG_INVALID", "repository has no effective changes to append");
     }
     commit = (await git(repositoryPath, [
       "-c", `user.name=${AGENTX_GIT_NAME}`, "-c", `user.email=${AGENTX_GIT_EMAIL}`,
-      "commit-tree", workspaceTree, "-p", remoteHead,
+      "commit-tree", workspaceTree, "-p", remoteHead, ...(mergeBase === undefined ? [] : ["-p", mergeBase]),
       "-m", reviewedTree === undefined ? `AgentX: update PR #${invocation.payload.pullRequestNumber}` : reviewedFixMessage(invocation.payload.workflowFix?.source),
     ])).trim();
     await git(repositoryPath, ["checkout", "--force", "-B", invocation.payload.headBranch, commit]);
@@ -177,7 +191,16 @@ export async function maintainPullRequest(options: {
   const status = await git(repositoryPath, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=dirty"]);
   if (status.trim()) throw agentXError("CONFIG_INVALID", "sync requires a clean repository");
   await git(repositoryPath, ["checkout", "--force", "-B", invocation.payload.headBranch, remoteHead]);
-  const remoteBase = (await git(repositoryPath, ["rev-parse", `refs/remotes/origin/${invocation.payload.baseBranch}^{commit}`])).trim();
+  const baseTip = (await git(repositoryPath, ["rev-parse", `refs/remotes/origin/${invocation.payload.baseBranch}^{commit}`])).trim();
+  // A workflow task's merge takes exactly the base commit the broker named (never whatever the base is by now), and only one the base branch holds.
+  const workflowSync = invocation.payload.workflowSync;
+  const remoteBase = workflowSync?.baseCommit ?? baseTip;
+  if (workflowSync !== undefined) {
+    const present = await git(repositoryPath, ["cat-file", "-e", `${remoteBase}^{commit}`]).then(() => true, () => false);
+    if (!present || !(await isAncestor(repositoryPath, remoteBase, baseTip))) {
+      throw agentXError("STALE_FENCE", "the base commit is not part of the base branch as AgentX last observed it");
+    }
+  }
   if (await isAncestor(repositoryPath, remoteBase, remoteHead)) {
     commit = remoteHead;
     reconciled = true;
@@ -188,6 +211,29 @@ export async function maintainPullRequest(options: {
         "merge", "--no-edit", "--no-ff", remoteBase,
       ]);
     } catch {
+      // A workflow task's merge that conflicted is a result, not an error: the conflicting files are returned and the workspace is left with the merge's files (markers in the conflicting ones, the branch
+      // still on the pull request's head) for the coding round that resolves them. Nothing is pushed.
+      const unmerged = workflowSync === undefined ? [] : await unmergedPaths(repositoryPath);
+      if (unmerged.length > 0) {
+        // The merge's files stay as it left them (markers in the conflicting ones, the base's new files in place). The index goes back to the head's: a candidate cannot be captured from a repository with
+        // unmerged entries, and the coder resolving the files by editing them, as it edits anything, must not also have to mark each one in Git.
+        await git(repositoryPath, ["reset", "--quiet"]);
+        const callback = await options.pullRequestUpdateSink({
+          repository: repository.name,
+          pullRequestNumber: invocation.payload.pullRequestNumber,
+          action: "sync",
+          headBranch: invocation.payload.headBranch,
+          baseBranch: invocation.payload.baseBranch,
+          previousCommit: remoteHead,
+          commit: remoteHead,
+        });
+        return PullRequestLifecycleResultSchema.parse({
+          action: "sync", repository: repository.name, number: invocation.payload.pullRequestNumber,
+          url: callback.url, state: callback.state, headBranch: invocation.payload.headBranch,
+          baseBranch: invocation.payload.baseBranch, previousCommit: remoteHead, commit: remoteHead,
+          conflicts: unmerged, checks: [], codeBuildChecks: [], reconciled: true,
+        });
+      }
       // The merge ran in a throwaway repository, so no MERGE_HEAD exists for `merge --abort`: the workspace was clean before it (checked above), so putting it back
       // on the pull request head, with the index the failed merge left, removes everything the merge wrote.
       await git(repositoryPath, ["reset", "--hard", remoteHead]).catch(() => undefined);
@@ -218,7 +264,20 @@ export async function maintainPullRequest(options: {
       credential,
       options.codeBuildSink,
     );
-  if (!reconciled) await push(repositoryPath, repository.url, invocation.payload.headBranch, credential);
+  if (!reconciled && workflowSync !== undefined) {
+    // A workflow task's merge is pushed onto the head AgentX recorded and nothing else: GitHub is asked again right before the push, so a branch a person moved (or deleted) meanwhile is never
+    // pushed over. A push GitHub refuses (the App can't push workflow files) leaves the workspace as it was, on the pull request's head.
+    try {
+      if (await remoteBranchHead(repositoryPath, repository.url, invocation.payload.headBranch, credential) !== remoteHead) {
+        throw agentXError("STALE_FENCE", "pull request head changed since AgentX last observed it");
+      }
+      await push(repositoryPath, repository.url, invocation.payload.headBranch, credential);
+    } catch (error) {
+      throw await undoMerge(repositoryPath, remoteHead, error);
+    }
+  } else if (!reconciled) {
+    await push(repositoryPath, repository.url, invocation.payload.headBranch, credential);
+  }
   const callback = await options.pullRequestUpdateSink({
     repository: repository.name,
     pullRequestNumber: invocation.payload.pullRequestNumber,
@@ -232,8 +291,16 @@ export async function maintainPullRequest(options: {
     action: "sync", repository: repository.name, number: invocation.payload.pullRequestNumber,
     url: callback.url, state: callback.state, headBranch: invocation.payload.headBranch,
     baseBranch: invocation.payload.baseBranch, previousCommit: remoteHead, commit,
+    // The merged tree, for the broker to check against what GitHub shows.
+    ...(workflowSync === undefined || reconciled ? {} : { treeSha: (await git(repositoryPath, ["rev-parse", `${commit}^{tree}`])).trim() }),
     checks, codeBuildChecks, reconciled: reconciled || callback.reconciled,
   });
+}
+
+/** The files a conflicting merge left unmerged, by name as Git has them (NUL-separated, so a name with a quote or a line break is not misread), at most as many as a result carries. */
+async function unmergedPaths(repositoryPath: string): Promise<string[]> {
+  const listed = await git(repositoryPath, ["diff", "--name-only", "-z", "--diff-filter=U", "--ignore-submodules=dirty"]).catch(() => "");
+  return listed.split("\0").filter((name) => name !== "").slice(0, CONFLICT_PATHS_MAX).map((name) => name.slice(0, 1024));
 }
 
 async function validateCandidate(

@@ -46,6 +46,10 @@ export class FakeGitHub {
   readonly commits = new Map<string, string>();
   /** Each pushed commit's parents. */
   readonly parents = new Map<string, string[]>();
+  /** The commit each base branch is at (Plan 6 Task 17: what a merge of the base takes), by branch name. */
+  readonly baseHeads = new Map<string, string>();
+  /** The commits that merge the base branch into a pull request's branch: pushed by a merge of the base, or a conflict round's fix pushed as one. */
+  readonly baseMerges = new Set<string>();
   readonly pullRequests: FakePullRequest[] = [];
   /** The repository's files by path (as GitHub names them, inside the repository), for the plan's cited code. */
   readonly files = new Map<string, string>();
@@ -356,6 +360,8 @@ export class FakeGitHub {
     },
     getBranchHead: async (_repositoryUrl: string, branch: string): Promise<string> => {
       this.fault("getBranchHead");
+      const base = this.baseHeads.get(branch);
+      if (base !== undefined) return base;
       const pushed = this.pushes.get(branch);
       if (pushed === undefined) throw new Error(`GitHub has no branch ${branch}`);
       return pushed.commit;

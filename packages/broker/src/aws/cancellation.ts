@@ -126,7 +126,9 @@ export interface OperationRecord extends Operation {
     expectedHeadCommit: string;
     codeBuildGates: CodeBuildGateDefinition[];
     /** A workflow task's push of its reviewed fix: the candidate, its reviewed tree and the task's pinned base. */
-    workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string };
+    workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; /** A conflict round's fix is pushed as a merge commit with this commit of the base as its second parent. */ mergeBaseCommit?: string };
+    /** Plan 6 Task 17: a workflow task's merge of the base branch into its pull request's branch: the base commit merged and the head it is for. */
+    workflowSync?: { baseCommit: string; expectedHeadCommit: string };
   };
   candidateCommit?: string;
   closePreviousStatus?: "READY" | "STOPPED";

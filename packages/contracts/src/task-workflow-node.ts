@@ -1,6 +1,6 @@
 import { DigestSchema } from "./workflow-dependencies.js";
 import {
-  ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds,
+  ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, CONFLICT_PATHS_MAX, type BranchSyncReason, type WorkflowBranchSync, intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
 import { redactText } from "./redaction.js";
@@ -987,11 +987,14 @@ export function recordWorkflowPullRequestHeadTrees(currentInput: unknown, trees:
 }
 
 /** Whether the task follows its pull requests only for their merge: an approved fix is being made or pushed, its push failed, or a person is to retry its CI fix. */
-export function workflowFollowsOnlyMerge(workflow: Pick<WorkflowSnapshot, "stage" | "state" | "blockReason">): boolean {
+export function workflowFollowsOnlyMerge(workflow: Pick<WorkflowSnapshot, "stage" | "state" | "blockReason"> & { branchSync?: WorkflowBranchSync | undefined }): boolean {
   return (workflow.stage !== "WAIT_FOR_MERGE" && workflow.stage !== "MERGED")
+    // Plan 6 Task 17: while the base branch is merged into the branch, its push moves the head: only a merge is followed until the result is recorded.
+    || (workflow.stage === "WAIT_FOR_MERGE" && workflow.branchSync !== undefined)
     || (workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed
       // Plan 6 Task 15: a task waiting for a person to retry its CI fix keeps waiting: an observation of the pull request must not read the block away, and comments wait for the Retry.
-      || isCiFixBlockReason(workflow.blockReason)));
+      // Plan 6 Task 17: so does one waiting for a person to update the branch on GitHub.
+      || isCiFixBlockReason(workflow.blockReason) || isBranchSyncBlockReason(workflow.blockReason)));
 }
 
 /**
@@ -1092,8 +1095,11 @@ export function recordWorkflowPullRequestUpdate(currentInput: unknown, input: { 
   }
   const pullRequests = (current.pullRequests ?? []).map((pullRequest) => {
     const update = updates.data.find((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number);
-    return update === undefined ? pullRequest
-      : { ...pullRequest, headSha: update.headSha, headTreeSha: update.headTreeSha, candidateDigest: candidate.digest, state: "OPEN" as const };
+    // A fix changes the code: what a person approved before a clean merge of the base is no longer what the pull request holds, so the record of that merge goes (Plan 6 Task 17).
+    if (update === undefined) return pullRequest;
+    const { syncedFrom: _syncedFrom, ...rest } = pullRequest;
+    void _syncedFrom;
+    return { ...rest, headSha: update.headSha, headTreeSha: update.headTreeSha, candidateDigest: candidate.digest, state: "OPEN" as const };
   });
   if (stalePullRequests({ ...current, pullRequests }).length > 0) {
     // A blocked task stays blocked for the pull requests its fix has not reached.
@@ -1132,9 +1138,10 @@ export function blockWorkflowPullRequestUpdate(currentInput: unknown, input: { n
 
 /** A snapshot without the marks of a fix in flight (the fix is over: pushed, given up or merged past). */
 function withoutFix(workflow: WorkflowSnapshot): WorkflowSnapshot {
-  const { fixSource: _source, fixProblems: _problems, ...rest } = workflow;
+  const { fixSource: _source, fixProblems: _problems, conflictBase: _conflictBase, ...rest } = workflow;
   void _source;
   void _problems;
+  void _conflictBase;
   return rest;
 }
 
@@ -1245,6 +1252,131 @@ export function retryWorkflowCiFix(currentInput: unknown, now: string): Workflow
   const heads = [...new Set((current.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN").flatMap((pullRequest) => pullRequest.headSha === undefined ? [] : [pullRequest.headSha]))];
   if (heads.length === 0) throw new WorkflowTransitionError("no open pull request has a recorded head to give a go-ahead for");
   return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", ciFixApproved: heads, updatedAt: now });
+}
+
+// ---- keeping the branch up to date (Plan 6 Task 17)
+
+const openPullRequestOf = (workflow: WorkflowSnapshot, repositoryId: string, number: number): WorkflowPullRequest | undefined =>
+  (workflow.pullRequests ?? []).find((pullRequest) => pullRequest.repositoryId === repositoryId && pullRequest.number === number && (pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN"));
+
+/**
+ * Rovara decides to merge the base branch into one pull request's branch: WAIT_FOR_MERGE/WAITING becomes WAIT_FOR_MERGE/READY, marked with the pull request, the head the merge is for (the head
+ * the workflow recorded) and why. Refused while the owner's card waits, while a fix or another merge is under way, and for a pull request that is not open or has no recorded head.
+ */
+export function startWorkflowBranchSync(currentInput: unknown, input: { repositoryId: string; number: number; reason: BranchSyncReason; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "WAITING" || current.fixSource !== undefined || current.branchSync !== undefined) {
+    throw new WorkflowTransitionError("the workflow is not waiting for the merge with nothing being changed");
+  }
+  if (ownerCardOpen(current)) throw new WorkflowTransitionError("the owner's feedback card is waiting, so nothing is merged on its own");
+  const pullRequest = openPullRequestOf(current, input.repositoryId, input.number);
+  if (pullRequest?.headSha === undefined) throw new WorkflowTransitionError("the pull request is not open, or has no recorded head");
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, state: "READY", updatedAt: input.now,
+    branchSync: { repositoryId: input.repositoryId, number: input.number, expectedHeadCommit: pullRequest.headSha, reason: input.reason },
+  });
+}
+
+/** The merge of the base branch is accepted by a worker: READY becomes RUNNING. */
+export function startWorkflowBranchSyncRun(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "READY" || current.branchSync === undefined) throw new WorkflowTransitionError("no merge of the base branch is waiting to start");
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "RUNNING", updatedAt: now });
+}
+
+/** A merge of the base branch that pushed nothing (it did not start, was not needed, failed, or the branch moved): the task waits for the merge again, as it was. */
+export function endWorkflowBranchSync(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || (current.state !== "READY" && current.state !== "RUNNING") || current.branchSync === undefined) throw new WorkflowTransitionError("no merge of the base branch is under way");
+  const { branchSync: _branchSync, ...rest } = current;
+  void _branchSync;
+  return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", updatedAt: now });
+}
+
+/**
+ * Keeping the branch up to date stops with a plain reason for a person to act on (the branch still conflicts after the conflict rounds, or the base changed CI workflow files, which Rovara cannot
+ * push): WAIT_FOR_MERGE/BLOCKED with `reason`, which must be one of the two texts. The pull requests stay followed for the merge.
+ */
+export function blockWorkflowBranchSync(currentInput: unknown, input: { reason: string; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const waiting = current.stage === "WAIT_FOR_MERGE" && (current.state === "WAITING" || current.state === "READY" || current.state === "RUNNING");
+  if (!isBranchSyncBlockReason(input.reason) || !waiting) throw new WorkflowTransitionError("the workflow is not at a place keeping the branch up to date can stop");
+  const { branchSync: _branchSync, ...rest } = current;
+  void _branchSync;
+  return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "BLOCKED", blockReason: input.reason.slice(0, 500), updatedAt: input.now });
+}
+
+/**
+ * The merge of the base branch conflicted (nothing was pushed; the worker left the merge's files in the workspace): a conflict round begins. The task is back to waiting for the merge and a fix of
+ * source `conflict` starts, counted, with the first conflicting files by name. Refused when the conflict rounds are used up (the caller stops instead).
+ */
+export function recordWorkflowSyncConflict(currentInput: unknown, input: { paths: readonly string[]; baseCommit: string; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "RUNNING" || current.branchSync === undefined) throw new WorkflowTransitionError("no merge of the base branch is running");
+  if (workflowFixRoundsLeft(current, "conflict") === 0) throw new WorkflowTransitionError("the rounds of this kind of fix are used up");
+  const { branchSync: _branchSync, ...rest } = current;
+  void _branchSync;
+  const waiting = WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", updatedAt: input.now });
+  const names = input.paths.slice(0, CONFLICT_PATHS_MAX).map((path) => redactText(path.replace(/[\p{Cc}\p{Cf}]/gu, " ")).replace(/\s+/gu, " ").trim().slice(0, 200)).filter((name) => name !== "");
+  if (!/^[a-f0-9]{40}$/.test(input.baseCommit)) throw new WorkflowTransitionError("the base commit of the conflict is invalid");
+  const started = startWorkflowFix(waiting, { source: "conflict", problems: names.slice(0, CI_FIX_PROBLEMS_MAX), now: input.now });
+  return WorkflowSnapshotSchema.parse({ ...started, conflictBase: input.baseCommit });
+}
+
+/**
+ * The base branch is merged into a pull request's branch and the merge is on GitHub. The pull request holds the merge, and the candidate is the same change on the new base: its repository entry has the
+ * merge commit, its tree and the new base commit, so the next review and the next fix see only Rovara's change (Finding 8). Everything bound to the old candidate's digest (checks, reviews, accepted
+ * findings, risk, the pull requests that held it) is kept for the new one: a merge of the base changes none of what they judged. Two ways to get here:
+ * - a clean merge, which the worker pushed (WAIT_FOR_MERGE/RUNNING with the merge marked): `previousHeadSha` is the head before it, and the pull request's `syncedFrom` names the head before the run of
+ *   clean merges, so a person's approval of that head can carry (the rule is Task 19's). The reviewed tree is the merge's;
+ * - a conflict round's fix, which was pushed as a merge commit and recorded as any fix (`recordWorkflowPullRequestUpdate`): the pull request already holds the head. It was code Rovara wrote, so
+ *   nothing carries an approval, and `syncedFrom` is not set.
+ */
+export function recordWorkflowBranchSync(currentInput: unknown, input: { repositoryId: string; number: number; headSha: string; headTreeSha: string; baseCommitSha: string; previousHeadSha?: string; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const sha = z.string().regex(/^[a-f0-9]{40}$/);
+  if (![input.headSha, input.headTreeSha, input.baseCommitSha, ...(input.previousHeadSha === undefined ? [] : [input.previousHeadSha])].every((value) => sha.safeParse(value).success)) {
+    throw new WorkflowTransitionError("the merge of the base branch names an invalid commit");
+  }
+  const candidate = current.candidate;
+  const pullRequest = (current.pullRequests ?? []).find((entry) => entry.repositoryId === input.repositoryId && entry.number === input.number);
+  const entry = candidate?.repositories.find((repository) => repository.repositoryId === input.repositoryId);
+  if (candidate === undefined || pullRequest === undefined || entry === undefined || (pullRequest.state !== "OPEN" && pullRequest.state !== "UNKNOWN")) {
+    throw new WorkflowTransitionError("the merge of the base branch names no open pull request of the workflow's candidate");
+  }
+  const clean = current.stage === "WAIT_FOR_MERGE" && current.state === "RUNNING" && current.branchSync?.repositoryId === input.repositoryId && current.branchSync.number === input.number;
+  const afterFix = !clean && ((current.stage === "WAIT_FOR_MERGE" && current.state === "WAITING") || (current.stage === "PULL_REQUEST" && current.state === "READY"));
+  if (clean) {
+    if (input.previousHeadSha === undefined || pullRequest.headSha !== input.previousHeadSha || input.headSha === input.previousHeadSha || current.branchSync?.expectedHeadCommit !== input.previousHeadSha) {
+      throw new WorkflowTransitionError("the merge of the base branch is not on the head the workflow recorded");
+    }
+  } else if (!afterFix || pullRequest.headSha !== input.headSha || pullRequest.headTreeSha !== input.headTreeSha || entry.treeSha !== input.headTreeSha || pullRequest.candidateDigest !== candidate.digest) {
+    throw new WorkflowTransitionError("the pull request does not hold the fix the merge of the base branch resolved");
+  }
+  const renewed = createCandidateManifest(candidate.repositories.map((repository) => repository.repositoryId === input.repositoryId
+    ? { repositoryId: repository.repositoryId, commitSha: input.headSha, treeSha: input.headTreeSha, baseCommitSha: input.baseCommitSha } : repository));
+  const rekey = <T extends { candidateDigest: string }>(entries: readonly T[] | undefined): T[] | undefined =>
+    entries?.map((entry_) => entry_.candidateDigest === candidate.digest ? { ...entry_, candidateDigest: renewed.digest } : entry_);
+  const pullRequests = (current.pullRequests ?? []).map((entry_) => {
+    if (entry_ !== pullRequest) return entry_.candidateDigest === candidate.digest ? { ...entry_, candidateDigest: renewed.digest } : entry_;
+    const { syncedFrom: priorSyncedFrom, ...rest } = entry_;
+    return { ...rest, headSha: input.headSha, headTreeSha: input.headTreeSha, candidateDigest: renewed.digest,
+      ...(clean ? { syncedFrom: priorSyncedFrom ?? input.previousHeadSha! } : {}) };
+  });
+  const reviewBase = renewed.repositories.every((repository) => repository.baseCommitSha !== undefined)
+    ? renewed.repositories.map((repository) => ({ repositoryId: repository.repositoryId, baseCommitSha: repository.baseCommitSha as string })) : current.reviewBase;
+  const { branchSync: _branchSync, ...rest } = current;
+  void _branchSync;
+  const verification = current.verification?.candidateDigest === candidate.digest ? { ...current.verification, candidateDigest: renewed.digest } : current.verification;
+  const reviews = rekey(current.reviews);
+  const acceptedFindings = rekey(current.acceptedFindings);
+  return WorkflowSnapshotSchema.parse({
+    ...rest, revision: current.revision + 1, state: clean ? "WAITING" : current.state, candidate: renewed,
+    ...(reviewBase === undefined ? {} : { reviewBase }),
+    ...(verification === undefined ? {} : { verification }), ...(reviews === undefined ? {} : { reviews }), ...(acceptedFindings === undefined ? {} : { acceptedFindings }),
+    ...(current.risk === undefined ? {} : { risk: current.risk.candidateDigest === candidate.digest ? { ...current.risk, candidateDigest: renewed.digest } : current.risk }),
+    pullRequests, pullRequestUpdatedAt: input.now, updatedAt: input.now,
+  });
 }
 
 /** Saves recoverable review input without inventing an independent report or code authority. */

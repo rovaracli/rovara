@@ -1,5 +1,5 @@
 import { GetCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate, closePlanCritique } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate, closePlanCritique, endWorkflowBranchSync } from "@agentx/contracts";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskKey, taskPointerKey } from "../developer/task-records.js";
@@ -155,13 +155,29 @@ async function blockFailedWorkflowRun(documentClient: Pick<DynamoDBDocumentClien
 async function blockFailedPullRequestUpdate(documentClient: Pick<DynamoDBDocumentClient, "send">, tableName: string, workspaceId: string, operationId: string, error: string): Promise<void> {
   try {
     const read = async (key: { pk: string; sk: string }) => (await documentClient.send(new GetCommand({ TableName: tableName, Key: key }))).Item;
-    const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as { maintenance?: { repository?: string; pullRequestNumber?: number; workflowCandidate?: { candidateDigest?: string } } } | undefined;
+    const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as { maintenance?: { repository?: string; pullRequestNumber?: number; workflowCandidate?: { candidateDigest?: string }; workflowSync?: { expectedHeadCommit?: string } } } | undefined;
     const binding = operation?.maintenance?.workflowCandidate;
-    if (binding === undefined) return;
+    const sync = operation?.maintenance?.workflowSync;
+    if (binding === undefined && sync === undefined) return;
     const pointer = await read(taskPointerKey(workspaceId)) as { taskId?: string } | undefined;
     if (typeof pointer?.taskId !== "string") return;
     const task = await read(taskKey(pointer.taskId)) as { closedAt?: string; workflow?: unknown } | undefined;
     const workflow = WorkflowSnapshotSchema.safeParse(task?.workflow);
+    // Plan 6 Task 17: a merge of the base branch that never reached the worker's result changed nothing Rovara knows of: it ends, and the task waits for the merge as it did.
+    if (sync !== undefined) {
+      if (task === undefined || task.closedAt !== undefined || !workflow.success || workflow.data.stage !== "WAIT_FOR_MERGE" || workflow.data.state !== "RUNNING"
+        || workflow.data.branchSync?.expectedHeadCommit !== sync.expectedHeadCommit) return;
+      const now = new Date().toISOString();
+      await documentClient.send(new UpdateCommand({
+        TableName: tableName, Key: taskKey(pointer.taskId),
+        UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+        ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
+        ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+        ExpressionAttributeValues: { ":workflow": endWorkflowBranchSync(workflow.data, now), ":now": now, ":revision": workflow.data.revision, ":stage": "WAIT_FOR_MERGE", ":running": "RUNNING" },
+      }));
+      return;
+    }
+    if (binding === undefined) return;
     if (task === undefined || task.closedAt !== undefined || !workflow.success || workflow.data.stage !== "PULL_REQUEST" || workflow.data.state !== "RUNNING"
       || workflow.data.candidate?.digest !== binding.candidateDigest || typeof operation?.maintenance?.pullRequestNumber !== "number") return;
     const now = new Date().toISOString();

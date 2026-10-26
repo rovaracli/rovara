@@ -1,0 +1,291 @@
+// Rovara Code (Plan 6 Task 17), through the whole broker: a version 2 task's pull request falls behind a base that requires an up-to-date branch (with a person's approval) or conflicts with it. The
+// schedule's tracking pass queues a merge of the base, the dispatch sweep starts it, the worker (real Git) merges exactly the base commit, and the broker records what GitHub shows. A clean merge keeps
+// the pull request's head a fast-forward and moves the candidate to the new base; a conflict becomes one coding round, checked, reviewed and pushed as a merge commit whose parents are the old head and
+// the base commit; GitHub refusing workflow files stops with its text. Nothing is rebased, nothing is force-pushed, and a person's push wins.
+import { describe, expect, it } from "vitest";
+import { BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, branchConflictStopMessage, type WorkflowProgram } from "@agentx/contracts";
+import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
+import { EDITS, PLAN, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+
+const PROGRAM: WorkflowProgram = { steps: [
+  { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
+  { id: "review", kind: "review", reviewers: ["code", "security"], onFindings: { backTo: "build", maxRounds: 3 } }, { id: "pull_request", kind: "pull_request" },
+] };
+void EMPTY_RECIPE;
+const RESOLVED = [{ path: "repo/demo/greeting.ts", content: "export function greet(name: string): string {\n  return `Hi, ${name}`;\n}\n" }];
+const BASE_GREETING = "export function greet(name: string): string {\n  return 'Hi ' + name;\n}\n";
+
+const task = (e2e: WorkflowE2E) => e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")!;
+const dispatchRows = (e2e: WorkflowE2E) => e2e.db.find((item) => item.pk === "WORKFLOW_DISPATCH");
+const milestones = (e2e: WorkflowE2E, kind: string) => e2e.db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === kind);
+const tracking = (e2e: WorkflowE2E) => {
+  const key = mergeTrackingKey(e2e.taskId(), "demo", e2e.github.pullRequests[0]!.number);
+  return e2e.db.get(key.pk, key.sk);
+};
+
+/** The fake GitHub as merge tracking reads it: the base is ahead (or not), the branch conflicts or not, a person has approved or not. */
+function syncGithub(e2e: () => WorkflowE2E) {
+  const state = { baseAhead: false, conflicted: false, approved: true, red: false };
+  const pullRequest = (number: number) => e2e().github.pullRequests.find((entry) => entry.number === number)!;
+  return {
+    state,
+    methods: {
+      getPullRequestStatus: async (_url: string, number: number) => {
+        const found = pullRequest(number);
+        // Once the head is a merge of the base (or a conflict fix pushed as one), the branch has the base and no longer conflicts.
+        const has = e2e().github.baseMerges.has(found.commit);
+        const behind = state.baseAhead && !has;
+        const conflicted = state.conflicted && !has;
+        return {
+          number, state: found.state, draft: found.draft === true, headSha: found.commit, baseBranch: found.baseBranch,
+          mergeableState: conflicted ? "dirty" as const : behind ? "behind" as const : "clean" as const, mergeable: !conflicted, ...(conflicted ? {} : { behindBy: behind ? 1 : 0 }),
+          checks: [{ name: "test", status: "completed" as const, conclusion: state.red ? "failure" as const : "success" as const, required: false, url: "https://github.com/example/demo/actions/runs/1/job/1" }],
+          requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0,
+          reviews: state.approved ? [{ githubUserId: "9", login: "maint", userType: "User", state: "APPROVED" as const, commitId: found.commit, submittedAt: "2026-10-25T09:00:00.000Z" }] : [],
+        };
+      },
+      getRepositoryPermission: async () => "write" as const,
+      markPullRequestReady: async (_url: string, number: number) => { pullRequest(number).draft = false; return "ready" as const; },
+      requestReviewers: async () => "requested" as const,
+    },
+  };
+}
+
+/** A version 2 task through its first pull request (waiting for the merge), with its program in place. */
+async function waitingForMerge(options: { resolves?: boolean } = {}) {
+  const holder: { e2e?: WorkflowE2E } = {};
+  const github = syncGithub(() => holder.e2e!);
+  const prompts: string[] = [];
+  const e2e = (holder.e2e = await createWorkflowE2E({
+    model: { plan: PLAN, edits: (latest) => { prompts.push(latest); return latest.includes(CONFLICT_PATHS_BLOCK_HEADER) && options.resolves !== false ? RESOLVED : EDITS; } },
+    trackingGithub: github.methods,
+  }));
+  await atPlanReview(e2e);
+  const stored = task(e2e);
+  e2e.db.set({ ...stored, workflow: { ...(stored.workflow as object), definitionVersion: "1.1.0" } });
+  await e2e.click("agentx_workflow_approve");
+  await e2e.settle();
+  expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+  const opened = task(e2e);
+  e2e.db.set({ ...opened, workflow: { ...(opened.workflow as object), program: PROGRAM, programStepId: "pull_request" } });
+  expect(WorkflowSnapshotSchema.safeParse(task(e2e).workflow).success).toBe(true);
+  // Draft marked ready on the first pass, so every later pass is about the branch.
+  e2e.clock.advance(60_000);
+  await e2e.runMergeRecovery();
+  return { e2e, github, prompts, pullRequest: e2e.github.pullRequests[0]! };
+}
+
+/** The schedule's tracking pass, then the dispatch sweep that starts what it queued, then the worker, and so on until the task is quiet. */
+async function trackAndRun(e2e: WorkflowE2E, rounds = 6): Promise<void> {
+  // A quiet task is looked at again at the heartbeat; a webhook would wake it sooner.
+  e2e.clock.advance(16 * 60_000);
+  await e2e.runMergeRecovery();
+  for (let round = 0; round < rounds; round += 1) {
+    await e2e.runRecovery();
+    await e2e.settle();
+  }
+}
+
+describe("Suite 15: keeping the branch up to date", () => {
+  journeySuite();
+
+  it("15.1 behind a base that requires it, with a person's approval: the base is merged into the branch as a fast-forward, and the candidate moves to the new base", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const beforeDigest = e2e.workflow().candidate!.digest;
+    const base = await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    const pushesBefore = e2e.github.pushLog.length;
+
+    await trackAndRun(e2e);
+
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(after.branchSync).toBeUndefined();
+    // GitHub shows the merge: the old head first, the base commit second; nothing else was pushed, to no other branch.
+    const merged = pullRequest.commit;
+    expect(merged).not.toBe(before);
+    expect(e2e.github.parents.get(merged)).toEqual([before, base]);
+    const pushes = e2e.github.pushLog.slice(pushesBefore);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toMatchObject({ branch: pullRequest.headBranch, commit: merged, parents: [before, base], during: "maintain" });
+    // The workflow records the head, the head before it, and the candidate on the new base, so the next review diffs only Rovara's change.
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: merged, syncedFrom: before, candidateDigest: after.candidate!.digest });
+    expect(after.candidate!.digest).not.toBe(beforeDigest);
+    expect(after.candidate!.repositories[0]).toMatchObject({ commitSha: merged, baseCommitSha: base });
+    expect(after.reviewBase).toEqual([{ repositoryId: "demo", baseCommitSha: base }]);
+    expect(after.verification?.candidateDigest).toBe(after.candidate!.digest);
+    expect(after.reviews?.every((review) => review.candidateDigest === after.candidate!.digest)).toBe(true);
+    // The day's merge is counted once, the row is gone, no fix round was used and nothing was said as stuck.
+    expect(dispatchRows(e2e).filter((row) => row.kind === "SYNC")).toEqual([]);
+    expect(after.fixRounds).toBeUndefined();
+    expect(milestones(e2e, "stuck")).toEqual([]);
+    // The thread says so once, in its own words (a merge of the base is not a fix).
+    expect(said(e2e).at(-1)).toBe(`Brought PR #${pullRequest.number} up to date with its base branch. Review it and merge it on GitHub; I'll finish this task when it's merged.`);
+    // The workspace is on the merge, with the base's file.
+    expect(await e2e.repoFile("upstream.ts")).toBe("export const upstream = 1;\n");
+    // It does not merge again: the next pass reads a branch that has the base, on a head that is Rovara's.
+    const rows = dispatchRows(e2e).length;
+    await trackAndRun(e2e, 2);
+    expect(tracking(e2e)).toMatchObject({ syncs: { count: 1 }, headSha: merged, branch: "up_to_date", headByRovara: true });
+    expect(dispatchRows(e2e)).toHaveLength(rows);
+    expect(e2e.github.pushLog.slice(pushesBefore)).toHaveLength(1);
+  });
+
+  it("15.2 behind with no approval: nothing is merged, and no machine is started", async () => {
+    const { e2e, github } = await waitingForMerge();
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    github.state.approved = false;
+    const pushesBefore = e2e.github.pushLog.length;
+    const invocationsBefore = e2e.invocations.length;
+    await trackAndRun(e2e, 2);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(e2e.github.pushLog).toHaveLength(pushesBefore);
+    expect(e2e.invocations).toHaveLength(invocationsBefore);
+    expect(tracking(e2e)?.syncs).toMatchObject({ count: 0 });
+  });
+
+  it("15.3 a person pushes to the branch before the merge starts: nothing is merged over their push", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    // The tracking pass queues the merge; before the dispatch sweep starts it, a person pushes.
+    e2e.clock.advance(16 * 60_000);
+    await e2e.runMergeRecovery();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "READY", branchSync: { reason: "behind" } });
+    const foreign = e2e.github.foreignPush(pullRequest.number);
+    const pushesBefore = e2e.github.pushLog.length;
+    await e2e.runRecovery();
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(e2e.workflow().branchSync).toBeUndefined();
+    expect(e2e.github.pushLog).toHaveLength(pushesBefore);
+    expect(pullRequest.commit).toBe(foreign.commit);
+    expect(e2e.invocations.filter((invocation) => invocation.kind === "maintain")).toHaveLength(0);
+    // And the next passes leave a head that is a person's alone.
+    await trackAndRun(e2e, 2);
+    expect(e2e.github.pushLog).toHaveLength(pushesBefore);
+    expect(e2e.invocations.filter((invocation) => invocation.kind === "maintain")).toHaveLength(0);
+  });
+
+  it("15.4 a conflict becomes one coding round: the files are named to the coder, the fix is checked and reviewed, and it is pushed as a merge commit of the old head and the base commit", async () => {
+    const { e2e, github, prompts, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const base = await e2e.advanceBase("greeting.ts", BASE_GREETING);
+    github.state.conflicted = true;
+    const pushesBefore = e2e.github.pushLog.length;
+    const promptsBefore = prompts.length;
+
+    await trackAndRun(e2e);
+
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 0, conflict: 1, feedbackAuto: 0 } });
+    expect(after.fixSource).toBeUndefined();
+    expect(after.conflictBase).toBeUndefined();
+    // The coder was told which file, in the exact block, and that it cannot push.
+    const conflictPrompt = prompts.slice(promptsBefore).find((prompt) => prompt.includes(CONFLICT_PATHS_BLOCK_HEADER))!;
+    expect(conflictPrompt).toBeDefined();
+    expect(conflictPrompt.indexOf("the merge conflicts")).toBeLessThan(conflictPrompt.indexOf(CONFLICT_PATHS_BLOCK_HEADER));
+    expect(conflictPrompt).toContain('["greeting.ts"]');
+    expect(conflictPrompt).toContain("you cannot push");
+    // One merge commit, a fast-forward of the old head with the base commit second; the fix's own checks and reviews ran before it.
+    const merged = pullRequest.commit;
+    expect(e2e.github.parents.get(merged)).toEqual([before, base]);
+    const pushes = e2e.github.pushLog.slice(pushesBefore);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toMatchObject({ branch: pullRequest.headBranch, parents: [before, base], during: "maintain" });
+    expect(await e2e.repoFile("greeting.ts")).toBe(RESOLVED[0]!.content);
+    // The candidate is on the new base now, with no head to carry an approval from.
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: merged, candidateDigest: after.candidate!.digest });
+    expect(after.pullRequests?.[0]?.syncedFrom).toBeUndefined();
+    expect(after.candidate!.repositories[0]).toMatchObject({ baseCommitSha: base });
+    expect(after.reviewBase).toEqual([{ repositoryId: "demo", baseCommitSha: base }]);
+    // Told to the person once, and the merge counted once for the day.
+    expect(milestones(e2e, "fixing")).toEqual([expect.objectContaining({ text: "The branch conflicts with main, so Rovara is resolving it (try 1 of 2)." })]);
+    expect(said(e2e).some((text) => /^The pull request's branch conflicts with the base branch \(greeting\.ts\)\./u.test(text))).toBe(true);
+    // The next pass reads a branch that has the base.
+    await trackAndRun(e2e, 1);
+    expect(tracking(e2e)).toMatchObject({ syncs: { count: 1 }, branch: "up_to_date", headSha: merged });
+    expect(dispatchRows(e2e)).toEqual([]);
+  });
+
+  it("15.5 a conflict fix pushed as a merge commit whose second parent is not the base commit is refused: the pull request keeps the head and code it had, and the task says the push failed", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const beforeDigest = e2e.workflow().candidate!.digest;
+    await e2e.advanceBase("greeting.ts", BASE_GREETING);
+    github.state.conflicted = true;
+    // The merge (the first maintain run) is as it was; GitHub shows the fix's push (the second) with another second parent.
+    e2e.worker.rewriteNextResult("maintain", (result) => result);
+    e2e.worker.rewriteNextResult("maintain", (result) => {
+      const pushed = (result as { commit: string }).commit;
+      e2e.github.parents.set(pushed, [before, "e".repeat(40)]);
+      return result;
+    });
+    await trackAndRun(e2e);
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED" });
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: before, candidateDigest: beforeDigest });
+    expect(after.pullRequestUpdateFailure?.numbers).toEqual([pullRequest.number]);
+    expect(after.candidate!.repositories[0]!.baseCommitSha).toBe(e2e.baseCommit);
+  });
+
+  it("15.6 two conflict rounds that did not help stop with the exact text and a stuck milestone, and no machine starts", async () => {
+    const { e2e, github } = await waitingForMerge();
+    await e2e.advanceBase("greeting.ts", BASE_GREETING);
+    github.state.conflicted = true;
+    const stored = task(e2e);
+    e2e.db.set({ ...stored, workflow: { ...(stored.workflow as object), fixRounds: { ci: 0, conflict: 2, feedbackAuto: 0 } } });
+    const invocationsBefore = e2e.invocations.length;
+    await trackAndRun(e2e, 2);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: branchConflictStopMessage("main") });
+    expect(e2e.invocations).toHaveLength(invocationsBefore);
+    expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text: "The branch still conflicts with main after 2 tries. Resolve it on GitHub or close the task." })]);
+    expect(dispatchRows(e2e)).toEqual([]);
+  });
+
+  it("15.7 GitHub refusing the push because the base changed CI workflow files stops with the exact text, and is not a conflict round", async () => {
+    const { e2e, github } = await waitingForMerge();
+    await e2e.advanceBase(".github/workflows/ci.yml", "name: ci\n");
+    github.state.baseAhead = true;
+    e2e.worker.failNext("maintain", "RUNTIME_UNAVAILABLE: ! [remote rejected] HEAD -> agentx/x (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)");
+    const pushesBefore = e2e.github.pushLog.length;
+    await trackAndRun(e2e, 3);
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: BRANCH_WORKFLOW_FILES_MESSAGE });
+    expect(after.fixRounds).toBeUndefined();
+    expect(after.branchSync).toBeUndefined();
+    expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text: BRANCH_WORKFLOW_FILES_MESSAGE })]);
+    expect(milestones(e2e, "fixing")).toEqual([]);
+    expect(e2e.github.pushLog).toHaveLength(pushesBefore);
+    // It does not go on trying: the task waits for a person (a block is not woken by the schedule), and the merge is still followed.
+    expect(dispatchRows(e2e)).toEqual([]);
+  });
+
+  it("15.8 a merge whose machine is lost after its push is ended, and Rovara does not touch the branch again: a head it has no record of is not its own", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const base = await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    // The worker pushes, then its machine is lost: no callback of any kind.
+    e2e.worker.crashNext("maintain", { afterPush: true });
+    e2e.clock.advance(16 * 60_000);
+    await e2e.runMergeRecovery();
+    await e2e.runRecovery();
+    await e2e.settle();
+    expect(e2e.github.parents.get(pullRequest.commit)).toEqual([before, base]);
+    // The reconciler's lost-machine step ends the run; the task is not left running.
+    await e2e.runRecovery();
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(e2e.workflow().branchSync).toBeUndefined();
+    expect(e2e.workflow().pullRequests?.[0]).toMatchObject({ headSha: before });
+    // The head is one the workflow has no record of, so nothing more is merged, fixed or pushed to it.
+    const pushes = e2e.github.pushLog.length;
+    await trackAndRun(e2e, 2);
+    expect(tracking(e2e)).toMatchObject({ headByRovara: false });
+    expect(e2e.github.pushLog).toHaveLength(pushes);
+  });
+});

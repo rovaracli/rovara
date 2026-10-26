@@ -24,6 +24,12 @@ import { briefLength, visibleSlackText } from "./strict-slack.js";
  * Words nothing AgentX shows in Slack may use (the suite's global constraint 5). Internal nouns in any case; status words
  * only as the shouted constants they are ("failed" in a plain sentence is fine, "FAILED" is a status leaking through).
  */
+/**
+ * Phrases that contain a jargon word as GitHub's own word, not Rovara's: a repository's CI workflow files (GitHub Actions). The plan's exact text for the one stop that names them (Plan 6 Task 17) uses it, and
+ * they are taken out before a message is read for jargon.
+ */
+export const GITHUB_OWN_WORDS = /CI workflow files/gu;
+
 export const JARGON = /\b(?:[Cc]andidates?|[Rr]evisions?|[Dd]igests?|[Oo]perations?|[Aa]rtifacts?|[Ww]orkflows?|[Ii]nvalid [Jj][Ss][Oo][Nn]|SUCCEEDED|FAILED|INTERRUPTED)\b/;
 
 /** What the task had decided when a run started (its workflow at that moment). */
@@ -38,6 +44,8 @@ export interface JourneyLedgerEntry {
   decided: JourneyDecided;
   /** A coding run the task owner asked for again with Retry coding (the broker's record of that press). */
   ownerRetry?: boolean;
+  /** A merge of the base branch (Plan 6 Task 17): a sync, not a fix, so it needs no owner's click and no fix round (its count is the day's, kept on the tracking item). */
+  sync?: boolean;
 }
 
 /** A push AgentX made, with the task's workflow at the moment of the push. */
@@ -63,6 +71,8 @@ export interface JourneyView {
     tokens: ReadonlyMap<string, "clone" | "push">;
     minted: ReadonlyArray<{ token: string; access: "clone" | "push"; during: string | undefined }>;
     pushLog: ReadonlyArray<{ branch: string; commit: string; tree: string; parents: readonly string[]; token: string; during: string | undefined }>;
+    /** The commits that merge the base branch into a pull request's branch (Plan 6 Task 17). */
+    baseMerges?: ReadonlySet<string>;
     /** GitHub's pull requests (one repository), with their state on GitHub. */
     pullRequests: ReadonlyArray<{ number: number; headBranch: string; state?: string }>;
   };
@@ -179,7 +189,7 @@ function checkClick(journey: JourneyView): string[] {
       }
       previous = entry;
     }
-    if (entry.kind === "maintain") {
+    if (entry.kind === "maintain" && entry.sync !== true) {
       if (feedbackApprovals(entry.decided) <= (previousMaintain === undefined ? 0 : feedbackApprovals(previousMaintain.decided))) {
         violations.push(`INV-CLICK: fix push ${entry.operationId} started with no owner approval of a fix since the previous push`);
       }
@@ -224,8 +234,15 @@ function checkCode(journey: JourneyView): string[] {
   const violations: string[] = [];
   const agentx = journey.github.pushLog.filter((push) => journey.github.tokens.has(push.token));
   const checked = new Set(journey.checkRuns.map((run) => run.tree));
+  const merges = journey.github.baseMerges ?? new Set<string>();
   for (const push of agentx) {
     const pushed = journey.pushedWorkflows.find((entry) => entry.commit === push.commit);
+    // A merge of the base branch (Plan 6 Task 17) is the task's code on a newer base, merged with two parents; it pushes no code of Rovara's own.
+    // A conflict round's fix pushed as that merge is checked and reviewed as any fix.
+    if (merges.has(push.commit) && pushed === undefined) {
+      if (push.parents.length !== 2) violations.push(`INV-CODE: the merge of the base ${push.commit} to ${push.branch} does not have two parents`);
+      continue;
+    }
     const problem = pushedCodeProblem(push, pushed?.workflow);
     if (problem !== undefined) violations.push(`INV-CODE: ${problem}`);
   }
@@ -239,7 +256,8 @@ function checkCode(journey: JourneyView): string[] {
     const previous = heads.get(push.branch);
     if (push.during === "maintain" && journey.github.tokens.has(push.token)) {
       if (previous === undefined) violations.push(`INV-CODE: a fix was pushed to ${push.branch}, a branch with no pull request head`);
-      else if (push.parents.length !== 1 || push.parents[0] !== previous) violations.push(`INV-CODE: the fix push ${push.commit} to ${push.branch} is not a fast-forward of ${previous}`);
+      // Never a rewrite: the commit's first parent is the head the branch had, and a merge of the base (Plan 6 Task 17) adds the base's commit as its second.
+      else if ((push.parents.length !== 1 && !(push.parents.length === 2 && merges.has(push.commit))) || push.parents[0] !== previous) violations.push(`INV-CODE: the fix push ${push.commit} to ${push.branch} is not a fast-forward of ${previous}`);
       if (!journey.github.pullRequests.some((pullRequest) => pullRequest.headBranch === push.branch)) violations.push(`INV-CODE: a fix was pushed to ${push.branch}, which has no pull request`);
     }
     heads.set(push.branch, push.commit);
@@ -387,7 +405,7 @@ function checkVoice(journey: JourneyView): string[] {
   }
   for (const message of [...journey.slack.posts, ...journey.slack.updates]) {
     for (const visible of visibleStrings(message)) {
-      const jargon = JARGON.exec(visible);
+      const jargon = JARGON.exec(visible.replace(GITHUB_OWN_WORDS, ""));
       if (jargon !== null) violations.push(`INV-VOICE: a thread message uses "${jargon[0]}": ${visible.slice(0, 120)}`);
     }
   }

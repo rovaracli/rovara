@@ -27,4 +27,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowFix",
   // Rovara Code v2: independent parts of an approved plan build side by side (parallel-parts.ts).
   "task.workflowParallelParts",
+  // Plan 6 Task 17: a merge of the base branch into a workflow task's pull request branch, and a conflict round's fix pushed as a merge commit.
+  "maintain.workflowSync",
 ] as const satisfies readonly WorkerInvocationFeature[];
