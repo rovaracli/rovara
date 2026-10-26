@@ -147,7 +147,7 @@ describe("Task 24: ids never confer authority", () => {
     expect(await verifyRealtimeToken(async () => jwk, response.token, w.clock.now)).toMatchObject({ org: ORG_B, sub: BO });
     const authorize = (channel: string) => authorizeRealtime({ authorizationToken: response.token, requestContext: { operation: "EVENT_SUBSCRIBE", channel } }, { ...w.table, publicKey: async () => jwk, log: () => undefined });
     await unchanged(w, async () => {
-      for (const channel of [sessionChannel(ORG_A, w.s1.sessionId), sessionChannel(ORG_A, w.s3.sessionId), projectChannel(ORG_A, "web"), userChannel(ORG_A, PRIYA), `/rovara/o-${ORG_A}/*`]) expect(await authorize(channel)).toEqual({ isAuthorized: false, ttlOverride: 0 });
+      for (const channel of [sessionChannel(ORG_A, w.s1.sessionId), sessionChannel(ORG_A, w.s3.sessionId), projectChannel(ORG_A, "web"), userChannel(ORG_A, PRIYA), userChannel(ORG_A, BO), `/rovara/o-${ORG_A}/*`]) expect(await authorize(channel)).toEqual({ isAuthorized: false, ttlOverride: 0 });
     });
     expect(await authorize(projectChannel(ORG_B, "web"))).toEqual({ isAuthorized: true, ttlOverride: 0 });
     expect(await authorize(userChannel(ORG_B, BO))).toEqual({ isAuthorized: true, ttlOverride: 0 });
@@ -256,7 +256,7 @@ describe("the broker and its real CLI/MCP clients", () => {
     const client = httpControlPlaneClient({ session: async () => ({ baseUrl: CELL, accessToken: "synthetic-test", signInCommand: "test login" }), fetch: (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
       return send(init?.method ?? "GET", url.pathname + url.search, typeof init?.body === "string" ? JSON.parse(init.body) : undefined);
-    }) as typeof fetch, tries: 1, sleep: async () => undefined });
+    }), tries: 1, sleep: async () => undefined });
     const server = createAgentXMcpServer({ version: "0.4.0", context: () => ({ client, clientName: "codex", serverVersion: "0.4.0", adminSignedIn: async () => false, compatibility: async () => ({ env: "staging", apiVersion: "1.2" }), now: Date.now, sleep: async () => undefined, newRequestId: randomUUID }) });
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await server.connect(serverSide);
