@@ -76,6 +76,12 @@ const cases = (s: string, deviceId: string): Array<[string, string, unknown?]> =
   ["PATCH", `/v1/app/sessions/${s}/messages/msg_aaaaaaaaaaaaaaaaaaaa`, { rev: 1, text: "changed" }],
   ["DELETE", `/v1/app/sessions/${s}/messages/msg_aaaaaaaaaaaaaaaaaaaa`, { rev: 1 }],
   ...["take-over", "stop", "retry", "handoff", "agent"].map((action): [string, string, unknown] => ["POST", `/v1/app/sessions/${s}/${action}`, { requestId: randomUUID(), ...(action === "handoff" ? { to: "mac", deviceId } : {}) }]),
+  // Plan 6: Understand's answers, "change it anyway" after an Answered task, and the Linear binding (link and unlink) are session routes like the rest: an id from another org, or a private one, is no session.
+  ["POST", `/v1/app/sessions/${s}/answers`, { requestId: randomUUID(), round: 1, answers: [{ questionId: "q1", text: "Cross-org canary" }] }],
+  ["POST", `/v1/app/sessions/${s}/change-anyway`, { requestId: randomUUID() }],
+  ["POST", `/v1/app/sessions/${s}/bindings`, { linear: "ENG-142" }],
+  ["POST", `/v1/app/sessions/${s}/bindings`, { linear: "ENG-142", replace: true }],
+  ["DELETE", `/v1/app/sessions/${s}/bindings/linear`],
   ["PUT", `/v1/app/sessions/${s}/shares`, { requestId: randomUUID(), principal: { kind: "member", developerId: BO }, level: "edit" }],
   ["DELETE", `/v1/app/sessions/${s}/shares/MEMBER%23${MIA}`],
   ["POST", `/v1/app/sessions/${s}/local/updates`, { requestId: randomUUID(), deviceId, status: "running" }],
