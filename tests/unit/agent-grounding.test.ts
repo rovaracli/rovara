@@ -408,3 +408,38 @@ describe("cleanGrounding", () => {
     expect(cleanGrounding(calls)).toEqual({ verdict: "grounded", reasons: [], tools: { calls: 2, failed: 1, failures: [{ tool: "ls", message: "denied" }] } });
   });
 });
+
+describe("review M2: a path the agent proposes is not an invented citation", () => {
+  const calls = [fileOk("read", { path: "repo/src/app.ts" }, "export const app = 1;")];
+  it("is not flagged when the line proposes, suggests or adds the file", () => {
+    for (const report of [
+      "Add a regression test in tests/unit/foo.test.ts.",
+      "I suggest creating a new file docs/runbook/deploy.md.",
+      "Proposed fix: rename it to src/new-name.ts, or consider src/other/place.ts.",
+      "We should introduce config/retry.yaml for this.",
+    ]) {
+      expect(check({ report, calls }), report).toBeUndefined();
+    }
+  });
+  it("is not flagged for a path that is a version or a host (22.23.2/bin/node.js, app.example.io/v1/health.json)", () => {
+    expect(check({ report: "Ran 22.23.2/bin/node.js against app.example.io/v1/health.json.", calls })).toBeUndefined();
+  });
+  it("still flags a path the report says it read, and one stated as a fact", () => {
+    for (const report of ["I read src/router/missing.ts and it is wrong.", "The bug is in lib/never-read/thing.ts."]) {
+      expect(check({ report, calls })?.verdict, report).toBe("unverified");
+    }
+  });
+});
+
+describe("review M3: hex-like words are not shas", () => {
+  it("does not take a short hex word, a number in scientific notation or a hex-like word with one digit for a sha", () => {
+    for (const report of ["The value 1234e567 is a number.", "A word like deadbee0 or facade1 is not a commit.", "The token ab12cd and decade are words."]) {
+      expect(check({ report }), report).toBeUndefined();
+    }
+  });
+  it("still checks a sha with a commit word, a backtick, or enough digits", () => {
+    for (const report of ["Fixed in commit deadbee0.", "Fixed in `deadbee0`.", "Fixed in 9d8c7b6a.", "Fixed in 4f2a9c1d7e0b3a5c."]) {
+      expect(check({ report })?.verdict, report).toBe("unverified");
+    }
+  });
+});

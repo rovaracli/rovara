@@ -259,10 +259,22 @@ function claimsAWrite(prose: string): boolean {
 /** Forms that name a pull request or issue outright; a bare #N is looser (it may be a step or a finding), so it is looked up more leniently. */
 const PULL_REQUEST_FORMS = /(?<![\w/])(?:PRs?[ \t]{0,2}[#-][ \t]{0,2}|pull[ -]requests?[ \t]{0,2}#[ \t]{0,2})(\d{1,7})\b|\/(?:pulls?|issues)\/(\d{1,7})\b/giu;
 const BARE_NUMBER = /(?<![\w&/#])#(\d{1,7})\b/gu;
-/** A commit: 7 to 40 hex characters; one of 6 only after a word that says it is a commit (or inside backticks), as 6 hex characters are also colours and words. */
+/** A commit: 6 to 40 hex characters, with digits and letters; see `citations` for when a short or hex-like one counts. */
 const COMMIT = /(?<![\w#-])[0-9a-f]{6,40}(?![\w-])/giu;
 const COMMIT_LEAD = /(?:\b(?:commit|sha|rev|ref|head|merge|merged|at)[ \t:`'"(]{0,3}|[@`])$/iu;
 const FILE_PATH = /(?<![\w./:@-])((?:[\w.-]{1,100}\/){1,12}[\w.-]{1,100}\.(?:tsx?|jsx?|mjs|cjs|json|ya?ml|md|py|go|rs|java|kt|rb|sh|sql|css|scss|html|toml|tf|swift|cpp|hpp|c|h))(?![\w/-])/gu;
+
+/** A path that starts like a version (22.23.2/bin/node.js) or a host (app.example.io/v1/health.json) is not a file of the repository. */
+const VERSION_OR_HOST = /^(?:\d+\.\d+|[\w-]+(?:\.[\w-]+)*\.(?:com|io|org|net|dev|app|co|ai|cloud)\/)/iu;
+/** A line that proposes a file (add, create, rename, suggest, "should", "consider"...) names one that does not exist yet. */
+const PROPOSAL = /\b(?:add|adds|adding|create|creates|creating|new|propose|proposed|proposes|suggest|suggested|suggests|should|could|would|rename|renaming|introduce|consider|write|writing)\b|\bmove(?:s)? (?:it )?to\b/iu;
+
+/** The line of the report a match sits in, cut to 400 characters around it. */
+function lineAround(text: string, at: number): string {
+  const start = Math.max(text.lastIndexOf("\n", at) + 1, at - 200);
+  const end = text.indexOf("\n", at);
+  return text.slice(start, Math.min(end === -1 ? text.length : end, at + 200));
+}
 
 interface Citations {
   /** Number to whether the report named it as a pull request (else just "#N"). */
@@ -289,13 +301,19 @@ function citations(report: string, prose: string): Citations {
     if (!room()) break;
     const token = match[0].toLowerCase();
     // A commit has both digits and letters; a word or a plain number (a run id, a count) is not one.
-    if (!/\d/u.test(token) || !/[a-f]/u.test(token)) continue;
-    if (token.length === 6 && !COMMIT_LEAD.test(report.slice(Math.max(0, match.index - 16), match.index))) continue;
+    if (!/\d/u.test(token) || !/[a-f]/u.test(token) || /^\d+e\d+$/u.test(token)) continue;
+    // Said to be a commit (a word before it, or backticks): any length. Bare: 9 or more characters, or 7 to 8 with at least two digits (a hex-like word has one at most); never 6.
+    const said = COMMIT_LEAD.test(report.slice(Math.max(0, match.index - 16), match.index));
+    const digits = token.replace(/\D/gu, "").length;
+    if (!said && (token.length < 7 || (token.length < 9 && digits < 2))) continue;
     commits.add(token);
   }
   for (const match of report.matchAll(FILE_PATH)) {
     if (!room()) break;
-    files.add(match[1]!);
+    const path = match[1]!;
+    // Not a read of the world: a path that starts like a version or a host, or one the line proposes (add, create, rename, "should", "consider"...).
+    if (VERSION_OR_HOST.test(path) || PROPOSAL.test(lineAround(report, match.index))) continue;
+    files.add(path);
   }
   found.commits = [...commits];
   found.files = [...files];
