@@ -566,6 +566,19 @@ describe("confirming a merge", () => {
     expect(stuck).toMatchObject({ kind: "stuck", text: M.halfMerged("billing", "payments", "GitHub would not merge it") });
   });
 
+  it("counts what an earlier run already merged: a rerun after a crash that finds the second pull request refused still says the first merged", async () => {
+    const w = await ready({ pullRequests: [{ repositoryId: "payments", number: 7 }, { repositoryId: "billing", number: 8 }] });
+    const { approvalId } = await pressed(w);
+    const record = await getAnyApproval(w.deps, ORG_A, approvalId);
+    const handler = getApprovalSubjectHandler("pull_request_merge")!;
+    w.github.results.set(7, agentXError("RUNTIME_UNAVAILABLE", "GitHub is down"));
+    await expect(handler(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(mergedOf(w)).toEqual(["8:a:squash", "7:a:squash"]);
+    w.clock.now += 130_000;
+    w.github.results.set(7, { outcome: "refused", reason: "not_mergeable" });
+    await expect(handler(w.deps, { ...record!, decidedBy: PRIYA } as never)).rejects.toMatchObject({ code: "MERGE_NOT_READY", message: expect.stringContaining(M.halfMerged("billing", "payments", "GitHub would not merge it")) as string });
+  });
+
   it("ends the change failed with the moved-head words when GitHub refuses the merge because the head moved, and does not call it half-merged when nothing merged", async () => {
     const w = await ready();
     w.github.results.set(7, { outcome: "refused", reason: "head_changed" });

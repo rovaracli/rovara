@@ -317,7 +317,7 @@ const REFUSAL_REASONS = {
 
 async function mergeableNow(
   deps: ApprovalDependencies, host: CodeMergeHost, task: DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot }, subject: PullRequestMergeSubject, presserDeveloperId: string,
-): Promise<{ plan: Array<{ entry: PullRequestEntry; url: string; headSha: string }>; settings: CodeSettings; alreadyMerged: boolean }> {
+): Promise<{ plan: Array<{ entry: PullRequestEntry; url: string; headSha: string }>; settings: CodeSettings; alreadyMerged: boolean; mergedBefore: string[] }> {
   const entries = requiredPullRequests(task.workflow);
   const wanted = byRepository(subject.pullRequests);
   if (entries.length !== wanted.length || entries.some((entry, index) => entry.repositoryId !== wanted[index]!.repositoryId || entry.number !== wanted[index]!.number)) {
@@ -354,13 +354,14 @@ async function mergeableNow(
     if (base !== undefined) bases.set(key, base);
     plan.push({ entry, url, headSha: status.headSha });
   }
-  if (facts.every((fact) => fact.state === "merged")) return { plan: [], settings, alreadyMerged: true };
+  const mergedBefore = facts.filter((fact) => fact.state === "merged").map((fact) => fact.repositoryId);
+  if (mergedBefore.length === facts.length) return { plan: [], settings, alreadyMerged: true, mergedBefore };
   const presser = { githubUserId: await githubUserOfMember(deps, task.orgId, presserDeveloperId) };
   const readiness = mergeReadiness({
     pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task),
   });
   if (!readiness.ready) throw agentXError("MERGE_NOT_READY", readiness.message);
-  return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false };
+  return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false, mergedBefore };
 }
 
 /** The approval a fresh read of GitHub gives: each reviewer's permission is looked up now (once), and a reviewer's link to a member is read now. */
@@ -427,10 +428,11 @@ async function mergeApprovedChange(deps: ApprovalDependencies, host: CodeMergeHo
   const task = await host.loadTask(subject.taskId);
   if (task === undefined || task.orgId !== record.orgId || task.closedAt !== undefined || task.orgId === undefined || !tracksMerge(task.workflow)) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
   const tracked = task as DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot };
-  const { plan, settings, alreadyMerged } = await mergeableNow(deps, host, tracked, subject, record.decidedBy);
+  const { plan, settings, alreadyMerged, mergedBefore } = await mergeableNow(deps, host, tracked, subject, record.decidedBy);
   if (alreadyMerged) return;
   const scope = host.scope(tracked.orgId);
-  const merged: string[] = [];
+  // What an earlier run of this handler already merged counts, so a rerun that finds the second pull request refused still says the first merged.
+  const merged: string[] = [...mergedBefore];
   for (const step of plan) {
     const { entry, url, headSha } = step;
     const claimed = await claimMerge(deps, tracked, entry, headSha, record.decidedBy);
