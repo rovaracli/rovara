@@ -84,7 +84,7 @@ describe("named web hosting and isolated throttle budgets", () => {
  it("hosts all files from the cell without a bucket or distribution when selected", () => {
   expect(ofType(cell, "AWS::CloudFront::Distribution")).toHaveLength(0);expect(ofType(cell, "AWS::S3::Bucket").some(([, resource]) => JSON.stringify(resource.Properties.BucketName ?? "").includes("web-assets"))).toBe(false);expect(record(record(webFunction(cell)[1].Properties.Environment).Variables).ASSET_ORIGIN).toBe("");
  });
- it("includes the hosting service actions in the existing deployment boundary", () => { for (const service of ["s3", "cloudfront", "lambda", "logs"]) { expect(SERVICE_ROLE_SERVICES).toContain(service);expect(BOUNDARY_SERVICES).toContain(service); } });
+ it("includes the hosting service actions in the existing deployment boundary", () => { for (const service of ["s3", "lambda", "logs"]) { expect(SERVICE_ROLE_SERVICES).toContain(service);expect(BOUNDARY_SERVICES).toContain(service); } expect(SERVICE_ROLE_SERVICES).not.toContain("cloudfront");expect(BOUNDARY_SERVICES).not.toContain("cloudfront"); });
 });
 
 describe("which hosting each way of synthesizing gets", () => {

@@ -1,7 +1,7 @@
 import { Stack, type App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
+import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, CLOUDFRONT_BOUNDARY_ACTIONS, CLOUDFRONT_DISTRIBUTION_ACTIONS, CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS, CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS, CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS, CLOUDFRONT_UNSCOPED_ACTIONS, ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -21,6 +21,10 @@ function roleStatements(resources: Record<string, Resource>): Statement[] {
     return [];
   });
 }
+
+/** IAM's action wildcard: `*` matches any run of characters, case-insensitively. */
+const globMatches = (pattern: string, action: string) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i").test(action);
+const CLOUDFRONT_ALL_ACTIONS = [...CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS, ...CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS, ...CLOUDFRONT_DISTRIBUTION_ACTIONS, ...CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, ...CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS, ...CLOUDFRONT_UNSCOPED_ACTIONS];
 
 describe("access stack", () => {
   const app = buildAgentXApp({ agentxEnv: "staging" });
@@ -48,11 +52,11 @@ describe("access stack", () => {
   };
   /**
    * Every action of every role's inline statements in every environment template, except the service
-   * role's own `Services` wildcards: those are derived from what the templates need, so counting them
+   * role's own `Services` wildcards: those are derived from what the templates need (as are the CloudFront statements), so counting them
    * as a need would make the "nothing unused" checks circular.
    */
   const usedActions = () => new Set(environmentResources().flatMap(({ stack, resources }) => roleStatements(resources)
-    .filter((st) => !(stack.stackName === "agentx-staging-access" && st.Sid === "Services"))
+    .filter((st) => !(stack.stackName === "agentx-staging-access" && (st.Sid === "Services" || st.Sid?.startsWith("CloudFront"))))
     .flatMap((st) => [st.Action].flat())));
 
   it("exists only for named environments, first in the app", () => {
@@ -145,7 +149,10 @@ describe("access stack", () => {
     // AppSync is allowed by name (Events APIs and their namespaces only, Plan 5 Task 8), never by wildcard.
     expect(allowedServices.has("appsync")).toBe(false);
     expect([...APPSYNC_EVENTS_ACTIONS, ...APPSYNC_EVENTS_UNSCOPED_ACTIONS].filter((action) => !allowed.has(action))).toEqual([]);
-    expect([...neededServices].filter((service) => !allowedServices.has(service) && !(service === "events" && allowed.has("events:*")) && service !== "appsync")).toEqual([]);
+    // CloudFront is allowed by name too (distributions by environment tag, the rest by ARN), never `cloudfront:*`.
+    expect(allowedServices.has("cloudfront")).toBe(false);
+    expect([...CLOUDFRONT_ALL_ACTIONS].filter((action) => !CLOUDFRONT_BOUNDARY_ACTIONS.some((pattern) => globMatches(pattern, action)))).toEqual([]);
+    expect([...neededServices].filter((service) => !allowedServices.has(service) && !(service === "events" && allowed.has("events:*")) && service !== "appsync" && service !== "cloudfront")).toEqual([]);
     // Every action a role uses is allowed by its service's wildcard or by name (IAM, STS and
     // Service Quotas only by name: servicequotas:GetServiceQuota is the operator's one scoped
     // quota read, never servicequotas:*).
@@ -171,6 +178,33 @@ describe("access stack", () => {
       expect(JSON.stringify(statement.Resource)).toContain("instance-profile/agentx/staging/*");
     }
   }, 240_000);
+
+  it("gives the CloudFormation service role and the boundary no cloudfront:*", () => {
+    const serviceStatements = roleStatements(template.toJSON().Resources as Record<string, Resource>).filter((st) => st.Sid !== undefined);
+    const boundaryStatements = (boundaryPolicies[0]![1].Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    for (const [name, statements] of [["service role", serviceStatements], ["boundary", boundaryStatements]] as const) {
+      const actions = statements.flatMap((st) => [st.Action].flat());
+      expect(actions, name).not.toContain("cloudfront:*");
+      expect(actions.filter((action) => /^cloudfront:\*?$/.test(action) || action === "*"), name).toEqual([]);
+    }
+    // The service role names each CloudFront action: distributions by this environment's tag, the rest by ARN, and only the resource-less ones on "*".
+    const cloudfront = serviceStatements.filter((st) => st.Effect === "Allow" && [st.Action].flat().some((action) => action.startsWith("cloudfront:")));
+    expect([...new Set(cloudfront.flatMap((st) => [st.Action].flat()))].sort()).toEqual([...CLOUDFRONT_ALL_ACTIONS].sort());
+    const onStar = cloudfront.filter((st) => st.Resource === "*");
+    expect(onStar.map((st) => st.Sid).sort()).toEqual(["CloudFrontDistributionCreate", "CloudFrontUnscoped"]);
+    expect(onStar.find((st) => st.Sid === "CloudFrontDistributionCreate")!.Condition).toEqual({ StringEquals: { "aws:RequestTag/agentx:env": "staging" } });
+    expect(cloudfront.find((st) => st.Sid === "CloudFrontDistributions")!.Condition).toEqual({ StringEquals: { "aws:ResourceTag/agentx:env": "staging" } });
+    const scoped = JSON.stringify(cloudfront.filter((st) => st.Resource !== "*").map((st) => st.Resource));
+    expect(scoped).toContain(":cloudfront::");
+    for (const type of ["distribution", "origin-access-control", "response-headers-policy"]) expect(scoped).toContain(`:${type}/*`);
+    const retag = serviceStatements.find((st) => st.Sid === "CloudFrontKeepEnvironmentTag")!;
+    expect(retag.Effect).toBe("Deny");
+    expect(retag.Action).toEqual(["cloudfront:TagResource"]);
+    // The boundary is the ceiling: CloudFront action families on its Services statement, nothing for any other CloudFront action.
+    const ceiling = boundaryStatements.find((st) => st.Sid === "Services")!;
+    expect([ceiling.Action].flat().filter((action) => action.startsWith("cloudfront:"))).toEqual([...CLOUDFRONT_BOUNDARY_ACTIONS]);
+    expect(boundaryStatements.some((st) => String(st.Sid).startsWith("CloudFront"))).toBe(false);
+  });
 
   it("lets only CloudFormation in this account assume the service role", () => {
     template.hasResourceProperties("AWS::IAM::Role", {
@@ -210,7 +244,7 @@ describe("access stack", () => {
     const needed = resourceTypeServices();
     // IAM resource types (roles, instance profiles, and the broker's agentx-* managed policies, ruling M2) are created through
     // the service role's by-name IAM statements, never an iam:* wildcard.
-    expect([...needed].filter((service) => !SERVICE_ROLE_SERVICES.includes(service) && service !== "events" && service !== "iam" && service !== "appsync")).toEqual([]);
+    expect([...needed].filter((service) => !SERVICE_ROLE_SERVICES.includes(service) && service !== "events" && service !== "iam" && service !== "appsync" && service !== "cloudfront")).toEqual([]);
     // AppSync (Events APIs and namespaces, Plan 5 Task 8) is created through its named actions, never `appsync:*`.
     const created = roleStatements(template.toJSON().Resources as Record<string, Resource>).find((st) => st.Sid === "AppSyncEvents")!;
     expect([...(created.Action as string[])].sort()).toEqual([...APPSYNC_EVENTS_ACTIONS].sort());
@@ -220,6 +254,7 @@ describe("access stack", () => {
     expect(createApi.Resource).toBe("*");
     expect(JSON.stringify(createApi.Condition)).toContain("aws:RequestedRegion");
     expect(SERVICE_ROLE_SERVICES).not.toContain("appsync");
+    expect(SERVICE_ROLE_SERVICES).not.toContain("cloudfront");
     // The reverse: every wildcard service is created by some resource type or called by some role.
     const used = new Set([...needed, ...[...usedActions()].map((a) => a.split(":")[0]!)]);
     expect(SERVICE_ROLE_SERVICES.filter((service) => !used.has(service))).toEqual([]);

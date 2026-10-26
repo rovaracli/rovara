@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_SERVICES, MANAGED_POLICY_ACTIONS, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope,
+  BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/contracts";
 
@@ -415,7 +415,8 @@ describe("default permission boundary", () => {
 
   it("allows each needed service by wildcard, never IAM, Organizations or Account", () => {
     const services = allows.find((s) => s.Sid === "Services")!;
-    expect(services.Action).toEqual(BOUNDARY_SERVICES.map((s) => `${s}:*`));
+    // CloudFront is the exception: action families (not cloudfront:*), as a ceiling over the service role's exact actions.
+    expect(services.Action).toEqual([...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS]);
     expect(services.Resource).toBe("*");
     for (const service of ["iam", "organizations", "account", "sts"]) expect(BOUNDARY_SERVICES).not.toContain(service);
     // The service role's own wildcard services must all pass the boundary it runs under.
@@ -510,5 +511,65 @@ describe("default permission boundary", () => {
     expect(services).not.toContain("servicequotas:*");
     expect(BOUNDARY_SERVICES).not.toContain("servicequotas");
     expect(allows.find((s) => s.Sid === "Quotas")).toEqual({ Sid: "Quotas", Effect: "Allow", Action: ["servicequotas:GetServiceQuota"], Resource: "*" });
+  });
+});
+
+describe("CloudFront permissions (web app deploy)", () => {
+  const arn = (type: string) => `arn:aws:cloudfront::123456789012:${type}/*`;
+  const cloudfront = (statements: ReturnType<typeof serviceRoleStatements>) => statements.filter((s) => s.Sid?.startsWith("CloudFront"));
+  const service = serviceRoleStatements(scope);
+
+  it("never grants cloudfront:* to the service role or the boundary", () => {
+    for (const statements of [service, defaultBoundaryStatements(scope)]) {
+      expect(statements.flatMap((s) => s.Action)).not.toContain("cloudfront:*");
+      expect(SERVICE_ROLE_SERVICES).not.toContain("cloudfront");
+      expect(BOUNDARY_SERVICES).not.toContain("cloudfront");
+    }
+  });
+
+  it("creates a distribution only with this environment's tag, and changes one only when it carries the tag", () => {
+    const create = service.find((s) => s.Sid === "CloudFrontDistributionCreate")!;
+    expect(create).toEqual({ Sid: "CloudFrontDistributionCreate", Effect: "Allow", Action: ["cloudfront:CreateDistribution"], Resource: "*", Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging" } } });
+    const tag = service.find((s) => s.Sid === "CloudFrontDistributionTag")!;
+    expect(tag).toMatchObject({ Action: ["cloudfront:TagResource"], Resource: arn("distribution"), Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging" } } });
+    const manage = service.find((s) => s.Sid === "CloudFrontDistributions")!;
+    expect(manage.Resource).toBe(arn("distribution"));
+    expect(manage.Condition).toEqual({ StringEquals: { "aws:ResourceTag/agentx:env": "staging" } });
+    expect([...manage.Action].sort()).toEqual(["cloudfront:DeleteDistribution", "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig", "cloudfront:ListTagsForResource", "cloudfront:UntagResource", "cloudfront:UpdateDistribution"]);
+  });
+
+  it("denies re-tagging a distribution that carries another environment's tag", () => {
+    expect(service.find((s) => s.Sid === "CloudFrontKeepEnvironmentTag")).toEqual({
+      Sid: "CloudFrontKeepEnvironmentTag", Effect: "Deny", Action: ["cloudfront:TagResource"], Resource: arn("distribution"),
+      Condition: { Null: { "aws:ResourceTag/agentx:env": "false" }, StringNotEquals: { "aws:ResourceTag/agentx:env": "staging" } },
+    });
+  });
+
+  it("scopes the origin access control and response headers policy actions by ARN, and puts only the resource-less actions on \"*\"", () => {
+    const policies = service.find((s) => s.Sid === "CloudFrontPolicies")!;
+    expect(policies.Resource).toEqual([arn("origin-access-control"), arn("response-headers-policy")]);
+    expect([...policies.Action].sort()).toEqual([
+      "cloudfront:DeleteOriginAccessControl", "cloudfront:DeleteResponseHeadersPolicy", "cloudfront:GetOriginAccessControl", "cloudfront:GetResponseHeadersPolicy", "cloudfront:UpdateOriginAccessControl", "cloudfront:UpdateResponseHeadersPolicy",
+    ]);
+    const onStar = cloudfront(service).filter((s) => s.Resource === "*");
+    expect(onStar.map((s) => s.Sid).sort()).toEqual(["CloudFrontDistributionCreate", "CloudFrontUnscoped"]);
+    expect([...service.find((s) => s.Sid === "CloudFrontUnscoped")!.Action].sort()).toEqual([
+      "cloudfront:CreateOriginAccessControl", "cloudfront:CreateResponseHeadersPolicy", "cloudfront:GetCachePolicy", "cloudfront:ListCachePolicies", "cloudfront:ListDistributions", "cloudfront:ListOriginAccessControls", "cloudfront:ListResponseHeadersPolicies",
+    ]);
+  });
+
+  it("gives the boundary only the CloudFront action families, on its Services statement", () => {
+    const boundary = defaultBoundaryStatements(scope);
+    expect(cloudfront(boundary)).toEqual([]);
+    expect(boundary.find((s) => s.Sid === "Services")!.Action.filter((a) => a.startsWith("cloudfront:"))).toEqual([...CLOUDFRONT_BOUNDARY_ACTIONS]);
+  });
+
+  it("keeps the boundary within IAM's 6,144-character managed policy limit and the service role within the 10,240-character inline limit, for the longest environment name", () => {
+    const size = (statements: unknown[]) => JSON.stringify({ Version: "2012-10-17", Statement: statements }).replace(/\s/g, "").length;
+    for (const env of ["staging", "agentxlivetest123", "a".repeat(20)]) {
+      const longest: PolicyScope = { ...scope, env, account: "944937319445", region: "ap-southeast-2", cloudFormationRoleName: `agentx-${env}-cloudformation`, artifactBucketArn: `arn:aws:s3:::agentx-${env}-access-artifactbucket-abcdefghijkl` };
+      expect(size(defaultBoundaryStatements(longest)), `boundary, ${env}`).toBeLessThanOrEqual(6144);
+      expect(size(serviceRoleStatements(longest)), `service role, ${env}`).toBeLessThanOrEqual(10_240);
+    }
   });
 });

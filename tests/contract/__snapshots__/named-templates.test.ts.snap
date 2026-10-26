@@ -224,7 +224,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   "Action": [
                     "apigateway:*",
                     "cloudformation:*",
-                    "cloudfront:*",
                     "cloudwatch:*",
                     "cognito-idp:*",
                     "dynamodb:*",
@@ -310,6 +309,171 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   "Effect": "Allow",
                   "Resource": "*",
                   "Sid": "AppSyncEventsCreate",
+                },
+                {
+                  "Action": [
+                    "cloudfront:CreateDistribution",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "CloudFrontDistributionCreate",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:RequestTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":distribution/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "CloudFrontDistributionTag",
+                },
+                {
+                  "Action": [
+                    "cloudfront:GetDistribution",
+                    "cloudfront:GetDistributionConfig",
+                    "cloudfront:UpdateDistribution",
+                    "cloudfront:DeleteDistribution",
+                    "cloudfront:ListTagsForResource",
+                    "cloudfront:UntagResource",
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:ResourceTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":distribution/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "CloudFrontDistributions",
+                },
+                {
+                  "Action": [
+                    "cloudfront:GetOriginAccessControl",
+                    "cloudfront:UpdateOriginAccessControl",
+                    "cloudfront:DeleteOriginAccessControl",
+                    "cloudfront:GetResponseHeadersPolicy",
+                    "cloudfront:UpdateResponseHeadersPolicy",
+                    "cloudfront:DeleteResponseHeadersPolicy",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":cloudfront::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":origin-access-control/*",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":cloudfront::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":response-headers-policy/*",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "CloudFrontPolicies",
+                },
+                {
+                  "Action": [
+                    "cloudfront:CreateOriginAccessControl",
+                    "cloudfront:CreateResponseHeadersPolicy",
+                    "cloudfront:GetCachePolicy",
+                    "cloudfront:ListCachePolicies",
+                    "cloudfront:ListDistributions",
+                    "cloudfront:ListOriginAccessControls",
+                    "cloudfront:ListResponseHeadersPolicies",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "CloudFrontUnscoped",
+                },
+                {
+                  "Action": [
+                    "cloudfront:TagResource",
+                  ],
+                  "Condition": {
+                    "Null": {
+                      "aws:ResourceTag/agentx:env": "false",
+                    },
+                    "StringNotEquals": {
+                      "aws:ResourceTag/agentx:env": "staging",
+                    },
+                  },
+                  "Effect": "Deny",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":distribution/*",
+                      ],
+                    ],
+                  },
+                  "Sid": "CloudFrontKeepEnvironmentTag",
                 },
                 {
                   "Action": [
@@ -733,7 +897,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               "Action": [
                 "apigateway:*",
                 "cloudformation:*",
-                "cloudfront:*",
                 "cloudwatch:*",
                 "cognito-idp:*",
                 "dynamodb:*",
@@ -758,6 +921,10 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "codebuild:*",
                 "execute-api:*",
                 "xray:*",
+                "cloudfront:*Distribution*",
+                "cloudfront:*OriginAccessControl*",
+                "cloudfront:*Polic*",
+                "cloudfront:*Tag*",
               ],
               "Effect": "Allow",
               "Resource": "*",
