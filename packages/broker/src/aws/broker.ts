@@ -515,9 +515,10 @@ import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.
 import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/runs.js";
-import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
+import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, ownerGithubLoginOf, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
+import { githubLoginOf, personNameForText, withoutEmails } from "../developer/requester-text.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, PlanCheckUnavailableError, criticModelFor, criticModelUnusable, critiqueModelOf } from "../rovara-code/critic.js";
 import { applyAgentStep, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
@@ -3057,7 +3058,8 @@ function withoutDeploymentAttribution(dependencies: GitHubMcpDependencies): Omit
 
 function attributionText(identity: AuthenticatedIdentity, connector: Pick<ResolvedConnector, "attribution">): string | undefined {
   if (!connector.attribution || !identity.slack) return undefined;
-  const name = identity.slack.requesterName;
+  // C55: a Slack display name that is an address is not written on GitHub.
+  const name = identity.slack.requesterName === undefined ? undefined : personNameForText(identity.slack.requesterName);
   const who = inertName(name ?? `Slack member ${identity.slack.requester.userId}`);
   return `Requested by ${who} via AgentX · ${slackThreadUrl(identity.slack.thread)}`;
 }
@@ -5648,6 +5650,13 @@ async function recordThreadRequester(
   }));
 }
 
+/** The login of the GitHub account a developer linked (C55: the name a pull request footer uses when the display name is an email address). */
+async function githubLoginOfDeveloper(dependencies: AwsBrokerDependencies, developerId: string): Promise<string | undefined> {
+  const developer = dependencies.developer;
+  if (developer === undefined) return undefined;
+  return githubLoginOf(new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: developer.signInTableName, now: Date.now }), developerId);
+}
+
 /** A pull request body with who asked for it: the developer footer (FR-023) or the Slack thread. */
 async function attributedBody(
   dependencies: AwsBrokerDependencies,
@@ -5656,7 +5665,9 @@ async function attributedBody(
 ): Promise<string | undefined> {
   if (identity.developer) {
     // A Rovara Code (version 2) description is built with its own markers and never says AgentX, so its footer doesn't either.
-    const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX");
+    // C55: never the requester's email address: their display name, else their linked GitHub login (read only when the name is an address), else "the task owner".
+    const login = withoutEmails(identity.developer.name) === identity.developer.name.trim() ? undefined : await githubLoginOfDeveloper(dependencies, identity.developer.developerId);
+    const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX", login);
     const attributed = body ? `${body}\n\n---\n${footer}` : footer;
     return Buffer.byteLength(attributed, "utf8") <= 32_768 ? attributed : body;
   }
@@ -6625,6 +6636,7 @@ function agentToolsBase(dependencies: AwsBrokerDependencies, gate: AgentToolsDep
         github.agentRepositoryReader!(repositoryUrl, { orgId }, ...(installationId === undefined ? [] : [{ installationId }])),
     }),
     gate,
+    githubLoginOf: (developerId) => githubLoginOfDeveloper(dependencies, developerId),
   };
   return base;
 }
@@ -6759,7 +6771,7 @@ function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: DeveloperT
           catalogs: t.catalogs, ledger: t.ledger(call.workspaceId, connector), request: call.request,
           // Every approved call is claimed and recorded in the ledger, whatever access the project gave the tool: a retry replays it instead of sending it again.
           durable: true,
-          ...(connector.attribution ? { attribution: attributionOf(task, call.agentName) } : {}),
+          ...(connector.attribution ? { attribution: attributionOf(task, call.agentName, await ownerGithubLoginOf(t, task)) } : {}),
         });
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "approval.write_outcome_unknown", approvalRequest: call.request.requestId, errorName: error instanceof Error ? error.name : "unknown" }));
