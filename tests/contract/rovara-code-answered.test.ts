@@ -62,7 +62,7 @@ describe("answerWorkflowIntent: a question-only intent ends Answered", () => {
     const next = answered();
     expect(next).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED", revision: before.revision + 1, updatedAt: LATER });
     expect(workflowAnswer(next)).toEqual(answerAssessment());
-    expect(next.artifacts).toEqual([expect.objectContaining({ type: "answer", version: 1, id: FROM.id, objectKey: FROM.objectKey, producer: "agentx-worker-untrusted", sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+    expect(next.artifacts).toEqual([expect.objectContaining({ type: "answer", version: 1, id: FROM.id, objectKey: FROM.objectKey, producer: "agentx-worker-untrusted", sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) as unknown as string })]);
     expect(before.state).toBe("RUNNING");
     expect(WorkflowSnapshotSchema.safeParse(next).success).toBe(true);
   });
@@ -153,7 +153,7 @@ describe("the answer's message", () => {
   it("is plain text: control characters become spaces, a long run of line breaks is two, at most 10 sources, and the answer is cut at its limit", () => {
     const sources = Array.from({ length: 12 }, (_, index) => ({ repository: "demo", path: `f${String(index)}.ts` }));
     const text = answeredMessage({ answer: `a\u0007b\n\n\n\n\nc${"x".repeat(5000)}`, sources });
-    expect(text).not.toMatch(/\u0007/u);
+    expect(text.includes(String.fromCharCode(7))).toBe(false);
     expect(text).not.toMatch(/\n{3,}/u);
     expect(text.split("\n").filter((line) => line.startsWith("- ")).length).toBe(10);
     expect(text.length).toBeLessThan(4300);
@@ -171,7 +171,7 @@ describe("the answer's message", () => {
   it("a task that ended Answered but whose answer can't be read still says no change is needed", () => {
     const { intent: _intent, ...bare } = answered();
     void _intent;
-    expect(workflowMessage({ taskId: TASK_ID, workflow: bare as never })?.text).toBe("No code change is needed.");
+    expect(workflowMessage({ taskId: TASK_ID, workflow: bare })?.text).toBe("No code change is needed.");
   });
 
   it("is not what a rejected plan, a timed-out Understand or an ordinary close says", () => {
@@ -312,7 +312,7 @@ describe("Close as answered and Make a change anyway at plan review", () => {
 
 async function world(options: { live?: boolean; orgs?: boolean } = {}) {
   const access = fakeModelAccess();
-  const h = await createDeveloperTaskBroker({ ...(options.orgs === true ? { orgResolver: async (subject: { developerId: string }) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG) } : {}), brokerExtra: { agents: { ...(options.live === false ? {} : { rovaraCodeV2Live: true }) }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  const h = await createDeveloperTaskBroker({ ...(options.orgs === true ? { orgResolver: async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG) } : {}), brokerExtra: { agents: { ...(options.live === false ? {} : { rovaraCodeV2Live: true }) }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
