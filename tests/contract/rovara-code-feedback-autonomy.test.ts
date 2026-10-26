@@ -12,7 +12,7 @@ import {
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { readCiEvidence, uninstallCiFixDecider, installCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
-import { FEEDBACK_REPLY_ATTEMPTS_MAX, autoFixableRound, autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
+import { FEEDBACK_REPLY_ATTEMPTS_MAX, autoFixableRound, standingKey, autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { FakeGithub, SESSION_ID, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
@@ -230,9 +230,9 @@ describe("what Rovara says", () => {
 // ---- when a round may be fixed without asking
 
 const standing = (permission: "admin" | "write" | "read" | "none", userType?: string) => ({ permission, ...(userType === undefined ? {} : { userType }) });
-const standings = (entries: Record<string, ReturnType<typeof standing>>) => new Map(Object.entries(entries).map(([login, value]) => [login.toLowerCase(), value]));
-const roundOf = (comments: Array<{ id: string; author: string }>, findings: Array<{ assessment?: string; recommended?: boolean }> = [{}]) =>
-  ({ comments, findings: findings.map((finding) => ({ assessment: finding.assessment ?? "ACTIONABLE", recommended: finding.recommended ?? true })) });
+const standings = (entries: Record<string, ReturnType<typeof standing>>) => new Map(Object.entries(entries).map(([login, value]) => [standingKey("payments", login), value]));
+const roundOf = (comments: Array<{ id: string; author: string; repositoryId?: string }>, findings: Array<{ assessment?: string; recommended?: boolean }> = [{}]) =>
+  ({ comments: comments.map((comment) => ({ repositoryId: "payments", ...comment })), findings: findings.map((finding) => ({ assessment: finding.assessment ?? "ACTIONABLE", recommended: finding.recommended ?? true })) });
 const NO_ROUNDS = { ci: 0, conflict: 0, feedbackAuto: 0 };
 
 describe("autoFixableRound", () => {

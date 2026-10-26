@@ -342,7 +342,7 @@ export interface MergeActionContext {
   readJobLog?: ((jobId: string) => Promise<string | undefined>) | undefined;
   log?: ((event: string, fields: Record<string, unknown>) => void) | undefined;
   /** Who the person is on the repository, read live and counted in the pass's allowance (once a pass for each person); undefined where this provider cannot ask. */
-  standingOf?: ((login: string) => Promise<RepositoryStanding>) | undefined;
+  standingOf?: ((login: string, repositoryId: string) => Promise<RepositoryStanding>) | undefined;
   /** The digest of the recipe that gave the task its autonomy. */
   recipeDigest?: string | undefined;
   /** Whether the waiting feedback round's stored report and comments are sound enough to fix on Rovara's own decision. Undefined: not known, so it is the owner's. */
@@ -580,17 +580,22 @@ async function trackOne(
   if (status.number !== pullRequest.number) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
   const prior = trackingItemOf(await readTrackingItem(deps, task.taskId, pullRequest.repositoryId, pullRequest.number), task.orgId, task.taskId);
   // One lookup for each person a pass asks about, whoever asks (the reviews, or the rule for a feedback round): the answer carries the permission and, where GitHub says it, the kind of account.
-  const standing = (login: string): Promise<RepositoryStanding> => {
-    const key = `${fullName}:${login.toLowerCase()}`;
+  const standingOn = async (repositoryId: string, login: string): Promise<RepositoryStanding> => {
+    // The repository of this pull request is known; another repository of the task is looked up as the task's project pins it.
+    const onUrl = repositoryId === pullRequest.repositoryId ? url : await deps.repositoryUrl(task.project, task.startingRevision, repositoryId, task.orgId);
+    if (onUrl === undefined) throw agentXError("CONFIG_INVALID", "the repository is not in the task's project");
+    const parsed = parseGitHubRepository(onUrl);
+    const key = `${parsed.owner}/${parsed.name}:${login.toLowerCase()}`;
     let found = standings.get(key);
     if (found === undefined) {
       found = deps.github.getRepositoryStanding !== undefined
-        ? deps.github.getRepositoryStanding(url, login, scope, budget)
-        : deps.github.getRepositoryPermission(url, login, scope, budget).then((permission): RepositoryStanding => ({ permission }));
+        ? deps.github.getRepositoryStanding(onUrl, login, scope, budget)
+        : deps.github.getRepositoryPermission(onUrl, login, scope, budget).then((permission): RepositoryStanding => ({ permission }));
       standings.set(key, found);
     }
     return found;
   };
+  const standing = (login: string): Promise<RepositoryStanding> => standingOn(pullRequest.repositoryId, login);
   const permission = async (login: string): Promise<"admin" | "write" | "read" | "none"> => (await standing(login)).permission;
   const recordedHead = await deps.recordedHead?.(task.workspaceId, pullRequest.repositoryId, pullRequest.number);
   const now = deps.now();
@@ -664,7 +669,7 @@ async function trackOne(
       repositoryId: pullRequest.repositoryId, pullRequestNumber: pullRequest.number, pullRequestUrl: pullRequest.url, headSha: status.headSha, failing: ci.failingDetails,
       ...(readLog === undefined ? {} : { readJobLog: readLog }),
       ...(deps.log === undefined ? {} : { log: (event: string, fields: Record<string, unknown>) => deps.log?.(event, fields) }),
-      standingOf: standing,
+      standingOf: (login, repositoryId) => standingOn(repositoryId, login),
       ...(recipeDigest === undefined ? {} : { recipeDigest }),
       ...(deps.feedbackRoundCheck === undefined ? {} : { feedbackRoundCheck: () => deps.feedbackRoundCheck!({ ...task, orgId: task.orgId, workflow: task.workflow }) }),
       noteCapped: () => { ranOut = true; },

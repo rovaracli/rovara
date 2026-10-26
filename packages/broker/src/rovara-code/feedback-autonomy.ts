@@ -38,14 +38,17 @@ export function isBotLogin(login: string): boolean {
   return /\[bot\]$/iu.test(login);
 }
 
-/** What the rule reads of a round: who wrote each comment of the whole set, and what the review made of each finding. */
+/** The key a person's standing is kept under: they are looked up on the repository of the pull request their comment is on (a writer on one repository may only read another). */
+export const standingKey = (repositoryId: string, login: string): string => `${repositoryId}\u0000${login.toLowerCase()}`;
+
+/** What the rule reads of a round: who wrote each comment of the whole set (and on which repository), and what the review made of each finding. */
 export interface FeedbackRound {
-  comments: ReadonlyArray<{ id: string; author: string }>;
+  comments: ReadonlyArray<{ id: string; author: string; repositoryId: string }>;
   findings: ReadonlyArray<{ assessment: string; recommended: boolean }>;
 }
 
 /**
- * Whether Rovara may fix a feedback round on its own (question 5). `standings` holds each author's live permission, keyed by lower-case login; an author nobody looked up is unknown, and unknown
+ * Whether Rovara may fix a feedback round on its own (question 5). `standings` holds each author's live permission on the repository of their comment, under `standingKey`; an author nobody looked up is unknown, and unknown
  * is not a writer. A bot, or any account GitHub does not call a `User` (an organization, a bot), never counts, whatever its permission. Any finding that is not actionable, or has no fix to make, sends
  * the whole round to the owner.
  */
@@ -54,7 +57,7 @@ export function autoFixableRound(round: FeedbackRound, standings: ReadonlyMap<st
   if (fixRounds.feedbackAuto >= FEEDBACK_AUTO_ROUNDS_MAX) return false;
   if (round.comments.length === 0 || round.findings.length === 0) return false;
   for (const comment of round.comments) {
-    const standing = standings.get(comment.author.toLowerCase());
+    const standing = standings.get(standingKey(comment.repositoryId, comment.author));
     if (standing === undefined || isBotLogin(comment.author)) return false;
     if (standing.userType !== undefined && standing.userType !== "User") return false;
     if (standing.permission !== "write" && standing.permission !== "admin") return false;
@@ -62,10 +65,12 @@ export function autoFixableRound(round: FeedbackRound, standings: ReadonlyMap<st
   return round.findings.every((finding) => finding.assessment === "ACTIONABLE" && finding.recommended);
 }
 
-/** Every different author of the round's comments, in the order they first appear (logins compared without regard to case). */
-export function commentAuthors(workflow: Pick<WorkflowSnapshot, "feedbackReview">): string[] {
-  const seen = new Map<string, string>();
-  for (const bundle of workflow.feedbackReview?.bundleRefs ?? []) for (const comment of bundle.comments) if (!seen.has(comment.author.toLowerCase())) seen.set(comment.author.toLowerCase(), comment.author);
+/** Every different author of the round's comments on each repository, in the order they first appear (logins compared without regard to case). */
+export function commentAuthors(workflow: Pick<WorkflowSnapshot, "feedbackReview">): Array<{ repositoryId: string; login: string }> {
+  const seen = new Map<string, { repositoryId: string; login: string }>();
+  for (const bundle of workflow.feedbackReview?.bundleRefs ?? []) {
+    for (const comment of bundle.comments) if (!seen.has(standingKey(bundle.repositoryId, comment.author))) seen.set(standingKey(bundle.repositoryId, comment.author), { repositoryId: bundle.repositoryId, login: comment.author });
+  }
   return [...seen.values()];
 }
 
@@ -82,7 +87,7 @@ function mayBeAutomatic(workflow: WorkflowSnapshot, autonomy: Autonomy): boolean
   const findings = review.reviewRef.findingRefs;
   if (findings.length === 0 || !findings.every((finding) => finding.assessment === "ACTIONABLE" && finding.recommended)) return false;
   const authors = commentAuthors(workflow);
-  return authors.length > 0 && authors.length <= PERMISSION_LOOKUPS_MAX && !authors.some(isBotLogin);
+  return authors.length > 0 && authors.length <= PERMISSION_LOOKUPS_MAX && !authors.some((author) => isBotLogin(author.login));
 }
 
 /** The pull request whose pass owns the card's failing checks: the first open one, so several pull requests never take turns rewriting the same list. */
@@ -100,10 +105,10 @@ async function roundIsAutomatic(input: MergeActionInput, context: MergeActionCon
     // The stored report and comments are read before anyone is asked about on GitHub: it is free of the allowance.
     if (!await context.feedbackRoundCheck()) return false;
     const standings = new Map<string, RepositoryStanding>();
-    for (const author of commentAuthors(workflow)) standings.set(author.toLowerCase(), await context.standingOf(author));
+    for (const author of commentAuthors(workflow)) standings.set(standingKey(author.repositoryId, author.login), await context.standingOf(author.login, author.repositoryId));
     const review = workflow.feedbackReview!;
     return autoFixableRound({
-      comments: review.bundleRefs.flatMap((bundle) => bundle.comments.map((comment) => ({ id: comment.id, author: comment.author }))),
+      comments: review.bundleRefs.flatMap((bundle) => bundle.comments.map((comment) => ({ id: comment.id, author: comment.author, repositoryId: bundle.repositoryId }))),
       findings: review.reviewRef!.findingRefs.map((finding) => ({ assessment: finding.assessment, recommended: finding.recommended })),
     }, standings, autonomy, workflowFixRounds(workflow));
   } catch (error) {
