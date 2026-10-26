@@ -23,6 +23,7 @@ import { registerCodeSettingsApprovals } from "../../packages/broker/src/rovara-
 import type { MergePullRequestResult } from "../../packages/broker/src/github-app.js";
 import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { ARJUN, CELL, MAX, OLA, ORG_A, PRIYA, sessionWorld } from "./agent-session-world.js";
+import { capturingAuditDeps, type AuditCapture } from "./audit-capture.js";
 
 export const HEAD_A = "a".repeat(40);
 export const HEAD_B = "b".repeat(40);
@@ -114,6 +115,8 @@ export interface MergeWorldExtras {
   store: AgentStore;
   shareDeps: SessionShareDependencies;
   decideStore: DecideStore;
+  /** The Audit Ledger's outbox and queue, wired into the approvals the world decides with. */
+  audit: AuditCapture;
 }
 export type MergeWorld = ReturnType<typeof sessionWorld> & MergeWorldExtras;
 
@@ -199,6 +202,8 @@ export function mergeWorld(options: MergeWorldOptions = {}): MergeWorld {
       return found;
     },
   });
+  const audit = capturingAuditDeps({ db: w.db, now });
+  (deps as { audit?: unknown }).audit = audit.audit;
   deps.mintConfirmUrl = (who, approvalId) => mintConfirmUrl(context(), { developerId: who.developerId, orgId: who.orgId }, approvalId);
   registerAgentApprovals();
   registerMergeApprovals();
@@ -222,6 +227,6 @@ export function mergeWorld(options: MergeWorldOptions = {}): MergeWorld {
   const requestId = () => randomUUID();
   return {
     ...w, sessionId, taskId, orgId, github, host, deps, kind, context, browser, decide, approvalOf, approvalIdOf, requestId, prs, seedTracking, trackingOf, trackingItem, settings, linkAll,
-    setWorkflow, setPullRequests, store, shareDeps, decideStore,
+    setWorkflow, setPullRequests, store, shareDeps, decideStore, audit,
   };
 }

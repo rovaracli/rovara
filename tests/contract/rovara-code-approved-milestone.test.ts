@@ -2,6 +2,7 @@
 // is a member of the org and not a requester (unless the org allows self-approval), on the head.
 import { afterEach, describe, expect, it } from "vitest";
 import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgMemberKey } from "../../packages/contracts/src/index.js";
 import { trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
@@ -21,6 +22,7 @@ async function approvedWorld(options: { linked?: boolean; requesterLinked?: bool
   const w = world();
   w.setTask({ developerId: REQUESTER, developerName: "Priya" });
   const members = { documentClient: w.db, tableName: "state", now: () => w.now() };
+  for (const developerId of [REQUESTER, REVIEWER]) w.db.set({ ...orgMemberKey(TEST_ORG, developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId, role: "member", joinedAt: "2026-10-01T00:00:00.000Z" });
   if (options.requesterLinked !== false) await linkGithubMember(members, TEST_ORG, REQUESTER, "1001");
   if (options.linked !== false) await linkGithubMember(members, TEST_ORG, REVIEWER, "1004");
   if (options.selfApproval === true) w.db.set({ ...codeSettingsKey(TEST_ORG, "web"), allowSelfApproval: true, mergeMethod: "squash", codeReviewers: [], revision: 1 });
@@ -98,6 +100,29 @@ describe("the approved milestone", () => {
     const { deps } = await approvedWorld({ reviews: [approval("priya-gh", "1001")], selfApproval: true });
     await trackPullRequest(deps, TASK_ID);
     expect(list).toEqual([`Approved by priya-gh. Ready to merge: ${ORIGIN}/s/${SESSION_ID}`]);
+  });
+
+  it("announces a standing approval once the org allows self-approval, and only once", async () => {
+    const list = heard();
+    const { w, deps } = await approvedWorld({ reviews: [approval("priya-gh", "1001")] });
+    await trackPullRequest(deps, TASK_ID);
+    expect(list).toEqual([]);
+    w.db.set({ ...codeSettingsKey(TEST_ORG, "web"), allowSelfApproval: true, mergeMethod: "squash", codeReviewers: [], revision: 1 });
+    await trackPullRequest(deps, TASK_ID);
+    expect(list).toEqual([`Approved by priya-gh. Ready to merge: ${ORIGIN}/s/${SESSION_ID}`]);
+    await trackPullRequest(deps, TASK_ID);
+    expect(list).toHaveLength(1);
+    expect(milestones(w)).toHaveLength(1);
+  });
+
+  it("announces a standing approval once the reviewer is linked to a member", async () => {
+    const list = heard();
+    const { w, deps } = await approvedWorld({ linked: false });
+    await trackPullRequest(deps, TASK_ID);
+    expect(list).toEqual([]);
+    await linkGithubMember({ documentClient: w.db, tableName: "state", now: () => w.now() }, TEST_ORG, REVIEWER, "1004");
+    await trackPullRequest(deps, TASK_ID);
+    expect(list).toHaveLength(1);
   });
 
   it("keeps the session line and the milestone in one transaction with the tracking item", async () => {

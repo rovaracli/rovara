@@ -3,7 +3,7 @@
 // before it claims and merges them, in order, once.
 import { describe, expect, it } from "vitest";
 import {
-  MERGE_NOT_READY_MESSAGES as M, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey,
+  MERGE_NOT_READY_MESSAGES as M, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey, orgMemberKey,
 } from "../../packages/contracts/src/index.js";
 import type { PullRequestReview } from "../../packages/broker/src/github-pull-status.js";
 import { getApprovalSubjectHandler, getAnyApproval, mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
@@ -211,7 +211,8 @@ describe("mergeReadiness", () => {
     expect(readiness({ presser: { githubUserId: undefined } })).toEqual(notReady(M.linkGithub));
     // Self-approval on is an organization admin's choice to allow one person to approve and press.
     expect(readiness({ approvals: new Map([[keyOf(facts()), approved("arjun")]]), presser: { githubUserId: GH.arjun }, allowSelfApproval: true })).toEqual({ ready: true });
-    expect(readiness({ presser: { githubUserId: undefined }, allowSelfApproval: true })).toEqual({ ready: true });
+    // Whoever presses must have a linked GitHub account, with self-approval on as well (controller ruling 2026-10-26).
+    expect(readiness({ presser: { githubUserId: undefined }, allowSelfApproval: true })).toEqual(notReady(M.linkGithub));
   });
 
   it("checks the presser against every pull request's approvers", () => {
@@ -804,6 +805,78 @@ describe("what the confirmation refuses", () => {
       w.github.results.set(7, { outcome: "refused", reason });
       expect((await confirm(w)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.notMerged("payments", words) });
     }
+  });
+});
+
+// ---- review fixes (Opus review of Task 19)
+
+describe("after a half merge", () => {
+  it("lets the person press Merge again and confirm it: only the pull requests still unmerged are in the change", async () => {
+    const w = await ready({ pullRequests: [{ repositoryId: "payments", number: 7 }, { repositoryId: "billing", number: 8 }] });
+    w.github.results.set(7, { outcome: "refused", reason: "not_mergeable" });
+    expect((await confirm(w)).record.status).toBe("APPROVED_FAILED");
+    // Today's observation marks the merged pull request MERGED in the workflow and in its tracking item.
+    const current = (w.db.get(taskKey(w.taskId))!.workflow as { pullRequests: Array<Record<string, unknown>> }).pullRequests;
+    w.setPullRequests(current.map((pr) => (pr.number === 8 ? { ...pr, state: "MERGED" } : pr)));
+    w.db.set({ ...w.trackingOf({ repositoryId: "billing", number: 8 })!, state: "merged" });
+    w.github.results.delete(7);
+    w.clock.now += 130_000;
+    const again = await confirm(w);
+    expect(again.record).toMatchObject({ status: "APPROVED_DONE" });
+    expect(mergedOf(w)).toEqual(["8:a:squash", "7:a:squash", "7:a:squash"]);
+  });
+});
+
+describe("who pressed, read again by a retry", () => {
+  it("refuses a rerun for a presser who can no longer merge the task, before it reads anything from GitHub", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    await expect((await handlerOf(w, started, ARJUN)).run()).rejects.toMatchObject({ code: "MERGE_NOT_READY", message: expect.stringContaining(M.presserLostRight) as string });
+    expect(w.github.calls).toEqual([]);
+  });
+
+  it("refuses a task that was released after the press", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    w.db.set({ ...w.db.get(taskKey(w.taskId))!, releasedAt: "2026-10-22T09:30:00.000Z" });
+    await expect((await handlerOf(w, started)).run()).rejects.toMatchObject({ code: "MERGE_NOT_READY" });
+    expect(w.github.calls).toEqual([]);
+  });
+});
+
+describe("a GitHub link that outlived the membership", () => {
+  it("does not count an approval from an account linked to someone who is no longer in the org (self-approval off)", async () => {
+    const w = await ready();
+    w.db.delete(orgMemberKey(ORG_A, ARJUN));
+    expect(await codeOf(press(w))).toEqual({ code: "MERGE_NOT_READY", message: M.needsOtherApproval("Priya") });
+  });
+
+  it("does not count it at confirmation either", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    w.db.delete(orgMemberKey(ORG_A, ARJUN));
+    expect((await confirm(w, PRIYA, started)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.needsOtherApproval("Priya") });
+    expect(w.github.mergeCalls).toEqual([]);
+  });
+});
+
+describe("what a merge leaves in the Audit Ledger", () => {
+  it("records, in the claim's own transaction, who asked GitHub to merge which pull request and how", async () => {
+    const w = await ready();
+    const { approvalId } = await confirm(w);
+    const [event] = w.audit.recordedBy("pull_request.merge_requested");
+    expect(event).toMatchObject({ action: "pull_request.merge_requested", actor: { kind: "member", id: PRIYA }, facts: { number: 7, method: "squash" }, related: [approvalId] });
+    const claimTransaction = w.db.transactions().find((items) => items.some((entry) => JSON.stringify(entry).includes("mergeClaim")))!;
+    expect(JSON.stringify(claimTransaction)).toContain("AUDIT_PENDING");
+    expect(JSON.stringify(event)).not.toContain("payments");
+  });
+
+  it("records nothing for a claim that was lost", async () => {
+    const w = await ready();
+    const started = await pressed(w);
+    w.db.set({ ...w.trackingOf({ repositoryId: "payments", number: 7 })!, mergeClaim: { headSha: HEAD_A, by: ARJUN, at: new Date(w.clock.now).toISOString() } });
+    await expect((await handlerOf(w, started)).run()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.audit.recordedBy("pull_request.merge_requested")).toEqual([]);
   });
 });
 

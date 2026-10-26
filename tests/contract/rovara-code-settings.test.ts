@@ -6,6 +6,7 @@ import { getAnyApproval, getApprovalSubjectHandler } from "../../packages/broker
 import { changeTitleOf } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getCodeSettings, putCodeSettings, readCodeSettings, type CodeSettingsDependencies } from "../../packages/broker/src/rovara-code/code-settings.js";
 import { ARJUN, MAX, MIA, OLA, ORG_A, PRIYA, ZED } from "../support/agent-session-world.js";
+import { readChanges } from "../../packages/broker/src/realtime/changes.js";
 import { mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
 
 const ROLES: Record<string, OrgRole> = { [OLA]: "admin" };
@@ -216,6 +217,52 @@ describe("turning self-approval on", () => {
     const w = mergeWorld();
     expect(await codeOf(putCodeSettings(settingsDeps(w), w.caller(MAX), "web", { requestId: w.requestId(), expectedRevision: 0, allowSelfApproval: true }, undefined))).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(await live(w)).toEqual(DEFAULT_CODE_SETTINGS);
+  });
+});
+
+describe("what a settings change leaves behind", () => {
+  it("records a change that applies at once in the Audit Ledger, with words and counts only", async () => {
+    const w = mergeWorld();
+    await put(w, MAX, { mergeMethod: "merge", codeReviewers: ["alice", "acme/core"] });
+    const [event] = w.audit.recordedBy("code_settings.changed");
+    expect(event).toMatchObject({ action: "code_settings.changed", actor: { kind: "member", id: MAX }, facts: { revision: 1, changed: "mergeMethod,codeReviewers", mergeMethod: "merge", reviewers: 2, selfApproval: false } });
+    expect(JSON.stringify(event)).not.toContain("alice");
+  });
+
+  it("records self-approval turned on by the administrator who confirmed it, with the page's proof", async () => {
+    const w = mergeWorld();
+    const reply = await put(w, MAX, { allowSelfApproval: true });
+    const approvalId = w.approvalIdOf(NeedsConfirmationSchema.parse(reply.body).confirmUrl);
+    await w.decide(approvalId, await w.browser(OLA, approvalId));
+    const events = w.audit.recordedBy("code_settings.changed");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ actor: { kind: "member", id: OLA }, facts: { revision: 1, changed: "selfApproval", selfApproval: true }, related: [approvalId], proof: { kind: "fresh_sign_in" } });
+  });
+
+  it("records nothing when nothing changed", async () => {
+    const w = mergeWorld({ allowSelfApproval: true });
+    await put(w, MAX, { allowSelfApproval: true, expectedRevision: 1 });
+    expect(w.audit.recordedBy("code_settings.changed")).toEqual([]);
+  });
+
+  it("tells the project's other maintainers, once it applies, with a notice that holds ids and a revision only", async () => {
+    const w = mergeWorld();
+    const reply = await put(w, MAX, { allowSelfApproval: true });
+    const approvalId = w.approvalIdOf(NeedsConfirmationSchema.parse(reply.body).confirmUrl);
+    expect(await readChanges({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, developerId: MAX }, undefined)).toMatchObject({ notices: [] });
+    await w.decide(approvalId, await w.browser(OLA, approvalId));
+    w.clock.now += 1000;
+    const told = await readChanges({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, developerId: MAX }, undefined);
+    expect(told.notices).toHaveLength(1);
+    expect(told.notices[0]).toMatchObject({ type: "code_settings.changed", project: "web", revision: 1, by: OLA });
+    // The administrator who decided it is not told of their own decision, and a contributor is not told at all.
+    expect((await readChanges({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, developerId: OLA }, undefined)).notices).toEqual([]);
+    expect((await readChanges({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, developerId: PRIYA }, undefined)).notices).toEqual([]);
+  });
+
+  it("refuses the same reviewer twice, whatever the case", async () => {
+    const w = mergeWorld();
+    expect(await codeOf(put(w, MAX, { codeReviewers: ["alice", "Alice"] }))).toMatchObject({ code: "CONFIG_INVALID" });
   });
 });
 
