@@ -1212,6 +1212,17 @@ export function abandonWorkflowFix(currentInput: unknown, now: string): Workflow
 }
 
 /**
+ * A round Rovara decided itself (Plan 6 Task 16) stops where it is, with `reason`, because the autonomy it ran under was lowered: the workflow is blocked at the step it was at, so nothing more is run,
+ * paid for or pushed. Before the push (PULL_REQUEST, which only a ready fix may be at) it waits for the merge, blocked, with the pull requests as they were, the fix's marks gone. The rounds stay counted.
+ */
+export function stopWorkflowFeedbackRound(currentInput: unknown, reason: string, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.fixSource !== "feedback" || current.feedbackDecisions?.at(-1)?.actorRole !== "ROVARA_AUTONOMY") throw new WorkflowTransitionError("no round Rovara decided itself is running");
+  if (current.stage !== "PULL_REQUEST") return blockWorkflow(current, reason, now);
+  return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: reason.slice(0, 500), updatedAt: now });
+}
+
+/**
  * A CI fix round stops with a plain reason a person has to act on: Rovara was told to wait (suggest), the rounds are used up, or the round changed nothing. WAIT_FOR_MERGE/WAITING (or the fix
  * itself, IMPLEMENT/RUNNING) becomes WAIT_FOR_MERGE/BLOCKED with `reason`, which must be one of the CI fix texts; the fix's marks are dropped. The pull requests stay followed.
  */

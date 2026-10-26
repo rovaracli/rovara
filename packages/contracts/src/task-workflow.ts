@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { sha256Hex } from "./web-hash.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
-import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE, FEEDBACK_AUTONOMY_ACTOR_ID, FeedbackCiFailuresSchema, WorkflowFeedbackAutonomySchema } from "./rovara-code.js";
+import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_STOPPED_REASON, FeedbackCiFailuresSchema, WorkflowFeedbackAutonomySchema } from "./rovara-code.js";
 import { StepIdSchema, CODING_STEP_KINDS, ReviewerSchema, OnFindingsSchema, MAX_RECIPE_STEPS } from "./agent-recipe.js";
 import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
@@ -861,8 +861,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
   if (workflow.stage === "WAIT_FOR_MERGE" || workflow.stage === "MERGED") {
     const pullRequests = workflow.pullRequests ?? [];
     const required = pullRequests.filter((pullRequest) => pullRequest.required);
-    // A pull request holds earlier reviewed code only after pushing its fix failed, or when it merged before the fix was pushed.
-    const earlierAllowed = workflow.stage === "MERGED" || (workflow.state === "BLOCKED" && workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed);
+    // A pull request holds earlier reviewed code only after pushing its fix failed (or was stopped because the autonomy was lowered), or when it merged before the fix was pushed.
+    const earlierAllowed = workflow.stage === "MERGED" || (workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed || workflow.blockReason === FEEDBACK_STOPPED_REASON));
     if (required.length === 0 || workflow.candidate === undefined
       || (!earlierAllowed && pullRequests.some((pullRequest) => pullRequest.candidateDigest !== workflow.candidate?.digest))
       || workflow.candidate.repositories.some((repository) => !required.some((pullRequest) => pullRequest.repositoryId === repository.repositoryId))) {

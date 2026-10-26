@@ -13620,6 +13620,8 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
       workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
+      taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
+        : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
       currentPullRequestHead: async (target, pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");

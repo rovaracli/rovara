@@ -434,7 +434,9 @@ describe("Suite 15: fixing review comments under autonomy", () => {
     const world = await midRound((lower) => ({ reviews: { CODE: [clean(), answerAndLower(lower, [])], SECURITY: [clean(), clean()] } }));
     expect(world.pushesMade).toBe(0);
     stopped(world.e2e);
-    expect(world.e2e.workflow().stage).toBe("PULL_REQUEST");
+    // Before the push the task waits for the merge, blocked, with the pull request as it was.
+    expect(world.e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE" });
+    expect(world.e2e.workflow().fixSource).toBeUndefined();
   }, 480_000);
 
   it("15.11b a company limit of suggest means Rovara decides nothing on its own, whatever the task's frozen recipe says: the card goes to the owner", async () => {

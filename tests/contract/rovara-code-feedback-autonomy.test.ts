@@ -477,6 +477,20 @@ describe("the feedback slot of merge tracking", () => {
     expect(dispatchRows(failed)).toEqual([]);
   });
 
+  it("a round that cannot be checked logs only the kind of error: never the message, which may carry a comment's text or a token a writer pasted", async () => {
+    class CommentError extends Error { constructor(message: string) { super(message); this.name = "CommentError"; } }
+    const logged: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const secret = `Use ${GHP} to call the API`;
+    const w = feedbackWorld({ roundCheck: async () => { throw new CommentError(secret); } });
+    (w.deps as { log?: unknown }).log = (event: string, fields: Record<string, unknown>) => { logged.push({ event, fields }); };
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w).revision).toBe(10);
+    const unchecked = logged.filter((entry) => entry.event === "feedback_autonomy.round_unchecked");
+    expect(unchecked).toEqual([{ event: "feedback_autonomy.round_unchecked", fields: { taskId: TASK_ID, error: "CommentError" } }]);
+    expect(JSON.stringify(logged)).not.toContain(GHP);
+    expect(JSON.stringify(logged)).not.toContain("call the API");
+  });
+
   it("GitHub's rate limit and the pass's own allowance are not swallowed: the pass is tried again", async () => {
     const limited = feedbackWorld();
     limited.github.throwFor = "maya";

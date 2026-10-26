@@ -339,7 +339,7 @@ export type FeedbackCiFailures = z.infer<typeof FeedbackCiFailuresSchema>;
 export const FEEDBACK_NOT_RUN_REASON = "Rovara didn't fix the review comments: who wrote the review comments or how far Rovara may go on its own changed since it decided. Retry to fix them anyway, or take over.";
 
 /** Why a round Rovara decided stopped part-way: the company lowered how far agents may act on their own while it ran, so no further paid step starts and nothing more is pushed. */
-export const FEEDBACK_STOPPED_REASON = "Rovara stopped fixing the review comments: how far Rovara may go on its own was lowered since it started. Nothing more was changed or pushed. Retry to go on, or take over.";
+export const FEEDBACK_STOPPED_REASON = "Rovara stopped fixing the review comments: how far Rovara may go on its own was lowered since it started. Nothing more was changed or pushed. You can take over from here.";
 
 /** What the thread and the task view say of a round Rovara decided itself. */
 export function feedbackDecidedByText(level: "prepare" | "run"): string {
