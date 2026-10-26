@@ -288,6 +288,7 @@ import { leaveTaskEndRow } from "./task-end-row.js";
 import { understandPrompt } from "../rovara-code/understand.js";
 import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal } from "@agentx/contracts";
 import { answeredEventItem, answersFromReply, intentAnswerItems, openQuestions } from "../rovara-code/question-answers.js";
+import { answeredMilestoneItems } from "../rovara-code/answered.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -1879,6 +1880,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
     ...(asWorkflow ? { requestText: storedRequestText(requestText) } : {}),
+    ...(run?.codeIntent?.retryOf === undefined ? {} : { retryOfTaskId: run.codeIntent.retryOf }),
     charge, shared: share !== undefined, ...(share === undefined ? {} : { share, shareVersion: 1 }),
     createdAt: receivedAt, updatedAt: receivedAt,
     ...(asWorkflow ? { workflow: createWorkflowSnapshot({
@@ -2612,9 +2614,11 @@ export async function decideTaskWorkflow(
     }
     return error;
   };
+  // "Close as answered" reads the plan's own answer, from the document that passed its digest check (below); nothing in the request body can supply it.
+  let noChangeNeeded: NonNullable<Parameters<typeof decideWorkflow>[3]["noChangeNeeded"]> | undefined;
   const transition = (decisionRequest: WorkflowDecisionRequest, decisions?: ReadonlyArray<{ id: string; optionIds: string[]; recommended: string }>, workBreakdownDigest?: string) => {
     try {
-      return decideWorkflow(workflow, decisionRequest, actor, { ...decideOptions, authority: access.authority, ...(decisions === undefined ? {} : { decisions }), ...(workBreakdownDigest === undefined ? {} : { workBreakdownDigest }) });
+      return decideWorkflow(workflow, decisionRequest, actor, { ...decideOptions, authority: access.authority, ...(decisions === undefined ? {} : { decisions }), ...(workBreakdownDigest === undefined ? {} : { workBreakdownDigest }), ...(noChangeNeeded === undefined ? {} : { noChangeNeeded }) });
     } catch (error) {
       if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", error.message);
       throw error;
@@ -2640,7 +2644,10 @@ export async function decideTaskWorkflow(
   const read = (objectKey: string, maxBytes: number) => deps.actions.readArtifact(objectKey, maxBytes);
   const answered = (request.answers?.length ?? 0) > 0;
   // The decided document, checked against its digest: its decisions check the answers, and the next step reads it.
-  const loaded = decided !== undefined && (answered || (prior === undefined && request.decision !== "REJECT")) ? await loadWorkflowDocument(read, decided, {}) : undefined;
+  const loaded = decided !== undefined && (answered || request.closeAsAnswered === true || (prior === undefined && request.decision !== "REJECT")) ? await loadWorkflowDocument(read, decided, {}) : undefined;
+  if (request.closeAsAnswered === true && loaded?.format === "structured" && loaded.plan.noChangeNeeded !== undefined) {
+    noChangeNeeded = { ...loaded.plan.noChangeNeeded, restatement: loaded.plan.title };
+  }
   const correction = task.e2ePlanCorrection;
   if (request.decision === "APPROVE" && documentType === "plan" && correction !== undefined) {
     if (workflow.candidate?.digest !== correction.candidateDigest) {
@@ -2751,13 +2758,18 @@ export async function decideTaskWorkflow(
   }
   const receivedAt = iso(deps);
   if (request.decision === "REJECT") {
+    // Closed as answered: the answer's milestone and the task's release mark are written in the same commit as the end, so a stop right after loses neither.
+    const answeredItems: TransactItems = next.outcome === "ANSWERED"
+      ? [...answeredMilestoneItems({ tableName: deps.tableName }, { taskId, orgId: deps.orgId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }) }, next, receivedAt),
+        finishedReleaseMarkItem(deps.tableName, taskId, receivedAt)]
+      : [];
     await deps.actions.transact([{ Update: {
       TableName: deps.tableName, Key: taskKey(taskId),
       UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: "workflow.revision = :revision AND workflow.#state = :waiting",
       ExpressionAttributeNames: { "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":waiting": "WAITING" },
-    } }, accessFence(deps, access)]);
+    } }, accessFence(deps, access), ...answeredItems]);
     // A rejected plan ends the task: it gives back its slot and its workspace now.
     await releaseFinishedTaskQuietly(deps, taskId);
     const fresh = (await authorizeTaskActor(deps, caller, taskId, "decide")).task;
@@ -4126,7 +4138,7 @@ async function queueWorkflowUnderstand(
     const fed = fedThroughUpdate(notes);
     const receivedAt = iso(deps);
     const next = startWorkflowUnderstand(workflow, receivedAt);
-    const prompt = understandPrompt({ requestText: current.requestText ?? "", intent: workflow.intent, notes: notes.suffix });
+    const prompt = understandPrompt({ requestText: current.requestText ?? "", intent: workflow.intent, notes: notes.suffix, ...(current.retryOfTaskId === undefined ? {} : { changeAnyway: true }) });
     return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt }, (operation) => [
       { Update: {
         TableName: deps.tableName, Key: taskKey(current.taskId),
@@ -4387,6 +4399,8 @@ export function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: bo
   if (!closed && workflow?.stage === "CLOSED" && workflow.state === "COMPLETE" && workflow.outcome === "PASSED") {
     return { status: "Finished every step", nextStep: "The changes are kept in this task's workspace until you close the task." };
   }
+  // A question that needed no code change: the answer was given, and nothing else is coming.
+  if (workflow?.outcome === "ANSWERED") return { status: "Answered", nextStep: "Nothing; no code change was needed." };
   if (closed || workflow?.stage === "CLOSED") return { status: "Closed", nextStep: "Nothing; this task is closed." };
   // Ruling R60: the creator was removed from the org, so the task ended; no step is waiting.
   if (removedReason !== undefined && workflow?.stage !== "MERGED") return { status: removedReason, nextStep: "Nothing; this task has ended." };
@@ -4489,6 +4503,7 @@ const HISTORY_REASON_MAX_CHARS = 200;
 /** The progress strip's current step, spelled as the page spells it; `Complete` once merged (every step done); empty when no step is current. */
 export function taskPageStep(workflow: WorkflowSnapshot | undefined, closed: boolean): string {
   if (workflow?.stage === "MERGED") return "Complete";
+  if (workflow?.outcome === "ANSWERED") return "Answered";
   if (closed || workflow === undefined) return "";
   switch (workflow.stage) {
     // Understand has no step of its own on the page's strip: it reads as the plan's, as older clients read the stage (the document is the Requirements on the Full path).
@@ -6797,7 +6812,8 @@ export function workflowEndOutcome(task: Pick<DeveloperTaskRecord, "workflow">):
   const workflow = task.workflow;
   if (workflow?.state !== "COMPLETE") return undefined;
   if (workflow.stage === "MERGED" && workflow.outcome === "MERGED") return "merged";
-  if (workflow.stage === "CLOSED") return workflow.outcome === "PASSED" ? "succeeded" : "closed";
+  // A question that needed no code change is a success that opened no pull request.
+  if (workflow.stage === "CLOSED") return workflow.outcome === "PASSED" ? "succeeded" : workflow.outcome === "ANSWERED" ? "answered" : "closed";
   return undefined;
 }
 

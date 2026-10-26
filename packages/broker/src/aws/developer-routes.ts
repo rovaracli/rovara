@@ -144,6 +144,7 @@ import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
+import { startCodeIntent } from "../rovara-code/intent.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
 import { pausedTaskGate, requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
@@ -1576,6 +1577,8 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
         if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");
         return startAgentRun(starter, { ...request, caller });
       },
+      // Plan 6 Task 6: the "make a change anyway" start, as the caller (they pay), through the one entry point.
+      startCodeIntent: (request) => startCodeIntent(codeIntentDependenciesOf(deps, caller), caller, request),
     },
     ...(deps.audit === undefined ? {} : { audit: deps.audit }),
     taskView: (task, options) => taskView(taskDeps, task, options),

@@ -706,7 +706,7 @@ function structuredCardClaims(plan: PlanDocument): NonNullable<WorkflowMessageCo
     const lines = planSummaryLines({ ...plan, claims }, claims.length);
     return claims.flatMap((claim, index) => [`${"  ".repeat(depth)}${lines[index]!}`, ...everyClaim(claim.children ?? [], depth + 1)]);
   };
-  return { claims: tiny ? everyClaim(plan.claims, 0) : planSummaryLines(plan), claimCount, decisionCount: plan.decisions.length, tiny };
+  return { claims: tiny ? everyClaim(plan.claims, 0) : planSummaryLines(plan), claimCount, decisionCount: plan.decisions.length, tiny, ...(plan.noChangeNeeded === undefined ? {} : { noChangeNeeded: plan.noChangeNeeded }) };
 }
 
 /**

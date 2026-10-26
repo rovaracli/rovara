@@ -124,7 +124,7 @@ export interface AgentRunRequest {
  * What `startCodeIntent` adds to a run (trusted, set by broker code): the start is a coding workflow, `path` is the Quick or Full path the request chose (absent: Understand
  * chooses it on version 2), and `binding` is the Slack thread or Linear issue the session follows. A Slack thread also shares the task to the thread's channel.
  */
-export interface CodeIntentStart { path?: WorkflowPath; binding?: SessionBinding }
+export interface CodeIntentStart { path?: WorkflowPath; binding?: SessionBinding; /** The answered task a "change anyway" start follows (set by broker code only). */ retryOf?: string }
 
 export interface AgentRunResult { taskId: string; runLimitUsd: number; stopAtUsd: number; paused: boolean }
 
@@ -180,7 +180,7 @@ const AgentRunRequestShape = z.object({
   chain: z.object({ chainRunId: z.string().min(1).max(200), stepId: z.string().min(1).max(200) }).strict().optional(),
   trigger: SessionTriggerSchema.optional(),
   runLimitUsd: z.number().finite().min(0).optional(),
-  codeIntent: z.object({ path: WorkflowPathSchema.optional(), binding: SessionBindingSchema.optional() }).strict().optional(),
+  codeIntent: z.object({ path: WorkflowPathSchema.optional(), binding: SessionBindingSchema.optional(), retryOf: z.string().uuid().optional() }).strict().optional(),
 }).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");

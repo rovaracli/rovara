@@ -4,7 +4,7 @@ import type { WorkflowCanvasCloseout, WorkflowCanvasCloseoutAttempt } from "@age
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const ArtifactSchema = z.object({
-  id: z.string().min(1).max(128), type: z.enum(["requirements", "design", "plan", "test_plan", "review_report"]),
+  id: z.string().min(1).max(128), type: z.enum(["requirements", "design", "plan", "test_plan", "review_report", "answer"]),
   version: z.number().int().positive(), objectKey: z.string().min(1).max(1024), sha256: DigestSchema,
 }).strict();
 const CanvasSchema = z.object({

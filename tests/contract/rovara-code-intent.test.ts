@@ -397,15 +397,17 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
     expect(t.taskCount()).toBe(0);
   });
 
-  it("refuses a Slack intent from a caller that is not the Slack workflow's own, and a hand-off or retry before those tasks exist", async () => {
+  it("refuses a Slack intent from a caller that is not the Slack workflow's own, and a hand-off before that task exists (a retry after an answer is accepted: Task 6)", async () => {
     const t = await setup({ v2: true });
     const notSlack = await refusal(t.start(MAYA, t.intent({ source: "slack", binding: THREAD })));
     expect(notSlack?.code).toBe("FORBIDDEN");
     const startAt = await refusal(t.start(MAYA, t.intent({ startAt: { repository: "demo", commit: "a".repeat(40), summary: "Half done" } })));
     expect(startAt?.code).toBe("RUNTIME_UNAVAILABLE");
-    const retry = await refusal(t.start(MAYA, t.intent({ retryOf: TASK_ID_A })));
-    expect(retry?.code).toBe("RUNTIME_UNAVAILABLE");
     expect(t.taskCount()).toBe(0);
+    // Task 6: `retryOf` (the "change anyway" start) is trusted input from broker code and is kept as a link on the new task.
+    const retried = await t.start(MAYA, t.intent({ retryOf: TASK_ID_A }));
+    expect(retried.task.taskId).toBeDefined();
+    expect(t.taskCount()).toBe(1);
   });
 
   it("records the surface as the origin for every source a person can start from", async () => {

@@ -23,6 +23,7 @@ import type { ChainSteerReads } from "./steer.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
 import { retrySession } from "./retry.js";
 import { answerIntentOnSession } from "../rovara-code/questions.js";
+import { changeAnywayOnSession } from "../rovara-code/change-anyway.js";
 import { stopSession } from "./stop.js";
 import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
 import { readChanges } from "../realtime/changes.js";
@@ -47,7 +48,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies {
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|answers))?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|answers|change-anyway))?)?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const LIVE_PATH = "/v1/app/live";
 const PROJECT_OVERVIEW_PATH = /^\/v1\/app\/projects\/([^/]+)\/overview$/;
@@ -222,6 +223,8 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     // Task 13: stop (Plan 3's cancel, or Plan 4's for a chain) and retry (the same workflow, or a new run); each answers the session that carries on.
     if (method !== "POST") throw notFound();
     if (control === "answers") return answerIntentOnSession(read, caller, sessionId, jsonBody(request));
+    // Rovara Code: a task that ended Answered, followed by a new task that makes the change anyway (202, like the app's start).
+    if (control === "change-anyway") return new StatusReply(202, await changeAnywayOnSession(read, caller, sessionId, jsonBody(request)));
     return control === "stop" ? stopSession(read, caller, sessionId, jsonBody(request)) : retrySession(read, caller, sessionId, jsonBody(request));
   }
   if (messages !== undefined) {

@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, StepIdSchema } from "./agent-recipe.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
 import {
-  ANSWER_EVERY_QUESTION_MESSAGE, FixSourceSchema, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, IntentAnswerSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX,
+  ANSWER_EVERY_QUESTION_MESSAGE, FixSourceSchema, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX,
   UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema,
-  intentAssessmentDuplicateIds, intentAssumptionLine, UNDERSTAND_UNREADABLE_MESSAGE, type IntentAnswer, type IntentAssessment, type WorkflowIntent,
+  intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, UNDERSTAND_UNREADABLE_MESSAGE, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
 import { redactText } from "./redaction.js";
@@ -898,7 +898,7 @@ const WorkflowObjectKeySchema = z.string().min(1).max(1024).refine((key) => !key
 
 export const WorkflowArtifactSchema = z.object({
   id: z.string().min(1).max(128),
-  type: z.enum(["requirements", "design", "plan", "test_plan", "review_report"]),
+  type: z.enum(["requirements", "design", "plan", "test_plan", "review_report", "answer"]),
   version: z.number().int().positive(),
   sha256: DigestSchema,
   producer: z.string().min(1).max(120),
@@ -938,6 +938,8 @@ export const WorkflowDecisionSchema = z.object({
   commentsIncluded: z.number().int().min(0).max(WORKFLOW_DECISION_COMMENTS_MAX).optional(),
   /** Made on the task page; absent for Slack, MCP and older decisions. */
   via: z.literal("PAGE").optional(),
+  /** Rovara Code v2: a REJECT of a plan that said no change is needed, which ends the task Answered instead of Closed. */
+  closedAs: z.literal("ANSWERED").optional(),
   at: z.string().datetime(),
 }).strict();
 export type WorkflowDecision = z.infer<typeof WorkflowDecisionSchema>;
@@ -1318,6 +1320,7 @@ const WorkflowSnapshotShapeSchema = z.object({
       context.addIssue({ code: "custom", path: ["stage"], message: "this stage needs definition version 1.1.0" });
     }
     if (workflow.outcome === "ANSWERED") context.addIssue({ code: "custom", path: ["outcome"], message: "this outcome needs definition version 1.1.0" });
+    if (workflow.artifacts.some((artifact) => artifact.type === "answer")) context.addIssue({ code: "custom", path: ["artifacts"], message: "an answer needs definition version 1.1.0" });
     for (const field of ["intent", "critique", "risk"] as const) {
       if (workflow[field] !== undefined) context.addIssue({ code: "custom", path: [field], message: `${field} needs definition version 1.1.0` });
     }
@@ -1477,6 +1480,8 @@ export const WorkflowDecisionRequestSchema = z.object({
   answers: z.array(WorkflowAnswerSchema.extend({ opened: z.boolean() }).strict()).max(WORKFLOW_DECISION_ANSWERS_MAX).optional(),
   /** The task page: the open comments the owner chose to send, in the order the next step sees them. */
   includedCommentIds: z.array(z.string().uuid()).max(WORKFLOW_DECISION_COMMENTS_MAX).optional(),
+  /** Rovara Code v2: with REJECT, on a plan that says no change is needed: end the task Answered ("Close as answered"). */
+  closeAsAnswered: z.literal(true).optional(),
 }).strict().refine((request) => request.artifactDigest !== undefined, { message: "a workflow decision must name the current artifact digest", path: ["artifactDigest"] })
   .superRefine((request, context) => {
     if (request.selectedOptionalCheckIds !== undefined && new Set(request.selectedOptionalCheckIds).size !== request.selectedOptionalCheckIds.length) {
@@ -1487,6 +1492,9 @@ export const WorkflowDecisionRequestSchema = z.object({
     }
     if (request.includedCommentIds !== undefined && new Set(request.includedCommentIds).size !== request.includedCommentIds.length) {
       context.addIssue({ code: "custom", path: ["includedCommentIds"], message: "each comment can be included only once" });
+    }
+    if (request.closeAsAnswered === true && request.decision !== "REJECT") {
+      context.addIssue({ code: "custom", path: ["closeAsAnswered"], message: "only closing a plan can close it as answered" });
     }
   });
 export type WorkflowDecisionRequest = z.infer<typeof WorkflowDecisionRequestSchema>;
@@ -2104,7 +2112,7 @@ export function startWorkflowPlanAfterUnderstand(currentInput: unknown, now: str
  * - `ready` goes to PLAN/READY, with the path (a path the request gave wins; a Full path asks for requirements first);
  * - `questions` wait for a person at UNDERSTAND/WAITING while fewer than UNDERSTAND_ROUNDS_MAX rounds were asked; a round after that is treated as `ready`, each question
  *   turned into the assumption it would have been answered with;
- * - `answer` (a question that needs no code change) is the next task's: until then it blocks with a plain reason, and nothing is planned.
+ * - `answer` (a question that needs no code change) ends the task Answered: `answerWorkflowIntent`.
  */
 export function recordIntentAssessment(currentInput: unknown, input: { expectedRevision: number; assessment: unknown; now: string }): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
@@ -2116,7 +2124,8 @@ export function recordIntentAssessment(currentInput: unknown, input: { expectedR
   if (!parsed.success || intentAssessmentDuplicateIds(parsed.data).length > 0) throw new WorkflowTransitionError("the assessment is invalid");
   const assessment: IntentAssessment = parsed.data;
   const intent = current.intent;
-  if (assessment.kind === "answer") return blockWorkflow(current, UNDERSTAND_ANSWER_PENDING_MESSAGE, input.now);
+  // A question that needs no code change ends the task Answered, and that move keeps the answer's artifact: it is `answerWorkflowIntent`, not this.
+  if (assessment.kind === "answer") throw new WorkflowTransitionError("an answer ends the task: record it with answerWorkflowIntent");
   if (assessment.kind === "questions" && intent.rounds < UNDERSTAND_ROUNDS_MAX) {
     return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "WAITING", intent: { ...intent, rounds: intent.rounds + 1, assessment }, updatedAt: input.now });
   }
@@ -2131,6 +2140,67 @@ export function recordIntentAssessment(currentInput: unknown, input: { expectedR
     ...(path === "FULL" ? { reviewPhase: "REQUIREMENTS" as const } : {}),
     intent: { ...intent, assessment: ready }, updatedAt: input.now,
   });
+}
+
+/** The producer an answer's artifact names: the answer is a model's words, kept as untrusted as a plan is. */
+export const WORKFLOW_ANSWER_PRODUCER = "agentx-worker-untrusted";
+
+/** What a question-only task keeps of the answer: the model's words with credentials redacted and control characters made spaces, checked once more against the assessment's own limits. */
+function cleanedAnswer(input: { restatement: string; answer: string; sources: ReadonlyArray<{ repository: string; path: string; line?: number | undefined }> }): Extract<IntentAssessment, { kind: "answer" }> {
+  const oneLine = (text: string) => Array.from(redactText(text).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim());
+  const parsed = IntentAssessmentSchema.safeParse({
+    kind: "answer", restatement: oneLine(input.restatement).slice(0, INTENT_RESTATEMENT_MAX).join("") || "A question",
+    answer: plainAnswerText(redactText(input.answer)),
+    sources: input.sources.map((source) => ({ repository: oneLine(source.repository).slice(0, 200).join(""), path: oneLine(source.path).slice(0, 500).join(""), ...(source.line === undefined ? {} : { line: source.line }) })),
+  });
+  if (!parsed.success || parsed.data.kind !== "answer") throw new WorkflowTransitionError("the answer is invalid");
+  return parsed.data;
+}
+
+/** The answer's artifact: the digest is of the answer and its sources, and the object it points at is the file the answer was read from (the Understand result or the plan document). */
+function answerArtifact(workflow: WorkflowSnapshot, answer: Extract<IntentAssessment, { kind: "answer" }>, from: { id: string; objectKey: string; createdAt: string }): WorkflowArtifact {
+  return WorkflowArtifactSchema.parse({
+    id: from.id, type: "answer", version: workflow.artifacts.filter((artifact) => artifact.type === "answer").length + 1,
+    sha256: createHash("sha256").update(JSON.stringify({ answer: answer.answer, sources: answer.sources }), "utf8").digest("hex"),
+    producer: WORKFLOW_ANSWER_PRODUCER, objectKey: from.objectKey, createdAt: from.createdAt,
+  });
+}
+
+/** The task as it is once its question is answered: closed and complete, outcome ANSWERED, with the answer on `intent` and as an `{ type: "answer" }` artifact. */
+function answeredSnapshot(current: WorkflowSnapshot, answer: Extract<IntentAssessment, { kind: "answer" }>, from: { id: string; objectKey: string; createdAt: string }, now: string, decision?: WorkflowDecision): WorkflowSnapshot {
+  // A Full workflow keeps the phase it was at: the schema asks every Full workflow to name one.
+  const { blockReason: _blockReason, ...rest } = current;
+  void _blockReason;
+  return WorkflowSnapshotSchema.parse({
+    ...rest, revision: current.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED", updatedAt: now,
+    intent: { ...(current.intent ?? { rounds: 0, pathFrom: "request", answers: [] }), assessment: answer },
+    artifacts: [...current.artifacts, answerArtifact(current, answer, from)],
+    ...(decision === undefined ? {} : { decisions: [...current.decisions, decision] }),
+  });
+}
+
+/**
+ * Rovara Code version 2: Understand found that the person asked a question that needs no code change. The task ends CLOSED/COMPLETE with the outcome ANSWERED, the answer kept on
+ * `intent` and as an `{ type: "answer" }` artifact (`artifact` names the file the answer was read from). `assessment` is the broker's checked copy of the model's answer; it is cleaned
+ * and checked here again, and nothing in it can do more than be read: no stage, path or decision comes from it.
+ */
+export function answerWorkflowIntent(
+  currentInput: unknown, input: { expectedRevision: number; assessment: unknown; artifact: { id: string; objectKey: string; createdAt: string }; now: string },
+): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || current.state !== "RUNNING" || current.intent === undefined) {
+    throw new WorkflowTransitionError("the workflow is not understanding the request");
+  }
+  const parsed = IntentAssessmentSchema.safeParse(input.assessment);
+  if (!parsed.success || parsed.data.kind !== "answer") throw new WorkflowTransitionError("the assessment is not an answer");
+  return answeredSnapshot(current, cleanedAnswer(parsed.data), input.artifact, input.now);
+}
+
+/** The answer a closed task kept, or undefined: only an ANSWERED workflow has one. */
+export function workflowAnswer(workflow: Pick<WorkflowSnapshot, "outcome" | "intent">): Extract<IntentAssessment, { kind: "answer" }> | undefined {
+  const assessment = workflow.outcome === "ANSWERED" ? workflow.intent?.assessment : undefined;
+  return assessment?.kind === "answer" ? assessment : undefined;
 }
 
 /** Answers that cannot be taken, with the error code the broker answers them under: `INTENT_NOT_WAITING` (nothing is waiting for them) or `CONFIG_INVALID` (they are not a full, valid set of answers). */
@@ -2694,6 +2764,8 @@ export function decideWorkflow(
     authority?: WorkflowOwnerAuthority;
     /** Digest of the graph loaded from the current coding-plan artifact, when present. */
     workBreakdownDigest?: string;
+    /** The current plan's `noChangeNeeded`, as the broker read it from the checked document (with the plan's title as the restatement); needed to close the plan as answered. */
+    noChangeNeeded?: NoChangeNeeded & { restatement: string };
   },
 ): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
@@ -2721,7 +2793,8 @@ export function decideWorkflow(
       && JSON.stringify(prior.selectedOptionalCheckIds ?? []) === JSON.stringify(selectedOptionalCheckIds)
       && sameAnswers(prior.answerOverrides ?? [], answerOverrides)
       && (prior.commentsIncluded ?? 0) === commentsIncluded
-      && prior.via === options.via;
+      && prior.via === options.via
+      && (prior.closedAs === "ANSWERED") === (request.data.closeAsAnswered === true);
     if (duplicate) return current;
     throw new WorkflowTransitionError("request ID was already used for a different workflow decision");
   }
@@ -2767,9 +2840,15 @@ export function decideWorkflow(
     ...(answerOverrides.length === 0 ? {} : { answerOverrides }),
     ...(commentsIncluded === 0 ? {} : { commentsIncluded }),
     ...(options.via === undefined ? {} : { via: options.via }),
+    ...(request.data.closeAsAnswered === true ? { closedAs: "ANSWERED" as const } : {}),
     at: options.now,
   });
   if (current.decisions.length >= 100) throw new WorkflowTransitionError("workflow decision history is full");
+  // "Close as answered": the plan said no change is needed, and the owner agrees. The task ends ANSWERED, keeping the plan's answer.
+  if (request.data.closeAsAnswered === true) {
+    if (current.definitionVersion !== "1.1.0" || options.noChangeNeeded === undefined) throw new WorkflowTransitionError("this plan does not say that no change is needed");
+    return answeredSnapshot(current, cleanedAnswer(options.noChangeNeeded), { id: `${currentPlan.id}-answer`.slice(0, 128), objectKey: currentPlan.objectKey, createdAt: options.now }, options.now, decision);
+  }
 
   const nextFullPhase = current.path === "FULL" && request.data.decision === "APPROVE"
     ? current.reviewPhase === "REQUIREMENTS" ? "DESIGN" as const

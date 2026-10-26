@@ -13,10 +13,11 @@ import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema,
-  StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
+  StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, answeredMessage, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
   GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, openChainRunKey, projectAllows, shortenToBytes, stepSk,
   type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge,
-  type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin,
+  type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin, type WorkflowSnapshot,
+  workflowAnswer,
 } from "@agentx/contracts";
 import { requireAgentAccess, type AgentCaller } from "../agents/access.js";
 import type { AgentRunRequest, AgentRunResult, AgentRunStarter } from "../agents/runs.js";
@@ -884,6 +885,14 @@ const taskFields = (attempt: StepAttemptRecord, taskId: string): Record<string, 
 async function resultOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, event: TaskEndEvent): Promise<{ status: "succeeded"; result: StepResult } | { status: "failed" | "cancelled"; failure: { reason: string; message: string } }> {
   const agentRun = await getItem(deps, taskAgentRunKey(event.taskId));
   const isAgentRun = agentRun !== undefined && agentRun["orgId"] === run.orgId;
+  // A Rovara Code step that answered a question needing no code change succeeded: it opened no pull request, and its report is the answer.
+  if (event.outcome === "answered") {
+    const task = await getItem(deps, { pk: `DEVTASK#${event.taskId}`, sk: "META" });
+    const workflow = task === undefined || task["orgId"] !== run.orgId ? undefined : task["workflow"] as WorkflowSnapshot | undefined;
+    const answer = workflow === undefined ? undefined : workflowAnswer(workflow);
+    const report = answer === undefined ? `${CODING_AGENT_NAME} finished: answered.` : shortenToBytes(redactSecrets(answeredMessage(answer)), AGENT_REPORT_MAX_BYTES);
+    return { status: "succeeded", result: StepResultSchema.parse({ report }) };
+  }
   if (event.outcome === "succeeded" || event.outcome === "merged") {
     if (isAgentRun) {
       const report = shortenToBytes(event.finalReport ?? "", AGENT_REPORT_MAX_BYTES);

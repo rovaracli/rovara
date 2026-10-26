@@ -33,7 +33,7 @@ export const CodeIntentRequestSchema = z
     assignedBy: z.object({ developerId: Hex64.optional(), bot: z.boolean() }).strict().optional(),
     /** Offer only: the Home offer the person accepted. */
     offerId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
-    /** The task this start retries (Task 6's "change anyway"). Accepted by shape; refused until that task lands. */
+    /** The answered task this start follows (Task 6's "change anyway"). Trusted input from broker code: no request body can carry it. */
     retryOf: z.string().uuid().optional(),
     /** A hand-off from the Mac (Task 21). Accepted by shape; refused until that task lands. */
     startAt: z.object({ repository: z.string().min(1).max(200), commit: z.string().regex(/^[a-f0-9]{40}$/), summary: z.string().min(1).max(4000) }).strict().optional(),

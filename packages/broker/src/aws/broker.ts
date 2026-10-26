@@ -98,6 +98,7 @@ import {
   UNDERSTAND_ARTIFACT_NAME,
   UNDERSTAND_UNREADABLE_MESSAGE,
   endStuckUnderstand,
+  answerWorkflowIntent,
   readIntentArtifact,
   recordIntentAssessment,
   WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON,
@@ -370,6 +371,7 @@ import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, 
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
 import { deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
@@ -5954,6 +5956,8 @@ async function taskOperationParts(
   // Recorded so the broker can refuse a v2 plan from a run that was never asked for one (Ruling AW).
   if (input.workflowMode === "PLAN" && offersApplicationE2EPlan(e2ePlanningContext)) operation.workflowE2EPlanVersion = 2;
   const documentInstructions = planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true,
+    // Rovara Code version 2 only: a plan may say that no code change is needed (version 1's prompt, and so its recorded behaviour, is unchanged).
+    ...(task?.workflow?.definitionVersion === "1.1.0" ? { noChangeOption: true } : {}),
     ...(workBreakdownContext === undefined ? {} : { workBreakdownContext }),
     ...(e2ePlanningContext === undefined ? {} : { e2ePlanningContext }),
     ...(input.retiredClaimIds === undefined ? {} : { retired: input.retiredClaimIds }) });
@@ -13192,7 +13196,7 @@ async function waitForMachine(dependencies: AwsBrokerDependencies, item: Workflo
 }
 
 /** The assessment a finished Understand run saved, read from its artifact and checked here (never taken from the worker's word): undefined when it is missing, too long, not JSON or not valid. */
-async function readUnderstandingArtifact(dependencies: AwsBrokerDependencies, operation: OperationRecord): Promise<IntentAssessment | undefined> {
+async function readUnderstandingArtifact(dependencies: AwsBrokerDependencies, operation: OperationRecord): Promise<{ assessment: IntentAssessment; artifact: { id: string; objectKey: string; createdAt: string } } | undefined> {
   const artifacts = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "ARTIFACT#"))
     .filter((item) => item.operationId === operation.id && item.name === UNDERSTAND_ARTIFACT_NAME)
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
@@ -13201,7 +13205,7 @@ async function readUnderstandingArtifact(dependencies: AwsBrokerDependencies, op
   const text = await readObjectText(dependencies, artifact.objectKey, UNDERSTAND_ARTIFACT_MAX_BYTES + 1);
   if (text === undefined) return undefined;
   const read = readIntentArtifact(text);
-  return read.ok ? read.assessment : undefined;
+  return read.ok ? { assessment: read.assessment, artifact: { id: String(artifact.id), objectKey: artifact.objectKey, createdAt: String(artifact.createdAt) } } : undefined;
 }
 
 async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: AccessPausedWorkflowDispatch): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
@@ -14367,6 +14371,7 @@ async function completedWorkflowItems(
   let raisedPlanningLimit: { seen: number; limit: number } | undefined;
   /** Plan 6 Task 4: the finished Understand's watchdog row goes with its result. */
   let understandWatchdog: TransactItems = [];
+  let answeredItems: TransactItems = [];
   let e2eAuthorityChecks: Array<Record<string, unknown>> = [];
   if (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS") {
     const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -14734,10 +14739,21 @@ async function completedWorkflowItems(
         : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
     } else {
       // Understand's answer is untrusted, whatever the worker checked: it is read from the saved artifact, bounded, schema-checked and redacted here before it can pick the path or put a question to a person.
-      const assessment = await readUnderstandingArtifact(dependencies, operation);
+      const understood = await readUnderstandingArtifact(dependencies, operation);
       try {
-        if (assessment === undefined) throw new Error("no readable assessment");
-        next = recordIntentAssessment(current, { expectedRevision: current.revision, assessment, now });
+        if (understood === undefined) throw new Error("no readable assessment");
+        // A question that needs no code change ends the task Answered: the answer is kept, the milestone is written and the task is queued for its release, all in this commit.
+        // A task that follows an answered one never answers again: the person asked for the change, so the answer is read as the restatement of a plan to make it.
+        const assessed: IntentAssessment = understood.assessment.kind === "answer" && task.retryOfTaskId !== undefined
+          ? { kind: "ready", path: current.path, restatement: understood.assessment.restatement, assumptions: ["An earlier answer said no change was needed; you asked for the change anyway."] }
+          : understood.assessment;
+        next = assessed.kind === "answer"
+          ? answerWorkflowIntent(current, { expectedRevision: current.revision, assessment: assessed, artifact: understood.artifact, now })
+          : recordIntentAssessment(current, { expectedRevision: current.revision, assessment: assessed, now });
+        if (next.outcome === "ANSWERED") {
+          answeredItems = [...answeredMilestoneItems({ tableName: dependencies.tableName }, { taskId: task.taskId, orgId: requireOrgId(task.orgId), ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }) }, next, now),
+            finishedReleaseMarkItem(dependencies.tableName, task.taskId, now)];
+        }
       } catch {
         next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.understandUnreadable, now);
       }
@@ -14877,7 +14893,7 @@ async function completedWorkflowItems(
       }),
       ...(e2eCancelAdmission === undefined ? {} : { ":e2eRequired": true, ":e2eRoundId": e2eCancelAdmission.roundId,
         ":e2eCandidateDigest": e2eCancelAdmission.candidateDigest }) },
-  } }, ...dispatch, ...understandWatchdog, ...questionsMilestone,
+  } }, ...dispatch, ...understandWatchdog, ...questionsMilestone, ...answeredItems,
   ...(evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId: task.taskId, ...evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
   ...(recordedReplies === undefined ? [] : [{ Put: recordedReplies }])];
 }

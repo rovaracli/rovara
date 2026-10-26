@@ -219,6 +219,8 @@ export function planDocumentInstructions(input: {
    * a worker that cannot read a version 2 intent is sent instead (see withoutApplicationPlanText).
    */
   applicationPlans?: boolean;
+  /** Rovara Code version 2: the planner may say that the request needs no code change (`noChangeNeeded`). Absent for version 1, whose prompt stays as it was. */
+  noChangeOption?: boolean;
 }): string {
   const checks = input.kind === "plan";
   const featureE2E = input.kind === "plan" && input.e2ePlanningContext !== undefined;
@@ -246,6 +248,7 @@ export function planDocumentInstructions(input: {
     "Decisions: include only real choices the owner should make, ranked by impact, each on the claim it changes, with 2 to 4 options that each say what follows from choosing them, and exactly one recommended. No decisions is fine.",
     "Every decision option must be something AgentX can carry out; custom wording goes through Request changes, never an option.",
     "`notChanging` and `risks` are required: say \"None\" when there is nothing to list.",
+    ...(input.noChangeOption === true ? ["If the request needs no code change at all, keep the plan short and add a `noChangeNeeded` member: { answer: string; sources: { repository: string; path: string; line?: number }[] }, with the answer in plain text (at most 4,000 characters) and up to 10 sources. Leave it out whenever any code has to change."] : []),
     "IDs: keep a claim's ID from the previous version of this document when the claim still exists. Give new claims new IDs. Never reuse the ID of a claim that was removed.",
     ...(retiredIds.length === 0 ? [] : [`These claim IDs were removed earlier and must not be used again: ${retiredIds.join(", ")}.`]),
     ...(checks ? ["`checks` goes in the coding plan only. Each check lists in `proves` the IDs of the claims it proves. Checks may prove Not changing items: use `nc1`, `nc2` and so on, counting the `notChanging` entries from 1."] : []),

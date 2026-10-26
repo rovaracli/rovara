@@ -1,0 +1,39 @@
+// Rovara Code (Plan 6 Task 6): "Make a change anyway" on a task that ended Answered. `POST /v1/app/sessions/{id}/change-anyway { requestId }` starts a NEW task through the one entry point
+// (`startCodeIntent`) with the old task's request and path, Rovara's earlier answer as information in its context, and `retryOf` naming the answered task. Who may: the session's
+// owner, or a person with "can use" on it (read live, as every session action is); the new task is the caller's: they pay (m11), `start_tasks` and `requireNewWorkAllowed` are
+// `startTask`'s own checks, so a person without the project role is refused there (`PROJECT_ACCESS_DENIED`). Nothing here reads a payer or a path from the request body.
+import { z } from "zod";
+import { RUN_INPUT_TEXT_MAX_BYTES, agentXError, answeredMessage, workflowAnswer, type CodeIntentResult, type DeveloperTaskView } from "@agentx/contracts";
+import { requireSessionLevel } from "../agent-sessions/access.js";
+import type { SessionReadDependencies } from "../agent-sessions/read.js";
+import { taskOfSession, type ControlCaller } from "../agent-sessions/stop.js";
+
+const BodySchema = z.object({ requestId: z.string().uuid() }).strict();
+
+export const NOT_ANSWERED_MESSAGE = "This task didn't end with an answer, so there is no answer to ask for a change after.";
+export const CHANGE_ANYWAY_UNAVAILABLE = "Starting the change isn't available right now.";
+
+/** The first `max` bytes of `text`, never in the middle of a character. */
+function cutToBytes(text: string, max: number): string {
+  const bytes = new TextEncoder().encode(text);
+  return bytes.byteLength <= max ? text : new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, max)).replace(/�+$/u, "");
+}
+
+/** What the new task starts with: the answered task's request, Rovara's earlier answer (information only: it is a model's words, kept out of the request text), the old path, and the link. */
+export async function changeAnywayOnSession(deps: SessionReadDependencies, caller: ControlCaller, sessionId: string, body: unknown): Promise<CodeIntentResult<DeveloperTaskView>> {
+  const parsed = BodySchema.safeParse(body);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", `${parsed.error.issues[0]?.path.join(".") || "body"}: ${parsed.error.issues[0]?.code === "unrecognized_keys" ? "has a field this route does not take" : "is not valid"}`);
+  const { session } = await requireSessionLevel(deps, caller, sessionId, "use", "ask for the change");
+  const task = await taskOfSession(deps, session);
+  const workflow = task?.workflow;
+  const answer = workflow === undefined ? undefined : workflowAnswer(workflow);
+  if (task === undefined || workflow === undefined || answer === undefined || task.requestText === undefined) throw agentXError("CONFIG_INVALID", NOT_ANSWERED_MESSAGE);
+  if (deps.control?.startCodeIntent === undefined) throw agentXError("RUNTIME_UNAVAILABLE", CHANGE_ANYWAY_UNAVAILABLE);
+  return deps.control.startCodeIntent({
+    requestId: parsed.data.requestId, project: task.project, source: "app", path: workflow.path, retryOf: task.taskId,
+    input: {
+      text: cutToBytes(task.requestText, RUN_INPUT_TEXT_MAX_BYTES),
+      context: [{ kind: "report", ref: `task:${task.taskId}`, title: "Rovara's earlier answer", body: cutToBytes(answeredMessage(answer), 16_000) }],
+    },
+  });
+}

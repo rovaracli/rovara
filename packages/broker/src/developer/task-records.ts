@@ -179,6 +179,8 @@ export interface DeveloperTaskRecord {
   requestedRunLimitUsd?: number;
   /** Plan 5, Task 2: the session this task is the subject of, created in the task's start transaction. A chain step's task has none (its chain run is the session). */
   sessionId?: string;
+  /** Plan 6 Task 6: the answered task this one follows ("make the change anyway"). Understand is told the person has read the answer and wants the change. */
+  retryOfTaskId?: string;
   /** Plan 3, Task 34: when the run's cost was written for the estimates (`recordRunCost`), so a run is counted once. */
   runCostRecordedAt?: string;
 }

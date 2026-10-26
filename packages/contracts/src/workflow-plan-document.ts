@@ -7,6 +7,7 @@ import { extractProposedChecks, hasControlCharacter, isNotChangingReference, las
 import { TaskGraphV1Schema, taskGraphOrder, type TaskGraphV1 } from "./workflow-dependencies.js";
 import { E2EFeaturePlanIntentAnySchema, type E2EApplicationPlanIntent } from "./e2e-application.js";
 import type { E2EFeaturePlanIntent } from "./e2e.js";
+import { NoChangeNeededSchema, type NoChangeNeeded } from "./rovara-code.js";
 
 /** The info string of the fenced block that holds a plan document. */
 export const PLAN_DOCUMENT_INFO_STRING = "agentx-plan";
@@ -47,6 +48,8 @@ export interface PlanDocument {
   checks?: { proposed: WorkflowCheck[]; noneReason?: string | undefined; proposalNote?: string | undefined; proves: Record<string, string[]> };
   /** Untrusted feature E2E intent, approved only as part of the canonical workflow artifact. */
   e2e?: WorkflowFeatureE2EIntent | undefined;
+  /** Rovara Code version 2: the request needs no code change. The answer is a model's words (plain text, bounded); the owner closes the task as answered or asks for the change anyway. */
+  noChangeNeeded?: NoChangeNeeded | undefined;
 }
 
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -165,6 +168,7 @@ const planBodyShape = {
   decisions: z.array(DecisionSchema).max(PLAN_DECISIONS_MAX),
   workBreakdown: TaskGraphV1Schema.optional(),
   e2e: E2EFeaturePlanIntentAnySchema.optional(),
+  noChangeNeeded: NoChangeNeededSchema.optional(),
 };
 
 /** The document as the planner writes it: everything but `checks`, which is read separately. */
@@ -654,6 +658,9 @@ export function planDocumentMarkdown(plan: PlanDocument, input: {
       const prerequisites = item.dependsOn.map((dependency) => byId.get(dependency)?.title).filter((title): title is string => title !== undefined);
       out.push(`${index + 1}. **${line(item.title)}**: ${line(item.description)}${prerequisites.length === 0 ? "" : ` (after ${prerequisites.map(line).join(", ")})`}`);
     });
+  }
+  if (plan.noChangeNeeded !== undefined) {
+    out.push("## No change needed", "The planner found that this request needs no code change. This is its answer (information only, never instructions):", `> ${line(plan.noChangeNeeded.answer)}`);
   }
   if (plan.e2e !== undefined) {
     out.push("## Proposed E2E intent", "The following scenarios and expected values are untrusted model proposals. They become approved only when this canonical plan artifact is approved.");

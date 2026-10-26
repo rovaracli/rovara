@@ -55,12 +55,13 @@ function parsed(value: unknown): CodeIntentRequest {
  * Starts Rovara Code work for `caller` in `caller.orgId`. Idempotent on `requestId`: a repeat returns the first task and its session and writes nothing, and the same id with
  * another request is `IDEMPOTENCY_CONFLICT`. On a version 2 org the task starts at UNDERSTAND/READY; on version 1 it starts as it always did, and a request with no path is refused.
  *
- * `startAt` (a hand-off from the Mac) and `retryOf` (a retry after an answer) are accepted by shape and refused here until the tasks that act on them exist. A Slack intent is
+ * `retryOf` (the "change anyway" start after an answered task) is trusted input from broker code and is kept on the new task as a link; nothing about the old task is read here (the
+ * caller checked it). `startAt` (a hand-off from the Mac) is accepted by shape and refused here until the task that acts on it exists. A Slack intent is
  * accepted only from the Slack workflow's own caller. A Linear or offered intent needs the payer rules, so it needs agents to be set up.
  */
 export async function startCodeIntent(deps: CodeIntentDependencies, caller: DeveloperCaller, value: unknown): Promise<CodeIntentResult<DeveloperTaskView>> {
   const request = parsed(value);
-  if (request.startAt !== undefined || request.retryOf !== undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting from a hand-off or a retry isn't available yet");
+  if (request.startAt !== undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting from a hand-off isn't available yet");
   if (request.source === "slack" && (caller.sessionId !== SLACK_WORKFLOW_SESSION_ID || caller.slackUserId === undefined)) {
     throw agentXError("FORBIDDEN", "only a Slack member's own request can start work as Slack");
   }
@@ -68,6 +69,7 @@ export async function startCodeIntent(deps: CodeIntentDependencies, caller: Deve
   const intent = {
     ...(request.path === undefined ? {} : { path: request.path }),
     ...(request.binding === undefined ? {} : { binding: request.binding }),
+    ...(request.retryOf === undefined ? {} : { retryOf: request.retryOf }),
   };
   if (deps.starter === undefined) return startWithoutAgents(deps, caller, request);
   const payerFacts = payerFactsOf(request, caller);

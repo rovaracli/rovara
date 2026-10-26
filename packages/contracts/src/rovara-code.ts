@@ -20,7 +20,7 @@ export const UNDERSTAND_WATCHDOG_GRACE_MINUTES = 2;
 export const UNDERSTAND_UNREADABLE_MESSAGE = "I couldn't read my own understanding of this task. Retry it.";
 /** What the owner reads when Understand's time ran out and the task was ended to give its slot back. */
 export const UNDERSTAND_TIMED_OUT_MESSAGE = "I couldn't finish understanding this task in time, so I stopped it. Start it again.";
-/** Said until a question-only intent can end the task as answered. */
+/** Said until a question-only intent can end the task as answered. No longer said (a question-only intent ends Answered); kept so a task stored blocked with it still reads. */
 export const UNDERSTAND_ANSWER_PENDING_MESSAGE = "I can answer this without changing any code, but I can't close a task as answered yet. Close this task, or ask for a change.";
 
 export const PLAN_CRITIC_REVISIONS_MAX = 1;
@@ -93,6 +93,11 @@ export const IntentQuestionSchema = z
   });
 export type IntentQuestion = z.infer<typeof IntentQuestionSchema>;
 
+/** Where in the code an answer was read: the repository, the file and, when it matters, the line. */
+export const AnswerSourceSchema = z.object({ repository: z.string().min(1).max(200), path: z.string().min(1).max(500), line: z.number().int().positive().optional() }).strict();
+export type AnswerSource = z.infer<typeof AnswerSourceSchema>;
+export const ANSWER_SOURCES_MAX = 10;
+
 export const IntentAssessmentSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("ready"),
@@ -109,7 +114,7 @@ export const IntentAssessmentSchema = z.discriminatedUnion("kind", [
     kind: z.literal("answer"),
     restatement: z.string().min(1).max(INTENT_RESTATEMENT_MAX),
     answer: z.string().min(1).max(INTENT_ANSWER_TEXT_MAX),
-    sources: z.array(z.object({ repository: z.string().min(1).max(200), path: z.string().min(1).max(500), line: z.number().int().positive().optional() }).strict()).max(10),
+    sources: z.array(AnswerSourceSchema).max(ANSWER_SOURCES_MAX),
   }).strict(),
 ]);
 export type IntentAssessment = z.infer<typeof IntentAssessmentSchema>;
@@ -193,6 +198,39 @@ export function intentQuestionsMessage(questions: readonly IntentQuestion[]): st
     ...(question.options ?? []).map((option) => `   ${option.id}) ${plainLine(option.label)}${question.recommended === option.id ? " (recommended)" : ""}`),
   ]);
   return [QUESTIONS_MESSAGE_HEADER, ...lines, "", `Reply here to answer them all at once, or open the task in Rovara to answer one by one. Say "${YOUR_CALL_WORDS}" for the ones you don't mind.`].join("\n");
+}
+
+// ---- question-only intents end Answered (Task 6)
+
+/** The first line of the message that gives the answer. */
+export const ANSWERED_MESSAGE_HEADER = "No code change is needed. Here's the answer:";
+/** The note a plan that needs no change is sent back with when the owner wants the change anyway. */
+export const CHANGE_ANYWAY_NOTE = "Make the change anyway.";
+/** The reason recorded when the owner closes a plan that needs no change as answered. */
+export const CLOSED_AS_ANSWERED_REASON = "Closed as answered.";
+/** The line on the session's timeline (and the milestone's text) when a task ended Answered. */
+export const ANSWERED_MILESTONE_TEXT = "Rovara answered the question. No code change is needed.";
+/** What the planner may say instead of a plan of changes: the answer, and where in the code it was read. The same shape as an Understand `answer`. */
+export const NoChangeNeededSchema = z
+  .object({ answer: z.string().trim().min(1).max(INTENT_ANSWER_TEXT_MAX), sources: z.array(AnswerSourceSchema).max(ANSWER_SOURCES_MAX) })
+  .strict();
+export type NoChangeNeeded = z.infer<typeof NoChangeNeededSchema>;
+
+/** A source as one plain line: `repository/path:line` (or `repository/path`). A model's words, so no control character, angle bracket or fence gets through. */
+export function answerSourceLine(source: AnswerSource): string {
+  return `${plainLine(source.repository)}/${plainLine(source.path)}${source.line === undefined ? "" : `:${String(source.line)}`}`;
+}
+
+/** The answer's own words as plain text: control characters made spaces (a line break stays), three or more line breaks made two, and no more than the answer may be. Never markup, never run. */
+export function plainAnswerText(answer: string): string {
+  return Array.from(answer.replace(/\r\n?/gu, "\n").replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" ? "\n" : " ")).replace(/\n{3,}/gu, "\n\n").trim())
+    .slice(0, INTENT_ANSWER_TEXT_MAX).join("");
+}
+
+/** The message that gives the answer: the exact first line, the answer, and its sources as `repository/path:line`. */
+export function answeredMessage(answered: { answer: string; sources: readonly AnswerSource[] }): string {
+  const sources = answered.sources.slice(0, ANSWER_SOURCES_MAX).map((source) => `- ${answerSourceLine(source)}`);
+  return [ANSWERED_MESSAGE_HEADER, plainAnswerText(answered.answer), ...(sources.length === 0 ? [] : ["", "Sources:", ...sources])].join("\n");
 }
 
 // ---- the plan critic

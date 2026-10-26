@@ -34,6 +34,7 @@ const LATER = "2026-10-26T12:30:00.000Z";
 const TASK_ID = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const OWNER = "a".repeat(64);
 const PROXY_URL = "http://internal-proxy.example.test:4000";
+const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as never;
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const ARJUN: Developer = { developerId: "a1".repeat(32), name: "Arjun Rao", provider: "oidc", sessionId: "s-arjun" };
 const MAX: Developer = { developerId: "b2".repeat(32), name: "Max Weber", provider: "oidc", sessionId: "s-max" };
@@ -64,6 +65,12 @@ describe("answerWorkflowIntent: a question-only intent ends Answered", () => {
     expect(next.artifacts).toEqual([expect.objectContaining({ type: "answer", version: 1, id: FROM.id, objectKey: FROM.objectKey, producer: "agentx-worker-untrusted", sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
     expect(before.state).toBe("RUNNING");
     expect(WorkflowSnapshotSchema.safeParse(next).success).toBe(true);
+  });
+
+  it("ends a Full workflow too, which keeps naming its approval phase", () => {
+    const full = startWorkflowUnderstand(created({ path: "FULL", pathFrom: "request" }), NOW);
+    const next = answerWorkflowIntent(full, { expectedRevision: full.revision, assessment: answerAssessment(), artifact: FROM, now: LATER });
+    expect(next).toMatchObject({ stage: "CLOSED", outcome: "ANSWERED", path: "FULL", reviewPhase: "REQUIREMENTS" });
   });
 
   it("is not a plan, a pull request or a decision: no candidate, no pull request, no decision, and the plan stage never ran", () => {
@@ -295,15 +302,17 @@ describe("Close as answered and Make a change anyway at plan review", () => {
     expect(message.text.split("\n")[0]).toBe("No code change is needed. Here's the answer:");
     expect(message.text).toContain("&lt;!channel&gt; here &amp; there");
     expect(message.text).toContain("Close it as answered, or ask for the change anyway");
-    expect(message.text).not.toMatch(/<(?!\/?$)/u);
+    // Only the link to the task page opens a tag: nothing a model wrote does.
+    expect(message.text.replace(/<https:[^>|]+\|[^>]+>/u, "")).not.toMatch(/[<>]/u);
+    expect(message.text).not.toContain("<!");
   });
 });
 
 // ---- through the real broker
 
-async function world(options: { live?: boolean } = {}) {
+async function world(options: { live?: boolean; orgs?: boolean } = {}) {
   const access = fakeModelAccess();
-  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: { ...(options.live === false ? {} : { rovaraCodeV2Live: true }) }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  const h = await createDeveloperTaskBroker({ ...(options.orgs === true ? { orgResolver: async (subject: { developerId: string }) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG) } : {}), brokerExtra: { agents: { ...(options.live === false ? {} : { rovaraCodeV2Live: true }) }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
   const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
@@ -474,18 +483,20 @@ describe("Understand answers a question: the task ends Answered", () => {
     expect(off.operationOf(run.workspaceId, "UNDERSTAND")).toBeUndefined();
   });
 
-  it("only people with access see the answer: a stranger's read of the session and the task is a 404, the same as a missing one", async () => {
-    const t = await world();
+  it("only people with access see the answer: a person in another org reads the session and the task as missing, with nothing of the answer in what they are told", async () => {
+    const t = await world({ orgs: true });
     const run = await t.answeredTask();
-    await t.member(MIA, undefined);
-    const stranger = await t.dev(MIA, "GET", `/v1/app/sessions/${run.sessionId}`);
-    expect(stranger.status).toBe(404);
-    expect(JSON.stringify(stranger.body)).not.toContain("payment worker");
-    const task = await t.dev(MIA, "GET", `/v1/dev/tasks/${run.taskId}`);
-    expect(task.status).toBe(404);
-    expect(JSON.stringify(task.body)).not.toContain("payment worker");
-    const other = await t.dev(OMAR, "GET", `/v1/app/sessions/${run.sessionId}`);
-    expect([403, 404]).toContain(other.status);
+    for (const path of [`/v1/app/sessions/${run.sessionId}`, `/v1/dev/tasks/${run.taskId}`, `/v1/app/sessions/${run.sessionId}/events`]) {
+      const other = await t.dev(OMAR, "GET", path);
+      expect(other.status, path).toBe(404);
+      expect(JSON.stringify(other.body), path).not.toContain("payment worker");
+    }
+    // The owner reads it.
+    const mine = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`);
+    expect(mine.status).toBe(200);
+    // A client that does not ask for the version 2 view (this one sends no header) reads the task as it always has: closed, with no answer in it.
+    expect(JSON.stringify(mine.body)).toContain('"step":"Answered"');
+    expect(JSON.stringify(mine.body)).toContain('"outcome":"CLOSED"');
   });
 });
 
@@ -594,7 +605,7 @@ describe("Make a change anyway after an answer", () => {
     const understand = t.operationOf(workspaceId, "UNDERSTAND")!;
     expect(t.invocationOf(String(understand.id)).payload.prompt).toContain(CHANGE_ANYWAY_RULE);
     await t.finishUnderstand({ workspaceId, operationId: String(understand.id) }, answerAssessment());
-    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN", outcome: undefined });
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN" });
     expect(t.meta(taskId).workflow.outcome).toBeUndefined();
     expect(t.operationOf(workspaceId, "PLAN")).toBeDefined();
   });
@@ -651,8 +662,9 @@ describe("Make a change anyway after an answer", () => {
     expect(forged.status).toBe(400);
     const missing = await t.changeAnyway(MAYA, "ses_zzzzzzzzzzzzzzzzzzzz");
     expect(missing.status).toBe(404);
-    await t.member(MIA, undefined);
-    expect((await t.changeAnyway(MIA, run.sessionId)).status).toBe(404);
+    const outsider = await world({ orgs: true });
+    const theirs = await outsider.answeredTask();
+    expect((await outsider.changeAnyway(OMAR, theirs.sessionId)).status).toBe(404);
   });
 });
 

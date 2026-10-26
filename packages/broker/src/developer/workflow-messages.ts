@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  intentQuestionsMessage, isRunLimitBlockReason, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
+  answeredMessage, intentQuestionsMessage, isRunLimitBlockReason, workflowAnswer, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
@@ -24,7 +24,7 @@ export interface WorkflowMessageContext {
    * A structured document's card: its top claims in rank order (for a tiny plan every claim, a child's text starting
    * with two spaces per level), how many claims and decisions it has in all, and whether it is tiny. Replaces `documentSummary`.
    */
-  structured?: { claims: string[]; claimCount: number; decisionCount: number; tiny: boolean } | undefined;
+  structured?: { claims: string[]; claimCount: number; decisionCount: number; tiny: boolean; noChangeNeeded?: NoChangeNeeded | undefined } | undefined;
   findingsUrl?: string | undefined;
   /** The task page, where every thread reply can be read. */
   taskPageUrl?: string | undefined;
@@ -399,6 +399,12 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     lines.push(...tail, context.documentLink === undefined ? unlinked : link(context.documentLink.url, `Read the full ${name}`));
     return { text: lines.join("\n"), buttons: decisions };
   }
+  // Rovara Code version 2: the planner found that no code change is needed. The card gives the answer (a model's words, escaped for Slack) and says what the owner can do with it.
+  if (structured.noChangeNeeded !== undefined && !needsE2ECorrection) {
+    const lines = [slackText(answeredMessage(structured.noChangeNeeded)), "", "Close it as answered, or ask for the change anyway: both are on the task page, and Request changes here asks for it too.",
+      context.documentLink === undefined ? unlinked : link(context.documentLink.url, `Open the ${name}`)];
+    return { text: lines.join("\n"), buttons: decisions };
+  }
   // FR-036: what Approve in Slack takes. A tiny plan (FR-037) is approved in Slack as it is, so its card is unchanged.
   if (structured.decisionCount > 0) {
     tail.unshift(`Approve here uses AgentX's answers for ${plural(structured.decisionCount, "decision")} and includes the open comments (up to 25) from the task page.`);
@@ -715,6 +721,12 @@ function planRunning(context: WorkflowMessageContext): string {
   return `Working on the ${name}. I'll post it here for your approval; nothing changes in the code until you approve.`;
 }
 
+/** The message that gives an answered task's answer; a task whose answer can't be read still says that no code change was needed. */
+function answeredText(workflow: WorkflowSnapshot): string {
+  const answer = workflowAnswer(workflow);
+  return answer === undefined ? "No code change is needed." : answeredMessage(answer);
+}
+
 function copyOf(context: WorkflowMessageContext): { text: string; buttons: Button[] } | undefined {
   const { workflow } = context;
   const exits = exitButtons(context);
@@ -782,7 +794,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       return plain(total <= 1 ? "The pull request is merged. This task is complete." : `All ${total} pull requests are merged. This task is complete.`);
     }
     // A custom sequence with no pull request step ran every step: its changes stay in the workspace, and only closing the task gives it back.
-    case "CLOSED/COMPLETE": return plain(workflow.outcome === "REJECTED" ? "Closed without changes."
+    // A question that needed no code change: the answer, as a plain message (a model's words, escaped for Slack).
+    case "CLOSED/COMPLETE": return plain(workflow.outcome === "ANSWERED" ? slackText(answeredText(workflow))
+      : workflow.outcome === "REJECTED" ? "Closed without changes."
       : workflow.outcome === "PASSED" ? SEQUENCE_FINISHED_TEXT
       // A version 2 task whose Understand never came back in time was ended, and says why.
       : workflow.outcome === "CLOSED" && workflow.blockReason === WORKFLOW_BLOCK_REASONS.understandTimedOut ? WORKFLOW_BLOCK_REASONS.understandTimedOut : "This task is closed.");

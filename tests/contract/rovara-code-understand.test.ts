@@ -24,7 +24,7 @@ import type { AgentId } from "../../packages/contracts/src/agent.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { ModelSelection } from "../../packages/contracts/src/models.js";
 import {
-  INTENT_BLOCK_INFO_STRING, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ARTIFACT_NAME, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_TIMED_OUT_MESSAGE,
+  INTENT_BLOCK_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_TIMED_OUT_MESSAGE,
   UNDERSTAND_TIMEOUT_MINUTES, UNDERSTAND_UNREADABLE_MESSAGE, UNDERSTAND_WATCHDOG_GRACE_MINUTES, checkIntentAssessment, intentAssumptionLine, readIntentArtifact, readIntentBlock,
   type IntentAssessment, type IntentQuestion,
 } from "../../packages/contracts/src/index.js";
@@ -178,8 +178,8 @@ describe("recording what Understand found", () => {
     expect(intentAssumptionLine({ id: "q1", text: "Short?" })).toBe("I assumed: Short? → the simplest reading");
   });
 
-  it("blocks a question-only answer with a plain reason instead of planning (closing it as answered comes with the next task)", () => {
-    expect(record(running(), answerOnly())).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: UNDERSTAND_ANSWER_PENDING_MESSAGE });
+  it("does not plan a question-only answer: it is not recorded here (it ends the task Answered: Task 6, rovara-code-answered.test.ts)", () => {
+    expect(() => record(running(), answerOnly())).toThrow(/answerWorkflowIntent/);
   });
 
   it("refuses a stale revision, a workflow that is not running Understand, and an assessment that is not valid", () => {
@@ -501,11 +501,11 @@ describe("what Understand answered becomes the next step", () => {
     expect(prompt).toContain("I assumed: Which service? → the simplest reading");
   });
 
-  it("an answer that needs no code change is not planned (it is blocked with its plain reason until the next task closes it as answered)", async () => {
+  it("an answer that needs no code change is not planned: the task ends Answered", async () => {
     const t = await world();
     const run = await t.understanding();
     await t.answers(run, answerOnly());
-    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED", blockReason: UNDERSTAND_ANSWER_PENDING_MESSAGE });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED" });
     expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
     expect(t.rows()).toEqual([]);
   });

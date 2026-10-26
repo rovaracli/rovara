@@ -326,6 +326,8 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   if (task.outcome === "creator_removed") ended = { status: "failed", at: task.outcomeAt ?? at };
   else if (runEnd !== undefined) ended = { status: runEnd === "COMPLETE" ? "succeeded" : runEnd === "FAILED" ? "failed" : "cancelled", at };
   else if (workflow?.stage === "MERGED") ended = { status: "succeeded", at };
+  // A question that needed no code change succeeded (its step reads "Answered"); a plan that was rejected or a task that was closed did not.
+  else if (workflow?.stage === "CLOSED" && workflow.outcome === "ANSWERED") ended = { status: "succeeded", at };
   else if (workflow?.stage === "CLOSED") ended = { status: "cancelled", at };
   else if (task.closedAt !== undefined) ended = { status: closedStatus, at };
   if (ended !== undefined) {

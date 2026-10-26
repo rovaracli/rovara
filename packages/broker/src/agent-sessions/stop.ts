@@ -15,6 +15,8 @@ import {
   cleanSessionName,
   sessionEventId,
   type AgentSessionRecord,
+  type CodeIntentResult,
+  type DeveloperTaskView,
   type OrgId,
   type SessionView,
 } from "@agentx/contracts";
@@ -47,6 +49,8 @@ export interface SessionControlHost {
    * guarantee, and the sweep starts it if this does nothing or fails. Never throws.
    */
   startUnderstanding?(task: DeveloperTaskRecord, workflowRevision: number): Promise<void>;
+  /** Plan 6 Task 6: `startCodeIntent` for the signed-in person (the "make a change anyway" start). Without it the route answers `RUNTIME_UNAVAILABLE`. */
+  startCodeIntent?(request: unknown): Promise<CodeIntentResult<DeveloperTaskView>>;
 }
 
 /**
