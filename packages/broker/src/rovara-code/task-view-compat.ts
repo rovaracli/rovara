@@ -33,6 +33,9 @@ export function taskViewForClient(input: DeveloperTaskView, headers: Headers): D
   if (workflow === undefined) return "verificationReport" in view || "reviewRound" in view || "mergeTracking" in view ? withoutNewFields : view;
   const rest: Record<string, unknown> = { ...workflow };
   for (const field of NEW_WORKFLOW_FIELDS) delete rest[field];
+  // A cause of a failed push that version 1 clients do not know reads as the one they do (Plan 6 Task 17).
+  const failure = rest["pullRequestUpdateFailure"] as { cause?: string } | undefined;
+  if (failure?.cause === "BASE_CHANGES_DROPPED") rest["pullRequestUpdateFailure"] = { ...failure, cause: "PUSH_REFUSED" };
   const pullRequests = workflow.pullRequests?.map(({ syncedFrom: _syncedFrom, ...pullRequest }) => pullRequest); // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
   return {
     ...withoutNewFields,

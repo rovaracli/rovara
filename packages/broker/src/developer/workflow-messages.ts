@@ -660,6 +660,8 @@ export function feedbackReviewFailedMessage(input: {
 const PULL_REQUEST_UPDATE_CAUSES: Record<string, { cause: string; then: string }> = {
   HEAD_MOVED: { cause: "it changed on GitHub since I opened it", then: "I've stopped following it, so merge or close it on GitHub and then close this task." },
   PUSH_REFUSED: { cause: "GitHub refused the push", then: STILL_WATCHING },
+  // Plan 6 Task 17: the fix to a conflict would have dropped what the base branch brought.
+  BASE_CHANGES_DROPPED: { cause: "the fix would have dropped changes the base branch made, so I didn't push it", then: "Update the branch on GitHub, or close this task. I'll keep watching for the merge." },
 };
 
 /** The approved fix could not be pushed to the pull requests: which, and why, when AgentX knows. */

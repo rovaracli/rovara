@@ -215,7 +215,7 @@ describe("Suite 15: keeping the branch up to date", () => {
     const { e2e, github, pullRequest } = await waitingForMerge();
     const before = pullRequest.commit;
     const beforeDigest = e2e.workflow().candidate!.digest;
-    await e2e.advanceBase("greeting.ts", BASE_GREETING);
+    const base = await e2e.advanceBase("greeting.ts", BASE_GREETING);
     github.state.conflicted = true;
     // The merge (the first maintain run) is as it was; GitHub shows the fix's push (the second) with another second parent.
     e2e.worker.rewriteNextResult("maintain", (result) => result);
@@ -229,7 +229,9 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED" });
     expect(after.pullRequests?.[0]).toMatchObject({ headSha: before, candidateDigest: beforeDigest });
     expect(after.pullRequestUpdateFailure?.numbers).toEqual([pullRequest.number]);
-    expect(after.candidate!.repositories[0]!.baseCommitSha).toBe(e2e.baseCommit);
+    // The fix's candidate was made on the base commit that conflicted (its reviewers saw the diff against it); the pull request still holds the code it had.
+    expect(after.candidate!.repositories[0]!.baseCommitSha).toBe(base);
+    expect(after.pullRequests?.[0]?.candidateDigest).toBe(beforeDigest);
   });
 
   it("15.6 two conflict rounds that did not help stop with the exact text and a stuck milestone, and no machine starts", async () => {

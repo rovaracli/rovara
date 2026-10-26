@@ -1243,7 +1243,9 @@ export const WorkflowReviewBaseSchema = z.array(z.object({
 const PROGRAM_ROUNDS_MAX = 100;
 
 /** Why pushing a fix to a pull request failed: its head moved on GitHub, GitHub refused it, or the worker cannot push a reviewed fix. */
-export const WORKFLOW_PULL_REQUEST_UPDATE_CAUSES = ["HEAD_MOVED", "PUSH_REFUSED", "WORKER_OUTDATED"] as const;
+/** What the worker says when a conflict round's tree would drop what the base branch brought (Plan 6 Task 17): the cause `BASE_CHANGES_DROPPED` is told from it. */
+export const WORKFLOW_FIX_DROPS_BASE_CHANGES = "the fix would drop changes the base branch made";
+export const WORKFLOW_PULL_REQUEST_UPDATE_CAUSES = ["HEAD_MOVED", "PUSH_REFUSED", "WORKER_OUTDATED", "BASE_CHANGES_DROPPED"] as const;
 export type WorkflowPullRequestUpdateCause = typeof WORKFLOW_PULL_REQUEST_UPDATE_CAUSES[number];
 const WorkflowPullRequestUpdateFailureSchema = z.object({
   numbers: z.array(z.number().int().positive()).min(1).max(32),
@@ -2124,7 +2126,11 @@ export function recordWorkflowSyncConflict(currentInput: unknown, input: { paths
   const names = input.paths.slice(0, CONFLICT_PATHS_MAX).map((path) => redactText(path.replace(/[\p{Cc}\p{Cf}]/gu, " ")).replace(/\s+/gu, " ").trim().slice(0, 200)).filter((name) => name !== "");
   if (!/^[a-f0-9]{40}$/.test(input.baseCommit)) throw new WorkflowTransitionError("the base commit of the conflict is invalid");
   const started = startWorkflowFix(waiting, { source: "conflict", problems: names.slice(0, CI_FIX_PROBLEMS_MAX), now: input.now });
-  return WorkflowSnapshotSchema.parse({ ...started, conflictBase: input.baseCommit });
+  // The round's reviewers see the diff against the base commit whose merge conflicted: a change of the base that the fix took back shows in it. (The pull request keeps its candidate on the old base until the fix lands.)
+  const repositoryId = current.branchSync.repositoryId;
+  const reviewBase = (current.reviewBase ?? current.candidate?.repositories.flatMap((repository) => repository.baseCommitSha === undefined ? [] : [{ repositoryId: repository.repositoryId, baseCommitSha: repository.baseCommitSha }]))
+    ?.map((entry) => entry.repositoryId === repositoryId ? { ...entry, baseCommitSha: input.baseCommit } : entry);
+  return WorkflowSnapshotSchema.parse({ ...started, conflictBase: input.baseCommit, ...(reviewBase === undefined || reviewBase.length === 0 ? {} : { reviewBase }) });
 }
 
 /**

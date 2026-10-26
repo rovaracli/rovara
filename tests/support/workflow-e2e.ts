@@ -700,7 +700,9 @@ export async function createWorkflowE2E(options: {
     } catch (error) {
       const unmerged = (await git(["diff", "--name-only", "--diff-filter=U"])).split("\n").filter((line) => line !== "");
       if (unmerged.length === 0) throw error;
-      await git(["reset", "--quiet"]);
+      // The merge's files stay, committed locally as the merge with its markers (the worker's, never pushed), so the history holds the base commit the round's candidate is on.
+      await git(["add", "--all"]);
+      await git(["commit", "--no-edit", "--quiet"]);
       const updated = await callbacks.pullRequestUpdateSink({ repository: payload.repository, pullRequestNumber: payload.pullRequestNumber, action: "sync",
         headBranch: payload.headBranch, baseBranch: payload.baseBranch, previousCommit: remoteHead, commit: remoteHead });
       return { action: "sync", repository: payload.repository, number: payload.pullRequestNumber, url: updated.url, state: updated.state, headBranch: payload.headBranch,

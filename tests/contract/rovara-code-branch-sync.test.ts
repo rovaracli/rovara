@@ -14,6 +14,9 @@ import {
   branchSyncRequestId, bumpSyncs, conflictDecider, decideBranchSync, decideConflict, installBranchSyncDeciders, isWorkflowFilesRefusal, planBranchSyncOutcome, syncDecider, syncsToday,
   uninstallBranchSyncDeciders, utcDay,
 } from "../../packages/broker/src/rovara-code/branch-sync.js";
+import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
+import { blockWorkflowPullRequestUpdate } from "@agentx/contracts";
 import { installCiFixDecider, uninstallCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { HEAD_A, HEAD_B, NOW, SESSION_ID, TASK_ID, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 
@@ -608,5 +611,17 @@ describe("the request of a merge", () => {
     expect(branchSyncRequestId(TASK_ID, 10, BASE_NEW)).not.toBe(branchSyncRequestId(TASK_ID, 10, BASE_OLD));
     expect(branchSyncRequestId(TASK_ID, 10, BASE_NEW)).not.toBe(branchSyncRequestId(TASK_ID, 12, BASE_NEW));
     expect(branchSyncRequestId(TASK_ID, 10, BASE_NEW)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+});
+
+describe("a conflict fix that would drop what the base brought", () => {
+  const blocked = (): WorkflowSnapshot => blockWorkflowPullRequestUpdate(WorkflowSnapshotSchema.parse({ ...waiting(), stage: "PULL_REQUEST", state: "RUNNING" }), { numbers: [7], cause: "BASE_CHANGES_DROPPED", now: at });
+
+  it("is told to the owner in its own words, and reads as a refused push to a client that does not know the cause", () => {
+    const text = JSON.stringify(workflowMessage({ taskId: TASK_ID, workflow: blocked() })?.blocks);
+    expect(text).toContain("the fix would have dropped changes the base branch made, so I didn't push it");
+    const view = { workflow: blocked() } as never;
+    const projected = taskViewForClient(view, {}) as { workflow: { pullRequestUpdateFailure: { cause: string } } };
+    expect(projected.workflow.pullRequestUpdateFailure.cause).toBe("PUSH_REFUSED");
   });
 });

@@ -132,13 +132,14 @@ describe("a workflow task's merge of the base branch", () => {
     const result = await maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update });
     expect(result).toMatchObject({ action: "sync", commit: fixture.pullRequestHead, previousCommit: fixture.pullRequestHead, reconciled: true, conflicts: ["README.md"] });
     expect(result.treeSha).toBeUndefined();
-    // The workspace holds the merge's files: the conflicting one carries the markers, the branch is still on the pull request's head, and the index holds nothing unmerged (a candidate can be captured).
+    // The workspace holds the merge's files: the conflicting one carries the markers, the index holds nothing unmerged (a candidate can be captured), and the branch is on a local merge commit of
+    // the head and the base commit (so the history holds the base the round is reviewed against), never pushed.
     expect((await git(fixture.checkout, ["diff", "--name-only", "--diff-filter=U"])).trim()).toBe("");
-    expect((await git(fixture.checkout, ["status", "--porcelain=v1"])).trim()).toBe("M README.md");
+    expect((await git(fixture.checkout, ["status", "--porcelain=v1"])).trim()).toBe("");
+    expect(await parentsOf(fixture.checkout, "HEAD")).toEqual([fixture.pullRequestHead, base]);
     const marked = await readFile(join(fixture.checkout, "README.md"), "utf8");
     expect(marked).toContain("<<<<<<<");
     expect(marked).toContain(">>>>>>>");
-    expect((await git(fixture.checkout, ["rev-parse", "HEAD"])).trim()).toBe(fixture.pullRequestHead);
     expect((await git(fixture.checkout, ["branch", "--show-current"])).trim()).toBe(fixture.headBranch);
     // Nothing was pushed, and the sink was told only that the head is as it was (so the broker has the pull request's link and state).
     expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
@@ -232,10 +233,10 @@ describe("a conflict round's fix, pushed as a merge commit", () => {
     await attempt(pushOf(fixture, tree, fixture.pullRequestHead));
   });
 
-  it("refuses a fix whose tree drops what the base brought: a tracked file the repository ignores, or a file the coder took back", async () => {
+  it("refuses a fix whose tree drops what the base brought: a tracked file the repository ignores, or a file the coder took back (it need not be in conflict)", async () => {
     for (const drop of ["ignored", "reverted"] as const) {
       const { fixture, base } = await resolved({ ignored: drop === "ignored", extras: true });
-      if (drop === "reverted") await rm(join(fixture.checkout, "BASE.md"));
+      await rm(join(fixture.checkout, drop === "reverted" ? "BASE.md" : "dist/app.js"));
       const tree = await temporaryIndexTree({ directory: fixture.checkout });
       const update = sink();
       const failure = await maintainPullRequest({ rootPath: fixture.root, invocation: pushOf(fixture, tree, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update }).then(() => undefined, (error: unknown) => error as Error);
@@ -244,6 +245,12 @@ describe("a conflict round's fix, pushed as a merge commit", () => {
       expect(update).not.toHaveBeenCalled();
       expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
     }
+  });
+
+  it("keeps a file the base tracks under an ignored folder: the merge's own commit holds it, so the fix's tree does too", async () => {
+    const { fixture, base, tree } = await resolved({ ignored: true, extras: true });
+    const result = await maintainPullRequest({ rootPath: fixture.root, invocation: pushOf(fixture, tree, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
+    expect((await git(fixture.checkout, ["show", `${result.commit}:dist/app.js`]))).toBe("built\n");
   });
 
   it("takes a fix that resolves the conflict and also changes other files of its own", async () => {

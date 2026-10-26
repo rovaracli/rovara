@@ -129,6 +129,7 @@ import {
   observeWorkflowPullRequestMergedWithFix,
   workflowPullRequestUpdateDue,
   WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED,
+  WORKFLOW_FIX_DROPS_BASE_CHANGES,
   type WorkflowPullRequestUpdateCause,
   taskResultChecks,
   type CheckEntry,
@@ -14450,6 +14451,7 @@ async function completedPullRequestUpdateItems(
   // push was not a fast-forward; or anything else on the way to GitHub (a CodeBuild gate included) stopped it.
   const cause: WorkflowPullRequestUpdateCause = terminalStatus === "SUCCEEDED" ? "PUSH_REFUSED"
     : terminalError?.includes(WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED) === true ? "WORKER_OUTDATED"
+      : terminalError?.includes(WORKFLOW_FIX_DROPS_BASE_CHANGES) === true ? "BASE_CHANGES_DROPPED"
       : terminalError?.startsWith("STALE_FENCE") === true ? "HEAD_MOVED" : "PUSH_REFUSED";
   // A worker that could not take the fix never reached GitHub.
   if (cause === "WORKER_OUTDATED") return failed(cause);

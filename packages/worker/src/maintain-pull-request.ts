@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   AgentXError,
   CONFLICT_PATHS_MAX,
+  WORKFLOW_FIX_DROPS_BASE_CHANGES,
   PullRequestLifecycleResultSchema,
   WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE,
   agentXError,
@@ -143,6 +144,9 @@ export async function maintainPullRequest(options: {
       if (workspaceTree !== reviewedTree) throw agentXError("CONFIG_INVALID", WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE);
     }
     const publishedTree = (await git(repositoryPath, ["rev-parse", `${remoteHead}^{tree}`])).trim();
+    // The fix is the merge of the base: whatever the base changed outside the files that conflicted must be in the tree. The candidate is captured from the working tree, so a file the repository ignores,
+    // or one the coder took back, would be missing here, and a merge commit that names the base as a parent would make GitHub treat its change as merged: merging the pull request would delete it.
+    if (mergeBase !== undefined) await assertKeepsBaseChanges(repositoryPath, remoteHead, mergeBase, workspaceTree);
     // A merge commit is worth recording even when its tree is the head's own (the conflict was resolved to the pull request's side).
     if (workspaceTree === publishedTree && mergeBase === undefined) {
       throw agentXError("CONFIG_INVALID", "repository has no effective changes to append");
@@ -215,9 +219,16 @@ export async function maintainPullRequest(options: {
       // still on the pull request's head) for the coding round that resolves them. Nothing is pushed.
       const unmerged = workflowSync === undefined ? [] : await unmergedPaths(repositoryPath);
       if (unmerged.length > 0) {
-        // The merge's files stay as it left them (markers in the conflicting ones, the base's new files in place). The index goes back to the head's: a candidate cannot be captured from a repository with
-        // unmerged entries, and the coder resolving the files by editing them, as it edits anything, must not also have to mark each one in Git.
-        await git(repositoryPath, ["reset", "--quiet"]);
+        // The merge's files stay as it left them (markers in the conflicting ones, the base's new files in place), and the branch of the workspace moves to a local merge commit of them (parents: the
+        // head, then the base commit; never pushed). A candidate cannot be captured from a repository with unmerged index entries, and one is compared with the base commit it is reviewed against,
+        // which the workspace's history must therefore hold; the coder resolving the files by editing them, as it edits anything, must not also have to mark each one in Git.
+        await git(repositoryPath, ["add", "--all"]);
+        const markedTree = (await git(repositoryPath, ["write-tree"])).trim();
+        const marked = (await git(repositoryPath, [
+          "-c", `user.name=${AGENTX_GIT_NAME}`, "-c", `user.email=${AGENTX_GIT_EMAIL}`,
+          "commit-tree", markedTree, "-p", remoteHead, "-p", remoteBase, "-m", "Rovara: the base branch merged in, conflicts not yet resolved (local, not pushed)",
+        ])).trim();
+        await git(repositoryPath, ["checkout", "--force", "-B", invocation.payload.headBranch, marked]);
         const callback = await options.pullRequestUpdateSink({
           repository: repository.name,
           pullRequestNumber: invocation.payload.pullRequestNumber,
@@ -295,6 +306,41 @@ export async function maintainPullRequest(options: {
     ...(workflowSync === undefined || reconciled ? {} : { treeSha: (await git(repositoryPath, ["rev-parse", `${commit}^{tree}`])).trim() }),
     checks, codeBuildChecks, reconciled: reconciled || callback.reconciled,
   });
+}
+
+/**
+ * Refuses a conflict round's tree that does not hold everything the base branch brought outside the conflicting files: for each path Git's own merge (`merge-tree`) changed from the head and did not
+ * conflict on, the reviewed tree must have the merged content. The coder may change the conflicting files as it needs to, and any other file of its own. All in one throwaway repository: the tree the
+ * merge writes exists only in it.
+ */
+async function assertKeepsBaseChanges(directory: string, head: string, base: string, reviewedTree: string): Promise<void> {
+  const options = { index: "none" as const, timeout: 120_000, maxBuffer: MAX_GIT_OUTPUT };
+  const dropped = await withIsolatedRepository(directory, "write", { refs: false }, async (repository) => {
+    let output: string;
+    try {
+      output = await repository.text(["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", head, base], options);
+    } catch (error) {
+      // A merge with conflicts exits 1 and still prints the tree it made (the conflicting files as they would be written with markers) and the names of the conflicting paths, NUL-separated.
+      const printed = (error as { stdout?: unknown }).stdout;
+      if (typeof printed !== "string" || printed === "") throw error;
+      output = printed;
+    }
+    const [tree = "", ...names] = output.split("\0");
+    if (!/^[a-f0-9]{40}$/u.test(tree)) throw agentXError("CONFIG_INVALID", "Git could not work out the merge of the base branch");
+    const conflicted = new Set(names.filter((name) => name !== ""));
+    const paths = async (from: string, to: string): Promise<string[]> =>
+      (await repository.text(["diff-tree", "-r", "--name-only", "-z", "--no-renames", from, to], options)).split("\0").filter((name) => name !== "");
+    const brought = (await paths(`${head}^{tree}`, tree)).filter((path) => !conflicted.has(path));
+    const different = new Set(await paths(tree, reviewedTree));
+    return brought.filter((path) => different.has(path));
+  }).catch((error: unknown) => {
+    if (error instanceof AgentXError) throw error;
+    throw agentXError("CONFIG_INVALID", "Git could not work out the merge of the base branch");
+  });
+  if (dropped.length > 0) {
+    const shown = dropped.slice(0, 3).map((path) => path.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 120)).join(", ");
+    throw agentXError("CONFIG_INVALID", `${WORKFLOW_FIX_DROPS_BASE_CHANGES} (${shown}${dropped.length > 3 ? ` and ${String(dropped.length - 3)} more` : ""}), so it was not pushed`);
+  }
 }
 
 /** The files a conflicting merge left unmerged, by name as Git has them (NUL-separated, so a name with a quote or a line break is not misread), at most as many as a result carries. */
