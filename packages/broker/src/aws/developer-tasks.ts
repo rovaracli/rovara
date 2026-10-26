@@ -246,6 +246,7 @@ import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { setupWatchKey } from "./stuck-setup.js";
 import { appendOperationEvent } from "./operation-events.js";
+import { setupNoteForStart, withFirstEvent } from "../rovara-code/setup-status.js";
 import { operationKey } from "./cancellation.js";
 import { resumeTaskDispatch } from "./task-dispatch-access.js";
 import { feedbackReviewNoticeId } from "../developer/notifications.js";
@@ -1816,6 +1817,17 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // A workflow asked for with no Quick or Full path is Understand's to choose on version 2; anywhere else the explicit path is still required, in the words the request schema used to give.
   if (request.workflow === true && request.workflowPath === undefined && !understandsFirst) return refused(agentXError("CONFIG_INVALID", WORKFLOW_PATH_REQUIRED));
   const workflowPath = request.workflowPath ?? "QUICK";
+  // Plan 6 Task 9: a version 2 task reads the project's setup status. A failed setup is refused here, before the budget, the limits and any write; an unchecked, outdated or
+  // checking one adds a first event to the task's own new workspace below. Version 1 tasks never read it.
+  let setupNote: string | undefined;
+  if (hasPlanCheck) {
+    try {
+      setupNote = await setupNoteForStart(deps, deps.orgId, request.project, project.definition);
+    } catch (error) {
+      if (error instanceof AgentXError) return refused(error);
+      throw error;
+    }
+  }
   // Plan 3, Task 34: with a model proxy a workflow task starts at its planning limit, a task with no workflow at the TASK estimate's run limit and an
   // agent-step run at the AGENT estimate's; a request can only lower it. Without a proxy nothing is limited, as before.
   const startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
@@ -1905,7 +1917,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     receivedAt, finishedAt: iso(deps), request: request.instructions, response: `Task ${taskId} is STARTING on ${request.project} revision ${revision}.`,
   });
   // A paused run is prepared but not dispatched: the workspace and its prepare operation are written, the outbox item that sends the prepare is not.
-  const preparationItems = paused ? preparation.items.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : preparation.items;
+  const noted = setupNote === undefined ? preparation.items : withFirstEvent(preparation.items, deps.tableName, setupNote, receivedAt);
+  const preparationItems = paused ? noted.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : noted;
   const items: TransactItems = [
     // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position (a paused run takes no slot).
     ...(paused ? [] : chargeItems(deps.tableName, charge, limits, taskId)),

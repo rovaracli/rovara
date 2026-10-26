@@ -150,6 +150,18 @@ describe("a version 2 task and the project's setup status", () => {
     expect(errorOf(reply)).toEqual({ code: "CONFIG_INVALID", message: failedMessage("setup: did not finish within 50 minutes") });
   });
 
+  it("fails closed: when the status cannot be read the start does not go on, and nothing is written", async () => {
+    const t = await setup();
+    const checkWorkspace = await t.runCheck("SUCCEEDED");
+    const before = { counters: t.counters(), workspaces: t.workspaces().length };
+    t.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { pk?: string } | undefined)?.pk === `WORKSPACE#${checkWorkspace}`, times: 5, error: { name: "InternalServerError" } });
+    const reply = await t.start();
+    expect(reply.status).toBeGreaterThanOrEqual(500);
+    expect(t.tasks()).toEqual([]);
+    expect(t.workspaces()).toHaveLength(before.workspaces);
+    expect(t.counters()).toEqual(before.counters);
+  });
+
   it("retry: after a refused start, a new passing check lets the same request id start", async () => {
     const t = await setup();
     await t.runCheck("FAILED", "setup step 0 (npm ci in repo/demo) exited 1");
