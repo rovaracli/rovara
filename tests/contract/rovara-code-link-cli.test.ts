@@ -44,6 +44,29 @@ describe("agentx session link", () => {
     expect(h.calls.map((call) => call.method)).toEqual(["GET"]);
   });
 
+  it("promises the Fixes line only where the server says the description will carry it, and prints the server's note", async () => {
+    const answers: Array<[string, Record<string, unknown>, RegExp | undefined, RegExp | undefined]> = [
+      ["updated", { description: "updated" }, /Fixes ENG-142/u, undefined],
+      ["next_update", { description: "next_update" }, /Fixes ENG-142/u, undefined],
+      ["not_for_version", { description: "not_for_version", note: "This is an older Rovara Code task, so its pull request won't say Fixes ENG-142; write it there yourself." }, undefined, /Fixes ENG-142/u],
+      ["failed", { description: "failed", note: "Rovara couldn't update the open pull request's description. Edit it on GitHub." }, undefined, /Edit it on GitHub/u],
+    ];
+    for (const [name, pullRequest, promise, note] of answers) {
+      const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/bindings`]: Response.json({ ...view([{ kind: "linear_issue", url: "https://linear.app/issue/ENG-142" }]), pullRequest }) });
+      expect(await h.run(["session", "link", SES, "--linear", "ENG-142"]), name).toBe(0);
+      if (promise !== undefined) expect(h.stdout(), name).toMatch(/will say Fixes ENG-142/u);
+      else expect(h.stdout(), name).not.toMatch(/will say Fixes/u);
+      if (note !== undefined) expect(h.stdout(), name).toMatch(note);
+    }
+  });
+
+  it("prints a note about the description after an unlink too, made safe for a terminal", async () => {
+    const h = await agentsCli({ [`DELETE /v1/app/sessions/${SES}/bindings/linear`]: Response.json({ ...view([]), pullRequest: { description: "failed", note: "It may still say Fixes ENG-123\u001b[2J: edit it on GitHub." } }) });
+    expect(await h.run(["session", "link", SES, "--unlink"])).toBe(0);
+    expect(h.stdout()).toContain("edit it on GitHub");
+    expect(h.stdout()).not.toContain("\u001b");
+  });
+
   it("unlinks with --unlink", async () => {
     const h = await agentsCli({ [`DELETE /v1/app/sessions/${SES}/bindings/linear`]: Response.json(view([])) });
     expect(await h.run(["session", "link", SES, "--unlink"])).toBe(0);

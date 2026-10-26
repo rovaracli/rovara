@@ -17,11 +17,14 @@ const LINK = "https://linear.app/acme/issue/ENG-142/fix-the-retry-bug";
 
 function world() {
   const w = sessionWorld();
+  const rewrites: Array<{ taskId: string; key: string | undefined }> = [];
+  const live = { rewrite: "ok" as "ok" | "fail" | "throw" };
   const audit = capturingAuditDeps({ db: w.db, now: () => w.clock.now });
   const deps: SessionReadDependencies = {
     documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
     taskView: async (task) => ({ taskId: task.taskId, title: "Bump the Stripe SDK", project: task.project, status: "RUNNING", startingRevision: 1, client: "test", shared: false, createdAt: "2026-10-22T08:00:00.000Z", updatedAt: "2026-10-22T08:05:00.000Z", events: [] }) as never,
     audit: audit.audit,
+    control: { rewritePullRequestLinearLine: async (task: { taskId: string }, key: string | undefined) => { rewrites.push({ taskId: task.taskId, key }); if (live.rewrite === "throw") throw new Error("GitHub down"); return live.rewrite === "fail" ? { updated: 0, failed: 1 } : { updated: 1, failed: 0 }; } } as never,
   };
   const table = { documentClient: w.db, tableName: "state", now: () => w.clock.now };
   const request = (who: string, method: string, sessionId: string, rest: string, body?: unknown, orgId: OrgId = ORG_A) => routeAgentSessionRequest(
@@ -33,7 +36,12 @@ function world() {
   const binding = (sessionId: string, orgId: OrgId = ORG_A) => w.db.get(sessionBindingKey(orgId, sessionId, "linear_issue")) as { binding: { issueId: string; url: string } } | undefined;
   const surface = (issueId: string, orgId: OrgId = ORG_A) => w.db.get(sessionSurfaceKey(orgId, { kind: "linear_issue", issueId, url: KEY_URL }));
   const timeline = (sessionId: string) => w.db.find((item) => typeof item.pk === "string" && item.pk.includes(sessionId) && String(item.sk).startsWith("EVENT#") && typeof item.text === "string" && /Linear/u.test(item.text)).map((item) => item.text);
-  return { ...w, audit, deps, table, link, unlink, request, binding, surface, timeline };
+  /** A task whose workflow is a Rovara Code (1.1.0) one with the given pull request states, or a version 1 one. */
+  const withWorkflow = (taskId: string, definitionVersion: "1.0.0" | "1.1.0", states: Array<"OPEN" | "MERGED" | "CLOSED"> = []) => {
+    const item = w.db.get({ pk: `DEVTASK#${taskId}`, sk: "META" }) as Record<string, unknown>;
+    w.db.set({ ...item, workflow: { definitionVersion, stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests: states.map((state, index) => ({ repositoryId: "api", number: index + 1, url: `https://github.com/acme/api/pull/${String(index + 1)}`, state })) } });
+  };
+  return { ...w, audit, deps, table, link, unlink, request, binding, surface, timeline, rewrites, live, withWorkflow };
 }
 
 describe("linking a session to a Linear issue", () => {
@@ -62,11 +70,11 @@ describe("linking a session to a Linear issue", () => {
     expect(audited[0]?.details).toEqual([{ subject: "org", fields: { issueKey: "ENG-142" } }]);
   });
 
-  it("takes the issue's Linear link, keeps the workspace in the stored link and drops the slug and the rest", async () => {
+  it("takes the issue's Linear link and stores only the key and Linear's short link: the typed workspace is not the company's to trust", async () => {
     const h = world();
     const { sessionId } = h.seedSession();
     await h.link(PRIYA, sessionId, `${LINK}?x=1#y`);
-    expect(h.binding(sessionId)?.binding).toEqual({ kind: "linear_issue", issueId: "ENG-142", url: "https://linear.app/acme/issue/ENG-142" });
+    expect(h.binding(sessionId)?.binding).toEqual({ kind: "linear_issue", issueId: "ENG-142", url: KEY_URL });
   });
 
   it("is the key the pull request's description says Fixes for", async () => {
@@ -358,5 +366,127 @@ describe("the routes", () => {
     }
     expect(await code(h.request(PRIYA, "POST", "not-a-session", "/bindings", { linear: "ENG-142" }))).toEqual({ code: "NOT_FOUND", message: "session not found" });
     expect(h.binding(sessionId)).toBeUndefined();
+  });
+});
+
+describe("replacing is one transaction", () => {
+  it("lets the old issue go and binds the new one together, with both timeline lines and both audit records", async () => {
+    const h = world();
+    const { sessionId } = h.seedSession();
+    await h.link(PRIYA, sessionId, "ENG-142");
+    const before = h.db.transactions().length;
+    await h.link(PRIYA, sessionId, "ENG-143", { replace: true });
+    const written = h.db.transactions().slice(before);
+    expect(written).toHaveLength(1);
+    const text = JSON.stringify(written[0]);
+    expect(text).toContain("Priya unlinked Linear issue ENG-142");
+    expect(text).toContain("Priya linked this session to Linear issue ENG-143");
+    expect(h.audit.flushed().map((event) => event.action).sort()).toEqual(["session.linked", "session.linked", "session.unlinked"]);
+    expect(h.binding(sessionId)?.binding.issueId).toBe("ENG-143");
+    expect(h.surface("ENG-142")).toBeUndefined();
+  });
+
+  it("leaves the session exactly as it was when another session takes the new issue in between, and sends no audit record for it", async () => {
+    const h = world();
+    const first = h.seedSession();
+    const other = h.seedSession({ owner: ARJUN });
+    await h.link(PRIYA, first.sessionId, "ENG-142");
+    const original = h.db.send.bind(h.db);
+    let taken = false;
+    h.db.send = (async (command: { constructor: { name: string } }) => {
+      if (!taken && command.constructor.name === "TransactWriteCommand") {
+        taken = true;
+        h.db.set({ ...sessionSurfaceKey(ORG_A, { kind: "linear_issue", issueId: "ENG-143", url: KEY_URL }), entityType: "SESSION_SURFACE", orgId: ORG_A, sessionId: other.sessionId, kind: "linear_issue", at: "2026-10-22T09:30:00.000Z" });
+      }
+      return original(command as never);
+    }) as typeof h.db.send;
+    expect(await code(h.link(PRIYA, first.sessionId, "ENG-143", { replace: true }))).toEqual({ code: "CONFIG_INVALID", message: "This issue already follows another session." });
+    h.db.send = original as typeof h.db.send;
+    expect(h.binding(first.sessionId)?.binding.issueId).toBe("ENG-142");
+    expect(h.surface("ENG-142")).toMatchObject({ sessionId: first.sessionId });
+    expect(h.audit.recorded().map((event) => event.action)).toEqual(["session.linked"]);
+    expect(h.timeline(first.sessionId)).toEqual(["Priya linked this session to Linear issue ENG-142."]);
+  });
+
+  it("changes nothing, and records nothing, when the old link was removed or replaced by another call in between", async () => {
+    for (const change of ["removed", "replaced"] as const) {
+      const h = world();
+      const { sessionId } = h.seedSession();
+      await h.link(PRIYA, sessionId, "ENG-142");
+      const original = h.db.send.bind(h.db);
+      let done = false;
+      h.db.send = (async (command: { constructor: { name: string } }) => {
+        if (!done && command.constructor.name === "TransactWriteCommand") {
+          done = true;
+          const key = sessionBindingKey(ORG_A, sessionId, "linear_issue");
+          if (change === "removed") h.db.delete(key);
+          else h.db.set({ ...key, entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId, binding: { kind: "linear_issue", issueId: "ENG-777", url: "https://linear.app/issue/ENG-777" }, at: "2026-10-22T09:30:00.000Z" });
+        }
+        return original(command as never);
+      }) as typeof h.db.send;
+      expect(await code(h.link(PRIYA, sessionId, "ENG-143", { replace: true })), change).toMatchObject({ code: "CONFIG_INVALID" });
+      h.db.send = original as typeof h.db.send;
+      expect(h.surface("ENG-143"), change).toBeUndefined();
+      expect(h.audit.recorded().map((event) => event.action), change).toEqual(["session.linked"]);
+    }
+  });
+});
+
+describe("the open pull request's description follows the binding at once", () => {
+  it("is rewritten after a link, an unlink and a replace on a version 2 task with an open pull request, and says so", async () => {
+    const h = world();
+    const { sessionId, taskId } = h.seedSession();
+    h.withWorkflow(taskId, "1.1.0", ["OPEN"]);
+    expect(await h.link(PRIYA, sessionId, "ENG-142")).toMatchObject({ pullRequest: { description: "updated" } });
+    expect(await h.link(PRIYA, sessionId, "ENG-143", { replace: true })).toMatchObject({ pullRequest: { description: "updated" } });
+    expect(await h.unlink(PRIYA, sessionId)).toMatchObject({ pullRequest: { description: "updated" } });
+    expect(h.rewrites).toEqual([{ taskId, key: "ENG-142" }, { taskId, key: "ENG-143" }, { taskId, key: undefined }]);
+  });
+
+  it("tells the person to edit it by hand when it could not be rewritten, naming the issue it may still say", async () => {
+    for (const how of ["fail", "throw"] as const) {
+      const h = world();
+      const { sessionId, taskId } = h.seedSession();
+      h.withWorkflow(taskId, "1.1.0", ["OPEN"]);
+      await h.link(PRIYA, sessionId, "ENG-142");
+      h.live.rewrite = how;
+      const reply = await h.unlink(PRIYA, sessionId) as unknown as { pullRequest: { description: string; note: string } };
+      expect(reply.pullRequest.description, how).toBe("failed");
+      expect(reply.pullRequest.note, how).toContain("ENG-142");
+      expect(reply.pullRequest.note, how).toMatch(/edit it on GitHub/u);
+      expect(h.binding(sessionId), how).toBeUndefined();
+    }
+  });
+
+  it("says the first description will carry it when no pull request is open yet, and leaves a merged or closed one alone", async () => {
+    const h = world();
+    const { sessionId, taskId } = h.seedSession();
+    h.withWorkflow(taskId, "1.1.0", []);
+    expect(await h.link(PRIYA, sessionId, "ENG-142")).toMatchObject({ pullRequest: { description: "next_update" } });
+    const done = world();
+    const second = done.seedSession();
+    done.withWorkflow(second.taskId, "1.1.0", ["MERGED", "CLOSED"]);
+    expect(await done.link(PRIYA, second.sessionId, "ENG-142")).toMatchObject({ pullRequest: { description: "next_update" } });
+    expect(done.rewrites).toEqual([]);
+  });
+
+  it("says a version 1 task's description will not carry it, so the person writes it there", async () => {
+    const h = world();
+    const { sessionId, taskId } = h.seedSession();
+    h.withWorkflow(taskId, "1.0.0", ["OPEN"]);
+    const reply = await h.link(PRIYA, sessionId, "ENG-142") as unknown as { pullRequest: { description: string; note: string } };
+    expect(reply.pullRequest.description).toBe("not_for_version");
+    expect(reply.pullRequest.note).toMatch(/won't say Fixes ENG-142/u);
+    expect(h.rewrites).toEqual([]);
+  });
+
+  it("does not fail the call when nothing can rewrite descriptions in this deployment", async () => {
+    const h = world();
+    const { sessionId, taskId } = h.seedSession();
+    h.withWorkflow(taskId, "1.1.0", ["OPEN"]);
+    const bare = { ...h.deps, control: undefined } as never;
+    const reply = await routeAgentSessionRequest(bare, h.caller(PRIYA, ORG_A), { method: "POST", path: `/v1/app/sessions/${sessionId}/bindings`, headers: {}, requestId: "r", body: JSON.stringify({ linear: "ENG-142" }) } as never, new URL(`/v1/app/sessions/${sessionId}/bindings`, "https://cell.example.com")) as { pullRequest: { description: string } };
+    expect(reply.pullRequest.description).toBe("failed");
+    expect(h.binding(sessionId)?.binding.issueId).toBe("ENG-142");
   });
 });

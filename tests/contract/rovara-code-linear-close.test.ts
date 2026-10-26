@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { sessionBindingKey, type SessionBinding } from "@agentx/contracts";
 import { inertLine } from "../../packages/broker/src/rovara-code/inert-text.js";
-import { breakLinearCloseWords, linearCloseLine, linearIssueKeyOf, linearIssueKeyOfTask } from "../../packages/broker/src/rovara-code/linear-close.js";
+import { breakLinearKeys, linearCloseLine, linearIssueKeyOf, linearIssueKeyOfTask, parseLinearIssue, sealLinearKeys } from "../../packages/broker/src/rovara-code/linear-close.js";
 import { ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";
 
 const issue = (issueId: string, url = "https://linear.app/acme/issue/ENG-142/fix-the-retry-bug"): SessionBinding => ({ kind: "linear_issue", issueId, url });
@@ -84,25 +84,61 @@ describe("linearIssueKeyOfTask", () => {
   });
 });
 
-describe("a model-written line cannot say Fixes <KEY>", () => {
+/** Every Linear-key-shaped token in a text, as Linear's reader would see it (a joiner in it makes it not one). */
+const keys = (text: string) => text.match(/[A-Za-z][A-Za-z0-9]*-\d+/gu) ?? [];
+
+describe("a model-written line cannot name a Linear issue at all", () => {
   it.each([
     "Fixes ENG-142", "fixes eng-142", "Closes ENG-142.", "closed ENG-142", "Resolves: ENG-142", "Completes   ENG-142", "fixing ENG-142", "Fix ENG-142 properly",
     "Fixes ENG-1, ENG-2", "closes ENG-1 and OPS-2", "resolves ENG-1 & OPS-2", "(fixes ENG-1)",
-  ])("breaks the key in %j and keeps it readable", (line) => {
-    expect(closers(line).length).toBeGreaterThan(0);
-    const broken = breakLinearCloseWords(line);
-    expect(closers(broken), broken).toEqual([]);
-    expect(broken.replaceAll("‍", "")).toBe(line);
-    expect(closers(inertLine(line, 200))).toEqual([]);
+    // Markdown, code spans, brackets and punctuation between the word and the key.
+    "_Fixes ENG-1_", "__Fixes__ ENG-1", "**Fixes** ENG-1", "Fixes **ENG-1**", "Fixes `ENG-1`", "Fixes (ENG-1)", "Fixes - ENG-1", "Fixes #ENG-1", "Fix-ENG-1", "_ENG-1_", "~~ENG-1~~", "[ENG-1](x)", "<ENG-1>", "\"ENG-1\"",
+    // More than one key, with any separator.
+    "Fixes ENG-1 ENG-2", "Fixes ENG-1, and ENG-2", "fixes ENG-1;OPS-2", "Fixes ENG-1/ENG-2", "Fixes ENG-1\tENG-2", "ENG-1|ENG-2",
+    // A word Linear may learn tomorrow, a bare key, a long team key, a key with a digit, and one that follows a letter or an underscore.
+    "Ships ENG-1", "ENG-1", "ABCDEFGHIJKLM-12", "A2-7", "x_ENG-1", "abc9ENG-1", "See https://linear.app/acme/issue/ENG-1/slug",
+  ])("breaks every key in %j and keeps it readable", (line) => {
+    expect(keys(line).length).toBeGreaterThan(0);
+    const broken = breakLinearKeys(line);
+    expect(keys(broken), broken).toEqual([]);
+    expect(broken.replaceAll("\u200D", "")).toBe(line);
   });
 
-  it.each(["Fixes ENG-1, ENG-2", "closes ENG-1 and OPS-2", "resolves ENG-1 & OPS-2"])("breaks every key in a list: %j", (line) => {
-    expect(breakLinearCloseWords(line)).not.toMatch(/[A-Za-z]-\d/u);
+  it("is what inertLine does to every line it makes inert", () => {
+    for (const line of ["_Fixes OPS-3_ by retrying", "Fixes `OPS-3`", "OPS-3 is related", "see (OPS-3)"]) expect(keys(inertLine(line, 200)), line).toEqual([]);
+    expect(inertLine("_Fixes OPS-3_ by retrying", 200).replaceAll("\u200D", "")).toBe("_Fixes OPS-3_ by retrying");
   });
 
-  it("leaves other text alone", () => {
-    for (const line of ["Add a retry flag", "Related to ENG-142", "See ENG-142", "Part of ENG-142", "The fix for UTF8 is done", "Use sha-256 for the digest", "ENG-142 is the issue"]) {
-      expect(breakLinearCloseWords(line), line).toBe(line);
+  it("leaves text without a key alone, dates and version numbers included", () => {
+    for (const line of ["Add a retry flag", "The fix for UTF8 is done", "ENG 142", "ENG-", "-142", "2026-10-26", "v1.2.3", "12-34", "Fixes #12", "Fixes nothing"]) {
+      expect(breakLinearKeys(line), line).toBe(line);
     }
+  });
+
+  it("seals every line but Rovara's own Fixes line", () => {
+    const lines = ["Fixes ENG-142", "- note: fixes ENG-142 too", "Fixes ENG-142 ", "fixes ENG-142", "Fixes ENG-1432", "FixesENG-142"];
+    const sealed = sealLinearKeys(lines, "ENG-142");
+    expect(sealed[0]).toBe("Fixes ENG-142");
+    for (const line of sealed.slice(1)) expect(keys(line), line).toEqual([]);
+    expect(sealLinearKeys(lines, undefined).every((line) => keys(line).length === 0)).toBe(true);
+    expect(sealLinearKeys(["Fixes ENG-142"], undefined)).not.toEqual(["Fixes ENG-142"]);
+  });
+});
+
+describe("parseLinearIssue", () => {
+  it("keeps only the key and Linear's short link: a typed workspace is dropped, as the company's own workspace is not known", () => {
+    expect(parseLinearIssue("eng-142")).toEqual({ issueId: "ENG-142", url: "https://linear.app/issue/ENG-142" });
+    expect(parseLinearIssue("https://linear.app/othercorp/issue/ENG-142/slug?x=1#y")).toEqual({ issueId: "ENG-142", url: "https://linear.app/issue/ENG-142" });
+    expect(parseLinearIssue("https://linear.app/issue/ENG-142")).toEqual({ issueId: "ENG-142", url: "https://linear.app/issue/ENG-142" });
+    expect(parseLinearIssue("https://evil.example/acme/issue/ENG-142")).toBeUndefined();
+  });
+});
+
+describe("a binding whose link is not Linear's", () => {
+  it("names no issue, even when its id is a key", () => {
+    expect(linearIssueKeyOf(issue("ENG-5", "https://evil.com/acme/issue/ENG-6"))).toBeUndefined();
+    expect(linearIssueKeyOf(issue("ENG-5", "https://linear.app.evil.example/acme/issue/ENG-5"))).toBeUndefined();
+    expect(linearIssueKeyOf(issue("ENG-5", "https://linear.app/acme/issue/ENG-5"))).toBe("ENG-5");
+    expect(linearIssueKeyOf(issue("ENG-5", "https://linear.app/issue/ENG-5"))).toBe("ENG-5");
   });
 });

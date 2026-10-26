@@ -8,7 +8,7 @@ import { workflowFindingFingerprint } from "../../packages/contracts/src/task-wo
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { RISK_SENSITIVE_PATH_PATTERNS, assessRisk, isSensitivePath, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 import { parseChangedFiles } from "../../packages/broker/src/rovara-code/changed-files.js";
-import { recomputeRisk } from "../../packages/broker/src/rovara-code/pull-request-body.js";
+import { recomputeRisk, withLinearCloseLine } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
 import { withStatusLines } from "../../packages/broker/src/developer/pull-request-feedback-section.js";
 import { workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
@@ -936,5 +936,132 @@ describe("a version 2 task bound to a Linear issue, through the broker", () => {
     await t.passReviews();
     expect(t.publication()).toBeDefined();
     expect(closers(String(t.publication()!.publication.body))).toEqual([]);
+  });
+});
+
+// ---- Plan 6 Task 20 review fixes: no text but Rovara's own Fixes line may name a Linear issue
+
+/** The Linear-key-shaped tokens in a text, as Linear's reader would see them. The session link (a uuid) and Rovara's own closing line are cut out first. */
+const bareKeys = (text: string) => (text.replace(SESSION, "").match(/[A-Za-z][A-Za-z0-9]*-\d+/gu) ?? []);
+
+describe("every text path into a version 2 pull request leaves no Linear key but Rovara's own Fixes line", () => {
+  const OWN = "ENG-142";
+  const withOwn = (extra: Record<string, unknown> = {}) => context({ linearIssueKey: OWN, ...extra });
+  const onlyOwn = (body: string) => expect(bareKeys(body)).toEqual([OWN]);
+  const accepted = (text: string, reason: string) => {
+    const finding = { text, origin: "INTRODUCED", severity: "HIGH", file: "src/retry.ts", line: 4 };
+    const code = candidate("1");
+    return workflowWith({
+      reviews: [
+        { operationId: randomUUID(), candidateDigest: code.digest, role: "CRITIC", provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now },
+        { operationId: randomUUID(), candidateDigest: code.digest, role: "SECURITY", provider: "t", version: "1", status: "FINDINGS", findings: [finding], readOnly: true, recordedAt: now },
+      ],
+      acceptedFindings: [{ candidateDigest: code.digest, role: "SECURITY", fingerprint: workflowFindingFingerprint("SECURITY", finding), text, reason, actorId: ownerId, at: now }],
+    });
+  };
+
+  it("an accepted review finding, and the owner's reason for accepting it", () => {
+    const body = workflowPullRequestBody(task, accepted("This also fixes OPS-12's null check", "Closes OPS-13 as well"), planOf, SESSION, withOwn());
+    expect(body).toContain("Owner accepted 1 review finding");
+    onlyOwn(body);
+    expect(body.replaceAll("‍", "")).toContain("This also fixes OPS-12's null check");
+    // The same through the block that a pushed fix rewrites.
+    const lines = workflowPullRequestStatusLines(accepted("_Fixes OPS-12_", "see (OPS-13)"), withOwn());
+    expect(bareKeys(lines.join("\n"))).toEqual([OWN]);
+  });
+
+  it("the plan's summary", () => {
+    onlyOwn(workflowPullRequestBody(task, workflowWith(), "# Plan\n\n1. _Fixes OPS-3_ by retrying; also `OPS-4` and (OPS-5).\n2. Fixes ENG-1 ENG-2\n", SESSION, withOwn()));
+  });
+
+  it("the task's title, when there is no plan", () => {
+    onlyOwn(workflowPullRequestBody({ title: "OPS-9 and Fixes OPS-10" } as never, workflowWith(), undefined, SESSION, withOwn()));
+  });
+
+  it("a changed file's path, its old name and its repository", () => {
+    const files = [{ repository: "payments", path: "docs/OPS-12-notes.md", added: 1, removed: 0 }, { repository: "OPS-14", path: "src/new.ts", renamedFrom: "src/Fixes-OPS-15.ts", added: 1, removed: 1 }];
+    onlyOwn(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn({ changedFiles: { files, complete: true } })));
+  });
+
+  it("a check's label, a failed check, a check that couldn't run, a test added and the reason there was no check", () => {
+    const failing = workflowWith({
+      stage: "VERIFY", state: "BLOCKED", blockReason: "candidate checks failed or have unknown results", reviews: undefined,
+      checkPolicy: { required: [check("unit", "Unit OPS-1"), check("lint", "Lint OPS-2"), check("types", "Types OPS-3")], optional: [], selectedOptionalIds: [], proposed: [] },
+      verification: { candidateDigest: candidate("1").digest, producer: "agentx-broker", environmentId: "ci", recordedAt: now,
+        results: [{ checkId: "unit", status: "PASS" }, { checkId: "lint", status: "FAILED" }, { checkId: "types", status: "FAILED", programNotFound: true }] },
+    });
+    onlyOwn(workflowPullRequestBody(task, failing, planOf, SESSION, withOwn({ changedFiles: { files: [file("src/OPS-4.test.ts")], complete: true } })));
+    const reviewOnly = workflowWith({
+      stage: "REVIEW", state: "WAITING", reviews: undefined,
+      checkPolicy: { required: [], optional: [], selectedOptionalIds: [], proposed: [], noneReason: "Documentation only, see OPS-9" },
+      verification: { candidateDigest: candidate("1").digest, producer: "agentx-broker", environmentId: "ci", recordedAt: now, results: [], reviewOnly: true },
+    });
+    onlyOwn(workflowPullRequestBody(task, reviewOnly, planOf, SESSION, withOwn()));
+  });
+
+  it("the base branch's name, and a risk reason", () => {
+    onlyOwn(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn({ ciBasis: "all_checks", baseBranch: "release/OPS-77" })));
+    onlyOwn(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn({ changedFiles: { files: [file("db/migrations/OPS-8.sql")], complete: true } })));
+  });
+
+  it("anything at all that reaches the block: a final pass breaks it, and keeps Rovara's own line and the session link whole", () => {
+    // A path that skipped every per-line guard still cannot name an issue.
+    const lines = workflowPullRequestStatusLines(workflowWith(), withOwn({ changedFiles: { files: [file("OPS-1.ts")], complete: true } }));
+    expect(lines).toContain("Fixes ENG-142");
+    expect(bareKeys(lines.join("\n"))).toEqual([OWN]);
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn());
+    expect(body).toContain(`Rovara session: ${SESSION}`);
+    expect(body).toContain(CLOSING);
+  });
+
+  it("without a key of its own, no key at all", () => {
+    expect(bareKeys(workflowPullRequestBody(task, accepted("Fixes OPS-12", "OPS-13"), "1. OPS-3", SESSION, context()))).toEqual([]);
+  });
+});
+
+describe("a pull request's title names no issue", () => {
+  it("a task's title with a bare key, or a closing word and a key, comes out with the key broken", async () => {
+    for (const instructions of ["ENG-9 login retry", "Fixes OTHER-9 by adding a retry flag", "_Closes OPS-1_ now", "Retry (OPS-2)"]) {
+      const t = await builtTask("1.1.0", ["src/retry.ts"], undefined, instructions);
+      await t.passReviews();
+      const title = String(t.publication()!.publication.title);
+      expect(bareKeys(title), instructions).toEqual([]);
+      expect(title.replaceAll("‍", ""), instructions).toContain("Rovara: ");
+    }
+  });
+
+  it("a version 1 task's title is as it was", async () => {
+    const t = await builtTask("1.0.0", ["src/retry.ts"], undefined, "ENG-9 login retry");
+    await t.passReviews();
+    expect(String(t.publication()!.publication.title)).toBe("AgentX: ENG-9 login retry");
+  });
+});
+
+describe("the open pull request's Fixes line follows the binding at once", () => {
+  const BLOCK = (...lines: string[]) => ["Plan", "", START, "## Risk: Low", "- ok", ...lines, END, "Rovara session: x", CLOSING].join("\n");
+
+  it("withLinearCloseLine takes Rovara's line out, puts a new one in, and touches nothing outside the block", () => {
+    const withOld = `A note from Priya. Fixes ENG-1 by hand.\n\n${BLOCK("", "Fixes ENG-142")}`;
+    const removed = withLinearCloseLine(withOld, undefined);
+    expect(removed).toMatchObject({ kind: "changed" });
+    const body = (removed as { body: string }).body;
+    expect(body).not.toContain("Fixes ENG-142");
+    expect(body).toContain("A note from Priya. Fixes ENG-1 by hand.");
+    expect(body.split(START)).toHaveLength(2);
+    expect(withLinearCloseLine(withOld, "ENG-143")).toEqual({ kind: "changed", body: withOld.replace("Fixes ENG-142", "Fixes ENG-143") });
+    expect(withLinearCloseLine(BLOCK(), "ENG-143")).toEqual({ kind: "changed", body: BLOCK("", "Fixes ENG-143") });
+    expect(withLinearCloseLine(withOld, "ENG-142")).toEqual({ kind: "same" });
+    expect(withLinearCloseLine(BLOCK(), undefined)).toEqual({ kind: "same" });
+  });
+
+  it("keeps a CRLF description's endings, and refuses a description whose block is not as Rovara wrote it", () => {
+    const crlf = BLOCK("", "Fixes ENG-142").replaceAll("\n", "\r\n");
+    const changed = withLinearCloseLine(crlf, "ENG-143") as { kind: string; body: string };
+    expect(changed.body).toContain("Fixes ENG-143\r\n");
+    expect(changed.body).not.toMatch(/[^\r]\n/u);
+    for (const odd of [`${START}\nx`, `x\n${END}`, `${END}\n${START}`, `${START}\n${START}\n${END}`, "no block at all"]) {
+      expect(withLinearCloseLine(odd, "ENG-143"), odd).toEqual({ kind: "no_block" });
+    }
+    expect(withLinearCloseLine("no block at all", undefined)).toEqual({ kind: "same" });
   });
 });
