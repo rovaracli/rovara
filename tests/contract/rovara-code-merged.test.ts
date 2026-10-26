@@ -18,6 +18,7 @@ import { bindSessionSurface, sessionForSurface } from "../../packages/broker/src
 import { onTaskEnded, registerTaskEndHandler, type TaskEndEvent } from "../../packages/broker/src/agents/task-end.js";
 import { reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { mergedLines } from "../../packages/broker/src/rovara-code/merged-lines.js";
 import { mergedMilestoneItems } from "../../packages/broker/src/rovara-code/merged.js";
 import { deliverCodeMilestones, registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -153,6 +154,14 @@ describe("the merged milestone", () => {
     expect(h.milestones()[0]).toMatchObject({ bindings: [THREAD] });
   });
 
+  it("leaves out an item that holds the other kind of binding than its key names", async () => {
+    const h = await bound(THREAD);
+    h.w.db.set({ ...sessionBindingKey(ORG_A, h.sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId: h.sessionId, binding: { ...THREAD, threadTs: "1695500000.000099" }, at: NOW });
+    h.merge(1, 2);
+    await h.reconcile("api");
+    expect(h.milestones()[0]).toMatchObject({ bindings: [THREAD] });
+  });
+
   it("fails closed: bindings that cannot be read stop the move to MERGED, so the Linear close is never lost", async () => {
     const h = await bound(ISSUE);
     h.merge(1, 2);
@@ -211,6 +220,16 @@ describe("mergedMilestoneItems", () => {
     expect(await mergedMilestoneItems(reader, task, waiting, waiting, NOW)).toEqual([]);
     expect(await mergedMilestoneItems(reader, { taskId: h.taskId }, waiting, merged, NOW)).toEqual([]);
     expect((await mergedMilestoneItems(reader, task, waiting, merged, NOW)).length).toBeGreaterThan(0);
+  });
+});
+
+describe("mergedLines", () => {
+  it("is one Merged: line for each merged GitHub pull request, and leaves out anything else", () => {
+    const pr = (url: string, state = "MERGED") => ({ url, state });
+    expect(mergedLines([pr("https://github.com/acme/api/pull/1"), pr("https://github.com/acme/ui/pull/2", "OPEN"), pr("https://github.com/acme/ui/pull/3", "CLOSED")])).toEqual(["Merged: https://github.com/acme/api/pull/1"]);
+    for (const url of ["http://github.com/acme/api/pull/1", "https://github.com.evil.example/acme/api/pull/1", "https://github.com/acme/api/issues/1", "https://github.com/acme/api/pull/1 <!@channel>", "https://github.com/acme/api/pull/0", "javascript:alert(1)"]) {
+      expect(mergedLines([pr(url)]), url).toEqual([]);
+    }
   });
 });
 
