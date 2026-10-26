@@ -528,8 +528,8 @@ import type { DecideKinds } from "../developer/decide-kinds.js";
 import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../developer/decide-inspect.js";
 import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { json } from "./json-reply.js";
-import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { developerReply, json } from "./json-reply.js";
+import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
 import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, planAutomaticFeedbackRound, workflowTaskAnswerContext } from "./developer-tasks.js";
@@ -2419,7 +2419,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           url.pathname = "/v1/app/" + url.pathname.slice("/v1/web/".length);
         }
         const answer = await routeDeveloperRequest(routeDependencies, request, url, authenticated);
-        return answer instanceof StatusReply ? json(answer.body, request.requestId, answer.statusCode) : json(answer, request.requestId);
+        return developerReply(answer, request.requestId);
       }
 
       const claimed = identityFromJwtClaims(request.jwtClaims, {

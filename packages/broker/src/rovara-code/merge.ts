@@ -11,6 +11,7 @@ import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MERGE_CLAIM_SECONDS,
   MERGE_NOT_READY_MESSAGES as M,
+  MERGE_VIEW_MESSAGE_MAX,
   agentXError,
   auditPullRequestId,
   isBranchSyncBlockReason,
@@ -252,7 +253,20 @@ export async function mergeViewOf(
   const host = deps.codeMerge;
   if (host === undefined || items.length === 0 || task.orgId === undefined || !tracksMerge(task.workflow)) return undefined;
   const { readiness } = await readinessFromItems(deps, host, task as DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot }, items, viewerDeveloperId);
-  return readiness.ready ? { ready: true } : { ready: false, message: readiness.message };
+  return mergeViewFromReadiness(readiness);
+}
+
+/**
+ * The view's `merge` for a readiness. The words of a refusal can carry a repository ID (up to 200 characters) and a branch name (up to 255), so with several pull requests they can pass the
+ * 500 the view allows; a view that is too long fails the task view of every client that reads it, so it is cut here, with an ellipsis. The press itself still says the words in full.
+ */
+export function mergeViewFromReadiness(readiness: Readiness): MergeView {
+  if (readiness.ready) return { ready: true };
+  if (readiness.message.length <= MERGE_VIEW_MESSAGE_MAX) return { ready: false, message: readiness.message };
+  const kept = readiness.message.slice(0, MERGE_VIEW_MESSAGE_MAX - 1);
+  // Never end on half of a surrogate pair.
+  const last = kept.charCodeAt(kept.length - 1);
+  return { ready: false, message: `${last >= 0xd800 && last <= 0xdbff ? kept.slice(0, -1) : kept}\u2026` };
 }
 
 // ---- pressing Merge

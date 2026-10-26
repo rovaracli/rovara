@@ -3,11 +3,12 @@
 // before it claims and merges them, in order, once.
 import { describe, expect, it } from "vitest";
 import {
-  MERGE_NOT_READY_MESSAGES as M, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey, orgMemberKey,
+  MERGE_NOT_READY_MESSAGES as M, MergeViewSchema, NeedsConfirmationReaderSchema, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey, orgMemberKey,
 } from "../../packages/contracts/src/index.js";
 import type { PullRequestReview } from "../../packages/broker/src/github-pull-status.js";
 import { getApprovalSubjectHandler, getAnyApproval, mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
-import { humanApprovalOf, mergeReadiness, mergeViewOf, pressMerge, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
+import { developerReply } from "../../packages/broker/src/aws/json-reply.js";
+import { humanApprovalOf, mergeReadiness, mergeViewFromReadiness, mergeViewOf, pressMerge, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
@@ -940,5 +941,57 @@ describe("the task view's merge field", () => {
     const task = w.db.get(taskKey(w.taskId))! as never;
     expect(await mergeViewOf(w.deps, task, [w.trackingOf({ repositoryId: "payments", number: 7 })!], PRIYA)).toEqual({ ready: false, message: M.checks });
     expect(w.github.calls).toEqual([]);
+  });
+});
+
+// ---- round trip (bug E): what the broker really answers, read by the schema each client reads it with
+
+describe("round trip: the merge answers, as the broker sends them", () => {
+  it("POST …/merge answers 202 NEEDS_CONFIRMATION with the gateway's requestId, which the clients' reader reads; the strict contract holds without it", async () => {
+    const w = await ready();
+    const path = `/v1/app/sessions/${w.sessionId}/merge`;
+    const answer = await routeAgentSessionRequest(
+      { ...w.shareDeps, origin: CELL, approvals: w.deps } as never, w.caller(PRIYA), { method: "POST", path, headers: {}, requestId: "r", body: JSON.stringify({ requestId: w.requestId() }) }, new URL(`${CELL}${path}`),
+    );
+    const wire = developerReply(answer, "gateway-1");
+    expect(wire.statusCode).toBe(202);
+    const body = JSON.parse(wire.body) as Record<string, unknown>;
+    expect(body.requestId).toBe("gateway-1");
+    expect(NeedsConfirmationReaderSchema.safeParse(body).success).toBe(true);
+    const { requestId: _gateway, ...own } = body; // eslint-disable-line @typescript-eslint/no-unused-vars -- set aside on purpose
+    expect(NeedsConfirmationSchema.safeParse(own).success).toBe(true);
+  });
+
+  it("the task view's merge field is what the view's schema allows, ready or not", async () => {
+    const w = await ready({}, { approval: { githubUserId: GH.max, login: LOGIN.max, commitId: HEAD_A } });
+    const task = w.db.get(taskKey(w.taskId))! as never;
+    const items = [w.trackingOf({ repositoryId: "payments", number: 7 })!];
+    for (const who of [PRIYA, MAX]) {
+      const view = await mergeViewOf(w.deps, task, items, who);
+      expect(MergeViewSchema.safeParse(view).success, JSON.stringify(view)).toBe(true);
+    }
+  });
+
+  it("every refusal's words fit the view at the longest names the contracts allow (a 200 character repository ID, a 255 character branch, an 80 character requester)", () => {
+    const repository = "r".repeat(200);
+    const branch = "b".repeat(255);
+    const pullRequests = [facts({ repositoryId: repository, number: 8, baseBranch: branch }), facts({ repositoryId: "payments", number: 9 })];
+    const cases = [
+      readiness({ pullRequests, recordedBases: new Map(pullRequests.map((pr) => [keyOf(pr), "main"])) }),
+      readiness({ pullRequests: [facts({ repositoryId: repository, baseBranch: branch, branch: "conflicted" }), facts({ repositoryId: "payments", number: 9 })] }),
+      readiness({ pullRequests: [facts({ repositoryId: repository, baseBranch: branch, branch: "behind", behindRequired: true }), facts({ repositoryId: "payments", number: 9 })] }),
+      readiness({ pullRequests: [facts({ repositoryId: repository }), facts({ repositoryId: "payments", number: 9 })], approvals: new Map(), requesterName: "q".repeat(80) }),
+    ];
+    for (const refusal of cases) {
+      expect(refusal.ready).toBe(false);
+      const view = mergeViewFromReadiness(refusal);
+      expect(MergeViewSchema.safeParse(view).success, JSON.stringify(view)).toBe(true);
+    }
+    // The cut keeps the words' start, and a message that fits is passed on as it was.
+    const long = mergeViewFromReadiness(cases[0]!);
+    expect(long.message!.endsWith("\u2026")).toBe(true);
+    expect((cases[0] as { message: string }).message.startsWith(long.message!.slice(0, -1))).toBe(true);
+    expect(mergeViewFromReadiness({ ready: false, message: M.checks })).toEqual({ ready: false, message: M.checks });
+    expect(mergeViewFromReadiness({ ready: true })).toEqual({ ready: true });
   });
 });

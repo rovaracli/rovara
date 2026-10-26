@@ -491,7 +491,8 @@ export const CODE_SETTINGS_STALE_MESSAGE = "Someone changed these settings. Relo
 // ---- merging (Plan 6 Task 19)
 
 /** The task view's `merge` (version 2 only): whether the viewer pressing Merge now would be allowed to, and if not, in words, why. */
-export const MergeViewSchema = z.object({ ready: z.boolean(), message: z.string().min(1).max(500).optional() }).strict();
+export const MERGE_VIEW_MESSAGE_MAX = 500;
+export const MergeViewSchema = z.object({ ready: z.boolean(), message: z.string().min(1).max(MERGE_VIEW_MESSAGE_MAX).optional() }).strict();
 export type MergeView = z.infer<typeof MergeViewSchema>;
 
 /** The exact texts of `MERGE_NOT_READY` (409). Words for a person: nothing here carries a title, a comment or a log. */
@@ -571,6 +572,9 @@ export const SetupDraftResponseSchema = z
   })
   .strict();
 export type SetupDraftResponse = z.infer<typeof SetupDraftResponseSchema>;
+
+/** How a client reads `GET`/`POST …/setup-draft`: with the gateway's `requestId` kept and not refused (see `CodeSettingsResponseReaderSchema`). */
+export const SetupDraftResponseReaderSchema = forwardReader(SetupDraftResponseSchema);
 
 /**
  * `POST …/setup-draft/apply`: what of the draft the person applies. Nothing is applied that is not named: a field left out or `false` is not applied. The

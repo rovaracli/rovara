@@ -65,6 +65,8 @@ describe("agentx project code-settings against the real broker", () => {
     // The premise of the bug: the real answer is `{ settings, requestId }`.
     expect(answers[0]!.status).toBe(200);
     expect(Object.keys(answers[0]!.body).sort()).toEqual(["requestId", "settings"]);
+    // Nothing else is sent, so a released CLI that reads the settings strictly sees the fields it has always seen (the fix is in the reader, not in what the broker sends).
+    expect(Object.keys(answers[0]!.body.settings as object).sort()).toEqual(["allowSelfApproval", "codeReviewers", "mergeMethod", "revision"]);
     expect(cli.text()).toBe(["Code settings for payments (revision 0):", "  Self-approval: off", "  Merge method: squash", "  Reviewers: none", ""].join("\n"));
   });
 
@@ -91,3 +93,36 @@ describe("agentx project code-settings against the real broker", () => {
     expect(cli.text()).toContain(`Confirm this in your browser: ${String(put.body.confirmUrl)}`);
   });
 });
+
+describe("agentx session commands against the real broker", () => {
+  /** A Code task of Maya's on `payments`, with its session. */
+  async function session(h: Broker): Promise<{ sessionId: string; taskId: string }> {
+    const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix the retry" } });
+    expect(started.status, JSON.stringify(started.body)).toBe(202);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    return { taskId, sessionId: String(h.db.get(`DEVTASK#${taskId}`, "META")!.sessionId) };
+  }
+
+  it("prints the link where a company-wide share is confirmed, from the broker's 202", async () => {
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    const { sessionId } = await session(h);
+    const answers: Array<{ status: number; body: Record<string, unknown> }> = [];
+    const cli = await cliAgainst(h, { onAnswer: (answer) => answers.push(answer) });
+    expect(await cli.run(["session", "share", sessionId, "--with", "company", "--level", "view"]), cli.errors()).toBe(0);
+    expect(answers.at(-1)!.status).toBe(202);
+    expect(typeof answers.at(-1)!.body.requestId).toBe("string");
+    expect(cli.text()).toContain("This waits for you to confirm it. Nothing has changed yet.");
+    expect(cli.text()).toContain(`Confirm this in your browser: ${String(answers.at(-1)!.body.confirmUrl)}`);
+  });
+
+  it("links a session to a Linear issue and lets it go again", async () => {
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    const { sessionId } = await session(h);
+    const cli = await cliAgainst(h);
+    expect(await cli.run(["session", "link", sessionId, "--linear", "ENG-142"]), cli.errors()).toBe(0);
+    expect(cli.text()).toContain("Linked this session to Linear issue");
+    expect(await cli.run(["session", "link", sessionId, "--unlink"]), cli.errors()).toBe(0);
+    expect(cli.text()).toContain("Unlinked the Linear issue from this session.");
+  });
+});
+
