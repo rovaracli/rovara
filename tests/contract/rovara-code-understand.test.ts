@@ -845,6 +845,14 @@ describe("a Full path chosen by Understand is admitted as a Full start is", () =
     expect(workflowMessage({ taskId: TASK_ID, workflow: WorkflowSnapshotSchema.parse({ ...t.meta(run.taskId).workflow }) })?.text).toContain("isn't enough AI budget left");
   });
 
+  it("fails closed when the proxy cannot say what is left: the result is not applied (the worker sends it again), nothing is blocked or raised", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    t.access!.goDown();
+    await t.answers(run, ready({ path: "FULL" })).catch(() => undefined);
+    expect(t.meta(run.taskId)).toMatchObject({ budgetUsd: 2, workflow: { stage: "UNDERSTAND", state: "RUNNING" } });
+  });
+
   it("and a Quick path chosen by Understand needs only the Quick minimum", async () => {
     const t = await world();
     const run = await t.understanding();
