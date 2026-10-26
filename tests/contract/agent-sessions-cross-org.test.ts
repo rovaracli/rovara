@@ -41,9 +41,9 @@ async function world() {
   const s1 = w.seedSession();
   const s2 = w.seedSession({ kind: "chain" });
   const s3 = w.seedSession({ kind: "local" });
-  const s4 = w.seedSession({ kind: "local" });
+  const s4 = w.seedSession({ people: [{ developerId: PRIYA, role: "owner" }, { developerId: ARJUN, role: "denied" }, { developerId: MAX, role: "denied" }] });
   const own = w.seedSession({ orgId: ORG_B, owner: BO });
-  for (const s of [s3, s4]) w.db.set({ ...w.db.get(agentSessionKey(ORG_A, s.sessionId, "META"))!, subject: { kind: "local", deviceId: device.deviceId, tool: "claude-code" }, where: { kind: "mac", deviceId: device.deviceId, label: "Priya's Mac" } });
+  for (const s of [s3]) w.db.set({ ...w.db.get(agentSessionKey(ORG_A, s.sessionId, "META"))!, subject: { kind: "local", deviceId: device.deviceId, tool: "claude-code" }, where: { kind: "mac", deviceId: device.deviceId, label: "Priya's Mac" } });
   w.seedShare(ORG_A, s3.sessionId, { kind: "member", developerId: ARJUN }, "view");
   w.seedShare(ORG_A, s4.sessionId, { kind: "member", developerId: MIA }, "view");
   for (const [s, orgId, owner] of [[s1, ORG_A, PRIYA], [s2, ORG_A, PRIYA], [s3, ORG_A, PRIYA], [s4, ORG_A, PRIYA], [own, ORG_B, BO]] as const) {
@@ -116,11 +116,20 @@ describe("Task 24: ids never confer authority", () => {
       }
       await expect(w.call(BO, ORG_B, "POST", "/v1/app/sessions/local", { requestId: randomUUID(), deviceId: w.device.deviceId, tool: "claude-code", title: "Canary", startedAt: new Date(w.clock.now).toISOString(), project: "web", shares: [{ principal: { kind: "member", developerId: BO }, level: "view" }] })).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
+    const listPath = "/v1/app/devices";
+    const listed = await routeDeviceRequest(w.table, w.caller(BO, ORG_B), { method: "GET", path: listPath, headers: {}, requestId: "r" }, new URL(listPath, CELL));
+    expect(JSON.stringify(listed)).toContain(w.bDevice.deviceId);
+    expect(JSON.stringify(listed)).not.toContain(w.device.deviceId);
     const path = `/v1/app/devices/${w.device.deviceId}/commands`;
     expect(await routeDeviceRequest(w.table, w.caller(PRIYA), { method: "GET", path, headers: {}, requestId: "r" }, new URL(path, CELL))).toMatchObject({ commands: [] });
   });
   it("same-named project lists, all Live filters, Home and changes never reveal hidden ids", async () => {
     const w = await world();
+    const meta = w.db.get(agentSessionKey(ORG_A, w.s1.sessionId, "META"))!;
+    w.db.set({ ...meta, summaryRevision: 2, summary: { ...w.s1.record.summary, status: "needs_person" } });
+    const task = w.db.find((row) => row.taskId === w.s1.taskId && row.sk === "META")[0]!;
+    w.db.set({ ...task, workflow: { stage: "PLAN_REVIEW", state: "WAITING", revision: 1, path: "QUICK", artifacts: [], decisions: [] } });
+    expect(JSON.stringify(await w.call(PRIYA, ORG_A, "GET", "/v1/app/home"))).toContain(w.s1.sessionId);
     const paths = ["/v1/app/sessions?owner=me", "/v1/app/sessions?shared=me", "/v1/app/sessions?project=web", "/v1/app/home", "/v1/app/changes", "/v1/app/projects/web/overview", ...["all", "mine", "failed", "needs_me", "team"].map((filter) => `/v1/app/live?filter=${filter}`)];
     for (const [who, org, hidden] of [[BO, ORG_B, [w.s1, w.s2, w.s3, w.s4]], [ARJUN, ORG_A, [w.s4]], [MAX, ORG_A, [w.s3]]] as const) {
       for (const path of paths) {
@@ -280,7 +289,7 @@ describe("the broker and its real CLI/MCP clients", () => {
 });
 
 describe("notices and audit cannot bypass session isolation", () => {
-  it("drops unauthorized followers of a private local session from notices and catch-up feeds", async () => {
+  it("drops unauthorized followers of a private task session from notices and catch-up feeds", async () => {
     const w = await world();
     for (const who of [MIA, ARJUN, MAX, BO]) w.follower(ORG_A, w.s4.sessionId, who);
     const published: Array<{ channel: string; events: string[] }> = [];
