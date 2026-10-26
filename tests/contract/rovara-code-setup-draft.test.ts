@@ -409,6 +409,9 @@ describe("the draft's result", () => {
       await end(t);
       const answer = view(await t.read());
       expect(answer, label).toMatchObject({ status: "failed", failure });
+      // The task itself ended with it (which is what gives its workspace back).
+      expect(t.task().setupDraftResult, label).toEqual({ status: "failed", failure });
+      expect(t.task().agentRunEnd, label).toMatchObject({ state: "FAILED" });
       expect(JSON.stringify(answer)).not.toContain(PLANTED_TOKEN);
       // A failed draft does not block the next one.
       expect((await t.ask()).status, label).toBe(202);
@@ -421,7 +424,9 @@ describe("the draft's result", () => {
     const run = await t.prepared();
     const cancelled = await t.dev(OMAR, "POST", `/v1/dev/tasks/${t.task().taskId}/cancel`, { requestId: randomUUID() });
     expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
-    await t.finish(run.workspaceId, run.own.id, "CANCELLED");
+    // The worker answers the cancel; the draft's own result never comes. The cancel's result ends the draft.
+    const cancel = t.operations(run.workspaceId).find((operation) => operation.kind === "cancel")!;
+    await t.finish(run.workspaceId, cancel.id, "SUCCEEDED");
     expect(view(await t.read())).toMatchObject({ status: "failed" });
     expect(t.task().agentRunEnd).toMatchObject({ state: "CANCELLED" });
   });
@@ -817,5 +822,34 @@ describe("an older worker", () => {
     const task = (workflowMode: string) => WorkerInvocationSchema.safeParse({ protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64), payload: { conversationId: randomUUID(), prompt: "x", workflowMode } }).success;
     expect(task("SETUP_DRAFT")).toBe(true);
     expect(task("SETUP_DRAFTS")).toBe(false);
+  });
+});
+
+describe("the draft's bookkeeping", () => {
+  it("never feeds the run-cost estimates of the agent that wrote it", async () => {
+    const t = await setup({ proxy: true });
+    await t.drafted();
+    expect(t.task().agentRunEnd).toMatchObject({ state: "COMPLETE" });
+    expect((t.db.get(`DEVTASK#${t.task().taskId}`, "META") as { runCostRecordedAt?: string }).runCostRecordedAt).toBeUndefined();
+    expect(t.db.find((item) => item.entityType === "RUN_COST")).toEqual([]);
+  });
+
+  it("refuses with the busy answer, and starts nothing, when another draft took the pointer between the check and the write", async () => {
+    const t = await setup();
+    await t.drafted();
+    const send = t.db.send.bind(t.db);
+    let moved = false;
+    t.db.send = (async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "TransactWriteCommand" && !moved) {
+        moved = true;
+        t.db.set({ ...(t.db.get(setupDraftKey(TEST_ORG, NAME)) as Record<string, unknown>), taskId: randomUUID() });
+      }
+      return send(command as never);
+    }) as typeof t.db.send;
+    const tasks = t.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
+    const reply = await t.ask();
+    expect(reply.status).toBe(409);
+    expect(errorOf(reply).code).toBe("WORKSPACE_BUSY");
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(tasks);
   });
 });

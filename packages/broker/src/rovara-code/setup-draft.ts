@@ -314,7 +314,8 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   const latest = await deps.latest(caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const state = await setupDraftState(deps, caller.orgId, name, latest.revision);
-  if (state.status !== "ready" || state.draft === undefined || state.pointer === undefined) throw agentXError("CONFIG_INVALID", SETUP_DRAFT_NONE_TO_APPLY);
+  // Only a ready state carries a draft.
+  if (state.draft === undefined || state.pointer === undefined) throw agentXError("CONFIG_INVALID", SETUP_DRAFT_NONE_TO_APPLY);
   const draft = state.draft;
   if (draft.basedOnRevision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETUP_DRAFT_OLD);
   const { include } = body;

@@ -4,7 +4,7 @@
 // redacted, secrets by name only, commands as the executor will run them, every command that downloads and runs code flagged), and it checks for itself, in the repository,
 // whether each dev container file the draft names is already there. The broker reads the draft again; the worker's copy is never trusted.
 import { stat } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
 import { SETUP_DRAFT_COMMANDS_MAX, SETUP_DRAFT_INFO_STRING, SETUP_DRAFT_SECRETS_MAX, sanitizeSetupDraft, setupDraftAnswerOf, type SetupDraft } from "@agentx/contracts";
 
 /** What the draft is asked, after the broker's own rules. The files are data; the answer is one JSON block. */
@@ -39,12 +39,9 @@ export function setupDraftRetryPrompt(errors: readonly string[]): string {
   return `Your answer could not be read as a setup draft (${errors.join("; ")}). Answer again with exactly one block labelled ${SETUP_DRAFT_INFO_STRING} holding the JSON draft, following the rules above, and nothing after it.`;
 }
 
-/** Whether the file exists in the repository's directory, never following a path out of it. */
+/** Whether the file exists in the repository's directory. The path is one `sanitizeSetupDraft` accepts (a devcontainer.json at a fixed place, no `..`), so it cannot leave the repository. */
 async function exists(rootPath: string, repository: { path: string }, configPath: string): Promise<boolean> {
-  const base = resolve(rootPath, repository.path);
-  const target = resolve(base, configPath);
-  if (target !== base && !target.startsWith(base + sep)) return false;
-  try { return (await stat(join(base, configPath))).isFile(); } catch { return false; }
+  try { return (await stat(join(rootPath, repository.path, configPath))).isFile(); } catch { return false; }
 }
 
 export type SetupDraftOutcome = { ok: true; draft: SetupDraft } | { ok: false; errors: string[] };
