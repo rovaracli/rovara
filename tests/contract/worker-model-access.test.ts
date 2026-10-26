@@ -305,10 +305,11 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
   const slackUser = "U0123456789";
   beforeAll(loadSlackBroker);
 
-  async function slackTask(agents = false) {
+  async function slackTask(agents = false, withIdentity = false) {
+    const identity = withIdentity ? await createDeveloperTaskBroker({ register: false }) : undefined;
     const access = sharedFakeModelAccess({ key: PROXY_KEY });
     const mintKey = access.mintKey;
-    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, ...(agents ? { agents: {} } : {}) } });
+    const { handler, db } = createBroker({ extra: { modelAccess: { access, proxyUrl: PROXY_URL }, ...(agents ? { agents: {} } : {}), ...(identity === undefined ? {} : { developer: identity.brokerInput.developer }) } });
     await registerSlackProject(handler);
     const workspace = await ensureWorkspace(handler, thread, slackUser);
     const workspaceId = workspace.body.workspaceId as string;
@@ -349,6 +350,22 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
     const reply = await h.ask();
     expect(reply).toMatchObject({ status: 403, body: { error: { code: "TASK_ACCESS_DENIED" } } });
     expect(h.mintKey).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("I1 refuses new keys after the merged requester account leaves (agents=%s)", async (agents) => {
+    const h = await slackTask(agents, true);
+    const raw = developerIdForSlackUser(slackUser);
+    const survivor = "7".repeat(64);
+    h.db.set({ pk: `DEVELOPER#${raw}`, sk: "META", developerId: raw, provider: "slack", displayName: "Synthetic requester", revoked: false, firstSignInAt: "x", lastSignInAt: "x", mergedInto: survivor });
+    h.db.set({ pk: `DEVELOPER#${survivor}`, sk: "META", developerId: survivor, provider: "oidc", displayName: "Synthetic survivor", revoked: false, firstSignInAt: "x", lastSignInAt: "x" });
+    seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+    h.db.delete(orgMemberKey(TEST_ORG, survivor));
+    h.db.delete(developerOrgKey(survivor));
+    h.db.set({ ...orgRemovedKey(TEST_ORG, survivor), orgId: TEST_ORG, developerId: survivor });
+    const before = h.db.commandNames().length;
+    expect(await h.ask()).toMatchObject({ status: 403, body: { error: { code: "TASK_ACCESS_DENIED" } } });
+    expect(h.mintKey).not.toHaveBeenCalled();
+    expect(h.db.commandNames().slice(before).filter((name) => /^(Put|Update|Delete|TransactWrite)/.test(name))).toEqual([]);
   });
 
   it("answers 404 when the operation names no org", async () => {
