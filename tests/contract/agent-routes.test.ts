@@ -1297,3 +1297,8 @@ it("preserves the store's budget error and the original finite-only body bounds"
  const f=await setup(),id=await f.create(MAYA),answer=await f.call(MAYA,"PUT",`/v1/app/agents/${id}/budget`,{monthlyUsd:-1});
  expect(answer.status).toBe(400);expect((answer.body.error as {message:string}).message).toContain("monthlyUsd: must be a number of dollars, zero or more");
 });
+it("returns the exact resolved recipes alongside their authorized diff",async()=>{
+ const f=await setup(),id=await f.create(MAYA);await f.seed(id,SAFE);await f.saveDraft(MAYA,id,{...SAFE,instructions:"Check duplicate webhooks before implementation."});
+ const answer=await f.call(MAYA,"GET",`/v1/app/agents/${id}/diff?from=1&to=draft`);expect(answer.status).toBe(200);expect(answer.body.comparison).toMatchObject({before:{instructions:[expect.objectContaining({text:SAFE.instructions})]},after:{instructions:[expect.objectContaining({text:"Check duplicate webhooks before implementation."})]}});
+ expect((await f.call(EVE,"GET",`/v1/app/agents/${id}/diff?from=1&to=draft`)).status).toBe(404);
+});
