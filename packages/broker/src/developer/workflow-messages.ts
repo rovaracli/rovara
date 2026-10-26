@@ -7,6 +7,7 @@ import {
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
+import { mergedLines } from "../rovara-code/merged-lines.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
 import { isE2EPlanCorrectionBlockReason } from "./task-records.js";
 import { workflowReviewRound } from "../rovara-code/verification-report.js";
@@ -826,6 +827,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed ? pullRequestUpdateFailed(workflow)
         : `${plainBlockReason(workflow.blockReason)} ${STILL_WATCHING}`, buttons: [exits.close] };
     case "MERGED/COMPLETE": {
+      // A Rovara Code (version 2) task says it as `Merged: <url>`, a line for each pull request (Plan 6 Task 20); version 1 keeps its words.
+      const lines = workflow.definitionVersion === "1.1.0" ? mergedLines(workflow.pullRequests ?? []) : [];
+      if (lines.length > 0) return plain(lines.join("\n"));
       const total = (workflow.pullRequests ?? []).filter((pullRequest) => pullRequest.required).length;
       return plain(total <= 1 ? "The pull request is merged. This task is complete." : `All ${total} pull requests are merged. This task is complete.`);
     }

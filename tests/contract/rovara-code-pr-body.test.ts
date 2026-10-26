@@ -751,6 +751,25 @@ describe("a pushed fix on a version 2 task", () => {
     return { harness, gateway, state, taskId, workspaceId, record, first, fix, finishReviews: () => reviews(reviewTwo, fix), opened: String(p.body) };
   }
 
+  it("adds Fixes <KEY> once to the description when the issue was bound after the pull request opened (Plan 6 Task 20)", async () => {
+    const t = await fixPassed();
+    expect(t.state.body).not.toMatch(/\bFixes ENG-142\b/u);
+    const record = t.record() as unknown as { orgId: string };
+    const sessionId = "ses_00000000000000000001";
+    t.harness.db.set({ ...t.record(), sessionId });
+    t.harness.db.set({ ...sessionBindingKey(record.orgId, sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: record.orgId, sessionId, binding: { kind: "linear_issue", issueId: "ENG-142", url: "https://linear.app/acme/issue/ENG-142/x" }, at: now });
+    await t.finishReviews();
+    const maintain = operations(t.harness, t.workspaceId).find((item) => item.kind === "maintain") as { id: string; maintenance: { headBranch: string } };
+    t.state.head = PUSHED;
+    t.state.tree = FIX_TREE;
+    await t.harness.callback(t.workspaceId, maintain.id, "pull-request-update", { repository: "demo", pullRequestNumber: 42, action: "append", headBranch: maintain.maintenance.headBranch, baseBranch: "main", previousCommit: "d".repeat(40), commit: PUSHED });
+    await t.harness.finish(t.workspaceId, maintain.id, "SUCCEEDED", { result: { action: "append", repository: "demo", number: 42, url: PR_URL, state: "open", headBranch: maintain.maintenance.headBranch, baseBranch: "main",
+      previousCommit: "d".repeat(40), commit: PUSHED, treeSha: FIX_TREE, checks: [], reconciled: false } });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-142"]);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+    expect(t.state.body.split(START)).toHaveLength(2);
+  });
+
   it("judges the risk again for the new code in the write that starts the push, and the description's block follows the push", async () => {
     const t = await fixPassed();
     await t.finishReviews();
@@ -780,7 +799,7 @@ describe("a pushed fix on a version 2 task", () => {
 // ---- Plan 6 Task 20: "Fixes <KEY>" for a session bound to a Linear issue
 
 const LINEAR_ISSUE = { kind: "linear_issue" as const, issueId: "ENG-142", url: "https://linear.app/acme/issue/ENG-142/fix-the-retry-bug" };
-const FIXES = /\b(?:fix|fixes|fixed|fixing|close|closes|closed|closing|resolve|resolves|resolved|resolving|complete|completes|completed|completing)\s+[a-z][a-z0-9]*-\d+/giu;
+const FIXES = /\b(?:fix|fixes|fixed|fixing|close|closes|closed|closing|resolve|resolves|resolved|resolving|complete|completes|completed|completing)[\s:]+[a-z][a-z0-9]*-\d+/giu;
 const closers = (text: string) => text.match(FIXES) ?? [];
 
 describe("a pull request for a session bound to a Linear issue", () => {
@@ -803,16 +822,20 @@ describe("a pull request for a session bound to a Linear issue", () => {
   it("keeps it exactly once when the block is rewritten after a fix, and adds it when the issue was bound after the pull request opened", () => {
     const wf = workflowWith();
     const first = workflowPullRequestBody(task, wf, planOf, SESSION, context({ linearIssueKey: "ENG-142" }));
-    const second = withStatusLines(`A note from Priya, kept.\n\n${first}`, workflowPullRequestStatusLines(wf, context({ linearIssueKey: "ENG-142" })))!;
-    expect(closers(second)).toEqual(["Fixes ENG-142"]);
-    expect(second).toContain("A note from Priya, kept.");
+    const noted = `A note from Priya, kept.\n\n${first}`;
+    // Rewriting with the same lines changes nothing (undefined); a rewrite after a fix, with the new code's lines, replaces the block and keeps the one line.
+    expect(withStatusLines(noted, workflowPullRequestStatusLines(wf, context({ linearIssueKey: "ENG-142" })))).toBeUndefined();
+    const fixed = withStatusLines(noted, workflowPullRequestStatusLines(wf, { changedFiles: { files: [file("src/retry.ts", 10, 2), file("src/other.ts", 1, 1)], complete: true }, linearIssueKey: "ENG-142" }))!;
+    expect(closers(fixed)).toEqual(["Fixes ENG-142"]);
+    expect(fixed).toContain("src/other.ts");
+    expect(fixed).toContain("A note from Priya, kept.");
     const unbound = workflowPullRequestBody(task, wf, planOf, SESSION, context());
     expect(closers(withStatusLines(unbound, workflowPullRequestStatusLines(wf, context({ linearIssueKey: "ENG-142" })))!)).toEqual(["Fixes ENG-142"]);
   });
 
   it("keeps the line when the lists shrink to fit the byte cap", () => {
     const many = Array.from({ length: 400 }, (_, index) => file(`src/generated/module-${index}-${"x".repeat(120)}.ts`, 3, 1));
-    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, { changedFiles: { files: many, complete: true }, linearIssueKey: "ENG-142" } as never);
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, { changedFiles: { files: many, complete: true }, linearIssueKey: "ENG-142" });
     expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(30_000);
     expect(closers(body)).toEqual(["Fixes ENG-142"]);
   });
@@ -849,7 +872,7 @@ describe("a version 2 task bound to a Linear issue, through the broker", () => {
     // The task start in this harness makes no session; the task names one, as a start with agents does.
     if (record.sessionId === undefined) t.harness.db.set({ ...t.record(), sessionId });
     const kind = (binding as { kind: "slack_thread" | "linear_issue" }).kind;
-    t.harness.db.set({ ...sessionBindingKey(record.orgId as never, sessionId, kind), entityType: "AGENT_SESSION_BINDING", orgId: orgId ?? record.orgId, sessionId, binding, at: now });
+    t.harness.db.set({ ...sessionBindingKey(record.orgId, sessionId, kind), entityType: "AGENT_SESSION_BINDING", orgId: orgId ?? record.orgId, sessionId, binding, at: now });
     return sessionId;
   };
 
@@ -899,7 +922,7 @@ describe("a version 2 task bound to a Linear issue, through the broker", () => {
     t.harness.db.send = ((command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
       if (command.constructor.name === "GetCommand" && String(command.input?.Key?.pk ?? "").includes("SESSION_BINDING#")) return Promise.reject(Object.assign(new Error("table down"), { name: "ServiceUnavailable" }));
       return original(command as never);
-    }) as typeof t.harness.db.send;
+    });
     await t.passReviews();
     expect(t.publication()).toBeDefined();
     expect(closers(String(t.publication()!.publication.body))).toEqual([]);

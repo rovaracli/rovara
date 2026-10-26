@@ -18,6 +18,7 @@ import { bindSessionSurface, sessionForSurface } from "../../packages/broker/src
 import { onTaskEnded, registerTaskEndHandler, type TaskEndEvent } from "../../packages/broker/src/agents/task-end.js";
 import { reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { mergedMilestoneItems } from "../../packages/broker/src/rovara-code/merged.js";
 import { deliverCodeMilestones, registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";
@@ -75,7 +76,7 @@ function harness(options: { mode?: "merge" | "feedback"; definitionVersion?: "1.
   };
   const merge = (...numbers: number[]) => numbers.forEach((number) => remote.set(number, "merged"));
   const milestones = () => w.db.find((item) => item.pk === `DEVTASK#${taskId}` && String(item.sk).startsWith("CODE_MILESTONE#merged#"));
-  const sessionEvents = () => w.db.find((item) => typeof item.pk === "string" && item.pk.includes(sessionId) && String(item.sk).startsWith("EVENT#") && String(item.text ?? "").startsWith("Merged:"));
+  const sessionEvents = () => w.db.find((item) => typeof item.pk === "string" && item.pk.includes(sessionId) && String(item.sk).startsWith("EVENT#") && typeof item.text === "string" && item.text.startsWith("Merged:"));
   return { w, table, taskId, sessionId, bindings, repositories, urlOf, reconcile, merge, milestones, sessionEvents, workflow: () => workflow, bind: (binding: SessionBinding) => bindSessionSurface(table, { orgId: ORG_A, sessionId, binding }) };
 }
 
@@ -159,7 +160,7 @@ describe("the merged milestone", () => {
     h.w.db.send = ((command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
       if (command.constructor.name === "GetCommand" && String(command.input?.Key?.pk ?? "").includes("SESSION_BINDING#")) return Promise.reject(Object.assign(new Error("table down"), { name: "ServiceUnavailable" }));
       return original(command as never);
-    }) as typeof h.w.db.send;
+    });
     await expect(h.reconcile("api")).rejects.toThrow();
     expect(h.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE" });
     expect(h.milestones()).toHaveLength(0);
@@ -194,6 +195,22 @@ describe("the merged milestone", () => {
     // Told again, it is not told twice.
     await deliverCodeMilestones({ documentClient: h.w.db, tableName: "state", now: () => Date.parse(NOW) }, h.taskId);
     expect(heard).toHaveLength(1);
+  });
+});
+
+describe("mergedMilestoneItems", () => {
+  it("writes nothing for a workflow that was already merged, one that is not merged, or a task with no org", async () => {
+    const h = harness({ count: 1 });
+    h.merge(1);
+    await h.reconcile("api");
+    const merged = h.workflow();
+    const waiting = WorkflowSnapshotSchema.parse({ ...merged, stage: "WAIT_FOR_MERGE", state: "WAITING", outcome: undefined });
+    const reader = { documentClient: h.w.db, tableName: "state" };
+    const task = { taskId: h.taskId, orgId: ORG_A, sessionId: h.sessionId };
+    expect(await mergedMilestoneItems(reader, task, merged, merged, NOW)).toEqual([]);
+    expect(await mergedMilestoneItems(reader, task, waiting, waiting, NOW)).toEqual([]);
+    expect(await mergedMilestoneItems(reader, { taskId: h.taskId }, waiting, merged, NOW)).toEqual([]);
+    expect((await mergedMilestoneItems(reader, task, waiting, merged, NOW)).length).toBeGreaterThan(0);
   });
 });
 

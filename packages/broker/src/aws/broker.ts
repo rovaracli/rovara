@@ -386,6 +386,8 @@ import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, 
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
 import { deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { mergedMilestoneItems } from "../rovara-code/merged.js";
+import { linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
@@ -11609,8 +11611,11 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     // The tracked pull request's checks basis and base branch (Plan 6 Task 14), so the description says when every check counted, because the base has no required ones.
     const tracked = workflow.definitionVersion === "1.1.0" && task.orgId !== undefined
       ? (await readMergeTracking(dependencies, task.taskId, task.orgId).catch(() => [])).find((item) => item.repositoryId === record.repository && item.number === record.number) : undefined;
-    const bodyContext = changedFiles === undefined && tracked === undefined ? undefined : {
+    // The Linear issue the task's session follows, so the description says Fixes <KEY> once (Plan 6 Task 20); an issue bound after the pull request opened is added by this rewrite.
+    const linearIssueKey = workflow.definitionVersion === "1.1.0" ? await linearIssueKeyOfTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task) : undefined;
+    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined ? undefined : {
       ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
+      ...(linearIssueKey === undefined ? {} : { linearIssueKey }),
     };
     const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, bodyContext)) : undefined;
     const withStatus = status !== undefined && status.length <= PULL_REQUEST_BODY_MAX_CHARS ? status : current;
@@ -12564,7 +12569,7 @@ export async function processGithubWorkflowEvent(
   if (getFeedback === undefined) throw agentXError("RUNTIME_UNAVAILABLE", options === undefined
     ? "current GitHub feedback collection is not configured"
     : "current GitHub merge observation is not configured");
-  await reconcileTaskPullRequestFeedback({
+  const changed = await reconcileTaskPullRequestFeedback({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     repositoryFullName: event.fullName, number: event.number, deliveryId,
     ...(event.headSha === undefined ? {} : { expectedHeadSha: event.headSha }),
@@ -12664,6 +12669,12 @@ export async function processGithubWorkflowEvent(
   const linked = await getItem<GithubWorkflowPullRequestRecord>(dependencies, githubWorkflowPullRequestKey(event.fullName, event.number));
   // A merge that finished the task gives back its slot and workspace (again for a redelivery, which changes nothing).
   if (linked !== undefined && options?.release !== "queue") await releaseIfFinished(dependencies, linked.taskId);
+  // Plan 6 Task 20: the merged milestone this save wrote is told to the registered handlers now; one that was not told is told again by the sweep.
+  if (linked !== undefined && changed) {
+    await deliverCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, linked.taskId).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "code_milestone.delivery_failed", taskId: linked.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    });
+  }
   if (linked !== undefined && options?.release !== "queue") {
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(linked.taskId));
     if (task !== undefined && dependencies.developer !== undefined) {
@@ -14514,7 +14525,9 @@ async function completedPullRequestUpdateItems(
   // counts nothing), as it does when a webhook or the sweep finds the merge. A task whose org is not known is not counted.
   const countsAsMerged = current.pullRequest.state === "merged" && pullRequest.state !== "MERGED" && task.orgId !== undefined
     && next.pullRequests?.some((after) => after.repositoryId === pullRequest.repositoryId && after.number === pullRequest.number && after.state === "MERGED") === true;
-  return [taskUpdate(next), ...(countsAsMerged ? [mergedPullRequestCountItem(dependencies.tableName, task.orgId!, task.project, now, 1)] : []), { Update: {
+  // The merge this save records is reported as the merged milestone, in the same transaction, as it is when a webhook or the sweep finds the merge (Plan 6 Task 20).
+  const mergedMilestone = await mergedMilestoneItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now);
+  return [taskUpdate(next), ...(countsAsMerged ? [mergedPullRequestCountItem(dependencies.tableName, task.orgId!, task.project, now, 1)] : []), ...mergedMilestone, { Update: {
     TableName: dependencies.tableName,
     Key: githubWorkflowPullRequestKey(repositoryFullName, pullRequest.number),
     // The pull request's link to the task now names the fix it holds.

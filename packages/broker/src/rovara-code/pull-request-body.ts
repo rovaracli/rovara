@@ -5,6 +5,7 @@
 import type { RiskAssessment, VerificationReport, WorkflowSnapshot } from "@agentx/contracts";
 import { ROVARA_STATUS_END, ROVARA_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { inertLine } from "./inert-text.js";
+import { linearCloseLine, normalizeIssueKey } from "./linear-close.js";
 import { assessRisk, riskHeading } from "./risk.js";
 import { verificationReport, type ChangedFileEntry, type VerificationProject } from "./verification-report.js";
 
@@ -35,6 +36,8 @@ export interface PullRequestBodyContext {
   ciBasis?: "required" | "all_checks" | undefined;
   /** The base branch's name, for the all-checks line. */
   baseBranch?: string | undefined;
+  /** The Linear issue key the task's session follows (Plan 6 Task 20): the block then says `Fixes <KEY>`, which Linear's GitHub integration closes the issue on. Anything that is not a key is ignored. */
+  linearIssueKey?: string | undefined;
 }
 
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
@@ -132,6 +135,7 @@ function testLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, 
  */
 export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, reviewLines: (listed: number) => string[], budgetBytes = PULL_REQUEST_BODY_MAX_BYTES - SUMMARY_MAX_BYTES - 2_000): string[] {
   const risk = riskShown(workflow, context);
+  const linearKey = normalizeIssueKey(context.linearIssueKey);
   let lines: string[] = [];
   for (const limit of LIST_LIMITS) {
     lines = [
@@ -139,6 +143,7 @@ export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullReque
       "## Tests", ...testLines(workflow, context, limit), "",
       "## Reviews", ...reviewLines(limit), "",
       `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${inertLine(reason, ITEM_MAX)}`),
+      ...(linearKey === undefined ? [] : ["", linearCloseLine(linearKey)]),
     ];
     if (byteLength(lines.join("\n")) <= budgetBytes) return lines;
   }
