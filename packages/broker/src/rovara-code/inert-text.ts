@@ -22,12 +22,13 @@ export function inertPlanLine(line: string): string {
 }
 
 /**
- * One line of untrusted text for a Rovara pull request description: redacted, with control and format characters and line breaks gone, made inert, any `<` that is left
+ * One line of untrusted text for a Rovara pull request description: redacted, with control and format characters and line breaks gone, `&` written as an entity, made inert, any `<` that is left
  * (an unclosed tag or comment) written as an entity so it cannot open a hidden comment, and cut to `max` characters (counted in code points).
  */
 export function inertLine(text: string, max: number): string {
   const plain = redactText(text).replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
-  const inert = inertPlanLine(plain).replaceAll("<", "&lt;").replace(/\s+/gu, " ").trim();
+  // `&` first: a character reference (`&#x40;user`, `&commat;user`) must stay text, not become an @ or a < after GitHub decodes it. Then an issue shorthand (`GH-123`) is broken up like `#123`.
+  const inert = inertPlanLine(plain.replaceAll("&", "&amp;")).replaceAll("<", "&lt;").replace(/\bGH-(?=\d)/giu, (match) => `${match}\u200D`).replace(/\s+/gu, " ").trim();
   const points = Array.from(inert);
   return points.length <= max ? inert : `${points.slice(0, max - 1).join("")}…`;
 }

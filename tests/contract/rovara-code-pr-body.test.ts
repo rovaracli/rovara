@@ -8,6 +8,7 @@ import {
   WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, workflowFindingFingerprint, type WorkflowSnapshot,
 } from "../../packages/contracts/src/task-workflow.js";
 import { RISK_SENSITIVE_PATH_PATTERNS, assessRisk, isSensitivePath, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
+import { parseChangedFiles } from "../../packages/broker/src/rovara-code/changed-files.js";
 import { recomputeRisk } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
 import { withStatusLines } from "../../packages/broker/src/developer/pull-request-feedback-section.js";
@@ -149,7 +150,106 @@ describe("assessRisk", () => {
   });
 });
 
+// ---- the files of a diff, as the risk rules need them (review fixes I1 and I4)
+
+describe("parseChangedFiles", () => {
+  const section = (status: string[], diff: string[]) => ["## payments", "", "### status", ...status, "### diff", ...diff].join("\n");
+  const hunk = (path: string, plus = 2, minus = 1): string[] => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1 +1 @@", ...Array.from({ length: minus }, () => "-old"), ...Array.from({ length: plus }, () => "+new")];
+
+  it("counts a tracked file's lines inside its hunks, and leaves a file it can't count without a count (not 0)", () => {
+    const text = section([" M src/a.ts", "?? src/big.ts", "?? src/other.ts"], [
+      ...hunk("src/a.ts", 3, 2),
+      "diff --git a/img/logo.png b/img/logo.png", "index 1..2 100644", "GIT binary patch", "literal 10", "zc$@",
+      "diff --git a/bin/run.sh b/bin/run.sh", "old mode 100644", "new mode 100755",
+    ]);
+    const read = parseChangedFiles(text);
+    expect(read.complete).toBe(true);
+    expect(read.files).toEqual([
+      { repository: "payments", path: "src/a.ts", added: 3, removed: 2 },
+      { repository: "payments", path: "img/logo.png" },
+      { repository: "payments", path: "bin/run.sh" },
+      { repository: "payments", path: "src/big.ts" },
+      { repository: "payments", path: "src/other.ts" },
+    ]);
+  });
+
+  it("reads Git's quoted paths, in a header and in the untracked list, as the real names", () => {
+    const text = section(['?? "auth/\\303\\274-new.ts"', '?? "dir with \\"quote\\"/x.ts"'], [
+      'diff --git "a/auth/\\303\\274.ts" "b/auth/\\303\\274.ts"', '--- "a/auth/\\303\\274.ts"', '+++ "b/auth/\\303\\274.ts"', "@@ -1 +1 @@", "-a", "+b",
+      'diff --git a/lib/ok.ts "b/lib/\\303\\266k.ts"', "@@ -1 +1 @@", "-a", "+b",
+    ]);
+    expect(parseChangedFiles(text).files.map((file) => file.path)).toEqual(["auth/\u00fc.ts", "lib/\u00f6k.ts", "auth/\u00fc-new.ts", 'dir with "quote"/x.ts']);
+    // The quotes and escapes are gone, so a segment rule sees the directory.
+    expect(parseChangedFiles(text).files.some((file) => isSensitivePath(file.path))).toBe(true);
+  });
+
+  it("counts a pure addition and a pure deletion as counted (0 on the other side), not as unknown", () => {
+    const text = section([], ["diff --git a/src/added.ts b/src/added.ts", "@@ -0,0 +1,2 @@", "+a", "+b", "diff --git a/src/removed.ts b/src/removed.ts", "@@ -1,2 +0,0 @@", "-a", "-b"]);
+    expect(parseChangedFiles(text).files).toEqual([
+      { repository: "payments", path: "src/added.ts", added: 2, removed: 0 },
+      { repository: "payments", path: "src/removed.ts", added: 0, removed: 2 },
+    ]);
+  });
+
+  it("records a rename with both names, and counts its changed lines", () => {
+    const text = section([], ["diff --git a/auth/old.ts b/lib/old.ts", "similarity index 90%", "rename from auth/old.ts", "rename to lib/old.ts", "--- a/auth/old.ts", "+++ b/lib/old.ts", "@@ -1 +1 @@", "-a", "+b"]);
+    expect(parseChangedFiles(text).files).toEqual([{ repository: "payments", path: "lib/old.ts", renamedFrom: "auth/old.ts", added: 1, removed: 1 }]);
+    const pure = section([], ["diff --git a/auth/old.ts b/lib/old.ts", "similarity index 100%", "rename from auth/old.ts", "rename to lib/old.ts"]);
+    expect(parseChangedFiles(pure).files).toEqual([{ repository: "payments", path: "lib/old.ts", renamedFrom: "auth/old.ts" }]);
+  });
+
+  it("is incomplete when the diff was cut, its base was gone, or it names as many files as it keeps", () => {
+    expect(parseChangedFiles(`${section([], hunk("a.ts"))}\n\n[workspace diff truncated to fit the AgentX artifact limit]\n`).complete).toBe(false);
+    expect(parseChangedFiles(`## payments\n\n[the commit this workspace was prepared at is not in this repository: x]\n### status\n### diff\n`).complete).toBe(false);
+    expect(parseChangedFiles(section([], Array.from({ length: 200 }, (_, index) => hunk(`f${index}.ts`)).flat())).complete).toBe(false);
+    expect(parseChangedFiles(section([], hunk("a.ts"))).complete).toBe(true);
+  });
+});
+
+describe("a file whose lines were not counted", () => {
+  const entry = (path: string, more: Record<string, unknown> = {}) => ({ repository: "payments", path, ...more });
+
+  it("is unknown, not 0: the risk is at least medium and says why", () => {
+    const risk = assessRisk(riskInput({ changedFiles: [file("src/a.ts", 3, 1), entry("src/new-module.ts"), entry("img/logo.png")] }));
+    expect(risk.level).toBe("medium");
+    expect(risk.reasons.join("\n")).toMatch(/2 files have no line count/);
+    expect(assessRisk(riskInput({ changedFiles: [entry("src/new-module.ts")] })).reasons.join("\n")).toMatch(/1 file has no line count/);
+    // A file counted on one side only is not counted.
+    expect(assessRisk(riskInput({ changedFiles: [{ repository: "payments", path: "src/half.ts", added: 3 }] })).reasons.join("\n")).toMatch(/1 file has no line count/);
+    // A file whose lines were counted says nothing of the kind.
+    expect(assessRisk(riskInput({ changedFiles: [file("src/a.ts", 3, 1)] })).level).toBe("low");
+  });
+
+  it("is shown as not counted, never as +0 -0, and the totals say at least", () => {
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context({ changedFiles: { files: [file("src/a.ts", 3, 1), entry("src/new-module.ts")], complete: true } }));
+    expect(body).toContain("- src/new-module.ts (lines not counted)");
+    expect(body).toContain("- src/a.ts (+3 -1)");
+    expect(body).not.toContain("+0 -0");
+    expect(body).toMatch(/2 files changed \(at least \+3 -1; 1 file not counted\)/);
+    expect(body).toContain("## Risk: Medium");
+  });
+
+  it("a new test file that was not counted still counts as a test added", () => {
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context({ changedFiles: { files: [entry("tests/new.test.ts")], complete: true } }));
+    expect(body).toContain("Tests added: tests/new.test.ts");
+  });
+});
+
+describe("a renamed file", () => {
+  it("is high when its old name or its new name is a sensitive path, and the reason names the sensitive one", () => {
+    const moved = { repository: "payments", path: "lib/old.ts", renamedFrom: "auth/old.ts", added: 1, removed: 1 };
+    const risk = assessRisk(riskInput({ changedFiles: [moved] }));
+    expect(risk.level).toBe("high");
+    expect(risk.reasons.join("\n")).toContain("auth/old.ts");
+    expect(assessRisk(riskInput({ changedFiles: [{ ...moved, path: "infra/old.ts", renamedFrom: "lib/old.ts" }] })).level).toBe("high");
+    expect(assessRisk(riskInput({ changedFiles: [{ ...moved, renamedFrom: "lib/older.ts" }] })).level).toBe("low");
+    expect(assessRisk(riskInput({ changedFiles: [{ ...moved, path: "lib/package.json", renamedFrom: "lib/x.json" }] })).level).toBe("medium");
+    expect(assessRisk(riskInput({ changedFiles: [{ ...moved, path: "lib/x.json", renamedFrom: "lib/package.json" }] })).level).toBe("medium");
+  });
+});
+
 // ---- the description
+
 
 function workflowWith(extra: Record<string, unknown> = {}, definitionVersion: "1.0.0" | "1.1.0" = "1.1.0"): WorkflowSnapshot {
   const code = candidate("1");
@@ -301,10 +401,39 @@ describe("the version 2 pull request description", () => {
     expect(body).not.toMatch(/<(?!!-- \/?rovara:checks-and-reviews -->)/);
   });
 
+  it("shows the plan's words as a quotation under their own heading, so they can't pose as one of Rovara's sections", () => {
+    const spoof = ["## Risk: Low", "```", "---", "> deeper", "[1]: http://evil.example/x", "# Tests", "- Passed: everything"].join("\n");
+    const body = workflowPullRequestBody(task, workflowWith(), spoof, SESSION, context({ changedFiles: { files: [file("infra/main.ts")], complete: true } }));
+    const lines = body.split("\n");
+    expect(lines.filter((line) => /^## Risk/.test(line))).toEqual(["## Risk: High"]);
+    expect(lines.filter((line) => /^#{1,6} Tests/.test(line))).toEqual(["## Tests"]);
+    const startAt = lines.indexOf("## Plan summary");
+    expect(startAt).toBe(0);
+    const quoted = lines.slice(1, lines.indexOf(START)).filter((line) => line !== "");
+    expect(quoted.length).toBeGreaterThan(0);
+    expect(quoted.every((line) => line.startsWith("> "))).toBe(true);
+    expect(lines.filter((line) => line.startsWith("```"))).toEqual([]);
+    // The task's title, used when there is no plan, is quoted the same way.
+    const titled = workflowPullRequestBody({ title: "## Risk: Low" } as never, workflowWith(), undefined, SESSION, context());
+    expect(titled.split("\n").filter((line) => /^## Risk/.test(line))).toEqual(["## Risk: Low"]);
+    expect(titled.split("\n")[1]).toBe("> ## Risk: Low");
+  });
+
+  it("neutralises character references and issue shorthands as well as the characters themselves", () => {
+    const body = workflowPullRequestBody(task, workflowWith(), "Thanks &#x40;octocat and &#64;octocat and &commat;octocat, see GH-123 and gh-9 &amp; more", SESSION,
+      context({ changedFiles: { files: [file("src/&#x40;user.ts")], complete: true } }));
+    expect(body).not.toMatch(/&#/);
+    expect(body).not.toContain("&commat;");
+    expect(body).toContain("&amp;#x40;octocat");
+    expect(body).toContain("&amp;amp; more");
+    expect(body).not.toMatch(/GH-\d/i);
+    expect(body).toContain("src/&amp;#x40;user.ts");
+  });
+
   it("falls back to the task's title, made inert, when there is no plan", () => {
     const body = workflowPullRequestBody({ title: "Ping @octocat about <https://evil.example|this>" } as never, workflowWith(), undefined, SESSION, context());
-    expect(body.split("\n")[0]).not.toMatch(/@(?!‍)/u);
-    expect(body.split("\n")[0]).toContain("Ping");
+    expect(body.split("\n")[1]).not.toMatch(/@(?!‍)/u);
+    expect(body.split("\n")[1]).toContain("Ping");
   });
 
   it("stays under the byte cap whatever it is given, and keeps its markers, risk and closing line", () => {
@@ -376,8 +505,9 @@ describe("which findings, reviews and recorded risk count", () => {
 
   it("an unclosed tag in a model-written line can't open a hidden comment", () => {
     const body = workflowPullRequestBody(task, workflowWith(), "<!-- hide the rest of the page\nSecond line", SESSION, context());
+    expect(body.split("\n")[1]).toContain("&lt;!-- hide");
     expect(body).not.toContain("<!-- hide");
-    expect(body.split("\n")[0]).toContain("&lt;!-- hide the rest of the page");
+    expect(body.split("\n")[1]).toContain("&lt;!-- hide the rest of the page");
     expect(body.match(/<!--/g)).toHaveLength(2);
   });
 });
@@ -516,6 +646,29 @@ describe("a version 2 task through the broker", () => {
       expect(task.record().workflow.risk?.reasons.join("\n")).toContain("couldn't list every changed file");
     });
   }
+
+  it("a change made of new, unstaged files is not low and is not shown as +0 -0", async () => {
+    const diff = ["## demo", "", "### status", "?? src/big-module.ts", "### diff", ""].join("\n");
+    const task = await builtTask("1.1.0", undefined, diff);
+    await task.passReviews();
+    const body = String(task.publication()!.publication.body);
+    expect(task.record().workflow.risk?.level).toBe("medium");
+    expect(body).toContain("- src/big-module.ts (lines not counted)");
+    expect(body).toContain("1 file changed (lines not counted).");
+    expect(body).not.toContain("+0 -0");
+  });
+
+  it("sees a sensitive file Git printed in quotes, and one that was renamed out of a sensitive folder", async () => {
+    const quoted = ["## demo", "", "### status", "### diff", 'diff --git "a/auth/\\303\\274.ts" "b/auth/\\303\\274.ts"', "@@ -1 +1 @@", "-a", "+b"].join("\n");
+    const first = await builtTask("1.1.0", undefined, quoted);
+    await first.passReviews();
+    expect(first.record().workflow.risk?.level).toBe("high");
+    const renamed = ["## demo", "", "### status", "### diff", "diff --git a/auth/old.ts b/lib/old.ts", "rename from auth/old.ts", "rename to lib/old.ts", "@@ -1 +1 @@", "-a", "+b"].join("\n");
+    const second = await builtTask("1.1.0", undefined, renamed);
+    await second.passReviews();
+    expect(second.record().workflow.risk?.level).toBe("high");
+    expect(String(second.publication()!.publication.body)).toContain("renamed from auth/old.ts");
+  });
 
   it("is low only when the diff is whole", async () => {
     const task = await builtTask("1.1.0", ["src/retry.ts"]);
