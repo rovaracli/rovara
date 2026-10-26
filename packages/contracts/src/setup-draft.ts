@@ -32,27 +32,42 @@ export const SETUP_DRAFT_ANSWER_MAX_BYTES = 262_144;
 
 /** The only places a dev container's configuration lives. */
 const DEVCONTAINER_PATH = /^(?:\.devcontainer\/(?:[A-Za-z0-9_.-]{1,64}\/)?devcontainer\.json|\.devcontainer\.json)$/u;
-const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,99}$/u;
+const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/u;
 const HIDDEN = /[\p{Cc}\p{Cf}]/u;
 
 // ---- commands that fetch code and run it
+//
+// The rule is conservative on purpose: a person reads the flag, so a command flagged by mistake costs a glance, and one missed is a download that runs with the project's
+// setup. A command is flagged when it
+//   - pipes into an interpreter, by any path or wrapper (`| sh`, `| /bin/sh`, `| /usr/bin/env bash`, `| sudo -u root bash`, `| command sh`, `| python3 -`), whatever came before the pipe;
+//   - sources or substitutes a download (`bash <(curl ..)`, `sh -c "$(curl ..)"`, backticks);
+//   - runs a `-c`/`-e` script that downloads, substitutes a command, decodes base64 or evaluates (`bash -c '.. | sh'`, `python -c "..urlopen.."`, `node -e "fetch(..)"`);
+//   - downloads and then runs what it fetched (`curl -o f && sh f`, `wget x; chmod +x x`);
+//   - hands a shell a URL (`sh https://..`).
 
 const FETCH_TOOL = String.raw`(?:curl|wget|fetch|aria2c|iwr|irm|invoke-webrequest|invoke-restmethod)`;
-const INTERPRETER = String.raw`(?:sudo\s+(?:-\S+\s+)*|env\s+(?:\S+=\S+\s+)*|xargs\s+(?:-\S+\s+)*|exec\s+)*(?:ba|z|da|k|c|fi)?sh|python[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|pwsh|powershell|iex|invoke-expression|source|eval`;
+/** Programs that run what they are given; the path in front of any of them is allowed (`/usr/bin/env`, `/bin/sh`). */
+const WRAPPERS = String.raw`(?:(?:\S*\/)?(?:sudo|doas|env|command|exec|nohup|nice|ionice|time|timeout|busybox|xargs|stdbuf|setsid|chroot|unshare|flock))`;
+const INTERPRETER_NAME = String.raw`(?:(?:ba|z|da|k|c|fi|a|tc)?sh|python[0-9.]*|nodejs|node|deno|bun|perl|ruby|php|lua|pwsh|powershell|iex|invoke-expression|source|eval|osascript|tclsh|rscript)`;
+const INTERPRETER = String.raw`(?:${WRAPPERS}(?![\w./-])(?:\s+\S+){0,3}?\s+){0,2}(?:\S*\/)?${INTERPRETER_NAME}(?![\w./-])`;
+/** What a `-c`/`-e` script does that fetches or builds code to run. */
+const BUILDS_CODE = String.raw`(?:${FETCH_TOOL}(?![\w-])|urllib|urlopen|requests\.|http\.get|https\.get|fetch\s*\(|socket|Net::HTTP|open-uri|LWP|\$\(|\x60|base64|eval|exec)`;
 const REMOTE_CODE_PATTERNS: readonly RegExp[] = [
-  // curl ... | sh, wget -qO- ... | sudo bash, iwr ... | iex
-  new RegExp(String.raw`(?<![\w-])${FETCH_TOOL}(?![\w-])[^\n]*\|\s*(?:${INTERPRETER})(?![\w-])`, "iu"),
+  // anything | sh, | /bin/sh, | /usr/bin/env bash, | sudo -E bash -s, | python3 - (a single `|`, not `||`)
+  new RegExp(String.raw`(?<!\|)\|&?\s*${INTERPRETER}`, "iu"),
   // bash <(curl ...), source <(wget ...), . <(curl ...)
   new RegExp(String.raw`<\(\s*${FETCH_TOOL}(?![\w-])`, "iu"),
   // sh -c "$(curl ...)", eval "$(wget ...)", bash `curl ...`
   new RegExp(String.raw`(?:\$\(|\x60)\s*${FETCH_TOOL}(?![\w-])`, "iu"),
-  // curl ... -o file && sh file, curl ... ; bash ./file
-  new RegExp(String.raw`(?<![\w-])${FETCH_TOOL}(?![\w-])[^\n]*(?:&&|;)\s*(?:(?:${INTERPRETER})\s|chmod\s+\+x\b|\.\/)`, "iu"),
-  // sh -c "curl ... | ..." is covered above; a shell given a URL to run
-  new RegExp(String.raw`(?<![\w-])(?:ba|z|da|k)?sh\s+(?:-\S+\s+)*https?:\/\/`, "iu"),
+  // bash -c '...', python -c "...", node -e "...", perl -e '...': a script that downloads, substitutes a command, decodes or evaluates
+  new RegExp(String.raw`(?<![\w./-])${INTERPRETER_NAME}(?![\w./-])(?:\s+-\S+)*?\s+-(?:[A-Za-z]*[cerCE]|Command|EncodedCommand)(?![\w-])[^\n]*${BUILDS_CODE}`, "iu"),
+  // curl ... -o file && sh file, wget ...; chmod +x ..., curl ...; ./file
+  new RegExp(String.raw`(?<![\w-])${FETCH_TOOL}(?![\w-])[^\n]*(?:&&|;|\|\|)\s*(?:${INTERPRETER}\s|chmod\s+\+x\b|\.\/)`, "iu"),
+  // sh https://...
+  new RegExp(String.raw`(?<![\w-])(?:\S*\/)?(?:ba|z|da|k|c|fi|a)?sh\s+(?:-\S+\s+)*https?:\/\/`, "iu"),
 ];
 
-/** `REMOTE_CODE_REASON` when the command fetches code from the internet and runs it, else undefined. A text with a hidden character is not read at all (it is left out earlier). */
+/** `REMOTE_CODE_REASON` when the command fetches code from the internet and runs it (by the rule above), else undefined. */
 export function remoteCodeReason(command: string): string | undefined {
   return REMOTE_CODE_PATTERNS.some((pattern) => pattern.test(command)) ? REMOTE_CODE_REASON : undefined;
 }
@@ -105,11 +120,25 @@ function readCommands(value: unknown): CommandResult {
   return { commands, leftOut };
 }
 
-/** A secret's name from what the model wrote: the part before any `=` (a value that came with it is dropped), if that is a name. */
-function secretNameOf(raw: unknown): string | undefined {
+/**
+ * What a secret name must not look like: a token. A name is shown to the person and stored, so a token the model copied into the name field (or that a README asked it to
+ * "name exactly") would be stored and shown whole. A name that `redactText` would change, one that starts like a known token, and a long one with no separator that mixes
+ * cases and digits are all treated as tokens and left out.
+ */
+const TOKEN_LIKE_NAME = new RegExp(
+  String.raw`(?:^|[^A-Za-z0-9])(?:gh[pousr]_|github_pat_|AKIA[0-9A-Z]{8}|ASIA[0-9A-Z]{8}|AIza|sk-|sk_(?:live|test)_|rk_(?:live|test)_|pk_(?:live|test)_|xox[abprs]-|glpat-|npm_|pypi-|shpat_|hf_|dop_v1_|ya29\.|eyJ)[A-Za-z0-9_\-.]{4,}`,
+);
+export function looksLikeToken(name: string): boolean {
+  if (redactText(name) !== name || TOKEN_LIKE_NAME.test(name)) return true;
+  return name.length >= 20 && !/[_.-]/u.test(name) && /[a-z]/u.test(name) && /[A-Z]/u.test(name) && /\d/u.test(name);
+}
+
+/** A secret's name from what the model wrote: the part before any `=` (a value that came with it is dropped), if that is a name; `"token"` for a name that looks like a token. */
+function secretNameOf(raw: unknown): { name: string } | "token" | undefined {
   if (typeof raw !== "string") return undefined;
   const name = raw.split("=", 1)[0]!.trim();
-  return SECRET_NAME.test(name) ? name : undefined;
+  if (!SECRET_NAME.test(name)) return name.length > 0 && name.length <= 200 && !HIDDEN.test(name) && /^[\w.-]+$/u.test(name) ? "token" : undefined;
+  return looksLikeToken(name) ? "token" : { name };
 }
 
 export interface SetupDraftContext {
@@ -154,15 +183,20 @@ export function sanitizeSetupDraft(raw: unknown, context: SetupDraftContext): Se
 
   const secrets: SetupDraft["secretsNeeded"] = [];
   const seen = new Set<string>();
+  let tokenNames = 0;
   const rawSecrets = Array.isArray(raw["secretsNeeded"]) ? raw["secretsNeeded"] : [];
   for (const entry of rawSecrets) {
     const source = typeof entry === "string" ? { name: entry } : isObject(entry) ? entry : undefined;
-    const name = source === undefined ? undefined : secretNameOf(source["name"]);
-    if (name === undefined || seen.has(name)) continue;
+    const read = source === undefined ? undefined : secretNameOf(source["name"]);
+    if (read === "token") { tokenNames += 1; continue; }
+    if (read === undefined || seen.has(read.name)) continue;
+    const name = read.name;
     if (secrets.length >= SETUP_DRAFT_SECRETS_MAX) { notes.push(`Only the first ${String(SETUP_DRAFT_SECRETS_MAX)} secret names are listed.`); break; }
     seen.add(name);
     secrets.push({ name, why: oneLineText(source?.["why"], 300), foundIn: oneLineText(source?.["foundIn"], 500) });
   }
+
+  if (tokenNames > 0) notes.push(`${String(tokenNames)} secret name${tokenNames === 1 ? " was" : "s were"} left out because ${tokenNames === 1 ? "it looks" : "they look"} like a token.`);
 
   const domains: string[] = [];
   for (const domain of strings(raw["allowedDomains"])) {

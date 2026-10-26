@@ -882,11 +882,11 @@ describe("review fixes: a secret NAME that is a token", () => {
 
   it("drops a name that is or contains a token, never stores or shows it, and says so", () => {
     for (const token of TOKENS) {
-      const result = sanitizeSetupDraft({ setupCommands: ["npm ci"], secretsNeeded: [{ name: token, why: "x" }, { name: `KEY=${token}`, why: "y" }, { name: "DATABASE_URL", why: "db" }] }, context);
+      const result = sanitizeSetupDraft({ setupCommands: ["npm ci"], secretsNeeded: [{ name: token, why: "x" }, { name: `${token}=1`, why: "y" }, { name: "DATABASE_URL", why: "db" }] }, context);
       if (!result.ok) throw new Error(result.errors.join("; "));
       expect(result.draft.secretsNeeded.map((secret) => secret.name), token).toEqual(["DATABASE_URL"]);
       expect(JSON.stringify(result.draft), token).not.toContain(token);
-      expect(result.draft.notes, token).toContain("left out because it looks like a token");
+      expect(result.draft.notes, token).toMatch(/2 secret names were left out because they look like a token\./);
     }
   });
 
