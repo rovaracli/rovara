@@ -1213,13 +1213,39 @@ describe("criticModelFor: models the account could not use (staging 0.4.10)", ()
 
   it("skips a model that already failed and takes the next-ranked one, one attempt each", () => {
     expect(chosenModel(choose({ planModel: PLANNER, sources }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5-1");
-    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
-    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, FABLE_5] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    // After a model fails, the next try is another capability tier (staging 0.4.11): a second model of the tier that just failed is likely to fail the same way.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
+    // Only when every other tier has failed does a tier that failed once get another model.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5, SONNET_5] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
+  });
+
+  it("staging 0.4.11: after the account refused fable-5-1, fable-5, opus-5-5 and opus-5, a model the account can serve is the next choice", () => {
+    const OPUS_5 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-opus-5" };
+    const SONNET_4_6 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" };
+    const HAIKU_4_5 = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0" };
+    const catalog = [FABLE, FABLE_5, OPUS_5_5, OPUS_5, SONNET_4_6, HAIKU_4_5];
+    expect(chosenModel(choose({ planModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-5" }, sources: catalog, unusable: [FABLE, FABLE_5, OPUS_5_5, OPUS_5] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
+    // And the walk from the start reaches it in three tries, not five.
+    expect(chosenModel(choose({ planModel: PLANNER, sources: catalog.filter((model) => model !== SONNET_4_6), unusable: [FABLE, OPUS_5_5] }))).toBe("amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0");
+    expect(chosenModel(choose({ planModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-5" }, sources: catalog, unusable: [FABLE, OPUS_5_5] }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
+  });
+
+  it("the last try is the model that wrote the plan, which this account just proved it can serve", () => {
+    const last = choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5], lastAttempt: true });
+    expect(chosenModel(last)).toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
+    expect(last).toMatchObject({ sameModelAsPlanner: true });
+    // Not when the company forbids it: policy still holds on the last try.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5], lastAttempt: true, guardrails: { ...GUARDRAILS, forbiddenModels: [PLANNER] } }))).toBe("amazon-bedrock/us.anthropic.claude-sonnet-5");
+    // Not when it already failed as a check, and not on an earlier try.
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE, OPUS_5_5, PLANNER], lastAttempt: true }))).not.toBe("amazon-bedrock/us.anthropic.claude-sonnet-4-6");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [FABLE] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
   });
 
   it("counts a failed model by its canonical name, so the same model reached another way is not tried again", () => {
     const viaAnthropic = { provider: "anthropic", modelId: "claude-fable-5-1" };
-    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [viaAnthropic] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources, unusable: [viaAnthropic] }))).toBe("amazon-bedrock/us.anthropic.claude-opus-5-5");
+    expect(chosenModel(choose({ planModel: PLANNER, sources: [FABLE, FABLE_5], unusable: [viaAnthropic] }))).toBe("amazon-bedrock/us.anthropic.claude-fable-5");
   });
 
   it("says the check is unavailable when every model the project may use has failed, and does not refuse", () => {
@@ -1317,11 +1343,43 @@ describe("a plan check whose model the account can't use (staging 0.4.10, bug A)
     await failCheck(t, workspaceId, 0);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_CRITIQUE", state: "RUNNING" });
     expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(2);
-    expect(modelOf(t, workspaceId, 1)).toBe("us.anthropic.claude-fable-5");
+    expect(modelOf(t, workspaceId, 1)).toBe("us.anthropic.claude-opus-5-5");
     await t.finishCritique(workspaceId, critiqueAnswer("ok", [{ id: "p1", severity: "note", text: "Name the test file." }]));
     const record = t.meta(taskId);
     expect(record.workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done" } });
-    expect(record.workflow.critique!.critiques[0]!.model).toMatchObject({ modelId: "us.anthropic.claude-fable-5" });
+    expect(record.workflow.critique!.critiques[0]!.model).toMatchObject({ modelId: "us.anthropic.claude-opus-5-5" });
+  });
+
+  it("staging 0.4.11: an account that refuses the newest fable and opus models still gets a plan check, from the first model it can serve", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    const refused = /fable|opus/u;
+    let attempts = 0;
+    while (refused.test(modelOf(t, workspaceId, attempts))) {
+      await failCheck(t, workspaceId, attempts);
+      attempts += 1;
+      expect(attempts, "a model this account can serve was never reached").toBeLessThan(CRITIC_MODEL_ATTEMPTS_MAX);
+    }
+    expect(modelOf(t, workspaceId, attempts)).toMatch(/sonnet|haiku/u);
+    expect(attempts).toBeLessThanOrEqual(3);
+    await t.finishCritique(workspaceId, critiqueAnswer("ok", [{ id: "p1", severity: "note", text: "Name the test file." }]));
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done" } });
+    expect(t.meta(taskId).workflow.critique!.critiques).toHaveLength(1);
+  });
+
+  it("when every other model is refused, the last try is the model that wrote the plan", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.planned();
+    const planner = t.invocationOf(t.byMode(workspaceId, "PLAN").at(-1)!.id)!.payload.model!.modelId;
+    for (let attempt = 0; attempt < CRITIC_MODEL_ATTEMPTS_MAX - 1; attempt += 1) {
+      // A refusal for every model but the planner's.
+      if (modelOf(t, workspaceId, attempt) === planner) break;
+      await failCheck(t, workspaceId, attempt);
+    }
+    const tries = t.byMode(workspaceId, "PLAN_CRITIQUE").length;
+    expect(modelOf(t, workspaceId, tries - 1)).toBe(planner);
+    await t.finishCritique(workspaceId, critiqueAnswer("ok"));
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING", critique: { status: "done", sameModelAsPlanner: true } });
   });
 
   it("each model is tried once and at most CRITIC_MODEL_ATTEMPTS_MAX are: then the plan goes to the person with the visible note, and the check never fails the task", async () => {

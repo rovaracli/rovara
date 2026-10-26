@@ -7,7 +7,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { agentSessionKey, orgMemberKey, projectMemberKey, changesKey, sharedSessionsKey, sessionBindingKey, sessionSurfaceKey } from "@agentx/contracts";
 import { putSessionShare, deleteSessionShare } from "../../packages/broker/src/agent-sessions/shares.js";
 import { routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
-import { MAYA, OMAR, createDeveloperTaskBroker, markThreadPosted } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, bearerFor, createDeveloperTaskBroker, markThreadPosted } from "../support/developer-task-broker.js";
+import { NeedsConfirmationReaderSchema, NeedsConfirmationSchema, SessionShareDeleteResponseReaderSchema, SessionShareDeleteResponseSchema } from "../../packages/contracts/src/index.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -531,4 +532,49 @@ for (const state of ["missing", "other-org"] as const) it(`M7: principal DELETE 
   expect(await deleteSessionShare(w.deps, w.caller(PRIYA), w.sessionId, `MEMBER#${ARJUN}`)).toEqual({ removed: true });
   expect(w.db.get(key)).toBeUndefined();
   expect(w.db.get(sharedSessionsKey(ORG_A, principal, w.sessionId))).toBeUndefined();
+});
+
+// ---- round trip (bug E): what the broker really answers, read by the schema each client reads it with
+
+it("round trip: the sharing and ownership answers of a Code task, as the broker sends them and the MCP client reads them", async () => {
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix the retry" } });
+  expect(started.status).toBe(202);
+  const { taskId } = started.body.task as { taskId: string };
+  const sessionId = String(h.db.get(taskKey(taskId))!.sessionId);
+  // The MCP client over the real broker handler, as `who` (the handler's own bytes, requestId included, are what it parses).
+  const clientFor = async (who: typeof MAYA) => httpControlPlaneClient({ session: async () => ({ baseUrl: "https://cell.example.com", accessToken: (await bearerFor(who, await h.orgOf(who))).replace(/^Bearer /, ""), signInCommand: "test" }),
+    fetch: async (url, init) => {
+      const target = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url);
+      const response = await h.handler({ version: "2.0", rawPath: target.pathname, rawQueryString: target.search.slice(1), headers: Object.fromEntries(new Headers(init?.headers).entries()),
+        ...(typeof init?.body === "string" ? { body: init.body } : {}), requestContext: { requestId: randomUUID(), http: { method: init?.method ?? "GET" } } });
+      return new Response(response.body, { status: response.statusCode, headers: { "content-type": "application/json" } });
+    } });
+
+  // POST /share answers { task }: the MCP client reads it with DeveloperTaskResponseSchema.
+  const shareId = randomUUID();
+  const shared = await (await clientFor(MAYA)).shareTask(taskId, { requestId: shareId, shareMode: "view" } as never);
+  expect(shared).toMatchObject({ taskId });
+
+  // DELETE …/shares/SLACK#<request> (the undo of a legacy share) answers { removed }.
+  markThreadPosted(h.db, taskId);
+  const requestId = randomUUID();
+  expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId, shareMode: "continue" })).status).toBe(200);
+  const undo = await h.dev(MAYA, "DELETE", `/v1/app/sessions/${sessionId}/shares/${encodeURIComponent(`SLACK#${requestId}`)}`);
+  expect(undo.status).toBe(200);
+  expect(SessionShareDeleteResponseReaderSchema.safeParse(undo.body).success).toBe(true);
+  const { requestId: _gateway, ...own } = undo.body; // eslint-disable-line @typescript-eslint/no-unused-vars -- set aside on purpose
+  expect(SessionShareDeleteResponseSchema.safeParse(own).success).toBe(true);
+
+  // POST …/people/take-ownership answers 202 NEEDS_CONFIRMATION for a Code task: the reader and the MCP client both read it.
+  await h.orgOf(OMAR);
+  h.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), role: "developer", projectRole: "maintainer" });
+  const ownership = await h.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/people/take-ownership`, { requestId: randomUUID(), expectedPeopleRevision: 1 });
+  expect(ownership.status, JSON.stringify(ownership.body)).toBe(202);
+  expect(typeof ownership.body.requestId).toBe("string");
+  expect(NeedsConfirmationReaderSchema.safeParse(ownership.body).success).toBe(true);
+  const { requestId: _transport, ...ownConfirmation } = ownership.body; // eslint-disable-line @typescript-eslint/no-unused-vars -- set aside on purpose
+  expect(NeedsConfirmationSchema.safeParse(ownConfirmation).success).toBe(true);
+  const taken = await (await clientFor(OMAR)).takeTaskOwnership(taskId, { requestId: randomUUID(), expectedPeopleRevision: 1 });
+  expect(taken).toMatchObject({ status: "PENDING" });
 });

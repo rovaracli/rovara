@@ -49,6 +49,13 @@ export const TASK_SANDBOX_PIDS_LIMIT = "4096";
 export function sandboxCpuLimit(hostCpus: number): string | undefined {
   return Number.isInteger(hostCpus) && hostCpus > 1 ? String(hostCpus - 1) : undefined;
 }
+/**
+ * The worker image's ENV that is the worker's own and not the customer's: the sandbox starts from that image (Bug F). NODE_ENV=production
+ * is for the worker process, and in a customer's commands it makes `npm ci` skip the devDependencies, so `npm test` cannot find vitest.
+ * Every sandbox command (project setup and readiness, AgentX's checks, the agent's shell) runs without it, except a project command
+ * whose own `env` sets it. The image's other ENV (PORT, AGENTX_WORKSPACE_ROOT, AGENTX_WORKER_PROCESS_SCOPE) is left as it is.
+ */
+export const SANDBOX_UNSET_ENVIRONMENT: readonly string[] = ["NODE_ENV"];
 /** The environment variable that names the sandbox image; boot.sh sets it to the worker's own image. */
 export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
@@ -196,7 +203,7 @@ export class TaskSandbox {
 
   /** The agent's shell in the sandbox. */
   bashOperations(): BashOperations {
-    return containerBashOperations(this.exec);
+    return containerBashOperations(this.exec, { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT });
   }
 
   /** Where the agent's file tools run for this sandbox: as the sandbox's user, with the workspace as the only reachable root. */
@@ -209,7 +216,7 @@ export class TaskSandbox {
 
   /** A project command (setup, readiness) in the sandbox. */
   runCommand(command: ProjectCommand, signal?: AbortSignal): Promise<CommandResult> {
-    return runContainerCommand(this.exec, this.options.rootPath, command, signal);
+    return runContainerCommand(this.exec, this.options.rootPath, command, signal, { unsetEnvironment: SANDBOX_UNSET_ENVIRONMENT });
   }
 
   /** Removes the container. Safe to call again, and when nothing started. */

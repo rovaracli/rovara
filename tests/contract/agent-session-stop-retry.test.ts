@@ -524,6 +524,19 @@ describe("what the first round of mutation showed was not yet pinned", () => {
     expect(bare.eventTexts(open.sessionId)).toEqual([]);
   });
 
+  it("tells a person whose task failed at setup that a new task is needed, in words that also name the setup commands (Bug F)", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.blocked();
+    // A workspace that could not be prepared never started the workflow: its step stays RUNNING and its session ends failed (summary.ts).
+    w.patchTask(taskId, { workflow: { revision: 2, stage: "IMPLEMENT", state: "RUNNING" } });
+    w.patchSession(sessionId, { endedAt: "2026-10-22T08:30:00.000Z", summary: { ...(w.meta(sessionId).summary as Item), status: "failed" } });
+    expect(await code(w.retry(MAX, sessionId))).toEqual({
+      code: "CONFIG_INVALID",
+      message: "This task failed and has ended, so it can't be retried. Start a new task; if its setup failed, fix the project's setup or test command first.",
+    });
+    expect(w.calls.workflow).toEqual([]);
+  });
+
   it("reads a session as ended by its end time alone, or by its ending status alone", async () => {
     const w = world();
     const byTime = w.blocked();

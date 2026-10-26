@@ -7,7 +7,7 @@
 // Nothing in this file decides an approval (R66).
 import { randomUUID } from "node:crypto";
 import {
-  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, LEVEL_WORDS, LIVE_FILTERS, NeedsConfirmationSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, agentXError, sessionLink,
+  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, LEVEL_WORDS, LIVE_FILTERS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, TASK_VIEW_HEADER, TASK_VIEW_VERSION, agentXError, sessionLink,
   type SessionLevel,
 } from "@agentx/contracts";
 import { appRequest, clean, developerRef, list, result, seg, str, type AppResult } from "./agents.js";
@@ -59,7 +59,7 @@ const nameOf = (value: unknown): string => str((value as Body | undefined)?.name
  * printed; an answer without one is an unexpected answer, not a confirmation.
  */
 function confirmationOf(answer: { env: string; url: string; body: Body }): AppResult {
-  const parsed = NeedsConfirmationSchema.safeParse(answer.body);
+  const parsed = NeedsConfirmationReaderSchema.safeParse(answer.body);
   if (!parsed.success || safeUrl(parsed.data.confirmUrl, answer.url) === undefined) {
     throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
   }
@@ -241,6 +241,57 @@ export async function sessionLinkIssue(deps: DeveloperSessionDeps, env: string |
     ...(typeof description.note === "string" && description.note.trim() !== "" ? [clean(description.note)] : []),
   ];
   return result(answer, answer.body, `${[what, ...note, linkOf(answer.url, id, view.link)].join("\n")}\n`);
+}
+
+// ---- Merge (Plan 6 Task 19, with the Task 25 slice)
+
+const shortHead = (sha: unknown): string => (typeof sha === "string" && /^[0-9a-f]{40}$/u.test(sha) ? sha.slice(0, 7) : "unknown");
+const ciWords: Record<string, string> = { passing: "passing", failing: "failing", pending: "still running", none: "none to wait for" };
+const branchWords: Record<string, string> = { up_to_date: "up to date", behind: "behind its base", conflicted: "conflicts with its base", unknown: "not read yet" };
+
+/** One pull request's line: what merge tracking last read from GitHub, in words. */
+function mergeLine(item: Body): string {
+  const approval = (item.approval ?? {}) as Body;
+  const review = item.review === "approved" && typeof approval.login === "string" ? `approved by ${clean(approval.login)}`
+    : item.review === "changes_requested" ? "changes requested"
+      : item.review === "requested" ? "review requested" : "not reviewed";
+  const state = item.state === "merged" ? "merged" : item.state === "closed" ? "closed" : item.draft === true ? "draft" : "open";
+  return `  ${str(item.repositoryId)} #${str(item.number)}  ${state}  head ${shortHead(item.headSha)}  checks ${ciWords[str(item.ci)] ?? "unknown"}  ${review}  branch ${branchWords[str(item.branch)] ?? "not read yet"}`;
+}
+
+/**
+ * `session merge <task-or-session> [--yes]` presses Rovara's Merge button for a Rovara Code task. It shows what merge tracking last read (each pull request's head, checks and who approved
+ * it) and whether Merge may be pressed now, asks (unless `--yes`), then presses. The press answers `202` with the link where the person confirms it on the confirmation page, and only that
+ * confirmation merges: the command prints the link and exits 0, and never signs in again. A refusal (`409 MERGE_NOT_READY`) is printed in the words the control plane wrote, and nothing is sent when the
+ * task view already says Merge is not allowed. No AI tool does any of this (Plan 6: a person always presses Merge).
+ */
+export async function sessionMerge(
+  deps: DeveloperSessionDeps, env: string | undefined, ref: string, input: { confirm: (question: string) => Promise<boolean> },
+): Promise<AppResult> {
+  const id = await sessionOfRef(deps, env, ref);
+  const read = await appRequest(deps, env, sessionPath(id), { headers: { [TASK_VIEW_HEADER]: TASK_VIEW_VERSION } });
+  const view = (read.body.session ?? {}) as Body;
+  const body = (view.body ?? {}) as Body;
+  if (body.kind !== "task") throw agentXError("CONFIG_INVALID", "Only a task's pull requests are merged from Rovara.");
+  const task = (body.task ?? {}) as Body;
+  const tracked = list(task.mergeTracking);
+  // Read tolerantly: a field a newer control plane adds to `merge` does not stop the press (the control plane decides it).
+  const given = (task.merge ?? {}) as Body;
+  const merge = typeof given.ready === "boolean" ? { ready: given.ready, ...(typeof given.message === "string" && given.message !== "" ? { message: given.message } : {}) } : undefined;
+  const lines = [`Merge ${str(view.title, "(no title)")}`, `  ${linkOf(read.url, id, view.link)}`, ...tracked.map(mergeLine)];
+  if (merge !== undefined && !merge.ready) {
+    // Nothing is sent: the control plane would refuse the press with these same words, from the same tracking.
+    throw agentXError("MERGE_NOT_READY", clean(merge.message ?? "This pull request is not ready to merge."));
+  }
+  const open = tracked.filter((item) => item.state !== "merged");
+  const verdict = merge?.ready === true ? "Ready to merge." : "Rovara has not read this task's pull requests yet; the press will say if it is not ready.";
+  const question = [...lines, verdict, `Press Merge${open.length === 0 ? "" : ` for ${open.map((item) => `${str(item.repositoryId)} #${str(item.number)}`).join(", ")}`}? You confirm it in your browser next.`].join("\n");
+  if (!await input.confirm(question)) throw agentXError("CONFIRMATION_DECLINED", "you did not press Merge; nothing changed");
+  const answer = await appRequest(deps, env, sessionPath(id, "/merge"), { method: "POST", body: { requestId: randomUUID() } });
+  if (answer.status !== 202) throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
+  const confirmation = confirmationOf(answer);
+  return result(answer, { ...confirmation.data, ...(merge === undefined ? {} : { merge }), pullRequests: tracked.map((item) => ({ repositoryId: item.repositoryId, number: item.number, headSha: item.headSha, ci: item.ci, review: item.review })) },
+    `${[...lines, verdict, confirmation.text.trimEnd()].join("\n")}\n`);
 }
 
 // ---- Home

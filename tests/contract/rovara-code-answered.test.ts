@@ -18,7 +18,7 @@ import {
   ANSWERED_MESSAGE_HEADER, ANSWERED_MILESTONE_TEXT, CHANGE_ANYWAY_NOTE, CLOSED_AS_ANSWERED_REASON, NoChangeNeededSchema, answerSourceLine, answeredMessage,
   type CodeMilestone, type IntentAssessment,
 } from "../../packages/contracts/src/rovara-code.js";
-import { UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
+import { DeveloperTaskResponseSchema, SessionResponseReaderSchema, UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
 import { WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowDecisionRequestSchema, WorkflowSnapshotSchema, answerWorkflowIntent, createWorkflowSnapshot, decideWorkflow, recordIntentAssessment, startWorkflowUnderstand, workflowAnswer } from "../../packages/contracts/src/task-workflow-node.js";
 import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan } from "../../packages/contracts/src/workflow-plan-document.js";
@@ -850,3 +850,26 @@ describe("retryOf is checked, not trusted", () => {
 });
 
 // A chain step that ends Answered pauses for a person (owner ruling): see rovara-code-answered-chain.test.ts.
+
+// ---- round trip (bug E): what the broker really answers, read by the schema each client reads it with
+
+describe("round trip: the answers after an Answered task, as the broker sends them", () => {
+  it("POST …/change-anyway answers 202 { task }, which the clients' task schema reads; the Answered task's session reads too", async () => {
+    const t = await world();
+    const run = await t.answeredTask(answerAssessment(), { path: "FULL" });
+    const reply = await t.changeAnyway(MAYA, run.sessionId);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    expect(typeof reply.body.requestId, "every /v1/app answer carries the gateway's requestId").toBe("string");
+    const task = DeveloperTaskResponseSchema.safeParse(reply.body);
+    expect(task.success, JSON.stringify(task.error?.issues)).toBe(true);
+    for (const headers of [{ "x-agentx-task-view": "2" }, {}]) {
+      const session = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`, undefined, headers);
+      expect(session.status).toBe(200);
+      const read = SessionResponseReaderSchema.safeParse(session.body);
+      expect(read.success, JSON.stringify(read.error?.issues)).toBe(true);
+      const answered = await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`, undefined, headers);
+      const parsed = DeveloperTaskResponseSchema.safeParse(answered.body);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    }
+  });
+});

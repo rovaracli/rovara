@@ -46,6 +46,7 @@ import {
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { TaskAgentRef } from "../agents/roster.js";
 import { isHeartbeat, modelCallView } from "./model-call-view.js";
+import { personNameForText } from "./requester-text.js";
 import type { ShareDecision } from "./share.js";
 
 /** Whether a block reason is one of the two that send a task back to plan review for a corrected E2E plan: a source reference that does not match the candidate, or an application plan that can no longer run as written. */
@@ -764,8 +765,9 @@ export function taskOwnerLabel(name: string): string {
  * FR-023. The client is one of the fixed names cleanClientName gives, or "Slack" for a task the Slack workflow
  * started, so it needs no escaping. A task stored before Slack was kept as a client is told by its Slack-ID name.
  */
-export function developerFooter(name: string, client: string, product: "AgentX" | "Rovara" = "AgentX"): string {
-  const label = taskOwnerLabel(name);
+export function developerFooter(name: string, client: string, product: "AgentX" | "Rovara" = "AgentX", githubLogin?: string): string {
+  // C55: text on GitHub never carries an email address, which is what a provider that has no name for a person uses as the display name: the name without it, else the GitHub login, else "the task owner".
+  const label = taskOwnerLabel(personNameForText(name, githubLogin) ?? "");
   const owner = label === TASK_OWNER_LABEL ? label : inertName(label);
   const slack = client === SLACK_CLIENT_NAME || (client === UNKNOWN_CLIENT_NAME && SLACK_FALLBACK_NAME.test(name.trim()));
   return `Requested by ${owner} via ${product}, started from ${slack ? SLACK_CLIENT_NAME : client}`;

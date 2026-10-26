@@ -201,6 +201,8 @@ export interface GitHubPullRequestDetails {
   baseBranch: string;
   headCommit: string;
   mergeCommit?: string;
+  /** The login of the account that merged it, when GitHub says (a merged pull request only). */
+  mergedBy?: string;
   title: string;
   body: string;
 }
@@ -2038,6 +2040,12 @@ function parsePullRequestWithDraft(value: unknown, repository: InstalledReposito
   return typeof draft === "boolean" ? { ...basic, isDraft: draft } : basic;
 }
 
+/** The login in a pull request's `merged_by`, when it is one GitHub could have issued (letters, digits and single hyphens, a bot's `[bot]` suffix allowed). */
+function mergedByLogin(value: unknown): string | undefined {
+  const login = value !== null && typeof value === "object" ? (value as Record<string, unknown>).login : undefined;
+  return typeof login === "string" && /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}(?:\[bot\])?$/u.test(login) ? login : undefined;
+}
+
 function parsePullRequestDetails(
   value: unknown,
   repository: InstalledRepository,
@@ -2075,6 +2083,7 @@ function parsePullRequestDetails(
     baseBranch: (base as Record<string, unknown>).ref as string,
     headCommit: (head as Record<string, unknown>).sha as string,
     ...(typeof candidate.merge_commit_sha === "string" ? { mergeCommit: candidate.merge_commit_sha } : {}),
+    ...(candidate.merged === true && typeof mergedByLogin(candidate.merged_by) === "string" ? { mergedBy: mergedByLogin(candidate.merged_by)! } : {}),
     title: candidate.title,
     body: candidate.body ?? "",
   };

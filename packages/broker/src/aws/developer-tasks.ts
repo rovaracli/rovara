@@ -4988,8 +4988,27 @@ export function taskPageUrl(issuer: string, taskId: string): string {
 /** Ruling R60: why the task ended, when its creator was removed from the org (an open task only). */
 const removedReasonOf = (task: DeveloperTaskRecord) => (task.outcome === "creator_removed" && task.closedAt === undefined ? task.outcomeReason : undefined);
 
+/**
+ * Whether Merge may be pressed now, for the words a page or message uses about a Rovara Code (version 2) task that waits for its merge; undefined for any other task, for one with nothing
+ * tracked yet, and when it cannot be read (the words then stay as they were). Advisory, like the task view's `merge`: the press reads GitHub again.
+ */
+async function mergeViewForWords(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "mergeView">, task: DeveloperTaskRecord): Promise<MergeView | undefined> {
+  const workflow = task.workflow;
+  if (deps.mergeView === undefined || task.orgId === undefined || task.closedAt !== undefined || workflow?.stage !== "WAIT_FOR_MERGE" || workflow.definitionVersion !== "1.1.0") return undefined;
+  try {
+    const items = await readMergeTracking(deps, task.taskId, task.orgId);
+    return items.length === 0 ? undefined : await deps.mergeView(task, items);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Where a workflow task stands and what happens next, in the words the task page shows. */
-export function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined, removedReason: string | undefined = undefined): { status: string; nextStep: string } {
+export function taskPageStage(
+  workflow: WorkflowSnapshot | undefined, closed: boolean, owner: boolean, publication: "failed" | "retrying" | undefined = undefined, removedReason: string | undefined = undefined,
+  /** Rovara Code version 2 (staging 0.4.11, Bug G): whether Merge may be pressed now, from merge tracking; absent for a task that is not tracked, which merges on GitHub. */
+  merge: MergeView | undefined = undefined,
+): { status: string; nextStep: string } {
   // A custom sequence with no pull request step ran every step; its changes wait, unpublished, until the owner closes the task.
   if (!closed && workflow?.stage === "CLOSED" && workflow.state === "COMPLETE" && workflow.outcome === "PASSED") {
     return { status: "Finished every step", nextStep: "The changes are kept in this task's workspace until you close the task." };
@@ -5057,7 +5076,10 @@ export function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: bo
         ? { status: "Trying again to open the draft pull request; the last try didn't open it", nextStep: "Review and merge it on GitHub once it's open." }
         : { status: "Opening a draft pull request", nextStep: "Review and merge it on GitHub once it's open." };
     case "PULL_REQUEST/BLOCKED": return { status: "The draft pull request didn't open", nextStep: `Retry opening the pull request or close the task ${inSlack}.` };
-    case "WAIT_FOR_MERGE/WAITING": return { status: "Waiting for the pull request to be merged", nextStep: "Review and merge it on GitHub; the task finishes when it's merged." };
+    case "WAIT_FOR_MERGE/WAITING":
+      if (merge?.ready === true) return { status: "Waiting for the pull request to be merged", nextStep: "Press Merge in Rovara; the task finishes when it's merged." };
+      if (merge !== undefined) return { status: "Waiting for the pull request to be merged", nextStep: `${merge.message ?? "It is not ready to merge yet."} Then press Merge in Rovara; the task finishes when it's merged.` };
+      return { status: "Waiting for the pull request to be merged", nextStep: "Review and merge it on GitHub; the task finishes when it's merged." };
     // Only a changed pull request stops the following; after a failed feedback review or push, the merge is still tracked.
     case "WAIT_FOR_MERGE/BLOCKED":
       if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestChanged) return { status: "Stopped following the pull request", nextStep: `Close the task ${inSlack}.` };
@@ -5586,7 +5608,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     catch (error) { log(deps, { event: "developer.task_e2e_results_unavailable", taskId, errorName: error instanceof Error ? error.name : "unknown" }); }
   }
   return {
-    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task)),
+    taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), now: deps.now(), title: task.title, ...taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task)),
     ...(e2eResults === undefined ? {} : { e2eResults }),
     path: workflow?.path ?? "QUICK", revision: workflow?.revision ?? 0, stage: taskPageStep(workflow, task.closedAt !== undefined), role: owner ? "owner" : "reader",
     documents, ...(unverified.length === 0 ? {} : { unverified }), checks, checksRan: results.length > 0, ...(checksNote === undefined ? {} : { checksNote }), findings,
