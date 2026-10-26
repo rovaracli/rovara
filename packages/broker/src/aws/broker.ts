@@ -363,6 +363,7 @@ import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, 
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
 import { deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
@@ -6049,9 +6050,10 @@ async function codingPlanChecksInstructions(dependencies: AwsBrokerDependencies,
 
 /** Bind planner guidance to the task's starting project revision; never consult the latest project here. */
 async function codingPlanWorkBreakdownContext(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<{ taskId: string; repositoryId: string } | undefined> {
-  if (dependencies.developer?.workflowDependenciesEnabled !== true) return undefined;
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
   const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  // A version 1 task needs the install's switch; a Rovara Code v2 task always plans in ordered, independent parts.
+  if (!workflowDependenciesAllowed({ workflowDependenciesEnabled: dependencies.developer?.workflowDependenciesEnabled }, task?.workflow)) return undefined;
   if (task === undefined) throw agentXError("CONFIG_INVALID", "the task for this planning step is missing");
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   if (project.definition.repositories.length !== 1) return undefined;
@@ -11947,6 +11949,22 @@ async function validateWorkflowProgressChunk(
     }
     if (progress.sequence !== latestSequence + 1 || progress.graphDigest !== invocation.approval.graphDigest || progress.runId !== invocation.approval.runId
       || progress.operationId !== operation.id) throw agentXError("CALLBACK_FORBIDDEN", "work breakdown progress is out of sequence or bound to another operation");
+    if (invocation.parallel !== undefined) {
+      // Rovara Code v2: several items may be running at once. The shape (what may start, how many run, what may finish) is the projection's; the trees are judged here: a part
+      // starts from the tree the run began at or from a tree some finished part was merged into. A worker that builds parts side by side names that tree on each finished part
+      // (`integratedTreeSha`); one that was not sent the setting (an older worker) builds them one after another, and the tree a finished part ends on is its own.
+      const stored = [...(nextWorkflow.workflowDependenciesProgress ?? []), progress];
+      const projected = workflowDependencyAttemptTerminalProgress({ graph: invocation.graph, approval: invocation.approval, operationId: operation.id,
+        sequenceStart: invocation.sequenceStart, resumeProgress: invocation.resumeProgress, history: stored, parallel: invocation.parallel });
+      const startTrees = new Set<string>(firstBaseTree === undefined ? [] : [firstBaseTree]);
+      for (const entry of stored) if (entry.state === "IMPLEMENTED") startTrees.add(entry.integratedTreeSha ?? entry.candidateTreeSha!);
+      if (projected === undefined || (progress.state === "STARTED" && !startTrees.has(progress.baseTreeSha))) {
+        throw agentXError("CALLBACK_FORBIDDEN", "work breakdown progress does not continue the retained graph's trees and order");
+      }
+      latestSequence = progress.sequence;
+      nextWorkflow = WorkflowSnapshotSchema.parse({ ...nextWorkflow, revision: nextWorkflow.revision + 1, workflowDependenciesProgress: stored });
+      continue;
+    }
     const operationHistory = [...history, ...((nextWorkflow.workflowDependenciesProgress ?? []).slice(history.length))]
       .filter((entry) => entry.operationId === operation.id);
     const active = operationHistory.at(-1)?.state === "STARTED" ? operationHistory.at(-1) : undefined;
@@ -14265,7 +14283,7 @@ async function completedWorkflowItems(
     const acknowledgedTerminal = dependencyBinding === undefined ? undefined : workflowDependencyAttemptTerminalProgress({
       graph: dependencyBinding.graph, approval: dependencyBinding.approval, operationId: operation.id,
       sequenceStart: dependencyBinding.sequenceStart, resumeProgress: dependencyBinding.resumeProgress,
-      history: task.workflow.workflowDependenciesProgress ?? [],
+      history: task.workflow.workflowDependenciesProgress ?? [], parallel: dependencyBinding.parallel,
     });
     const dependencyResultValid = dependencyBinding !== undefined && dependencyResult?.success === true
       && dependencyResult.data.taskId === dependencyBinding.graph.taskId
@@ -14283,8 +14301,11 @@ async function completedWorkflowItems(
       && dependencyResult.data.items.every((item, index) => canonicalJson(item) === canonicalJson(acknowledgedTerminal[index]))
       && dependencyResult.data.items.every((item, index) => item.itemId === dependencyOrder[index]
         && item.sequence > 0
-        && (index === 0 || dependencyResult.data.items[index - 1]?.state === "IMPLEMENTED"
-          && dependencyResult.data.items[index - 1]?.candidateTreeSha === item.baseTreeSha));
+        // One at a time: each item starts on the tree the one before it ended on. In parallel the items are merged as they finish, so each names the tree it was merged into instead.
+        && (dependencyBinding.parallel !== undefined
+          ? item.state !== "IMPLEMENTED" || (item.integratedTreeSha ?? item.candidateTreeSha) !== undefined
+          : index === 0 || dependencyResult.data.items[index - 1]?.state === "IMPLEMENTED"
+            && dependencyResult.data.items[index - 1]?.candidateTreeSha === item.baseTreeSha));
     const graphItemsComplete = dependencyBinding !== undefined && dependencyResult?.success === true
       && dependencyResult.data.status === "SUCCEEDED"
       && dependencyResult.data.items.length === dependencyBinding.graph.items.length
@@ -14297,7 +14318,22 @@ async function completedWorkflowItems(
         : workflowRunEndedReason(operation.workflowMode, terminalStatus), now);
       const progress = task.workflow.workflowDependenciesProgress ?? [];
       const unfinished = progress.at(-1);
-      if (dependencyBinding !== undefined && unfinished?.operationId === operation.id && unfinished.state === "STARTED") {
+      if (dependencyBinding?.parallel !== undefined) {
+        // Parts run side by side, so a stopped run can leave several started and unfinished: each is marked unknown, in the order it started.
+        const open = new Map<string, (typeof progress)[number]>();
+        for (const entry of progress) {
+          if (entry.operationId !== operation.id) continue;
+          if (entry.state === "STARTED") open.set(entry.itemId, entry);
+          else open.delete(entry.itemId);
+        }
+        let marked = progress;
+        for (const entry of [...open.values()].sort((left, right) => left.sequence - right.sequence)) {
+          const { candidateTreeSha: _tree, integratedTreeSha: _integrated, ...rest } = entry;
+          void _tree; void _integrated;
+          marked = [...marked, { ...rest, sequence: (marked.at(-1)?.sequence ?? entry.sequence) + 1, state: "UNKNOWN" as const, at: now, producer: "agentx-broker-terminal" }];
+        }
+        if (marked !== progress) next = WorkflowSnapshotSchema.parse({ ...next, workflowDependenciesProgress: marked });
+      } else if (dependencyBinding !== undefined && unfinished?.operationId === operation.id && unfinished.state === "STARTED") {
         const unknown = { ...unfinished, sequence: unfinished.sequence + 1, state: "UNKNOWN" as const, at: now, producer: "agentx-broker-terminal" };
         delete unknown.candidateTreeSha;
         next = WorkflowSnapshotSchema.parse({ ...next, workflowDependenciesProgress: [...progress, unknown] });
@@ -14413,9 +14449,12 @@ async function completedWorkflowItems(
           throw new Error(verificationFailure);
         }
         if (dependencyBinding !== undefined && dependencyResult?.success === true) {
-          const finalProgress = dependencyResult.data.items.at(-1);
+          // In parallel the combined tree is the one the last part to finish was merged into; one at a time it is the last item's tree.
+          const finalProgress = dependencyBinding.parallel === undefined ? dependencyResult.data.items.at(-1)
+            : [...dependencyResult.data.items].sort((left, right) => right.sequence - left.sequence)[0];
           const actualFinalTree = candidate.repositories.length === 1 ? candidate.repositories[0]?.treeSha : undefined;
-          if (finalProgress?.state !== "IMPLEMENTED" || actualFinalTree === undefined || finalProgress.candidateTreeSha !== actualFinalTree) {
+          const expectedFinalTree = dependencyBinding.parallel === undefined ? finalProgress?.candidateTreeSha : finalProgress?.integratedTreeSha ?? finalProgress?.candidateTreeSha;
+          if (finalProgress?.state !== "IMPLEMENTED" || actualFinalTree === undefined || expectedFinalTree !== actualFinalTree) {
             verificationFailure = "work breakdown final item does not bind the final combined candidate tree";
             throw new Error(verificationFailure);
           }

@@ -1,0 +1,206 @@
+import { describe, expect, it } from "vitest";
+import { PARALLEL_PARTS_MAX, WORKER_INVOCATION_FEATURES, taskGraphDigest } from "@agentx/contracts";
+import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { createWorkflowE2E, type WorkflowE2E } from "../support/workflow-e2e.js";
+import { assertJourneyInvariants, registerJourneyInvariants } from "../support/workflow-e2e-invariants.js";
+
+registerJourneyInvariants();
+
+// A Rovara Code v2 task (definition version 1.1.0) whose approved plan has independent parts, through the real broker, the real dispatch and the real worker. The plan's first
+// two parts do not depend on each other; the third needs both. Version 2 tasks need no install switch for ordered work; version 1 keeps AGENTX_WORKFLOW_DEPENDENCIES_ENABLED.
+
+const ITEM_A = "11111111-1111-4111-8111-111111111111";
+const ITEM_B = "22222222-2222-4222-8222-222222222222";
+const ITEM_C = "33333333-3333-4333-8333-333333333333";
+
+function graphFor(taskId: string) {
+  return { schemaVersion: 1 as const, taskId, version: 1, items: [
+    { id: ITEM_A, title: "A: create formatter", description: "Create the shared formatter function.", repository: "demo", dependsOn: [] },
+    { id: ITEM_B, title: "B: create clock", description: "Create the shared clock function.", repository: "demo", dependsOn: [] },
+    { id: ITEM_C, title: "C: integration assertion", description: "Add an executable integration assertion over A and B.", repository: "demo", dependsOn: [ITEM_A, ITEM_B] },
+  ] };
+}
+
+function fullPlan(taskId: string, latest: string): string {
+  const cleanClaims = [{ id: "1", text: "Users can create and use a greeting service." }];
+  if (/writing the requirements/i.test(latest)) return planAnswer(planDocument({ title: "Requirements", claims: cleanClaims }));
+  if (/writing the design/i.test(latest)) return planAnswer(planDocument({ title: "Design", claims: cleanClaims }));
+  return planAnswer(planDocument({ title: "Coding plan", claims: cleanClaims, workBreakdown: graphFor(taskId) }));
+}
+
+/** Parts work in a folder of their own whose root is the repository; a part run one after another works in the workspace, where the repository is repo/demo. */
+const where = (latest: string, file: string) => `${/built at the same time/.test(latest) ? "" : "repo/demo/"}${file}`;
+
+function itemEdits(latest: string) {
+  const title = latest.match(/Current approved item[^\n]*\nTitle: (.*)/)?.[1];
+  if (title === "A: create formatter") return [{ path: where(latest, "formatter.mjs"), content: "export const formatGreeting = (name) => `Hello, ${name}`;\n" }];
+  if (title === "B: create clock") return [{ path: where(latest, "clock.mjs"), content: "export const today = () => '2026-10-26';\n" }];
+  if (title === "C: integration assertion") return [{ path: where(latest, "integration.mjs"), content: "import assert from 'node:assert/strict';\nimport { formatGreeting } from './formatter.mjs';\nimport { today } from './clock.mjs';\nassert.equal(formatGreeting('Ada'), 'Hello, Ada');\nassert.equal(today(), '2026-10-26');\n" }];
+  return [];
+}
+
+function modelFor(context: { current?: WorkflowE2E }) {
+  return { plan: (latest: string) => fullPlan(context.current!.taskId(), latest), edits: itemEdits };
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The parts a run built one after another, in order: they share one session, so each shows only in the coding turns. */
+const itemTitlesInOrder = (e2e: WorkflowE2E) => [...new Set(e2e.turns.filter((turn) => turn.role === "CODER" && /Current approved item/.test(turn.userText)).map((turn) => turn.userText.match(/Title: (.*)/)?.[1] ?? ""))];
+/** One entry per coding session that was given a part, in the order the sessions opened. */
+const itemTitles = (e2e: WorkflowE2E) => e2e.prompts.filter((prompt) => /Current approved item/.test(prompt)).map((prompt) => prompt.match(/Title: (.*)/)?.[1] ?? "");
+const implementInvocations = (e2e: WorkflowE2E) => e2e.invocations.filter((invocation) => invocation.kind === "task" && invocation.payload.workflowMode === "IMPLEMENT");
+const dependenciesOf = (invocation: ReturnType<typeof implementInvocations>[number]) => (invocation.kind === "task" ? invocation.payload.workflowDependencies : undefined);
+
+/** Starts a Full task, and makes it a version 2 task before its plans are approved, as an org on Rovara Code version 2 would have it. */
+async function startFull(e2e: WorkflowE2E, version: "1.0.0" | "1.1.0"): Promise<void> {
+  expect(await e2e.mention("Add a shared greeting service")).toBe(200);
+  expect(await e2e.mention("full please", { type: "message" })).toBe(200);
+  await e2e.settle();
+  if (version === "1.1.0") {
+    const key = { pk: `DEVTASK#${e2e.taskId()}`, sk: "META" };
+    const task = e2e.db.get(key.pk, key.sk) as { workflow: Record<string, unknown> };
+    e2e.db.set({ ...key, ...task, workflow: { ...task.workflow, definitionVersion: "1.1.0" } });
+  }
+}
+
+async function approveAll(e2e: WorkflowE2E): Promise<void> {
+  for (let index = 0; index < 3; index += 1) {
+    expect(e2e.slack.lastPostWithAction("agentx_workflow_approve")).toBeDefined();
+    const viewCount = e2e.slack.views.length;
+    await e2e.click("agentx_workflow_approve");
+    if (e2e.slack.views.length > viewCount) await e2e.submitView();
+    await e2e.settle();
+  }
+}
+
+type Progress = { itemId: string; sequence: number; state: string; baseTreeSha: string; candidateTreeSha?: string; integratedTreeSha?: string; operationId: string };
+const progressOf = (e2e: WorkflowE2E): Progress[] => ((e2e.workflow() as unknown as { workflowDependenciesProgress?: Progress[] }).workflowDependenciesProgress ?? []);
+const READINESS = [{ cwd: "repo/demo", executable: "node", args: ["integration.mjs"], timeoutSeconds: 30 }];
+
+describe("a Rovara Code v2 task builds the independent parts of its plan side by side", () => {
+  it("runs A and B together, then C on both, merges them, and opens one pull request on the integrated tree", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    const e2e = await createWorkflowE2E({ readiness: READINESS, realProjectCommands: true, model: modelFor(context) });
+    context.current = e2e;
+    await startFull(e2e, "1.1.0");
+    await approveAll(e2e);
+
+    const workflow = e2e.workflow() as unknown as { definitionVersion: string; stage: string; state: string; candidate?: { repositories: Array<{ treeSha: string }> } };
+    expect(workflow).toMatchObject({ definitionVersion: "1.1.0", stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    // The broker sent the graph and the parts setting, within the plan's cap; one operation carried all three parts.
+    const implement = implementInvocations(e2e);
+    expect(implement).toHaveLength(1);
+    expect(dependenciesOf(implement[0]!)?.parallel).toEqual({ max: PARALLEL_PARTS_MAX });
+    expect(dependenciesOf(implement[0]!)?.graph.items).toHaveLength(3);
+    // A and B started before either finished, and C started after both were merged.
+    const progress = progressOf(e2e);
+    expect(progress.map((entry) => entry.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(progress.slice(0, 2).map((entry) => entry.state)).toEqual(["STARTED", "STARTED"]);
+    expect(progress.slice(0, 2).map((entry) => entry.itemId).sort()).toEqual([ITEM_A, ITEM_B]);
+    const implemented = progress.filter((entry) => entry.state === "IMPLEMENTED");
+    expect(implemented.map((entry) => entry.itemId).slice(2)).toEqual([ITEM_C]);
+    expect(implemented.every((entry) => entry.integratedTreeSha !== undefined)).toBe(true);
+    const cStart = progress.find((entry) => entry.itemId === ITEM_C && entry.state === "STARTED")!;
+    expect(cStart.baseTreeSha).toBe(implemented[1]!.integratedTreeSha);
+    expect(workflow.candidate!.repositories[0]!.treeSha).toBe(implemented[2]!.integratedTreeSha);
+    // The code holds all three parts, and the checks ran once on the integrated tree.
+    expect(await e2e.repoFile("formatter.mjs")).toContain("formatGreeting");
+    expect(await e2e.repoFile("clock.mjs")).toContain("today");
+    expect(await e2e.repoFile("integration.mjs")).toContain("assert.equal(today()");
+    expect(e2e.checkRuns).toHaveLength(1);
+    expect(e2e.checkRuns[0]!.tree).toBe(workflow.candidate!.repositories[0]!.treeSha);
+    expect(e2e.github.pullRequests).toHaveLength(1);
+    expect(e2e.github.pullRequests[0]!.tree).toBe(workflow.candidate!.repositories[0]!.treeSha);
+    // The prompts: one per part, and C's prompt came after the other two.
+    expect(itemTitles(e2e).sort()).toEqual(["A: create formatter", "B: create clock", "C: integration assertion"]);
+    expect(itemTitles(e2e).at(-1)).toBe("C: integration assertion");
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+
+  it("a version 1 task keeps building its ordered work one item at a time, and gets no parts setting", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    const e2e = await createWorkflowE2E({ workflowDependenciesEnvironment: { AGENTX_WORKFLOW_DEPENDENCIES_ENABLED: "true" }, readiness: READINESS, realProjectCommands: true, model: modelFor(context) });
+    context.current = e2e;
+    await startFull(e2e, "1.0.0");
+    await approveAll(e2e);
+    expect(e2e.workflow()).toMatchObject({ definitionVersion: "1.0.0", stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(dependenciesOf(implementInvocations(e2e)[0]!)?.parallel).toBeUndefined();
+    expect(itemTitlesInOrder(e2e)).toEqual(["A: create formatter", "B: create clock", "C: integration assertion"]);
+    expect(progressOf(e2e).map((entry) => entry.state)).toEqual(["STARTED", "IMPLEMENTED", "STARTED", "IMPLEMENTED", "STARTED", "IMPLEMENTED"]);
+    expect(progressOf(e2e).every((entry) => entry.integratedTreeSha === undefined)).toBe(true);
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+
+  it("a version 1 task without the install's switch still saves its graph and does not start it", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    const e2e = await createWorkflowE2E({ readiness: READINESS, realProjectCommands: true, model: modelFor(context) });
+    context.current = e2e;
+    await startFull(e2e, "1.0.0");
+    // The coding plan is the third; its approval is refused for a version 1 task with the switch off.
+    for (let index = 0; index < 2; index += 1) {
+      await e2e.click("agentx_workflow_approve");
+      await e2e.settle();
+    }
+    const before = e2e.workflow();
+    await e2e.click("agentx_workflow_approve");
+    await e2e.settle();
+    expect(implementInvocations(e2e)).toEqual([]);
+    expect(e2e.workflow().revision).toBe(before.revision);
+  }, 240_000);
+
+  it("a worker that cannot build parts side by side is sent the plan whole and builds them one after another", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    const e2e = await createWorkflowE2E({ readiness: READINESS, realProjectCommands: true, model: modelFor(context) });
+    context.current = e2e;
+    e2e.worker.features(WORKER_INVOCATION_FEATURES.filter((feature) => feature !== "task.workflowParallelParts"));
+    await startFull(e2e, "1.1.0");
+    await approveAll(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    // The broker still stored the setting for the operation; only the delivery withheld it from the worker.
+    expect(progressOf(e2e).map((entry) => entry.state)).toEqual(["STARTED", "IMPLEMENTED", "STARTED", "IMPLEMENTED", "STARTED", "IMPLEMENTED"]);
+    expect(progressOf(e2e).every((entry) => entry.integratedTreeSha === undefined)).toBe(true);
+    expect(await e2e.repoFile("clock.mjs")).toContain("today");
+    expect(e2e.github.pullRequests).toHaveLength(1);
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+
+  it("when one part fails the finished part is kept, nothing new starts, and the owner's retry builds only what is left", async () => {
+    const context: { current?: WorkflowE2E } = {};
+    let failA = true;
+    const model = modelFor(context);
+    const e2e = await createWorkflowE2E({
+      readiness: READINESS, realProjectCommands: true,
+      model: { ...model, edits: (latest) => {
+        if (failA && /Title: A: create formatter/.test(latest)) throw new Error("model stopped before a result");
+        return itemEdits(latest);
+      } },
+    });
+    context.current = e2e;
+    await startFull(e2e, "1.1.0");
+    await approveAll(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    const first = progressOf(e2e);
+    expect(first.filter((entry) => entry.state === "IMPLEMENTED").map((entry) => entry.itemId)).toEqual([ITEM_B]);
+    expect(first.some((entry) => entry.itemId === ITEM_C)).toBe(false);
+    expect(e2e.github.pullRequests).toEqual([]);
+    // The part that finished is in the repository; the one that did not, is not.
+    expect(await e2e.repoFile("clock.mjs")).toContain("today");
+    await expect(e2e.repoFile("formatter.mjs")).rejects.toThrow();
+    const promptsBefore = itemTitles(e2e).length;
+
+    failA = false;
+    await e2e.click("agentx_workflow_retry_implementation");
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    // B was not built again.
+    expect(itemTitles(e2e).slice(promptsBefore).sort()).toEqual(["A: create formatter", "C: integration assertion"]);
+    expect(implementInvocations(e2e)).toHaveLength(2);
+    expect(dependenciesOf(implementInvocations(e2e)[1]!)?.resumeProgress?.map((entry) => entry.itemId)).toContain(ITEM_B);
+    expect(await e2e.repoFile("formatter.mjs")).toContain("formatGreeting");
+    expect(e2e.github.pullRequests).toHaveLength(1);
+    assertJourneyInvariants(e2e);
+  }, 240_000);
+});
+
+void taskGraphDigest;
+void wait;

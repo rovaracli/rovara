@@ -1,0 +1,55 @@
+// Rovara Code v2 (Plan 6 Task 11): how many independent parts of an approved plan may be built at once, and when ordered work is allowed to start.
+//
+// Parts run on the task's one machine, inside the one operation the broker admits (`admitWork`, the step budget, the payer, the planning and run limits), on that
+// operation's one model key. They have no spending limit of their own, so what they spend together can never pass the task's limits. What is bounded here is the number of
+// parts: the plan's cap (PARALLEL_PARTS_MAX), and the room the person and the org have in their workspace slots. The task holds one slot already, so it may run its own
+// part plus one more for each free slot; an org at its limit builds serially.
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { parallelPartsFor, type OrgId, type WorkflowParallel } from "@agentx/contracts";
+import { developerCharge, readWorkspaceLimits } from "../developer/limits.js";
+
+type Client = { send(command: unknown): Promise<unknown> };
+
+export interface ParallelPartsDependencies {
+  documentClient: Client;
+  tableName: string;
+  orgId: OrgId;
+  slackTeamId?: string | undefined;
+  /** The install's limits when the org set none. */
+  limitDefaults: { member: number; organization: number };
+}
+
+/** Rovara Code v2 is the one definition version that builds parts in parallel (decided 2026-10-22, question 14). */
+export const isParallelPartsWorkflow = (workflow: { definitionVersion?: string } | undefined): boolean => workflow?.definitionVersion === "1.1.0";
+
+/**
+ * Whether a task's approved ordered plan may start. Version 1 keeps today's switch (`AGENTX_WORKFLOW_DEPENDENCIES_ENABLED`, off by default); a version 2 task does not need
+ * it, since a version 2 task exists only where an admin adopted version 2.
+ */
+export function workflowDependenciesAllowed(deps: { workflowDependenciesEnabled?: boolean | undefined }, workflow: { definitionVersion?: string } | undefined): boolean {
+  return deps.workflowDependenciesEnabled === true || isParallelPartsWorkflow(workflow);
+}
+
+/**
+ * The parts setting for a task's ordered-plan operation: `undefined` for version 1 (it keeps running one item at a time), else `{ max }` from 1 to the plan's cap. Anything
+ * that cannot be read leaves one part: more machine work is never started on a guess.
+ */
+export async function parallelPartsForTask(
+  deps: ParallelPartsDependencies,
+  task: { developerId: string; slackUserId?: string | undefined; workflow?: { definitionVersion?: string } | undefined },
+): Promise<WorkflowParallel | undefined> {
+  if (!isParallelPartsWorkflow(task.workflow)) return undefined;
+  try {
+    const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.limitDefaults, () => undefined);
+    const charge = developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
+    const count = async (key: { pk: string; sk: string }): Promise<number> => {
+      const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: { count?: unknown } };
+      return typeof response.Item?.count === "number" ? response.Item.count : 0;
+    };
+    const freeForPerson = limits.member - await count(charge.member);
+    const freeForOrg = limits.organization - await count(charge.organization);
+    return { max: parallelPartsFor(1 + Math.max(0, Math.min(freeForPerson, freeForOrg))) };
+  } catch {
+    return { max: 1 };
+  }
+}

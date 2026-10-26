@@ -542,8 +542,18 @@ async function forWorkerFeatures(
   }
   // M1.3 Task 3.7b: the request to export the unchanged code is only for a worker that can; an older one runs the coding without it (a baseline never stops the coding), and the
   // baseline then says it could not be checked.
-  const sent = withoutBaselineSource(planned, features);
-  if (sent !== planned) {
+  const serial = withoutParallelParts(planned, features);
+  if (serial !== planned) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.parallel_parts_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
+  const sent = withoutBaselineSource(serial, features);
+  if (sent !== serial) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.baseline_source_omitted",
@@ -553,6 +563,18 @@ async function forWorkerFeatures(
     }));
   }
   return sent;
+}
+
+/**
+ * An approved plan's parts for a worker that does not list "task.workflowParallelParts": it would reject the `parallel` setting, and it builds the parts one after another, which
+ * the broker's checkpoint rules accept and which costs no more (only time). This is the one field of a plan run that is withheld rather than refused: the plan and its approval
+ * are sent whole.
+ */
+function withoutParallelParts(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || invocation.payload.workflowDependencies?.parallel === undefined || features.includes("task.workflowParallelParts")) return invocation;
+  const { parallel: _parallel, ...workflowDependencies } = invocation.payload.workflowDependencies;
+  void _parallel;
+  return { ...invocation, payload: { ...invocation.payload, workflowDependencies } };
 }
 
 /** A coding run without the request to export the unchanged code, for a worker that does not list "task.workflowE2EBaselineSource": it would reject the field. The export reads the repository alone, so this feature is not withheld with the executor image. */
