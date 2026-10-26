@@ -512,10 +512,15 @@ async function getDraft(deps: AgentRouteDependencies, caller: AgentCaller, agent
   if (draft === undefined) throw notFound();
   // RULING Q48: invalid drafts remain inspectable; publication still validates.
   const problems: Array<{path:string;message:string}> = [];
-  const resolved = await resolveAgent(deps.store, caller.orgId, agentId, "draft", { draft, problems, ...(deps.resolveSkill === undefined ? {} : { resolveSkill: deps.resolveSkill }) });
-  for (const problem of await validateRecipeForOrg(deps, caller.orgId, resolved)) if (!problems.some(p => p.path === problem.path && p.message === problem.message)) problems.push(problem);
-  problems.sort((a,b)=>a.path.localeCompare(b.path)||a.message.localeCompare(b.message));
-  return { draft: await withOriginView(deps, caller, draft), resolved, base: await resolveBase(deps, caller.orgId, draft.extends), problems };
+  try {
+    const resolved = await resolveAgent(deps.store, caller.orgId, agentId, "draft", { draft, problems, ...(deps.resolveSkill === undefined ? {} : { resolveSkill: deps.resolveSkill }) });
+    for (const problem of await validateRecipeForOrg(deps, caller.orgId, resolved)) if (!problems.some(p => p.path === problem.path && p.message === problem.message)) problems.push(problem);
+    problems.sort((a,b)=>a.path.localeCompare(b.path)||a.message.localeCompare(b.message));
+    return { draft: await withOriginView(deps, caller, draft), resolved, base: await resolveBase(deps, caller.orgId, draft.extends), problems };
+  } catch (error) {
+    if (!(error instanceof AgentXError)) throw error;
+    return { draft: await withOriginView(deps, caller, draft), problems: [{ path: /skill/i.test(error.message) ? "skills" : "extends", message: error.message.replace(`${error.code}: `, "") }] };
+  }
 }
 
 async function putDraft(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<Shown> {
