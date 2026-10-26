@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import {expect,it} from "vitest";
-import {screen,within} from "@testing-library/react";
+import {screen} from "@testing-library/react";
 import {QueryClientProvider} from "@tanstack/react-query";
 import {RecipeDiffView} from "../../packages/ui/src/screens/builder/RecipeDiffView.js";
 import {PublishDialog} from "../../packages/ui/src/screens/builder/PublishDialog.js";
@@ -20,3 +20,12 @@ it("keeps added and removed steps explicit",async()=>{const c=comparison();c.aft
 it("does not enable publication when only raw pointers are available",async()=>{const f=mount({from:3,to:"draft",changes:["/steps/0/settings/model"],lessSafe:[]},true);fireEvent.click(screen.getByRole("button",{name:"Publish"}));await screen.findByText("The before-and-after comparison is unavailable. Refresh before publishing.");expect(screen.getByRole("button",{name:"Publish this draft"})).toHaveProperty("disabled",true);f.close();});
 it("retains human-readable descriptions from older cells",async()=>{const f=mount({from:3,to:"draft",changes:["Review now uses the company model."],lessSafe:[]});await screen.findByText("Review now uses the company model.");f.close();});
 it("never follows a prototype property as a recipe field",async()=>{const f=mount({from:3,to:"draft",changes:["/__proto__/constructor"],lessSafe:[],comparison:comparison()});await screen.findByText("The before-and-after comparison is unavailable. Refresh before publishing.");expect(f.container.textContent).not.toContain("function Object");f.close();});
+it("shows a removed indexed step without substituting another step's name",async()=>{const c=comparison();c.after.steps.pop();const f=mount({from:3,to:"draft",changes:["/steps/4"],lessSafe:[],comparison:c});await screen.findByRole("heading",{name:"Removed step: Pull request"});f.close();});
+it("distinguishes a disabled setting from a missing value and a cleared setting",async()=>{const c=comparison();c.before.allowMentions=false;c.after.allowMentions=true;const f=mount({from:3,to:"draft",changes:["/allowMentions"],lessSafe:[],comparison:c});await screen.findByRole("heading",{name:"Mentions"});expect(screen.getByText("Disabled")).toBeTruthy();expect(screen.getByText("Enabled")).toBeTruthy();expect(screen.queryByText("Not set")).toBeNull();f.close();});
+it("does not reuse a previous saved draft's comparison",async()=>{
+ let body={from:3,to:"draft",changes:["/steps/0/settings/instructions/0/text"],lessSafe:[],comparison:comparison()};
+ const {useState}=await import("react"),f=fakeHost(async()=>({status:200,body})),query=createQueryClient();
+ function Editor(){const[revision,setRevision]=useState(2);return h("div",{},h("button",{onClick:()=>{body=structuredClone(body);body.comparison.after.steps[0]!.settings.instructions[0]!.text="Check concurrent refund retries too.";setRevision(3);}},"Save next draft"),h(PublishDialog,{agent:agentProfile().agent,revision,disabled:false,onPublished:()=>undefined,onInvalid:()=>undefined}));}
+ const ui=renderUi(h(AppHostProvider,{host:f.host,children:h(QueryClientProvider,{client:query,children:h(Editor,{})})}));
+ fireEvent.click(screen.getByRole("button",{name:"Publish"}));await screen.findByText(/Check duplicate webhooks/);fireEvent.click(screen.getByRole("button",{name:"Close dialog"}));fireEvent.click(screen.getByRole("button",{name:"Save next draft"}));fireEvent.click(screen.getByRole("button",{name:"Publish"}));await screen.findByText("Check concurrent refund retries too.");expect(f.request.mock.calls.filter(([request])=>request.path.includes("/diff?")).length).toBeGreaterThanOrEqual(2);ui.unmount();query.clear();
+});
