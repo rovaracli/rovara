@@ -33,7 +33,7 @@ import { assertLocalTaskExecutionAllowed, taskSandboxFor, taskShellSelection, ty
 import { projectCommandEnvironment } from "./git.js";
 import { runIsolatedGit, withIsolatedRepository } from "./isolated-repository.js";
 import { CHECK_HISTORY_PATH, projectCheckKey, recordPreparedOutcomes } from "./verification/check-history.js";
-import { assertCredentialFreeRemote, runGitWithCredential } from "./git-auth.js";
+import { assertCredentialFreeRemote, runGitWithCredential, type CredentialedGitRunner } from "./git-auth.js";
 import type {
   RepositoryCloneCredential,
   RepositoryCredentialProvider,
@@ -138,6 +138,73 @@ export interface PrepareWorkspaceOptions {
   readOnly?: boolean;
   /** Tests only: where a pull request head is fetched from (the repository's own URL by default; a fixture is not an HTTPS URL a project may name). */
   pullRequestRemote?: (repository: StoredProjectDefinition["repositories"][number]) => string;
+  /** Tests only: how the credentialed pull request fetch runs Git (the real Git by default). */
+  gitRunner?: CredentialedGitRunner;
+  /** The waits and log of the "Repository not found" retry (see `retryRepositoryNotFound`); tests replace them. */
+  cloneRetry?: CloneRetryOptions;
+}
+
+export interface CloneRetryOptions {
+  /** Waits before each retry; there are as many retries as waits. Default 2 s, then 5 s. */
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  log?: (event: Record<string, unknown>) => void;
+}
+
+const CLONE_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000];
+/** GitHub installation tokens last one hour: one this old is asked for again before a retry (the retries wait seconds, so this is the exception). */
+const CREDENTIAL_REFRESH_AFTER_MS = 55 * 60_000;
+
+/** Git's answer when GitHub refuses a repository (or, for a few seconds after it is issued, a new token): `remote: Repository not found.` */
+function isRepositoryNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { message, stderr } = error as { message?: unknown; stderr?: unknown };
+  return [message, stderr].some((text) => typeof text === "string" && /Repository not found/i.test(text));
+}
+
+/** A repository's credential and when it was obtained, so a retry can reuse it and ask again only when it is nearly out of date. */
+interface CredentialSession {
+  credential: RepositoryCloneCredential;
+  /** Runs a clone or fetch; when Git says "Repository not found" (only then) it is run again after each wait, and the last error is thrown as before. */
+  retrying: <T>(operation: () => Promise<T>) => Promise<T>;
+}
+
+function credentialSession(options: PrepareWorkspaceOptions, repository: { name: string }, first: RepositoryCloneCredential, ask: () => Promise<RepositoryCloneCredential>): CredentialSession {
+  const retry = options.cloneRetry ?? {};
+  const delays = retry.delaysMs ?? CLONE_RETRY_DELAYS_MS;
+  const sleep = retry.sleep ?? ((ms: number) => new Promise<void>((done) => { setTimeout(done, ms); }));
+  const now = retry.now ?? Date.now;
+  const log = retry.log ?? ((event: Record<string, unknown>) => { console.log(JSON.stringify({ component: "worker", ...event })); });
+  let obtainedAt = now();
+  const session: CredentialSession = {
+    credential: first,
+    async retrying(operation) {
+      let failure: unknown;
+      try {
+        return await operation();
+      } catch (error) {
+        failure = error;
+      }
+      for (const [index, delayMs] of delays.entries()) {
+        if (!isRepositoryNotFound(failure)) break;
+        await sleep(delayMs);
+        if (now() - obtainedAt >= CREDENTIAL_REFRESH_AFTER_MS) {
+          try { session.credential = await ask(); obtainedAt = now(); } catch { /* keep the credential held; the retry reports Git's own answer */ }
+        }
+        try {
+          const result = await operation();
+          log({ event: "workspace.clone_retry", repository: repository.name, attempt: index + 1, delayMs, outcome: "succeeded" });
+          return result;
+        } catch (error) {
+          failure = error;
+          log({ event: "workspace.clone_retry", repository: repository.name, attempt: index + 1, delayMs, outcome: isRepositoryNotFound(error) ? "repository_not_found" : "failed" });
+        }
+      }
+      throw failure;
+    },
+  };
+  return session;
 }
 
 export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promise<PreparationManifest> {
@@ -179,11 +246,12 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       const destination = containedPath(canonicalRoot, repository.path);
       assertRepositoryPathDoesNotOverlapRuntimeBacking(destination, runtimeBackingPath);
       const existing = await pathKind(destination);
-      let credential: RepositoryCloneCredential = {};
+      const askCredential = async (): Promise<RepositoryCloneCredential> => await options.credentialProvider?.(repository) ?? {};
+      let session = credentialSession(options, repository, {}, askCredential);
       if (existing === "missing") {
         await mkdir(resolve(destination, ".."), { recursive: true });
-        credential = await options.credentialProvider?.(repository) ?? {};
-        await materializer(repository, destination, credential);
+        session = credentialSession(options, repository, await askCredential(), askCredential);
+        await session.retrying(() => materializer(repository, destination, session.credential));
       } else {
         if (existing !== "directory" || (await pathKind(resolve(destination, ".git"))) === "missing") {
           throw new Error(`repository path already exists and is not a Git checkout: ${repository.path}`);
@@ -194,7 +262,7 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       let checkedOut: { pullRequest: number; headSha: string } | undefined;
       if (existing === "missing") {
         await checkoutResolvedCommit(destination, resolvedCommit);
-        checkedOut = await checkoutPullRequestHeads(destination, options.pullRequestRemote?.(repository) ?? repository.url, (options.checkout ?? []).filter((entry) => entry.repository === repository.name), credential);
+        checkedOut = await checkoutPullRequestHeads(destination, options.pullRequestRemote?.(repository) ?? repository.url, (options.checkout ?? []).filter((entry) => entry.repository === repository.name), session, options.gitRunner);
       } else if (head !== resolvedCommit) {
         throw new Error(
           `unrecorded checkout at ${repository.path} has HEAD ${head}; refusing to reset it`,
@@ -423,7 +491,8 @@ async function checkoutPullRequestHeads(
   directory: string,
   remoteUrl: string,
   heads: ReadonlyArray<{ pullRequest: number; headSha: string }>,
-  credential: RepositoryCloneCredential,
+  session: CredentialSession,
+  run?: CredentialedGitRunner,
 ): Promise<{ pullRequest: number; headSha: string } | undefined> {
   for (const head of heads) {
     const ref = `refs/remotes/origin/pull/${String(head.pullRequest)}/head`;
@@ -431,19 +500,20 @@ async function checkoutPullRequestHeads(
     const hasCommit = async (): Promise<boolean> => (await runIsolatedGit(directory, ["cat-file", "-e", `${head.headSha}^{commit}`], { timeout: 30_000, maxBuffer: 4_096 }).then(() => true, () => false));
     // The repository's own URL, as every other network call of the worker names it (a hardened Git ignores the clone's `origin`).
     try {
-      await runGitWithCredential({ directory, args: ["fetch", "--no-tags", remoteUrl, head.headSha], cwd: directory, credential, timeout: 300_000, maxBuffer: MAX_COMMAND_OUTPUT_BYTES });
+      await runGitWithCredential({ directory, args: ["fetch", "--no-tags", remoteUrl, head.headSha], cwd: directory, credential: session.credential, timeout: 300_000, maxBuffer: MAX_COMMAND_OUTPUT_BYTES, ...(run === undefined ? {} : { run }) });
     } catch {
       // A server that does not serve a commit by its sha: the pull request's ref is read instead, and must name that commit.
     }
     if (!await hasCommit()) {
-      await runGitWithCredential({
+      await session.retrying(() => runGitWithCredential({
         directory,
         args: ["fetch", "--no-tags", remoteUrl, `+refs/pull/${String(head.pullRequest)}/head:${ref}`],
         cwd: directory,
-        credential,
+        credential: session.credential,
         timeout: 300_000,
         maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
-      });
+        ...(run === undefined ? {} : { run }),
+      }));
       const fetched = (await runIsolatedGit(directory, ["rev-parse", "--verify", `${ref}^{commit}`], { timeout: 30_000, maxBuffer: 4_096 })).trim();
       if (fetched !== head.headSha) throw new Error(`pull request ${String(head.pullRequest)} has a new commit since the run started; start the run again`);
     }
