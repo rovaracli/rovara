@@ -609,11 +609,13 @@ async function trackOne(
     const nextItem: MergeTrackingItem = { ...digested, version: (current?.version ?? 0) + 1, observedAt: stamp };
     const items: TransactItem[] = [];
     let action: MergeActionRequest | undefined;
+    const github = deps.github;
+    const readLog = github.getJobLogTail === undefined ? undefined : (jobId: string) => github.getJobLogTail!(url, jobId, scope, budget);
     const decision = await nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, await (deps.autonomy?.(task) ?? "prepare"), now, {
       tableName: deps.tableName, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }),
       repositoryId: pullRequest.repositoryId, pullRequestNumber: pullRequest.number, pullRequestUrl: pullRequest.url, headSha: status.headSha, failing: ci.failingDetails,
-      ...(deps.github.getJobLogTail === undefined ? {} : { readJobLog: (jobId: string) => deps.github.getJobLogTail!(url, jobId, scope, budget) }),
-      ...(deps.log === undefined ? {} : { log: deps.log }),
+      ...(readLog === undefined ? {} : { readJobLog: readLog }),
+      ...(deps.log === undefined ? {} : { log: (event: string, fields: Record<string, unknown>) => deps.log?.(event, fields) }),
     });
     if (decision.slot !== "none") action = decision;
     if (unchanged && action === undefined) {

@@ -31,7 +31,7 @@ function harness(fixture: Fixture = {}) {
     requests.push({ url, headers: { ...(init?.headers as Record<string, string> | undefined) }, redirect: init?.redirect });
     if (url.endsWith("/installation")) return Response.json({ id: 163046162, account: { login: "acme" } });
     if (url.endsWith("/access_tokens")) {
-      tokenRequests.push(JSON.parse(String(init?.body)));
+      tokenRequests.push(typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined);
       return fixture.tokenStatus === undefined ? Response.json({ token: "log-token" }, { status: 201 }) : new Response("{}", { status: fixture.tokenStatus });
     }
     if (/\/actions\/jobs\/\d+\/logs$/.test(url)) {

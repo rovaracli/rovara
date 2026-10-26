@@ -199,6 +199,8 @@ describe("the health route's grants (A13)", () => {
       // Rovara Code (Plan 6): the milestone records a task writes for the people following it (Task 5), the duration history of a project's runs (Task 7), the record of an applied
       // setup draft (Task 10) and the index from a pull request's head to its task (Task 14) are short-lived records of their own modules, kept for a fixed time and then deleted by the TTL.
       "packages/broker/src/rovara-code/milestones.ts", "packages/broker/src/rovara-code/duration.ts", "packages/broker/src/rovara-code/setup-draft.ts", "packages/broker/src/rovara-code/head-index.ts",
+      // Rovara Code (Plan 6 Task 15): what CI said, kept for the coding run of the fix round that started with it (30 days, then the TTL deletes it); only ci-fix.ts writes and reads it.
+      "packages/broker/src/rovara-code/ci-fix.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

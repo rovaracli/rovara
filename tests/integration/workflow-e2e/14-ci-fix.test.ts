@@ -120,7 +120,7 @@ describe("Suite 14: fixing failing CI", () => {
     // The evidence is kept for the fix, apart from the workflow.
     expect(e2e.db.get(ciEvidenceKey(e2e.taskId(), 10).pk, ciEvidenceKey(e2e.taskId(), 10).sk) ?? e2e.db.find((item) => item.entityType === "CI_EVIDENCE")[0]).toBeDefined();
     // The pull request now holds the fix's code, and CI that is still red on the new head is the next round's business, not this one's.
-    expect(e2e.db.get(mergeTrackingKey(e2e.taskId(), "demo", pullRequest.number))).toMatchObject({ ci: expect.stringMatching(/failing|pending/u) });
+    expect(["failing", "pending"]).toContain(e2e.db.get(mergeTrackingKey(e2e.taskId(), "demo", pullRequest.number))?.ci);
   }, 240_000);
 
   it("14.2 a round whose coder changes nothing stops with the unrelated text, tells a person once, and does not start another round by itself", async () => {

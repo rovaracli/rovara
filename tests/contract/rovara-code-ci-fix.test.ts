@@ -76,7 +76,7 @@ describe("startWorkflowFix", () => {
     expect(() => startWorkflowFix(card, { source: "ci", problems: [], now: at })).toThrow(/card/);
     const running = startWorkflowFix(waiting(), { source: "ci", problems: ["test"], now: at });
     expect(() => startWorkflowFix(running, { source: "ci", problems: [], now: at })).toThrow(WorkflowTransitionError);
-    expect(() => startWorkflowFix({ ...waiting(), state: "RUNNING" } as WorkflowSnapshot, { source: "ci", problems: [], now: at })).toThrow(WorkflowTransitionError);
+    expect(() => startWorkflowFix({ ...waiting(), state: "RUNNING" }, { source: "ci", problems: [], now: at })).toThrow(WorkflowTransitionError);
     expect(() => startWorkflowFix(waiting({ pullRequests: [{ ...PULL_REQUEST, state: "CLOSED" }] }), { source: "ci", problems: [], now: at })).toThrow(WorkflowTransitionError);
   });
 
@@ -150,7 +150,7 @@ describe("a CI fix that waits for a person", () => {
     expect(retryWorkflowCiFix(stopped, at).fixRounds).toEqual({ ci: 0, conflict: 1, feedbackAuto: 2 });
     // Only a CI block is retried this way.
     expect(() => retryWorkflowCiFix(waiting(), at)).toThrow(WorkflowTransitionError);
-    expect(() => retryWorkflowCiFix({ ...waiting(), state: "BLOCKED", blockReason: "something else" } as WorkflowSnapshot, at)).toThrow(WorkflowTransitionError);
+    expect(() => retryWorkflowCiFix({ ...waiting(), state: "BLOCKED", blockReason: "something else" }, at)).toThrow(WorkflowTransitionError);
   });
 });
 
@@ -175,7 +175,7 @@ describe("what CI said, as a prompt block", () => {
   it("cleans a log: colour codes, control and bidirectional characters and GitHub's time stamps go, a token is redacted", () => {
     const cleaned = cleanLog(`2026-10-25T11:00:00.0000000Z \u001b[31mError:\u001b[0m token ${GHP}\u0007 \u202Eboom\r\nnext line   \n`);
     expect(cleaned).not.toContain(GHP);
-    expect(cleaned).not.toMatch(/[\u001b\u0007\u202E\r]/u);
+    for (const bad of ["\u001b", "\u0007", "\u202E", "\r"]) expect(cleaned.includes(bad), JSON.stringify(bad)).toBe(false);
     expect(cleaned.startsWith("Error: token ")).toBe(true);
     expect(cleaned.endsWith("boom\nnext line\n")).toBe(true);
     expect(cleaned).not.toMatch(/\d{4}-\d{2}-\d{2}T/u);
@@ -249,7 +249,7 @@ const redCheck = (overrides: Record<string, unknown> = {}) => ({ name: "test", s
 function ciWorld(options: { workflow?: WorkflowSnapshot; autonomy?: "suggest" | "prepare" | "run"; checks?: ReturnType<typeof redCheck>[] } = {}): TrackingWorld & { github: CiGithub } {
   const github = new CiGithub();
   const w = world({ sessionId: SESSION_ID });
-  const ci = Object.assign(w, { github }) as TrackingWorld & { github: CiGithub };
+  const ci = Object.assign(w, { github });
   // The world's fake is replaced by one that reads logs; the dependencies point at it.
   (ci.deps as { github: unknown }).github = github;
   github.statuses.set(7, status({ checks: options.checks ?? [redCheck()] }));
@@ -324,7 +324,7 @@ describe("the CI slot of merge tracking", () => {
     w.github.logs.set("4242", new Error("HTTP 502"));
     await trackPullRequest(w.deps, TASK_ID);
     expect(workflowOf(w).stage).toBe("IMPLEMENT");
-    expect(JSON.parse((await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 10))!.split("\n")[1]!)[0].note).toBe("The log could not be read.");
+    expect((JSON.parse((await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 10))!.split("\n")[1]!) as Array<{ note: string }>)[0]!.note).toBe("The log could not be read.");
     const limited = ciWorld();
     limited.github.logs.set("4242", new GithubMergeRateLimitError(NOW + 60_000));
     await expect(trackPullRequest(limited.deps, TASK_ID)).rejects.toBeInstanceOf(GithubMergeRateLimitError);
@@ -486,7 +486,7 @@ describe("collecting evidence", () => {
     installCiFixDecider();
     await trackPullRequest(w.deps, TASK_ID);
     expect(await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 10)).toBeDefined();
-    expect(await readCiEvidence(w.deps, TASK_ID, "org_zzzzzzzzzzzzzzzzzzzz" as never, 10)).toBeUndefined();
+    expect(await readCiEvidence(w.deps, TASK_ID, "org_zzzzzzzzzzzzzzzzzzzz", 10)).toBeUndefined();
     expect(await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 11)).toBeUndefined();
     expect(await readCiEvidence(w.deps, "00000000-0000-4000-8000-0000000000b2", TEST_ORG, 10)).toBeUndefined();
     w.db.set({ ...w.db.get(`DEVTASK#${TASK_ID}`, "CI_EVIDENCE#000000010")!, block: "not a block" });

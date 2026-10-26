@@ -1,6 +1,7 @@
 // Rovara Code (Plan 6 Task 15): reading the end of a GitHub Actions job's log. GitHub answers a log request with a redirect to a short-lived address on its own storage; only an
 // address on a host GitHub is known to serve logs from is followed, with no credentials, and the body is read as a stream that keeps only its end, so a log of any size costs
 // bounded memory and time. What comes back is untrusted text: the caller redacts it and labels it before it reaches a model.
+import type { ReadableStreamDefaultReader } from "node:stream/web";
 import { CI_LOG_BYTES_MAX, CI_LOG_TAIL_LINES, agentXError } from "@agentx/contracts";
 
 /** The hosts a job log is served from: GitHub's Actions hosts, and the storage accounts of its results service. */
@@ -52,14 +53,15 @@ export function logTail(text: string, options: { lines?: number; bytes?: number 
 /** Reads a response body as a stream, keeping only its end; stops after `LOG_DOWNLOAD_BYTES_MAX` bytes. Returns the end as text. */
 export async function readLogEnd(response: Response, signal?: AbortSignal): Promise<string> {
   if (response.body === null) return "";
-  const reader = response.body.getReader();
+  const reader = response.body.getReader() as unknown as ReadableStreamDefaultReader<Uint8Array>;
   let kept: Buffer = Buffer.alloc(0);
   let total = 0;
   try {
     for (;;) {
       if (signal?.aborted === true) throw agentXError("RUNTIME_UNAVAILABLE", "reading the log was cancelled");
-      const { done, value } = await reader.read();
-      if (done) break;
+      const read = await reader.read();
+      if (read.done) break;
+      const value = read.value;
       total += value.byteLength;
       kept = Buffer.concat([kept, Buffer.from(value)]);
       if (kept.length > KEEP_BYTES) kept = kept.subarray(kept.length - KEEP_BYTES);
