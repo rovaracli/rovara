@@ -114,6 +114,9 @@ export async function bindSessionSurface(
   if (!parsedBinding.success || !parsedId.success) throw agentXError("CONFIG_INVALID", "This link can't be bound to a session.");
   const binding = parsedBinding.data;
   const sessionId = parsedId.data;
+  // Refuse foreign/missing ids before attempting any write; keep the transaction's check for races.
+  const meta = await getItem(table, agentSessionKey(input.orgId, sessionId, "META"));
+  if (meta === undefined || meta["orgId"] !== input.orgId) throw agentXError("NOT_FOUND", "session not found");
   for (let attempt = 1; ; attempt += 1) {
     const at = new Date(table.now()).toISOString();
     try {
