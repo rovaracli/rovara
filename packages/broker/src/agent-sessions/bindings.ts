@@ -107,7 +107,7 @@ async function diagnose(table: TableInput, orgId: OrgId, sessionId: SessionId, b
  */
 export async function bindSessionSurface(
   table: TableInput,
-  input: { orgId: OrgId; sessionId: SessionId; binding: SessionBinding },
+  input: { orgId: OrgId; sessionId: SessionId; binding: SessionBinding; /** Items that commit with the binding or not at all (the timeline line and the audit item of a person's link); none are written for a repeat. */ extraItems?: TransactItem[] },
 ): Promise<"bound" | "already_bound"> {
   const parsedBinding = SessionBindingSchema.safeParse(input.binding);
   const parsedId = SessionIdSchema.safeParse(input.sessionId);
@@ -117,7 +117,7 @@ export async function bindSessionSurface(
   for (let attempt = 1; ; attempt += 1) {
     const at = new Date(table.now()).toISOString();
     try {
-      await table.documentClient.send(new TransactWriteCommand({ TransactItems: bindingItemsForOpenSession(table, input.orgId, sessionId, binding, at) }));
+      await table.documentClient.send(new TransactWriteCommand({ TransactItems: [...bindingItemsForOpenSession(table, input.orgId, sessionId, binding, at), ...(input.extraItems ?? [])] }));
       return "bound";
     } catch (error) {
       if (isTransactionConflict(error)) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
@@ -148,4 +148,45 @@ export async function sessionForSurface(table: TableInput, orgId: OrgId, binding
   if (session === undefined) return undefined;
   const own = await getItem(table, sessionBindingKey(orgId, id.data, parsed.data.kind));
   return own !== undefined && own["orgId"] === orgId && surfaceOf(orgId, own["binding"]) === surface.sk ? session : undefined;
+}
+
+/**
+ * Lets go of a session's binding of one kind (Plan 6 Task 20: unlinking a Linear issue): the session's own `BINDING#<kind>` item and the reverse surface item are deleted in one transaction, behind a
+ * check that the session is in this org and that the binding is still the one that was read (a binding replaced meanwhile is not undone). The surface item goes only if it names this session. `extraItems`
+ * commit with it. "unbound" when it deleted them, "not_bound" when the session follows nothing of that kind (nothing is written). The binding that was read is answered, for the caller's timeline and audit line.
+ */
+export async function unbindSessionSurface(
+  table: TableInput,
+  input: { orgId: OrgId; sessionId: SessionId; kind: SessionBinding["kind"]; /** Built from the binding that was read, so the line names what was let go. */ extraItems?: (binding: SessionBinding) => Promise<TransactItem[]> },
+): Promise<{ result: "unbound"; binding: SessionBinding } | { result: "not_bound" }> {
+  const parsedId = SessionIdSchema.safeParse(input.sessionId);
+  if (!parsedId.success) throw agentXError("CONFIG_INVALID", "This link can't be removed from a session.");
+  const sessionId = parsedId.data;
+  for (let attempt = 1; ; attempt += 1) {
+    const own = await getItem(table, sessionBindingKey(input.orgId, sessionId, input.kind));
+    if (own === undefined || own["orgId"] !== input.orgId) return { result: "not_bound" };
+    const parsed = SessionBindingSchema.safeParse(own["binding"]);
+    if (!parsed.success || parsed.data.kind !== input.kind) throw agentXError("RUNTIME_UNAVAILABLE", "This link can't be read right now.");
+    const binding = parsed.data;
+    const surface = sessionSurfaceKey(input.orgId, binding);
+    const items: TransactItem[] = [
+      { ConditionCheck: { TableName: table.tableName, Key: agentSessionKey(input.orgId, sessionId, "META"), ConditionExpression: "attribute_exists(pk) AND orgId = :orgId", ExpressionAttributeValues: { ":orgId": input.orgId } } },
+      { Delete: { TableName: table.tableName, Key: sessionBindingKey(input.orgId, sessionId, input.kind), ConditionExpression: "attribute_exists(pk) AND orgId = :orgId AND #at = :at", ExpressionAttributeNames: { "#at": "at" }, ExpressionAttributeValues: { ":orgId": input.orgId, ":at": own["at"] } } },
+      { Delete: { TableName: table.tableName, Key: surface, ConditionExpression: "attribute_not_exists(pk) OR (orgId = :orgId AND sessionId = :sessionId)", ExpressionAttributeValues: { ":orgId": input.orgId, ":sessionId": sessionId } } },
+      ...(await input.extraItems?.(binding) ?? []),
+    ];
+    try {
+      await table.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      return { result: "unbound", binding };
+    } catch (error) {
+      if (isTransactionConflict(error)) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
+      if (failedIndexes(error) === undefined) throw error;
+      // Something moved between the read and the write. A binding that is gone was let go by another call; one that is another binding now is not undone, because it is not the one the
+      // person asked about; anything else is read again.
+      const now = await getItem(table, sessionBindingKey(input.orgId, sessionId, input.kind));
+      if (now === undefined) return { result: "not_bound" };
+      if (now["at"] !== own["at"] || now["orgId"] !== input.orgId) throw agentXError("CONFIG_INVALID", "This session's link changed just now. Check it and try again.");
+      if (attempt >= ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
+    }
+  }
 }

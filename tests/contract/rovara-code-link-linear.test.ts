@@ -130,12 +130,10 @@ describe("linking a session to a Linear issue", () => {
     const first = h.seedSession();
     const second = h.seedSession({ owner: ARJUN });
     await h.link(PRIYA, first.sessionId, "ENG-142");
-    const writes = h.db.transactions().length;
     expect(await code(h.link(ARJUN, second.sessionId, "ENG-142"))).toEqual({ code: "CONFIG_INVALID", message: "This issue already follows another session." });
     expect(h.binding(second.sessionId)).toBeUndefined();
     expect(h.timeline(second.sessionId)).toEqual([]);
     expect(h.audit.recordedBy("session.linked")).toHaveLength(1);
-    expect(h.db.transactions().slice(writes).filter((transaction) => JSON.stringify(transaction).includes("AUDIT_PENDING")).length).toBe(0);
   });
 
   it("lets two companies follow the same issue key, each its own session, and shows neither the other's", async () => {
@@ -328,7 +326,7 @@ describe("unlinking", () => {
       if (!swapped && command.constructor.name === "TransactWriteCommand") {
         swapped = true;
         // Another call replaced the binding between the read and the write.
-        h.db.set({ ...sessionBindingKey(ORG_A, sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId, binding: { kind: "linear_issue", issueId: "ENG-777", url: "https://linear.app/issue/ENG-777" }, at: "2026-10-22T09:00:00.000Z" });
+        h.db.set({ ...sessionBindingKey(ORG_A, sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId, binding: { kind: "linear_issue", issueId: "ENG-777", url: "https://linear.app/issue/ENG-777" }, at: "2026-10-22T09:30:00.000Z" });
       }
       return original(command as never);
     }) as typeof h.db.send;

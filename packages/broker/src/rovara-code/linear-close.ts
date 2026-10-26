@@ -12,17 +12,42 @@ export function normalizeIssueKey(text: string | undefined): string | undefined 
   return text !== undefined && ISSUE_KEY.test(text) ? text.toUpperCase() : undefined;
 }
 
-/** The key in an issue's Linear link (`https://linear.app/<workspace>/issue/<KEY>/<slug>`), or undefined for any other host or shape. */
-function keyOfLink(link: string): string | undefined {
+const WORKSPACE = /^[A-Za-z0-9_-]{1,64}$/u;
+
+/**
+ * The issue a Linear link names: `https://linear.app/<workspace>/issue/<KEY>[/<slug>]`, or the short `https://linear.app/issue/<KEY>`. Only https on `linear.app` itself, with no user name,
+ * password or port, counts; anything after the key (a slug, a query, a fragment) is dropped.
+ */
+function issueOfLink(link: string): { key: string; workspace?: string } | undefined {
   let url: URL;
   try {
     url = new URL(link);
   } catch {
     return undefined;
   }
-  if (url.protocol !== "https:" || url.hostname !== "linear.app") return undefined;
+  if (url.protocol !== "https:" || url.hostname !== "linear.app" || url.username !== "" || url.password !== "" || url.port !== "") return undefined;
   const parts = url.pathname.split("/").filter((part) => part !== "");
-  return parts[1] === "issue" ? normalizeIssueKey(parts[2]) : undefined;
+  const workspace = parts[0];
+  const inWorkspace = parts[1] === "issue" ? normalizeIssueKey(parts[2]) : undefined;
+  if (workspace !== undefined && inWorkspace !== undefined && WORKSPACE.test(workspace)) return { key: inWorkspace, workspace };
+  const short = parts[0] === "issue" ? normalizeIssueKey(parts[1]) : undefined;
+  return short === undefined ? undefined : { key: short };
+}
+
+/** The key in an issue's Linear link, or undefined for any other host or shape. */
+const keyOfLink = (link: string): string | undefined => issueOfLink(link)?.key;
+
+/**
+ * What a person typed to name a Linear issue (Plan 6 Task 20's link command): the issue key (`ENG-142`, any case) or the issue's Linear link. The result is the binding's issue id (the key in
+ * capitals) and a clean https link (the workspace's, when the link had one; else Linear's short form). Anything else is undefined.
+ */
+export function parseLinearIssue(text: string): { issueId: string; url: string } | undefined {
+  const typed = text.trim();
+  if (typed.length === 0 || typed.length > 2048) return undefined;
+  const key = normalizeIssueKey(typed);
+  if (key !== undefined) return { issueId: key, url: `https://linear.app/issue/${key}` };
+  const found = issueOfLink(typed);
+  return found === undefined ? undefined : { issueId: found.key, url: `https://linear.app/${found.workspace === undefined ? "" : `${found.workspace}/`}issue/${found.key}` };
 }
 
 /**
