@@ -2,6 +2,7 @@
 // is pushed, the description lists briefly what was changed for which comments, from each approved proposal's summary,
 // and is kept up to date across rounds. The summaries come from a reviewer reading untrusted comments: each is redacted
 // and made inert for GitHub (no mention, link or cross-reference) before it is written.
+import { neutralizeLinearWords } from "../rovara-code/linear-close.js";
 import { PULL_REQUEST_BODY_MAX_CHARS, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WorkflowFeedbackReviewReportSchema, redactText, type WorkflowFeedbackReviewReport, type WorkflowSnapshot } from "@agentx/contracts";
 import { createHash } from "node:crypto";
 
@@ -153,7 +154,8 @@ export function shortFixSummary(summary: string): string | undefined {
 
 function fixLine(fix: FeedbackFix): string {
   // Cut before it is escaped, so no cut lands inside an escape.
-  const summary = inertGitHubText(shortFixSummary(redactText(fix.summary)) ?? summaryFallback(fix.comments.length));
+  // A reviewer model writes this from comments anyone can post: a Linear magic word before an issue key is broken (before the escaping, which would hide the key's hyphen).
+  const summary = inertGitHubText(neutralizeLinearWords(shortFixSummary(redactText(fix.summary)) ?? summaryFallback(fix.comments.length)));
   if (fix.comments.length === 0) return `- ${summary}`;
   const links = fix.comments.slice(0, LINKS_LISTED).map((url, index) => `[comment ${index + 1}](${url})`);
   const more = fix.comments.length > LINKS_LISTED ? ` and ${fix.comments.length - LINKS_LISTED} more` : "";

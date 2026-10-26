@@ -311,6 +311,7 @@ import { wakeTrackingRow } from "./workflow-merge-recovery.js";
 import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
+import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -5805,9 +5806,12 @@ export async function startTaskWorkflowPublicationFromSystem(
   if (publication === undefined) return "STALE";
   // Rovara Code version 2: the description says what changed, how it was tested and how risky it is, and the risk is recorded with the code it was judged on (in the same write that opens the pull request).
   const rovaraV2 = workflow.definitionVersion === "1.1.0";
-  const bodyContext: PullRequestBodyContext | undefined = rovaraV2 ? { changedFiles: await candidateChangedFiles(deps, task) } : undefined;
+  // A session bound to a Linear issue gets `Fixes <KEY>` once in the description, so Linear's own GitHub integration closes the issue when the pull request merges (Plan 6 Task 20).
+  const linearIssueKey = rovaraV2 ? await linearIssueKeyOfTask({ documentClient: deps.documentClient, tableName: deps.tableName }, task) : undefined;
+  const bodyContext: PullRequestBodyContext | undefined = rovaraV2 ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }) } : undefined;
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
-  const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${inertTaskTitle(task.title)}`.slice(0, 256);
+  // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
+  const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);
   const body = workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext);
   const receivedAt = iso(deps);
   const unchanged = {

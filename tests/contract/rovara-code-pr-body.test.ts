@@ -3,14 +3,14 @@
 // model-written line is redacted and made inert (no mention, link or cross-reference), the whole body is bounded, and a version 1 task's description is exactly as before.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { RiskAssessmentSchema, type VerificationReport } from "../../packages/contracts/src/index.js";
+import { RiskAssessmentSchema, sessionBindingKey, type VerificationReport } from "../../packages/contracts/src/index.js";
 import { workflowFindingFingerprint } from "../../packages/contracts/src/task-workflow.js";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { RISK_SENSITIVE_PATH_PATTERNS, assessRisk, isSensitivePath, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 import { parseChangedFiles } from "../../packages/broker/src/rovara-code/changed-files.js";
-import { recomputeRisk } from "../../packages/broker/src/rovara-code/pull-request-body.js";
+import { recomputeRisk, withLinearCloseLine } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
-import { withStatusLines } from "../../packages/broker/src/developer/pull-request-feedback-section.js";
+import { feedbackFixesSection, withFeedbackFixes, withStatusLines } from "../../packages/broker/src/developer/pull-request-feedback-section.js";
 import { workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, testedPlanDocument } from "../support/plan-documents.js";
@@ -570,9 +570,9 @@ const pullRequestGateway = () => ({
 const DIFF = (files: string[]) => ["## demo", "", "### status", "### diff", ...files.flatMap((path) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, "@@ -1 +1,3 @@", "-old", "+new", "+more", "+most"])].join("\n");
 
 /** A task through its build: version 2 (its stored definition version set to 1.1.0, as the app will start it) or version 1. */
-async function builtTask(definitionVersion: "1.0.0" | "1.1.0", diffFiles: string[] | undefined, diffText?: string) {
+async function builtTask(definitionVersion: "1.0.0" | "1.1.0", diffFiles: string[] | undefined, diffText?: string, instructions = "Fix the retry bug") {
   const harness = await createDeveloperTaskBroker({ brokerExtra: { githubPullRequests: pullRequestGateway() } });
-  const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+  const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions, client: "test-client", workflow: true, workflowPath: "QUICK" });
   const id = String((started.body.task as { taskId: string }).taskId);
   const record = () => harness.db.get(`DEVTASK#${id}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: WorkflowSnapshot };
   const workspaceId = record().workspaceId;
@@ -700,7 +700,7 @@ describe("a pushed fix on a version 2 task", () => {
   const PR_URL = "https://github.com/example/demo/pull/42";
 
   /** The pull request is open with the first description; the fix (tree c) touching infra/ has just passed its checks and reviews. */
-  async function fixPassed() {
+  async function fixPassed(options: { boundTo?: string; beforeOpen?: (harness: Harness, taskId: string, orgId: string) => void } = {}) {
     const state = { head: "d".repeat(40), tree: "b".repeat(40), body: "" };
     const branch = { name: "x" };
     const details = (number: number) => ({ number, url: PR_URL, state: "open" as const, headBranch: branch.name, baseBranch: "main", headCommit: state.head, title: "t", body: state.body });
@@ -724,6 +724,12 @@ describe("a pushed fix on a version 2 task", () => {
     await finishPlanningWithMarkdown(harness, workspaceId, String(operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), plan, testedPlanDocument());
     await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex") });
     const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    // A session bound to a Linear issue before the pull request is described (the task in this harness has no session of its own).
+    const orgOfTask = String((record() as unknown as { orgId: string }).orgId);
+    if (options.boundTo !== undefined) {
+      harness.db.set({ ...record(), sessionId: "ses_00000000000000000001" });
+      harness.db.set({ ...sessionBindingKey(orgOfTask, "ses_00000000000000000001", "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: orgOfTask, sessionId: "ses_00000000000000000001", binding: { kind: "linear_issue", issueId: options.boundTo, url: `https://linear.app/issue/${options.boundTo}` }, at: now });
+    }
     const first = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
     await harness.artifact(workspaceId, String(implementation.id), "workspace.diff", DIFF(["src/retry.ts"]));
     await harness.finish(workspaceId, String(implementation.id), "SUCCEEDED", { result: { workflowCandidateRepositories: first.repositories, workflowCheckCandidateRepositories: first.repositories, checks: passingChecks() } });
@@ -735,6 +741,7 @@ describe("a pushed fix on a version 2 task", () => {
     const p = publish.publication;
     branch.name = p.headBranch;
     state.body = `A note from Priya, kept.\n\n${p.body}`;
+    options.beforeOpen?.(harness, taskId, orgOfTask);
     await harness.callback(workspaceId, publish.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) });
     await harness.finish(workspaceId, publish.id, "SUCCEEDED", { result: { repository: "demo", number: 42, url: PR_URL, headBranch: p.headBranch, baseBranch: "main", commit: "d".repeat(40), checks: [], reconciled: false } });
     expect(record().workflow).toMatchObject({ stage: "WAIT_FOR_MERGE", risk: { level: "low", candidateDigest: first.digest } });
@@ -750,6 +757,137 @@ describe("a pushed fix on a version 2 task", () => {
     await harness.artifact(workspaceId, String(reviewTwo.id), "workspace.diff", DIFF(["src/retry.ts", "infra/queue.ts"]));
     return { harness, gateway, state, taskId, workspaceId, record, first, fix, finishReviews: () => reviews(reviewTwo, fix), opened: String(p.body) };
   }
+
+  it("adds Fixes <KEY> once to the description when the issue was bound after the pull request opened (Plan 6 Task 20)", async () => {
+    const t = await fixPassed();
+    expect(t.state.body).not.toMatch(/\bFixes ENG-142\b/u);
+    const record = t.record() as unknown as { orgId: string };
+    const sessionId = "ses_00000000000000000001";
+    t.harness.db.set({ ...t.record(), sessionId });
+    t.harness.db.set({ ...sessionBindingKey(record.orgId, sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: record.orgId, sessionId, binding: { kind: "linear_issue", issueId: "ENG-142", url: "https://linear.app/acme/issue/ENG-142/x" }, at: now });
+    await t.finishReviews();
+    const maintain = operations(t.harness, t.workspaceId).find((item) => item.kind === "maintain") as { id: string; maintenance: { headBranch: string } };
+    t.state.head = PUSHED;
+    t.state.tree = FIX_TREE;
+    await t.harness.callback(t.workspaceId, maintain.id, "pull-request-update", { repository: "demo", pullRequestNumber: 42, action: "append", headBranch: maintain.maintenance.headBranch, baseBranch: "main", previousCommit: "d".repeat(40), commit: PUSHED });
+    await t.harness.finish(t.workspaceId, maintain.id, "SUCCEEDED", { result: { action: "append", repository: "demo", number: 42, url: PR_URL, state: "open", headBranch: maintain.maintenance.headBranch, baseBranch: "main",
+      previousCommit: "d".repeat(40), commit: PUSHED, treeSha: FIX_TREE, checks: [], reconciled: false } });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-142"]);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+    expect(t.state.body.split(START)).toHaveLength(2);
+  });
+
+  const unbind = (harness: Harness, orgId: string) => harness.db.delete(sessionBindingKey(orgId, "ses_00000000000000000001", "linear_issue"));
+  const rebind = (harness: Harness, orgId: string, key: string) => harness.db.set({ ...sessionBindingKey(orgId, "ses_00000000000000000001", "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId, sessionId: "ses_00000000000000000001", binding: { kind: "linear_issue", issueId: key, url: `https://linear.app/issue/${key}` }, at: "2026-10-26T13:00:00.000Z" });
+
+  it("honours an unlink made before the pull request was recorded: it opens without the old Fixes line (re-derived when the pull request is recorded)", async () => {
+    const t = await fixPassed({ boundTo: "ENG-142", beforeOpen: (harness, _taskId, orgId) => unbind(harness, orgId) });
+    expect(closers(t.opened)).toEqual(["Fixes ENG-142"]);
+    expect(closers(t.state.body)).toEqual([]);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+  });
+
+  it("honours a replace made before the pull request was recorded: it opens with the new issue's line", async () => {
+    const t = await fixPassed({ boundTo: "ENG-142", beforeOpen: (harness, _taskId, orgId) => rebind(harness, orgId, "ENG-143") });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-143"]);
+  });
+
+  it("honours a link made before the pull request was recorded when the description was written without one", async () => {
+    const t = await fixPassed({ beforeOpen: (harness, _taskId, orgId) => { harness.db.set({ ...harness.db.get(`DEVTASK#${_taskId}`, "META")!, sessionId: "ses_00000000000000000001" }); rebind(harness, orgId, "ENG-144"); } });
+    expect(closers(t.opened)).toEqual([]);
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-144"]);
+  });
+
+  it("leaves the description alone, with no write, when it already says what the binding says", async () => {
+    const t = await fixPassed({ boundTo: "ENG-142" });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-142"]);
+    expect(t.gateway.updatePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("repairs the line when another writer's write undid a rewrite (the lost-update race), by reading the description and the binding again after the write", async () => {
+    const t = await fixPassed({ boundTo: "ENG-142" });
+    const record = t.record() as unknown as { orgId: string };
+    const before = t.state.body;
+    rebind(t.harness, record.orgId, "ENG-143");
+    t.gateway.updatePullRequest.mockImplementationOnce(async (_url: string, _number: number, change: { body?: string }) => {
+      // Our write lands, and then Rovara's feedback rewrite (which read the description before it) writes its old copy over it.
+      t.state.body = before;
+      void change;
+      return { number: 42, url: PR_URL, state: "closed" as const, headBranch: "x", baseBranch: "main", headCommit: t.state.head, title: "t", body: t.state.body };
+    });
+    const rewrite = (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine;
+    await rewrite(t.record() as never, "ENG-143");
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-143"]);
+  });
+
+  it("does not take the line out because the binding could not be read after the write", async () => {
+    const t = await fixPassed({ boundTo: "ENG-142" });
+    const original = t.harness.db.send.bind(t.harness.db);
+    t.harness.db.send = ((command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
+      if (command.constructor.name === "GetCommand" && String(command.input?.Key?.pk ?? "").includes("SESSION_BINDING#")) return Promise.reject(Object.assign(new Error("table down"), { name: "ServiceUnavailable" }));
+      return original(command as never);
+    });
+    t.state.body = t.state.body.replace(/\n\nFixes ENG-142/u, "");
+    expect(closers(t.state.body)).toEqual([]);
+    const rewrite = (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine;
+    expect(await rewrite(t.record() as never, "ENG-142")).toEqual({ updated: 1, failed: 0 });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-142"]);
+  });
+
+  it("the feedback rewrite checks the binding again after its write, so a link committed meanwhile is not undone", async () => {
+    const t = await fixPassed({ boundTo: "ENG-142" });
+    const record = t.record() as unknown as { orgId: string };
+    t.gateway.updatePullRequest.mockImplementationOnce(async (_url: string, _number: number, change: { body?: string }) => {
+      // The feedback rewrite writes what it computed from the binding it read (ENG-142); the person's replace commits at that moment, and its own write is the one that gets undone.
+      if (change.body !== undefined) t.state.body = change.body;
+      rebind(t.harness, record.orgId, "ENG-999");
+      return { number: 42, url: PR_URL, state: "closed" as const, headBranch: "x", baseBranch: "main", headCommit: t.state.head, title: "t", body: t.state.body };
+    });
+    await t.finishReviews();
+    const maintain = operations(t.harness, t.workspaceId).find((item) => item.kind === "maintain") as { id: string; maintenance: { headBranch: string } };
+    t.state.head = PUSHED;
+    t.state.tree = FIX_TREE;
+    await t.harness.callback(t.workspaceId, maintain.id, "pull-request-update", { repository: "demo", pullRequestNumber: 42, action: "append", headBranch: maintain.maintenance.headBranch, baseBranch: "main", previousCommit: "d".repeat(40), commit: PUSHED });
+    await t.harness.finish(t.workspaceId, maintain.id, "SUCCEEDED", { result: { action: "append", repository: "demo", number: 42, url: PR_URL, state: "open", headBranch: maintain.maintenance.headBranch, baseBranch: "main", previousCommit: "d".repeat(40), commit: PUSHED, treeSha: FIX_TREE, checks: [], reconciled: false } });
+    expect(t.gateway.updatePullRequest).toHaveBeenCalled();
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-999"]);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+  });
+
+  it("rewrites the open pull request's Fixes line at once when the binding changes (Plan 6 Task 20 review)", async () => {
+    const t = await fixPassed();
+    const record = t.record() as unknown as { orgId: string };
+    t.harness.db.set({ ...t.record(), sessionId: "ses_00000000000000000001" });
+    const task = t.record() as never;
+    // The route commits the binding first and then asks for the rewrite, so the binding is moved before each call.
+    const rewrite = (key: string | undefined) => {
+      if (key === undefined) t.harness.db.delete(sessionBindingKey(record.orgId, "ses_00000000000000000001", "linear_issue"));
+      else t.harness.db.set({ ...sessionBindingKey(record.orgId, "ses_00000000000000000001", "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: record.orgId, sessionId: "ses_00000000000000000001", binding: { kind: "linear_issue", issueId: key, url: `https://linear.app/issue/${key}` }, at: now });
+      return (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine(task, key);
+    };
+    expect(record.orgId).toBeDefined();
+    expect(await rewrite("ENG-142")).toEqual({ updated: 1, failed: 0 });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-142"]);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+    expect(await rewrite("ENG-142")).toEqual({ updated: 0, failed: 0 });
+    expect(await rewrite("ENG-143")).toEqual({ updated: 1, failed: 0 });
+    expect(closers(t.state.body)).toEqual(["Fixes ENG-143"]);
+    expect(await rewrite(undefined)).toEqual({ updated: 1, failed: 0 });
+    expect(closers(t.state.body)).toEqual([]);
+    expect(t.state.body).toContain("A note from Priya, kept.");
+    expect(t.state.body.split(START)).toHaveLength(2);
+    expect(await rewrite(undefined)).toEqual({ updated: 0, failed: 0 });
+    // GitHub refusing the write, or a description whose block a person removed, is a failure to report, not an exception.
+    // A merged or closed pull request of the task is left alone.
+    const withMerged = t.record() as unknown as { workflow: { pullRequests: Array<Record<string, unknown>> } };
+    t.harness.db.set({ ...t.record(), workflow: { ...withMerged.workflow, pullRequests: [...withMerged.workflow.pullRequests, { repositoryId: "demo", number: 43, url: "https://github.com/example/demo/pull/43", state: "MERGED" }] } });
+    expect(await (t.harness.actions as unknown as { rewriteLinearCloseLine: (task: never, key: string | undefined) => Promise<{ updated: number; failed: number }> }).rewriteLinearCloseLine(t.record() as never, undefined)).toEqual({ updated: 0, failed: 0 });
+    t.gateway.updatePullRequest.mockRejectedValueOnce(new Error("GitHub down"));
+    expect(await rewrite("ENG-144")).toEqual({ updated: 0, failed: 1 });
+    t.state.body = "A description with no Rovara block.";
+    expect(await rewrite("ENG-144")).toEqual({ updated: 0, failed: 1 });
+    expect(t.state.body).toBe("A description with no Rovara block.");
+  });
 
   it("judges the risk again for the new code in the write that starts the push, and the description's block follows the push", async () => {
     const t = await fixPassed();
@@ -774,5 +912,326 @@ describe("a pushed fix on a version 2 task", () => {
     expect(t.state.body).toContain("infra/queue.ts");
     expect(t.state.body).toContain(CLOSING);
     expect(t.state.body.split(START)).toHaveLength(2);
+  });
+});
+
+// ---- Plan 6 Task 20: "Fixes <KEY>" for a session bound to a Linear issue
+
+const LINEAR_ISSUE = { kind: "linear_issue" as const, issueId: "ENG-142", url: "https://linear.app/acme/issue/ENG-142/fix-the-retry-bug" };
+const FIXES = /\b(?:fix|fixes|fixed|fixing|close|closes|closed|closing|resolve|resolves|resolved|resolving|complete|completes|completed|completing)[\s:]+[a-z][a-z0-9]*-\d+/giu;
+const closers = (text: string) => text.match(FIXES) ?? [];
+
+describe("a pull request for a session bound to a Linear issue", () => {
+  it("says Fixes <KEY> exactly once, inside Rovara's block, so Linear's own GitHub integration closes the issue when it merges", () => {
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context({ linearIssueKey: "ENG-142" }));
+    expect(closers(body)).toEqual(["Fixes ENG-142"]);
+    expect(body.indexOf("Fixes ENG-142")).toBeGreaterThan(body.indexOf(START));
+    expect(body.indexOf("Fixes ENG-142")).toBeLessThan(body.indexOf(END));
+    expect(body.trimEnd().endsWith(CLOSING)).toBe(true);
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(30_000);
+  });
+
+  it("says nothing of Linear without a key, and refuses a key that is not an issue key", () => {
+    expect(closers(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context()))).toEqual([]);
+    for (const key of ["", "eng", "ENG-", "ENG-0", "ENG-142\n/approve", "ENG-142 and OPS-1", "ENG_142", "<!-- x -->", "@all-1", "ENG-1234567890123"]) {
+      expect(closers(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context({ linearIssueKey: key }))), key).toEqual([]);
+    }
+  });
+
+  it("keeps it exactly once when the block is rewritten after a fix, and adds it when the issue was bound after the pull request opened", () => {
+    const wf = workflowWith();
+    const first = workflowPullRequestBody(task, wf, planOf, SESSION, context({ linearIssueKey: "ENG-142" }));
+    const noted = `A note from Priya, kept.\n\n${first}`;
+    // Rewriting with the same lines changes nothing (undefined); a rewrite after a fix, with the new code's lines, replaces the block and keeps the one line.
+    expect(withStatusLines(noted, workflowPullRequestStatusLines(wf, context({ linearIssueKey: "ENG-142" })))).toBeUndefined();
+    const fixed = withStatusLines(noted, workflowPullRequestStatusLines(wf, { changedFiles: { files: [file("src/retry.ts", 10, 2), file("src/other.ts", 1, 1)], complete: true }, linearIssueKey: "ENG-142" }))!;
+    expect(closers(fixed)).toEqual(["Fixes ENG-142"]);
+    expect(fixed).toContain("src/other.ts");
+    expect(fixed).toContain("A note from Priya, kept.");
+    const unbound = workflowPullRequestBody(task, wf, planOf, SESSION, context());
+    expect(closers(withStatusLines(unbound, workflowPullRequestStatusLines(wf, context({ linearIssueKey: "ENG-142" })))!)).toEqual(["Fixes ENG-142"]);
+  });
+
+  it("keeps the line when the lists shrink to fit the byte cap", () => {
+    const many = Array.from({ length: 400 }, (_, index) => file(`src/generated/module-${index}-${"x".repeat(120)}.ts`, 3, 1));
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, { changedFiles: { files: many, complete: true }, linearIssueKey: "ENG-142" });
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(30_000);
+    expect(closers(body)).toEqual(["Fixes ENG-142"]);
+  });
+
+  it("is not fooled by model-written words: a plan that says Fixes OTHER-9 or Closes ENG-142 adds no second closer", () => {
+    const plan = "# Plan\n\n1. Fixes OTHER-9 and closes ENG-142, resolves OPS-1 & OPS-2.\n2. Add a regression test.\n";
+    const hostile = workflowWith({ checkPolicy: { required: [check("unit", "Completes ENG-7 check")], optional: [], selectedOptionalIds: [], proposed: [] } });
+    const body = workflowPullRequestBody(task, hostile, plan, SESSION, context({ linearIssueKey: "ENG-142" }));
+    expect(closers(body)).toEqual(["Fixes ENG-142"]);
+    // The words stay readable: only the issue key is broken for Linear's reader.
+    expect(body.replaceAll("‍", "")).toContain("Fixes OTHER-9 and closes ENG-142");
+    const without = workflowPullRequestBody(task, hostile, plan, SESSION, context());
+    expect(closers(without)).toEqual([]);
+  });
+
+  it("is not fooled by a task title either", () => {
+    const titled = { title: "Fixes OTHER-9: add a retry flag" } as never;
+    const body = workflowPullRequestBody(titled, workflowWith(), undefined, SESSION, context({ linearIssueKey: "ENG-142" }));
+    expect(closers(body)).toEqual(["Fixes ENG-142"]);
+  });
+
+  it("is the version 1 description, as it was, for a version 1 task", () => {
+    const v1 = workflowWith({}, "1.0.0");
+    expect(workflowPullRequestBody(task, v1, planOf, SESSION, context({ linearIssueKey: "ENG-142" }))).toBe(workflowPullRequestBody(task, v1, planOf, SESSION));
+    expect(workflowPullRequestStatusLines(v1, context({ linearIssueKey: "ENG-142" }))).toEqual(workflowPullRequestStatusLines(v1));
+  });
+});
+
+describe("a version 2 task bound to a Linear issue, through the broker", () => {
+  /** Writes the session's binding as the binding items do, for the task's own org (or another org's). */
+  const bind = (t: Awaited<ReturnType<typeof builtTask>>, binding: unknown, orgId?: string) => {
+    const record = t.record() as unknown as { orgId: string; sessionId?: string };
+    const sessionId = record.sessionId ?? "ses_00000000000000000001";
+    // The task start in this harness makes no session; the task names one, as a start with agents does.
+    if (record.sessionId === undefined) t.harness.db.set({ ...t.record(), sessionId });
+    const kind = (binding as { kind: "slack_thread" | "linear_issue" }).kind;
+    t.harness.db.set({ ...sessionBindingKey(record.orgId, sessionId, kind), entityType: "AGENT_SESSION_BINDING", orgId: orgId ?? record.orgId, sessionId, binding, at: now });
+    return sessionId;
+  };
+
+  it("opens the pull request with Fixes <KEY> once, and the title is untouched", async () => {
+    const t = await builtTask("1.1.0", ["src/retry.ts"]);
+    bind(t, LINEAR_ISSUE);
+    await t.passReviews();
+    const publication = t.publication()!.publication;
+    expect(closers(String(publication.body))).toEqual(["Fixes ENG-142"]);
+    expect(String(publication.title)).toBe("Rovara: Fix the retry bug");
+  });
+
+  it("finds the key in the issue's link when the issue id is not a key", async () => {
+    const t = await builtTask("1.1.0", ["src/retry.ts"]);
+    bind(t, { ...LINEAR_ISSUE, issueId: "7c1f2d9e-4b1a-4f66-9d0e-5a3c1b2d4e6f" });
+    await t.passReviews();
+    expect(closers(String(t.publication()!.publication.body))).toEqual(["Fixes ENG-142"]);
+  });
+
+  it("says nothing for no binding, a Slack thread alone, a binding that names another org, or an issue link that is not Linear's", async () => {
+    const cases: Array<[string, (t: Awaited<ReturnType<typeof builtTask>>) => void]> = [
+      ["no binding", () => undefined],
+      ["a Slack thread alone", (t) => bind(t, { kind: "slack_thread", teamId: "T0TEAM001", channelId: "C0CHAN001", threadTs: "1695500000.000031" })],
+      ["another org's binding", (t) => bind(t, LINEAR_ISSUE, "org_bbbbbbbbbbbbbbbbbbbb")],
+      ["an issue that is not a key and a link that is not Linear's", (t) => bind(t, { kind: "linear_issue", issueId: "7c1f2d9e-4b1a-4f66-9d0e-5a3c1b2d4e6f", url: "https://evil.example/acme/issue/ENG-142/x" })],
+      ["an id and a link that name different issues", (t) => bind(t, { ...LINEAR_ISSUE, url: "https://linear.app/acme/issue/OPS-9/x" })],
+    ];
+    for (const [name, set] of cases) {
+      const t = await builtTask("1.1.0", ["src/retry.ts"]);
+      set(t);
+      await t.passReviews();
+      expect(closers(String(t.publication()!.publication.body)), name).toEqual([]);
+    }
+  });
+
+  it("does not let a task's title close another issue", async () => {
+    const t = await builtTask("1.1.0", ["src/retry.ts"], undefined, "Fixes OTHER-9 by adding a retry flag");
+    bind(t, LINEAR_ISSUE);
+    await t.passReviews();
+    const publication = t.publication()!.publication;
+    expect(closers(String(publication.title))).toEqual([]);
+    expect(String(publication.title).replaceAll("\u200D", "")).toContain("Fixes OTHER-9");
+    expect(closers(String(publication.body))).toEqual(["Fixes ENG-142"]);
+  });
+
+  it("does not add it to a version 1 task's pull request", async () => {
+    const t = await builtTask("1.0.0", ["src/retry.ts"]);
+    bind(t, LINEAR_ISSUE);
+    await t.passReviews();
+    expect(closers(String(t.publication()!.publication.body))).toEqual([]);
+  });
+
+  it("still opens the pull request when the binding cannot be read", async () => {
+    const t = await builtTask("1.1.0", ["src/retry.ts"]);
+    bind(t, LINEAR_ISSUE);
+    const original = t.harness.db.send.bind(t.harness.db);
+    t.harness.db.send = ((command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
+      if (command.constructor.name === "GetCommand" && String(command.input?.Key?.pk ?? "").includes("SESSION_BINDING#")) return Promise.reject(Object.assign(new Error("table down"), { name: "ServiceUnavailable" }));
+      return original(command as never);
+    });
+    await t.passReviews();
+    expect(t.publication()).toBeDefined();
+    expect(closers(String(t.publication()!.publication.body))).toEqual([]);
+  });
+});
+
+// ---- Plan 6 Task 20 review fixes: no text but Rovara's own Fixes line may name a Linear issue
+
+/** The Linear-key-shaped tokens in a text (a title carries none). The session link (a uuid) is cut out first. */
+const bareKeys = (text: string) => (text.replace(SESSION, "").match(/[A-Za-z][A-Za-z0-9]*-\d+/gu) ?? []);
+/** What Linear acts on: a magic word (closing or linking) as a whole word, then a key within a few characters. The session link is cut out first. */
+const MAGIC = /(?<![A-Za-z0-9])(?:close[sd]?|closing|fix(?:es|ed|ing)?|resolve[sd]?|resolving|complete[sd]?|completing|implement(?:s|ed|ing)?|refs?|references|towards?|updates|part\s+of|contributes?\s+to|relates?\s+to|related\s+to)(?![A-Za-z0-9])(?:[^A-Za-z0-9]|&[a-z]+;|&#x?[0-9a-f]+;){0,12}[A-Za-z][A-Za-z0-9]*\\?-\d+/giu;
+const readable = (text: string) => (text.replace(SESSION, "").match(MAGIC) ?? []).map((found) => found.replace(/[^A-Za-z0-9-]+/gu, " ").trim());
+
+describe("every text path into a version 2 pull request leaves no Linear key but Rovara's own Fixes line", () => {
+  const OWN = "ENG-142";
+  const withOwn = (extra: Record<string, unknown> = {}) => context({ linearIssueKey: OWN, ...extra });
+  const onlyOwn = (body: string) => expect(readable(body)).toEqual(["Fixes ENG-142"]);
+  const accepted = (text: string, reason: string) => {
+    const finding = { text, origin: "INTRODUCED", severity: "HIGH", file: "src/retry.ts", line: 4 };
+    const code = candidate("1");
+    return workflowWith({
+      reviews: [
+        { operationId: randomUUID(), candidateDigest: code.digest, role: "CRITIC", provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: now },
+        { operationId: randomUUID(), candidateDigest: code.digest, role: "SECURITY", provider: "t", version: "1", status: "FINDINGS", findings: [finding], readOnly: true, recordedAt: now },
+      ],
+      acceptedFindings: [{ candidateDigest: code.digest, role: "SECURITY", fingerprint: workflowFindingFingerprint("SECURITY", finding), text, reason, actorId: ownerId, at: now }],
+    });
+  };
+
+  it("an accepted review finding, and the owner's reason for accepting it", () => {
+    const body = workflowPullRequestBody(task, accepted("This also fixes OPS-12's null check", "Closes OPS-13 as well"), planOf, SESSION, withOwn());
+    expect(body).toContain("Owner accepted 1 review finding");
+    onlyOwn(body);
+    expect(body.replaceAll("‍", "")).toContain("This also fixes OPS-12's null check");
+    // The same through the block that a pushed fix rewrites.
+    const lines = workflowPullRequestStatusLines(accepted("_Fixes OPS-12_", "see (OPS-13)"), withOwn());
+    expect(readable(lines.join("\n"))).toEqual(["Fixes ENG-142"]);
+  });
+
+  it("the plan's summary", () => {
+    onlyOwn(workflowPullRequestBody(task, workflowWith(), "# Plan\n\n1. _Fixes OPS-3_ by retrying; also `OPS-4` and (OPS-5).\n2. Fixes ENG-1 ENG-2\n", SESSION, withOwn()));
+  });
+
+  it("the task's title, when there is no plan", () => {
+    onlyOwn(workflowPullRequestBody({ title: "OPS-9 and Fixes OPS-10" } as never, workflowWith(), undefined, SESSION, withOwn()));
+  });
+
+  it("a changed file's path, its old name and its repository", () => {
+    const files = [{ repository: "payments", path: "docs/OPS-12-notes.md", added: 1, removed: 0 }, { repository: "OPS-14", path: "src/new.ts", renamedFrom: "src/Fixes-OPS-15.ts", added: 1, removed: 1 }];
+    onlyOwn(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn({ changedFiles: { files, complete: true } })));
+  });
+
+  it("a check's label, a failed check, a check that couldn't run, a test added and the reason there was no check", () => {
+    const failing = workflowWith({
+      stage: "VERIFY", state: "BLOCKED", blockReason: "candidate checks failed or have unknown results", reviews: undefined,
+      checkPolicy: { required: [check("unit", "Unit OPS-1"), check("lint", "Lint OPS-2"), check("types", "Types OPS-3")], optional: [], selectedOptionalIds: [], proposed: [] },
+      verification: { candidateDigest: candidate("1").digest, producer: "agentx-broker", environmentId: "ci", recordedAt: now,
+        results: [{ checkId: "unit", status: "PASS" }, { checkId: "lint", status: "FAILED" }, { checkId: "types", status: "FAILED", programNotFound: true }] },
+    });
+    onlyOwn(workflowPullRequestBody(task, failing, planOf, SESSION, withOwn({ changedFiles: { files: [file("src/OPS-4.test.ts")], complete: true } })));
+    const reviewOnly = workflowWith({
+      stage: "REVIEW", state: "WAITING", reviews: undefined,
+      checkPolicy: { required: [], optional: [], selectedOptionalIds: [], proposed: [], noneReason: "Documentation only, see OPS-9" },
+      verification: { candidateDigest: candidate("1").digest, producer: "agentx-broker", environmentId: "ci", recordedAt: now, results: [], reviewOnly: true },
+    });
+    onlyOwn(workflowPullRequestBody(task, reviewOnly, planOf, SESSION, withOwn()));
+  });
+
+  it("the base branch's name, and a risk reason", () => {
+    onlyOwn(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn({ ciBasis: "all_checks", baseBranch: "release/OPS-77" })));
+    onlyOwn(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn({ changedFiles: { files: [file("db/migrations/OPS-8.sql")], complete: true } })));
+  });
+
+  it("anything at all that reaches the block: a final pass breaks it, and keeps Rovara's own line and the session link whole", () => {
+    // A path that skipped every per-line guard still cannot name an issue.
+    const lines = workflowPullRequestStatusLines(workflowWith(), withOwn({ changedFiles: { files: [file("OPS-1.ts")], complete: true } }));
+    expect(lines).toContain("Fixes ENG-142");
+    expect(readable(lines.join("\n"))).toEqual(["Fixes ENG-142"]);
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn());
+    expect(body).toContain(`Rovara session: ${SESSION}`);
+    expect(body).toContain(CLOSING);
+  });
+
+  it("the 'Fixes from PR feedback' section, which a reviewer model writes from comments anyone can post", () => {
+    const fixes = [
+      { summary: "Fixes OPS-12 and the null check", comments: ["https://github.com/example/demo/pull/42#issuecomment-1"] },
+      { summary: "_Part of OPS-13_: closes OPS-14", comments: [] },
+      { summary: "Resolves UTF-8 handling", comments: ["https://github.com/example/demo/pull/42#issuecomment-2", "https://github.com/example/demo/pull/42#issuecomment-3"] },
+    ];
+    const section = withFeedbackFixes(`${workflowPullRequestBody(task, workflowWith(), planOf, SESSION, withOwn())}`, fixes);
+    expect(section.body).toBeDefined();
+    expect(readable(section.body!)).toEqual(["Fixes ENG-142"]);
+    // Ordinary text of the section is as it was.
+    expect(section.body).toContain("Fixes from PR feedback");
+    expect(section.body).toContain("the null check");
+    expect(readable(feedbackFixesSection(fixes, 10_000))).toEqual([]);
+  });
+
+  it("without a key of its own, no key at all", () => {
+    expect(readable(workflowPullRequestBody(task, accepted("Fixes OPS-12", "Part of OPS-13"), "1. Closes OPS-3", SESSION, context()))).toEqual([]);
+  });
+});
+
+describe("technical text in a version 2 description stays as it is", () => {
+  it("keeps UTF-8, SHA-256, node-22, x86-64 and paths byte for byte, including in a risk reason (no stray space where a joiner was)", () => {
+    const files = [file("db/V1-2__init.sql"), file("src/utf-8-handler.ts"), file("docs/ADR-0007.md"), file("scripts/sha-256.sh")];
+    const lines = workflowPullRequestStatusLines(workflowWith(), context({ linearIssueKey: "ENG-142", changedFiles: { files, complete: true } }));
+    const body = lines.join("\n");
+    for (const text of ["db/V1-2__init.sql", "src/utf-8-handler.ts", "docs/ADR-0007.md", "scripts/sha-256.sh"]) expect(body, text).toContain(text);
+    expect(body).toMatch(/Changes sensitive paths: db\/V1-2__init\.sql/u);
+    expect(body).not.toContain("V1- 2");
+    expect(body).not.toContain("\u200D");
+    const full = workflowPullRequestBody(task, workflowWith(), "# Plan\n\n1. Use UTF-8 and SHA-256 on node-22 (x86-64)\n2. Run `git checkout feature-2`\n", SESSION, context({ linearIssueKey: "ENG-142", changedFiles: { files, complete: true } }));
+    expect(full).toContain("Use UTF-8 and SHA-256 on node-22 (x86-64)");
+    expect(full).toContain("git checkout feature-2");
+    expect(full).not.toContain("\u200D");
+  });
+
+  it("keeps the joiner it puts in a name that holds a magic word and a key, in the block and in a risk reason (it is not inerted a second time into a space)", () => {
+    const files = [file("db/migrations/Fixes-ENG-1.sql")];
+    const body = workflowPullRequestStatusLines(workflowWith(), context({ linearIssueKey: "ENG-142", changedFiles: { files, complete: true } })).join("\n");
+    expect(body).toContain("Changes sensitive paths: db/migrations/F\u200Dixes-ENG-1.sql");
+    expect(body).not.toContain("F ixes");
+    expect(readable(body)).toEqual(["Fixes ENG-142"]);
+  });
+});
+
+describe("a pull request's title names no issue", () => {
+  it("a task's title with a bare key, or a closing word and a key, comes out with the key broken", async () => {
+    for (const instructions of ["ENG-9 login retry", "Fixes OTHER-9 by adding a retry flag", "_Closes OPS-1_ now", "Retry (OPS-2)"]) {
+      const t = await builtTask("1.1.0", ["src/retry.ts"], undefined, instructions);
+      await t.passReviews();
+      const title = String(t.publication()!.publication.title);
+      expect(bareKeys(title), instructions).toEqual([]);
+      expect(title.replaceAll("‍", ""), instructions).toContain("Rovara: ");
+    }
+  });
+
+  it("a version 1 task's title is as it was", async () => {
+    const t = await builtTask("1.0.0", ["src/retry.ts"], undefined, "ENG-9 login retry");
+    await t.passReviews();
+    expect(String(t.publication()!.publication.title)).toBe("AgentX: ENG-9 login retry");
+  });
+});
+
+describe("the open pull request's Fixes line follows the binding at once", () => {
+  const BLOCK = (...lines: string[]) => ["Plan", "", START, "## Risk: Low", "- ok", ...lines, END, "Rovara session: x", CLOSING].join("\n");
+
+  it("withLinearCloseLine takes Rovara's line out, puts a new one in, and touches nothing outside the block", () => {
+    const withOld = `A note from Priya. Fixes ENG-1 by hand.\n\n${BLOCK("", "Fixes ENG-142")}`;
+    const removed = withLinearCloseLine(withOld, undefined);
+    expect(removed).toEqual({ kind: "changed", body: `A note from Priya. Fixes ENG-1 by hand.\n\n${BLOCK()}` });
+    const body = (removed as { body: string }).body;
+    expect(body).not.toContain("Fixes ENG-142");
+    expect(body).toContain("A note from Priya. Fixes ENG-1 by hand.");
+    expect(body.split(START)).toHaveLength(2);
+    expect(withLinearCloseLine(withOld, "ENG-143")).toEqual({ kind: "changed", body: withOld.replace("Fixes ENG-142", "Fixes ENG-143") });
+    expect(withLinearCloseLine(BLOCK(), "ENG-143")).toEqual({ kind: "changed", body: BLOCK("", "Fixes ENG-143") });
+    expect(withLinearCloseLine(withOld, "ENG-142")).toEqual({ kind: "same" });
+    expect(withLinearCloseLine(BLOCK(), undefined)).toEqual({ kind: "same" });
+  });
+
+  it("takes out only a line that is exactly Rovara's own, not words of a person's inside the block", () => {
+    const noted = BLOCK("", "A person wrote: Fixes ENG-9 here", "Fixes ENG-142 too", "Fixes ENG-142");
+    const removed = withLinearCloseLine(noted, undefined) as { kind: string; body: string };
+    expect(removed.body).toContain("A person wrote: Fixes ENG-9 here");
+    expect(removed.body).toContain("Fixes ENG-142 too");
+    expect(removed.body.split("\n").filter((line) => line === "Fixes ENG-142")).toEqual([]);
+    expect(withLinearCloseLine(BLOCK("", "Fixes ENG-142 too"), undefined)).toEqual({ kind: "same" });
+  });
+
+  it("keeps a CRLF description's endings, and refuses a description whose block is not as Rovara wrote it", () => {
+    const crlf = BLOCK("", "Fixes ENG-142").replaceAll("\n", "\r\n");
+    const changed = withLinearCloseLine(crlf, "ENG-143") as { kind: string; body: string };
+    expect(changed.body).toContain("Fixes ENG-143\r\n");
+    expect(changed.body).not.toMatch(/[^\r]\n/u);
+    for (const odd of [`${START}\nx`, `x\n${END}`, `${END}\n${START}`, `${START}\n${START}\n${END}`, "no block at all"]) {
+      expect(withLinearCloseLine(odd, "ENG-143"), odd).toEqual({ kind: "no_block" });
+    }
+    expect(withLinearCloseLine("no block at all", undefined)).toEqual({ kind: "same" });
   });
 });

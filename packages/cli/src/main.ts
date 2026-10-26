@@ -87,7 +87,7 @@ import {
 import { hooksCreate, hooksDelete, hooksList, hooksRotate } from "./developer/hooks.js";
 import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
-import { homeCards, sessionControl, sessionFollow, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
+import { homeCards, sessionControl, sessionFollow, sessionLinkIssue, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -791,7 +791,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         mine: options.mine, shared: options.shared, ...(project === undefined ? {} : { project }), ...(options.live === undefined ? {} : { live: options.live }), ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
       }));
     });
-  const session = program.command("session").description("look at one session, comment on it, tell its agent, stop it, retry it, take it over or share it");
+  const session = program.command("session").description("look at one session, comment on it, tell its agent, stop it, retry it, take it over, share it or link it to a Linear issue");
   session
     .command("show")
     .description("show a session: its link, status, owner, cost and what waits for you")
@@ -836,6 +836,15 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--level <level>", "view, use or edit")
     .action(async (id: string, options: { with?: string; level?: string }, command: Command) =>
       printResult(command, await sessionShare(developerSession(), developerEnv(command), id, { ...(options.with === undefined ? {} : { with: options.with }), ...(options.level === undefined ? {} : { level: options.level }) })));
+  session
+    .command("link")
+    .description("link a Rovara Code session to a Linear issue, so its pull request says Fixes <KEY>; needs \"can edit\" on the session")
+    .argument("<task-or-session>", "the session's ID (from agentx sessions) or the task's ID")
+    .option("--linear <issue>", "the Linear issue's key (like TEAM-123) or its linear.app link")
+    .option("--replace", "change the issue when the session already follows another", false)
+    .option("--unlink", "let go of the session's Linear issue", false)
+    .action(async (ref: string, options: { linear?: string; replace: boolean; unlink: boolean }, command: Command) =>
+      printResult(command, await sessionLinkIssue(developerSession(), developerEnv(command), ref, { ...(options.linear === undefined ? {} : { linear: options.linear }), replace: options.replace, unlink: options.unlink })));
   program
     .command("home")
     .description("what needs you now: approvals, plans, spend requests, pull requests and failures")

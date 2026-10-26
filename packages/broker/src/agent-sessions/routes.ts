@@ -27,6 +27,7 @@ import { answerIntentOnSession } from "../rovara-code/questions.js";
 import { changeAnywayOnSession } from "../rovara-code/change-anyway.js";
 import { stopSession } from "./stop.js";
 import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
+import { linkLinearOnSession, unlinkLinearOnSession } from "../rovara-code/link-linear.js";
 import { readChanges } from "../realtime/changes.js";
 import type { RealtimeConfig } from "../realtime/publish.js";
 import { realtimeTokenFor, type RealtimeTokenDependencies } from "../realtime/token.js";
@@ -54,6 +55,8 @@ export type SessionRouteCaller = DeveloperCaller;
 const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|handoff|answers|change-anyway))?)?$/;
 const LOCAL_REGISTER_PATH = "/v1/app/sessions/local";
 const LOCAL_UPDATE_PATH = /^\/v1\/app\/sessions\/([^/]+)\/local\/updates$/;
+/** Plan 6 Task 20: `POST …/bindings` links a session to a Linear issue and `DELETE …/bindings/linear` lets it go (a path of its own, beside the local-session ones). */
+const BINDINGS_PATH = /^\/v1\/app\/sessions\/([^/]+)\/bindings(?:\/(linear))?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const LIVE_PATH = "/v1/app/live";
 const PROJECT_OVERVIEW_PATH = /^\/v1\/app\/projects\/([^/]+)\/overview$/;
@@ -208,6 +211,15 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   if (localUpdate !== null) {
     if (request.method !== "POST") throw notFound();
     return recordLocalUpdate({ ...read, realtimePublish: deps.realtimePublish }, caller, localUpdate[1]!, jsonBody(request));
+  }
+  const bindingsOf = BINDINGS_PATH.exec(url.pathname);
+  if (bindingsOf !== null) {
+    // Both need "can edit" on the session; an id that can't be a session is no session.
+    const bound = SessionIdSchema.safeParse(bindingsOf[1]);
+    if (!bound.success) throw agentXError("NOT_FOUND", "session not found");
+    if (request.method === "POST" && bindingsOf[2] === undefined) return linkLinearOnSession(read, caller, bound.data, jsonBody(request));
+    if (request.method === "DELETE" && bindingsOf[2] === "linear") return unlinkLinearOnSession(read, caller, bound.data);
+    throw notFound();
   }
   const matched = PATH.exec(url.pathname);
   if (matched === null) throw notFound();

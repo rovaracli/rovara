@@ -197,6 +197,52 @@ export async function sessionShare(deps: DeveloperSessionDeps, env: string | und
   return result(answer, answer.body, `Shared with ${who} (${LEVEL_WORDS[level]}).\n${linkOf(answer.url, id)}\n`);
 }
 
+// ---- linking a session to a Linear issue
+
+const LINEAR_KEY = /^[A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$/u;
+const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** A Linear issue as a person types it: its key (ENG-142) or its link. The control plane checks it again; this only keeps an obvious mistake from being sent. */
+const isLinearIssue = (text: string): boolean => LINEAR_KEY.test(text) || (text.length <= URL_MAX && /^https:\/\/linear\.app\/[^\s]+$/u.test(text));
+
+/** The session a person named: a session ID, or a task ID, whose session is asked for. */
+async function sessionOfRef(deps: DeveloperSessionDeps, env: string | undefined, ref: string): Promise<string> {
+  if (SessionIdSchema.safeParse(ref).success) return ref;
+  if (!TASK_ID.test(ref)) throw agentXError("CONFIG_INVALID", "give a session ID (ses_...) from agentx sessions, or a task ID");
+  const answer = await appRequest(deps, env, `/v1/dev/tasks/${seg(ref)}`);
+  const sessionId = (answer.body.task as Body | undefined)?.sessionId;
+  if (typeof sessionId !== "string" || !SessionIdSchema.safeParse(sessionId).success) throw agentXError("CONFIG_INVALID", "that task has no session, so there is nothing to link; start the work from the app or the CLI to get a session");
+  return sessionId;
+}
+
+/**
+ * `session link <task-or-session> --linear <KEY|URL> [--replace]` links a Rovara Code session to a Linear issue; `--unlink` lets it go. The pull request Rovara opens (or next updates) then says
+ * `Fixes <KEY>`, which Linear's own GitHub integration closes the issue on when it merges. Needs "can edit" on the session; the control plane decides, and its refusal is printed as it wrote it.
+ */
+export async function sessionLinkIssue(deps: DeveloperSessionDeps, env: string | undefined, ref: string, input: { linear?: string; unlink?: boolean; replace?: boolean }): Promise<AppResult> {
+  const linear = input.linear?.trim();
+  if ((linear === undefined) === (input.unlink !== true)) throw agentXError("CONFIG_INVALID", "give one of --linear <KEY|link> and --unlink");
+  if (linear !== undefined && !isLinearIssue(linear)) throw agentXError("CONFIG_INVALID", "--linear takes an issue key like TEAM-123, or the issue's linear.app link");
+  if (input.replace === true && linear === undefined) throw agentXError("CONFIG_INVALID", "--replace goes with --linear");
+  const id = await sessionOfRef(deps, env, ref);
+  const answer = linear === undefined
+    ? await appRequest(deps, env, sessionPath(id, "/bindings/linear"), { method: "DELETE" })
+    : await appRequest(deps, env, sessionPath(id, "/bindings"), { method: "POST", body: { linear, ...(input.replace === true ? { replace: true } : {}) } });
+  const view = (answer.body.session ?? {}) as Body;
+  const issue = list(view.bindings).find((binding) => binding.kind === "linear_issue");
+  const issueUrl = typeof issue?.url === "string" && /^https:\/\/linear\.app\/[^\s]+$/u.test(issue.url) ? issue.url : undefined;
+  const key = issueUrl === undefined ? undefined : /\/issue\/([A-Za-z0-9-]+)$/u.exec(issueUrl)?.[1];
+  const what = linear === undefined ? "Unlinked the Linear issue from this session." : `Linked this session to Linear issue ${key ?? clean(linear)}.`;
+  // What became of the pull request's description, as the server says it: the promise of a Fixes line only where it will be there, and its note (clean) where the person has to act.
+  const description = (answer.body.pullRequest ?? {}) as Body;
+  const carries = linear !== undefined && (description.description === "updated" || description.description === "next_update");
+  const note = [
+    ...(carries ? [`Its pull request description will say Fixes ${key ?? clean(linear)}, so Linear's GitHub integration closes the issue when it merges.`] : []),
+    ...(typeof description.note === "string" && description.note.trim() !== "" ? [clean(description.note)] : []),
+  ];
+  return result(answer, answer.body, `${[what, ...note, linkOf(answer.url, id, view.link)].join("\n")}\n`);
+}
+
 // ---- Home
 
 export async function homeCards(deps: DeveloperSessionDeps, env: string | undefined): Promise<AppResult> {

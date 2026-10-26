@@ -5,6 +5,7 @@
 import type { RiskAssessment, VerificationReport, WorkflowSnapshot } from "@agentx/contracts";
 import { ROVARA_STATUS_END, ROVARA_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { inertLine } from "./inert-text.js";
+import { linearCloseLine, neutralizeLinearWords, normalizeIssueKey, sealLinearText } from "./linear-close.js";
 import { assessRisk, riskHeading } from "./risk.js";
 import { verificationReport, type ChangedFileEntry, type VerificationProject } from "./verification-report.js";
 
@@ -35,6 +36,8 @@ export interface PullRequestBodyContext {
   ciBasis?: "required" | "all_checks" | undefined;
   /** The base branch's name, for the all-checks line. */
   baseBranch?: string | undefined;
+  /** The Linear issue key the task's session follows (Plan 6 Task 20): the block then says `Fixes <KEY>`, which Linear's GitHub integration closes the issue on. Anything that is not a key is ignored. */
+  linearIssueKey?: string | undefined;
 }
 
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
@@ -132,14 +135,17 @@ function testLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, 
  */
 export function rovaraStatusLines(workflow: WorkflowSnapshot, context: PullRequestBodyContext, reviewLines: (listed: number) => string[], budgetBytes = PULL_REQUEST_BODY_MAX_BYTES - SUMMARY_MAX_BYTES - 2_000): string[] {
   const risk = riskShown(workflow, context);
+  const linearKey = normalizeIssueKey(context.linearIssueKey);
   let lines: string[] = [];
   for (const limit of LIST_LIMITS) {
-    lines = [
+    // The last guard: whatever a path let through, no line has a Linear magic word before a key but Rovara's own Fixes line.
+    lines = sealLinearText([
       "## What changed", ...changedLines(context, limit), "",
       "## Tests", ...testLines(workflow, context, limit), "",
       "## Reviews", ...reviewLines(limit), "",
-      `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${inertLine(reason, ITEM_MAX)}`),
-    ];
+      `## Risk: ${riskHeading(risk?.level ?? "medium")}`, ...(risk?.reasons ?? ["Rovara couldn't assess this change."]).map((reason) => `- ${Array.from(reason).slice(0, ITEM_MAX).join("")}`),
+      ...(linearKey === undefined ? [] : ["", linearCloseLine(linearKey)]),
+    ], linearKey);
     if (byteLength(lines.join("\n")) <= budgetBytes) return lines;
   }
   return lines;
@@ -173,7 +179,7 @@ export function rovaraPullRequestBody(input: {
 }): string {
   // The plan's words are a model's: they sit under their own heading as a quotation (a quotation holds a heading, a fence or a rule inside it), so they cannot pose as one of Rovara's sections.
   const summary = summaryOf(input.summary);
-  const quoted = (summary.length > 0 ? summary : [inertLine(input.fallbackTitle, SUMMARY_LINE_MAX)]).map((line) => `> ${line}`);
+  const quoted = (summary.length > 0 ? summary : [inertLine(input.fallbackTitle, SUMMARY_LINE_MAX)]).map((line) => `> ${neutralizeLinearWords(line)}`);
   const head = ["## Plan summary", ...quoted];
   const tail = [...(input.pageUrl === undefined ? [] : [`Rovara session: ${input.pageUrl}`, ""]), ROVARA_PULL_REQUEST_CLOSING];
   const assemble = (headLines: readonly string[], block: readonly string[]) => [...headLines, "", ROVARA_STATUS_START, ...block, ROVARA_STATUS_END, ...tail].join("\n");
@@ -181,4 +187,37 @@ export function rovaraPullRequestBody(input: {
   const block = rovaraStatusLines(input.workflow, input.context, input.reviewLines, PULL_REQUEST_BODY_MAX_BYTES - fixed);
   // The block's budget leaves room for the summary at its largest, and the block at its shortest (no list entries) is a few kilobytes, so this always fits.
   return assemble(head, block);
+}
+
+// ---- the open description follows the binding
+
+/** The line Rovara wrote itself: `Fixes <KEY>` and nothing else on the line. */
+const OWN_FIXES_LINE = /^Fixes [A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$/u;
+
+/**
+ * An open pull request's description with Rovara's `Fixes <KEY>` line inside its marked block changed to `key`, or taken out when `key` is undefined (a binding that was replaced or removed). Only the block
+ * is touched, only a line that is exactly Rovara's own, and the person's words around the block stay. `same`: nothing to change. `no_block`: a line is wanted but the block is not as Rovara wrote it (it was
+ * edited away, doubled or cut), so nothing is written; with no `key` and no block there is nothing of Rovara's to take out.
+ */
+export function withLinearCloseLine(body: string, key: string | undefined): { kind: "same" } | { kind: "changed"; body: string } | { kind: "no_block" } {
+  const start = body.indexOf(ROVARA_STATUS_START);
+  const end = body.indexOf(ROVARA_STATUS_END);
+  if (start === -1 && end === -1) return key === undefined ? { kind: "same" } : { kind: "no_block" };
+  if (start === -1 || end === -1 || end < start || body.indexOf(ROVARA_STATUS_START, start + 1) !== -1 || body.indexOf(ROVARA_STATUS_END, end + 1) !== -1) return { kind: "no_block" };
+  const eol = body.includes("\r\n") ? "\r\n" : "\n";
+  const inner = body.slice(start + ROVARA_STATUS_START.length, end).split(eol);
+  const found = inner.flatMap((line, index) => (OWN_FIXES_LINE.test(line) ? [index] : []));
+  const wanted = key === undefined ? undefined : linearCloseLine(key);
+  let next: string[];
+  if (found.length === 0) {
+    if (wanted === undefined) return { kind: "same" };
+    // Before the last (empty) element, which is the line break before the end marker.
+    next = [...inner.slice(0, -1), "", wanted, ...inner.slice(-1)];
+  } else if (wanted === undefined) {
+    next = inner.filter((_line, index) => !found.includes(index) && !(index === found[0]! - 1 && inner[index] === ""));
+  } else {
+    if (found.length === 1 && inner[found[0]!] === wanted) return { kind: "same" };
+    next = inner.flatMap((line, index) => (index === found[0] ? [wanted] : found.includes(index) ? [] : [line]));
+  }
+  return { kind: "changed", body: `${body.slice(0, start + ROVARA_STATUS_START.length)}${next.join(eol)}${body.slice(end)}` };
 }

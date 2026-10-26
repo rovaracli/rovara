@@ -12,6 +12,7 @@ import { failedIndexes, isTransactionConflict } from "../agents/table-writes.js"
 import type { InstallationCreatedPayload } from "../org/github-install-requests.js";
 import type { InstallationLifecycleEvent } from "../org/github-connection.js";
 import { feedbackReopenedMeasure, type FeedbackReviewMeasure } from "../developer/feedback-review-measures.js";
+import { mergedMilestoneItems } from "../rovara-code/merged.js";
 
 const DELIVERY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GitHubWebhookPayloadSchema = z.object({
@@ -209,7 +210,7 @@ export interface ReconcileTaskPullRequestFeedbackInput {
   observationMode?: "feedback" | "merge";
   /** The head a push event says the pull request now has (a hint): until GitHub's own read shows it, nothing is decided. */
   expectedHeadSha?: string;
-  loadTask(taskId: string): Promise<{ project: string; startingRevision: number; orgId?: OrgId | undefined; closedAt?: string; workflow?: WorkflowSnapshot } | undefined>;
+  loadTask(taskId: string): Promise<{ project: string; startingRevision: number; orgId?: OrgId | undefined; sessionId?: string | undefined; closedAt?: string; workflow?: WorkflowSnapshot } | undefined>;
   repositoryUrl(project: string, revision: number, repositoryId: string, orgId?: OrgId): Promise<string | undefined>;
   /** `orgId` is the task's org: the GitHub token that reads the pull request is minted for it (Plan 2, Task 15). */
   getCurrentFeedback(repositoryUrl: string, number: number, orgId: OrgId | undefined): Promise<GitHubPullRequestFeedback>;
@@ -252,7 +253,7 @@ export const GITHUB_HEAD_LAG_WINDOW_MS = 10 * 60_000;
  * redelivered merge changes nothing and so records nothing). The chain names the pull request by an opaque id and not by
  * the repository's name, which goes in `details`; the observer is Rovara, because GitHub's read does not say who merged.
  * A builder or org lookup that fails is logged and the save goes on without the event. At most 32 events (a workflow's cap on
- * pull requests), so even with a landed-push save (1 + 2 x 32 items) the transaction stays within the 100 items DynamoDB allows.
+ * pull requests), so even with a landed-push save (1 + 2 x 32 items) plus the month count (1) and the merged milestone (2), the transaction stays within the 100 items DynamoDB allows.
  */
 /** The pull requests this save moves to MERGED: their record changes from anything else to merged. */
 function newlyMerged<Read extends { pr: { repositoryId: string; number: number; state: string } }>(next: WorkflowSnapshot, reads: ReadonlyArray<Read>): Read[] {
@@ -404,7 +405,8 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       if (next === current) return false;
       const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
       try {
-        const items = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)];
+        const items = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads),
+          ...await mergedMilestoneItems(input, { taskId: linked.taskId, orgId: task.orgId, sessionId: task.sessionId }, current, next, input.now)];
         await saveRetryingConflicts(() => input.saveWorkflow(linked.taskId, current.revision, next, items));
         await flushAuditEvents(input, events);
         return true;
@@ -609,7 +611,8 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
     }
     if (headTrees.length > 0) next = recordWorkflowPullRequestHeadTrees(next, headTrees, input.now);
     const events = await mergedPullRequestEvents(input, task, linked.taskId, next, reads);
-    const extraItems = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads)];
+    const extraItems = [...events.flatMap(event => auditPending(input, event)), ...await mergedPullRequestStats(input, task, linked.taskId, next, reads),
+      ...await mergedMilestoneItems(input, { taskId: linked.taskId, orgId: task.orgId, sessionId: task.sessionId }, current, next, input.now)];
     try {
       await saveRetryingConflicts(() => recordedPushes.length > 0
         ? input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems)

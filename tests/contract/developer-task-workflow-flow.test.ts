@@ -4840,6 +4840,9 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() },
     { orgId: TEST_ORG, developerId: task.developerId } as never, taskId);
   };
+  /** The `merged` milestones the task has (Plan 6 Task 20): one per task, written by the save that moves it to MERGED, whichever path made it. */
+  const mergedMilestones = (harness: { db: { find(predicate: (item: Record<string, unknown>) => boolean): Array<Record<string, unknown>> } }) =>
+    harness.db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === "merged");
   const STILL_WATCHING = "I'm still watching the pull request and will finish this task when it's merged.";
   const STOPPED_FOLLOWING = "it changed on GitHub since I opened it. I've stopped following it, so merge or close it on GitHub and then close this task.";
   /** The worker's push landed on GitHub: the pull request's head is the pushed commit, on the fix's reviewed tree. */
@@ -4867,6 +4870,11 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     await pullRequestEvent(t.harness, "closed");
     expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
     expect((await page(t.harness, t.taskId)).stage).toBe("Complete");
+    // The same save wrote the merged milestone, with the pull request; a redelivery writes no second.
+    expect(mergedMilestones(t.harness)).toHaveLength(1);
+    expect(mergedMilestones(t.harness)[0]).toMatchObject({ taskId: t.taskId, pullRequests: [{ repository: "demo", number: 42, url: PR_URL }], text: `Merged: ${PR_URL}` });
+    await pullRequestEvent(t.harness, "closed");
+    expect(mergedMilestones(t.harness)).toHaveLength(1);
   });
 
   it("observes a merge of the pull request in every stage while the approved fix is made", async () => {
@@ -4919,6 +4927,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       expect(taskWorkflow(t.harness, t.taskId)).toEqual(merged);
       // The merge is counted once (Plan 5 Task 16's month count): by the webhook's save, and not again by the result that finds it merged.
       expect(mergedCount(t.harness)).toBe(1);
+      expect(mergedMilestones(t.harness)).toHaveLength(1);
     }
     // The result first: it records the fix and the merge together.
     {
@@ -4933,6 +4942,9 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       expect(mergedCount(t.harness)).toBe(1);
       await t.harness.finish(t.workspaceId, maintain.id, "SUCCEEDED", appendResult(maintain));
       expect(mergedCount(t.harness)).toBe(1);
+      // And it writes the merged milestone too, once, in that same save.
+      expect(mergedMilestones(t.harness)).toHaveLength(1);
+      expect(mergedMilestones(t.harness)[0]).toMatchObject({ taskId: t.taskId, pullRequests: [{ repository: "demo", number: 42, url: PR_URL }] });
     }
   });
 
