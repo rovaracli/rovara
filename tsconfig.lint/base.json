@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "composite": false,
+    "noEmit": true,
+    "rootDir": ".."
+  },
+  "exclude": [
+    "../**/dist/**",
+    "../**/node_modules/**",
+    "../cdk.out/**",
+    "../.release-synth/**",
+    "../packages/ui/**",
+    "../packages/web/**",
+    "../tests/web/**",
+    "../tests/web-e2e/**"
+  ]
+}
