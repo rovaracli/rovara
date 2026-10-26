@@ -9,8 +9,8 @@ export const CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE = "The plan check stopped at 
 /** The line the plan view shows when the one revision the check asked for could not be paid for, so the plan is shown as it was written. */
 export const notRevisedLine = (limit: "planning" | "other" | undefined): string =>
   `I couldn't revise this plan for the second model's points, because ${limit === "planning" ? "the planning limit" : "a spending limit"} was reached first. It is shown as it was.`;
-/** The line the plan view shows when no check was made at all. */
-export const CRITIC_NOT_CHECKED_LINE = "This plan was not checked by a second model.";
+/** The line the plan view shows when no check was made at all (no model could be used for it, or it gave no answer). */
+export const CRITIC_NOT_CHECKED_LINE = "Plan check unavailable: this plan was not checked by a second model.";
 
 /**
  * The lines a person reads about the plan check, under the plan: the same-model note, how many problems the second model found (and what they were), and when the check stopped short.

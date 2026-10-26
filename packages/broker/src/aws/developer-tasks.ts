@@ -1462,7 +1462,7 @@ export async function taskView(
     outcome: task.outcome,
     workspaceStatus: workspace.status,
     pointer,
-    operations: operations.map((operation) => ({ id: operation.id, kind: operation.kind, status: operation.status, error: operation.error, createdAt: operation.createdAt, updatedAt: operation.updatedAt, fence: operation.fence })),
+    operations: operations.map((operation) => ({ id: operation.id, kind: operation.kind, status: operation.status, error: operation.error, createdAt: operation.createdAt, updatedAt: operation.updatedAt, fence: operation.fence, workflowMode: operation.workflowMode })),
   });
   const workflowWaitingForE2ECompute = task.workflow?.stage === "VERIFY" && task.workflow.state === "WAITING"
     && task.workflow.e2e?.required === true && task.workflow.e2e.currentRoundId === undefined;

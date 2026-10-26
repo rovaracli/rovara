@@ -309,6 +309,7 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   const operations: OperationFacts[] = operationItems.filter((item) => item["entityType"] === "OPERATION").map((item) => ({
     id: String(item["id"]), kind: String(item["kind"]), status: String(item["status"]), error: typeof item["error"] === "string" ? item["error"] : undefined,
     createdAt: String(item["createdAt"]), updatedAt: typeof item["updatedAt"] === "string" ? item["updatedAt"] : undefined, fence: typeof item["fence"] === "number" ? item["fence"] : undefined,
+    workflowMode: typeof item["workflowMode"] === "string" ? item["workflowMode"] : undefined,
   }));
   const derived = deriveTaskStatus({
     closedAt: task.closedAt, outcome: task.outcome, workspaceStatus: typeof workspace?.["status"] === "string" ? workspace["status"] : "READY",

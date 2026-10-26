@@ -1730,6 +1730,15 @@ export function closePlanCritique(
 }
 
 /**
+ * The plan check could not use its model (the account has no access to it): the same check is made again on the next-ranked model. RUNNING goes back to READY at the next revision, so the
+ * start of the next attempt has a request ID of its own; the critiques kept so far stay. Bounded by the caller (`CRITIC_MODEL_ATTEMPTS_MAX`): this only moves the workflow.
+ */
+export function retryPlanCritique(currentInput: unknown, input: { expectedRevision: number; now: string }): WorkflowSnapshot {
+  const current = runningPlanCheck(currentInput, input.expectedRevision);
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "READY", updatedAt: input.now });
+}
+
+/**
  * The one revision a blocking point asked for could not be paid for (the planning budget ran out as it ran): the plan goes to the person as it was, with the critic's points and the
  * word that it was not revised. Nothing is paused and no money is asked for, because no person asked for the revision.
  */

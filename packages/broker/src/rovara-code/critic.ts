@@ -3,8 +3,8 @@
 // plan, possibly from the same company (owner decision 10, 2026-10-22). There is no "different AI company" requirement. What the critic writes is untrusted advice: it reaches a
 // planner only inside a labelled block, bounded and redacted, and it can never approve a plan.
 import {
-  PLAN_CRITIC_BLOCK_HEADER, PLAN_CRITIQUE_INFO_STRING, agentXError, canonicalModelName, modelCompany, redactText,
-  type AgentGuardrails, type AgentXError, type ModelIdentifier, type ModelSelection, type PlanCritique,
+  AgentXError, PLAN_CRITIC_BLOCK_HEADER, PLAN_CRITIQUE_INFO_STRING, agentXError, canonicalModelName, errorStatus, modelCompany, redactText,
+  type AgentGuardrails, type ModelIdentifier, type ModelSelection, type PlanCritique,
 } from "@agentx/contracts";
 import { modelNotAllowedText } from "../model-sources/routing.js";
 
@@ -63,6 +63,8 @@ export function rankCriticModels(models: readonly ModelIdentifier[]): ModelIdent
 export interface CriticModelLimits {
   approved?: readonly ModelIdentifier[] | undefined;
   forbidden?: readonly ModelIdentifier[] | undefined;
+  /** Models this task's earlier plan checks already tried and the account could not use (staging 0.4.10: Bedrock answered 403 for a model it had not enabled): each is left out, by canonical name. */
+  unusable?: readonly ModelIdentifier[] | undefined;
 }
 
 /** Whether `model` is one the limits allow: not forbidden (by canonical name, so another route to a forbidden model is forbidden too) and, when the project lists models, one of them. */
@@ -70,13 +72,41 @@ function allowed(limits: CriticModelLimits, model: ModelIdentifier): boolean {
   return !(limits.forbidden ?? []).some((other) => sameModel(other, model)) && (limits.approved === undefined || limits.approved.some((other) => sameModel(other, model)));
 }
 
+/** Whether an earlier plan check already found `model` unusable for this account. */
+const triedAndFailed = (limits: CriticModelLimits, model: ModelIdentifier): boolean => (limits.unusable ?? []).some((other) => sameModel(other, model));
+
+/** The most models one plan check tries, one attempt each (a failed attempt costs nothing: the model refuses before it answers). */
+export const CRITIC_MODEL_ATTEMPTS_MAX = 4;
+
+/** Thrown where a plan check is about to start and no model is left that the account could use. It is not a refusal of anyone's choice: the plan goes to the person, shown as not checked. */
+export class PlanCheckUnavailableError extends AgentXError {
+  constructor() {
+    super("MODEL_NOT_ALLOWED", "no model is left that this account can use for the plan check", errorStatus("MODEL_NOT_ALLOWED"));
+    this.name = "PlanCheckUnavailableError";
+  }
+}
+
+/**
+ * Whether a failed plan check's error says its model could not serve this account, whichever provider it ran on (Bedrock's 403 "not available for this account", Anthropic's or OpenAI's
+ * 401/403/404 for a model, OpenRouter's 402 or "no endpoints"). The worker words every provider's failure alike, as a class: a refused key, a model not found, a request the provider refused
+ * (OpenRouter's 400 for a model with no endpoint), a 402, or a failure it could not classify (a proxy's 403 reads `unknown` on a worker that reads only Bedrock's own diagnostics). Also the
+ * broker's `MODEL_NOT_ALLOWED` and a model the install does not serve. A rate limit (without a 402), an outage, a spent budget or a stop is not: another model would not change them.
+ */
+export function criticModelUnusable(error: string | undefined): boolean {
+  if (error === undefined) return false;
+  return /\bthe model call failed: (?:key-rejected|model-not-found|not-in-catalog|request-rejected|unknown)\b/u.test(error)
+    || /\bthe model call failed: [a-z-]+(?: [A-Za-z0-9_]+)? HTTP 402\b/u.test(error)
+    || /^MODEL_NOT_ALLOWED:/u.test(error)
+    || /\bis not available on this install\b/u.test(error);
+}
+
 /**
  * The models a plan check could run on, strongest first (`sources` already holds only what the project's sources serve for this org, and the order they list them in decides nothing): those the
- * limits allow. When no source list is known (an install with no model proxy) the project's approved models, in their order, stand in for it.
+ * limits allow and no earlier check found unusable. When no source list is known (an install with no model proxy) the project's approved models, in their order, stand in for it.
  */
 function candidatesOf(limits: CriticModelLimits, sources: readonly ModelIdentifier[]): ModelIdentifier[] {
   const pool = sources.length > 0 ? sources : limits.approved ?? [];
-  return rankCriticModels(distinct(pool.filter((model) => allowed(limits, model))));
+  return rankCriticModels(distinct(pool.filter((model) => allowed(limits, model) && !triedAndFailed(limits, model))));
 }
 
 /**
@@ -103,10 +133,14 @@ export interface CriticModelInput {
   guardrails: Pick<AgentGuardrails, "forbiddenModels"> & Partial<Pick<AgentGuardrails, "requireCrossCompanyReview">>;
   /** The models the project's sources can serve for this org, in the order they are tried; empty when that isn't known. */
   sources: readonly ModelIdentifier[];
+  /** Models this task's earlier plan checks tried and the account could not use. The next check takes the next-ranked model; with none left the check is unavailable. */
+  unusable?: readonly ModelIdentifier[] | undefined;
 }
 
 export type CriticModel =
   | { model: ModelSelection | undefined; sameModelAsPlanner: boolean; chosenBy: "company" | "rovara" }
+  /** Every model the project may use has failed for this account: no plan check is made, and the plan says so. Never a failure of the task. */
+  | { unavailable: true }
   | { refuse: AgentXError };
 
 const selectionOf = (model: ModelSelection | ModelIdentifier): ModelSelection => ({
@@ -122,17 +156,22 @@ const selectionOf = (model: ModelSelection | ModelIdentifier): ModelSelection =>
  */
 export function criticModelFor(input: CriticModelInput): CriticModel {
   const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.guardrails.forbiddenModels };
+  const failed: CriticModelLimits = { ...limits, unusable: input.unusable };
   const subject = { agent: input.agentName, step: input.step?.name ?? "Plan check" };
   const settings = (input.step?.settings ?? {}) as { model?: ModelSelection | ModelIdentifier | null; fallbackModel?: ModelSelection | ModelIdentifier | null };
   const own = settings.model ?? undefined;
   if (own !== undefined) {
-    if (allowed(limits, own)) return { model: selectionOf(own), sameModelAsPlanner: false, chosenBy: "company" };
     const fallback = settings.fallbackModel ?? undefined;
-    if (fallback !== undefined && allowed(limits, fallback)) return { model: selectionOf(fallback), sameModelAsPlanner: false, chosenBy: "company" };
+    if (allowed(failed, own) && !triedAndFailed(failed, own)) return { model: selectionOf(own), sameModelAsPlanner: false, chosenBy: "company" };
+    if (fallback !== undefined && allowed(failed, fallback) && !triedAndFailed(failed, fallback)) return { model: selectionOf(fallback), sameModelAsPlanner: false, chosenBy: "company" };
+    // Policy allowed a model, the account could not use it: the check is unavailable. Policy allowed none: Plan 3's refusal.
+    if (allowed(limits, own) || (fallback !== undefined && allowed(limits, fallback))) return { unavailable: true };
     return { refuse: agentXError("MODEL_NOT_ALLOWED", modelNotAllowedText(subject, own, input.project.name)) };
   }
-  const recommended = recommendCriticModel(limits, input.planModel, input.sources);
+  const recommended = recommendCriticModel(failed, input.planModel, input.sources);
   if (recommended !== undefined) return { model: selectionOf(recommended.model), sameModelAsPlanner: recommended.sameModelAsPlanner, chosenBy: "rovara" };
+  // Models the policy allows were all tried and failed: unavailable, not refused.
+  if (candidatesOf(limits, input.sources).length > 0) return { unavailable: true };
   // Nothing is known to choose from (no source list, no approved list): the project's own model runs the check, and nothing is claimed about it.
   if (input.sources.length === 0 && input.project.approved === undefined) {
     return { model: input.planModel === undefined ? undefined : selectionOf(input.planModel), sameModelAsPlanner: false, chosenBy: "rovara" };
