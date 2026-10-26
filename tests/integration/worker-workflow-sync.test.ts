@@ -172,9 +172,9 @@ describe("a workflow task's merge of the base branch", () => {
 
   it("refuses a workspace with changes in it, as a sync that is not a workflow task's", async () => {
     const fixture = await createFixture();
-    const base = await advanceBase(fixture, "UPSTREAM.md", "first change\n");
+    await advanceBase(fixture, "UPSTREAM.md", "first change\n");
     await writeFile(join(fixture.checkout, "UNSAVED.md"), "work\n", "utf8");
-    await expect(maintainPullRequest({ rootPath: fixture.root, invocation: { ...fixture.invocation, payload: { ...fixture.invocation.payload, action: "sync" } } as Maintain, credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() })).rejects.toThrow(/clean repository/);
+    await expect(maintainPullRequest({ rootPath: fixture.root, invocation: { ...fixture.invocation, payload: { ...fixture.invocation.payload, action: "sync" } }, credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() })).rejects.toThrow(/clean repository/);
     expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
   });
 
@@ -344,7 +344,7 @@ async function advanceBase(fixture: Fixture, file: string, content: string): Pro
   return (await git(fixture.seed, ["rev-parse", "HEAD"])).trim();
 }
 
-async function createFixture(options: { conflict?: boolean; conflictFile?: string; gates?: boolean; ignored?: boolean; extras?: boolean } = {}): Promise<Fixture> {
+async function createFixture(options: { conflict?: boolean; conflictFile?: string; gates?: boolean; ignored?: boolean; extras?: boolean; failingReadiness?: boolean } = {}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "agentx-workflow-sync-test-"));
   temporaryDirectories.push(root);
   const bare = join(root, "remote.git");
