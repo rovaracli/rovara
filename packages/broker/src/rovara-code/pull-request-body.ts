@@ -179,10 +179,6 @@ export function rovaraPullRequestBody(input: {
   const assemble = (headLines: readonly string[], block: readonly string[]) => [...headLines, "", ROVARA_STATUS_START, ...block, ROVARA_STATUS_END, ...tail].join("\n");
   const fixed = byteLength(assemble(head, []));
   const block = rovaraStatusLines(input.workflow, input.context, input.reviewLines, PULL_REQUEST_BODY_MAX_BYTES - fixed);
-  const body = assemble(head, block);
-  if (byteLength(body) <= PULL_REQUEST_BODY_MAX_BYTES) return body;
-  // Even the shortest lists don't fit beside the summary: the summary gives way, never the block.
-  const first = `> ${Array.from(quoted[0]!.slice(2)).slice(0, 200).join("")}`;
-  const short = assemble(["## Plan summary", first], block);
-  return byteLength(short) <= PULL_REQUEST_BODY_MAX_BYTES ? short : assemble([], block);
+  // The block's budget leaves room for the summary at its largest, and the block at its shortest (no list entries) is a few kilobytes, so this always fits.
+  return assemble(head, block);
 }

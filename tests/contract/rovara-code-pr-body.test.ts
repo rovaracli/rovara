@@ -183,6 +183,14 @@ describe("parseChangedFiles", () => {
     expect(parseChangedFiles(text).files.some((file) => isSensitivePath(file.path))).toBe(true);
   });
 
+  it("counts a pure addition and a pure deletion as counted (0 on the other side), not as unknown", () => {
+    const text = section([], ["diff --git a/src/added.ts b/src/added.ts", "@@ -0,0 +1,2 @@", "+a", "+b", "diff --git a/src/removed.ts b/src/removed.ts", "@@ -1,2 +0,0 @@", "-a", "-b"]);
+    expect(parseChangedFiles(text).files).toEqual([
+      { repository: "payments", path: "src/added.ts", added: 2, removed: 0 },
+      { repository: "payments", path: "src/removed.ts", added: 0, removed: 2 },
+    ]);
+  });
+
   it("records a rename with both names, and counts its changed lines", () => {
     const text = section([], ["diff --git a/auth/old.ts b/lib/old.ts", "similarity index 90%", "rename from auth/old.ts", "rename to lib/old.ts", "--- a/auth/old.ts", "+++ b/lib/old.ts", "@@ -1 +1 @@", "-a", "+b"]);
     expect(parseChangedFiles(text).files).toEqual([{ repository: "payments", path: "lib/old.ts", renamedFrom: "auth/old.ts", added: 1, removed: 1 }]);
@@ -206,6 +214,8 @@ describe("a file whose lines were not counted", () => {
     expect(risk.level).toBe("medium");
     expect(risk.reasons.join("\n")).toMatch(/2 files have no line count/);
     expect(assessRisk(riskInput({ changedFiles: [entry("src/new-module.ts")] })).reasons.join("\n")).toMatch(/1 file has no line count/);
+    // A file counted on one side only is not counted.
+    expect(assessRisk(riskInput({ changedFiles: [{ repository: "payments", path: "src/half.ts", added: 3 }] })).reasons.join("\n")).toMatch(/1 file has no line count/);
     // A file whose lines were counted says nothing of the kind.
     expect(assessRisk(riskInput({ changedFiles: [file("src/a.ts", 3, 1)] })).level).toBe("low");
   });
@@ -234,6 +244,7 @@ describe("a renamed file", () => {
     expect(assessRisk(riskInput({ changedFiles: [{ ...moved, path: "infra/old.ts", renamedFrom: "lib/old.ts" }] })).level).toBe("high");
     expect(assessRisk(riskInput({ changedFiles: [{ ...moved, renamedFrom: "lib/older.ts" }] })).level).toBe("low");
     expect(assessRisk(riskInput({ changedFiles: [{ ...moved, path: "lib/package.json", renamedFrom: "lib/x.json" }] })).level).toBe("medium");
+    expect(assessRisk(riskInput({ changedFiles: [{ ...moved, path: "lib/x.json", renamedFrom: "lib/package.json" }] })).level).toBe("medium");
   });
 });
 
