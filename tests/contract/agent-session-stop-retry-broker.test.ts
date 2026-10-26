@@ -161,6 +161,20 @@ describe("a Rovara Code task, through the real broker", () => {
     expect(t.operations(task.workspaceId).filter((operation) => operation.kind === "cancel")).toHaveLength(1);
   });
 
+  it("reads stopped at once, not running, when the stop lands before the instructions ran (v0.4.6 staging, slow stop)", async () => {
+    const t = await setup();
+    // The task is made and its workspace is still being prepared: the instructions are pending, so the stop is the pointer's `cancelledAt` and no operation is cancelled.
+    const reply = await t.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const task = reply.body.task as { taskId: string; sessionId: string };
+    expect(t.session(task.sessionId).record.summary.status).toBe("starting");
+    const stopped = await t.dev(MAYA, "POST", `/v1/app/sessions/${task.sessionId}/stop`, { requestId: randomUUID() });
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
+    // The answer and the stored summary both say so right away, with no sweep in between.
+    expect((stopped.body.session as { status: string }).status).toBe("stopped");
+    expect(t.session(task.sessionId)).toMatchObject({ record: { summary: { status: "stopped" } }, open: true });
+  });
+
   it("fences the stop on the task's People revision: a task with a People list is stopped at the revision the list has", async () => {
     const t = await setup();
     const task = await startWorkflow(t);
