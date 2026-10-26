@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_WORKER_OUTDATED, DEFAULT_PLANNING_LIMIT_USD, REMOTE_CODE_REASON, SETUP_DRAFT_PULL_REQUEST_OFFER, SetupDraftResponseSchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema,
   egressDomainsKey, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, redactText, sanitizeSetupDraft, setupDraftAnswerOf,
-  setupDraftKey, remoteCodeReason, type GithubInstallationRecord, type OrgId, type SetupDraft,
+  setupDraftKey, remoteCodeReason, type GithubInstallationRecord, type SetupDraft,
 } from "../../packages/contracts/src/index.js";
 import { SETUP_DRAFT_BUSY, SETUP_DRAFT_FAILURES, SETUP_DRAFT_NONE_TO_APPLY, SETUP_DRAFT_NOTHING_CHOSEN, SETUP_DRAFT_OLD } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
@@ -232,7 +232,7 @@ describe("POST /v1/app/projects/{name}/setup-draft", () => {
     expect(run.invocation.payload).not.toHaveProperty("readiness");
     expect(String(run.invocation.payload.prompt)).toContain("Draft the dev setup for the project web.");
     expect(String(run.invocation.payload.prompt)).toContain("do not edit, write or create files");
-    expect(WorkerInvocationSchema.safeParse({ ...(t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === run.own.id)[0] as { invocation: unknown }).invocation }).success).toBe(true);
+    expect(WorkerInvocationSchema.safeParse((t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === run.own.id)[0] as { invocation: object }).invocation).success).toBe(true);
   });
 
   it("limits the run like a Quick plan and charges the caller: the QUICK planning limit is the task's run limit", async () => {
@@ -688,7 +688,7 @@ function modelAnswering(answers: readonly string[]) {
   let listener: (event: unknown) => void = () => undefined;
   const adapter: PiSessionAdapter = {
     async create(input) {
-      seen.created.push(input as never);
+      seen.created.push(input);
       const sessionFile = join(input.sessionDirectory, "fixture.jsonl");
       await writeFile(sessionFile, "");
       return {
@@ -797,7 +797,7 @@ describe("an older worker", () => {
   it("is refused the draft with the worker-outdated words, and is never sent the mode", async () => {
     for (const features of [["task.workflowMode"], ["task.workflowMode", "task.workflowUnderstand", "task.workflowPlanCritique"]]) {
       const old = delivery(features);
-      const outbox = record() as never as { invocation: never };
+      const outbox = record() as { invocation: never };
       await expect(old.deliver(outbox as never, outbox.invocation)).rejects.toThrow(AGENT_WORKER_OUTDATED);
       expect(old.post).not.toHaveBeenCalled();
     }
@@ -805,7 +805,7 @@ describe("an older worker", () => {
 
   it("is sent the draft once it lists task.setupDraft", async () => {
     const capable = delivery(["task.workflowMode", "task.setupDraft"]);
-    const outbox = record() as never as { invocation: never };
+    const outbox = record() as { invocation: never };
     expect(await capable.deliver(outbox as never, outbox.invocation)).toBe("DELIVERED");
     expect(capable.post).toHaveBeenCalledTimes(1);
   });

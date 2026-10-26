@@ -253,6 +253,54 @@ export const SetupDraftSchema = z
   .strict();
 export type SetupDraft = z.infer<typeof SetupDraftSchema>;
 
+/** A draft that has been "drafting" this long without a result is read as failed: its machine never reported, and a new draft may start. */
+export const SETUP_DRAFT_STALE_MINUTES = 60;
+
+/** `POST /v1/app/projects/{name}/setup-draft`. */
+export const SetupDraftStartBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+export type SetupDraftStartBody = z.infer<typeof SetupDraftStartBodySchema>;
+
+export const SETUP_DRAFT_STATUSES = ["none", "drafting", "ready", "failed"] as const;
+/** `GET`/`POST …/setup-draft`: where the project's draft stands. `none`: nobody has asked yet (`basedOnRevision` is the project's latest revision). */
+export const SetupDraftResponseSchema = z
+  .object({
+    status: z.enum(SETUP_DRAFT_STATUSES),
+    basedOnRevision: CountSchema,
+    draft: SetupDraftSchema.optional(),
+    /** A fixed sentence, never the model's or a repository's words. */
+    failure: z.string().max(300).optional(),
+    /** The draft was applied (at which settings revision). */
+    appliedRevision: CountSchema.optional(),
+  })
+  .strict();
+export type SetupDraftResponse = z.infer<typeof SetupDraftResponseSchema>;
+
+/**
+ * `POST …/setup-draft/apply`: what of the draft the person applies. Nothing is applied that is not named: a field left out or `false` is not applied. The
+ * flagged commands are applied only with `flaggedCommands: true`. `devcontainerPullRequest` asks Rovara to open a pull request that adds a dev container the
+ * repository lacks.
+ */
+export const SetupDraftApplyBodySchema = z
+  .object({
+    requestId: z.string().uuid(),
+    expectedRevision: z.number().int().positive(),
+    include: z
+      .object({
+        setupCommands: z.boolean().optional(),
+        testCommands: z.boolean().optional(),
+        devcontainer: z.boolean().optional(),
+        allowedDomains: z.boolean().optional(),
+        flaggedCommands: z.boolean().optional(),
+        devcontainerPullRequest: z.boolean().optional(),
+      })
+      .strict(),
+  })
+  .strict();
+export type SetupDraftApplyBody = z.infer<typeof SetupDraftApplyBodySchema>;
+
+/** What a draft offers beyond the settings it can apply. */
+export const SETUP_DRAFT_PULL_REQUEST_OFFER = "Add it with a pull request";
+
 // ---- milestones
 
 export const CODE_MILESTONE_KINDS = ["questions", "answered", "plan_ready", "pr_ready", "review_nudge", "fixing", "stuck", "approved", "merged"] as const;

@@ -15,4 +15,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource",
   "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
   "model.route", "task.agentStep", "task.agentRun",
+  // Rovara Code (Plan 6 Task 10): a read-only run that drafts a project's dev setup.
+  "task.setupDraft",
 ] as const satisfies readonly WorkerInvocationFeature[];

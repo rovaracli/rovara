@@ -99,7 +99,7 @@ import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { releaseOrgModelSources } from "../model-sources/release.js";
 import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
-import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
+import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
@@ -144,6 +144,8 @@ import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
+import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
+import { startCodeIntent } from "../rovara-code/intent.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
 import { pausedTaskGate, requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
@@ -1126,6 +1128,28 @@ async function startProjectSetupCheck(deps: DeveloperRouteDependencies, caller: 
   throw agentXError("WORKSPACE_BUSY", "AgentX could not start the setup check just now; try again with the same request id");
 }
 
+/** What the setup-draft routes (Plan 6 Task 10) need, from the developer API's dependencies and for one caller. */
+function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDependencies {
+  return {
+    documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now,
+    starter: agentRunStarterOf(deps),
+    projectFor: (who, rawName) => projectRoleForRoute(deps, who, rawName),
+    requireNewWork: (who, project, role) => requireNewWorkAllowed(deps, who.orgId, project, role, "task"),
+    latest: async (orgId, project) => {
+      const latest = await latestRevision({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
+      return latest === undefined ? undefined : { revision: latest.definition.revision, allowedDomains: latest.definition.network?.allowedDomains ?? [] };
+    },
+    updateSettings: (who, project, body) => putProjectSettings(deps, who, encodeURIComponent(project), body),
+    startSetupCheck: async (who, project, requestId) => { await startProjectSetupCheck(deps, who, encodeURIComponent(project), { requestId }); },
+    startPullRequest: async (who, request) => {
+      const started = await startCodeIntent(codeIntentDependenciesOf(deps, who), who, { requestId: request.requestId, project: request.project, input: { text: request.text }, path: "QUICK", source: "app" });
+      const taskId = (started.task as { taskId: string }).taskId;
+      return { taskId, ...(started.sessionId === undefined ? {} : { sessionId: started.sessionId }), ...(started.sessionUrl === undefined ? {} : { sessionUrl: started.sessionUrl }) };
+    },
+    readProject: (who, project) => getAppProject(deps, who, project),
+  };
+}
+
 /**
  * What reads and writes a project's people: the table, a developer's sign-in record (for `mergedInto`), and the two ways a Slack channel
  * gives access (a project the person reaches, and whether one project's channel gives it to them). Slack failing closes the channel route
@@ -1841,6 +1865,13 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
   if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
+  const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
+  if (setupDraftRoute !== null) {
+    const drafting = setupDraftDepsOf(deps);
+    if (request.method === "POST" && setupDraftRoute[2] === undefined) return startSetupDraft(drafting, caller, setupDraftRoute[1]!, jsonBody(request));
+    if (request.method === "GET" && setupDraftRoute[2] === undefined) return getSetupDraft(drafting, caller, setupDraftRoute[1]!);
+    if (request.method === "POST" && setupDraftRoute[2] !== undefined) return applySetupDraft(drafting, caller, setupDraftRoute[1]!, jsonBody(request));
+  }
   const projectSetupCheckRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-check$/.exec(url.pathname);
   if (request.method === "POST" && projectSetupCheckRoute !== null) return startProjectSetupCheck(deps, caller, projectSetupCheckRoute[1]!, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {
