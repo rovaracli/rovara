@@ -45,6 +45,7 @@ import { sameMember } from "../agents/lifecycle.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { taskKey } from "../developer/task-records.js";
 import { chainAccess } from "./access.js";
+import { gateStepOf } from "./answered-gate.js";
 import { displayNameOf, wordsFor } from "./gates.js";
 import { getItem, readChainRun, readStepAttempt, readStepAttempts, type ChainRunRecord, type StepAttemptRecord } from "./runner.js";
 import type { ChainRouteDependencies } from "./routes.js";
@@ -165,8 +166,8 @@ function gateStatusOf(record: AnyApprovalRecord | undefined, attempt: StepAttemp
 
 async function gateSection(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, definition: PinnedChainDefinition | undefined, reader: AgentCaller | undefined): Promise<ChainRunSection["gate"]> {
   if (attempt.approvalId === undefined) return undefined;
-  const step = definition?.steps.find((candidate) => candidate.id === attempt.stepId);
-  if (step === undefined || step.kind !== "gate") return undefined;
+  const step = gateStepOf(definition, attempt);
+  if (step === undefined) return undefined;
   const record = await getAnyApproval(deps, run.orgId, attempt.approvalId).catch(() => undefined);
   const decidedBy = record?.decidedBy;
   return {

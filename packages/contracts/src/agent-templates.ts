@@ -157,6 +157,7 @@ const SERVICE_REPORT = [
 // ---- Plan 4 Task 27: version 2 of the five templates. This is exact product copy and none of it changes the safety layer: the grants, the write gate and the approvals decide what can happen.
 
 const RELEASE_2 = "Chains and triggers";
+const RELEASE_ROVARA_CODE_2 = "Rovara Code from intent to merged pull request";
 
 const ROOT_CAUSE_RULES_V2 = [
   "You look for the cause of a problem and say how sure you are.",
@@ -235,6 +236,13 @@ const ROVARA_CODE_STEPS: ResolvedStep[] = [
   { id: "pull_request", name: "Pull request", kind: "pull_request", settings: { instructions: [] } },
 ];
 
+/** Rovara Code version 2: the same steps with a plan check (a second model reads the plan) directly after the plan. Version 1's steps above never change. */
+const ROVARA_CODE_STEPS_V2: ResolvedStep[] = [
+  ...structuredClone(ROVARA_CODE_STEPS.slice(0, 1)),
+  { id: "plan_critic", name: "Plan check", kind: "plan_critic", settings: { instructions: [] } },
+  ...structuredClone(ROVARA_CODE_STEPS.slice(1)),
+];
+
 interface DraftVersion { recipe: ResolvedRecipe; releasedIn: string; notes: string }
 
 /** Freezes a value and everything inside it, so a released recipe cannot be changed through the shared object. */
@@ -286,6 +294,11 @@ export const BUILTIN_AGENTS: Record<BuiltinAgentId, BuiltinAgent> = {
       recipe: recipeFor("rovara-code", "Rovara Code", 1, ROVARA_CODE_STEPS, [], ""),
       releasedIn: LAUNCH,
       notes: "Plan, build, check, a code and security review that sends findings back to build for up to 3 rounds, then the pull request.",
+    },
+    {
+      recipe: recipeFor("rovara-code", "Rovara Code", 2, ROVARA_CODE_STEPS_V2, [], ""),
+      releasedIn: RELEASE_ROVARA_CODE_2,
+      notes: "Asks clear questions when a task is vague, has each plan checked by a second model, and sends review findings back to build on its own for up to 3 rounds.",
     },
   ]),
   "ticket-triage": agent("ticket-triage", TICKET_TRIAGE, "Reads a ticket, labels it, comments with what it found and opens a new ticket for a separate problem.", [
@@ -407,6 +420,20 @@ export const BUILTIN_AGENTS: Record<BuiltinAgentId, BuiltinAgent> = {
 /** The newest released version of a built-in agent. */
 export function currentBuiltinVersion(id: BuiltinAgentId): number {
   return BUILTIN_AGENTS[id].versions.length;
+}
+
+/**
+ * Whether an org created from now on is pinned to Rovara Code version 2. Off until Task 8 (the plan check) is built, because a 1.1.0 task would otherwise
+ * run without Understand or the plan check; Task 8 flips it. An explicit pin of 2 (tests, internal trials) works either way.
+ */
+export const ROVARA_CODE_V2_FOR_NEW_ORGS = false;
+
+/**
+ * The version an org runs before it has any settings for a built-in: the newest release, except Rovara Code, which stays on version 1 until the org adopts
+ * version 2 (new orgs are created pinned to it). Plan 6 question 16: orgs on version 1 keep today's behaviour until an admin adopts the new one.
+ */
+export function builtinDefaultPin(id: BuiltinAgentId): number {
+  return id === "rovara-code" ? 1 : currentBuiltinVersion(id);
 }
 
 /** A copy of one released version's recipe. A version that doesn't exist is `NOT_FOUND`. */

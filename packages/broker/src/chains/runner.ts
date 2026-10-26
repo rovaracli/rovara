@@ -13,10 +13,11 @@ import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema,
-  StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
+  StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, answeredMessage, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
   GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, openChainRunKey, projectAllows, shortenToBytes, stepSk,
   type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge,
-  type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin,
+  type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin, type WorkflowSnapshot,
+  workflowAnswer,
 } from "@agentx/contracts";
 import { requireAgentAccess, type AgentCaller } from "../agents/access.js";
 import type { AgentRunRequest, AgentRunResult, AgentRunStarter } from "../agents/runs.js";
@@ -35,6 +36,7 @@ import { admitChainRun, chainRunLimitUsd, chainRunPayer, runRaiseMessage, settle
 import { requireChainAccess, type ChainAccessDeps } from "./access.js";
 import { buildHandoff, HandoffTriggerSchema, redactSecrets, type EarlierReport, type HandoffTrigger } from "./handoff.js";
 import { onChainGateDecided, openGateApproval } from "./gates.js";
+import { answeredGateId, answeredGateOrigin, answeredGateStep, answeredStepName, gateStepOf, type GateStep } from "./answered-gate.js";
 import { cancelAbandonedTask, cancelRequestId, closeAbandonedGate } from "./lifecycle.js";
 import { neutralText, runEventItems, type RunEventInput } from "./run-events.js";
 import type { ChainRouteDependencies } from "./routes.js";
@@ -111,6 +113,8 @@ export interface StepAttemptRecord {
   branch?: { id: string; fellBack: boolean };
   /** A gate's decision, once someone decided it. */
   decision?: "approved" | "declined";
+  /** The step's coding task ended Answered (it answered a question and changed no code): the run pauses at an implied gate for a person to continue or stop (see `answered-gate.ts`). */
+  answered?: true;
   /** How many retries this visit of the step has used: 0 (absent) for the first attempt, 1 for its first retry (Task 9). A step entered again by an edge starts over. */
   retriesUsed?: number;
   /** Set by the sweep when the attempt ran past its time and its task was asked to stop (Task 9); the task's end then ends the attempt `timed_out`. */
@@ -603,6 +607,18 @@ async function endRun(deps: Deps, run: ChainRunRecord, ended: { status: EndStatu
  * inside it, say) ends `cancelled` with the words the task gave.
  */
 async function afterAttempt(deps: Deps, run: ChainRunRecord, ended: StepAttemptRecord, attempts: StepAttemptRecord[], definition: PinnedChainDefinition): Promise<Progress> {
+  // The gate an answered step implied was decided: Continue goes on as if the answered step had succeeded (by its own edge); Stop ends the run, cancelled (a person's decision).
+  const answeredOrigin = ended.kind === "gate" && ended.status === "succeeded" ? answeredGateOrigin(ended.stepId) : undefined;
+  if (answeredOrigin !== undefined) {
+    if (ended.decision === "declined") {
+      return endRun(deps, run, { status: "cancelled", failure: { seq: ended.seq, reason: "answered_stop", message: `Stopped after "${answeredStepName(ended.stepName)}" answered instead of changing code.` } });
+    }
+    const origin = attempts.filter((candidate) => candidate.stepId === answeredOrigin && candidate.answered === true && candidate.seq < ended.seq).at(-1);
+    if (origin === undefined) return endRun(deps, run, { status: "failed", failure: { seq: ended.seq, reason: "design_invalid", message: `Step "${answeredStepName(ended.stepName)}" is not in this chain's attempts.` } });
+    const { answered: _answered, ...plain } = origin;
+    void _answered;
+    return afterAttempt(deps, run, plain, attempts, definition);
+  }
   const step = stepOf(definition, ended.stepId);
   if (step === undefined) return endRun(deps, run, { status: "failed", failure: { seq: ended.seq, reason: "design_invalid", message: `Step "${ended.stepName}" is not in this chain's design.` } });
   if (ended.status === "failed" || ended.status === "timed_out") {
@@ -619,6 +635,10 @@ async function afterAttempt(deps: Deps, run: ChainRunRecord, ended: StepAttemptR
     const given = ended.failure?.message;
     const message = given !== undefined && given !== NO_REASON && given !== PLAIN_CANCEL_REASON ? given : `Step "${ended.stepName}" was cancelled.`;
     return endRun(deps, run, { status: "cancelled", failure: { seq: ended.seq, reason: ended.failure?.reason ?? "step_cancelled", message } });
+  }
+  // A coding step that answered a question needs a person: nothing goes on, and nothing starts, until they continue or stop.
+  if (ended.answered === true && step.kind === "agent") {
+    return enterStep(deps, run, attempts, definition, answeredGateId(step.id), { ended, traversals: run.traversals, events: [] }, answeredGateStep(step.id, ended.stepName));
   }
   let edge: Edge;
   let branch: { id: string; fellBack: boolean } | undefined;
@@ -649,8 +669,8 @@ async function afterAttempt(deps: Deps, run: ChainRunRecord, ended: StepAttemptR
 interface Entry { ended: StepAttemptRecord; traversals: Record<string, number>; events: RunEventInput[]; branchUpdate?: TransactItem; retry?: number }
 
 /** Writes the next step's attempt (a gate `waiting`, an agent step `starting`) with the run moved on to it and its events, then starts an agent step. */
-async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptRecord[], definition: PinnedChainDefinition, targetId: string, via: Entry | undefined): Promise<Progress> {
-  const target = stepOf(definition, targetId);
+async function enterStep(deps: Deps, run: ChainRunRecord, attempts: StepAttemptRecord[], definition: PinnedChainDefinition, targetId: string, via: Entry | undefined, implied?: GateStep): Promise<Progress> {
+  const target = implied ?? stepOf(definition, targetId);
   if (target === undefined) return endRun(deps, run, { status: "failed", failure: { ...(via === undefined ? {} : { seq: via.ended.seq }), reason: "design_invalid", message: `This chain has no step "${targetId}".` } });
   if (target.kind === "agent" && run.stepRuns + 1 > CHAIN_MAX_STEP_RUNS) {
     return endRun(deps, run, {
@@ -821,7 +841,9 @@ export async function recordGateDecision(deps: Deps, orgId: OrgId, runId: ChainR
   const live = await liveGate(deps, orgId, runId, seq, by.approvalId);
   if (live === undefined) return;
   const { run, attempt } = live;
-  const words = decision === "approved" ? `${by.name} approved "${attempt.stepName}"` : `${by.name} sent "${attempt.stepName}" back`;
+  const answered = answeredGateOrigin(attempt.stepId) !== undefined;
+  const words = answered ? `${by.name} chose to ${decision === "approved" ? "continue" : "stop"} after "${answeredStepName(attempt.stepName)}" answered instead of changing code.`
+    : decision === "approved" ? `${by.name} approved "${attempt.stepName}"` : `${by.name} sent "${attempt.stepName}" back`;
   try {
     await transact(deps, [
       gateAttemptUpdate(deps, run, seq, by.approvalId, { status: "succeeded", decision, endedAt: iso(deps) }),
@@ -844,10 +866,11 @@ export async function recordGateExpiry(deps: Deps, orgId: OrgId, runId: ChainRun
     const live = await liveGate(deps, orgId, runId, seq, approvalId);
     if (live === undefined) return;
     const { run, attempt } = live;
-    const gate = stepOf(await designOf(deps, run), attempt.stepId);
-    const hours = gate?.kind === "gate" ? gate.timeoutHours ?? GATE_DEFAULT_TIMEOUT_HOURS : GATE_DEFAULT_TIMEOUT_HOURS;
+    const gate = gateStepOf(await designOf(deps, run), attempt);
+    const hours = gate?.timeoutHours ?? GATE_DEFAULT_TIMEOUT_HOURS;
+    const said = answeredGateOrigin(attempt.stepId) !== undefined ? `No one continued or stopped "${answeredStepName(attempt.stepName)}"` : `No one approved "${attempt.stepName}"`;
     const ended = await endRun(deps, run, {
-      status: "timed_out", failure: { seq, reason: "gate_timeout", message: `No one approved "${attempt.stepName}" within ${String(hours)} hour${hours === 1 ? "" : "s"}, so the chain stopped.` },
+      status: "timed_out", failure: { seq, reason: "gate_timeout", message: `${said} within ${String(hours)} hour${hours === 1 ? "" : "s"}, so the chain stopped.` },
       attemptUpdate: gateAttemptUpdate(deps, run, seq, approvalId, { status: "timed_out", endedAt: iso(deps) }),
     });
     if (ended === "done") return;
@@ -884,6 +907,14 @@ const taskFields = (attempt: StepAttemptRecord, taskId: string): Record<string, 
 async function resultOf(deps: Deps, run: ChainRunRecord, attempt: StepAttemptRecord, event: TaskEndEvent): Promise<{ status: "succeeded"; result: StepResult } | { status: "failed" | "cancelled"; failure: { reason: string; message: string } }> {
   const agentRun = await getItem(deps, taskAgentRunKey(event.taskId));
   const isAgentRun = agentRun !== undefined && agentRun["orgId"] === run.orgId;
+  // A Rovara Code step that answered a question needing no code change succeeded: it opened no pull request, and its report is the answer.
+  if (event.outcome === "answered") {
+    const task = await getItem(deps, { pk: `DEVTASK#${event.taskId}`, sk: "META" });
+    const workflow = task === undefined || task["orgId"] !== run.orgId ? undefined : task["workflow"] as WorkflowSnapshot | undefined;
+    const answer = workflow === undefined ? undefined : workflowAnswer(workflow);
+    const report = answer === undefined ? `${CODING_AGENT_NAME} finished: answered.` : shortenToBytes(redactSecrets(answeredMessage(answer)), AGENT_REPORT_MAX_BYTES);
+    return { status: "succeeded", result: StepResultSchema.parse({ report }) };
+  }
   if (event.outcome === "succeeded" || event.outcome === "merged") {
     if (isAgentRun) {
       const report = shortenToBytes(event.finalReport ?? "", AGENT_REPORT_MAX_BYTES);
@@ -962,14 +993,14 @@ export async function onStepTaskEnded(deps: Deps, event: TaskEndEvent): Promise<
   // person's cancel or decline that ended it is theirs: it is never retried.
   const timedOut = attempt.timedOutAt !== undefined && outcome.status === "cancelled" && await endedByOwnTimeoutCancel(deps, run, attempt, event, outcome.failure.message);
   const minutes = attempt.timeoutMinutes ?? STEP_DEFAULT_TIMEOUT_MINUTES;
-  const fields = outcome.status === "succeeded" ? { status: "succeeded", result: outcome.result }
+  const fields = outcome.status === "succeeded" ? { status: "succeeded", result: outcome.result, ...(event.outcome === "answered" ? { answered: true } : {}) }
     : timedOut ? { status: "timed_out", failure: { reason: "step_timeout", message: `it ran longer than ${String(minutes)} minutes` } }
     : { status: outcome.status, failure: outcome.failure };
   const events: RunEventInput[] = [];
   if (attempt.status === "paused" && outcome.status === "succeeded") events.push({ type: "resumed", stepSeq: attempt.seq, text: `Step "${attempt.stepName}" is running again.` });
   events.push({
     type: "step_ended", stepSeq: attempt.seq,
-    text: outcome.status === "succeeded" ? `Step "${attempt.stepName}" finished.` : timedOut ? `Step "${attempt.stepName}" ran out of time.` : outcome.status === "cancelled" ? `Step "${attempt.stepName}" was cancelled.` : `Step "${attempt.stepName}" failed.`,
+    text: outcome.status === "succeeded" ? (event.outcome === "answered" ? `Step "${attempt.stepName}" answered instead of changing code.` : `Step "${attempt.stepName}" finished.`) : timedOut ? `Step "${attempt.stepName}" ran out of time.` : outcome.status === "cancelled" ? `Step "${attempt.stepName}" was cancelled.` : `Step "${attempt.stepName}" failed.`,
   });
   if (settled.raisedUsd > 0) events.push({ type: "step_ended", stepSeq: attempt.seq, text: runRaiseMessage("Someone", settled.raisedUsd) });
   try {

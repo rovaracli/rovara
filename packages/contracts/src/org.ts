@@ -1,8 +1,8 @@
 import { z } from "zod";
+import { OrgIdSchema, type OrgId } from "./browser-ids.js";
 
-export const OrgIdSchema = z.string().regex(/^org_[0-9a-z]{20}$/);
-
-export type OrgId = z.infer<typeof OrgIdSchema>;
+// Defined in browser-ids.ts (the browser-safe Rovara Code contracts import it from there); re-exported here for everything else.
+export { OrgIdSchema, type OrgId };
 
 export const OrgRoleSchema = z.enum(["owner", "admin", "member"]);
 

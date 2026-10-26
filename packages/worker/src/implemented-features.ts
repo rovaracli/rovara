@@ -15,4 +15,14 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource",
   "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
   "model.route", "task.agentStep", "task.agentRun",
+  // Rovara Code version 2 (Plan 6): Understand runs read-only and answers with a `rovara-intent` block.
+  "task.workflowUnderstand",
+  // Plan 6 Task 8: the plan check of Rovara Code version 2 (a read-only model run that answers with a rovara-plan-critique block).
+  "task.workflowPlanCritique",
+  // Rovara Code (Plan 6 Task 10): a read-only run that drafts a project's dev setup.
+  "task.setupDraft",
+  // Plan 6 Task 13: the code review of a Rovara Code version 2 task states a risk level.
+  "task.workflowReviewRisk",
+  // Plan 6 Task 15: a coding run that fixes a pull request that is already open (CI, a conflict or comments).
+  "task.workflowFix",
 ] as const satisfies readonly WorkerInvocationFeature[];

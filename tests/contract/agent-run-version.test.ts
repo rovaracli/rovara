@@ -330,6 +330,7 @@ describe("built-in agents below the org's pin follow the same rules", () => {
       state,
       source: {
         currentVersion: (id: string) => (id === "ticket-triage" ? state.latest : 1),
+        defaultPin: (id: string) => (id === "ticket-triage" ? state.latest : 1),
         recipe: (id: string, version: number) => {
           if (id !== "ticket-triage") return structuredClone(BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[0]!.recipe);
           if (version < 1 || version > 2) throw agentXError("NOT_FOUND", `ticket-triage has no version ${String(version)}`);

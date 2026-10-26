@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import type { FeatureE2EPlanningContextResult } from "../e2e/feature-plan-planning-context.js";
 import { describeFeatureE2EExecutableKinds, offersApplicationE2EPlan } from "../e2e/feature-plan-executable-kinds.js";
-import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, type PlanDocumentKind } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, PLAN_PARTS_SENTENCE, type PlanDocumentKind } from "@agentx/contracts";
 import { commentRefInAuthor } from "@agentx/contracts";
 import type { TransactItems } from "./developer-task-actions.js";
 
@@ -219,6 +219,10 @@ export function planDocumentInstructions(input: {
    * a worker that cannot read a version 2 intent is sent instead (see withoutApplicationPlanText).
    */
   applicationPlans?: boolean;
+  /** Rovara Code version 2: the planner may say that the request needs no code change (`noChangeNeeded`). Absent for version 1, whose prompt stays as it was. */
+  noChangeOption?: boolean;
+  /** Rovara Code version 2 (Plan 6 Task 7): ask a coding plan to name what changes, which files and how it is tested. Version 1 plans are asked as before. */
+  requiredParts?: boolean;
 }): string {
   const checks = input.kind === "plan";
   const featureE2E = input.kind === "plan" && input.e2ePlanningContext !== undefined;
@@ -246,9 +250,11 @@ export function planDocumentInstructions(input: {
     "Decisions: include only real choices the owner should make, ranked by impact, each on the claim it changes, with 2 to 4 options that each say what follows from choosing them, and exactly one recommended. No decisions is fine.",
     "Every decision option must be something AgentX can carry out; custom wording goes through Request changes, never an option.",
     "`notChanging` and `risks` are required: say \"None\" when there is nothing to list.",
+    ...(input.noChangeOption === true ? ["If the request needs no code change at all, keep the plan short and add a `noChangeNeeded` member: { answer: string; sources: { repository: string; path: string; line?: number }[] }, with the answer in plain text (at most 4,000 characters) and up to 10 sources. Leave it out whenever any code has to change."] : []),
     "IDs: keep a claim's ID from the previous version of this document when the claim still exists. Give new claims new IDs. Never reuse the ID of a claim that was removed.",
     ...(retiredIds.length === 0 ? [] : [`These claim IDs were removed earlier and must not be used again: ${retiredIds.join(", ")}.`]),
     ...(checks ? ["`checks` goes in the coding plan only. Each check lists in `proves` the IDs of the claims it proves. Checks may prove Not changing items: use `nc1`, `nc2` and so on, counting the `notChanging` entries from 1."] : []),
+    ...(checks && input.requiredParts === true ? [PLAN_PARTS_SENTENCE] : []),
     ...(e2eContext === undefined ? [] : [
       "E2EFeaturePlanIntent has exactly these members: { schemaVersion: 1, requestedTargetIds: string[], portableOperationRefs?: { operationId, applicationId, requestedTargetIds, packageExportSubpath, moduleSpecifier, callableSelector: { kind: \"default\" } | { kind: \"named\", exportName } }[], mockFixtureRefs?: { componentId, requestedTargetId, operationId, sourcePath, sourceSha256 }[], accountContextRefs: { applicationId, profileId, sourcePath, sourceSha256 }[], scenarios: { scenarioId, requirementId, requestedTargetIds, required, accountProfileId, minimumEvidence: \"source\" | \"mock-contract\" | \"runtime\" | \"external-live\", requiredRealComponentIds: string[], steps: E2EStep[], assertions: E2EAssertion[] }[], semanticExportDeltas: { applicationId, operationId, requestedTargetIds, expectedExportNames: string[], reason }[] }. Each scenario needs at least one assertion; `invoke-contract` steps must use a listed operation and a target listed on that operation.",
       e2eContext.status === "available"
@@ -333,11 +339,13 @@ export interface WorkflowDispatchRecord {
   taskId: string;
   workflowRevision: number;
   /**
-   * UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
+   * CRITIQUE (Plan 6, Task 8): a Rovara Code version 2 plan is ready for its plan check; REPLAN: the plan check found a blocking problem and the planner revises the plan once.
+   * UNDERSTAND (Plan 6, Task 4): Rovara Code version 2 reads the request and the code (a row at a READY revision starts it, a row at the RUNNING revision is its watchdog and
+   * is due only after the step's time limit); PLAN: the plan step starts after Understand. UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
    * has something to do for the task. `operation_end`: a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel
    * sweep), so the broker's recovery sweep blocks its keys and tells the task's end handlers.
    */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "agent_run" | "operation_end";
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "UNDERSTAND" | "PLAN" | "CRITIQUE" | "REPLAN" | "agent_run" | "operation_end";
   /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. */
   candidateDigest: string;
   /** A single internal resume operation warms EC2 before a required E2E round is immutably admitted. */
@@ -406,13 +414,15 @@ export function operationEndDispatchItem(tableName: string, input: { taskId: str
 export const WORKFLOW_NO_CANDIDATE_DIGEST = "0".repeat(64);
 const WORKFLOW_DISPATCH_RETENTION_SECONDS = 7 * 86_400;
 
-export function workflowDispatchItem(tableName: string, taskId: string, workflowRevision: number, kind: WorkflowDispatchRecord["kind"], candidateDigest: string, now: string): TransactItems[number] {
+export function workflowDispatchItem(tableName: string, taskId: string, workflowRevision: number, kind: WorkflowDispatchRecord["kind"], candidateDigest: string, now: string,
+  /** When the sweep may run the row first: by default at once; a watchdog row is due later (`UNDERSTAND`, at the step's time limit). */
+  dueAt: string = now): TransactItems[number] {
   const sk = `${taskId}#${workflowRevision}`;
   const item: WorkflowDispatchRecord = {
     pk: WORKFLOW_DISPATCH_PK, sk, entityType: "WORKFLOW_DISPATCH",
     taskId, workflowRevision, kind, candidateDigest, createdAt: now,
-    attempts: 0, nextAttemptAt: now, dispatchDuePk: WORKFLOW_DISPATCH_PK, dispatchDueSk: `${now}#${sk}`,
-    [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(now) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
+    attempts: 0, nextAttemptAt: dueAt, dispatchDuePk: WORKFLOW_DISPATCH_PK, dispatchDueSk: `${dueAt}#${sk}`,
+    [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,
   };
   return { Put: { TableName: tableName, Item: item, ConditionExpression: "attribute_not_exists(pk)" } };
 }

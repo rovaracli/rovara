@@ -336,6 +336,8 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   // (a continue is refused as never started; only a close is left). The session ends failed when the preparation does (v0.4.9 staging: it read `Running: Coding plan`, and a stop changed nothing).
   else if (workflow !== undefined && derived.failedPrepare !== undefined) ended = { status: "failed", at: derived.failedPrepare.updatedAt ?? at };
   else if (workflow?.stage === "MERGED") ended = { status: "succeeded", at };
+  // A question that needed no code change succeeded (its step reads "Answered"); a plan that was rejected or a task that was closed did not.
+  else if (workflow?.stage === "CLOSED" && workflow.outcome === "ANSWERED") ended = { status: "succeeded", at };
   else if (workflow?.stage === "CLOSED") ended = { status: "cancelled", at };
   else if (task.closedAt !== undefined) ended = { status: closedStatus, at };
   if (ended !== undefined) {
@@ -361,7 +363,8 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     if (workflow.state === "BLOCKED") workflowBlocked = true;
     // Only a stage that waits on a person is not running: a plan under review needs its owner, a blocked task needs someone, a pull request waits to be merged. The checks and
     // reviews also sit in WAITING between runs, but nobody is needed for them.
-    if ((workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") || workflow.state === "BLOCKED") status = "needs_person";
+    // Rovara Code version 2: Understand's questions wait for a person too.
+    if ((workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") || (workflow.stage === "UNDERSTAND" && workflow.state === "WAITING") || workflow.state === "BLOCKED") status = "needs_person";
     else if (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING") status = "waiting";
     // A stop that landed before the instructions ran cancels nothing and leaves the step marked running with nothing behind it; the task reads cancelled then, and so does the session
     // (v0.4.6 staging: it read `running` until the task was closed).
@@ -391,7 +394,7 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   const waitingOwner = tryEffectiveTaskOwner(task)?.developerId;
   if (waitingOwner !== undefined) {
     if (status === "needs_person" && needsPeople.length === 0) needsPeople.push(waitingOwner);
-    if (workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && !needsPeople.includes(waitingOwner)) needsPeople.push(waitingOwner);
+    if ((workflow?.stage === "PLAN_REVIEW" || workflow?.stage === "UNDERSTAND") && workflow.state === "WAITING" && !needsPeople.includes(waitingOwner)) needsPeople.push(waitingOwner);
   }
   // An event log that can't be read keeps the peek the summary had: a failed read is not a reason to blank it.
   const peek = derived.current === undefined ? undefined : await peekOf(deps, derived.current.id).catch((error: unknown) => {

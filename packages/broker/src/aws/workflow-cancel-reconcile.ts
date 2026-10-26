@@ -8,16 +8,18 @@
 // - the owner's Retry planning on a row an earlier release already stranded (`strandedPlanningRun`, `recoverStrandedPlanning`).
 // Nothing here adds an approval, queues a dispatch row, or starts an operation: the only change is RUNNING to BLOCKED.
 import { GetCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, closePlanCritique, type WorkflowSnapshot } from "@agentx/contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { workflowRunEndedReason } from "./outbox-failure.js";
 
-type WorkflowMode = "PLAN" | "IMPLEMENT" | "CHECKS" | "REVIEW" | "FEEDBACK_REVIEW";
+type WorkflowMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "CHECKS" | "REVIEW" | "FEEDBACK_REVIEW";
+/** A setup draft (Rovara Code, Task 10) is no step of a workflow: nothing here ever blocks a step for it. */
+type RunMode = WorkflowMode | "SETUP_DRAFT";
 type Client = Pick<DynamoDBDocumentClient, "send">;
 
 /** The workflow stage a run of each mode occupies while it runs. */
 export const WORKFLOW_STEP_STAGE: Readonly<Record<WorkflowMode, WorkflowSnapshot["stage"]>> = {
-  PLAN: "PLAN", IMPLEMENT: "IMPLEMENT", CHECKS: "VERIFY", REVIEW: "REVIEW", FEEDBACK_REVIEW: "WAIT_FOR_MERGE",
+  UNDERSTAND: "UNDERSTAND", PLAN: "PLAN", PLAN_CRITIQUE: "PLAN_CRITIQUE", IMPLEMENT: "IMPLEMENT", CHECKS: "VERIFY", REVIEW: "REVIEW", FEEDBACK_REVIEW: "WAIT_FOR_MERGE",
 };
 
 /** The operation fields these rules read; an `OperationRecord` and the public `Operation` both fit. */
@@ -28,7 +30,7 @@ export interface StoppedRunOperation {
   status: string;
   fence: number;
   createdAt: string;
-  workflowMode?: WorkflowMode | undefined;
+  workflowMode?: RunMode | undefined;
   workflowDependencies?: unknown;
   workflowE2EAdmission?: { purpose?: "baseline" | "replay" | undefined } | undefined;
   workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string } | undefined;
@@ -58,7 +60,7 @@ export function stopBlocksWorkflowStep(task: StoppedRunTask, run: StoppedRunOper
 function runsRunningStep(task: StoppedRunTask, run: StoppedRunOperation): boolean {
   const workflow = task.workflow;
   const mode = run.workflowMode;
-  if (workflow === undefined || mode === undefined || run.kind !== "task") return false;
+  if (workflow === undefined || mode === undefined || mode === "SETUP_DRAFT" || run.kind !== "task") return false;
   if (task.closedAt !== undefined || task.workspaceId !== run.workspaceId) return false;
   if (workflow.state !== "RUNNING" || workflow.stage !== WORKFLOW_STEP_STAGE[mode]) return false;
   if (run.workflowDependencies !== undefined) return false;
@@ -82,7 +84,7 @@ export async function blockStoppedWorkflowRun(client: Client, tableName: string,
     if (task === undefined || !parsed.success) return false;
     const workflow = parsed.data;
     const mode = run.workflowMode;
-    if (mode === undefined || !runsRunningStep({ closedAt: task.closedAt, workspaceId: task.workspaceId, workflow }, run)) return false;
+    if (mode === undefined || mode === "SETUP_DRAFT" || !runsRunningStep({ closedAt: task.closedAt, workspaceId: task.workspaceId, workflow }, run)) return false;
     if (mode === "FEEDBACK_REVIEW") {
       const binding = run.workflowFeedbackReview;
       if (binding === undefined || workflow.revision !== binding.workflowRevision || workflow.taskId !== binding.taskId
@@ -96,7 +98,9 @@ export async function blockStoppedWorkflowRun(client: Client, tableName: string,
         UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
         ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
         ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-        ExpressionAttributeValues: { ":workflow": blockWorkflow(workflow, stoppedStepReason(mode, endedAs), now), ":now": now,
+        ExpressionAttributeValues: { ":workflow": mode === "PLAN_CRITIQUE"
+          // Plan 6 Task 8: the plan check is advice, so a check that was stopped lets the plan go on to the person, shown as not checked.
+          ? closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now }) : blockWorkflow(workflow, stoppedStepReason(mode, endedAs), now), ":now": now,
           ":revision": workflow.revision, ":stage": workflow.stage, ":running": "RUNNING" },
       } },
       { ConditionCheck: {

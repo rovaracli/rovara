@@ -7,7 +7,7 @@ import type * as NodeCrypto from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
 import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
@@ -224,7 +224,7 @@ describe("Rovara Code with agents switched on", () => {
   const STARTS: GoldenScenario[] = [
     "plan-quick", "plan-full-requirements", "plan-review-decision", "implement", "checks", "review", "task-no-workflow", "task-no-workflow-no-proxy", "shared-task", "plan-ready-quick",
   ];
-  const latest = BUILTIN_AGENTS["rovara-code"].versions.at(-1)!;
+  const latest = BUILTIN_AGENTS["rovara-code"].versions.find((v) => v.version === builtinDefaultPin("rovara-code"))!;
 
   for (const scenario of STARTS) {
     it(`${scenario} differs from its golden fixture only by the task's agent, origin, payer, place, session id, the keys' tags, the operation's key ids, the RECIPE item and change 1 and 4`, async () => {

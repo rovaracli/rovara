@@ -10,7 +10,7 @@ import {
   validateChainForPublish,
 } from "../../packages/broker/src/chains/validate.js";
 import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import type { AgentId } from "../../packages/contracts/src/agent.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
 import { PinnedChainDefinitionSchema, type ApproverRule, type ChainDefinition, type ChainDefinitionInput, type PinnedChainDefinition } from "../../packages/contracts/src/chains.js";
@@ -43,6 +43,7 @@ const caller = (developerId: string = ALICE, orgId: OrgId = ORG_A): AgentCaller 
 function builtinsWithRelease(release: { codeReviewer: number }): BuiltinSource {
   return {
     currentVersion: (id) => (id === "code-reviewer" ? release.codeReviewer : currentBuiltinVersion(id as "rovara-code")),
+    defaultPin: (id) => (id === "code-reviewer" ? release.codeReviewer : builtinDefaultPin(id as "rovara-code")),
     recipe: (id, version) => {
       if (id !== "code-reviewer" || version <= currentBuiltinVersion("code-reviewer") || version > release.codeReviewer) return builtinRecipe(id as "rovara-code", version);
       return builtinRecipe("code-reviewer", 1);
@@ -275,7 +276,7 @@ describe("validateChainForPublish", () => {
     const versions = result.pinned.steps.flatMap((step) => (step.kind === "agent" ? [[step.agent.agentId, step.agent.version]] : []));
     expect(versions).toEqual([
       ["root-cause-analyst", currentBuiltinVersion("root-cause-analyst")],
-      ["rovara-code", currentBuiltinVersion("rovara-code")],
+      ["rovara-code", builtinDefaultPin("rovara-code")],
       ["code-reviewer", currentBuiltinVersion("code-reviewer")],
     ]);
     expect(PinnedChainDefinitionSchema.safeParse(result.pinned).success).toBe(true);

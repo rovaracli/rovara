@@ -60,7 +60,12 @@ import {
   nextStandingFailures,
   type StandingFailure,
   submitWorkflowArtifact,
+  submitPlanCritique,
+  closePlanCritique,
+  skipPlanRevision,
+  readPlanCritique,
   parsePlanDocument,
+  planAnswerMissingParts,
   parseCommentAnswers,
   commentRefInAuthor,
   commentIdInAuthor,
@@ -71,6 +76,8 @@ import {
   type PlanClaim,
   type WorkflowDecisionDetail,
   type DeveloperTaskView,
+  type CodeIntentResult,
+  RUN_INPUT_TEXT_MAX_BYTES,
   retiredClaimIds,
   canonicalPlanJson,
   canonicalJson,
@@ -83,6 +90,7 @@ import {
   workflowPullRequestTrees,
   workflowSelectedChecks,
   blockWorkflow,
+  endWorkflowCiFixUnrelated,
   WorkflowDependencyResultSchema,
   WorkItemProgressV1Schema,
   WorkflowSnapshotSchema,
@@ -95,6 +103,14 @@ import {
   WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   WORKFLOW_BLOCK_REASONS,
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
+  type IntentAssessment,
+  UNDERSTAND_ARTIFACT_MAX_BYTES,
+  UNDERSTAND_ARTIFACT_NAME,
+  UNDERSTAND_UNREADABLE_MESSAGE,
+  endStuckUnderstand,
+  answerWorkflowIntent,
+  readIntentArtifact,
+  recordIntentAssessment,
   WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON,
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE,
   WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE,
@@ -175,6 +191,7 @@ import {
   githubRepoProjectKey,
   type ProjectCommand,
   type WorkflowFeedbackApprovalBinding,
+  type WorkflowFixPayload,
   type WorkflowDependencyInvocation,
   type WorkflowReviewBase,
   type WorkflowReviewChecks,
@@ -219,6 +236,8 @@ import {
   type ModelRef,
   type ModelSelection,
   type ResolvedRecipe,
+  type ResolvedStep,
+  type AgentGuardrails,
   type ProjectModelOptions,
   EgressApproveBodySchema,
   EgressRejectBodySchema,
@@ -366,11 +385,15 @@ import { isGithubInstallPath, routeGithubInstall } from "./github-install-web.js
 import { decisionComments, ownerAnswersFor, pageCommentsPrompt, promptComments, readDecisionDetail } from "../developer/owner-answers.js";
 import { isPageRefusal, plannerRepliesItem, writeCommentAnswer, writePlannerReplies, type SlackRequestQueue } from "../developer/page-comments.js";
 import { loadWorkflowDocument, readObjectText as readStoredText, shortenMarkdown } from "../developer/plan-artifacts.js";
+import { deliverCodeMilestones, deliverDueCodeMilestones } from "../rovara-code/milestones.js";
+import { answeredMilestoneItems } from "../rovara-code/answered.js";
+import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
+import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
 import { resolvePlanEvidence } from "../developer/plan-evidence.js";
 import { WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { slackRefusalMessage } from "./slack-refusals.js";
-import { approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
+import { ROVARA_STATUS_START, approvedFeedbackFixes, withFeedbackFixes, withStatusLines } from "../developer/pull-request-feedback-section.js";
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../org/store.js";
@@ -451,7 +474,7 @@ import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, typ
 import { runApprovalSweep } from "../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../agents/lifecycle.js";
 import { estimateRun } from "../spend/estimate.js";
-import { readProjectAi, readSpendPolicy } from "../spend/settings.js";
+import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
 import { SkillStore, servedSkills } from "../agents/skills.js";
 import { followMerges, orgRoleOf, type ProjectMembers } from "../agents/access.js";
@@ -471,7 +494,7 @@ import { sweepChainRuns } from "../chains/lifecycle.js";
 import { chainRunPortsFor, chainRunSpendReader, type ChainRunnerDependencies } from "../chains/runner.js";
 import type { ChainRouteDependencies } from "../chains/routes.js";
 import { chainOwnerMoverFor, chainReadAccessFor, chainSessionSource } from "../chains/session-seam.js";
-import type { SessionAccessDependencies } from "../agent-sessions/access.js";
+import { requireSessionLevel, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { slackReplyAuthor } from "../agent-sessions/events.js";
 import { drainEndedSessions, sweepAgentSessions } from "../agent-sessions/sweep.js";
 import { installRealtimeSink, realtimeConfigFromEnvironment } from "../realtime/sink.js";
@@ -480,7 +503,8 @@ import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/r
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
-import { applyAgentStep, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
+import { criticModelFor, critiqueModelOf } from "../rovara-code/critic.js";
+import { applyAgentStep, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { chatGptServing, effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import { readGuardrails } from "../agents/guardrails.js";
@@ -489,13 +513,17 @@ import type { DecideKinds } from "../developer/decide-kinds.js";
 import { answerDecideInspect, isDecideInspectEvent, type DecideInspectEvent } from "../developer/decide-inspect.js";
 import { approvalDecideKind } from "../agents/approval-decide-kind.js";
 import { isDecidePagePath, routeDecidePage } from "./decide-web.js";
-import { agentRunStarterOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
+import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, StatusReply, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, agentStepNotes, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowPlanRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, workflowPullRequestStatusLines, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { CandidateBuildSourceBodySchema, StoredCandidateBuildSourceSchema, assessCandidateBuildSource, candidateBuildSourceAdmissionReference, type StoredCandidateBuildSource } from "./candidate-build-source.js";
-import { mergeRecoveryItem, runDueWorkflowMergeRecovery, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
+import { mergeRecoveryItem, runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking, trackingRecoveryItem, type GithubMergeReadBudget, type MergeRecoveryResult } from "./workflow-merge-recovery.js";
+import { readMergeTracking, reconcileTrackingTask, type MergeTrackingDependencies } from "../rovara-code/merge-tracking.js";
+import { ciFixUnrelatedItems, installCiFixDecider, taskAutonomy } from "../rovara-code/ci-fix.js";
+import { backfillGithubMembers } from "../rovara-code/github-members.js";
+import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../rovara-code/tracking-events.js";
 import { credentialRefusals, preflightConnectors, registrationWarnings, type PreflightOutcome } from "./registration-preflight.js";
 import { TurnRecordExport, dynamoTurnRecordSource, workspaceProjectReader } from "./turns.js";
 import { createCodeBuildGateway, type CodeBuildGateway } from "../codebuild.js";
@@ -532,6 +560,8 @@ import { dropWatchedBatch, listWatchedBatches, recordWatchedBatchThread, startSl
 import { batchResults, parseStartBody, requireBatchProject, showBatch, startBatch, stopBatchById } from "./eval-batch-admin.js";
 import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { slackWorkflowCaller } from "./slack-workflow-caller.js";
+import { startCodeIntent, type CodeIntentDependencies } from "../rovara-code/intent.js";
+import { SETUP_DRAFT_PREAMBLE, setupDraftEndItems } from "../rovara-code/setup-draft.js";
 import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 
@@ -691,7 +721,7 @@ interface AwsBrokerDependencies {
   adminValues: readonly string[];
   callbackSigningKey: string;
   repositoryGrants: RepositoryGrantService;
-  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
+  githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */
   projectSetupSource?: { capture: (input: { repositoryUrl: string; ref: string }, scope: GitHubTokenScope) => Promise<E2ESourceSnapshot> };
   /** Server-selected catalog namespace for an already configured setup verifier. */
@@ -743,7 +773,7 @@ interface AwsBrokerDependencies {
    * The store, access checks and approvals are built from the broker's State table and sign-in table. `projectMembers` (who holds which role
    * on a project) is Plan 2 Task 21's `createProjectMembers` over those same tables unless a test hands in a stand-in (PF6).
    */
-  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory; /** Plan 4 Task 25: which AWS accounts an org connected (default: its CloudWatch connections) and the fetch under SNS certificate and confirmation requests. */ awsAccounts?: ConnectedAwsAccounts; snsFetch?: typeof fetch }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; /** Plan 4 Task 26: the queue that keeps the schedule invocations that failed, drained by the chain sweep. */ scheduleDeadLetters?: ScheduleDeadLetters; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions; sessions?: Pick<SessionAccessDependencies, "chainReadAccess" | "chain"> & Pick<SessionTakeOverDependencies, "chainOwner"> } & Pick<AgentStoreInput, "newId" | "builtins">;
+  agents?: { /** Plan 4 Task 19: where event hooks keep their secrets, which providers read their deliveries and what starts the work; absent where hooks are not set up. */ eventHooks?: { secrets: HookSecrets; providers?: Partial<Record<HookSource, HookProvider>>; dispatch?: HookIngressDeps["dispatch"]; memory?: HookIngressMemory; /** Plan 4 Task 25: which AWS accounts an org connected (default: its CloudWatch connections) and the fetch under SNS certificate and confirmation requests. */ awsAccounts?: ConnectedAwsAccounts; snsFetch?: typeof fetch }; projectMembers?: ProjectMembers; resolveSkill?: AgentRouteDependencies["resolveSkill"]; servableModels?: AgentRouteDependencies["servableModels"]; /** Plan 6: whether Rovara Code version 2 is available (default off until Task 8); tests turn it on. */ rovaraCodeV2Live?: boolean; orgSourceOrder?: AgentRouteDependencies["orgSourceOrder"]; pullRequestHead?: AgentRouteDependencies["pullRequestHead"]; requestRunLimit?: AgentRouteDependencies["requestRunLimit"]; chainTriggers?: ChainTriggerHooks; triggers?: TriggerStore; hooks?: TriggerHookReader; triggerSchedules?: TriggerScheduler; /** Plan 4 Task 26: the queue that keeps the schedule invocations that failed, drained by the chain sweep. */ scheduleDeadLetters?: ScheduleDeadLetters; chainRuns?: AgentRouteDependencies["chainRuns"]; chainRunBudgets?: AgentRouteDependencies["chainRunBudgets"]; registerChainRunner?: boolean; modelSources?: ModelSourceBrokerOptions; sessions?: Pick<SessionAccessDependencies, "chainReadAccess" | "chain"> & Pick<SessionTakeOverDependencies, "chainOwner"> } & Pick<AgentStoreInput, "newId" | "builtins">;
   /**
    * Plan 3, Task 21a (R66): present, the decisions are made on the confirmation page (`/v1/app/approve/{id}`), the decide routes send a token
    * there, and the sign-in function may ask `decide-inspect`. Absent, the page answers NOT_FOUND and nothing can be decided. The `apr_` kind (write,
@@ -1138,6 +1168,7 @@ function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     // The confirmation page is served by the cell, at the origin its access tokens are issued from.
     confirmOrigin: new URL(developer.issuer).origin,
     ...(agents.resolveSkill === undefined ? {} : { resolveSkill: agents.resolveSkill }),
+    ...(agents.rovaraCodeV2Live === undefined ? {} : { rovaraCodeV2Live: agents.rovaraCodeV2Live }),
     // Where the install runs the model proxy, the models a recipe may name and the order a project may reorder are the org's own sources' (Task 26).
     ...(routing === undefined ? {} : { modelRouting: routing }),
     ...(agents.servableModels === undefined ? (routing === undefined ? {} : { servableModels: (orgId: OrgId) => servableModels(routing, orgId) }) : { servableModels: agents.servableModels }),
@@ -1439,16 +1470,51 @@ export function createAgentRunStarter(input: AwsBrokerInput): AgentRunStarter | 
   return agentRunStarterFrom(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
 }
 
-function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): AgentRunStarter | undefined {
+/** The developer API's dependencies for starting work as a person, from the broker's own: what the run starter and the code intent start are made from. */
+function startRouteDependencies(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): DeveloperRouteDependencies | undefined {
   const developer = dependencies.developer;
   if (developer === undefined) return undefined;
-  return agentRunStarterOf({
+  return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
     ...(dependencies.cloud === true ? { cloud: true } : {}),
     ...(agents === undefined ? {} : { agents }),
     ...repositoriesGateRoute(dependencies),
-  });
+  };
+}
+
+function agentRunStarterFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): AgentRunStarter | undefined {
+  const routeDependencies = startRouteDependencies(dependencies, tasks, agents);
+  return routeDependencies === undefined ? undefined : agentRunStarterOf(routeDependencies);
+}
+
+/**
+ * Plan 6 Task 3: what `startCodeIntent` needs for a caller that is already authenticated (the app route's session, the Slack workflow's own caller). Undefined where developer sign-in is
+ * not set up. Plan 9 does not use this: it calls `createCodeIntentStarter`, which names the person and reads them again.
+ */
+export function createCodeIntentDependencies(input: AwsBrokerInput, caller: DeveloperCaller): CodeIntentDependencies | undefined {
+  const dependencies = brokerDependencies(input);
+  const tasks = developerTaskActions(dependencies);
+  const routeDependencies = startRouteDependencies(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
+  return routeDependencies === undefined ? undefined : codeIntentDependenciesOf(routeDependencies, caller);
+}
+
+/**
+ * Plan 6 Task 3: Rovara Code's one entry point for an intent, for Plan 9's Linear and offer starts. It takes the person as an org and a developer id and reads them again on every
+ * call (sign-in, revocation, org membership and role), so a caller can't be built stale or with a role it doesn't hold. A person who is revoked, removed or in another org is
+ * refused `FORBIDDEN`. `source: "slack"` is refused here: only the Slack workflow's own start builds the Slack caller. It needs agents to be set up.
+ */
+export function createCodeIntentStarter(input: AwsBrokerInput): ((orgId: OrgId, developerId: string, request: unknown) => Promise<CodeIntentResult<DeveloperTaskView>>) {
+  const dependencies = brokerDependencies(input);
+  const tasks = developerTaskActions(dependencies);
+  const routeDependencies = startRouteDependencies(dependencies, tasks, agentRouteDependencies(dependencies, tasks));
+  const starter = routeDependencies === undefined ? undefined : agentRunStarterOf(routeDependencies);
+  return async (orgId, developerId, request) => {
+    if (routeDependencies === undefined || starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting work is not set up in this deployment");
+    const caller = await starter.callerFor(orgId, developerId);
+    if (caller === undefined) throw agentXError("FORBIDDEN", "The person this run is for isn't a member of the organization.");
+    return startCodeIntent(codeIntentDependenciesOf(routeDependencies, caller), caller, request);
+  };
 }
 
 /** The latest broker's chain runner dependencies, which the one registration of the chain runner's end and pause handlers reads (Plan 4 Task 6). */
@@ -1883,13 +1949,24 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     }
     if (isWorkflowMergeRecoveryEvent(event)) {
       try {
+        const sweepStartedAt = Date.now();
         const result = await runDueWorkflowMergeRecovery({
           documentClient: dependencies.documentClient,
           tableName: dependencies.tableName,
           now: Date.now,
           reconcile: (taskId, budget) => reconcileWorkflowMergeRecoveryTask(dependencies, taskId, budget),
         });
-        return json(result, "workflow-merge-recovery");
+        // The tracking pass (Rovara Code) runs after the merge pass with the time that is left, in its own partition, behind its own gate: neither starves the other.
+        const tracking = await runDueWorkflowMergeTracking({
+          documentClient: dependencies.documentClient,
+          tableName: dependencies.tableName,
+          now: Date.now,
+          reconcile: (taskId, budget) => reconcileWorkflowTrackingTask(dependencies, taskId, budget),
+        }, { budgetMs: Math.max(0, SWEEP_EVENT_BUDGET_MS - (Date.now() - sweepStartedAt)) }).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "broker", event: "workflow.merge_tracking_failed", error: error instanceof Error ? error.name : "unknown" }));
+          return { attempted: 0, reconciled: 0, deferred: 0 };
+        });
+        return json({ ...result, tracking }, "workflow-merge-recovery");
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.merge_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);
@@ -1904,13 +1981,18 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           console.log(JSON.stringify({ component: "broker", event: "plan_evidence.sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { attempted: 0, started: 0 };
         });
+        // Rovara Code milestones a handler was not told after their commit (or threw on) are told again; this too never hides the dispatches' result.
+        const codeMilestones = await deliverDueCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "broker", event: "code_milestone.sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
+          return { attempted: 0 };
+        });
         // Finished tasks whose release found the workspace busy, failed or never ran: their slot and workspace are given back.
         const releases = await releasePendingFinishedTasks({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) })
           .catch((error: unknown) => {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
           });
-        return json({ ...dispatches, planEvidence, releases }, "workflow-dispatch-recovery");
+        return json({ ...dispatches, planEvidence, codeMilestones, releases }, "workflow-dispatch-recovery");
       }
       catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_recovery_failed", error: error instanceof Error ? error.name : "unknown" }));
@@ -2086,7 +2168,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             rawBody: request.body ?? "",
             headers: request.headers,
             secret: webhookSecret,
-            authorizeRepository: (scope) => authorizeLinkedGithubWebhook({
+            authorizeRepository: (scope) => "headSha" in scope
+              ? resolveHeadEventTask(headEventDependencies(dependencies), scope).then((followed) => followed !== undefined)
+              : authorizeLinkedGithubWebhook({
               documentClient: dependencies.documentClient,
               tableName: dependencies.tableName,
               scope,
@@ -5537,7 +5621,8 @@ async function attributedBody(
   body: string | undefined,
 ): Promise<string | undefined> {
   if (identity.developer) {
-    const footer = developerFooter(identity.developer.name, identity.developer.client);
+    // A Rovara Code (version 2) description is built with its own markers and never says AgentX, so its footer doesn't either.
+    const footer = developerFooter(identity.developer.name, identity.developer.client, body?.includes(ROVARA_STATUS_START) === true ? "Rovara" : "AgentX");
     const attributed = body ? `${body}\n\n---\n${footer}` : footer;
     return Buffer.byteLength(attributed, "utf8") <= 32_768 ? attributed : body;
   }
@@ -5791,7 +5876,7 @@ async function dispatchAgentStep(
   settings: RegisteredProjectRecord,
   projectModel: ModelSelection | undefined,
   chatgptModel: ModelSelection | undefined,
-): Promise<(AppliedAgentStep & { stepName: string }) | undefined> {
+): Promise<(AppliedAgentStep & { stepName: string; criticSameModel?: true }) | undefined> {
   if (task?.agent === undefined) return undefined;
   const frozen = await readTaskRecipe(dependencies, task.taskId, orgId);
   // The digest is computed from the recipe itself, never taken from the item's own field: the content is what must be the one the task recorded.
@@ -5799,13 +5884,45 @@ async function dispatchAgentStep(
   // A run of agent steps is driven by the engine alone: any other task operation (a legacy turn from whichever route) would run a full coding session in its workspace.
   if (input.agentRun === undefined && recipeRunner(frozen.recipe) === "agent_steps") throw agentXError("CONFIG_INVALID", "an agent run takes no follow-up; start a new run instead");
   const guardrails = await readGuardrails(dependencies, orgId);
-  const stepIds = priorStepIds({ recipe: frozen.recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails, agentRun: input.agentRun });
-  const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, frozen.recipe, stepIds);
+  // Plan 6 Task 8: the plan check is an ordinary step. The model the company set on it stands; with none set, Rovara recommends one the project may use (a different one from the planner's by default).
+  const critic = input.workflowMode === "PLAN_CRITIQUE" && input.agentRun === undefined
+    ? await criticModelOfStep(dependencies, orgId, workspace, task, frozen.recipe, input.programStepId, guardrails, settings.definition.models?.approved, projectModel) : undefined;
+  const recipe = critic?.recipe ?? frozen.recipe;
+  const stepIds = priorStepIds({ recipe, mode: input.workflowMode, programStepId: input.programStepId, guardrails, agentRun: input.agentRun });
+  const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, recipe, stepIds);
   const applied = applyAgentStep({
-    recipe: frozen.recipe, ref: task.agent, mode: input.workflowMode, programStepId: input.programStepId, guardrails, project: workspace.projectName,
+    recipe, ref: task.agent, mode: input.workflowMode, programStepId: input.programStepId, guardrails, project: workspace.projectName,
     projectModel, projectApproved: settings.definition.models?.approved, chatgptModel, priorOperations, agentRun: input.agentRun,
   });
-  return { ...applied, stepName: input.agentRun?.step.name ?? stepNameOf(frozen.recipe, input.workflowMode, input.programStepId) };
+  return { ...applied, stepName: input.agentRun?.step.name ?? stepNameOf(recipe, input.workflowMode, input.programStepId), ...(critic?.sameModelAsPlanner === true ? { criticSameModel: true as const } : {}) };
+}
+
+/**
+ * Plan 6 Task 8: the recipe the plan check runs under. The company's own choice for the step is left as it is (the step's ordinary checks apply to it in `applyAgentStep`); with none,
+ * Rovara's recommendation (`criticModelFor`) is set as the step's model for this one operation, so it is checked and routed like any model a step names. The planner's model is the one the
+ * latest planning operation recorded, else the project's. The sources are the ones this org's project walks, so a model of another org's is never offered. A refusal is thrown (Plan 3's words).
+ */
+async function criticModelOfStep(
+  dependencies: AwsBrokerDependencies, orgId: OrgId, workspace: WorkspaceInstance, task: DeveloperTaskRecord, recipe: ResolvedRecipe, programStepId: string | undefined,
+  guardrails: AgentGuardrails, approved: ReadonlyArray<ModelIdentifier> | undefined, projectModel: ModelSelection | undefined,
+): Promise<{ recipe: ResolvedRecipe; sameModelAsPlanner: boolean }> {
+  const step = stepForOperation(recipe, "PLAN_CRITIQUE", programStepId);
+  const planner = (await queryAllItems(dependencies, `WORKSPACE#${workspace.id}`, "OPERATION#"))
+    .filter((item) => item.entityType === "OPERATION" && item.kind === "task" && item.workflowMode === "PLAN" && item.conversationId === task.conversationId)
+    .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
+  const recorded = ModelSelectionSchema.safeParse(planner?.model);
+  const routing = routingOf(dependencies);
+  const chosen = criticModelFor({
+    step, agentName: task.agent?.name ?? ROVARA_CODE_NAME, planModel: recorded.success ? recorded.data : projectModel ?? defaultWorkerModel(routing?.rovaraGeography),
+    project: { name: workspace.projectName, approved }, guardrails,
+    sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
+  });
+  if ("refuse" in chosen) throw chosen.refuse;
+  if (step === undefined || chosen.chosenBy === "company" || chosen.model === undefined) return { recipe, sameModelAsPlanner: chosen.sameModelAsPlanner };
+  return {
+    recipe: { ...recipe, steps: recipe.steps.map((candidate) => (candidate.id === step.id ? { ...candidate, settings: { ...candidate.settings, model: chosen.model } } as ResolvedStep : candidate)) },
+    sameModelAsPlanner: chosen.sameModelAsPlanner,
+  };
 }
 
 /** The models the workspace's earlier coding operations ran on, by the recipe step each was; one that recorded none has no model. */
@@ -5844,7 +5961,7 @@ async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId
 async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
   workspace: WorkspaceInstance,
-  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; legacyTask?: boolean; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
+  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
@@ -5893,6 +6010,8 @@ async function taskOperationParts(
     payloadHash: hashJson({ conversationId: input.conversationId, prompt: input.prompt,
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: input.workflowReviewers }),
+      ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+      ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
       ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
       ...(input.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: input.workflowE2EAdmission }) }),
     status: "ACCEPTED",
@@ -5902,6 +6021,10 @@ async function taskOperationParts(
     ...input.requester,
   });
   operation.settingsRevision = settings.definition.revision;
+  // Plan 6 Task 8: the project allows only one model, so the same model that wrote the plan checks it; the plan view says so.
+  if (applied?.criticSameModel === true) operation.criticSameModel = true;
+  // Plan 6 Task 8: the one revision a plan check asked for. No person asked for it, so it may never pause the task or ask for money (see handleModelAccess and the budget-stop paths).
+  if (input.planRevision === true) operation.planRevision = true;
   // The model this operation runs on, kept so a later step that must differ in company from this one can be compared with it.
   const ranModel = leftThePlan ? applied?.model : applied?.ranModel;
   if (ranModel !== undefined) operation.model = ranModel;
@@ -5928,7 +6051,11 @@ async function taskOperationParts(
     : undefined;
   // Recorded so the broker can refuse a v2 plan from a run that was never asked for one (Ruling AW).
   if (input.workflowMode === "PLAN" && offersApplicationE2EPlan(e2ePlanningContext)) operation.workflowE2EPlanVersion = 2;
+  const requiredParts = codingPlan && input.workflowMode === "PLAN" && input.legacyTask !== true && await codingPlanRequiresParts(dependencies, workspace.id);
   const documentInstructions = planDocumentInstructions({ kind: planKind, path: input.workflowPhase === undefined ? "QUICK" : "FULL", anchors: true,
+    // Rovara Code version 2 only: a plan may say that no code change is needed (version 1's prompt, and so its recorded behaviour, is unchanged).
+    ...(task?.workflow?.definitionVersion === "1.1.0" ? { noChangeOption: true } : {}),
+    ...(requiredParts ? { requiredParts: true } : {}),
     ...(workBreakdownContext === undefined ? {} : { workBreakdownContext }),
     ...(e2ePlanningContext === undefined ? {} : { e2ePlanningContext }),
     ...(input.retiredClaimIds === undefined ? {} : { retired: input.retiredClaimIds }) });
@@ -5938,7 +6065,9 @@ async function taskOperationParts(
   const gated = input.workflowMode !== undefined && input.legacyTask !== true;
   // The agent's instructions come after Rovara's own rules and the phase text, in a block that says it adds to them (Plan 3, Task 16).
   const agentSection = applied?.promptSection === undefined ? "" : `\n\n${applied.promptSection}`;
-  const selectedPrompt = input.workflowMode === "PLAN"
+  const selectedPrompt = input.workflowMode === "SETUP_DRAFT"
+    ? `${SETUP_DRAFT_PREAMBLE}${agentSection}\n\nRequest:\n${input.prompt}`
+    : input.workflowMode === "PLAN"
     ? `${WORKFLOW_PREAMBLE}\n\nPlanning phase only. Do not edit, write, or create files. Inspect the request and repository. ${PLAN_PHASE_LIMITS} Avoid filler and include only material risks or genuine unanswered questions. This linked detail is shown to the owner for approval before the next phase or code changes.\n\n${documentInstructions}${checksInstructions}${agentSection}\n\nRequest:\n${input.prompt}`
     : input.workflowMode === "REVIEW"
       ? `${WORKFLOW_PREAMBLE}\n\nReview the current code read-only for the current task. Do not edit files or run commands that modify the workspace. Return concise critic and security review findings. The broker will bind your reports to this operation and candidate.${agentSection}\n\n${input.prompt}`
@@ -5992,6 +6121,9 @@ async function taskOperationParts(
       ...(input.workflowReviewFeedback === undefined ? {} : { workflowReviewFeedback: input.workflowReviewFeedback }),
       ...(input.workflowReviewNote === undefined ? {} : { workflowReviewNote: input.workflowReviewNote }),
       ...(input.workflowReviewers === undefined ? {} : { workflowReviewers: [...input.workflowReviewers] }),
+      ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+      // Plan 6 Task 15: the run fixes a pull request that is already open; a worker without "task.workflowFix" is refused the run at delivery, never sent it without the field.
+      ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
       // Task 26 (review I1): when a route was chosen the worker is told the model it was chosen for, never left to its install setting, which the key may not allow.
       ...(payloadModel === undefined ? {} : { model: payloadModel }),
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
@@ -6000,7 +6132,7 @@ async function taskOperationParts(
       ...(resolvedModel.diagnostic === undefined ? {} : { modelSelectionDiagnostic: resolvedModel.diagnostic }),
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as
       // publicationProject merges it, since that is what publication gates on. None when the project has none.
-      ...(input.agentRun !== undefined || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),
+      ...(input.agentRun !== undefined || input.workflowMode === "SETUP_DRAFT" || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),
     },
   };
   return { operation, outbox: outboxRecord(workspace, invocation), fence };
@@ -6028,6 +6160,13 @@ async function codingPlanChecksInstructions(dependencies: AwsBrokerDependencies,
   if (task.workflow?.checkPolicy === undefined) return "";
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   return planChecksInstructions(project.definition.repositories.map((repository) => repository.path), task.workflow?.checkPolicy?.required ?? []);
+}
+
+/** Plan 6 Task 7: whether the workspace's task is a Rovara Code version 2 task, whose coding plan must name what changes, which files and how it is tested. */
+async function codingPlanRequiresParts(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<boolean> {
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
+  const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  return task?.workflow?.definitionVersion === "1.1.0";
 }
 
 /** Bind planner guidance to the task's starting project revision; never consult the latest project here. */
@@ -6661,10 +6800,13 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
           tags: mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId, ...(chainTag === undefined ? {} : { chain: chainTag }) }),
           scopes: payment.scopes,
           operationKeyIds: current.modelKeyIds ?? [],
-          planning: current.workflowMode === "PLAN",
+          // Understand spends from the planning limit too (a refusal while it runs pauses with the planning scope).
+          // The plan check spends from the task's planning limit like planning does (the run limit is the planning limit until the plan is approved). It is advice: running out never pauses the task or asks for money
+          // (the plan goes on to the person, "stopped at the planning limit"), so it is given no pause to write.
+          planning: current.workflowMode === "PLAN" || current.workflowMode === "UNDERSTAND",
           ...(testCapUsd === undefined ? {} : { testCapUsd }),
           ...(stepBudgetUsd === undefined ? {} : { stepBudgetUsd }),
-          pause: { taskId: task.taskId, key: taskKey(task.taskId), operationId: current.id },
+          ...(current.workflowMode === "PLAN_CRITIQUE" || current.planRevision === true ? {} : { pause: { taskId: task.taskId, key: taskKey(task.taskId), operationId: current.id } }),
           recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }, { key: operationKey(current.workspaceId, current.id) }],
         }),
       };
@@ -6889,7 +7031,7 @@ async function acceptTask(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { sharedTask?: boolean; operationId?: string; workflowMode?: "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
+  options: { sharedTask?: boolean; planRevision?: true; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
@@ -6899,6 +7041,8 @@ async function acceptTask(
   const requestHash = hashJson({ conversationId: request.conversationId, prompt: request.prompt,
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
+    ...(options.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+    ...(options.workflowFix === undefined ? {} : { workflowFix: options.workflowFix }),
     ...(options.workflowDependencies === undefined ? {} : { workflowDependencies: options.workflowDependencies }),
     ...(options.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: options.workflowE2EAdmission }) });
   const idempotencyKey = {
@@ -6938,6 +7082,7 @@ async function acceptTask(
     // 25c note 1: a turn from an open shared thread, or the developer's own turn on a shared task.
     shared: identity.sharedTask?.state === "continue" || options.sharedTask === true,
     ...(options.workflowMode === undefined ? {} : { workflowMode: options.workflowMode }),
+    ...(options.planRevision === true ? { planRevision: true as const } : {}),
     ...(options.operationId === undefined ? {} : { operationId: options.operationId }),
     ...(options.workflowPhase === undefined ? {} : { workflowPhase: options.workflowPhase }),
     ...(options.workflowFeedbackReview === undefined ? {} : { workflowFeedbackReview: options.workflowFeedbackReview }),
@@ -6952,6 +7097,8 @@ async function acceptTask(
     ...(options.workflowReviewNote === undefined ? {} : { workflowReviewNote: options.workflowReviewNote }),
     ...(options.programStepId === undefined ? {} : { programStepId: options.programStepId }),
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
+    ...(options.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
+    ...(options.workflowFix === undefined ? {} : { workflowFix: options.workflowFix }),
     ...(options.retiredClaimIds === undefined ? {} : { retiredClaimIds: options.retiredClaimIds }),
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
@@ -7221,7 +7368,7 @@ async function acceptPullRequestLifecycle(
    * exactly the reviewed tree on the task's pinned base, onto the head the workflow recorded. Only the broker's own
    * dispatch passes it; nothing a person asks for changes a workflow task's pull request.
    */
-  options: { workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string } } = {},
+  options: { workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"] } } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestLifecycleRequestSchema.parse(value);
   // Ruling R60: before any access check, as for acceptPullRequest.
@@ -7477,6 +7624,8 @@ async function acceptPullRequestLifecycle(
       ),
       // The reviewed fix: the worker pushes exactly this tree, built on the pinned base's history, or refuses before pushing.
       ...(candidate === undefined ? {} : { workflowCandidateTreeSha: candidate.treeSha, workflowBaseCommit: candidate.baseCommitSha }),
+      // Which fix it is, for its commit's message (Plan 6 Task 15).
+      ...(candidate?.fixSource === undefined ? {} : { workflowFix: { source: candidate.fixSource } }),
     },
   };
   const outbox = outboxRecord(workspace, invocation);
@@ -7735,7 +7884,7 @@ export interface SlackWorkflowRetryEvent {
   /** The approved plan's proposed checks the owner kept; all of them when absent. */
   selectedProposedCheckIds?: string[];
   /** Task 16: which blocked step the owner retries; the checks when absent. */
-  step?: "plan" | "coding";
+  step?: "plan" | "coding" | "plan_check";
 }
 
 /** Task 16: the owner's Send back to coding, from the task's own thread. */
@@ -7916,7 +8065,7 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
   const userId = SlackRequesterSchema.shape.userId.parse(event.userId);
   const requestId = randomUUIDSchema.parse(event.requestId);
   const instructions = event.instructions.trim();
-  if (!instructions || Buffer.byteLength(instructions, "utf8") > 65_536) throw agentXError("CONFIG_INVALID", "workflow request is empty or too long");
+  if (!instructions || Buffer.byteLength(instructions, "utf8") > RUN_INPUT_TEXT_MAX_BYTES) throw agentXError("CONFIG_INVALID", "workflow request is empty or too long");
   if (dependencies.developer.slackTeamId !== thread.teamId) throw agentXError("FORBIDDEN", "Slack workspace is not enabled for developer tasks");
   const binding = await getSlackBinding(dependencies, await slackTeamOrg(dependencies, thread.teamId), thread.teamId, thread.channelId);
   if (binding === undefined) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
@@ -7928,16 +8077,17 @@ async function startSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: De
   }
   const caller = await slackCallerFor(dependencies, userId, thread.teamId);
   const agents = agentRouteDependencies(dependencies, tasks);
-  const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
+  const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
     ...(dependencies.cloud === true ? { cloud: true } : {}),
     // Plan 3, Task 15: a Slack-started workflow stores its agent snapshot like any other start.
-    ...(agents === undefined ? {} : { agents }) }, caller, thread);
-  const request = {
-    method: "POST", path: "/v1/dev/tasks", headers: {}, requestId,
-    body: JSON.stringify({ requestId, project: binding.projectName, instructions, client: "slack", workflow: true, workflowPath: event.workflowPath, shareToChannel: true, channel: thread.channelId }),
-  };
-  return await routeDeveloperTaskRequest(routeDeps, caller, request, new URL(request.path, "https://agentx.invalid")) as { task: { taskId: string } };
+    ...(agents === undefined ? {} : { agents }) };
+  // Plan 6 Task 3: the Slack start is a Rovara Code intent from the thread, through the one entry point; the explicit path the member chose is the request's.
+  const started = await startCodeIntent(codeIntentDependenciesOf(routeDependencies, caller), caller, {
+    requestId, project: binding.projectName, input: { text: instructions }, path: event.workflowPath, source: "slack",
+    binding: { kind: "slack_thread", teamId: thread.teamId, channelId: thread.channelId, threadTs: thread.threadTs },
+  });
+  return { task: started.task };
 }
 
 const randomUUIDSchema = { parse(value: string): string { if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw agentXError("CONFIG_INVALID", "workflow request ID is invalid"); return value; } };
@@ -7961,7 +8111,7 @@ export function isSlackWorkflowRetryEvent(event: unknown): event is SlackWorkflo
     && Number.isInteger(value.expectedRevision) && Array.isArray(value.selectedOptionalCheckIds)
     && value.selectedOptionalCheckIds.every((id) => typeof id === "string") && typeof value.thread === "object" && value.thread !== null
     && (value.selectedProposedCheckIds === undefined || (Array.isArray(value.selectedProposedCheckIds) && value.selectedProposedCheckIds.every((id) => typeof id === "string")))
-    && (value.step === undefined || value.step === "plan" || value.step === "coding");
+    && (value.step === undefined || value.step === "plan" || value.step === "coding" || value.step === "plan_check");
 }
 
 export function isSlackWorkflowSendBackEvent(event: unknown): event is SlackWorkflowSendBackEvent {
@@ -8149,6 +8299,7 @@ async function retrySlackWorkflowChecks(dependencies: AwsBrokerDependencies, tas
   const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "retry verification");
   const routeDeps = slackWorkflowRouteDependencies(dependencies, tasks, developer, caller);
   const instructions = event.step === "plan" ? "The previous planning run stopped before it saved a plan. Plan the request again."
+    : event.step === "plan_check" ? "Retry the plan check."
     : event.step === "coding" ? "Retry the coding step." : "Retry the owner-selected project checks without changing code.";
   const body = JSON.stringify({ requestId, expectedRevision: event.expectedRevision, instructions,
     ...(event.step === undefined ? { selectedOptionalCheckIds: event.selectedOptionalCheckIds,
@@ -8362,6 +8513,29 @@ export function isSlackThreadNoteEvent(event: unknown): event is SlackThreadNote
  * Every expected answer (saved, already saved, or not saved because the thread or task no longer takes notes)
  * is a 200 with its outcome, so Slack is never asked to retry it.
  */
+/** What a person hears (privately, in the thread) when their reply to Rovara's questions is too long or says nothing. */
+const SLACK_ANSWER_REFUSED = "I couldn't take that as an answer. Keep it under 2,000 characters and reply again.";
+/** A stable id for a Slack message's refusal, so the same message is told once. */
+const refusalIdOf = (taskId: string, messageTs: string): string => {
+  const bytes = createHash("sha256").update(`answer-refusal\n${taskId}\n${messageTs}`, "utf8").digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+/** Whether `caller` has "can use" on the task's session in their org, by the same check the app route runs (level, org, project role). Any failure to tell is a no. */
+export async function mayAnswerFromSlack(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<boolean> {
+  const sessions = agentRouteDependencies(dependencies, tasks)?.agentSessions;
+  if (sessions === undefined || task.sessionId === undefined || task.orgId !== caller.orgId) return false;
+  try {
+    await requireSessionLevel(sessions, caller, task.sessionId, "use", "answer its questions");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackThreadNoteEvent): Promise<{ outcome: "captured" | "duplicate" | "refused" }> {
   if (dependencies.developer === undefined) return { outcome: "refused" };
   const thread = SlackThreadSchema.safeParse(event.thread);
@@ -8377,10 +8551,22 @@ async function recordSlackThreadNote(dependencies: AwsBrokerDependencies, tasks:
   catch { return { outcome: "refused" }; }
   if (access.task.share?.teamId !== thread.data.teamId || access.task.share.channelId !== thread.data.channelId
     || access.task.share.threadTs !== thread.data.threadTs) return { outcome: "refused" };
+  const author = await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }), access.task, userId.data, actor);
+  // Plan 6 Task 5: a reply answers Understand's questions only from a person who has "can use" on the task's session in this org, judged live the way the app route judges it (the project
+  // role included). It is recorded under that person, whoever owns the task.
+  const waiting = access.task.workflow?.stage === "UNDERSTAND" && access.task.workflow.state === "WAITING";
+  // Who the Slack user is in this org: the task's effective owner when the Slack user is theirs, else the member the Slack user maps to (merges followed).
+  const effectiveOwner = tryEffectiveTaskOwner(access.task);
+  const replier = { developerId: effectiveOwner?.slackUserId === userId.data ? effectiveOwner.developerId : author.developerId, name: author.name };
+  const mayAnswer = waiting && await mayAnswerFromSlack(dependencies, tasks, { ...actor, developerId: replier.developerId }, access.task);
   const result = await recordWorkflowThreadNote({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, now: Date.now },
     { taskId, thread: thread.data, userId: userId.data, messageTs: messageTs.data, eventId: event.eventId, text: event.text,
       peopleAccess: { ...(access.peopleRevision === undefined ? {} : { peopleRevision: access.peopleRevision }), isOwner: access.role === "owner" },
-      actor: await slackReplyAuthor(dependencies, new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }), access.task, userId.data, actor) });
+      actor: author, ...(mayAnswer ? { answerBy: replier } : {}) });
+  // A reply that could have answered but could not be taken as one is told to the person who wrote it, privately in the thread.
+  if (result.outcome === "refused" && mayAnswer) await recordSlackWorkflowRefusal(dependencies, { taskId, userId: userId.data, thread: thread.data, requestId: refusalIdOf(taskId, messageTs.data) }, SLACK_ANSWER_REFUSED, "reply");
+  // Plan 6 Task 5: an owner's reply that answered Understand's questions made the next Understand run due: it starts now, and the sweep starts it if this is lost.
+  if (result.outcome === "captured" && access.task.workflow?.stage === "UNDERSTAND" && access.task.workflow.state === "WAITING") await dispatchWorkflowContinuation(dependencies, taskId);
   // The PR feedback review page keeps showing the owner's own replies, as before (best effort).
   if (result.outcome === "captured") {
     const task = access.task;
@@ -11415,7 +11601,16 @@ async function describeFeedbackFixes(dependencies: AwsBrokerDependencies, operat
     const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number, scope)).body;
     const workflow = task.workflow;
     const pushedChecked = workflow.candidate?.digest === candidateDigest && workflow.verification?.candidateDigest === candidateDigest;
-    const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow)) : undefined;
+    // Rovara Code version 2 rewrites its whole block (what changed, tests, reviews and risk) for the code now on the pull request; its changed files come from the task's latest workspace diff.
+    const changedFiles = pushedChecked && workflow.definitionVersion === "1.1.0"
+      ? await candidateChangedFiles({ actions: developerTaskActions(dependencies), log: () => undefined }, task) : undefined;
+    // The tracked pull request's checks basis and base branch (Plan 6 Task 14), so the description says when every check counted, because the base has no required ones.
+    const tracked = workflow.definitionVersion === "1.1.0" && task.orgId !== undefined
+      ? (await readMergeTracking(dependencies, task.taskId, task.orgId).catch(() => [])).find((item) => item.repositoryId === record.repository && item.number === record.number) : undefined;
+    const bodyContext = changedFiles === undefined && tracked === undefined ? undefined : {
+      ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
+    };
+    const status = pushedChecked ? withStatusLines(current, workflowPullRequestStatusLines(workflow, bodyContext)) : undefined;
     const withStatus = status !== undefined && status.length <= PULL_REQUEST_BODY_MAX_CHARS ? status : current;
     const fixed = withFeedbackFixes(withStatus, fixes, earlier);
     const next = { ...fixed, ...(fixed.body === undefined && withStatus !== current ? { body: withStatus } : {}) };
@@ -11983,6 +12178,9 @@ async function putArtifact(
   if (Buffer.byteLength(input.content, "utf8") > MAX_ARTIFACT_BYTES) {
     throw agentXError("CONFIG_INVALID", "artifact exceeds the 5 MB demo limit");
   }
+  if (operation.workflowMode === "UNDERSTAND" && input.name === UNDERSTAND_ARTIFACT_NAME && Buffer.byteLength(input.content, "utf8") > UNDERSTAND_ARTIFACT_MAX_BYTES) {
+    throw agentXError("CONFIG_INVALID", "understanding artifact exceeds the size limit");
+  }
   if (operation.workflowMode === "PLAN" && input.name === "plan.md" && Buffer.byteLength(input.content, "utf8") > WORKFLOW_PLAN_MAX_BYTES) {
     throw agentXError("CONFIG_INVALID", "plan artifact exceeds the workflow plan size limit");
   }
@@ -12338,6 +12536,11 @@ export async function processGithubWorkflowEvent(
   deliveryId: string,
   options?: { observationMode: "merge"; budget: GithubMergeReadBudget; release: "queue" },
 ): Promise<void> {
+  // A check or status event only wakes the task's tracking row; the pass that follows reads GitHub (Plan 6 Task 14).
+  if (event.kind === "HEAD_STATUS") {
+    await wakeFromHeadEvent(headEventDependencies(dependencies), event);
+    return;
+  }
   const getFeedback = options === undefined
     ? dependencies.githubPullRequests.getPullRequestFeedback
     : dependencies.githubPullRequests.getPullRequestMergeObservation;
@@ -12458,6 +12661,8 @@ export async function processGithubWorkflowEvent(
 }
 
 const MERGE_RECOVERY_RETRY_MS = 5 * 60_000;
+/** What one run of the merge-recovery schedule may spend in all (the merge pass, then the tracking pass), inside the broker's 30-second timeout. */
+const SWEEP_EVENT_BUDGET_MS = 26_000;
 
 async function stronglyRead<T>(dependencies: AwsBrokerDependencies, key: { pk: string; sk: string }): Promise<T | undefined> {
   const response = await dependencies.documentClient.send(new GetCommand({
@@ -12481,6 +12686,72 @@ async function mergeRecoveryReleaseConfirmed(dependencies: AwsBrokerDependencies
     || !Number.isInteger(organization.count) || (organization.count as number) < 0) return false;
   if (member.tasks !== undefined && (!(member.tasks instanceof Set) || member.tasks.has(task.taskId))) return false;
   return true;
+}
+
+/** What a check or status delivery is matched with (Plan 6 Task 14): the installation's org, the task, and the project's pinned repository. */
+function headEventDependencies(dependencies: AwsBrokerDependencies): HeadEventDependencies {
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
+    repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+    verifyRepository: (repositoryUrl, scope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, scope),
+    orgOfInstallation: async (installationId) => {
+      if (dependencies.cloud !== true) return installOrgId(dependencies);
+      return boundInstallationOrg({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, installationId);
+    },
+  };
+}
+
+/** What the tracking pass needs, or undefined where the GitHub provider cannot read a pull request's status (then no row is tracked). */
+function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<MergeTrackingDependencies, "budget"> | undefined {
+  const github = dependencies.githubPullRequests;
+  if (github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined || github.markPullRequestReady === undefined || github.requestReviewers === undefined) return undefined;
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    github: {
+      getPullRequestStatus: (...args) => github.getPullRequestStatus!.call(github, ...args),
+      getRepositoryPermission: (...args) => github.getRepositoryPermission!.call(github, ...args),
+      markPullRequestReady: (...args) => github.markPullRequestReady!.call(github, ...args),
+      requestReviewers: (...args) => github.requestReviewers!.call(github, ...args),
+      ...(github.getJobLogTail === undefined ? {} : { getJobLogTail: (...args: Parameters<NonNullable<typeof github.getJobLogTail>>) => github.getJobLogTail!.call(github, ...args) }),
+    },
+    // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).
+    autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))),
+    scope: (orgId) => githubScope(dependencies, orgId),
+    loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
+    repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+    recordedHead: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.expectedHeadCommit,
+    log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
+  };
+}
+
+/** The tracking pass's reconcile for one tracking row: tracking, then today's merge observation (Plan 6 Task 14). Without a provider that can read status it is today's merge observation alone. */
+export async function reconcileWorkflowTrackingTask(
+  dependencies: AwsBrokerDependencies,
+  taskId: string,
+  budget: GithubMergeReadBudget,
+): Promise<MergeRecoveryResult> {
+  const tracking = mergeTrackingDependencies(dependencies);
+  const observeMerge = (id: string, merged: GithubMergeReadBudget) => reconcileWorkflowMergeRecoveryTask(dependencies, id, merged);
+  if (tracking === undefined) return observeMerge(taskId, budget);
+  // Plan 6 Task 15: failing CI is fixed on Rovara's own pull requests; the slot is filled once for the process.
+  installCiFixDecider();
+  // The first pass for an org links the members who signed in with GitHub before the links were kept; once done it is marked and not run again. A failure never stops the pass.
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)).catch(() => undefined);
+  if (task?.orgId !== undefined && dependencies.developer !== undefined) {
+    const store = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+    const orgs = new OrgStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now });
+    const orgId = task.orgId;
+    await backfillGithubMembers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, async () => {
+      const found: Array<{ developerId: string; githubUserId: string }> = [];
+      for (const member of (await orgs.listMembers(orgId)).slice(0, 500)) {
+        const githubUserId = await store.githubUserIdOf(member.developerId);
+        if (githubUserId !== undefined) found.push({ developerId: member.developerId, githubUserId });
+      }
+      return found;
+    }).catch((error: unknown) => console.log(JSON.stringify({ component: "broker", event: "github_member.backfill_failed", error: error instanceof Error ? error.name : "unknown" })));
+  }
+  return reconcileTrackingTask({ ...tracking, observeMerge }, taskId, budget);
 }
 
 /** Reconciles one recovery row using one exact reverse-linked PR and the bounded merge-only GitHub reader. */
@@ -12541,6 +12812,7 @@ export async function reconcileWorkflowMergeRecoveryTask(
 }
 
 async function githubEventStillAuthorized(dependencies: AwsBrokerDependencies, event: ReceivedGithubWebhook["event"]): Promise<boolean> {
+  if (event.kind === "HEAD_STATUS") return await resolveHeadEventTask(headEventDependencies(dependencies), event) !== undefined;
   return authorizeLinkedGithubWebhook({
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,
@@ -12726,14 +12998,24 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
       console.log(JSON.stringify({ component: "broker", event: "agent_run.dispatch_gave_up", taskId: item.taskId, attempts }));
       return;
     }
+    // Plan 6 Task 8: a plan check that could not be started, however often it was tried, is not a reason to hold the plan back: it goes to the person, unchecked.
+    if (item.kind === "CRITIQUE" && finalReason === undefined) {
+      await closeUncheckedPlanCheck(dependencies, item);
+      console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
+      return;
+    }
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
     const workflow = task?.workflow;
     const deleteRow = { Delete: { TableName: dependencies.tableName, Key: key, ...sameRow } };
     // The stage and state the row was due in, and the plain reason the owner sees when AgentX gives up on it.
-    const [stage, state, usualReason] = item.kind === "CHECKS"
+    const [stage, state, usualReason] = item.kind === "UNDERSTAND" ? ["UNDERSTAND", "READY", WORKFLOW_BLOCK_REASONS.understandNotStarted] as const
+      : item.kind === "PLAN" ? ["PLAN", "READY", WORKFLOW_BLOCK_REASONS.planNotStarted] as const
+      : item.kind === "CHECKS"
       ? ["VERIFY", "WAITING", exhaustedReason ?? WORKFLOW_BLOCK_REASONS.checksUnconfirmed] as const
       : item.kind === "REVIEW" ? ["REVIEW", "WAITING", WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE] as const
       : item.kind === "IMPLEMENT" ? ["IMPLEMENT", "READY", WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE] as const
+      : item.kind === "CRITIQUE" ? ["PLAN_CRITIQUE", "READY", WORKFLOW_BLOCK_REASONS.planCheckNotStarted] as const
+      : item.kind === "REPLAN" ? ["PLAN", "READY", WORKFLOW_BLOCK_REASONS.planRevisionNotStarted] as const
       : ["PULL_REQUEST", "READY", WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE] as const;
     const reason = finalReason ?? usualReason;
     // A fix AgentX gave up pushing: the task waits for the merge, blocked, naming the pull request.
@@ -12757,6 +13039,43 @@ async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDependencies
     if (!isConditional(error)) {
       console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_failure_unrecorded", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
     }
+  }
+}
+
+/** Whether the company chose the plan check's model (its recipe step names one): only then is a refused model the company's to fix. */
+async function companyChoseCriticModel(dependencies: AwsBrokerDependencies, taskId: string): Promise<boolean> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+  if (task?.orgId === undefined) return true;
+  const frozen = await readTaskRecipe(dependencies, taskId, task.orgId);
+  const step = frozen?.recipe.steps.find((candidate) => candidate.kind === "plan_critic");
+  return step !== undefined && (step.settings as { model?: unknown } | undefined)?.model != null;
+}
+
+/**
+ * Plan 6 Task 8: the plan check can't be started (its start was given up, or no model Rovara could recommend is usable): its dispatch row goes and the plan goes to the person at PLAN_REVIEW, shown
+ * as not checked. One transaction, conditional on the row and on the task still waiting for exactly this check; a task that moved on, or a row someone else took, is left alone.
+ */
+async function closeUncheckedPlanCheck(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
+  const workflow = task?.workflow;
+  const deleteRow = { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } };
+  if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision || workflow.stage !== "PLAN_CRITIQUE" || workflow.state !== "READY") {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow] }));
+    return;
+  }
+  const now = new Date().toISOString();
+  const next = closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
+  try {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [deleteRow, { Update: {
+      TableName: dependencies.tableName, Key: taskKey(item.taskId),
+      UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
+      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+      ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": item.workflowRevision, ":stage": "PLAN_CRITIQUE", ":state": "READY" },
+    } }] }));
+  } catch (error) {
+    // A task that moved meanwhile is the newer writer's; anything else is tried again by the next sweep.
+    if (!isConditional(error)) console.log(JSON.stringify({ component: "broker", event: "workflow.plan_check_close_failed", taskId: item.taskId, error: error instanceof Error ? error.name : "unknown" }));
   }
 }
 
@@ -13087,7 +13406,7 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
       }
       await blockEndedOperationKeys(dependencies, operation);
       orgId = operation.orgId;
-      told = await tellTaskStop(dependencies, operation, item.taskId, operation.status, operation.kind === "task" && operation.status === "FAILED" && operation.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE);
+      told = await tellTaskStop(dependencies, operation, item.taskId, operation.status, operation.kind === "task" && operation.workflowMode !== "PLAN_CRITIQUE" && operation.planRevision !== true && operation.status === "FAILED" && operation.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE);
     }
     if (told === "in_progress") {
       // Another call holds the end and may die with it: the row stays, due when its lease could have run out, so whoever looks then finishes the end.
@@ -13111,6 +13430,77 @@ async function runOperationEndDispatch(dependencies: AwsBrokerDependencies, item
   }
 }
 
+/**
+ * Plan 6 Task 4: Understand never came back by its time limit (its worker was lost, or its result never reached the broker). The task ends, closed, with the reason; the row goes and the
+ * task is marked as waiting for its release, all in the same commit, so a stop right after it loses neither. A task that moved on meanwhile (the result arrived) makes the commit fail its
+ * condition: the row is stale and goes.
+ *
+ * The run is normally still on record as active (that is why no result came), and a workspace with an active run is not released ("busy"). So the run is stopped through the cancel
+ * every owner's Cancel uses; its result (or, for a worker that is gone, the existing stuck-cancel handling) ends the operation, and the release then goes through, by that result and by the
+ * release sweep's mark. Until the run has ended the slot is held.
+ */
+async function endStuckUnderstanding(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item: WorkflowDispatchRecord): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
+  const now = new Date().toISOString();
+  try {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Update: {
+        TableName: dependencies.tableName, Key: taskKey(task.taskId),
+        UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+        ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :understand AND workflow.#state = :running AND attribute_not_exists(closedAt)",
+        ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+        ExpressionAttributeValues: { ":workflow": endStuckUnderstand(task.workflow, now), ":now": now, ":revision": task.workflow.revision, ":understand": "UNDERSTAND", ":running": "RUNNING" },
+      } },
+      { Delete: { TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } } },
+      finishedReleaseMarkItem(dependencies.tableName, task.taskId, now),
+    ] }));
+  } catch (error) {
+    if (!isConditional(error)) throw error;
+    await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk } }));
+    return "STALE";
+  }
+  console.log(JSON.stringify({ component: "broker", event: "workflow.understand_timed_out", taskId: task.taskId }));
+  try {
+    const workspace = await requireWorkspace(dependencies, task.workspaceId);
+    if (workspace.activeOperationId) await cancelRunningTask(dependencies, workspace, {});
+  } catch (error) {
+    // The task has ended; a run that could not be asked to stop is the release sweep's to find (its mark is written), and the reaper's.
+    console.log(JSON.stringify({ component: "broker", event: "workflow.understand_stop_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+  await releaseIfFinished(dependencies, task.taskId);
+  return "DISPATCHED";
+}
+
+/** How long a row that is waiting for its machine to be prepared is put off. */
+const WAIT_FOR_MACHINE_MS = 2 * 60_000;
+
+/** Puts a waiting dispatch row's next sweep off, conditional on the attempts it was read with (a row someone else moved is left to them). */
+async function waitForMachine(dependencies: AwsBrokerDependencies, item: WorkflowDispatchRecord): Promise<void> {
+  const next = new Date(Date.now() + WAIT_FOR_MACHINE_MS).toISOString();
+  try {
+    await dependencies.documentClient.send(new UpdateCommand({
+      TableName: dependencies.tableName, Key: { pk: item.pk, sk: item.sk },
+      UpdateExpression: "SET nextAttemptAt = :next, dispatchDueSk = :due",
+      ConditionExpression: "attribute_exists(pk) AND (attempts = :attempts OR (attribute_not_exists(attempts) AND :attempts = :zero))",
+      ExpressionAttributeValues: { ":next": next, ":due": `${next}#${item.sk}`, ":attempts": item.attempts ?? 0, ":zero": 0 },
+    }));
+  } catch (error) {
+    if (!isConditional(error)) throw error;
+  }
+}
+
+/** The assessment a finished Understand run saved, read from its artifact and checked here (never taken from the worker's word): undefined when it is missing, too long, not JSON or not valid. */
+async function readUnderstandingArtifact(dependencies: AwsBrokerDependencies, operation: OperationRecord): Promise<{ assessment: IntentAssessment; artifact: { id: string; objectKey: string; createdAt: string } } | undefined> {
+  const artifacts = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "ARTIFACT#"))
+    .filter((item) => item.operationId === operation.id && item.name === UNDERSTAND_ARTIFACT_NAME)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const artifact = artifacts.at(-1);
+  if (artifact === undefined || typeof artifact.objectKey !== "string") return undefined;
+  const text = await readObjectText(dependencies, artifact.objectKey, UNDERSTAND_ARTIFACT_MAX_BYTES + 1);
+  if (text === undefined) return undefined;
+  const read = readIntentArtifact(text);
+  return read.ok ? { assessment: read.assessment, artifact: { id: String(artifact.id), objectKey: artifact.objectKey, createdAt: String(artifact.createdAt) } } : undefined;
+}
+
 async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: AccessPausedWorkflowDispatch): Promise<"DISPATCHED" | "STALE" | "RETRY"> {
   if (item.kind === "agent_run") return runAgentRunDispatch(dependencies, item);
   if (item.kind === "operation_end") return runOperationEndDispatch(dependencies, item);
@@ -13128,14 +13518,27 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     if (item.taskAccessPausedAt !== undefined) return "RETRY";
     const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(item.taskId));
     const workflow = task?.workflow;
-    const due = item.kind === "CHECKS" ? workflow?.stage === "VERIFY" && workflow.state === "WAITING"
+    // Plan 6 Task 4: Understand's row at a READY revision starts it; at the RUNNING revision it is the step's watchdog. The plan step's row starts planning after Understand.
+    const due = item.kind === "UNDERSTAND" ? workflow?.stage === "UNDERSTAND" && (workflow.state === "READY" || workflow.state === "RUNNING")
+      : item.kind === "PLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY"
+      : item.kind === "CHECKS" ? workflow?.stage === "VERIFY" && workflow.state === "WAITING"
       : item.kind === "REVIEW" ? workflow?.stage === "REVIEW" && workflow.state === "WAITING"
       : item.kind === "IMPLEMENT" ? workflow?.stage === "IMPLEMENT" && workflow.state === "READY" && workflow.program !== undefined
+      // Plan 6 Task 8: the plan check of a version 2 plan, and the one revision a blocking point of it asks for.
+      : item.kind === "CRITIQUE" ? workflow?.stage === "PLAN_CRITIQUE" && workflow.state === "READY"
+      : item.kind === "REPLAN" ? workflow?.stage === "PLAN" && workflow.state === "READY" && workflow.critique !== undefined
       : item.kind === "PUBLISH" || item.kind === "UPDATE" ? workflow?.stage === "PULL_REQUEST" && workflow.state === "READY" : false;
     if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== item.workflowRevision
       || !due || dependencies.developer === undefined) {
       await remove();
       return "STALE";
+    }
+    // The watchdog needs no caller: it is due only after the step's time limit, and then it ends the task if the step never answered. Other work (a result of this task) runs the task's rows at
+    // once, due or not, so a watchdog that is not due yet stays as it is.
+    if (item.kind === "UNDERSTAND" && workflow.state === "RUNNING") {
+      // Not a dispatch (and not a stale row: it stays); the sweep never reads it before it is due.
+      if (Date.now() < Date.parse(item.nextAttemptAt)) return "STALE";
+      return await endStuckUnderstanding(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, item);
     }
     const caller = await ownerCallerOf(dependencies, task, "workflow-dispatch");
     const routeDependencies = developerTaskRouteDependencies({
@@ -13143,6 +13546,13 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
       workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
+      currentPullRequestHead: async (target, pullRequest) => {
+        const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
+        if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+        const head = (await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, await githubScopeOf(dependencies, target)) as { headCommit?: unknown } | undefined)?.headCommit;
+        if (typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not say what the pull request's head is");
+        return head;
+      },
     }, caller, undefined, null);
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };
     // A fix for the pull requests already open is pushed to them by the same start, which sees they exist.
@@ -13157,10 +13567,22 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
       outcome = await startWorkflowE2EChecksDispatch(dependencies, routeDependencies, readiness.task, expected, caller);
       // The baseline round holds the workspace: the row stays, and the next pass (or the baseline's own result) tries again.
       if (outcome === "WAITING") return "DISPATCHED";
+    } else if (item.kind === "UNDERSTAND") {
+      outcome = await startTaskWorkflowUnderstandFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision });
+      // The machine is still being prepared: the row stays, and the prepare's result runs it at once. Its due time moves on, with no attempt counted, so rows that wait for a machine
+      // cannot fill the sweep's page and starve the others (the sweep reads the oldest due rows first).
+      if (outcome === "WAITING") {
+        await waitForMachine(dependencies, item);
+        return "DISPATCHED";
+      }
+    } else if (item.kind === "PLAN") {
+      outcome = await startTaskWorkflowPlanFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision });
     } else {
       outcome = item.kind === "PUBLISH" || item.kind === "UPDATE"
         ? await startTaskWorkflowPublicationFromSystem(routeDependencies, item.taskId, expected, { taskPageUrl: taskPageUrl(dependencies.developer.issuer, item.taskId) })
         : item.kind === "IMPLEMENT" ? await startTaskWorkflowImplementationFromSystem(routeDependencies, item.taskId, expected)
+        : item.kind === "CRITIQUE" ? await startTaskWorkflowPlanCritiqueFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
+        : item.kind === "REPLAN" ? await startTaskWorkflowPlanRevisionFromSystem(routeDependencies, item.taskId, { workflowRevision: item.workflowRevision })
         : await startTaskWorkflowReviewFromSystem(routeDependencies, item.taskId, expected);
     }
     await remove();
@@ -13223,6 +13645,11 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     // blocked at once with the refusal's own words, which the owner can read.
     if (error instanceof AgentXError && error.code === "MODEL_NOT_ALLOWED") {
       console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_refused", taskId: item.taskId, kind: item.kind, error: error.code }));
+      // Plan 6 Task 8: only a model the company chose for the plan check blocks it. Rovara's own recommendation that no source can serve is no one's fault: the plan goes on, unchecked.
+      if (item.kind === "CRITIQUE" && !await companyChoseCriticModel(dependencies, item.taskId).catch(() => true)) {
+        await closeUncheckedPlanCheck(dependencies, item);
+        return "STALE";
+      }
       await recordWorkflowDispatchFailure(dependencies, item, refusalText(error));
       return "STALE";
     }
@@ -14088,6 +14515,8 @@ async function completedPullRequestUpdateItems(
     ExpressionAttributeNames: { "#state": "state" },
     ExpressionAttributeValues: { ":head": head, ":state": current.pullRequest.state, ":now": now, ":previous": maintenance.expectedHeadCommit },
   } }] : []),
+  // The new head, for the check and status events that name only a commit.
+  ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName, headSha: head, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, Date.parse(now))),
   // More pull requests to go: the next push is due, as the first one was after the reviews.
   ...(next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "UPDATE", next.candidate.digest, now)] : [])];
@@ -14136,6 +14565,7 @@ function laterProgramBuild(workflow: WorkflowSnapshot): boolean {
   return first !== undefined && workflow.programStepId !== undefined && workflow.programStepId !== first.id;
 }
 
+/* Plan 6 Task 10 note: the setup-draft branch is first in completedWorkflowItems. */
 async function completedWorkflowItems(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
@@ -14155,6 +14585,12 @@ async function completedWorkflowItems(
 ): Promise<TransactItems> {
   if (pointer === undefined) return [];
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  // Plan 6 Task 10: a setup draft's result is its draft (or the reason there is none), written with the result.
+  if (task?.purpose === "setup_draft") {
+    const repositories = terminalStatus === "SUCCEEDED" && operation.kind === "task"
+      ? (await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition.repositories.map((repository) => repository.name) : [];
+    return setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
+  }
   if (task?.workflow === undefined) return [];
   if (operation.kind === "prepare") {
     // The commit preparation checked out is the task's base until a verified candidate pins it. It comes from the
@@ -14241,7 +14677,14 @@ async function completedWorkflowItems(
     // More repositories to go: the next draft pull request is due, as the first one was after the reviews.
     ...(next.stage === "PULL_REQUEST" && next.state === "READY" && next.candidate !== undefined
       ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "PUBLISH", next.candidate.digest, now)] : []),
-    ...((task.workflow.pullRequests ?? []).length === 0 ? [mergeRecoveryItem(dependencies.tableName, task.taskId, now)] : [])];
+    // The head, for the check and status events that name only a commit (Plan 6 Task 14).
+    ...(task.orgId === undefined || task.workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, {
+      orgId: task.orgId, repositoryFullName, headSha: publishedRecord.expectedHeadCommit, taskId: task.taskId, repositoryId: published.data.repository,
+      number: published.data.number, branch: publishedRecord.headBranch,
+    }, Date.parse(now))),
+    // The task's recovery row: a Rovara Code (version 2) task's becomes its tracking row; any other task's stays the merge row it always was.
+    ...((task.workflow.pullRequests ?? []).length === 0
+      ? [(task.workflow.definitionVersion === "1.1.0" ? trackingRecoveryItem : mergeRecoveryItem)(dependencies.tableName, task.taskId, now)] : [])];
   }
   if (operation.kind === "maintain") return completedPullRequestUpdateItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result, terminalError);
   if (operation.kind !== "task" || operation.workflowMode === undefined || task.workflow.state !== "RUNNING") return [];
@@ -14259,6 +14702,13 @@ async function completedWorkflowItems(
   /** Plan 3, Task 34: what the coding plan that just reached review is expected to cost, committed with it. */
   let runEstimate: RunEstimate | undefined;
   let dropStaleEstimate = false;
+  /** Plan 6 Task 4: Understand chose the Full path for a task that started under the Quick planning limit: the limit goes up with the result, from `seen` to `limit`. */
+  let raisedPlanningLimit: { seen: number; limit: number } | undefined;
+  /** Plan 6 Task 4: the finished Understand's watchdog row goes with its result. */
+  let understandWatchdog: TransactItems = [];
+  let answeredItems: TransactItems = [];
+  /** Plan 6 Task 15: a CI fix round that changed nothing tells a person (the milestone), in the commit that stops it. */
+  let fixExitItems: TransactItems = [];
   let e2eAuthorityChecks: Array<Record<string, unknown>> = [];
   if (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS") {
     const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -14509,9 +14959,15 @@ async function completedWorkflowItems(
         });
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.verification_blocked", taskId: task.taskId, operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown", reason: verificationFailure, ...(verificationDetail === undefined ? {} : { detail: verificationDetail }) }));
-        next = verificationFailure === WORKFLOW_BLOCK_REASONS.fixChangedNothing ? blockWorkflow(task.workflow, verificationFailure, now)
-          : blockWorkflow(verifying, verificationFailure, now, { ...(regressedChecks === undefined ? {} : { regressedChecks }),
-            ...(failedE2ERound === undefined ? {} : { failedE2ERound }) });
+        if (verificationFailure === WORKFLOW_BLOCK_REASONS.fixChangedNothing && task.workflow.fixSource === "ci" && task.orgId !== undefined) {
+          // A round for failing CI that left the code as the pull request holds it: the failure is not this change's, so a person is asked to look (the round stays counted).
+          next = endWorkflowCiFixUnrelated(task.workflow, now);
+          fixExitItems = ciFixUnrelatedItems({ tableName: dependencies.tableName, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), next, at: now });
+        } else {
+          next = verificationFailure === WORKFLOW_BLOCK_REASONS.fixChangedNothing ? blockWorkflow(task.workflow, verificationFailure, now)
+            : blockWorkflow(verifying, verificationFailure, now, { ...(regressedChecks === undefined ? {} : { regressedChecks }),
+              ...(failedE2ERound === undefined ? {} : { failedE2ERound }) });
+        }
       }
     }
   } else if (operation.workflowMode === "REVIEW") {
@@ -14615,6 +15071,64 @@ async function completedWorkflowItems(
         next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.feedbackReviewFailed, now);
       }
     }
+  } else if (operation.workflowMode === "UNDERSTAND") {
+    const current = task.workflow;
+    if (current.stage !== "UNDERSTAND") return [];
+    // The answered step's watchdog goes with its result. A step that ended any other way leaves its row to go stale (a cancel's result may carry the step's own update alone).
+    if (terminalStatus === "SUCCEEDED") understandWatchdog = [{ Delete: { TableName: dependencies.tableName, Key: { pk: WORKFLOW_DISPATCH_PK, sk: `${task.taskId}#${current.revision}` } } }];
+    if (terminalStatus !== "SUCCEEDED") {
+      // The step's budget ran out (a spend request is asked for at the end of this result, and its approval retries the step), or its worker could not read its own answer, or the run ended.
+      next = blockWorkflow(current, terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused
+        : terminalError?.includes(UNDERSTAND_UNREADABLE_MESSAGE) === true ? WORKFLOW_BLOCK_REASONS.understandUnreadable : workflowRunEndedReason("UNDERSTAND", terminalStatus), now);
+    } else {
+      // Understand's answer is untrusted, whatever the worker checked: it is read from the saved artifact, bounded, schema-checked and redacted here before it can pick the path or put a question to a person.
+      const understood = await readUnderstandingArtifact(dependencies, operation);
+      try {
+        if (understood === undefined) throw new Error("no readable assessment");
+        // A question that needs no code change ends the task Answered: the answer is kept, the milestone is written and the task is queued for its release, all in this commit.
+        // A task that follows an answered one never answers again: the person asked for the change, so the answer is read as the restatement of a plan to make it.
+        const assessed: IntentAssessment = understood.assessment.kind === "answer" && task.retryOfTaskId !== undefined
+          ? { kind: "ready", path: current.path, restatement: understood.assessment.restatement, assumptions: ["An earlier answer said no change was needed; you asked for the change anyway."] }
+          : understood.assessment;
+        next = assessed.kind === "answer"
+          ? answerWorkflowIntent(current, { expectedRevision: current.revision, assessment: assessed, artifact: understood.artifact, now })
+          : recordIntentAssessment(current, { expectedRevision: current.revision, assessment: assessed, now });
+        if (next.outcome === "ANSWERED") {
+          answeredItems = [...answeredMilestoneItems({ tableName: dependencies.tableName }, { taskId: task.taskId, orgId: requireOrgId(task.orgId), ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }) }, next, now),
+            finishedReleaseMarkItem(dependencies.tableName, task.taskId, now)];
+        }
+      } catch {
+        next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.understandUnreadable, now);
+      }
+      // Understand chose the Full path for a task admitted under the Quick limit: the planning limit rises to the Full one, in this same commit (bounded: a request's own lower limit still wins).
+      if (next.stage === "PLAN" && next.path === "FULL" && current.path === "QUICK" && task.budgetUsd !== undefined) {
+        // It is a Full plan from here, so it must be admitted as a Full start is: the budgets it counts against must have the Full path's minimum left (it reads and writes nothing but the proxy's
+        // limits). Refused, the step is blocked with a plain reason, as a Full start would have been refused; the payer's words are in the log's error code only.
+        if (dependencies.modelAccess !== undefined) {
+          try {
+            await admitWork(
+              { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, cloud: dependencies.cloud === true },
+              { orgId: requireOrgId(task.orgId), project: task.project, payer: task.payer ?? { kind: "member", developerId: task.developerId },
+                agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, agentName: task.agent?.name ?? ROVARA_CODE_NAME, path: "FULL",
+                ...(task.origin === "test_run" ? { testRunBy: task.startedBy?.developerId ?? task.developerId } : {}) },
+            );
+          } catch (error) {
+            if (!(error instanceof AgentXError) || !ADMISSION_REFUSALS.has(error.code)) throw error;
+            console.log(JSON.stringify({ component: "broker", event: "workflow.understand_full_not_admitted", taskId: task.taskId, error: error.code }));
+            next = blockWorkflow(current, WORKFLOW_BLOCK_REASONS.understandFullNotAdmitted, now);
+          }
+        }
+      }
+      if (next.stage === "PLAN" && next.path === "FULL" && current.path === "QUICK" && task.budgetUsd !== undefined) {
+        const full = planningLimit(await readProjectAi({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, requireOrgId(task.orgId), task.project), "FULL");
+        const limit = Math.max(task.budgetUsd, task.requestedRunLimitUsd === undefined ? full : Math.min(full, task.requestedRunLimitUsd));
+        if (limit > task.budgetUsd) raisedPlanningLimit = { seen: task.budgetUsd, limit };
+      }
+    }
+  } else if (operation.workflowMode === "PLAN_CRITIQUE") {
+    // Plan 6 Task 8: a plan check's result counts only while the task waits for exactly that check; a late one changes nothing.
+    if (task.workflow.stage !== "PLAN_CRITIQUE") return [];
+    next = await planCritiqueOutcome(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, operation, terminalStatus, terminalError, now);
   } else if (task.workflow.stage !== "PLAN") {
     return [];
   } else if (terminalStatus === "SUCCEEDED") {
@@ -14630,8 +15144,9 @@ async function completedWorkflowItems(
       planUnreadable = stored.planUnreadable;
       evidenceJob = stored.evidenceJob;
       if (stored.inlineEvidence !== undefined) inlineEvidence?.push({ ...stored.inlineEvidence, taskId: task.taskId });
-      // The coding plan (not a requirements or design document) carries the estimate its approval will accept as the run limit.
-      if (stored.next.stage === "PLAN_REVIEW" && stored.next.artifacts.at(-1)?.type === "plan") {
+      // The coding plan (not a requirements or design document) carries the estimate its approval will accept as the run limit. A version 2 plan reaches the person only after its
+      // plan check; the estimate is made with the plan, and the plan check changes nothing about it.
+      if ((stored.next.stage === "PLAN_REVIEW" || stored.next.stage === "PLAN_CRITIQUE") && stored.next.artifacts.at(-1)?.type === "plan") {
         runEstimate = await planRunEstimate(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot });
         // An estimate that could not be made must not leave the earlier plan's in place: the plan-ready line and the approval would use it.
         dropStaleEstimate = runEstimate === undefined && task.runEstimate !== undefined;
@@ -14641,6 +15156,9 @@ async function completedWorkflowItems(
         recordedReplies = plannerRepliesItem(dependencies.tableName, stored.plannerReplies, now);
       }
     }
+  } else if (operation.planRevision === true && terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
+    // Plan 6 Task 8: the revision a plan check asked for ran out of budget. No person asked for it, so it asks for nothing: the plan goes to the person as it was, with the points.
+    next = skipPlanRevision(task.workflow, { expectedRevision: task.workflow.revision, limit: await spendLimitKind(dependencies, task), now });
   } else {
     // Plan 3, Task 32: a planning run whose budget ran out waits for its spend request; the approval retries planning.
     next = blockWorkflow(task.workflow, terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? WORKFLOW_BLOCK_REASONS.budgetPaused : workflowRunEndedReason("PLAN", terminalStatus), now);
@@ -14649,7 +15167,14 @@ async function completedWorkflowItems(
   // right after this commit, and the recovery sweep runs it if that is lost.
   // Only a coding or check run makes reviews due: a review run's own result never queues another review.
   // Task 12: both reviews passed, so the draft pull request is due the same way; AgentX opens it with no one asking.
-  const dispatch = operation.workflowMode === "IMPLEMENT" && task.workflow.e2e?.required === true
+  // Plan 6 Task 8: a version 2 plan is due its plan check, and a plan the check sent back is due its one revision, the same way.
+  const dispatch = operation.workflowMode === "UNDERSTAND" && next.stage === "PLAN" && next.state === "READY"
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "PLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+    : operation.workflowMode === "PLAN" && next.stage === "PLAN_CRITIQUE" && next.state === "READY"
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+    : operation.workflowMode === "PLAN_CRITIQUE" && next.stage === "PLAN" && next.state === "READY"
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "REPLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+    : operation.workflowMode === "IMPLEMENT" && task.workflow.e2e?.required === true
     && next.stage === "VERIFY" && next.state === "WAITING" && next.candidate !== undefined
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CHECKS", next.candidate.digest, now)]
     : (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS")
@@ -14666,6 +15191,10 @@ async function completedWorkflowItems(
         && (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS" || operation.workflowMode === "REVIEW")
         ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "IMPLEMENT", next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, now)]
         : [];
+  // Plan 6 Task 5: Understand's questions are told to the people who can answer (the milestone and its timeline line) in the commit that asks them, never after it.
+  const questionsMilestone = operation.workflowMode === "UNDERSTAND" && next.stage === "UNDERSTAND" && next.state === "WAITING"
+    ? questionsMilestoneItems({ tableName: dependencies.tableName }, { taskId: task.taskId, orgId: requireOrgId(task.orgId), ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }) }, next, now)
+    : [];
   // A saved plan forgets the reasons an earlier answer was unreadable; an unreadable answer keeps its own for Retry planning.
   const forget = planUnreadable === null && task.planUnreadable !== undefined;
   if (operation.kind === "task" && operation.workflowMode === "CHECKS" && task.workflow.e2e?.required === true
@@ -14702,10 +15231,11 @@ async function completedWorkflowItems(
     TableName: dependencies.tableName,
     Key: taskKey(task.taskId),
     // A stored plan quoted the replies fed so far; the next plan's window starts after them.
-    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${forget || dropStaleEstimate ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : [])].join(", ")}` : ""}`,
-    ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${graphCancelCondition}${e2eCancelCondition}`,
+    UpdateExpression: `SET workflow = :workflow, updatedAt = :now${planUnreadable === undefined || planUnreadable === null ? "" : ", planUnreadable = :unreadable"}${planUnreadable === null && task.threadNotesFedThrough !== undefined ? ", threadNotesFedFrom = :fedFrom" : ""}${runEstimate === undefined ? "" : ", runEstimate = :runEstimate"}${raisedPlanningLimit === undefined ? "" : ", budgetUsd = :raisedLimit"}${forget || dropStaleEstimate ? ` REMOVE ${[...(forget ? ["planUnreadable"] : []), ...(dropStaleEstimate ? ["runEstimate"] : [])].join(", ")}` : ""}`,
+    ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running${raisedPlanningLimit === undefined ? "" : " AND budgetUsd = :seenLimit"}${graphCancelCondition}${e2eCancelCondition}`,
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": task.workflow.revision, ":stage": task.workflow.stage, ":running": "RUNNING",
+      ...(raisedPlanningLimit === undefined ? {} : { ":raisedLimit": raisedPlanningLimit.limit, ":seenLimit": raisedPlanningLimit.seen }),
       ...(planUnreadable === undefined || planUnreadable === null ? {} : { ":unreadable": planUnreadable }),
       ...(planUnreadable === null && task.threadNotesFedThrough !== undefined ? { ":fedFrom": task.threadNotesFedThrough } : {}),
       ...(runEstimate === undefined ? {} : { ":runEstimate": runEstimate }),
@@ -14719,9 +15249,56 @@ async function completedWorkflowItems(
       }),
       ...(e2eCancelAdmission === undefined ? {} : { ":e2eRequired": true, ":e2eRoundId": e2eCancelAdmission.roundId,
         ":e2eCandidateDigest": e2eCancelAdmission.candidateDigest }) },
-  } }, ...dispatch,
+  } }, ...dispatch, ...understandWatchdog, ...questionsMilestone, ...answeredItems, ...fixExitItems,
   ...(evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId: task.taskId, ...evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
   ...(recordedReplies === undefined ? [] : [{ Put: recordedReplies }])];
+}
+
+/**
+ * Which limit a check or revision that ran out of budget stopped at: `planning` when the task's keys have spent the whole of its planning limit in this window, otherwise `other` (the step's, the
+ * month's or the org's). Anything that can't be read says `other`, the wording that claims least.
+ */
+async function spendLimitKind(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord): Promise<"planning" | "other"> {
+  if (dependencies.modelAccess === undefined || task.budgetUsd === undefined) return "other";
+  try {
+    const spent = await dependencies.modelAccess.access.keySpend(task.modelKeyIds ?? []);
+    const window = Math.max(0, spent - (task.budgetBaselineUsd ?? 0));
+    return window >= task.budgetUsd && (task.maxPerRunUsd === undefined || task.maxPerRunUsd >= task.budgetUsd) ? "planning" : "other";
+  } catch {
+    return "other";
+  }
+}
+
+/** The most bytes of a plan check's answer that are read. */
+const PLAN_CRITIQUE_ANSWER_MAX_BYTES = 65_536;
+
+/**
+ * Plan 6 Task 8: what a plan check's result does to the workflow. A readable answer is the critic's advice: it is kept for the person (or, with a blocking point, sent to the planner once) and
+ * can do nothing else. A check that ran out of its budget (the planning limit) goes on to the person saying so. An answer with no readable block, and a run that failed, was stopped or was lost, block
+ * the check with the reason; the task's owner can retry it. The critique's model is the one the operation ran on.
+ */
+async function planCritiqueOutcome(
+  dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, operation: OperationRecord, terminalStatus: OperationStatus, terminalError: string | undefined, now: string,
+): Promise<WorkflowSnapshot> {
+  const workflow = task.workflow;
+  // The check is advice: whatever goes wrong with it, the plan goes on to the person, who is told it was not checked (or that the check stopped at a limit).
+  if (terminalStatus !== "SUCCEEDED") {
+    return terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE
+      ? closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "stopped_at_limit", limit: await spendLimitKind(dependencies, task), now })
+      : closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
+  }
+  const answers = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "ARTIFACT#"))
+    .filter((item) => item.operationId === operation.id && item.name === "plan-critique.md")
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const artifact = answers.at(-1);
+  const text = artifact === undefined ? undefined : await readObjectText(dependencies, String(artifact.objectKey), PLAN_CRITIQUE_ANSWER_MAX_BYTES).catch(() => undefined);
+  const read = text === undefined ? undefined : readPlanCritique(text);
+  if (read === undefined || !read.ok) return closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
+  return submitPlanCritique(workflow, {
+    expectedRevision: workflow.revision, now,
+    critique: { verdict: read.verdict, points: read.points, model: critiqueModelOf(operation.model ?? defaultWorkerModel(routingOf(dependencies)?.rovaraGeography)) },
+    ...(operation.criticSameModel === true ? { sameModelAsPlanner: true as const } : {}),
+  });
 }
 
 /**
@@ -14732,10 +15309,19 @@ async function completedWorkflowItems(
 async function planRunEstimate(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }): Promise<RunEstimate | undefined> {
   if (dependencies.modelAccess === undefined || task.orgId === undefined) return undefined;
   try {
-    return await estimateRun(
+    const cost = await estimateRun(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, ...(dependencies.cloud === true ? { cloud: true } : {}), now: Date.now },
       { orgId: task.orgId, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, path: task.workflow.path, ...(task.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: task.maxPerRunUsd }) },
     );
+    // Plan 6 Task 7: a version 2 plan also carries how long to a pull request. Version 1 estimates stay as recorded.
+    if (task.workflow.definitionVersion !== "1.1.0") return cost;
+    // A history that can't be read leaves out the time and nothing else: the cost estimate (and the run limit it gives) is not held back by it.
+    const minutes = await estimateDuration({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, { orgId: task.orgId, project: task.project, path: task.workflow.path })
+      .catch((error: unknown) => {
+        console.log(JSON.stringify({ component: "broker", event: "duration_estimate.unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" }));
+        return undefined;
+      });
+    return minutes === undefined ? cost : { ...cost, minutes };
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "run_estimate.unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" }));
     return undefined;
@@ -14798,6 +15384,11 @@ async function storePlanAnswer(
     } } : {}),
   });
   if (!parsed.ok) return unreadable(parsed.errors);
+  // Plan 6 Task 7: a version 2 coding plan names what changes, which files and how it is tested. The worker asked once more when a part was missing; a plan still missing one is unreadable.
+  if (workflow.definitionVersion === "1.1.0" && artifactType === "plan") {
+    const missing = planAnswerMissingParts(content, parsed.plan);
+    if (missing.length > 0) return unreadable(missing);
+  }
   // Defense in depth with the worker's own check: a version 2 intent is stored only from a run that negotiated it.
   if (parsed.plan.e2e?.schemaVersion === 2 && !applicationPlanNegotiated) {
     return unreadable(["the plan: e2e schemaVersion 2 was not offered for this planning step; use the schemaVersion 1 portable intent, or leave e2e out"]);
@@ -14823,6 +15414,7 @@ async function storePlanAnswer(
     expectedRevision: workflow.revision,
     now,
     ...(parsed.proposal === undefined ? {} : { proposal: parsed.proposal }),
+    ...(parsed.plan.noChangeNeeded === undefined ? {} : { noChangeNeeded: true }),
     artifact: {
       id: artifactId, type: artifactType, version: workflow.artifacts.filter((entry) => entry.type === artifactType).length + 1,
       sha256: sha(canonical), producer: "agentx-worker-untrusted", objectKey: `${prefix}.json`, createdAt: String(artifact.createdAt),
@@ -15112,7 +15704,9 @@ async function cancelledWorkflowStepItems(
 ): Promise<TransactItems> {
   if (target === undefined || pointer === undefined || target.kind !== "task" || target.workflowMode === undefined) return [];
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
-  if (task === undefined || !stopBlocksWorkflowStep(task, target)) return [];
+  // A cancelled setup draft ends as cancelled, in the cancel's own transaction (it has no workflow step to block).
+  if (task?.purpose === "setup_draft") return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
+  if (task === undefined || target.workflowMode === "SETUP_DRAFT" || !stopBlocksWorkflowStep(task, target)) return [];
   const items = await completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
   // Only the one conditional update of the step the target ran, exactly; anything else is left to the owner's Retry.
   const update = items.length === 1 ? items[0]?.Update : undefined;
@@ -15377,17 +15971,25 @@ async function recordTerminalResult(
   }
   // Plan 3 final fix wave (runs I-1): an agent-step run's budget stop with no pause yet (the proxy's mid-step "budget exceeded") is asked for BEFORE the engine is
   // driven, so the engine tells the pause's real scope, once, instead of a made-up one that it then resumes at once. A stop an approval already answered is not asked again.
-  const budgetStoppedRun = taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
+  const budgetStoppedRun = taskPointer !== undefined && operation.kind === "task" && operation.planRevision !== true && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
   const stop = { asked: false };
   const runStop = budgetStoppedRun && taskPointer !== undefined ? await agentRunStopAsk(dependencies, taskPointer.taskId, operation.id) : "not_run";
   if (runStop !== "not_run") stop.asked = true;
   if (runStop === "ask" && taskPointer !== undefined) await askForPausedTask(dependencies, taskPointer.taskId, operation);
   // Gap 6: start any step this result made due (its dispatch row committed above); a lost start is the sweep's.
   if (taskPointer !== undefined) await dispatchWorkflowContinuation(dependencies, taskPointer.taskId);
+  // Plan 6 Task 5: the milestones this result wrote (Understand's questions) are told to the registered handlers now; a handler that was not told is told again by the sweep.
+  if (taskPointer !== undefined && recordedStatus === terminalStatus) {
+    const milestoneTaskId = taskPointer.taskId;
+    await deliverCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, milestoneTaskId).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "code_milestone.delivery_failed", taskId: milestoneTaskId, error: error instanceof Error ? error.name : "unknown" }));
+    });
+  }
   // A task that finished while this ran (merged during a feedback review, say) gives back its slot and workspace now.
   if (taskPointer !== undefined && !closeCanFinish) await releaseIfFinished(dependencies, taskPointer.taskId);
   // Plan 3, Task 32: a task operation that ran out of budget is paused, and asks for the limit its pause names (an agent-step run's engine paused it above).
-  const budgetStopped = taskPointer !== undefined && operation.kind === "task" && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
+  // Plan 6 Task 8: a plan check that ran out of budget is advice that stopped short (its plan goes to the person), not a pause: it asks for no money.
+  const budgetStopped = taskPointer !== undefined && operation.kind === "task" && operation.workflowMode !== "PLAN_CRITIQUE" && operation.planRevision !== true && recordedStatus === "FAILED" && error === BUDGET_EXHAUSTED_FAILURE_MESSAGE;
   // Plan 3, Task 22 (G7): a workflow task that passed its sequence, and a plain task whose operation ended, tell the end handlers (an agent-step run's engine tells its own).
   // Plan 3, M-6: a plain task that stopped on a budget is paused, not ended (Task 32 may resume it): the pause handlers hear that instead, before the ask below.
   if (taskPointer !== undefined && !closeCanFinish && (hasTaskEndHandlers() || (budgetStopped && hasTaskPauseHandlers()))) {
@@ -15401,6 +16003,10 @@ async function recordTerminalResult(
     await startPlanEvidenceJobs(dependencies, evidenceJobs);
     await attachInlineEvidence(dependencies, inlineEvidence);
     await writeAllPlannerReplies(dependencies, plannerReplies);
+  }
+  // Plan 6 Task 7: the pull request just opened (the task now waits for the merge): a version 2 task's duration is written for the next time estimate. Best effort, never fails the result.
+  if (recordedStatus === terminalStatus && terminalStatus === "SUCCEEDED" && operation.kind === "publish" && taskPointer !== undefined) {
+    await noteDurationAtPullRequest({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, taskPointer.taskId, now);
   }
   // #213: a prepare that did not succeed leaves the workspace PREPARATION_FAILED, which stops
   // counting toward the workspace limits now; the release logs, and never fails the callback.

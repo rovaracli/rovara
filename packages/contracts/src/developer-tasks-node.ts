@@ -1,7 +1,7 @@
 import { sharedNoticeKey, type SlackThread, slackThreadSubject } from "./slack.js";
 import { z } from "zod";
 import type { DeveloperTaskShareSchema, ChannelTurnSchema, DeveloperTaskStatusSchema, DeveloperTaskFailureCategorySchema, DeveloperTaskFailureStageSchema, DeveloperTaskFailureSchema, DeveloperTaskRunViewSchema} from "./developer-tasks.js";
-import { DeveloperTaskEventSchema, DeveloperTaskViewSchema, PullRequestSummarySchema } from "./developer-tasks.js";
+import { DeveloperTaskEventSchema, DeveloperTaskViewSchema, DeveloperTaskClientViewSchema, PullRequestSummarySchema } from "./developer-tasks.js";
 import { DeveloperShareModeSchema } from "./project.js";
 import { Buffer } from "node:buffer";
 import { AgentIdSchema } from "./agent.js";
@@ -165,6 +165,9 @@ export const StartAgentSelectionSchema = z.object({
 
 export type StartAgentSelection = z.infer<typeof StartAgentSelectionSchema>;
 
+/** The refusal for a workflow request with no Quick or Full path where Understand does not choose it (a Rovara Code version 1 task). */
+export const WORKFLOW_PATH_REQUIRED = "workflowPath: workflow requests require an explicit Quick or Full path";
+
 export const StartDeveloperTaskRequestSchema = z
   .object({
     requestId: RequestIdSchema,
@@ -188,7 +191,8 @@ export const StartDeveloperTaskRequestSchema = z
   .strict().superRefine((request, context) => {
     if (request.input !== undefined && request.instructions !== request.input.text) context.addIssue({ code: "custom", path: ["instructions"], message: "instructions must equal input.text" });
     if (request.workflowPath !== undefined && request.workflow !== true) context.addIssue({ code: "custom", path: ["workflowPath"], message: "workflowPath requires workflow: true" });
-    if (request.workflow === true && request.workflowPath === undefined) context.addIssue({ code: "custom", path: ["workflowPath"], message: "workflow requests require an explicit Quick or Full path" });
+    // Plan 6 Task 3: a workflow request without a path is allowed here and means "Understand chooses" on Rovara Code version 2; the start itself refuses it, with
+    // `WORKFLOW_PATH_REQUIRED`'s words, where the agent it resolved is not version 2.
   });
 
 export type StartDeveloperTaskRequest = z.infer<typeof StartDeveloperTaskRequestSchema>;
@@ -290,10 +294,10 @@ export type DeveloperTaskListItem = z.infer<typeof DeveloperTaskListItemSchema>;
 /** `nextCursor` is opaque: pass it back as `cursor` for the next page; it is absent on the last page. */
 export const DeveloperTaskListResponseSchema = z.object({ tasks: z.array(DeveloperTaskListItemSchema), nextCursor: z.string().optional() });
 
-export const DeveloperTaskResponseSchema = z.object({ task: DeveloperTaskViewSchema });
+export const DeveloperTaskResponseSchema = z.object({ task: DeveloperTaskClientViewSchema });
 
 export const DeveloperCloseResponseSchema = z.object({
-  task: DeveloperTaskViewSchema,
+  task: DeveloperTaskClientViewSchema,
   closed: z.boolean(),
   discardedUnpublished: z.boolean().optional(),
   unpublished: z.array(z.object({ repository: z.string(), reasons: z.array(z.string()) })).optional(),
@@ -304,7 +308,7 @@ export const DeveloperCloseResponseSchema = z.object({
 export type DeveloperCloseResponse = z.infer<typeof DeveloperCloseResponseSchema>;
 
 export const DeveloperPullRequestResponseSchema = z.object({
-  task: DeveloperTaskViewSchema,
+  task: DeveloperTaskClientViewSchema,
   operationId: z.string().uuid(),
   operationStatus: OperationStatusSchema,
   pullRequest: PullRequestSummarySchema.optional(),
@@ -421,4 +425,4 @@ export function diffStat(diff: string, limit = 200): ChangedFile[] {
   return [...byRepository.values()].flat().slice(0, limit);
 }
 
-export { DEVELOPER_TASK_SUMMARY_MAX, DEVELOPER_FAILURE_MESSAGE_MAX, DEVELOPER_EVENT_TEXT_MAX, DEVELOPER_EVENTS_MAX, CHANNEL_TURNS_MAX, CHANNEL_TURN_REQUEST_MAX, DeveloperTaskShareSchema, ChannelTurnSchema, DeveloperTaskStatusSchema, DeveloperTaskFailureCategorySchema, DeveloperTaskFailureStageSchema, DeveloperTaskFailureSchema, DeveloperTaskEventSchema, PullRequestSummarySchema, DeveloperTaskRunViewSchema, DeveloperTaskViewSchema } from "./developer-tasks.js";
+export { DEVELOPER_TASK_SUMMARY_MAX, DEVELOPER_FAILURE_MESSAGE_MAX, DEVELOPER_EVENT_TEXT_MAX, DEVELOPER_EVENTS_MAX, CHANNEL_TURNS_MAX, CHANNEL_TURN_REQUEST_MAX, DeveloperTaskShareSchema, ChannelTurnSchema, DeveloperTaskStatusSchema, DeveloperTaskFailureCategorySchema, DeveloperTaskFailureStageSchema, DeveloperTaskFailureSchema, DeveloperTaskEventSchema, PullRequestSummarySchema, DeveloperTaskRunViewSchema, DeveloperTaskViewSchema, DeveloperTaskClientViewSchema, knownTaskView, type DeveloperTaskClientView } from "./developer-tasks.js";

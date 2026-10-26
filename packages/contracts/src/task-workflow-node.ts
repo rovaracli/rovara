@@ -1,6 +1,11 @@
 import { DigestSchema } from "./workflow-dependencies.js";
+import {
+  ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, UNDERSTAND_ROUNDS_MAX, UNDERSTAND_TIMED_OUT_MESSAGE, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds,
+} from "./rovara-code.js";
+import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
+import { redactText } from "./redaction.js";
 import type { WorkflowAcceptedFindingSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackThreadObservationSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramSchema, WorkflowCheckPolicySchema, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WorkflowReviewBaseSchema} from "./task-workflow.js";
-import { ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX } from "./task-workflow.js";
+import { ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX , type WorkflowDefinitionVersion } from "./task-workflow.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WorkflowProposedCheckInputSchema, feedbackReplacementCheckProblem, WORKFLOW_PROPOSED_CHECK_DEFAULT_TIMEOUT_SECONDS } from "./workflow-check-input.js";
@@ -393,7 +398,7 @@ function reviewNotPassedReason(roles: ReadonlyArray<"CRITIC" | "SECURITY">): str
 }
 
 const PROGRAM_STAGE_OF_STEP: Record<WorkflowProgramStep["kind"], WorkflowStage> = {
-  plan: "PLAN", build: "IMPLEMENT", check: "VERIFY", review: "REVIEW", pull_request: "PULL_REQUEST",
+  plan: "PLAN", plan_critic: "PLAN_CRITIQUE", build: "IMPLEMENT", check: "VERIFY", review: "REVIEW", pull_request: "PULL_REQUEST",
 };
 
 function programIndex(program: WorkflowProgram, id: string | undefined): number {
@@ -403,11 +408,14 @@ function programIndex(program: WorkflowProgram, id: string | undefined): number 
   return index;
 }
 
-/** The step the engine runs after the one at `index`: a plan step never repeats, and a check not right after a build was recorded with its build. */
+/**
+ * The step the engine runs after the one at `index`: a plan step never repeats, the plan check (Rovara Code version 2) is skipped because the engine runs it
+ * between the plan and its approval and not as a step to move to afterwards, and a check not right after a build was recorded with its build.
+ */
 function programStepAfter(program: WorkflowProgram, index: number): WorkflowProgramStep | undefined {
   for (let next = index + 1; next < program.steps.length; next += 1) {
     const step = program.steps[next]!;
-    if (step.kind === "plan" || (step.kind === "check" && program.steps[next - 1]?.kind !== "build")) continue;
+    if (step.kind === "plan" || step.kind === "plan_critic" || (step.kind === "check" && program.steps[next - 1]?.kind !== "build")) continue;
     return step;
   }
   return undefined;
@@ -702,6 +710,8 @@ export const WorkflowDecisionRequestSchema = z.object({
   answers: z.array(WorkflowAnswerSchema.extend({ opened: z.boolean() }).strict()).max(WORKFLOW_DECISION_ANSWERS_MAX).optional(),
   /** The task page: the open comments the owner chose to send, in the order the next step sees them. */
   includedCommentIds: z.array(z.string().uuid()).max(WORKFLOW_DECISION_COMMENTS_MAX).optional(),
+  /** Rovara Code v2: with REJECT, on a plan that says no change is needed: end the task Answered ("Close as answered"). */
+  closeAsAnswered: z.literal(true).optional(),
 }).strict().refine((request) => request.artifactDigest !== undefined, { message: "a workflow decision must name the current artifact digest", path: ["artifactDigest"] })
   .superRefine((request, context) => {
     if (request.selectedOptionalCheckIds !== undefined && new Set(request.selectedOptionalCheckIds).size !== request.selectedOptionalCheckIds.length) {
@@ -712,6 +722,9 @@ export const WorkflowDecisionRequestSchema = z.object({
     }
     if (request.includedCommentIds !== undefined && new Set(request.includedCommentIds).size !== request.includedCommentIds.length) {
       context.addIssue({ code: "custom", path: ["includedCommentIds"], message: "each comment can be included only once" });
+    }
+    if (request.closeAsAnswered === true && request.decision !== "REJECT") {
+      context.addIssue({ code: "custom", path: ["closeAsAnswered"], message: "only closing a plan can close it as answered" });
     }
   });
 
@@ -832,7 +845,11 @@ export function submitWorkflowReview(currentInput: unknown, reportInput: unknown
   // The reviews this step asks for: both without a program, the review step's own reviewers with one.
   const roles = workflowReviewRoles(current);
   if (current.program !== undefined && !roles.includes(report.data.role)) throw new WorkflowTransitionError("review report is not one this step asked for");
-  const reviews = [...(current.reviews ?? []).filter((entry) => entry.role !== report.data.role), report.data];
+  // A risk level is a version 2 thing: a version 1 task keeps the review as it was, without one.
+  const { risk: _risk, ...withoutRisk } = report.data;
+  void _risk;
+  const stored = current.definitionVersion === "1.1.0" ? report.data : withoutRisk;
+  const reviews = [...(current.reviews ?? []).filter((entry) => entry.role !== report.data.role), stored];
   // A review also stands when the owner accepted every finding that blocked it, for this candidate.
   const complete = roles.every((role) => reviews.some((entry) => entry.role === role && reviewCleared(entry, current.acceptedFindings)));
   // The reviews that hold the change back, named as the owner knows them, whichever review was recorded last.
@@ -969,10 +986,12 @@ export function recordWorkflowPullRequestHeadTrees(currentInput: unknown, trees:
   return WorkflowSnapshotSchema.parse({ ...current, pullRequests, updatedAt: now });
 }
 
-/** Whether the task follows its pull requests only for their merge: an approved fix is being made or pushed, or its push failed. */
+/** Whether the task follows its pull requests only for their merge: an approved fix is being made or pushed, its push failed, or a person is to retry its CI fix. */
 export function workflowFollowsOnlyMerge(workflow: Pick<WorkflowSnapshot, "stage" | "state" | "blockReason">): boolean {
   return (workflow.stage !== "WAIT_FOR_MERGE" && workflow.stage !== "MERGED")
-    || (workflow.state === "BLOCKED" && workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed);
+    || (workflow.state === "BLOCKED" && (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed
+      // Plan 6 Task 15: a task waiting for a person to retry its CI fix keeps waiting: an observation of the pull request must not read the block away, and comments wait for the Retry.
+      || isCiFixBlockReason(workflow.blockReason)));
 }
 
 /**
@@ -991,7 +1010,7 @@ function withPullRequestsObserved(current: WorkflowSnapshot, pullRequests: Workf
   void _priorReason;
   const reopened = !keep && !closed && current.state === "BLOCKED" && current.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestClosed;
   return WorkflowSnapshotSchema.parse({
-    ...(keep ? current : reopened ? unblocked : withoutPriorOutcome),
+    ...(complete ? withoutFix(keep ? current : reopened ? unblocked : withoutPriorOutcome) : keep ? current : reopened ? unblocked : withoutPriorOutcome),
     revision: current.revision + 1,
     stage: complete ? "MERGED" : keep ? current.stage : "WAIT_FOR_MERGE",
     state: complete ? "COMPLETE" : keep ? current.state : closed ? "BLOCKED" : "WAITING",
@@ -1080,10 +1099,11 @@ export function recordWorkflowPullRequestUpdate(currentInput: unknown, input: { 
     // A blocked task stays blocked for the pull requests its fix has not reached.
     return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, ...(pushFailed ? {} : { state: "READY" }), pullRequests, updatedAt: input.now });
   }
-  const { blockReason: _blockReason, pullRequestUpdateFailure: _failure, feedbackReview, feedbackDispatchApproval: _approval, ...rest } = current;
+  const { blockReason: _blockReason, pullRequestUpdateFailure: _failure, feedbackReview, feedbackDispatchApproval: _approval, ...restWithFix } = current;
   void _blockReason;
   void _failure;
   void _approval;
+  const rest = withoutFix(restWithFix);
   const history = [...(current.feedbackReviewHistory ?? [])];
   const report = feedbackReview?.reviewRef;
   if (report !== undefined && !history.some((entry) => entry.sha256 === report.sha256)) history.push(report);
@@ -1105,9 +1125,126 @@ export function blockWorkflowPullRequestUpdate(currentInput: unknown, input: { n
     throw new WorkflowTransitionError("workflow is not pushing a fix to its pull requests");
   }
   return WorkflowSnapshotSchema.parse({
-    ...current, revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED",
+    ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED",
     blockReason: WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed, pullRequestUpdateFailure: failure.data, updatedAt: input.now,
   });
+}
+
+/** A snapshot without the marks of a fix in flight (the fix is over: pushed, given up or merged past). */
+function withoutFix(workflow: WorkflowSnapshot): WorkflowSnapshot {
+  const { fixSource: _source, fixProblems: _problems, ...rest } = workflow;
+  void _source;
+  void _problems;
+  return rest;
+}
+
+const FIX_ROUND_KEYS = { ci: "ci", conflict: "conflict", feedback: "feedbackAuto" } as const satisfies Record<FixSource, keyof WorkflowFixRounds>;
+const FIX_ROUNDS_MAX = { ci: CI_FIX_ROUNDS_MAX, conflict: CONFLICT_ROUNDS_MAX, feedbackAuto: FEEDBACK_AUTO_ROUNDS_MAX } as const satisfies Record<keyof WorkflowFixRounds, number>;
+
+/** How many fix rounds of each kind have run (none when the workflow has never fixed anything). */
+export function workflowFixRounds(workflow: Pick<WorkflowSnapshot, "fixRounds">): WorkflowFixRounds {
+  return workflow.fixRounds ?? { ci: 0, conflict: 0, feedbackAuto: 0 };
+}
+
+/** How many rounds of this kind are left before the cap. */
+export function workflowFixRoundsLeft(workflow: Pick<WorkflowSnapshot, "fixRounds">, source: FixSource): number {
+  const key = FIX_ROUND_KEYS[source];
+  return Math.max(0, FIX_ROUNDS_MAX[key] - workflowFixRounds(workflow)[key]);
+}
+
+/** Whether the owner's feedback card is being prepared or waits for them (it blocks every automatic action). */
+function ownerCardOpen(workflow: WorkflowSnapshot): boolean {
+  return workflow.feedbackReview?.status === "PENDING" || workflow.feedbackReview?.status === "COLLECTING";
+}
+
+/**
+ * Rovara Code (Plan 6 Task 15): a fix to the open pull requests starts, with no one deciding it: WAIT_FOR_MERGE/WAITING becomes IMPLEMENT/READY, marked with its source (`ci`, `conflict` or
+ * `feedback`) and the names of what is being fixed, and counted in `fixRounds`. The build it goes back to is the program's last build, as for an approved feedback fix, and the review rounds
+ * of the earlier code are not counted against this one. A round counts unless `count` is false (a person told Rovara to go on after its rounds ran out). Refused while the owner's card waits,
+ * while a fix is already under way, and when the source's rounds are used up. Both definition versions may be fixed.
+ */
+export function startWorkflowFix(currentInput: unknown, input: { source: FixSource; problems: readonly string[]; now: string; count?: boolean }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "WAITING" || current.candidate === undefined || current.fixSource !== undefined) {
+    throw new WorkflowTransitionError("the workflow is not waiting for the merge with nothing being fixed");
+  }
+  if (ownerCardOpen(current)) throw new WorkflowTransitionError("the owner's feedback card is waiting, so nothing is fixed on its own");
+  if (!(current.pullRequests ?? []).some((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN")) {
+    throw new WorkflowTransitionError("the workflow has no open pull request to fix");
+  }
+  const key = FIX_ROUND_KEYS[input.source];
+  const rounds = workflowFixRounds(current);
+  const counted = input.count !== false;
+  if (counted && rounds[key] >= FIX_ROUNDS_MAX[key]) throw new WorkflowTransitionError("the rounds of this kind of fix are used up");
+  const problems = z.array(z.string().trim().min(1).max(200)).max(CI_FIX_PROBLEMS_MAX).safeParse(input.problems);
+  if (!problems.success) throw new WorkflowTransitionError("the problems a fix is for are invalid");
+  const candidate = current.candidate;
+  // A pull request recorded without its head's tree keeps the reviewed tree it was opened with: once the fix is coded the candidate is the fix.
+  const pullRequests = current.pullRequests?.map((pullRequest) => pullRequest.headTreeSha !== undefined || pullRequest.candidateDigest !== candidate.digest ? pullRequest
+    : { ...pullRequest, headTreeSha: candidate.repositories.find((repository) => repository.repositoryId === pullRequest.repositoryId)?.treeSha });
+  const { blockReason: _blockReason, ciFixApproved: _approved, programRounds: _rounds, ...rest } = current;
+  void _blockReason;
+  void _approved;
+  void _rounds;
+  return WorkflowSnapshotSchema.parse({
+    ...rest, revision: current.revision + 1, stage: "IMPLEMENT", state: "READY",
+    ...(pullRequests === undefined ? {} : { pullRequests }),
+    ...(current.program === undefined ? {} : { programStepId: programBuildAtOrBefore(current.program, current.program.steps.length - 1).id }),
+    fixSource: input.source, ...(problems.data.length === 0 ? {} : { fixProblems: problems.data }),
+    fixRounds: counted ? { ...rounds, [key]: rounds[key] + 1 } : rounds, updatedAt: input.now,
+  });
+}
+
+/** How many fix rounds of every kind have begun: the number a milestone about a round is filed under. */
+export function workflowFixRoundsBegun(workflow: Pick<WorkflowSnapshot, "fixRounds">): number {
+  const rounds = workflowFixRounds(workflow);
+  return rounds.ci + rounds.conflict + rounds.feedbackAuto;
+}
+
+/**
+ * A fix that has not started its coding run stops because the pull request is no longer as Rovara left it (a person pushed to it): IMPLEMENT/READY becomes WAIT_FOR_MERGE/WAITING again, the marks
+ * of the fix dropped. The round stays counted: it was begun. The code, checks and reviews are those the pull request was opened with, so the task is as it was.
+ */
+export function abandonWorkflowFix(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "IMPLEMENT" || current.state !== "READY" || current.fixSource === undefined) throw new WorkflowTransitionError("no fix is waiting to start");
+  return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "WAITING", updatedAt: now });
+}
+
+/**
+ * A CI fix round stops with a plain reason a person has to act on: Rovara was told to wait (suggest), the rounds are used up, or the round changed nothing. WAIT_FOR_MERGE/WAITING (or the fix
+ * itself, IMPLEMENT/RUNNING) becomes WAIT_FOR_MERGE/BLOCKED with `reason`, which must be one of the CI fix texts; the fix's marks are dropped. The pull requests stay followed.
+ */
+export function blockWorkflowCiFix(currentInput: unknown, input: { reason: string; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const waiting = current.stage === "WAIT_FOR_MERGE" && current.state === "WAITING";
+  const fixing = current.stage === "IMPLEMENT" && current.fixSource === "ci" && (current.state === "RUNNING" || current.state === "READY");
+  if (!isCiFixBlockReason(input.reason) || (!waiting && !fixing)) throw new WorkflowTransitionError("the workflow is not at a place a CI fix can stop");
+  return WorkflowSnapshotSchema.parse({ ...withoutFix(current), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: input.reason.slice(0, 500), updatedAt: input.now });
+}
+
+/** A CI fix round that changed nothing: the failure is not this change's, so a person is asked to look (and the round stays counted). */
+export function endWorkflowCiFixUnrelated(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "IMPLEMENT" || current.fixSource !== "ci") throw new WorkflowTransitionError("the workflow is not fixing CI");
+  return blockWorkflowCiFix(current, { reason: ciFixUnrelatedMessage(current.fixProblems?.[0] ?? "a check"), now });
+}
+
+/**
+ * The owner's Retry of a CI fix that waited for a person (Rovara was told to suggest, the three rounds are used up, or a round changed nothing): WAIT_FOR_MERGE/BLOCKED becomes WAITING with
+ * the go-ahead recorded for the heads the open pull requests hold now, so the next CI fix round, for a failure on one of them, starts whatever the autonomy. The rounds already used stay counted:
+ * one Retry is one round more (see `startWorkflowFix`'s `count`), never three.
+ */
+export function retryWorkflowCiFix(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "BLOCKED" || !isCiFixBlockReason(current.blockReason)) {
+    throw new WorkflowTransitionError("the workflow is not waiting for a CI fix to be retried");
+  }
+  const { blockReason: _blockReason, ...rest } = current;
+  void _blockReason;
+  const heads = [...new Set((current.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN").flatMap((pullRequest) => pullRequest.headSha === undefined ? [] : [pullRequest.headSha]))];
+  if (heads.length === 0) throw new WorkflowTransitionError("no open pull request has a recorded head to give a go-ahead for");
+  return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", ciFixApproved: heads, updatedAt: now });
 }
 
 /** Saves recoverable review input without inventing an independent report or code authority. */
@@ -1271,18 +1408,26 @@ function validSnapshot(input: unknown): WorkflowSnapshot {
   return parsed.data;
 }
 
-export function createWorkflowSnapshot(input: { taskId: string; ownerId: string; now: string; path?: WorkflowPath; checkPolicy?: WorkflowCheckPolicyInput; program?: WorkflowProgram }): WorkflowSnapshot {
+/**
+ * A new workflow. A Rovara Code version 2 task (`definitionVersion: "1.1.0"`) passes `understand: true` and starts at UNDERSTAND/READY: Understand reads the
+ * intent before any plan is written. `pathFrom` says who chose the path (the request, Understand, or a hand-off) and is kept on `intent`; a version 1 task
+ * has neither (its snapshot refuses `intent`).
+ */
+export function createWorkflowSnapshot(input: { taskId: string; ownerId: string; now: string; path?: WorkflowPath; checkPolicy?: WorkflowCheckPolicyInput; program?: WorkflowProgram; definitionVersion?: WorkflowDefinitionVersion; understand?: boolean; pathFrom?: WorkflowIntent["pathFrom"] }): WorkflowSnapshot {
+  const understand = input.understand === true;
+  if ((understand || input.pathFrom !== undefined) && input.definitionVersion !== "1.1.0") throw new WorkflowTransitionError("only a version 1.1.0 workflow understands the intent first");
   const parsed = WorkflowSnapshotSchema.safeParse({
     schemaVersion: 1,
     definitionId: "agentx-task-to-pr",
-    definitionVersion: "1.0.0",
+    definitionVersion: input.definitionVersion ?? "1.0.0",
     taskId: input.taskId,
     ownerId: input.ownerId,
     path: input.path ?? "QUICK",
     ...(input.path === "FULL" ? { reviewPhase: "REQUIREMENTS" as const } : {}),
     revision: 1,
-    stage: "PLAN",
-    state: "RUNNING",
+    stage: understand ? "UNDERSTAND" : "PLAN",
+    state: understand ? "READY" : "RUNNING",
+    ...(understand || input.pathFrom !== undefined ? { intent: { rounds: 0, pathFrom: input.pathFrom ?? "understand", answers: [] } } : {}),
     createdAt: input.now,
     updatedAt: input.now,
     artifacts: [],
@@ -1297,9 +1442,197 @@ export function createWorkflowSnapshot(input: { taskId: string; ownerId: string;
   return parsed.data;
 }
 
+/**
+ * Rovara Code version 2: Understand runs (the first time, again after a person answered, or after a retry): UNDERSTAND/READY or BLOCKED becomes RUNNING. The task must be a 1.1.0 workflow.
+ */
+export function startWorkflowUnderstand(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || (current.state !== "READY" && current.state !== "BLOCKED")) {
+    throw new WorkflowTransitionError("the workflow is not ready to understand the request");
+  }
+  const { blockReason: _blockReason, ...unblocked } = current;
+  void _blockReason;
+  return WorkflowSnapshotSchema.parse({ ...unblocked, revision: current.revision + 1, state: "RUNNING", updatedAt: now });
+}
+
+/** Rovara Code version 2: the plan step runs after Understand: PLAN/READY becomes RUNNING. */
+export function startWorkflowPlanAfterUnderstand(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "PLAN" || current.state !== "READY") throw new WorkflowTransitionError("the workflow is not ready to plan");
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "RUNNING", updatedAt: now });
+}
+
+/**
+ * What Understand found, recorded (`assessment` is the broker's checked, redacted copy of the model's answer; it is checked here once more):
+ * - `ready` goes to PLAN/READY, with the path (a path the request gave wins; a Full path asks for requirements first);
+ * - `questions` wait for a person at UNDERSTAND/WAITING while fewer than UNDERSTAND_ROUNDS_MAX rounds were asked; a round after that is treated as `ready`, each question
+ *   turned into the assumption it would have been answered with;
+ * - `answer` (a question that needs no code change) ends the task Answered: `answerWorkflowIntent`.
+ */
+export function recordIntentAssessment(currentInput: unknown, input: { expectedRevision: number; assessment: unknown; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || current.state !== "RUNNING" || current.intent === undefined) {
+    throw new WorkflowTransitionError("the workflow is not understanding the request");
+  }
+  const parsed = IntentAssessmentSchema.safeParse(input.assessment);
+  if (!parsed.success || intentAssessmentDuplicateIds(parsed.data).length > 0) throw new WorkflowTransitionError("the assessment is invalid");
+  const assessment: IntentAssessment = parsed.data;
+  const intent = current.intent;
+  // A question that needs no code change ends the task Answered, and that move keeps the answer's artifact: it is `answerWorkflowIntent`, not this.
+  if (assessment.kind === "answer") throw new WorkflowTransitionError("an answer ends the task: record it with answerWorkflowIntent");
+  if (assessment.kind === "questions" && intent.rounds < UNDERSTAND_ROUNDS_MAX) {
+    return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, state: "WAITING", intent: { ...intent, rounds: intent.rounds + 1, assessment }, updatedAt: input.now });
+  }
+  const ready: Extract<IntentAssessment, { kind: "ready" }> = assessment.kind === "ready" ? assessment
+    : { kind: "ready", path: current.path, restatement: assessment.restatement, assumptions: assessment.questions.map(intentAssumptionLine) };
+  // The request's path (or a hand-off's) wins over Understand's.
+  const path = intent.pathFrom === "understand" ? ready.path : current.path;
+  const { reviewPhase: _reviewPhase, ...withoutPhase } = current;
+  void _reviewPhase;
+  return WorkflowSnapshotSchema.parse({
+    ...withoutPhase, revision: current.revision + 1, stage: "PLAN", state: "READY", path,
+    ...(path === "FULL" ? { reviewPhase: "REQUIREMENTS" as const } : {}),
+    intent: { ...intent, assessment: ready }, updatedAt: input.now,
+  });
+}
+
+/** The producer an answer's artifact names: the answer is a model's words, kept as untrusted as a plan is. */
+export const WORKFLOW_ANSWER_PRODUCER = "agentx-worker-untrusted";
+
+/** What a question-only task keeps of the answer: the model's words with credentials redacted and control characters made spaces, checked once more against the assessment's own limits. */
+function cleanedAnswer(input: { restatement: string; answer: string; sources: ReadonlyArray<{ repository: string; path: string; line?: number | undefined }> }): Extract<IntentAssessment, { kind: "answer" }> {
+  const oneLine = (text: string) => Array.from(redactText(text).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim());
+  const parsed = IntentAssessmentSchema.safeParse({
+    kind: "answer", restatement: oneLine(input.restatement).slice(0, INTENT_RESTATEMENT_MAX).join("") || "A question",
+    answer: plainAnswerText(redactText(input.answer)),
+    sources: input.sources.map((source) => ({ repository: oneLine(source.repository).slice(0, 200).join(""), path: oneLine(source.path).slice(0, 500).join(""), ...(source.line === undefined ? {} : { line: source.line }) })),
+  });
+  if (!parsed.success || parsed.data.kind !== "answer") throw new WorkflowTransitionError("the answer is invalid");
+  return parsed.data;
+}
+
+/** The answer's artifact: the digest is of the answer and its sources, and the object it points at is the file the answer was read from (the Understand result or the plan document). */
+function answerArtifact(workflow: WorkflowSnapshot, answer: Extract<IntentAssessment, { kind: "answer" }>, from: { id: string; objectKey: string; createdAt: string }): WorkflowArtifact {
+  return WorkflowArtifactSchema.parse({
+    id: from.id, type: "answer", version: workflow.artifacts.filter((artifact) => artifact.type === "answer").length + 1,
+    sha256: createHash("sha256").update(JSON.stringify({ answer: answer.answer, sources: answer.sources }), "utf8").digest("hex"),
+    producer: WORKFLOW_ANSWER_PRODUCER, objectKey: from.objectKey, createdAt: from.createdAt,
+  });
+}
+
+/** The task as it is once its question is answered: closed and complete, outcome ANSWERED, with the answer on `intent` and as an `{ type: "answer" }` artifact. */
+function answeredSnapshot(current: WorkflowSnapshot, answer: Extract<IntentAssessment, { kind: "answer" }>, from: { id: string; objectKey: string; createdAt: string }, now: string, decision?: WorkflowDecision): WorkflowSnapshot {
+  // A Full workflow keeps the phase it was at: the schema asks every Full workflow to name one.
+  const { blockReason: _blockReason, ...rest } = current;
+  void _blockReason;
+  return WorkflowSnapshotSchema.parse({
+    ...rest, revision: current.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "ANSWERED", updatedAt: now,
+    intent: { ...(current.intent ?? { rounds: 0, pathFrom: "request", answers: [] }), assessment: answer },
+    artifacts: [...current.artifacts, answerArtifact(current, answer, from)],
+    ...(decision === undefined ? {} : { decisions: [...current.decisions, decision] }),
+  });
+}
+
+/**
+ * Rovara Code version 2: Understand found that the person asked a question that needs no code change. The task ends CLOSED/COMPLETE with the outcome ANSWERED, the answer kept on
+ * `intent` and as an `{ type: "answer" }` artifact (`artifact` names the file the answer was read from). `assessment` is the broker's checked copy of the model's answer; it is cleaned
+ * and checked here again, and nothing in it can do more than be read: no stage, path or decision comes from it.
+ */
+export function answerWorkflowIntent(
+  currentInput: unknown, input: { expectedRevision: number; assessment: unknown; artifact: { id: string; objectKey: string; createdAt: string }; now: string },
+): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || current.state !== "RUNNING" || current.intent === undefined) {
+    throw new WorkflowTransitionError("the workflow is not understanding the request");
+  }
+  const parsed = IntentAssessmentSchema.safeParse(input.assessment);
+  if (!parsed.success || parsed.data.kind !== "answer") throw new WorkflowTransitionError("the assessment is not an answer");
+  return answeredSnapshot(current, cleanedAnswer(parsed.data), input.artifact, input.now);
+}
+
+/** The answer a closed task kept, or undefined: only an ANSWERED workflow has one. */
+export function workflowAnswer(workflow: Pick<WorkflowSnapshot, "outcome" | "intent">): Extract<IntentAssessment, { kind: "answer" }> | undefined {
+  const assessment = workflow.outcome === "ANSWERED" ? workflow.intent?.assessment : undefined;
+  return assessment?.kind === "answer" ? assessment : undefined;
+}
+
+/** Answers that cannot be taken, with the error code the broker answers them under: `INTENT_NOT_WAITING` (nothing is waiting for them) or `CONFIG_INVALID` (they are not a full, valid set of answers). */
+export class IntentAnswerRefusal extends WorkflowTransitionError {
+  readonly code: "INTENT_NOT_WAITING" | "CONFIG_INVALID";
+  constructor(code: "INTENT_NOT_WAITING" | "CONFIG_INVALID", message: string) {
+    super(message);
+    this.name = "IntentAnswerRefusal";
+    this.code = code;
+  }
+}
+
+/** A person's words for a prompt and a record: credentials redacted, control characters made spaces (a line break stays), no longer than an answer may be. */
+function cleanAnswerText(text: string): string {
+  const cleaned = redactText(text).replace(/\r\n?/gu, "\n").replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" ? "\n" : " ")).trim();
+  return Array.from(cleaned).slice(0, INTENT_ANSWER_MAX_CHARS).join("");
+}
+
+/**
+ * Rovara Code version 2: people answered Understand's questions. Only at UNDERSTAND/WAITING, for the round now asked, at the revision that was read; every open question needs one
+ * answer (an option of that question, words, or both), and nothing else is taken. The answers are cleaned (credentials redacted, control characters made spaces) and kept with who
+ * gave them, where from, and the questions as they were asked, and Understand runs again (UNDERSTAND/READY; the caller writes the dispatch row in the same transaction).
+ * `by` is the person the broker authenticated, never anything from the request's body.
+ */
+export function answerIntentQuestions(
+  currentInput: unknown,
+  input: { expectedRevision: number; round: number; by: { actorId: string; name: string }; source: string; answers: unknown; now: string },
+): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const asked = current.intent?.assessment;
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || current.state !== "WAITING" || current.intent === undefined || asked?.kind !== "questions"
+    || input.round !== current.intent.rounds || input.expectedRevision !== current.revision) {
+    throw new IntentAnswerRefusal("INTENT_NOT_WAITING", INTENT_NOT_WAITING_MESSAGE);
+  }
+  const invalid = (message: string) => new IntentAnswerRefusal("CONFIG_INVALID", message);
+  const source = z.enum(INTENT_ANSWER_SOURCES).safeParse(input.source);
+  if (!ActorIdSchema.safeParse(input.by.actorId).success || !source.success) throw new WorkflowTransitionError("the answers are not from a known person and place");
+  const name = Array.from(redactText(input.by.name).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim()).slice(0, 200).join("");
+  if (name === "") throw new WorkflowTransitionError("the answers need the name of the person who gave them");
+  const parsed = z.array(IntentAnswerSchema).min(1).max(INTENT_QUESTIONS_MAX).safeParse(input.answers);
+  if (!parsed.success) {
+    // Field names only: the values are a person's words.
+    throw invalid(`answers: ${parsed.error.issues[0]?.path.map(String).join(".") || "the list"} is not valid`);
+  }
+  const questions = new Map(asked.questions.map((question) => [question.id, question]));
+  if (parsed.data.some((answer) => !questions.has(answer.questionId))) throw invalid("answers: one of them is for a question that wasn't asked");
+  if (new Set(parsed.data.map((answer) => answer.questionId)).size !== parsed.data.length || parsed.data.length !== questions.size) throw invalid(ANSWER_EVERY_QUESTION_MESSAGE);
+  const cleaned: IntentAnswer[] = [];
+  for (const answer of parsed.data) {
+    const options = questions.get(answer.questionId)?.options;
+    if (answer.optionId !== undefined && options?.some((option) => option.id === answer.optionId) !== true) throw invalid("answers: one of them is not one of the question's options");
+    const text = answer.text === undefined ? undefined : cleanAnswerText(answer.text);
+    if (answer.optionId === undefined && (text === undefined || text === "")) throw invalid("answers: each answer picks an option or says something");
+    cleaned.push({ questionId: answer.questionId, ...(answer.optionId === undefined ? {} : { optionId: answer.optionId }), ...(text === undefined || text === "" ? {} : { text }) });
+  }
+  const ordered = asked.questions.map((question) => cleaned.find((answer) => answer.questionId === question.id)!);
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, state: "READY", updatedAt: input.now,
+    intent: { ...current.intent, answers: [...current.intent.answers, { round: current.intent.rounds, by: { actorId: input.by.actorId, name }, source: source.data, answers: ordered, questions: asked.questions, at: input.now }] },
+  });
+}
+
+/**
+ * Understand never came back (or never started) in time: the task ends, closed, with the reason, so it gives its workspace slot back like a task whose plan was rejected.
+ * Only an UNDERSTAND step that is READY or RUNNING ends this way.
+ */
+export function endStuckUnderstand(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.definitionVersion !== "1.1.0" || current.stage !== "UNDERSTAND" || (current.state !== "READY" && current.state !== "RUNNING")) {
+    throw new WorkflowTransitionError("the workflow is not waiting on Understand");
+  }
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", blockReason: UNDERSTAND_TIMED_OUT_MESSAGE, updatedAt: now });
+}
+
 export function submitWorkflowArtifact(
   currentInput: unknown,
-  input: { expectedRevision: number; artifact: WorkflowArtifact; now: string; proposal?: WorkflowCheckProposal },
+  input: { expectedRevision: number; artifact: WorkflowArtifact; now: string; proposal?: WorkflowCheckProposal; noChangeNeeded?: boolean },
 ): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
   const artifact = WorkflowArtifactSchema.safeParse(input.artifact);
@@ -1324,16 +1657,92 @@ export function submitWorkflowArtifact(
   void _oldDependencyApproval;
   void _oldDependencyOperationId;
   void _oldDependencyProgress;
+  // Plan 6 Task 8: a Rovara Code version 2 coding plan is checked by a second model before a person sees it (a Full task's requirements and design are not).
+  // MERGE-DECISION: a plan that says the request needs no code change (Task 4) has no change to check, so it goes straight to the person.
+  const checked = input.noChangeNeeded !== true && planCritiqued(current, artifact.data.type);
   const next = WorkflowSnapshotSchema.parse({
     ...withoutOldDependencyApproval,
     revision: current.revision + 1,
-    stage: "PLAN_REVIEW",
-    state: "WAITING",
+    stage: checked ? "PLAN_CRITIQUE" : "PLAN_REVIEW",
+    state: checked ? "READY" : "WAITING",
     artifacts: [...current.artifacts, artifact.data],
     ...(policy === undefined ? {} : { checkPolicy: policy }),
     updatedAt: input.now,
   });
   return next;
+}
+
+/** Whether a plan of this type, made by this workflow, goes through the plan check: a version 2 coding plan of a sequence that has a plan check step. */
+function planCritiqued(workflow: Pick<WorkflowSnapshot, "definitionVersion" | "program">, type: WorkflowArtifact["type"]): boolean {
+  return workflow.definitionVersion === "1.1.0" && type === "plan" && workflow.program?.steps.some((step) => step.kind === "plan_critic") === true;
+}
+
+function runningPlanCheck(currentInput: unknown, expectedRevision: number, states: readonly WorkflowState[] = ["RUNNING"]): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  if (current.stage !== "PLAN_CRITIQUE" || !states.includes(current.state)) throw new WorkflowTransitionError("the workflow is not running the plan check");
+  return current;
+}
+
+/**
+ * The plan check's result (Rovara Code version 2). The critic's points are advice: they are kept for the person and can neither approve the plan nor move it past
+ * PLAN_REVIEW. A `revise` verdict with a blocking point sends the plan back to the planner once (`PLAN_CRITIC_REVISIONS_MAX`), with the points kept; the revised plan is checked
+ * again. Every other result, and the second check whatever it says, goes to the person at PLAN_REVIEW with the critiques. `sameModelAsPlanner` notes that the project allows only one model.
+ */
+export function submitPlanCritique(
+  currentInput: unknown,
+  input: { expectedRevision: number; critique: PlanCritique; sameModelAsPlanner?: true; now: string },
+): WorkflowSnapshot {
+  const current = runningPlanCheck(currentInput, input.expectedRevision);
+  const critique = PlanCritiqueSchema.safeParse(input.critique);
+  if (!critique.success) throw new WorkflowTransitionError("the plan critique is invalid");
+  const earlier = current.critique;
+  const revisions = earlier?.revisions ?? 0;
+  const critiques = [...(earlier?.critiques ?? []), critique.data];
+  if (critiques.length > PLAN_CRITIC_REVISIONS_MAX + 1) throw new WorkflowTransitionError("the plan critique is invalid");
+  const sendBack = critique.data.verdict === "revise" && critique.data.points.some((point) => point.severity === "blocking") && revisions < PLAN_CRITIC_REVISIONS_MAX;
+  const kept: WorkflowCritique = {
+    status: "done", critiques, revisions: sendBack ? revisions + 1 : revisions,
+    ...(input.sameModelAsPlanner === true ? { sameModelAsPlanner: true as const } : {}),
+  };
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, stage: sendBack ? "PLAN" : "PLAN_REVIEW", state: sendBack ? "READY" : "WAITING", critique: kept, updatedAt: input.now,
+  });
+}
+
+/**
+ * The plan check ended with no critique to add: it stopped at a spending limit (`stopped_at_limit`, `limit` says which), or it could not run or give an answer (`done`, so the plan is shown
+ * as it was checked so far, which may be not at all). The plan goes to the person; whatever was critiqued before is kept. A check is advice, so it never holds a plan back. It may be closed
+ * before it started (`READY`: its start was given up) as well as while it runs.
+ */
+export function closePlanCritique(
+  currentInput: unknown,
+  input: { expectedRevision: number; status: WorkflowCritique["status"]; limit?: "planning" | "other"; sameModelAsPlanner?: true; now: string },
+): WorkflowSnapshot {
+  const current = runningPlanCheck(currentInput, input.expectedRevision, ["RUNNING", "READY"]);
+  const earlier = current.critique;
+  const kept: WorkflowCritique = {
+    status: input.status, critiques: earlier?.critiques ?? [], revisions: earlier?.revisions ?? 0,
+    ...(input.limit === undefined ? {} : { limit: input.limit }),
+    ...(input.sameModelAsPlanner === true || earlier?.sameModelAsPlanner === true ? { sameModelAsPlanner: true as const } : {}),
+  };
+  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, stage: "PLAN_REVIEW", state: "WAITING", critique: kept, updatedAt: input.now });
+}
+
+/**
+ * The one revision a blocking point asked for could not be paid for (the planning budget ran out as it ran): the plan goes to the person as it was, with the critic's points and the
+ * word that it was not revised. Nothing is paused and no money is asked for, because no person asked for the revision.
+ */
+export function skipPlanRevision(currentInput: unknown, input: { expectedRevision: number; limit: "planning" | "other"; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.revision !== input.expectedRevision) throw new WorkflowTransitionError("workflow revision is stale");
+  const critique = current.critique;
+  if (current.stage !== "PLAN" || current.state !== "RUNNING" || critique === undefined || critique.revisions < 1 || critique.critiques.length === 0) {
+    throw new WorkflowTransitionError("the workflow is not revising a plan after its check");
+  }
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, stage: "PLAN_REVIEW", state: "WAITING", critique: { ...critique, notRevised: true, limit: input.limit }, updatedAt: input.now,
+  });
 }
 
 /** Blocks the current step with `reason`; `regressedChecks` names the tests a review-only rerun found regressed. */
@@ -1788,6 +2197,8 @@ export function decideWorkflow(
     authority?: WorkflowOwnerAuthority;
     /** Digest of the graph loaded from the current coding-plan artifact, when present. */
     workBreakdownDigest?: string;
+    /** The current plan's `noChangeNeeded`, as the broker read it from the checked document (with the plan's title as the restatement); needed to close the plan as answered. */
+    noChangeNeeded?: NoChangeNeeded & { restatement: string };
   },
 ): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
@@ -1815,7 +2226,8 @@ export function decideWorkflow(
       && JSON.stringify(prior.selectedOptionalCheckIds ?? []) === JSON.stringify(selectedOptionalCheckIds)
       && sameAnswers(prior.answerOverrides ?? [], answerOverrides)
       && (prior.commentsIncluded ?? 0) === commentsIncluded
-      && prior.via === options.via;
+      && prior.via === options.via
+      && (prior.closedAs === "ANSWERED") === (request.data.closeAsAnswered === true);
     if (duplicate) return current;
     throw new WorkflowTransitionError("request ID was already used for a different workflow decision");
   }
@@ -1861,9 +2273,15 @@ export function decideWorkflow(
     ...(answerOverrides.length === 0 ? {} : { answerOverrides }),
     ...(commentsIncluded === 0 ? {} : { commentsIncluded }),
     ...(options.via === undefined ? {} : { via: options.via }),
+    ...(request.data.closeAsAnswered === true ? { closedAs: "ANSWERED" as const } : {}),
     at: options.now,
   });
   if (current.decisions.length >= 100) throw new WorkflowTransitionError("workflow decision history is full");
+  // "Close as answered": the plan said no change is needed, and the owner agrees. The task ends ANSWERED, keeping the plan's answer.
+  if (request.data.closeAsAnswered === true) {
+    if (current.definitionVersion !== "1.1.0" || options.noChangeNeeded === undefined) throw new WorkflowTransitionError("this plan does not say that no change is needed");
+    return answeredSnapshot(current, cleanedAnswer(options.noChangeNeeded), { id: `${currentPlan.id}-answer`.slice(0, 128), objectKey: currentPlan.objectKey, createdAt: options.now }, options.now, decision);
+  }
 
   const nextFullPhase = current.path === "FULL" && request.data.decision === "APPROVE"
     ? current.reviewPhase === "REQUIREMENTS" ? "DESIGN" as const
@@ -1878,8 +2296,11 @@ export function decideWorkflow(
     : request.data.decision === "REQUEST_CHANGES" ? "CHANGES_REQUESTED"
       : request.data.decision === "REJECT" ? "REJECTED"
         : request.data.decision === "SKIP" ? "SKIPPED" : undefined;
+  // Changes the person asks for make a new plan, which is checked afresh: the critique of the plan they sent back is dropped (the approved plan's stays for the record).
+  const { critique: _sentBackCritique, ...withoutCritique } = current;
+  void _sentBackCritique;
   return WorkflowSnapshotSchema.parse({
-    ...current,
+    ...(request.data.decision === "REQUEST_CHANGES" ? withoutCritique : current),
     revision: current.revision + 1,
     stage: nextStage,
     state: request.data.decision === "REJECT" ? "COMPLETE" : "READY",

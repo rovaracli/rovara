@@ -50,6 +50,11 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks.ts", "authorizeTaskAction", "caller-actor", "taskOwnerKey()"],
   // the session actor of a stop or retry (Plan 5 Task 13): a person's actor id on a task that is not theirs; it decides nothing about who owns it
   ["aws/developer-tasks.ts", "sessionActorAccess", "caller-actor", "taskOwnerKey()"],
+  // Plan 6 Task 5: a person's answers to Understand's questions are recorded under their actor id on the task (the route checked that they may answer); it decides nothing about who owns the task
+  ["aws/developer-tasks.ts", "answerIntentFromReply", "caller-actor", "taskOwnerKey()"],
+  ["rovara-code/questions.ts", "answerIntentOnSession", "caller-actor", "taskOwnerKey()"],
+  // Plan 6 Task 13: the object prefix of the task's own diff artifact (`ownArtifactKey`): the task's principal, never changes
+  ["aws/developer-tasks.ts", "candidateChangedFiles", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "getWorkflowFeedbackReview", "principal", ".ownerKey*2"],
   ["aws/developer-tasks.ts", "submitWorkflowFeedbackDecision", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "ownArtifactKey", "principal", ".ownerKey"],
@@ -102,6 +107,8 @@ const ROWS: readonly Row[] = [
   ["aws/broker.ts", "processGithubWorkflowEvent>reviewedComments", "principal", ".ownerKey"],
   ["aws/broker.ts", "processGithubWorkflowEvent>persistBundle", "principal", ".ownerKey"],
   ["aws/broker.ts", "completedWorkflowItems", "principal", ".ownerKey"],
+  // Plan 6 Task 4: an Understand that chose the Full path is admitted as a Full start is, against the budget of whoever pays for the task (the recorded payer, else the creator; a test run's starter): money, read as `paymentOfTask` reads it
+  ["aws/broker.ts", "completedWorkflowItems", "money", ".developerId*2", ".startedBy"],
   ["aws/broker.ts", "storePlanAnswer", "principal", ".ownerKey"],
   ["aws/activity-index.ts", "contextOf", "history", ".developerName"],
   ["aws/activity-index.ts", "contextOf", "principal", ".ownerKey"],

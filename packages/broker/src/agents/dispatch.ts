@@ -30,11 +30,14 @@ import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDe
 import type { TaskAgentRef } from "./roster.js";
 
 /** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
-export type DispatchMode = "PLAN" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW";
+export type DispatchMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT";
 
-const KIND_OF_MODE: Record<DispatchMode, CodingStepKind> = { PLAN: "plan", IMPLEMENT: "build", REVIEW: "review", CHECKS: "check", FEEDBACK_REVIEW: "pull_request" };
+// Understand is not a recipe step: it runs with the plan step's model and settings (so a recipe cannot remove the question-asking, and no model is chosen that the plan step could not run).
+// That is everything of the plan step's: its model and fallback, thinking level, time limit, step budget, instruction layers, connector tools and skills. A change to the plan step in a recipe changes Understand too, knowingly.
+// SETUP_DRAFT (Rovara Code, Task 10) is a read-only look at the repositories, so it runs on the plan step's model too: the same allowed-model checks as planning.
+const KIND_OF_MODE: Record<DispatchMode, CodingStepKind> = { UNDERSTAND: "plan", PLAN: "plan", SETUP_DRAFT: "plan", PLAN_CRITIQUE: "plan_critic", IMPLEMENT: "build", REVIEW: "review", CHECKS: "check", FEEDBACK_REVIEW: "pull_request" };
 /** What a step is called in a refusal when the recipe has no step of that kind (a program that leaves out its plan still gets the engine's planning pass). */
-const KIND_LABEL: Record<CodingStepKind, string> = { plan: "Plan", build: "Build", check: "Check", review: "Review", pull_request: "Pull request" };
+const KIND_LABEL: Record<CodingStepKind, string> = { plan: "Plan", plan_critic: "Plan check", build: "Build", check: "Check", review: "Review", pull_request: "Pull request" };
 
 /**
  * The recipe step an operation is. With a program, the step the operation names (`programStepId`); without one, or when it names a step of

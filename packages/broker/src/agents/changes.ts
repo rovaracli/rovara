@@ -6,6 +6,7 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   EMPTY_RECIPE,
+  ROVARA_CODE_V2_FOR_NEW_ORGS,
   agentXError,
   atLeast,
   canonicalJson,
@@ -139,7 +140,7 @@ export async function versionSafety(
 ): Promise<{ current: number | undefined; safety: VersionSafety }> {
   const builtin = agent === undefined;
   // Read only: a version list must not make the org's settings for a built-in (the start does, `ensureBuiltinSettings`, before it asks).
-  const current = builtin ? (await deps.store.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId) : agent.currentVersion;
+  const current = builtin ? (await deps.store.getBuiltinSettings(orgId, agentId))?.pinnedVersion ?? deps.store.builtinDefaultPin(agentId) : agent.currentVersion;
   if (current === undefined || version === current) return { current, safety: { kind: "current" } };
   const target = builtin ? deps.store.builtinRecipe(agentId, version) : await resolveRecipe(deps, orgId, agentId, version);
   let now: ResolvedRecipe;
@@ -220,6 +221,8 @@ export async function adoptBuiltin(
   const pinned = await deps.store.pinnedBuiltinVersion(caller.orgId, agentId);
   const target = deps.store.builtinRecipe(agentId, input.version);
   if (input.version === pinned) return { applied: true, value: { pinnedVersion: pinned, changes: [] } };
+  // Plan 6 Task 3: a release beyond the one new orgs start on (Rovara Code version 2) can't be adopted until it is available, so no org reaches it by hand before it works.
+  if (input.version > deps.store.builtinDefaultPin(agentId) && !(deps.rovaraCodeV2Live ?? ROVARA_CODE_V2_FOR_NEW_ORGS)) throw agentXError("CONFIG_INVALID", "Version 2 of Rovara Code is not available yet.");
   const current = deps.store.builtinRecipe(agentId, pinned);
   const changes = lessSafeChanges(current, target);
   if (changes.length === 0) {

@@ -40,8 +40,8 @@ describe("built-in agents", () => {
       expect(agent.description.length, id).toBeGreaterThan(0);
       expect(agent.versions.map((entry) => entry.version), id).toEqual(agent.versions.map((_, index) => index + 1));
       expect(currentBuiltinVersion(id), id).toBe(agent.versions.length);
-      // Plan 4 Task 27 added version 2 of the five templates (templates-full.test.ts); Rovara Code has one.
-      expect(currentBuiltinVersion(id), id).toBe(id === "rovara-code" ? 1 : 2);
+      // Plan 4 Task 27 added version 2 of the five templates (templates-full.test.ts); Plan 6 Task 2 added Rovara Code's version 2 (rovara-code-v2.test.ts).
+      expect(currentBuiltinVersion(id), id).toBe(2);
     }
   });
 
@@ -74,7 +74,7 @@ describe("built-in agents", () => {
   });
 
   it("answers NOT_FOUND for a version that does not exist", () => {
-    for (const version of [0, 2, -1, 1.5]) {
+    for (const version of [0, 3, -1, 1.5]) {
       expect(() => builtinRecipe("rovara-code", version), String(version)).toThrow(/^NOT_FOUND: /);
     }
     expect(() => builtinRecipe("nope" as BuiltinAgentId, 1)).toThrow(/^NOT_FOUND: /);

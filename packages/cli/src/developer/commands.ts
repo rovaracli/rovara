@@ -1,5 +1,5 @@
 // agentx whoami and agentx logout (FR-011).
-import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectArchiveResponseSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProject, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, TASK_VIEW_HEADER, TASK_VIEW_VERSION, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectArchiveResponseSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProject, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -34,7 +34,7 @@ export async function developerRequest<T>(
   try {
     response = await deps.fetch(`${session.entry.url}${path}`, {
       method: options.method ?? "GET",
-      headers: { authorization: `Bearer ${session.accessToken}`, ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { authorization: `Bearer ${session.accessToken}`, [TASK_VIEW_HEADER]: TASK_VIEW_VERSION, ...(options.body === undefined ? {} : { "content-type": "application/json" }) },
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
       signal: AbortSignal.timeout(20_000),
     });

@@ -799,3 +799,54 @@ export function personRateKey(orgId: OrgId, developerId: string, kind: "local_re
 export function deviceCommandKey(orgId: OrgId, deviceId: DeviceId, seq: number): OrgKey {
   return { pk: devicePk(orgId, deviceId), sk: `COMMAND#${paddedCounter(seq, "a command number")}` };
 }
+
+// ---- Rovara Code (Plan 6 Task 1)
+
+/** A project's code settings (self-approval, merge method, reviewers). */
+export function codeSettingsKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: orgScoped(orgId, `CODE_SETTINGS#${keyPart(project, "a project name")}`), sk: "META" };
+}
+
+/** How long recent tasks of one project took, per path (`QUICK` or `FULL`), for the plan's time estimate. */
+export function durationHistoryKey(orgId: OrgId, project: string, path: "QUICK" | "FULL"): OrgKey {
+  return { pk: orgScoped(orgId, `DURATION_HISTORY#${keyPart(project, "a project name")}`), sk: path };
+}
+
+/** Which member of the org a GitHub account (by its numeric id) is linked to, for telling an approval from a requester's. */
+export function githubMemberKey(orgId: OrgId, githubUserId: string): OrgKey {
+  return { pk: orgScoped(orgId, `GITHUB_MEMBER#${keyPart(githubUserId, "a GitHub user id")}`), sk: "META" };
+}
+
+/** The GitHub account a member of the org linked, the other way round from `githubMemberKey`. */
+export function memberGithubKey(orgId: OrgId, developerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `MEMBER_GITHUB#${keyPart(developerId, "a developer id")}`), sk: "META" };
+}
+
+/** The setup draft Rovara wrote for a project, waiting for a maintainer. */
+export function setupDraftKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: orgScoped(orgId, `SETUP_DRAFT#${keyPart(project, "a project name")}`), sk: "META" };
+}
+
+/** One person's discarded work, kept 7 days. */
+export function trashKey(orgId: OrgId, developerId: string, taskId: string): OrgKey {
+  return { pk: orgScoped(orgId, `TRASH#${keyPart(developerId, "a developer id")}`), sk: keyPart(taskId, "a task id") };
+}
+
+/** Which task a pull request head belongs to, so a check or status event that carries only a commit finds its task. */
+export function prHeadKey(orgId: OrgId, repositoryId: string, headSha: string): OrgKey {
+  return { pk: orgScoped(orgId, `PR_HEAD#${keyPart(repositoryId, "a repository id")}`), sk: keyPart(headSha, "a commit") };
+}
+
+/**
+ * Items in the task's own partition (`DEVTASK#<taskId>`, a named exception to org scoping like the task itself): the items carry `orgId` and a reader
+ * re-checks it. One tracking item per pull request of the task.
+ */
+export function mergeTrackingKey(taskId: string, repositoryId: string, number: number): { pk: string; sk: string } {
+  if (!Number.isInteger(number) || number <= 0) throw new Error("a pull request number is a positive whole number");
+  return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `MERGE_TRACKING#${keyPart(repositoryId, "a repository id")}#${String(number)}` };
+}
+
+/** One milestone of a task: the `n`th of its kind (`n` from 0; six digits keep them in order). */
+export function codeMilestoneKey(taskId: string, kind: string, n: number): { pk: string; sk: string } {
+  return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `CODE_MILESTONE#${keyPart(kind, "a milestone kind")}#${paddedCounter(n, "a milestone number")}` };
+}

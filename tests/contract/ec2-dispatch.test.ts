@@ -407,6 +407,39 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
+    it("never sends a fix to an open pull request to a worker that does not list task.workflowFix: it is refused, not run as a first build, and the field is not dropped (Plan 6 Task 15)", async () => {
+      const record = taskRecord({ workflowMode: "IMPLEMENT", workflowFix: { source: "ci" } });
+      const base = ["task.workflowMode"];
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.workflowFix"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).workflowFix).toEqual({ source: "ci" });
+      // An ordinary build is delivered to either.
+      const build = taskRecord({ workflowMode: "IMPLEMENT" });
+      const plain = delivery({ workerFeatures: async () => base });
+      expect(await plain.deliver(build, build.invocation)).toBe("DELIVERED");
+    });
+
+    it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];
+      const record = taskRecord({ workflowMode: "REVIEW", workflowBase, workflowReviewRisk: true });
+      const base = ["task.workflowMode", "task.workflowReview", "task.workflowBase"];
+      const capable = delivery({ workerFeatures: async () => [...base, "task.workflowReviewRisk"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).workflowReviewRisk).toBe(true);
+      const older = delivery({ workerFeatures: async () => base });
+      expect(await older.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(older.post)).not.toHaveProperty("workflowReviewRisk");
+      expect(postedPayload(older.post).workflowBase).toEqual(workflowBase);
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)) as unknown)).toContainEqual(expect.objectContaining({
+        event: "dispatch.review_risk_omitted", reason: "worker-lacks-feature", operationId: record.operationId,
+      }));
+      log.mockRestore();
+    });
+
     it("tells a planning run its document kind and structured format only on a worker that lists them; an older worker plans without them", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const record = taskRecord({ workflowMode: "PLAN", workflowPhase: "DESIGN", planFormat: "structured" });
@@ -923,6 +956,21 @@ describe("ec2-ebs delivery", () => {
       expect(postedPayload(post).workflowMode).toBe("PLAN");
     });
 
+    it("sends the Understand and plan-critic modes only to a worker that lists their feature, and never drops the mode (Rovara Code v2)", async () => {
+      for (const [workflowMode, feature] of [["UNDERSTAND", "task.workflowUnderstand"], ["PLAN_CRITIQUE", "task.workflowPlanCritique"]] as const) {
+        const record = taskRecord({ workflowMode });
+        const older = delivery({ workerFeatures: async () => ["task.workflowMode"] });
+        await expect(older.deliver(record, record.invocation)).rejects.toThrow(/needs a newer worker/);
+        expect(older.post).not.toHaveBeenCalled();
+        // The other new feature is not enough.
+        const other = delivery({ workerFeatures: async () => ["task.workflowMode", feature === "task.workflowUnderstand" ? "task.workflowPlanCritique" : "task.workflowUnderstand"] });
+        await expect(other.deliver(record, record.invocation)).rejects.toThrow(/needs a newer worker/);
+        const capable = delivery({ workerFeatures: async () => ["task.workflowMode", feature] });
+        expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+        expect(postedPayload(capable.post).workflowMode).toBe(workflowMode);
+      }
+    });
+
     it("refuses workflow dispatch when a worker cannot prove it enforces the requested tool boundary", async () => {
       const { deliver, post } = delivery({ workerFeatures: async () => [] });
       const record = taskRecord({ workflowMode: "PLAN" });
@@ -1149,6 +1197,27 @@ describe("ec2-ebs delivery", () => {
       const accepted = delivery({ workerFeatures: async () => ["task.workflowPullRequestUpdate"] });
       expect(await accepted.deliver(fix, fix.invocation)).toBe("DELIVERED");
       expect(postedPayload(accepted.post)).toMatchObject({ workflowCandidateTreeSha: "b".repeat(40), workflowBaseCommit: "e".repeat(40) });
+    });
+
+    it("sends a reviewed fix's push without the name of the fix to a worker that does not list task.workflowFix: the push is the same, and its commit keeps the usual message (Plan 6 Task 15)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const record = recordFor();
+      const invocation = { ...record.invocation, kind: "maintain", payload: {
+        action: "append", project: { name: "demo", revision: 1, setup: [], readiness: [], orchestratorInstructions: "x",
+          repositories: [{ name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" }] },
+        repository: "demo", pullRequestNumber: 42, headBranch: `agentx/${randomUUID()}`, baseBranch: "main", expectedHeadCommit: "d".repeat(40), repositoryGrant: "g",
+        workflowCandidateTreeSha: "b".repeat(40), workflowBaseCommit: "e".repeat(40), workflowFix: { source: "ci" },
+      } } as WorkerInvocation;
+      const fix = { ...record, invocation };
+      const older = delivery({ workerFeatures: async () => ["task.workflowPullRequestUpdate"] });
+      expect(await older.deliver(fix, fix.invocation)).toBe("DELIVERED");
+      expect(postedPayload(older.post)).toMatchObject({ workflowCandidateTreeSha: "b".repeat(40) });
+      expect(postedPayload(older.post)).not.toHaveProperty("workflowFix");
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)) as unknown)).toContainEqual(expect.objectContaining({ event: "dispatch.push_fix_omitted", operationId: fix.operationId }));
+      const newer = delivery({ workerFeatures: async () => ["task.workflowPullRequestUpdate", "task.workflowFix"] });
+      expect(await newer.deliver(fix, fix.invocation)).toBe("DELIVERED");
+      expect(postedPayload(newer.post).workflowFix).toEqual({ source: "ci" });
+      log.mockRestore();
     });
 
     it("refuses a publication carrying the task's pinned base before POST unless the worker advertises it, and never drops it", async () => {

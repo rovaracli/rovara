@@ -256,7 +256,7 @@ async function admissionNeedsModelFreeLimits(invocation: WorkerInvocation, read:
  * "publish.reportChecks". A review's workflowReviewChecks goes only to one whose /ping lists "task.workflowReviewChecks";
  * an older one reviews without being told which checks ran, and its workflowReviewPlan goes only to one whose /ping lists
  * "task.workflowReviewPlan"; an older one reviews without seeing the approved plan, and its workflowReviewFeedback goes only to one whose
- * /ping lists "task.workflowReviewFeedback"; an older one judges a feedback fix against the plan alone. The retry note goes only to one whose /ping lists "task.workflowReviewNote"; older workers review without it. A planning run's workflowPhase and planFormat go only to one whose /ping lists
+ * /ping lists "task.workflowReviewFeedback"; an older one judges a feedback fix against the plan alone. The retry note goes only to one whose /ping lists "task.workflowReviewNote"; older workers review without it. A Rovara Code version 2 review's workflowReviewRisk (the code reviewer states a risk level) goes only to one whose /ping lists "task.workflowReviewRisk"; an older one reviews as before, and the risk comes from the paths, the size and the checks alone. A planning run's workflowPhase and planFormat go only to one whose /ping lists
  * "task.structuredPlans"; an older one plans without checking the answer's format. A planning run's workflowE2EPlanVersion (the schema-v2 application plan)
  * goes only to one whose /ping lists "task.workflowE2EApplicationPlan"; an older one is sent the portable-only prompt, and its review plan without a v2 intent. A planning prompt asks for anchor lines on
  * code citations only on one whose /ping lists "task.codeAnchors"; for an older one that text is left out of the prompt. The invoke token signs the operation, not the payload, so
@@ -314,7 +314,8 @@ async function forWorkerFeatures(
   // Its read-only form (clone and checkout, nothing of the repository run) is the same: a worker that does not know the field would run the setup.
   const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesCheckout) return invocation;
+  const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesCheckout) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -331,6 +332,17 @@ async function forWorkerFeatures(
   }
   if (invocation.kind === "task" && invocation.payload.workflowMode === "CHECKS" && !features.includes("task.workflowChecks")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "verification retry requires a compatible worker that runs checks without code-editing tools");
+  }
+  // Rovara Code v2's Understand and plan-critic runs: a worker that does not list the feature would fail the mode at its own parse, so the mode is never sent to it.
+  if (invocation.kind === "task" && invocation.payload.workflowMode === "UNDERSTAND" && !features.includes("task.workflowUnderstand")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  if (invocation.kind === "task" && invocation.payload.workflowMode === "PLAN_CRITIQUE" && !features.includes("task.workflowPlanCritique")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Rovara drafts a project's setup (Task 10): an older worker would fail the mode at its own parse, so the mode is never sent to it.
+  if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !features.includes("task.setupDraft")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesFeedbackReview && !features.includes("task.workflowFeedbackReview")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "PR feedback critic requires a compatible worker");
@@ -350,6 +362,10 @@ async function forWorkerFeatures(
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // A fix to a pull request that is already open (Plan 6 Task 15) must not be run by a worker that would take it for a first build, so the field is never dropped.
+  if (carriesFix && !features.includes("task.workflowFix")) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // A review step that asks for fewer than both reviews must not be run by a worker that would run them all, so the field is never dropped.
@@ -513,8 +529,28 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
-  const anchored = withoutCodeAnchors(withNote, features);
-  if (anchored !== withNote) {
+  const withRisk = withoutReviewRisk(withNote, features);
+  if (withRisk !== withNote) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.review_risk_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
+  const withPush = withoutPushFix(withRisk, features);
+  if (withPush !== withRisk) {
+    console.log(JSON.stringify({
+      component: "dispatcher",
+      event: "dispatch.push_fix_omitted",
+      reason,
+      operationId: invocation.operationId,
+      workspaceId: invocation.workspaceId,
+    }));
+  }
+  const anchored = withoutCodeAnchors(withPush, features);
+  if (anchored !== withPush) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.code_anchors_omitted",
@@ -636,6 +672,25 @@ function withoutReviewNote(invocation: WorkerInvocation, features: readonly stri
   if (invocation.kind !== "task" || invocation.payload.workflowReviewNote === undefined || features.includes("task.workflowReviewNote")) return invocation;
   const payload = { ...invocation.payload };
   delete payload.workflowReviewNote;
+  return { ...invocation, payload };
+}
+
+/** A push of a fix without the name of the fix it is, for a worker that does not parse it: the push is the same, and its commit keeps the usual message. */
+function withoutPushFix(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "maintain" || invocation.payload.workflowFix === undefined || features.includes("task.workflowFix")) return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.workflowFix;
+  return { ...invocation, payload };
+}
+
+/**
+ * A review without the request for a risk level, for a worker that does not parse it. The level is one more input of the risk shown on the pull request; such a worker reviews the same change
+ * as before, and the risk comes from the paths, the size and the checks alone.
+ */
+function withoutReviewRisk(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || invocation.payload.workflowReviewRisk === undefined || features.includes("task.workflowReviewRisk")) return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.workflowReviewRisk;
   return { ...invocation, payload };
 }
 

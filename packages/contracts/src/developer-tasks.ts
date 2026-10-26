@@ -3,10 +3,12 @@ import { DeveloperShareModeSchema } from "./project.js";
 import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES } from "./agent-run.js";
 import { StepIdSchema } from "./agent-recipe.js";
 import { ApprovalIdSchema, AgentIdSchema, SpendRequestIdSchema } from "./agent.js";
-import { WorkflowSnapshotViewSchema, WORKFLOW_PLAN_MAX_BYTES } from "./task-workflow.js";
+import { WorkflowSnapshotViewSchema, WORKFLOW_PLAN_MAX_BYTES, WorkflowSnapshotReaderShape, type WorkflowSnapshotReader } from "./task-workflow.js";
 import { E2ESharedViewSchema } from "./e2e-view.js";
 import { RunEstimateSchema } from "./spend.js";
 import { SessionIdSchema } from "./agent-sessions.js";
+import { MergeTrackingItemSchema, VerificationReportSchema } from "./rovara-code.js";
+import { readsAsUnknown } from "./forward-reader-unknown.js";
 
 export const DEVELOPER_TASK_SUMMARY_MAX = 4_000;
 
@@ -136,4 +138,42 @@ export const DeveloperTaskViewSchema = z.object({
    * minutes: `askAgainAfter` is when). Absent unless the plan is blocked on its run limit.
    */
   runLimit: z.object({ limitUsd: z.number().nonnegative(), spendRequestId: SpendRequestIdSchema.optional(), canAskAgain: z.boolean(), askAgainAfter: z.string().max(40).optional() }).strict().optional(),
+  /**
+   * Plan 6, Task 12 (Rovara Code version 2 only; the broker leaves it out of a version 1 task's view, and out of a client that does not send `x-agentx-task-view: 2`):
+   * what passed, what failed, what could not be checked and which tests the change added, for the code the checks ran on. Worker output, redacted and bounded; plain
+   * text that every reader escapes for its own markup.
+   */
+  verificationReport: VerificationReportSchema.optional(),
+  /** Plan 6, Task 12 (version 2 only, like `verificationReport`): the review round whose problems are being fixed, with the sentence the thread says. */
+  reviewRound: z.object({ round: z.number().int().min(1).max(100), max: z.number().int().min(1).max(5), message: z.string().min(1).max(200) }).strict().optional(),
+  /**
+   * Plan 6, Task 14 (version 2 only, full reads only, and only for a client that sends `x-agentx-task-view: 2`): what GitHub says about each pull request of the task,
+   * as merge tracking last read it. The merge claim is the broker's own and is never part of the view.
+   */
+  mergeTracking: z.array(MergeTrackingItemSchema.omit({ mergeClaim: true })).max(32).optional(),
 });
+
+/**
+ * The task as a client that sends `x-agentx-task-view: 2` reads it: the same view, with the workflow read tolerantly (`WorkflowSnapshotReaderShape`), so a stage or
+ * outcome a newer control plane added reads as "unknown" instead of failing the whole answer. The type says what the reader does: `stage` and `outcome` may be
+ * "unknown", so a caller has to decide what to do with a stage it does not know.
+ */
+export type DeveloperTaskClientView = Omit<z.infer<typeof DeveloperTaskViewSchema>, "workflow"> & {
+  workflow?: (WorkflowSnapshotReader & { planContent?: string | undefined; workBreakdownDigest?: string | undefined }) | undefined;
+};
+export const DeveloperTaskClientViewSchema = DeveloperTaskViewSchema.extend({
+  workflow: z.looseObject({
+    ...WorkflowSnapshotReaderShape,
+    planContent: z.string().max(WORKFLOW_PLAN_MAX_BYTES).optional(),
+    workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  }).optional(),
+}) as unknown as z.ZodType<DeveloperTaskClientView>;
+/**
+ * The task as the strict view, or undefined when the control plane named a stage, outcome or other value this build does not know (a newer server), which the
+ * reader gave as "unknown". The reader differs from the strict view only by those markers and by keeping fields it does not know, so a task with no marker
+ * is the strict view. Code that decides what to do from a stage reads the task through this, and tells the person when it is undefined. Only the places the
+ * reader can write the marker count (`readsAsUnknown` walks the strict schema), so free text that is the word "unknown" does not.
+ */
+export function knownTaskView(view: DeveloperTaskClientView): z.infer<typeof DeveloperTaskViewSchema> | undefined {
+  return readsAsUnknown(DeveloperTaskViewSchema.shape.workflow, view.workflow) ? undefined : (view as z.infer<typeof DeveloperTaskViewSchema>);
+}

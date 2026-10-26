@@ -1,5 +1,6 @@
 // The session routes (Plan 5 Task 5): `/v1/app/sessions*` for the app, CLI and MCP, only. Shared `/s/` links belong to the web shell. Each maps to a function
 // that checks the caller's level first; the reads are in read.ts and the shares in shares.ts. A session the caller can't view is `NOT_FOUND` everywhere.
+import { sessionResponseForClient, taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { LIVE_PAGE_MAX, SessionIdSchema, agentXError, type AgentSessionRecord, type OrgId, type OrgRole, type SessionId } from "@agentx/contracts";
 import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
 import { listApprovalsFor, mayDecideApproval, shownText } from "../agents/approvals.js";
@@ -22,6 +23,8 @@ import type { ChainSteerReads } from "./steer.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
 import { handoffSession, type HandoffRuntime } from "./handoff.js";
 import { retrySession } from "./retry.js";
+import { answerIntentOnSession } from "../rovara-code/questions.js";
+import { changeAnywayOnSession } from "../rovara-code/change-anyway.js";
 import { stopSession } from "./stop.js";
 import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
 import { readChanges } from "../realtime/changes.js";
@@ -48,7 +51,7 @@ export interface SessionRouteDependencies extends SessionReadDependencies, Pick<
 /** The caller of a route. */
 export type SessionRouteCaller = DeveloperCaller;
 
-const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|handoff))?)?$/;
+const PATH = /^\/v1\/app\/sessions(?:\/([^/]+)(?:\/(shares)(?:\/([^/]+))?|\/sections\/([0-9]{1,6})\/task|\/(events)|\/(follow|presence)|\/(messages)(?:\/([^/]+))?|\/(agent)|\/(take-over)|\/(stop|retry|handoff|answers|change-anyway))?)?$/;
 const LOCAL_REGISTER_PATH = "/v1/app/sessions/local";
 const LOCAL_UPDATE_PATH = /^\/v1\/app\/sessions\/([^/]+)\/local\/updates$/;
 const CHANGES_PATH = "/v1/app/changes";
@@ -135,7 +138,7 @@ function liveQueryOf(url: URL): LiveQuery {
 /**
  * `routeAgentSessionRequest(deps, caller, request, url)`: `GET /v1/app/sessions` (the lists), `GET /v1/app/sessions/{id}`, `GET`, `PUT` and `DELETE`
  * `…/shares[/{principalKey}]` and `GET …/sections/{seq}/task` and `GET …/events?after=`; `POST` and `DELETE …/follow` and `POST …/presence` (Task 9); `GET` and `POST …/messages` and `PATCH` and
- * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `POST …/take-over` (Task 12b: ask to take the session over, answered `202` with the link to confirm it); `POST …/stop` and `POST …/retry` (Task 13); `POST …/handoff` (Task 19: move the session between a Mac and the cloud); `GET /v1/app/changes?since=` (the caller's own change notices) and
+ * `DELETE …/messages/{messageId}` (Task 10); `POST …/agent` (Task 10c: make an agent from the session); `POST …/take-over` (Task 12b: ask to take the session over, answered `202` with the link to confirm it); `POST …/stop` and `POST …/retry` (Task 13); `POST …/handoff` (Task 19: move the session between a Mac and the cloud); `POST …/answers` (Rovara Code: people answer Understand's questions, needs "can use"); `POST …/change-anyway` (Rovara Code: make the change after an Answered task); `GET /v1/app/changes?since=` (the caller's own change notices) and
  * `POST /v1/app/realtime/token`; `GET /v1/app/home` and `POST /v1/app/home/cards/{cardId}/dismiss` (Task 15: Home's ranked cards); `GET /v1/app/live?filter=&project=&cursor=&limit=` (Task 14: the Live wall's tiles). Any other path or method is `NOT_FOUND`.
  */
 export async function routeAgentSessionRequest(deps: SessionRouteDependencies, caller: SessionRouteCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
@@ -240,6 +243,9 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
       // Task 19: move the session between a Mac and the cloud (its owner only); the runtime is Plan 6's, the repositories are Plan 3's own reader.
       return handoffSession({ ...read, handoff: deps.handoff, projectRepositories: approvals?.projectRepositories }, caller, sessionId, jsonBody(request));
     }
+    if (control === "answers") return answerIntentOnSession(read, caller, sessionId, jsonBody(request));
+    // Rovara Code: a task that ended Answered, followed by a new task that makes the change anyway (202, like the app's start).
+    if (control === "change-anyway") return new StatusReply(202, await changeAnywayOnSession(read, caller, sessionId, jsonBody(request)));
     return control === "stop" ? stopSession(read, caller, sessionId, jsonBody(request)) : retrySession(read, caller, sessionId, jsonBody(request));
   }
   if (messages !== undefined) {
@@ -272,11 +278,11 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   if (shares === undefined && rawSeq === undefined) {
     if (method !== "GET") throw notFound();
-    return { session: await sessionView(read, caller, sessionId) };
+    return sessionResponseForClient({ session: await sessionView(read, caller, sessionId) }, request.headers);
   }
   if (rawSeq !== undefined) {
     if (method !== "GET") throw notFound();
-    return sessionStepTask(read, caller, sessionId, Number(rawSeq));
+    return taskResponseForClient(await sessionStepTask(read, caller, sessionId, Number(rawSeq)), request.headers);
   }
   if (rawKey === undefined) {
     if (method === "GET") return listSessionShares(read, caller, sessionId);

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { ChainRunIdSchema, TriggerIdSchema } from "./chains.js";
+import { TriggerIdSchema } from "./chains.js";
+import { ChainRunIdSchema, SessionIdSchema, SESSION_ID_PATTERN, type SessionId } from "./browser-ids.js";
 import { AgentIdSchema } from "./agent.js";
 
 /**
@@ -84,10 +85,8 @@ export const PersonNameSchema = z
 
 export const CountSchema = z.number().int().min(0);
 
-export const SESSION_ID_PATTERN = /^ses_[0-9a-z]{20}$/;
-
-/** A session id: `ses_` for a task or local session, the chain run's own id for a chain session (Plan 4 pins `sessionId = ChainRunId`). */
-export const SessionIdSchema = z.union([z.string().regex(SESSION_ID_PATTERN), ChainRunIdSchema]);
+// SessionIdSchema and SESSION_ID_PATTERN are defined in browser-ids.ts (browser-safe contracts import them there) and re-exported here.
+export { SessionIdSchema, SESSION_ID_PATTERN };
 
 export const DeviceIdSchema = z.string().regex(/^dvc_[0-9a-z]{20}$/);
 
@@ -95,7 +94,7 @@ export const SessionMessageIdSchema = z.string().regex(/^msg_[0-9a-z]{20}$/);
 
 export const SessionEventIdSchema = z.string().regex(/^evt_[0-9a-f]{24}$/);
 
-export type SessionId = z.infer<typeof SessionIdSchema>;
+export type { SessionId };
 
 // ---- kinds, statuses, modes, tools, levels
 

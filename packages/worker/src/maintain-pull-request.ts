@@ -136,7 +136,7 @@ export async function maintainPullRequest(options: {
     commit = (await git(repositoryPath, [
       "-c", `user.name=${AGENTX_GIT_NAME}`, "-c", `user.email=${AGENTX_GIT_EMAIL}`,
       "commit-tree", workspaceTree, "-p", remoteHead,
-      "-m", reviewedTree === undefined ? `AgentX: update PR #${invocation.payload.pullRequestNumber}` : "AgentX: address PR feedback",
+      "-m", reviewedTree === undefined ? `AgentX: update PR #${invocation.payload.pullRequestNumber}` : reviewedFixMessage(invocation.payload.workflowFix?.source),
     ])).trim();
     await git(repositoryPath, ["checkout", "--force", "-B", invocation.payload.headBranch, commit]);
     const codeBuildChecks = await validateCandidate(
@@ -377,4 +377,9 @@ function assertContained(rootPath: string, candidate: string): void {
 function sanitize(value: string): string {
   // Redacted before it is cut to its last 16 KiB, where Git says what failed (#170).
   return storedCommandOutput(value.replace(/https:\/\/[^@\s/]+@/giu, "https://[redacted]@"), 16_384) || "Git command failed";
+}
+
+/** The message of a reviewed fix's commit: what the fix is for, when the broker says (Plan 6 Task 15), else the one PR feedback fixes always had. */
+function reviewedFixMessage(source: "ci" | "conflict" | "feedback" | undefined): string {
+  return source === "ci" ? "Rovara: fix failing CI" : source === "conflict" ? "Rovara: resolve conflict with the base branch" : "AgentX: address PR feedback";
 }

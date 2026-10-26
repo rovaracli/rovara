@@ -257,7 +257,9 @@ export function registerLoopCommands(program: Command, context: LoopCommandConte
             item.nativeImport.sourceBindingRef !== enrollmentResolution.enrollment.sourceBindingRef || item.nativeImport.proofDigest !== nativeEvidence.proofDigest)) {
           throw new Error("the existing route is bound to different native task proof; publication remains on hold");
         }
-        const workflowPath = DeveloperTaskResponseSchema.parse(rawTask).task.workflow?.path;
+        // A path a newer control plane named reads as "unknown", which is not a route this build can publish on.
+        const namedPath = DeveloperTaskResponseSchema.parse(rawTask).task.workflow?.path;
+        const workflowPath = namedPath === "QUICK" || namedPath === "FULL" ? namedPath : undefined;
         if (adopting && workflowPath === undefined) throw new Error("the native task does not identify a supported Quick or Full publication route");
         const routeItem: WorkItemState | undefined = adopting ? {
           version: 1, repo: found.repo, issue, loop: workflowPath!.toLowerCase(), step: "publish", startedBy: account,

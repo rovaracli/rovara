@@ -72,11 +72,20 @@ export const AgentXErrorCodeSchema = z.enum([
   "SESSION_REVISION_CONFLICT",
   "SESSION_ON_MAC",
   "LOCAL_AGENT_NOT_ALLOWED",
+  "INTENT_NOT_WAITING",
+  "MERGE_NOT_READY",
+  "TRASH_EXPIRED",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";
 
 export type AgentXErrorCode = z.infer<typeof AgentXErrorCodeSchema>;
+
+/** What INTENT_NOT_WAITING (409) says: answers arrived for a task that is not waiting for them. */
+export const INTENT_NOT_WAITING_MESSAGE = "This task isn't waiting for answers.";
+
+/** What TRASH_EXPIRED (410) says: discarded work past its 7 days. */
+export const TRASH_EXPIRED_MESSAGE = "This discarded work was removed after 7 days.";
 
 /** What LAST_OWNER (409) says: the organization's last owner may not step down, leave or be removed. */
 export const LAST_OWNER_MESSAGE = "An organization needs at least one owner. Make someone else an owner first.";
@@ -112,6 +121,7 @@ export function errorStatus(code: AgentXErrorCode): number {
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED" || code === "PROJECT_BUDGET_EXCEEDED" || code === "AGENT_BUDGET_EXCEEDED" || code === "TEST_ALLOWANCE_USED" || code === "CHAIN_BUDGET_EXCEEDED") return 402;
   if (code === "CONFIG_INVALID" || code === "AUDIT_RANGE_INVALID" || code === "AUDIT_REASON_REQUIRED" || code === "AUDIT_FILTER_TOO_WIDE") return 400;
   if (code === "TOO_MANY_REQUESTS") return 429;
+  if (code === "TRASH_EXPIRED") return 410;
   if (code === "RUNTIME_UNAVAILABLE" || code === "SLACK_UNAVAILABLE" || code === "MODEL_PROXY_UNAVAILABLE" || code === "AUDIT_UNAVAILABLE") return 503;
   return 409;
 }

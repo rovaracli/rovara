@@ -9,6 +9,7 @@ import { listVisibleAgents } from "../agents/access.js";
 // routes use. /v1/dev/* has no API Gateway authorizer (D17): the broker verifies the developer
 // access token itself, then checks the environment, the method and the sign-in session on every
 // request (R12, R13), so a revoked session stops at once.
+import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { clearOrgHooks } from "../triggers/hooks.js";
 import { deleteOrgTriggers } from "../triggers/lifecycle.js";
 import { randomUUID } from "node:crypto";
@@ -102,12 +103,13 @@ import {
   type TaskPeopleDisplayReadRequest,
   type TaskPeopleDisplayReadResponse,
   SESSION_PROJECT_BINDINGS_MAX,
+  workflowAnswer,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { releaseOrgModelSources } from "../model-sources/release.js";
 import { applyArchiveRequest, archiveOrgProjects, type ProjectArchiveDependencies } from "../org/project-archive.js";
-import { updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
+import { latestRevision, updateProjectSettings, type ProjectSettingsDependencies } from "../org/project-settings.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, requireNewWorkAllowed, type ProjectMetaItem } from "../developer/project-roles.js";
 import { createProjectMembers, listProjectMembers, removeProjectMember, setProjectMember, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { evaluateProjectAuthority } from "../developer/task-project-access.js";
@@ -135,7 +137,7 @@ import {
   createPageComment, decideOnPage, deletePageComment, editPageComment, getTaskDocumentView, getTaskFreshness, getTaskPageState, listPageComments, retryApplicationRoundOnPage, setPageSuggestion,
   confirmTaskPeopleProposal, getTaskPeopleCapabilities, getTaskPeopleForPage, getTaskPeopleProposal, getTaskPeopleProposalMetadata, getTaskPersonPresentationName,
   proposeTaskOwnershipForPage, proposeTaskPeopleRoleForPage,
-  CLOSED_TASK, cancelTask, cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
+  CLOSED_TASK, cancelTask, cancelTaskFor, getWorkflowFeedbackReview, loadOwnedTask, retryTaskWorkflowFor, routeDeveloperTaskRequest, startAlreadyMade, startTask, startTaskWorkflowUnderstandFromSystem, submitWorkflowFeedbackDecision, taskView, type DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
@@ -149,10 +151,14 @@ import { decidingOf, isAgentSessionRoute, routeAgentSessionRequest, type Session
 import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
 import type { HandoffRuntime } from "../agent-sessions/handoff.js";
 import { stopSession } from "../agent-sessions/stop.js";
+import { requireSessionLevel } from "../agent-sessions/access.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { clearOrgConnections, type OrgConnectionStore } from "../connections/store.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
+import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
+import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
+import { startCodeIntent } from "../rovara-code/intent.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion } from "../agents/run-version-gate.js";
 import { pausedTaskGate, requestForPausedTask, withdrawTaskSpendRequests } from "../spend/requests.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
@@ -220,6 +226,7 @@ export interface DeveloperRouteDependencies {
   workflowE2EPresentation?: DeveloperTaskRouteDependencies["workflowE2EPresentation"];
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
   sessionDiffFiles?: NonNullable<SessionRouteDependencies["diff"]>["files"] | undefined;
+  currentPullRequestHead?: DeveloperTaskRouteDependencies["currentPullRequestHead"];
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
   workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
   startWorkflowE2EBaseline?: DeveloperTaskRouteDependencies["startWorkflowE2EBaseline"];
@@ -1138,6 +1145,28 @@ async function startProjectSetupCheck(deps: DeveloperRouteDependencies, caller: 
   throw agentXError("WORKSPACE_BUSY", "AgentX could not start the setup check just now; try again with the same request id");
 }
 
+/** What the setup-draft routes (Plan 6 Task 10) need, from the developer API's dependencies and for one caller. */
+function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDependencies {
+  return {
+    documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now,
+    starter: agentRunStarterOf(deps),
+    projectFor: (who, rawName) => projectRoleForRoute(deps, who, rawName),
+    requireNewWork: (who, project, role) => requireNewWorkAllowed(deps, who.orgId, project, role, "task"),
+    latest: async (orgId, project) => {
+      const latest = await latestRevision({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
+      return latest === undefined ? undefined : { revision: latest.definition.revision, allowedDomains: latest.definition.network?.allowedDomains ?? [] };
+    },
+    updateSettings: (who, project, body) => putProjectSettings(deps, who, encodeURIComponent(project), body),
+    startSetupCheck: async (who, project, requestId) => { await startProjectSetupCheck(deps, who, encodeURIComponent(project), { requestId }); },
+    startPullRequest: async (who, request) => {
+      const started = await startCodeIntent(codeIntentDependenciesOf(deps, who), who, { requestId: request.requestId, project: request.project, input: { text: request.text }, path: "QUICK", source: "app" });
+      const taskId = (started.task as { taskId: string }).taskId;
+      return { taskId, ...(started.sessionId === undefined ? {} : { sessionId: started.sessionId }), ...(started.sessionUrl === undefined ? {} : { sessionUrl: started.sessionUrl }) };
+    },
+    readProject: (who, project) => getAppProject(deps, who, project),
+  };
+}
+
 /**
  * What reads and writes a project's people: the table, a developer's sign-in record (for `mergedInto`), and the two ways a Slack channel
  * gives access (a project the person reaches, and whether one project's channel gives it to them). Slack failing closes the channel route
@@ -1454,7 +1483,10 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
       };
     },
     startTask: async (caller, body, run) => {
-      const answer = await startTask(developerTaskRouteDependencies(deps, caller), caller, body, run);
+      // Plan 6 Task 3: a Rovara Code intent from a Slack thread is started shared to that thread, as the Slack workflow always was.
+      const binding = run.codeIntent?.binding;
+      const thread = binding?.kind === "slack_thread" ? { teamId: binding.teamId, channelId: binding.channelId, threadTs: binding.threadTs } : undefined;
+      const answer = await startTask(developerTaskRouteDependencies(deps, caller, thread), caller, body, run);
       if (answer.run === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the run did not report its limits");
       // Plan 3, Task 32 (PF17): a run started with a run limit of 0 waits for its limit: the run_limit request asks for it. The start stands either way; a
       // request that can't be made now is asked for again by the next pause, or by a repeat of the start (the request is once per task).
@@ -1473,6 +1505,36 @@ export function agentRunStarterOf(deps: DeveloperRouteDependencies): AgentRunSta
         // A task that was closed is over: there is nothing left to stop.
         if (error instanceof AgentXError && error.message.endsWith(CLOSED_TASK)) return;
         throw error;
+      }
+    },
+  };
+}
+
+/**
+ * Plan 6 Task 3: what `startCodeIntent` needs for one caller, from the developer API's dependencies: Plan 3's run start where agents are set up, the plain task start where they are
+ * not, the person's own task view, and the origin session links are made from. The routes and the broker's Slack start and `createCodeIntentStarter` all build it here.
+ */
+export function codeIntentDependenciesOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller): CodeIntentRouteDependencies {
+  const taskDeps = developerTaskRouteDependencies(deps, caller);
+  return {
+    starter: agentRunStarterOf(deps),
+    startPlainTask: (who, body, thread) => startTask(developerTaskRouteDependencies(deps, who, thread), who, body),
+    ownedTask: async (who, taskId) => taskView(taskDeps, await loadOwnedTask(taskDeps, who, taskId), { events: 0, details: false }),
+    origin: new URL(deps.developer.issuer).origin,
+    visibleProject: async (who, rawName) => (await projectRoleForRoute(deps, who, rawName)).name,
+    // A follow-up may follow only a task of the caller's own org, whose session they can see, that ended Answered (read now, never trusted from the request).
+    retryable: async (who, taskId) => {
+      const sessions = sessionDependenciesOf(deps);
+      if (sessions === undefined) return false;
+      const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true }))) as { Item?: DeveloperTaskRecord };
+      const task = item.Item;
+      if (task === undefined || task.orgId !== who.orgId || task.sessionId === undefined || task.workflow === undefined || workflowAnswer(task.workflow) === undefined) return false;
+      // Seen by the caller now (a person who cannot see the session reads it as missing): any refusal is a plain "no".
+      try {
+        await requireSessionLevel(sessions, who, task.sessionId, "view", "follow it up");
+        return true;
+      } catch {
+        return false;
       }
     },
   };
@@ -1566,11 +1628,21 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
     control: {
       cancelTask: async (task, requestId) => { await cancelTaskFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
       retryWorkflow: async (task, requestId) => { await retryTaskWorkflowFor(taskDeps, task, { requestId, actor: { kind: "session", caller } }); },
+      // Plan 6 Task 5: Understand starts again as soon as people answered. A failed start is the answer's dispatch row's to redo, so it is logged by name and not raised.
+      startUnderstanding: async (task, workflowRevision) => {
+        try {
+          await startTaskWorkflowUnderstandFromSystem(taskDeps, task.taskId, { workflowRevision });
+        } catch (error) {
+          console.log(JSON.stringify({ component: "broker", event: "rovara_code.understand_start_deferred", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+        }
+      },
       startAgentRun: async (request) => {
         const starter = agentRunStarterOf(deps);
         if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");
         return startAgentRun(starter, { ...request, caller });
       },
+      // Plan 6 Task 6: the "make a change anyway" start, as the caller (they pay), through the one entry point.
+      startCodeIntent: (request) => startCodeIntent(codeIntentDependenciesOf(deps, caller), caller, request),
     },
     ...(deps.audit === undefined ? {} : { audit: deps.audit }),
     taskView: (task, options) => taskView(taskDeps, task, options),
@@ -1673,6 +1745,7 @@ export function developerTaskRouteDependencies(
     ...(deps.cloud === true ? { cloud: true } : {}),
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),
     ...(deps.workflowE2EPublicationChecks === undefined ? {} : { workflowE2EPublicationChecks: deps.workflowE2EPublicationChecks }),
+    ...(deps.currentPullRequestHead === undefined ? {} : { currentPullRequestHead: deps.currentPullRequestHead }),
     ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),
     ...(deps.workflowE2EArtifact === undefined ? {} : { workflowE2EArtifact: deps.workflowE2EArtifact }),
     ...(deps.startWorkflowE2EBaseline === undefined ? {} : { startWorkflowE2EBaseline: deps.startWorkflowE2EBaseline }),
@@ -1819,7 +1892,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isChainRoute(url.pathname)) {
     const chainDeps = chainRouteDependenciesFor(deps, caller);
     if (chainDeps === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
-    return routeChainRequest(chainDeps, caller, request, url);
+    // Rovara Code (Plan 6): a step's task is read like any task, so a client without `x-agentx-task-view: 2` gets the version 1 projection of it.
+    return taskResponseForClient(await routeChainRequest(chainDeps, caller, request, url), request.headers);
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (request.method === "GET" && url.pathname === "/v1/app/nav") return getAppNavigation(deps, caller);
@@ -1847,6 +1921,15 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
+  const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
+  if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
+  const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
+  if (setupDraftRoute !== null) {
+    const drafting = setupDraftDepsOf(deps);
+    if (request.method === "POST" && setupDraftRoute[2] === undefined) return startSetupDraft(drafting, caller, setupDraftRoute[1]!, jsonBody(request));
+    if (request.method === "GET" && setupDraftRoute[2] === undefined) return getSetupDraft(drafting, caller, setupDraftRoute[1]!);
+    if (request.method === "POST" && setupDraftRoute[2] !== undefined) return applySetupDraft(drafting, caller, setupDraftRoute[1]!, jsonBody(request));
+  }
   const projectSetupCheckRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-check$/.exec(url.pathname);
   if (request.method === "POST" && projectSetupCheckRoute !== null) return startProjectSetupCheck(deps, caller, projectSetupCheckRoute[1]!, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {
@@ -1899,7 +1982,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     // An AI tool's start of an older version of an agent that is less safe than the current one waits for the agent's owner (owner decision 2026-10-22), as the app route's does.
     const waitingForOwner = request.method === "POST" && url.pathname === "/v1/dev/tasks" ? await gateDeveloperStart(deps, caller, request) : undefined;
     if (waitingForOwner !== undefined) return waitingForOwner;
-    return routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url);
+    // Rovara Code (Plan 6): a client that does not send `x-agentx-task-view: 2` reads a version 1 projection of any task in the answer.
+    return taskResponseForClient(await routeDeveloperTaskRequest(developerTaskRouteDependencies(deps, caller), caller, request, url), request.headers);
   }
   if (url.pathname === CHATGPT_CONNECTION_PATH || url.pathname === `${CHATGPT_CONNECTION_PATH}/finish`) {
     return routeChatGptConnection(deps, caller, request, url);

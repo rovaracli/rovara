@@ -60,10 +60,11 @@ describe("native task workflow contracts", () => {
     expect(() => workflowContracts.WorkflowSnapshotSchema.parse({ ...qualified, e2e: { ...qualified.e2e!, qualifiedRound: { ...qualification, roundId: "33333333-3333-4333-8333-333333333333" } } })).toThrow(/current candidate, contract, plan, and round/);
   });
 
-  it("requires an explicit Quick or Full choice when creating a workflow task", () => {
+  it("allows a workflow request with no Quick or Full choice and refuses a choice with no workflow (Plan 6 Task 3: the start itself refuses a missing choice unless Understand makes it, see rovara-code-intent.test.ts)", () => {
     const request = { requestId: "a1ec6b71-2494-4cbd-92a9-6eecab01676b", project: "payments", instructions: "Fix retry handling", workflow: true };
-    expect(StartDeveloperTaskRequestSchema.safeParse(request).success).toBe(false);
+    expect(StartDeveloperTaskRequestSchema.safeParse(request).success).toBe(true);
     expect(StartDeveloperTaskRequestSchema.safeParse({ ...request, workflowPath: "QUICK" }).success).toBe(true);
+    expect(StartDeveloperTaskRequestSchema.safeParse({ requestId: request.requestId, project: "payments", instructions: "Fix retry handling", workflowPath: "QUICK" }).success).toBe(false);
   });
 
   it("stores exact task Canvas lineage and retryable closeout state while keeping legacy snapshots valid", () => {

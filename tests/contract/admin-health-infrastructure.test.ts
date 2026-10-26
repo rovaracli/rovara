@@ -200,6 +200,11 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/aws/workflow-e2e-baseline.ts",
       // The audit replay's record (M1.4 Task 4.6b) has the baseline record's expiry: 30 days after it was last written.
       "packages/broker/src/aws/workflow-e2e-replay.ts",
+      // Rovara Code (Plan 6): the milestone records a task writes for the people following it (Task 5), the duration history of a project's runs (Task 7), the record of an applied
+      // setup draft (Task 10) and the index from a pull request's head to its task (Task 14) are short-lived records of their own modules, kept for a fixed time and then deleted by the TTL.
+      "packages/broker/src/rovara-code/milestones.ts", "packages/broker/src/rovara-code/duration.ts", "packages/broker/src/rovara-code/setup-draft.ts", "packages/broker/src/rovara-code/head-index.ts",
+      // Rovara Code (Plan 6 Task 15): what CI said, kept for the coding run of the fix round that started with it (30 days, then the TTL deletes it); only ci-fix.ts writes and reads it.
+      "packages/broker/src/rovara-code/ci-fix.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
@@ -229,11 +234,12 @@ describe("the health route's grants (A13)", () => {
     const dispatchItem = shared.slice(shared.indexOf("export function workflowDispatchItem("));
     expect(dispatchItem).toContain('entityType: "WORKFLOW_DISPATCH"');
     expect(shared.split("\n").filter((line) => /indexExpiresAt|INDEX_EXPIRY_ATTRIBUTE/.test(line)).map((line) => line.trim())).toEqual([
-      'import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, type PlanDocumentKind } from "@agentx/contracts";',
+      'import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, PLAN_PARTS_SENTENCE, type PlanDocumentKind } from "@agentx/contracts";',
       "indexExpiresAt: number;",
       // Plan 3, Task 22: the agent-step engine's dispatch row, written over the task's one row at each change; it expires a week after it was due.
       "[INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(input.dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,",
-      "[INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(now) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,",
+      // Plan 6 Task 4: a watchdog row (Understand's) is due later than it is written, so its backstop counts from when it is due.
+      "[INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,",
     ]);
     const notifier = readFileSync("packages/broker/src/aws/developer-task-notifier.ts", "utf8");
     const writes = notifier.split("\n").filter((line) => line.includes("noticeExpiry(deps)"));
@@ -279,7 +285,7 @@ describe("the health route's grants (A13)", () => {
     const retire = recovery.slice(recovery.indexOf("async function retire("), recovery.indexOf("async function setGlobalCooldown("));
     expect(retire).toContain("recoveryStatus = :status, retiredAt = :now, updatedAt = :now, indexExpiresAt = :ttl");
     const retry = recovery.slice(recovery.indexOf("async function settleActive("), recovery.indexOf("async function retire("));
-    expect(retry).toContain("SET attempts = :attempts, nextAttemptAt = :next, dispatchDuePk = :pk, dispatchDueSk = :due, updatedAt = :now REMOVE leaseToken, leaseExpiresAt");
+    expect(retry).toContain("SET attempts = :attempts, nextAttemptAt = :next, dispatchDueSk = :due, updatedAt = :now REMOVE leaseToken, leaseExpiresAt");
     expect(retry).not.toContain("indexExpiresAt");
   });
 

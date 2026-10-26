@@ -25,6 +25,22 @@ const GitHubWebhookPayloadSchema = z.object({
   comment: z.object({ id: z.number().int().positive(), body: z.string().max(65_536).nullable().optional(), html_url: z.string().url(), updated_at: z.string().datetime().optional(), path: z.string().max(500).optional(), line: z.number().int().positive().optional(), diff_hunk: z.string().max(8_000).optional(), user: z.object({ login: z.string().min(1).max(100) }).passthrough() }).passthrough().optional(),
 }).passthrough();
 
+/** A `check_suite`, `check_run` or `status` delivery: it names a commit, not a pull request. Everything is read from GitHub again after it; the body only says which commit. */
+const HeadEventPayloadSchema = z.object({
+  installation: z.object({ id: z.number().int().positive() }).passthrough(),
+  repository: z.object({ id: z.number().int().positive(), full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(300) }).passthrough(),
+  action: z.string().min(1).max(80).optional(),
+  sha: z.string().optional(),
+  branches: z.array(z.object({ name: z.string().max(255) }).passthrough()).max(100).optional(),
+  check_suite: z.object({ head_sha: z.string(), head_branch: z.string().max(255).nullable().optional() }).passthrough().optional(),
+  check_run: z.object({ head_sha: z.string(), check_suite: z.object({ head_branch: z.string().max(255).nullable().optional() }).passthrough().optional() }).passthrough().optional(),
+}).passthrough();
+
+const HEAD_EVENT_NAMES: ReadonlySet<string> = new Set(["check_suite", "check_run", "status"]);
+const COMMIT_SHA = /^[a-f0-9]{40}$/;
+/** The branch Rovara opens its pull requests from. */
+const ROVARA_BRANCH = /^agentx\/[A-Za-z0-9._-]{1,200}$/;
+
 const COMMENT_ACTIONS = new Set(["created", "edited", "deleted"]);
 const PULL_REQUEST_ACTIONS = new Set(["opened", "reopened", "edited", "closed", "synchronize", "ready_for_review", "converted_to_draft"]);
 const REVIEW_ACTIONS = new Set(["submitted", "edited", "dismissed"]);
@@ -50,6 +66,8 @@ export class GithubWebhookRefusal extends Error {
  * task's. Where trigger events are handled (`handleGithubWebhook`'s `triggerEvents`) it is answered 202 and ignored; elsewhere it is the refusal it always was.
  */
 export class GithubWebhookIgnorable extends GithubWebhookRefusal {
+  /** Set when the delivery was verified and reserved nothing: a check or status event no task follows. It is answered 202 IGNORED whether or not triggers are set up. */
+  ignoredDeliveryId?: string;
   constructor(message: string) {
     super(message);
     this.name = "GithubWebhookIgnorable";
@@ -68,7 +86,11 @@ export interface ReceiveGithubWebhookInput {
   rawBody: string;
   headers: Record<string, string | undefined>;
   secret: string;
-  authorizeRepository(scope: { installationId: number; repositoryId: number; fullName: string; pullRequestNumber: number }): Promise<boolean>;
+  /**
+   * Whether the delivery's repository is one a task follows through this installation. A pull request event names the pull request; a check or status event names a
+   * commit (`headSha`, and a Rovara branch it was on, when it says): either way the answer is the caller's own check against what Rovara recorded.
+   */
+  authorizeRepository(scope: { installationId: number; repositoryId: number; fullName: string; pullRequestNumber: number } | { installationId: number; repositoryId: number; fullName: string; headSha: string; branch?: string }): Promise<boolean>;
   reserveDelivery(delivery: { deliveryId: string; installationId: number; repositoryId: number; eventHash: string; event: ReceivedGithubWebhook["event"] }): Promise<"reserved" | "retry" | "duplicate" | "conflict">;
   /**
    * Called once the signature, the delivery id and the JSON have been checked, before the event is looked at: the one place a delivery's verified body is handed on. It is how
@@ -77,10 +99,25 @@ export interface ReceiveGithubWebhookInput {
   onVerified?(verified: { eventName: string | undefined; deliveryId: string; payload: unknown }): Promise<void>;
 }
 
+/** A check or status delivery for a commit: only a nudge. The tracking pass that follows reads GitHub itself. */
+export interface HeadWebhookEvent {
+  kind: "HEAD_STATUS";
+  action: string;
+  installationId: number;
+  repositoryId: number;
+  fullName: string;
+  headSha: string;
+  /** The Rovara branch (`agentx/...`) the event names, when it names one: a second way to find the task. */
+  branch?: string;
+}
+
 export interface ReceivedGithubWebhook {
   delivery: "ACCEPTED" | "DUPLICATE";
   deliveryId: string;
-  event: {
+  event: PullRequestWebhookEvent | HeadWebhookEvent;
+}
+
+export interface PullRequestWebhookEvent {
     kind: "PULL_REQUEST" | "PR_COMMENT";
     action: string;
     installationId: number;
@@ -90,7 +127,6 @@ export interface ReceivedGithubWebhook {
     /** A push to the pull request (synchronize): the head GitHub says it now has. A hint, checked against GitHub's own read. */
     headSha?: string;
     comment?: { id: number; body: string; truncated: boolean; url: string; author: string; updatedAt?: string; path?: string; line?: number; diffHunk?: string; source: "review" | "review_comment" | "pr_discussion" };
-  };
 }
 
 /** Looks up only an already-published PR; webhooks cannot associate arbitrary GitHub work with a task. */
@@ -359,6 +395,9 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
         const expectedTree = pr.headTreeSha ?? current.candidate?.repositories.find(repository => repository.repositoryId === pr.repositoryId)?.treeSha;
         const exactIdentity = exactHead && expectedTree !== undefined && expectedTree === feedback.pullRequest.headTreeSha;
         if ((state === "MERGED" && (!exactIdentity || !completePublishedSet)) || (state === "OPEN" && !exactIdentity)) continue;
+        // While a fix is made or pushed only a merge is followed (as in the feedback path below): an open pull request that was not yet recorded as open is not written down now. Writing it
+        // would move the workflow's revision under the dispatch row a fix has just been given (Plan 6 Task 15), and the run would never start.
+        if (state === "OPEN" && workflowFollowsOnlyMerge(current)) continue;
         if (pr.state !== state) next = observeWorkflowPullRequest(next, { repositoryId: pr.repositoryId, number: pr.number,
           candidateDigest: pr.candidateDigest, state, source: "GITHUB_API", observedAt: input.now }, input.now);
       }
@@ -1039,6 +1078,8 @@ export async function handleGithubWebhook(input: {
       }),
     });
   } catch (error) {
+    // A check or status event no task follows is ignored, whether or not triggers are set up.
+    if (error instanceof GithubWebhookIgnorable && error.ignoredDeliveryId !== undefined) return { status: "IGNORED", deliveryId: error.ignoredDeliveryId };
     // A signed event the feedback path has no use for: if triggers took it, it is accepted (or a duplicate); if nothing did, it is ignored, and neither is a refusal.
     if (triggerEvents === undefined || !(error instanceof GithubWebhookIgnorable) || verifiedDelivery === undefined) throw error;
     if (triggered === undefined) return { status: "IGNORED", deliveryId: verifiedDelivery };
@@ -1080,7 +1121,8 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
   const deliveryId = headers["x-github-delivery"];
   if (deliveryId === undefined || !DELIVERY_ID.test(deliveryId)) throw new GithubWebhookRefusal("GitHub webhook delivery ID is invalid");
   const eventName = headers["x-github-event"];
-  const followed = eventName === "pull_request" || eventName === "pull_request_review" || eventName === "pull_request_review_comment" || eventName === "issue_comment";
+  const followed = eventName === "pull_request" || eventName === "pull_request_review" || eventName === "pull_request_review_comment" || eventName === "issue_comment"
+    || (eventName !== undefined && HEAD_EVENT_NAMES.has(eventName));
   if (!followed && input.onVerified === undefined) throw new GithubWebhookRefusal("GitHub webhook event type is unsupported");
   let raw: unknown;
   try {
@@ -1090,11 +1132,12 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
   }
   await input.onVerified?.({ eventName, deliveryId, payload: raw });
   if (!followed) throw new GithubWebhookIgnorable("GitHub webhook event type is unsupported");
+  if (eventName !== undefined && HEAD_EVENT_NAMES.has(eventName)) return receiveHeadEvent(input, { eventName, deliveryId, rawBody: input.rawBody, raw });
   const parsed = GitHubWebhookPayloadSchema.safeParse(raw);
   const object = parsed.success ? parsed.data : undefined;
   if (object === undefined) throw new GithubWebhookIgnorable("GitHub webhook event payload is unsupported or incomplete");
   let number: number;
-  let comment: ReceivedGithubWebhook["event"]["comment"];
+  let comment: PullRequestWebhookEvent["comment"];
   if (eventName === "pull_request" && object.pull_request !== undefined && PULL_REQUEST_ACTIONS.has(object.action)) {
     number = object.pull_request.number;
   } else if (eventName === "pull_request_review" && object.pull_request !== undefined && object.review !== undefined && REVIEW_ACTIONS.has(object.action)) {
@@ -1116,7 +1159,7 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
     pullRequestNumber: number,
   };
   if (!await input.authorizeRepository(scope)) throw new GithubWebhookIgnorable("GitHub webhook repository is outside the registered installation and repository scope");
-  const event: ReceivedGithubWebhook["event"] = {
+  const event: PullRequestWebhookEvent = {
     kind: comment === undefined ? "PULL_REQUEST" : "PR_COMMENT",
     action: object.action,
     installationId: scope.installationId,
@@ -1142,7 +1185,46 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
   };
 }
 
-function toComment(input: { id: number; body?: string | null | undefined; html_url: string; updated_at?: string | undefined; path?: string | undefined; line?: number | undefined; diff_hunk?: string | undefined; user: { login: string } }, source: NonNullable<ReceivedGithubWebhook["event"]["comment"]>["source"]): NonNullable<ReceivedGithubWebhook["event"]["comment"]> {
+/**
+ * A check or status delivery (Plan 6 Task 14). It is matched to a task by the commit (and the Rovara branch when it names one), through the caller's `authorizeRepository`; one no task
+ * follows is answered IGNORED (a 202), as an event Rovara has no use for. Its body is only a nudge: nothing in it is believed.
+ */
+async function receiveHeadEvent(
+  input: ReceiveGithubWebhookInput,
+  delivery: { eventName: string; deliveryId: string; rawBody: string; raw: unknown },
+): Promise<ReceivedGithubWebhook> {
+  const ignore = (message: string): never => {
+    const ignorable = new GithubWebhookIgnorable(message);
+    ignorable.ignoredDeliveryId = delivery.deliveryId;
+    throw ignorable;
+  };
+  const parsed = HeadEventPayloadSchema.safeParse(delivery.raw);
+  if (!parsed.success) return ignore("GitHub webhook event payload is unsupported or incomplete");
+  const body = parsed.data;
+  const headSha = (delivery.eventName === "status" ? body.sha : delivery.eventName === "check_suite" ? body.check_suite?.head_sha : body.check_run?.head_sha) ?? "";
+  if (!COMMIT_SHA.test(headSha)) return ignore("GitHub webhook event names no commit");
+  const branches = delivery.eventName === "status" ? (body.branches ?? []).map((branch) => branch.name)
+    : [delivery.eventName === "check_suite" ? body.check_suite?.head_branch : body.check_run?.check_suite?.head_branch ?? undefined];
+  const branch = branches.find((name): name is string => typeof name === "string" && ROVARA_BRANCH.test(name));
+  const scope = {
+    installationId: body.installation.id, repositoryId: body.repository.id, fullName: body.repository.full_name.toLowerCase(), headSha,
+    ...(branch === undefined ? {} : { branch }),
+  };
+  if (!await input.authorizeRepository(scope)) return ignore("GitHub webhook repository or commit is not followed by a task");
+  const event: HeadWebhookEvent = {
+    kind: "HEAD_STATUS", action: body.action ?? "status", installationId: scope.installationId, repositoryId: scope.repositoryId, fullName: scope.fullName, headSha,
+    ...(branch === undefined ? {} : { branch }),
+  };
+  const reserved = await input.reserveDelivery({
+    deliveryId: delivery.deliveryId, installationId: scope.installationId, repositoryId: scope.repositoryId,
+    eventHash: createHash("sha256").update(delivery.eventName, "utf8").update("\0").update(delivery.rawBody, "utf8").digest("hex"),
+    event,
+  });
+  if (reserved === "conflict") throw new GithubWebhookRefusal("GitHub delivery ID was reused with different content");
+  return { delivery: reserved === "duplicate" ? "DUPLICATE" : "ACCEPTED", deliveryId: delivery.deliveryId, event };
+}
+
+function toComment(input: { id: number; body?: string | null | undefined; html_url: string; updated_at?: string | undefined; path?: string | undefined; line?: number | undefined; diff_hunk?: string | undefined; user: { login: string } }, source: NonNullable<PullRequestWebhookEvent["comment"]>["source"]): NonNullable<PullRequestWebhookEvent["comment"]> {
   let url: URL;
   try {
     url = new URL(input.html_url);

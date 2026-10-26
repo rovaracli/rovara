@@ -32,6 +32,7 @@ import {
   type Operation,
   type PauseScope,
   type RunCheckout,
+  type SetupDraft,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
@@ -171,6 +172,13 @@ export interface DeveloperTaskRecord {
    */
   agentRunEnd?: { state: "COMPLETE" | "FAILED" | "CANCELLED"; at: string };
   /**
+   * Plan 6, Task 10: the task is Rovara drafting a project's dev setup (read-only look at the repositories; its result is a proposal in the project's `SETUP_DRAFT` item). It is
+   * no workflow and no agent-step run: its result sets `agentRunEnd`, which is how it gives back its workspace, and it never feeds the run-cost estimates.
+   */
+  purpose?: "setup_draft";
+  /** Plan 6, Task 10: what a setup-draft task ended with, written in the same transaction as `agentRunEnd`: the sanitized draft, or a fixed sentence saying why there is none. */
+  setupDraftResult?: { status: "ready"; draft: SetupDraft } | { status: "failed"; failure: string };
+  /**
    * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches
    * review on an install with a model proxy. Approving the plan accepts `runLimitUsd` (`acceptRunLimit`); the plan-ready message and the task view show it.
    */
@@ -179,8 +187,12 @@ export interface DeveloperTaskRecord {
   requestedRunLimitUsd?: number;
   /** Plan 5, Task 2: the session this task is the subject of, created in the task's start transaction. A chain step's task has none (its chain run is the session). */
   sessionId?: string;
+  /** Plan 6 Task 6: the answered task this one follows ("make the change anyway"). Understand is told the person has read the answer and wants the change. */
+  retryOfTaskId?: string;
   /** Plan 3, Task 34: when the run's cost was written for the estimates (`recordRunCost`), so a run is counted once. */
   runCostRecordedAt?: string;
+  /** Plan 6 Task 7: when this version 2 task's duration was written for the next time estimate (`recordTaskDuration`), so a task is counted once. */
+  durationRecordedAt?: string;
 }
 
 /** C1: a shared task's thread, as the task record keeps it. */
@@ -254,7 +266,7 @@ export interface DeveloperTaskPointerRecord {
   /** The first instructions, until the prepare's result queues them (R3). */
   pendingPrompt?: string;
   /** The first plan-only operation is selected by the broker, never by the request. */
-  pendingWorkflowMode?: "PLAN" | "IMPLEMENT";
+  pendingWorkflowMode?: "PLAN" | "IMPLEMENT" | "SETUP_DRAFT";
   /** Set when the task was cancelled before its instructions ran (R16). */
   cancelledAt?: string;
 }
@@ -741,11 +753,11 @@ export function taskOwnerLabel(name: string): string {
  * FR-023. The client is one of the fixed names cleanClientName gives, or "Slack" for a task the Slack workflow
  * started, so it needs no escaping. A task stored before Slack was kept as a client is told by its Slack-ID name.
  */
-export function developerFooter(name: string, client: string): string {
+export function developerFooter(name: string, client: string, product: "AgentX" | "Rovara" = "AgentX"): string {
   const label = taskOwnerLabel(name);
   const owner = label === TASK_OWNER_LABEL ? label : inertName(label);
   const slack = client === SLACK_CLIENT_NAME || (client === UNKNOWN_CLIENT_NAME && SLACK_FALLBACK_NAME.test(name.trim()));
-  return `Requested by ${owner} via AgentX, started from ${slack ? SLACK_CLIENT_NAME : client}`;
+  return `Requested by ${owner} via ${product}, started from ${slack ? SLACK_CLIENT_NAME : client}`;
 }
 
 /** The identity every workspace handler sees for a developer task: its own owner key (FR-021). */

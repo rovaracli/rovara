@@ -14,8 +14,8 @@ import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { PER_TASK_BUDGET_USD, type OrgId, type PauseScope } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 
-/** How a task ended. `creator_removed` is Plan 2's R60 outcome; `merged` and `closed` are a workflow task's. */
-export type TaskEndOutcome = "succeeded" | "failed" | "cancelled" | "creator_removed" | "merged" | "closed";
+/** How a task ended. `creator_removed` is Plan 2's R60 outcome; `merged` and `closed` are a workflow task's, and `answered` is a Rovara Code task that answered a question needing no code change (a success, with no pull request). */
+export type TaskEndOutcome = "succeeded" | "failed" | "cancelled" | "creator_removed" | "merged" | "closed" | "answered";
 
 /** What every end handler is told. `runLimitUsd` is the task's budget as it stands (every approved raise included). */
 export interface TaskEndEvent {

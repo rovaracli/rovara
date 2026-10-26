@@ -273,6 +273,21 @@ describe("pull request maintenance", () => {
       expect(update).toHaveBeenCalledWith(expect.objectContaining({ previousCommit: fixture.pullRequestHead, commit: result.commit }));
     });
 
+    it("says in the commit what the reviewed fix is for, when the broker says; any other fix keeps the usual message (Plan 6 Task 15)", async () => {
+      for (const [source, subject] of [["ci", "Rovara: fix failing CI"], ["conflict", "Rovara: resolve conflict with the base branch"], ["feedback", "AgentX: address PR feedback"], [undefined, "AgentX: address PR feedback"]] as const) {
+        const fixture = await createFixture("append");
+        await writeFile(join(fixture.checkout, "FIX.md"), `fix for ${String(source)}\n`, "utf8");
+        const reviewedTree = await workspaceTree(fixture.checkout);
+        const invocation = failingReadiness(fixture.invocation, reviewedTree, { workflowBaseCommit: fixture.baseCommit });
+        const result = await pushFix({
+          rootPath: fixture.root,
+          invocation: source === undefined || invocation.kind !== "maintain" ? invocation : { ...invocation, payload: { ...invocation.payload, workflowFix: { source } } },
+          credentialProvider: async () => ({}), pullRequestUpdateSink: sink(),
+        });
+        expect(await git(fixture.bare, ["log", "-1", "--format=%s", result.commit]), String(source)).toBe(`${subject}\n`);
+      }
+    });
+
     it("refuses to push a fix whose tree differs from the reviewed tree", async () => {
       const fixture = await createFixture("append");
       await writeFile(join(fixture.checkout, "FIX.md"), "address feedback\n", "utf8");

@@ -81,7 +81,7 @@ const occurrenceOf = (card: HomeSourceCard): string => card.occurrence ?? card.a
 const isAgentXError = (error: unknown): boolean => error instanceof Error && error.name === "AgentXError";
 const text = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
 const logOf = (deps: Pick<HomeDependencies, "log">) => (entry: Record<string, unknown>) => (deps.log ?? ((line: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...line }))))(entry);
-const fit = (prefix: string, rest: string): string => [...`${prefix}${rest}`].slice(0, HOME_REASON_MAX).join("").trimEnd();
+export const fit = (prefix: string, rest: string): string => [...`${prefix}${rest}`].slice(0, HOME_REASON_MAX).join("").trimEnd();
 const cut = (value: string, max: number): string => [...value].slice(0, max).join("").trimEnd();
 
 // ---- the registry
@@ -199,9 +199,9 @@ async function ownSessionsOf(deps: HomeDependencies, caller: HomeCaller, context
 // ---- small builders
 
 const sessionHref = (deps: HomeDependencies, sessionId: string) => sessionLink(deps.origin.replace(/\/+$/u, ""), sessionId);
-const openSession = (deps: HomeDependencies, sessionId: string, label = "Open session") => ({ label, action: "open" as const, href: sessionHref(deps, sessionId), method: "GET" as const });
+export const openSession = (deps: HomeDependencies, sessionId: string, label = "Open session") => ({ label, action: "open" as const, href: sessionHref(deps, sessionId), method: "GET" as const });
 const confirmButton = (deps: HomeDependencies, id: string, label: string) => ({ label, action: "confirm" as const, href: approveLink(deps, id), method: "GET" as const });
-const quoted = (title: string) => `"${cut(shownText(title, 300), SESSION_WORDS_MAX)}"`;
+export const quoted = (title: string) => `"${cut(shownText(title, 300), SESSION_WORDS_MAX)}"`;
 
 /** A pull request's address when it is a plain `https://github.com/…` one; nothing else is ever a destination. */
 function githubUrl(value: unknown): string | undefined {

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { sha256Hex } from "./web-hash.js";
+import { readerOf, type ForwardReader } from "./forward-reader.js";
+import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE } from "./rovara-code.js";
 import { StepIdSchema, CODING_STEP_KINDS, ReviewerSchema, OnFindingsSchema, MAX_RECIPE_STEPS } from "./agent-recipe.js";
 import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
@@ -38,6 +40,11 @@ export const WORKFLOW_BLOCK_REASONS = {
   planNotSaved: "The planning run finished without saving a document. Retry planning.",
   /** The saved plan is a structured document that could not be read back. */
   planUnreadable: "the plan couldn't be read",
+  /** Plan 6 Task 8: the plan check's answer had no block Rovara could read. */
+  planCheckUnreadable: "Rovara couldn't read the plan check's answer.",
+  /** Plan 6 Task 8: the plan check or the revision after it could not be started, however often it was tried. */
+  planCheckNotStarted: "Rovara couldn't start the plan check.",
+  planRevisionNotStarted: "Rovara couldn't start revising the plan after its check.",
   pullRequestChanged: "The pull request on GitHub no longer holds the checked code, so I won't finish this task from it. Close the task.",
   /** A required pull request was closed on GitHub without merging; reopened, it is followed again. */
   pullRequestClosed: "The pull request was closed on GitHub without merging. Reopen it there, or close this task.",
@@ -49,6 +56,17 @@ export const WORKFLOW_BLOCK_REASONS = {
   documentUnverified: "The saved document couldn't be checked, so I stopped. Close this task and start again.",
   /** Plan 3, Task 32: a step ran out of its run's budget and a spend request is open; approving it retries the step. */
   budgetPaused: "Paused: this task needs more AI budget. I've asked for it.",
+  /** Rovara Code version 2: Understand's answer could not be read, even after one more try. */
+  understandUnreadable: UNDERSTAND_UNREADABLE_MESSAGE,
+  /** Rovara Code version 2: the request needs no code change, and closing a task as answered is not available yet. */
+  understandAnswerPending: UNDERSTAND_ANSWER_PENDING_MESSAGE,
+  /** Rovara Code version 2: Understand never came back in time, so the task was ended. */
+  understandTimedOut: UNDERSTAND_TIMED_OUT_MESSAGE,
+  /** Rovara Code version 2: the dispatch could not start Understand, or the plan step after it, within its attempts. */
+  understandNotStarted: "I couldn't start reading your request. Retry it.",
+  planNotStarted: "I couldn't start the plan. Retry planning.",
+  /** Rovara Code version 2: Understand chose the Full path, but a Full start would not be admitted on the budgets that are left. */
+  understandFullNotAdmitted: "I chose the Full path for this task, but there isn't enough AI budget left to start a Full plan. Raise the budget, then retry.",
 } as const;
 
 /** At most this many regressed tests are kept on a blocked workflow, each cut to WORKFLOW_REGRESSED_CHECK_MAX characters. */
@@ -153,7 +171,10 @@ export const WorkflowReviewReportSchema = z.object({
   recordedAt: z.string().datetime(),
   /** The base-to-candidate diff the reviewer saw was cut to fit its limit: the review covered only part of the change. */
   partialDiff: z.literal(true).optional(),
+  /** Rovara Code v2: the code reviewer's own risk level for this change (one of three words; the security review states none). Kept only on a 1.1.0 task. */
+  risk: z.enum(["low", "medium", "high"]).optional(),
 }).strict().superRefine((report, context) => {
+  if (report.risk !== undefined && report.role !== "CRITIC") context.addIssue({ code: "custom", path: ["risk"], message: "only the code review states a risk level" });
   const introduced = report.findings.some((finding) => findingBlocks(finding, report.role));
   if (report.status === "PASS" && introduced) context.addIssue({ code: "custom", path: ["findings"], message: "a passing review cannot report an introduced finding" });
   if (report.status === "FINDINGS" && !introduced) context.addIssue({ code: "custom", path: ["findings"], message: "a review with findings must report at least one introduced finding" });
@@ -228,6 +249,8 @@ export const WorkflowPullRequestSchema = z.object({
   required: z.boolean(),
   state: z.enum(["UNKNOWN", "OPEN", "CLOSED", "MERGED"]),
   observedAt: z.string().datetime().optional(),
+  /** Plan 6: the head this pull request had before Rovara merged the base branch into it (a sync); allowed on both definition versions. */
+  syncedFrom: z.string().regex(/^[a-f0-9]{40}$/).optional(),
 }).strict();
 
 export const FeedbackIdSchema = z.string().trim().min(1).max(128);
@@ -386,7 +409,9 @@ export const WorkflowFeedbackReviewSchema = z.union([
 ]);
 
 export const WorkflowStageSchema = z.enum([
+  "UNDERSTAND",
   "PLAN",
+  "PLAN_CRITIQUE",
   "PLAN_REVIEW",
   "IMPLEMENT",
   "VERIFY",
@@ -422,6 +447,7 @@ export const WorkflowProgramSchema = z.object({
   if (new Set(steps.map((step) => step.id)).size !== steps.length) problem("step ids must be unique");
   steps.forEach((step, index) => {
     if (step.kind === "plan" && index !== 0) problem("a plan step can only come first", index);
+    if (step.kind === "plan_critic" && (index !== 1 || steps[0]?.kind !== "plan")) problem("a plan check step can only come directly after the plan step", index);
     if (step.kind === "pull_request" && index !== steps.length - 1) problem("a pull request step can only come last", index);
     if (step.kind === "review") {
       if (step.reviewers === undefined) problem("a review step needs its reviewers", index);
@@ -434,7 +460,7 @@ export const WorkflowProgramSchema = z.object({
       if (target < 0 || target >= index || steps[target]?.kind !== "build") problem("onFindings must go back to an earlier build step", index);
     }
   });
-  if (steps.find((step) => step.kind !== "plan")?.kind !== "build") problem("the first step after the plan must be a build step");
+  if (steps.find((step) => step.kind !== "plan" && step.kind !== "plan_critic")?.kind !== "build") problem("the first step after the plan must be a build step");
   if (steps.some((step) => step.kind === "pull_request")) {
     const after = steps.slice(steps.findLastIndex((step) => step.kind === "build") + 1);
     if (!after.some((step) => step.kind === "check") || !after.some((step) => step.kind === "review" && step.reviewers?.includes("code") === true && step.reviewers.includes("security"))) {
@@ -447,7 +473,7 @@ export const WorkflowObjectKeySchema = z.string().min(1).max(1024).refine((key) 
 
 export const WorkflowArtifactSchema = z.object({
   id: z.string().min(1).max(128),
-  type: z.enum(["requirements", "design", "plan", "test_plan", "review_report"]),
+  type: z.enum(["requirements", "design", "plan", "test_plan", "review_report", "answer"]),
   version: z.number().int().positive(),
   sha256: DigestSchema,
   producer: z.string().min(1).max(120),
@@ -488,6 +514,8 @@ export const WorkflowDecisionSchema = z.object({
   commentsIncluded: z.number().int().min(0).max(WORKFLOW_DECISION_COMMENTS_MAX).optional(),
   /** Made on the task page; absent for Slack, MCP and older decisions. */
   via: z.literal("PAGE").optional(),
+  /** Rovara Code v2: a REJECT of a plan that said no change is needed, which ends the task Answered instead of Closed. */
+  closedAs: z.literal("ANSWERED").optional(),
   at: z.string().datetime(),
 }).strict();
 
@@ -558,6 +586,9 @@ export function workflowIsReviewOnly(policy: WorkflowCheckPolicy | undefined): b
 }
 
 export const WorkflowPathSchema = z.enum(["QUICK", "FULL"]);
+/** The definition versions a stored snapshot may have: Rovara Code v1 (today's engine) and v2. */
+export const WORKFLOW_DEFINITION_VERSIONS = ["1.0.0", "1.1.0"] as const;
+export type WorkflowDefinitionVersion = (typeof WORKFLOW_DEFINITION_VERSIONS)[number];
 
 export const WorkflowReviewPhaseSchema = z.enum(["REQUIREMENTS", "DESIGN", "IMPLEMENTATION_PLAN"]);
 
@@ -642,7 +673,8 @@ export const WorkflowPullRequestUpdateFailureSchema = z.object({
 export const WorkflowSnapshotShapeSchema = z.object({
   schemaVersion: z.literal(1),
   definitionId: z.literal("agentx-task-to-pr"),
-  definitionVersion: z.literal("1.0.0"),
+  /** "1.1.0" (Rovara Code v2) alone may hold the stages UNDERSTAND and PLAN_CRITIQUE, the outcome ANSWERED, and `intent`, `critique` and `risk`. */
+  definitionVersion: z.enum(WORKFLOW_DEFINITION_VERSIONS),
   taskId: z.string().uuid(),
   ownerId: ActorIdSchema,
   path: WorkflowPathSchema.default("QUICK"),
@@ -656,7 +688,7 @@ export const WorkflowSnapshotShapeSchema = z.object({
    * and fail now. Kept through a send-back so the coder hears of them; the next block or verification replaces them.
    */
   regressedChecks: z.array(z.string().trim().min(1).max(WORKFLOW_REGRESSED_CHECK_MAX)).min(1).max(WORKFLOW_REGRESSED_CHECKS_MAX).optional(),
-  outcome: z.enum(["PASSED", "SKIPPED", "CHANGES_REQUESTED", "REJECTED", "MERGED", "CLOSED"]).optional(),
+  outcome: z.enum(["PASSED", "SKIPPED", "CHANGES_REQUESTED", "REJECTED", "MERGED", "CLOSED", "ANSWERED"]).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   artifacts: z.array(WorkflowArtifactSchema).max(100),
@@ -701,7 +733,40 @@ export const WorkflowSnapshotShapeSchema = z.object({
   programStepId: StepIdSchema.optional(),
   /** How many review rounds each review step has finished, so a step that keeps finding problems blocks at its `maxRounds`. */
   programRounds: z.record(StepIdSchema, z.number().int().min(1).max(PROGRAM_ROUNDS_MAX)).optional(),
+  /** Rovara Code v2 (1.1.0 only): what Understand made of the request, the questions asked and the answers. */
+  intent: WorkflowIntentSchema.optional(),
+  /** Rovara Code v2 (1.1.0 only): the plan critic's points. */
+  critique: WorkflowCritiqueSchema.optional(),
+  /** Rovara Code v2 (1.1.0 only): the risk level of the pull request's code. */
+  risk: RiskAssessmentSchema.optional(),
+  /** Both versions: how many fix rounds of each kind ran, and which kind the round now running is. */
+  fixRounds: WorkflowFixRoundsSchema.optional(),
+  fixSource: FixSourceSchema.optional(),
+  /** Both versions: the names of the failing checks the fix now running is for (at most five, one line each); present only with `fixSource`. */
+  fixProblems: z.array(z.string().trim().min(1).max(200)).min(1).max(CI_FIX_PROBLEMS_MAX).optional(),
+  /**
+   * Both versions: a person told Rovara to go on with a CI fix it was waiting to be told about (Retry). It names the heads of the open pull requests that were failing when they said it, and only a
+   * failure on one of those heads is covered. The next CI fix round starts whatever the autonomy and the rounds used (that one round is not counted), and clears it.
+   */
+  ciFixApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
 }).superRefine((workflow, context) => {
+  if (workflow.definitionVersion === "1.0.0") {
+    if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
+      context.addIssue({ code: "custom", path: ["stage"], message: "this stage needs definition version 1.1.0" });
+    }
+    if (workflow.outcome === "ANSWERED") context.addIssue({ code: "custom", path: ["outcome"], message: "this outcome needs definition version 1.1.0" });
+    if (workflow.artifacts.some((artifact) => artifact.type === "answer")) context.addIssue({ code: "custom", path: ["artifacts"], message: "an answer needs definition version 1.1.0" });
+    for (const field of ["intent", "critique", "risk"] as const) {
+      if (workflow[field] !== undefined) context.addIssue({ code: "custom", path: [field], message: `${field} needs definition version 1.1.0` });
+    }
+    if (workflow.program?.steps.some((step) => step.kind === "plan_critic") === true) {
+      context.addIssue({ code: "custom", path: ["program"], message: "a plan check step needs definition version 1.1.0" });
+    }
+    if (workflow.reviews?.some((review) => review.risk !== undefined) === true) context.addIssue({ code: "custom", path: ["reviews"], message: "a review's risk level needs definition version 1.1.0" });
+  }
+  if (workflow.fixProblems !== undefined && workflow.fixSource === undefined) {
+    context.addIssue({ code: "custom", path: ["fixProblems"], message: "the problems a fix is for need the fix's source" });
+  }
   if (workflow.program === undefined) {
     if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {
       context.addIssue({ code: "custom", path: ["program"], message: "a program position needs its program" });
@@ -800,3 +865,18 @@ export const WorkflowSnapshotShapeSchema = z.object({
  * saved document failed its digest check (`WORKFLOW_BLOCK_REASONS.documentUnverified`); that state is never stored.
  */
 export const WorkflowSnapshotViewSchema = WorkflowSnapshotShapeSchema;
+
+/**
+ * A workflow as a client that sends `x-agentx-task-view: 2` reads it, tolerant of a newer server. A stage or outcome it does not know reads as
+ * "unknown" (a missing one is still an error), `definitionVersion` is any string, and fields it does not know are kept. Derived from the strict
+ * shape, so the two cannot drift apart. `WorkflowSnapshotReaderShape` is for a view that adds fields of its own.
+ */
+export const WorkflowSnapshotReaderShape = {
+  ...Object.fromEntries(Object.entries(WorkflowSnapshotShapeSchema.shape).map(([key, field]) => [key, readerOf(field as z.ZodType)])),
+  definitionVersion: z.string().min(1).max(32),
+  // `readerOf` hands a field with a default, or a literal, back unchanged, so a value a newer server added would fail the whole read: these two read it as "unknown".
+  definitionId: z.string().transform((value): "agentx-task-to-pr" | "unknown" => (value === "agentx-task-to-pr" ? value : "unknown")),
+  path: z.string().optional().transform((value): z.infer<typeof WorkflowPathSchema> | "unknown" => (value === undefined ? "QUICK" : (WorkflowPathSchema.options as readonly string[]).includes(value) ? value as z.infer<typeof WorkflowPathSchema> : "unknown")),
+};
+export type WorkflowSnapshotReader = ForwardReader<Omit<z.output<typeof WorkflowSnapshotShapeSchema>, "definitionVersion"> & { definitionVersion: string }>;
+export const WorkflowSnapshotReaderSchema = z.looseObject(WorkflowSnapshotReaderShape) as unknown as z.ZodType<WorkflowSnapshotReader>;

@@ -8,6 +8,7 @@ import { extractProposedChecks, hasControlCharacter, isNotChangingReference, las
 import { TaskGraphV1Schema, taskGraphOrder, type TaskGraphV1 } from "./workflow-dependencies-node.js";
 import { E2EFeaturePlanIntentAnySchema, type E2EApplicationPlanIntent } from "./e2e-application.js";
 import type { E2EFeaturePlanIntent } from "./e2e-node.js";
+import { NoChangeNeededSchema, type NoChangeNeeded } from "./rovara-code.js";
 
 /** The info string of the fenced block that holds a plan document. */
 export const PLAN_DOCUMENT_INFO_STRING = "agentx-plan";
@@ -48,6 +49,8 @@ export interface PlanDocument {
   checks?: { proposed: WorkflowCheck[]; noneReason?: string | undefined; proposalNote?: string | undefined; proves: Record<string, string[]> };
   /** Untrusted feature E2E intent, approved only as part of the canonical workflow artifact. */
   e2e?: WorkflowFeatureE2EIntent | undefined;
+  /** Rovara Code version 2: the request needs no code change. The answer is a model's words (plain text, bounded); the owner closes the task as answered or asks for the change anyway. */
+  noChangeNeeded?: NoChangeNeeded | undefined;
 }
 
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -166,6 +169,7 @@ const planBodyShape = {
   decisions: z.array(DecisionSchema).max(PLAN_DECISIONS_MAX),
   workBreakdown: TaskGraphV1Schema.optional(),
   e2e: E2EFeaturePlanIntentAnySchema.optional(),
+  noChangeNeeded: NoChangeNeededSchema.optional(),
 };
 
 /** The document as the planner writes it: everything but `checks`, which is read separately. */
@@ -451,6 +455,83 @@ export function planClaimCount(plan: PlanDocument): number {
   return claimsDepthFirst(plan.claims).length;
 }
 
+// ---- the parts a Rovara Code version 2 coding plan must have (Plan 6 Task 7)
+
+export const PLAN_MISSING_CHANGE = "The plan must say what changes.";
+export const PLAN_MISSING_FILES = "The plan must say which files change.";
+export const PLAN_MISSING_TESTS = "The plan must say how the change will be tested.";
+
+/**
+ * What a version 2 coding plan's prompt adds, and the marker the worker looks for to hold the planner's answer to the same rule (the worker asks once more when a part is
+ * missing; the broker blocks the plan when it still is). Requirements and design documents are not coding plans and are not asked for it.
+ */
+export const PLAN_PARTS_SENTENCE = "A coding plan must name three things: what changes (the claims), which files change (cite each existing file in a `code` item, or name each file, such as src/charge.ts, in a claim), and how the change will be tested (a claim that names a test, or a proposed check).";
+
+/** Whether a planner's prompt asks for the three parts of a version 2 coding plan. */
+export const asksForPlanParts = (prompt: string): boolean => prompt.includes(PLAN_PARTS_SENTENCE);
+
+const FILE_EXTENSIONS = "[cm]?[jt]sx?|py|go|rs|java|kt|rb|php|cs|swift|json|ya?ml|toml|md|sql|css|scss|html|sh|tf|proto|graphql|xml|ini|lock|gradle|cpp|hpp";
+/**
+ * A file named in words: a name with a known extension, alone or at the end of a path (`charge.ts`, `src/charge.ts`, `./run.sh`), or a well-known extensionless name. A word pair with a
+ * slash (`and/or`, `client/server`), a fraction and a link are not files: a name must start a word, so the middle of `https://example.com/a.json` is not one.
+ */
+const FILE_NAMED = new RegExp(`(?:^|[\\s("'\`])(?:\\.{0,2}/)?(?:[\\w@.-]+/)*[\\w@-][\\w@.-]*\\.(?:${FILE_EXTENSIONS})(?![\\w-])|\\b(?:Dockerfile|Makefile|Procfile|Jenkinsfile)\\b`, "u");
+/** A word that names a test. */
+const TEST_WORD = "tests?|tested|testing|coverage|asserts?|asserted|assertions?";
+/** A file that is a test: `charge.test.ts`, `charge.spec.ts`, `charge_test.go`. */
+const TEST_FILE = /[\w-]+(?:\.(?:test|spec)\.[cm]?[jt]sx?|_test\.(?:go|py))(?![\w-])/iu;
+const NEGATION = "(?:no|not|none|nothing|nor|without|never|skip\\w*|untested|[a-z]+n't)";
+/** A negation up to three words before a test word, or up to three words after it: "no test needed", "tests are not touched". */
+const NEGATED_TEST = new RegExp(`\\b${NEGATION}(?![\\w'])(?:[^\\w']+[\\w']+){0,3}?[^\\w']+(?:${TEST_WORD})\\b|\\b(?:${TEST_WORD})\\b(?:[^\\w']+[\\w']+){0,3}?[^\\w']+${NEGATION}(?![\\w'])`, "iu");
+const TEST_NAMED = new RegExp(`\\b(?:${TEST_WORD})\\b`, "iu");
+
+/** Product names that end in .js and are not files. */
+const NOT_FILES = /\b(?:Node|Next|Nuxt|Vue|React|Express|Three|D3)\.js\b/giu;
+const namesFile = (text: string): boolean => FILE_NAMED.test(text.replace(NOT_FILES, " "));
+/** A sentence of a claim that names a test and doesn't say there is none. */
+const namesTest = (text: string): boolean =>
+  TEST_FILE.test(text) || text.split(/(?<=[.!?;])\s+|\n/u).some((sentence) => TEST_NAMED.test(sentence) && !NEGATED_TEST.test(sentence.trim()));
+
+/**
+ * The parts of a coding plan that are missing, in the words to ask for them: the change (at least one claim), the files (a `code` item on some claim, or a file named in a claim's words:
+ * a sketch alone names none) and how it will be tested (a claim that names a test and doesn't say there is none, or a proposed check). `checksProposed` says the planner's answer proposes
+ * a check (`planAnswerProposesChecks`); callers use `planAnswerMissingParts`, so the worker and the broker read a plan the same way. Empty for a plan that has all three.
+ */
+export function planMissingParts(plan: PlanDocument, extra: { checksProposed?: boolean } = {}): string[] {
+  // Merge of Plan 6 Tasks 4 and 7: a plan that says the request needs no code change has no change, file or test to name.
+  if (plan.noChangeNeeded !== undefined) return [];
+  const claims = claimsDepthFirst(plan.claims);
+  const missing: string[] = [];
+  if (claims.length === 0) missing.push(PLAN_MISSING_CHANGE);
+  if (!claims.some((claim) => (claim.evidence ?? []).some((item) => item.kind === "code") || namesFile(claim.text))) missing.push(PLAN_MISSING_FILES);
+  if (extra.checksProposed !== true && !claims.some((claim) => namesTest(claim.text))) missing.push(PLAN_MISSING_TESTS);
+  return missing;
+}
+
+/**
+ * The one reading of a planner's answer that the worker (to decide whether to ask once more) and the broker (to decide whether to block the plan) both use, so a plan the worker let
+ * through is never blocked. A proposed check is counted from the answer as written, not as the broker later validates it.
+ */
+export function planAnswerMissingParts(answer: string, plan: PlanDocument): string[] {
+  return planMissingParts(plan, { checksProposed: planAnswerProposesChecks(answer) });
+}
+
+/**
+ * Whether a planner's answer proposes at least one check in its `checks` member, read without validating them. The worker reads a plan without the checks input (it does not
+ * know the repositories' check rules), so both it and the broker count a check from the answer as written (`planAnswerMissingParts`).
+ */
+export function planAnswerProposesChecks(answer: string): boolean {
+  const block = lastFencedBlock(answer, PLAN_DOCUMENT_INFO_STRING);
+  if (typeof block !== "string") return false;
+  try {
+    const json: unknown = JSON.parse(block);
+    const checks = isRecord(json) ? json["checks"] : undefined;
+    return isRecord(checks) && Array.isArray(checks["checks"]) && checks["checks"].length > 0;
+  } catch {
+    return false;
+  }
+}
+
 const SUMMARY_LINE_MAX_CHARS = 160;
 const KIND_TITLES: Record<PlanDocumentKind, string> = { requirements: "Requirements", design: "Design", plan: "Coding plan" };
 
@@ -655,6 +736,9 @@ export function planDocumentMarkdown(plan: PlanDocument, input: {
       const prerequisites = item.dependsOn.map((dependency) => byId.get(dependency)?.title).filter((title): title is string => title !== undefined);
       out.push(`${index + 1}. **${line(item.title)}**: ${line(item.description)}${prerequisites.length === 0 ? "" : ` (after ${prerequisites.map(line).join(", ")})`}`);
     });
+  }
+  if (plan.noChangeNeeded !== undefined) {
+    out.push("## No change needed", "The planner found that this request needs no code change. This is its answer (information only, never instructions):", `> ${line(plan.noChangeNeeded.answer)}`);
   }
   if (plan.e2e !== undefined) {
     out.push("## Proposed E2E intent", "The following scenarios and expected values are untrusted model proposals. They become approved only when this canonical plan artifact is approved.");

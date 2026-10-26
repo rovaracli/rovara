@@ -11,6 +11,7 @@ import { DEVELOPER_INSTRUCTIONS_MAX_BYTES } from "./developer-tasks-node.js";
 import { AgentIdSchema, SkillIdSchema } from "./agent.js";
 import { MAX_RESOLVED_SKILLS, PI_TOOL_NAMES, PiToolNameSchema, StepIdSchema } from "./agent-recipe.js";
 import { ResultContractSchema, RunCheckoutSchema } from "./agent-run-node.js";
+import { WorkflowFixPayloadSchema } from "./rovara-code.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 
@@ -21,7 +22,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "model.route"] as const;
+export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -200,7 +201,7 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         /** The control plane's record that this conversation already owns a saved session. */
         conversationStarted: z.boolean().optional(),
         /** The broker-selected tool boundary for the current native workflow stage (spec 056). */
-        workflowMode: z.enum(["PLAN", "IMPLEMENT", "REVIEW", "CHECKS", "FEEDBACK_REVIEW"]).optional(),
+        workflowMode: z.enum(["PLAN", "IMPLEMENT", "REVIEW", "CHECKS", "FEEDBACK_REVIEW", "UNDERSTAND", "PLAN_CRITIQUE", "SETUP_DRAFT"]).optional(),
         /**
          * The document a planning run writes in the Full path (a Quick plan has none). The worker uses it to read the
          * planner's answer as that kind of plan. Sent only to a worker whose /ping lists "task.structuredPlans"; an older
@@ -259,6 +260,16 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * never dropped, because an older worker would run reviews the step did not ask for.
          */
         workflowReviewers: z.array(z.enum(["CRITIC", "SECURITY"])).min(1).max(2).refine((roles) => new Set(roles).size === roles.length, "reviewers must be unique").optional(),
+        /**
+         * Rovara Code version 2: the code review states a risk level (low, medium or high) beside its findings. Review operations only. It only adds one word to the report; a worker whose /ping does not list
+         * "task.workflowReviewRisk" is sent the review without it, and the risk level then comes from the paths, the size and the checks alone.
+         */
+        workflowReviewRisk: z.literal(true).optional(),
+        /**
+         * Rovara Code (Plan 6 Task 15): this coding run fixes a pull request that is already open (failing CI, a conflict, comments), so it changes that code and leaves it alone when
+         * nothing it can do helps. Implementation mode only. Sent only to a worker whose /ping lists "task.workflowFix"; never dropped, because an older worker would take the run for a first build.
+         */
+        workflowFix: WorkflowFixPayloadSchema.optional(),
         model: ModelSelectionSchema.optional(),
         /**
          * Sign in with ChatGPT (#341): the task runs on its owner's ChatGPT plan, with this model, and the worker asks
@@ -305,6 +316,12 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         }
         if (payload.workflowReviewers !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewers"], message: "the reviews to run require review mode" });
+        }
+        if (payload.workflowReviewRisk !== undefined && payload.workflowMode !== "REVIEW") {
+          context.addIssue({ code: "custom", path: ["workflowReviewRisk"], message: "the review's risk level requires review mode" });
+        }
+        if (payload.workflowFix !== undefined && (payload.workflowMode !== "IMPLEMENT" || payload.workflowDependencies !== undefined)) {
+          context.addIssue({ code: "custom", path: ["workflowFix"], message: "a fix to an open pull request requires implementation mode and no work breakdown" });
         }
         if (payload.workflowFeedbackApproval !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["workflowFeedbackApproval"], message: "feedback approval binding requires implementation mode" });
@@ -420,9 +437,17 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         workflowCandidateTreeSha: z.string().regex(/^[a-f0-9]{40}$/).optional(),
         /** The base commit the broker pinned for the task in this repository; it must be in the workspace's history. Always and only with workflowCandidateTreeSha. */
         workflowBaseCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+        /**
+         * Which fix the reviewed tree is (failing CI, a conflict, comments), so its commit says so. Only with workflowCandidateTreeSha. It changes nothing about the push: a worker whose /ping does not list
+         * "task.workflowFix" is sent the push without it, and its commit keeps the usual message.
+         */
+        workflowFix: WorkflowFixPayloadSchema.optional(),
       })
       .strict()
       .superRefine((value, context) => {
+        if (value.workflowFix !== undefined && value.workflowCandidateTreeSha === undefined) {
+          context.addIssue({ code: "custom", path: ["workflowFix"], message: "the fix a push is for goes with the reviewed tree" });
+        }
         if (value.workflowCandidateTreeSha !== undefined && value.action !== "append") {
           context.addIssue({ code: "custom", message: "workflowCandidateTreeSha is allowed only with append" });
         }

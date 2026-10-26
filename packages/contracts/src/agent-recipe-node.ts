@@ -153,6 +153,12 @@ function codingStructureProblems(steps: readonly ResolvedStep[], add: (path: str
     if (order > 0) add(`steps.${index}`, `a recipe can have only one plan step`);
     else if (index !== 0) add(`steps.${index}`, `the plan step must come first`);
   });
+  // Rovara Code version 2: the plan check comes directly after the plan, and there is only one.
+  indexesOf("plan_critic").forEach((index, order) => {
+    if (order > 0) add("steps", "a recipe can have only one plan check step");
+    else if (plans.length === 0) add("steps", "a plan check needs a plan step");
+    else if (index !== (plans[0] ?? -1) + 1) add("steps", "a plan check must come right after the plan step");
+  });
   const builds = indexesOf("build");
   if (builds.length === 0) add("steps", "a coding recipe needs at least one build step");
   const pullRequests = indexesOf("pull_request");

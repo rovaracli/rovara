@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { E2E_MODEL_FAILURE_CLASSES, type E2EModelFailureClass } from "./e2e-model-channel.js";
+import { E2E_MODEL_FAILURE_CLASSES, type E2EModelFailureClass } from "./e2e-model-failure-classes.js";
 import type { ModelSelectionSchema } from "./models.js";
 import { ModelIdentifierSchema, ThinkingLevelSchema } from "./models.js";
 import { isKeyedModelProvider, KEYED_MODEL_PROVIDERS } from "./model-providers.js";

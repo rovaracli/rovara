@@ -315,8 +315,9 @@ describe("workflow Slack messages", () => {
       try {
         workflow = snapshot(stage, "BLOCKED", { blockReason: stage === "PULL_REQUEST" ? WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE : "planning operation ended failed" });
       } catch {
-        // Nothing runs while a document waits for its owner, a closed task is done, and a merged one is complete.
-        expect(["PLAN_REVIEW", "CLOSED", "MERGED"], stage).toContain(stage);
+        // Nothing runs while a document waits for its owner, a closed task is done, and a merged one is complete. UNDERSTAND and PLAN_CRITIQUE
+        // exist only in a 1.1.0 snapshot (Task 1); this helper builds a 1.0.0 one, and their Slack cards come with the tasks that run them.
+        expect(["PLAN_REVIEW", "CLOSED", "MERGED", "UNDERSTAND", "PLAN_CRITIQUE"], stage).toContain(stage);
         continue;
       }
       const message = workflowMessage({ taskId, workflow });

@@ -3,11 +3,13 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  isRunLimitBlockReason, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
+  answeredMessage, formatMinutes, intentQuestionsMessage, isCiFixBlockReason, isRunLimitBlockReason, workflowAnswer, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
+import { critiqueLines } from "../rovara-code/critique-lines.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
 import { isE2EPlanCorrectionBlockReason } from "./task-records.js";
+import { workflowReviewRound } from "../rovara-code/verification-report.js";
 
 export interface WorkflowMessageContext {
   taskId: string;
@@ -24,7 +26,7 @@ export interface WorkflowMessageContext {
    * A structured document's card: its top claims in rank order (for a tiny plan every claim, a child's text starting
    * with two spaces per level), how many claims and decisions it has in all, and whether it is tiny. Replaces `documentSummary`.
    */
-  structured?: { claims: string[]; claimCount: number; decisionCount: number; tiny: boolean } | undefined;
+  structured?: { claims: string[]; claimCount: number; decisionCount: number; tiny: boolean; noChangeNeeded?: NoChangeNeeded | undefined } | undefined;
   findingsUrl?: string | undefined;
   /** The task page, where every thread reply can be read. */
   taskPageUrl?: string | undefined;
@@ -44,6 +46,8 @@ export interface WorkflowMessageContext {
   runEstimate?: RunEstimate | undefined;
   /** The name of the agent doing the work, for the max-per-run line (Rovara Code when absent). */
   agentName?: string | undefined;
+  /** The task's project, for the plan check's note that the project allows only one model. */
+  project?: string | undefined;
 }
 export interface WorkflowMessage { text: string; blocks: Array<Record<string, unknown>> }
 
@@ -118,20 +122,21 @@ export function isFeedbackReviewFailure(blockReason: string | undefined): boolea
 }
 
 /** The step a stopped run ran, as the first word of the sentence that says it was stopped (keys: `workflowRunEndedReason`'s step names). */
-const STOPPED_STEP_NAME: Readonly<Record<string, string>> = { planning: "Planning", implementation: "Coding", "verification retry": "Checking", "independent review": "Reviewing" };
+const STOPPED_STEP_NAME: Readonly<Record<string, string>> = { understanding: "Understanding", planning: "Planning", "plan check": "The plan check", implementation: "Coding", "verification retry": "Checking", "independent review": "Reviewing" };
 
 /** The broker's own reason a step stopped, in words the owner can act on; any other reason is internal. */
-export function plainBlockReason(blockReason: string | undefined): string {
-  if (blockReason === undefined) return GENERIC_REASON;
+export function plainBlockReason(blockReason: string | undefined, as: "AgentX" | "Rovara" = "AgentX"): string {
+  const generic = as === "Rovara" ? GENERIC_REASON.replace("AgentX", "Rovara") : GENERIC_REASON;
+  if (blockReason === undefined) return generic;
   if (isE2EPlanCorrectionBlockReason(blockReason)) return slackText(blockReason);
   const reworded = REWORDED_REASONS.get(blockReason);
   if (reworded !== undefined) return slackText(reworded);
   // PLANINC-2: a stop the owner asked for (cancelled, or interrupted when the stop could not be delivered) says so and what to do; only a failed run is unexpected.
-  const stopped = /^(planning|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/.exec(blockReason);
+  const stopped = /^(understanding|planning|plan check|implementation|verification retry|independent review) operation ended (cancelled|interrupted)$/.exec(blockReason);
   if (stopped !== null) return `${STOPPED_STEP_NAME[stopped[1]!]!} was stopped before it finished. Choose Retry to run it again.`;
   if (/operation ended (failed|interrupted|cancelled)$/.test(blockReason)) return "The run stopped unexpectedly.";
   if (/ was invalid, incomplete, or stale$/.test(blockReason)) return "The result couldn't be trusted, so nothing moved forward.";
-  return PLAIN_REASONS.has(blockReason) ? slackText(blockReason) : GENERIC_REASON;
+  return PLAIN_REASONS.has(blockReason) ? slackText(blockReason) : generic;
 }
 
 /** A review-only task's blocked verification, without advice to rerun checks it does not have. */
@@ -349,9 +354,11 @@ function structuredClaimLines(structured: NonNullable<WorkflowMessageContext["st
  * Plan 3, Task 34: the plan-ready lines for what the run is expected to cost: the range and the run limit, and, when the agent's max per run would stop the
  * run before its run limit, that. Dollars are written as they are (fifty-cent steps: `$1.5`, `$4`).
  */
-function runEstimateLines(estimate: RunEstimate, agentName: string): string[] {
+function runEstimateLines(estimate: RunEstimate, agentName: string, workflow: WorkflowSnapshot): string[] {
   const lines = [`Estimated cost: about $${String(estimate.lowUsd)}\u2013$${String(estimate.highUsd)}. Run limit: $${String(estimate.runLimitUsd)}.`];
   if (estimate.stopAtUsd < estimate.runLimitUsd) lines.push(`${cleanLine(agentName, 60)}'s max per run is $${String(estimate.stopAtUsd)}, so this run will stop at $${String(estimate.stopAtUsd)}, before its run limit.`);
+  // Plan 6 Task 7: a version 2 plan also says how long to a pull request, after the cost lines. Version 1 messages stay as recorded.
+  if (estimate.minutes !== undefined && workflow.definitionVersion === "1.1.0") lines.push(`Estimated time: ${formatMinutes(estimate.minutes.low, estimate.minutes.high)} to a pull request.`);
   return lines;
 }
 
@@ -386,7 +393,9 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
       tail.push(context.taskPageUrl === undefined || commentId === undefined ? line : link(`${context.taskPageUrl}?doc=${approved.replace(" ", "-")}#comment-${commentId}`, line));
     }
   } else if (answered !== undefined && answered.total > 0) tail.push(`AgentX answered ${answered.answered} of ${plural(answered.total, "comment")} from v${answered.fromVersion}.`);
-  if (context.runEstimate !== undefined && workflowDocumentType(workflow) === "plan") tail.push(...runEstimateLines(context.runEstimate, context.agentName ?? "Rovara Code"));
+  if (context.runEstimate !== undefined && workflowDocumentType(workflow) === "plan") tail.push(...runEstimateLines(context.runEstimate, context.agentName ?? "Rovara Code", workflow));
+  // Plan 6 Task 8: what the second model made of a version 2 plan. Its words are the critic's, so each line is redacted, on one line, cut and escaped.
+  if (workflow.definitionVersion === "1.1.0" && workflowDocumentType(workflow) === "plan") tail.push(...critiqueLines(workflow.critique, context.project ?? "this project").map((line) => cleanLine(line, 300)));
   // The owner can always reach the plan: when the document could not be shown or linked, the task page is, and an
   // administrator is named only when no task page exists at all.
   const unlinked = context.taskPageUrl === undefined
@@ -397,6 +406,12 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     const lines = [header];
     for (const line of (context.documentSummary ?? []).slice(0, 3)) lines.push(`> ${cleanLine(line, SUMMARY_LINE_MAX)}`);
     lines.push(...tail, context.documentLink === undefined ? unlinked : link(context.documentLink.url, `Read the full ${name}`));
+    return { text: lines.join("\n"), buttons: decisions };
+  }
+  // Rovara Code version 2: the planner found that no code change is needed. The card gives the answer (a model's words, escaped for Slack) and says what the owner can do with it.
+  if (structured.noChangeNeeded !== undefined && !needsE2ECorrection) {
+    const lines = [slackText(answeredMessage(structured.noChangeNeeded)), "", "Close it as answered, or ask for the change anyway: both are on the task page, and Request changes here asks for it too.",
+      context.documentLink === undefined ? unlinked : link(context.documentLink.url, `Open the ${name}`)];
     return { text: lines.join("\n"), buttons: decisions };
   }
   // FR-036: what Approve in Slack takes. A tiny plan (FR-037) is approved in Slack as it is, so its card is unchanged.
@@ -660,11 +675,21 @@ function pushingFixTo(workflow: WorkflowSnapshot): string | undefined {
 
 function implementRunning(context: WorkflowMessageContext): string {
   const { workflow } = context;
+  // Plan 6 Task 15: the first run of a fix for failing CI says so, in the failing checks' own names (GitHub's words, escaped); what the fix's own checks and reviews send back says what a send-back says.
+  if (workflow.fixSource === "ci" && sendBackProblems(workflow).length === 0) {
+    const names = (workflow.fixProblems ?? []).map(slackText);
+    const what = names.length === 0 ? "CI" : `the failing CI ${names.length === 1 ? "check" : "checks"} (${names.join(", ")})`;
+    return `Fixing ${what}. The checks and reviews run again after, and I'll push the fix to the pull request if they pass.`;
+  }
   const decision = leadingDecision(workflow);
   const feedback = (workflow.feedbackDecisions ?? []).at(-1);
   if (feedback?.decision === "APPROVE" && feedback.workflowRevision >= workflow.revision - 2 && (decision === undefined || feedback.at >= decision.at)) {
     return "PR feedback approved. Updating the code now; the checks and reviews run again after.";
   }
+  // Rovara Code version 2 (Task 12): a review round that found problems sends the work back on its own, and the thread says which round it is. It comes after the
+  // approved PR feedback fix (above), and an owner's own send-back keeps its wording (below); a version 1 task, and a fix for CI, a conflict or comments, have no round.
+  const round = workflowReviewRound(workflow);
+  if (round !== undefined && decision?.source !== "SEND_BACK" && decision?.source !== "FINDINGS") return round.message;
   if (decision?.source === "SEND_BACK" || decision?.source === "FINDINGS") {
     const problems = sendBackProblems(workflow);
     const issues = problems.filter((problem) => problem.source !== "check").length;
@@ -708,12 +733,25 @@ function planRunning(context: WorkflowMessageContext): string {
   const name = workflowDocumentName(workflow);
   const decision = leadingDecision(workflow);
   if (decision?.decision === "REQUEST_CHANGES") return `Got it. Revising the ${name} with your changes.`;
+  // Plan 6 Task 8: the plan check sent the plan back to its planner (no person decided).
+  if (workflow.critique !== undefined && workflow.critique.revisions > 0 && workflow.critique.critiques.length > 0 && workflow.critique.critiques.length <= workflow.critique.revisions) {
+    return `A second model checked the ${name} and found problems. Revising the ${name}.`;
+  }
   if (decision?.decision === "APPROVE" && workflow.path === "FULL") {
     const previous = workflow.reviewPhase === "DESIGN" ? "requirements" : "design";
     return `${capitalized(previous)} approved${approvedBy(context, decision)}. Writing the ${name} next.`;
   }
   return `Working on the ${name}. I'll post it here for your approval; nothing changes in the code until you approve.`;
 }
+
+/** The message that gives an answered task's answer; a task whose answer can't be read still says that no code change was needed. */
+function answeredText(workflow: WorkflowSnapshot): string {
+  const answer = workflowAnswer(workflow);
+  return answer === undefined ? "No code change is needed." : answeredMessage(answer);
+}
+
+/** A step's refusal for a model the company or the project doesn't allow (Plan 3's words); shown as it is, escaped. */
+const MODEL_REFUSAL = /^.{1,120}'s .{1,60} step uses [\w./:@-]{1,120}, which isn't allowed on .{1,80}\. Ask the agent's owner to pick another model\.$/u;
 
 function copyOf(context: WorkflowMessageContext): { text: string; buttons: Button[] } | undefined {
   const { workflow } = context;
@@ -726,11 +764,26 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
   const checksAndReviewsPassed = reviewOnly ? "Reviews passed (no automated check applied)." : "Checks and reviews passed.";
   if (context.publishFailure !== undefined && workflow.stage === "PULL_REQUEST") return publishFailed(context, exits, context.publishFailure);
   switch (`${workflow.stage}/${workflow.state}`) {
+    // Rovara Code version 2: Understand reads the request and the code first, and asks its questions (a model's words, escaped here; the thread's reply answers all of them) when it must.
+    case "UNDERSTAND/WAITING": {
+      const asked = workflow.intent?.assessment;
+      return asked?.kind === "questions" ? plain(slackText(intentQuestionsMessage(asked.questions))) : undefined;
+    }
+    case "UNDERSTAND/RUNNING": return plain("Reading your request and the code before I plan. I'll ask a question here if I need one; nothing changes in the code until you approve a plan.");
+    case "UNDERSTAND/BLOCKED": return { text: `I couldn't finish understanding this task. ${plainBlockReason(workflow.blockReason)}`, buttons: [exits.button("agentx_workflow_retry_plan", "Retry understanding"), exits.close] };
     case "PLAN/RUNNING": return plain(planRunning(context));
     case "PLAN/BLOCKED": return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.planUnreadable
       ? `AgentX couldn't read the ${workflowDocumentName(workflow)} it wrote.`
       : `I couldn't finish the ${workflowDocumentName(workflow)}. ${plainBlockReason(workflow.blockReason)}`,
       buttons: [exits.button("agentx_workflow_retry_plan", "Retry planning"), exits.close] };
+    // Plan 6 Task 8: the plan check runs between the plan and its approval; the plan is posted once, after it. A check that stopped says so and can be closed.
+    // Only a model the company chose for the check, and that it may not use, blocks it; the rest of what can go wrong with the check lets the plan go on, unchecked.
+    case "PLAN_CRITIQUE/BLOCKED": {
+      const reason = workflow.blockReason;
+      const said = reason !== undefined && MODEL_REFUSAL.test(reason) ? slackText(reason) : plainBlockReason(reason, "Rovara");
+      const stopped = reason !== undefined && /^plan check operation ended (cancelled|interrupted)$/u.test(reason);
+      return { text: stopped ? said : `The plan check stopped before it finished. ${said}`, buttons: [exits.button("agentx_workflow_retry_plan_check", "Retry plan check"), exits.close] };
+    }
     case "PLAN_REVIEW/WAITING": return planReview(context, exits);
     // Only a task view shows this (never stored): the saved document failed its digest check, so it can't be approved.
     case "PLAN_REVIEW/BLOCKED": return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.documentUnverified
@@ -765,7 +818,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     case "WAIT_FOR_MERGE/RUNNING": return plain(feedbackReviewStarted(workflow));
     // Nothing on GitHub is retried from here: the owner closes the task (its pull request stays on GitHub). Only a changed
     // pull request ends the following; a failed feedback review or push leaves the merge still tracked.
-    case "WAIT_FOR_MERGE/BLOCKED": return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestChanged
+    // Plan 6 Task 15: CI failing and a person needed (Rovara is set to suggest, three fixes did not help, or a fix changed nothing): the reason says it (its check name and log line are GitHub's words, escaped); Retry the fix is in the app.
+    case "WAIT_FOR_MERGE/BLOCKED": if (isCiFixBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason!), buttons: [exits.close] };
+      return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestChanged
       ? `I stopped following the pull request. ${plainBlockReason(workflow.blockReason)}`
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestClosed ? plainBlockReason(workflow.blockReason)
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed ? pullRequestUpdateFailed(workflow)
@@ -775,8 +830,12 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       return plain(total <= 1 ? "The pull request is merged. This task is complete." : `All ${total} pull requests are merged. This task is complete.`);
     }
     // A custom sequence with no pull request step ran every step: its changes stay in the workspace, and only closing the task gives it back.
-    case "CLOSED/COMPLETE": return plain(workflow.outcome === "REJECTED" ? "Closed without changes."
-      : workflow.outcome === "PASSED" ? SEQUENCE_FINISHED_TEXT : "This task is closed.");
+    // A question that needed no code change: the answer, as a plain message (a model's words, escaped for Slack).
+    case "CLOSED/COMPLETE": return plain(workflow.outcome === "ANSWERED" ? slackText(answeredText(workflow))
+      : workflow.outcome === "REJECTED" ? "Closed without changes."
+      : workflow.outcome === "PASSED" ? SEQUENCE_FINISHED_TEXT
+      // A version 2 task whose Understand never came back in time was ended, and says why.
+      : workflow.outcome === "CLOSED" && workflow.blockReason === WORKFLOW_BLOCK_REASONS.understandTimedOut ? WORKFLOW_BLOCK_REASONS.understandTimedOut : "This task is closed.");
     default: return undefined;
   }
 }

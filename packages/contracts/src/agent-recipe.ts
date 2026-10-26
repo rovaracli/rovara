@@ -29,7 +29,11 @@ export const Sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const StepIdSchema = z.string().regex(/^[a-z][a-z0-9_]{0,23}$/);
 
-export const CODING_STEP_KINDS = ["plan", "build", "check", "review", "pull_request"] as const;
+/**
+ * `plan_critic` (Rovara Code version 2) is an ordinary step that checks the plan with a second model; it comes only directly after `plan`, at most once.
+ * Nothing about it asks for a different AI company: the company chooses its model through an overlay like any step's (question 10).
+ */
+export const CODING_STEP_KINDS = ["plan", "plan_critic", "build", "check", "review", "pull_request"] as const;
 
 export const AGENT_STEP_KINDS = ["agent", "approval"] as const;
 
@@ -48,9 +52,10 @@ export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const satisfies
 export const STEP_TOOLS = {
   build: PI_TOOL_NAMES,
   plan: READ_ONLY_TOOLS,
+  plan_critic: READ_ONLY_TOOLS,
   review: READ_ONLY_TOOLS,
   agent: READ_ONLY_TOOLS,
-} as const satisfies Record<"build" | "plan" | "review" | "agent", readonly PiToolName[]>;
+} as const satisfies Record<"build" | "plan" | "plan_critic" | "review" | "agent", readonly PiToolName[]>;
 
 export const StepThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high"]);
 
@@ -90,6 +95,7 @@ export function stepVariants<Settings extends z.ZodType, CheckSettings extends z
   const common = { id: StepIdSchema, name: StepNameSchema };
   return z.discriminatedUnion("kind", [
     z.object({ ...common, kind: z.literal("plan"), settings }).strict(),
+    z.object({ ...common, kind: z.literal("plan_critic"), settings }).strict(),
     z.object({ ...common, kind: z.literal("build"), settings }).strict(),
     z.object({ ...common, kind: z.literal("check"), settings: checkSettings }).strict(),
     z.object({

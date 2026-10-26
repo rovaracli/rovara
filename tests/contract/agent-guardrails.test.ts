@@ -916,6 +916,7 @@ describe("a built-in agent turned off", () => {
     const state = { latest: 1 };
     const builtins = {
       currentVersion: (id: string) => (id === "ticket-triage" ? state.latest : 1),
+      defaultPin: (id: string) => (id === "ticket-triage" ? state.latest : 1),
       recipe: (id: string, version: number) => structuredClone(id === "ticket-triage" ? shipped : BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].versions[version - 1]!.recipe),
       name: (id: string) => BUILTIN_AGENTS[id as keyof typeof BUILTIN_AGENTS].name,
     };

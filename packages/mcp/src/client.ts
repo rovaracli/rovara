@@ -10,6 +10,8 @@ import {
   DeveloperPullRequestResponseSchema,
   DeveloperTaskListResponseSchema,
   DeveloperTaskResponseSchema,
+  TASK_VIEW_HEADER,
+  TASK_VIEW_VERSION,
   SessionListReaderSchema,
   SessionMessageSchema,
   SessionResponseReaderSchema,
@@ -23,7 +25,7 @@ import {
   type DeveloperPullRequestResponse,
   type DeveloperTaskListItem,
   type DeveloperTaskStatus,
-  type DeveloperTaskView,
+  type DeveloperTaskClientView,
   type ShareDeveloperTaskRequest,
   type RunInput,
   type StartDeveloperTaskRequest,
@@ -85,32 +87,32 @@ export interface ControlPlaneClient {
   /** The environment's agentx-configuration, read without a token. */
   configuration(): Promise<{ env: string; apiVersion: string; baseUrl: string; adminApiVersion?: string; confirm?: AgentXConfigurationConfirm }>;
   projects(): Promise<DeveloperProjectsResponse>;
-  startTask(request: StartDeveloperTaskRequest): Promise<DeveloperTaskView>;
-  getTask(taskId: string, events: number, options?: CallOptions): Promise<DeveloperTaskView>;
+  startTask(request: StartDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
+  getTask(taskId: string, events: number, options?: CallOptions): Promise<DeveloperTaskClientView>;
   listTasks(query: { project?: string; status?: DeveloperTaskStatus; limit: number }): Promise<DeveloperTaskListItem[]>;
-  continueTask(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskView>;
-  decideWorkflowTask(taskId: string, request: WorkflowDecisionRequest): Promise<DeveloperTaskView>;
-  startWorkflowReviewTask(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskView>;
-  retryWorkflowTask(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskView>;
+  continueTask(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
+  decideWorkflowTask(taskId: string, request: WorkflowDecisionRequest): Promise<DeveloperTaskClientView>;
+  startWorkflowReviewTask(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
+  retryWorkflowTask(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
   /** Task 16: sends blocked work back to coding with the problems found; expectedRevision is required. */
-  sendWorkflowBack(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskView>;
+  sendWorkflowBack(taskId: string, request: ContinueDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
   /** Accepts (with a reason) or sends to coding each blocking review finding; expectedRevision and candidateDigest are required. */
-  resolveWorkflowFindings(taskId: string, request: WorkflowResolveFindingsInput): Promise<DeveloperTaskView>;
+  resolveWorkflowFindings(taskId: string, request: WorkflowResolveFindingsInput): Promise<DeveloperTaskClientView>;
   /** Task 12/16: asks AgentX to open the workflow's draft pull request again. */
-  retryWorkflowPublish(taskId: string, request: WorkflowPublishRetryRequest): Promise<DeveloperTaskView>;
+  retryWorkflowPublish(taskId: string, request: WorkflowPublishRetryRequest): Promise<DeveloperTaskClientView>;
   /** After an approved PR feedback fix changed nothing: keep the pull request as it is and wait for its merge again. */
-  keepWorkflowPullRequests(taskId: string, request: WorkflowPublishRetryRequest): Promise<DeveloperTaskView>;
+  keepWorkflowPullRequests(taskId: string, request: WorkflowPublishRetryRequest): Promise<DeveloperTaskClientView>;
   /** The pending PR feedback proposal, as the feedback page shows it (GitHub and reviewer text: untrusted data). */
   getWorkflowFeedback(taskId: string): Promise<Record<string, unknown>>;
   /** The owner's decision on the pending PR feedback proposal, the same transition the Slack buttons make. */
-  decideWorkflowFeedback(taskId: string, request: WorkflowFeedbackFindingsDecisionRequest): Promise<DeveloperTaskView>;
+  decideWorkflowFeedback(taskId: string, request: WorkflowFeedbackFindingsDecisionRequest): Promise<DeveloperTaskClientView>;
   /** The owner's Retry review of a PR feedback review that could not finish. */
-  retryWorkflowFeedbackReview(taskId: string, request: WorkflowFeedbackReviewRetryRequest): Promise<{ task: DeveloperTaskView; started: boolean }>;
-  cancelTask(taskId: string, requestId: string): Promise<DeveloperTaskView>;
+  retryWorkflowFeedbackReview(taskId: string, request: WorkflowFeedbackReviewRetryRequest): Promise<{ task: DeveloperTaskClientView; started: boolean }>;
+  cancelTask(taskId: string, requestId: string): Promise<DeveloperTaskClientView>;
   closeTask(taskId: string, requestId: string, discardUnpublished?: boolean): Promise<DeveloperCloseResponse>;
   openPullRequest(taskId: string, request: DeveloperPullRequestRequest): Promise<DeveloperPullRequestResponse>;
   /** Spec 025 FR-030: shares the task, or changes a shared task's mode (API 1.2). */
-  shareTask(taskId: string, request: ShareDeveloperTaskRequest): Promise<DeveloperTaskView>;
+  shareTask(taskId: string, request: ShareDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
   getTaskPeople(taskId: string): Promise<TaskPeopleView>;
   getTaskPeopleRequest(taskId: string, requestId: string): Promise<TaskPeopleChangeResult>;
   setTaskPerson(taskId: string, request: TaskPeopleRoleRequest): Promise<TaskPeopleChangeResult>;
@@ -120,7 +122,7 @@ export interface ControlPlaneClient {
   /** Plan 3 Task 35a: the agents the person can see, or those that work on a project. */
   listAgents(query: { project?: string }): Promise<AgentSummary[]>;
   /** Plan 3 Task 35a: starts a run of an agent on a project; the run is a task. */
-  runAgent(agentId: string, request: { requestId: string; project: string; version?: number | "draft"; input: RunInput }): Promise<DeveloperTaskView>;
+  runAgent(agentId: string, request: { requestId: string; project: string; version?: number | "draft"; input: RunInput }): Promise<DeveloperTaskClientView>;
   /**
    * Plan 3 Task 35a: the approvals that wait for the person, one with its full arguments, and its confirmation page's link (ticketed when they
    * may decide it). There is no call that decides one: a person decides on the page (R3-4, R66).
@@ -240,7 +242,7 @@ export function httpControlPlaneClient(options: {
     };
     for (let attempt = 1; ; attempt += 1) {
       if (isCancelled()) throw cancelled();
-      const headers: Record<string, string> = { "x-agentx-trace-id": options.traceId?.() ?? randomUUID() };
+      const headers: Record<string, string> = { "x-agentx-trace-id": options.traceId?.() ?? randomUUID(), [TASK_VIEW_HEADER]: TASK_VIEW_VERSION };
       if (authorized) headers.authorization = `Bearer ${current.accessToken}`;
       if (body !== undefined) headers["content-type"] = "application/json";
       // Each try gets what is left of the deadline, at most 30 seconds, to answer in full.
@@ -300,7 +302,7 @@ export function httpControlPlaneClient(options: {
     }
   }
 
-  const task = (response: { task: DeveloperTaskView }) => response.task;
+  const task = (response: { task: DeveloperTaskClientView }) => response.task;
   /** A session view with its own link and its decision links kept only when they are the control plane's. */
   const pinned = async (view: SessionViewRead): Promise<SessionViewRead> => {
     const { baseUrl } = await session();

@@ -30,7 +30,22 @@ export const DEFAULT_RUN_ESTIMATE_USD = {
   AGENT: { lowUsd: 0.5, highUsd: 2 },
 } as const satisfies Record<"QUICK" | "FULL" | "TASK" | "AGENT", RunEstimateRange>;
 
-/** A run's expected cost and the limits that follow from it (Task 34); `basis` says whether the range came from the org's own runs or the default. */
+/** The longest time an estimate of a task's duration may show, in minutes: a task that sat waiting for a person is counted as no more than this. */
+export const RUN_MINUTES_MAX = 480;
+
+/**
+ * Rovara Code version 2 (Plan 6 Task 7): the expected time from the task's start to its pull request, in minutes, from the project's recent tasks or, with too little
+ * history, the defaults (`basis`). An estimate for a person to read, never a limit.
+ */
+export const RunMinutesSchema = z.object({
+  low: z.number().int().min(1).max(RUN_MINUTES_MAX),
+  high: z.number().int().min(1).max(RUN_MINUTES_MAX),
+  basis: z.enum(["history", "default"]),
+  samples: z.number().int().min(0),
+}).strict().refine((minutes) => minutes.low <= minutes.high, { error: "the low end comes after the high end" });
+export type RunMinutes = z.infer<typeof RunMinutesSchema>;
+
+/** A run's expected cost and the limits that follow from it (Task 34); `basis` says whether the range came from the org's own runs or the default. `minutes` is Plan 6's time estimate, on version 2 tasks only. */
 export const RunEstimateSchema = z.object({
   lowUsd: z.number().finite().min(0),
   highUsd: z.number().finite().min(0),
@@ -38,6 +53,7 @@ export const RunEstimateSchema = z.object({
   stopAtUsd: z.number().finite().min(0),
   basis: z.enum(["history", "default"]),
   samples: z.number().int().min(0),
+  minutes: RunMinutesSchema.optional(),
 }).strict();
 export type RunEstimate = z.infer<typeof RunEstimateSchema>;
 

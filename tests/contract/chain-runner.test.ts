@@ -10,7 +10,7 @@ import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/ag
 import { setChainShares } from "../../packages/broker/src/chains/access.js";
 import { STARTER_CHAIN_DEFINITION, type ChainRouteDependencies } from "../../packages/broker/src/chains/routes.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { BUILTIN_AGENTS, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
 import { CHAIN_MAX_STEP_RUNS, CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, type ChainDefinitionInput, type StepResult } from "../../packages/contracts/src/chains.js";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
 import { agentXError } from "@agentx/contracts";
@@ -394,7 +394,7 @@ describe("the worked example: investigate, then fix", () => {
     await recordGateDecision(w.deps, ORG_A, run.runId, 2, "approved", decisionBy(w, run.runId, 2));
     expect(w.starts).toHaveLength(2);
     expect(w.starts[1]).toMatchObject({
-      agent: { agentId: "rovara-code", version: currentBuiltinVersion("rovara-code") }, chain: { chainRunId: run.runId, stepId: "fix" }, runLimitUsd: 29.25,
+      agent: { agentId: "rovara-code", version: builtinDefaultPin("rovara-code") }, chain: { chainRunId: run.runId, stepId: "fix" }, runLimitUsd: 29.25,
       input: {
         text: "Fix the cause the investigation found. Keep the change small.",
         context: [

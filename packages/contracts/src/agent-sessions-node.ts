@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { OrgIdSchema } from "./org.js";
 import { WorkOriginSchema, PayerSchema } from "./agent-run-node.js";
 import { ApprovalIdSchema } from "./agent.js";
-import { SlackTeamIdSchema, SlackChannelIdSchema, SlackMessageTimestampSchema } from "./slack.js";
+import { SessionBindingSchema, type SessionBinding } from "./browser-ids.js";
 
 export const SESSION_MESSAGES_MAX = 1000;
 
@@ -78,9 +78,7 @@ export const DEVICES_PER_MEMBER_MAX = 10;
 
 export const HANDOFF_SUMMARY_MAX_BYTES = 8192;
 
-const LINEAR_ISSUE_ID_MAX = 64;
 
-const LINEAR_URL_MAX = 2048;
 
 /**
  * A person's or an agent's name as a session keeps it: control characters become spaces, every format character other than ZWNJ and ZWJ (bidi
@@ -194,19 +192,8 @@ export type SessionGoneAnchor = z.infer<typeof SessionGoneAnchorSchema>;
 
 export type SessionMessage = z.infer<typeof SessionMessageSchema>;
 
-/** The outside place a session is bound to: one Slack thread or one Linear issue, at `BINDING#<kind>` (Plan 9 posts through it). */
-export const SessionBindingSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("slack_thread"), teamId: SlackTeamIdSchema, channelId: SlackChannelIdSchema, threadTs: SlackMessageTimestampSchema }).strict(),
-  z
-    .object({
-      kind: z.literal("linear_issue"),
-      issueId: z.string().regex(new RegExp(`^[A-Za-z0-9_-]{1,${String(LINEAR_ISSUE_ID_MAX)}}$`)),
-      url: z.string().url().max(LINEAR_URL_MAX).refine((value) => value.startsWith("https://"), "must be an https link"),
-    })
-    .strict(),
-]);
-
-export type SessionBinding = z.infer<typeof SessionBindingSchema>;
+// Defined in browser-ids.ts (browser-safe contracts import it there); re-exported here for everything else.
+export { SessionBindingSchema, type SessionBinding };
 
 // ---- an agent remembers the task it was made from (Plan 5 Task 10c)
 

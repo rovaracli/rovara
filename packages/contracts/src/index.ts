@@ -16,6 +16,11 @@ export * from "./credentials.js";
 export * from "./developer.js";
 export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
+export * from "./rovara-code.js";
+export * from "./rovara-code-node.js";
+export * from "./rovara-code-intent.js";
+export * from "./rovara-code-understand.js";
+export * from "./plan-critique-block.js";
 export * from "./workflow-proposed-checks.js";
 export * from "./canonical-json.js";
 export * from "./workflow-plan-document.js";
@@ -104,6 +109,7 @@ export * from "./refusal-words.js";
 export * from "./agent-sessions-node.js";
 export * from "./chains.js";
 export * from "./forward-reader.js";
+export * from "./forward-reader-unknown.js";
 export * from "./chain-session.js";
 export * from "./trigger-specs.js";
 export * from "./triggers.js";
@@ -126,3 +132,5 @@ export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
 export * from "./agent-web-views.js";
 
 export * from "./onboarding.js";
+
+export * from "./setup-draft.js";

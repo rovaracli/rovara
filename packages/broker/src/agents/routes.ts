@@ -65,6 +65,7 @@ import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
 import { adoptBuiltin, publishDraft, registerAgentApprovals, resolveBase, resolveRecipe, rollbackAgent, shareAgent, updateGuardrails, versionSafety, type ChangeResult } from "./changes.js";
+import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { NEEDS_OWNER_APPROVAL, gateRunVersion, registerRunVersionApproval } from "./run-version-gate.js";
 import type { ApprovalDependencies } from "./approvals.js";
 import { validateRecipeForOrg, readGuardrails, readGuardrailsWithRevision, requireBaseEnabled } from "./guardrails.js";
@@ -143,7 +144,7 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
  * `POST /v1/app/agents/{id}/runs` [`use`]: a person starts a run of the agent on a project. Access to the project, to the agent, the roster and the
  * guardrails are checked by the start itself, before anything is charged (an agent the caller can't see answers the same 404 as one that doesn't exist).
  */
-async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown): Promise<StatusReply> {
+async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId, body: unknown, headers: Record<string, string | undefined>): Promise<StatusReply> {
   if (deps.startRun === undefined) throw agentXError("NOT_FOUND", "starting runs is not set up in this deployment");
   const input = parseBody(RunBodySchema, body);
   // A version that is not the current one and is less safe than it waits for the agent's owner (owner decision 2026-10-22): nothing starts until they OK it.
@@ -153,7 +154,8 @@ async function startRun(deps: AgentRouteDependencies, caller: AgentCaller, agent
     requestId: input.requestId, project: input.project, input: input.input,
     agent: { agentId, ...(input.version === undefined ? {} : { version: input.version }) },
   });
-  return new StatusReply(202, { task: started.task });
+  // Rovara Code (Plan 6): a client that does not send `x-agentx-task-view: 2` reads a version 1 projection of the task.
+  return new StatusReply(202, taskResponseForClient({ task: started.task }, headers));
 }
 
 /** The answer for a change waiting on the page. */
@@ -273,7 +275,7 @@ async function builtinView(deps: ApprovalDependencies, orgId: OrgId, agentId: Ag
     builtin: true,
     status: "active",
     ...(disabled ? { disabled: true } : {}),
-    pinnedVersion: settings?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId),
+    pinnedVersion: settings?.pinnedVersion ?? deps.store.builtinDefaultPin(agentId),
     latestVersion: deps.store.builtinLatestVersion(agentId),
     ...(template.needsLaterConnectors === undefined ? {} : { needsLaterConnectors: template.needsLaterConnectors }),
     ...(settings?.accountable === undefined ? {} : { accountable: settings.accountable }),
@@ -379,7 +381,7 @@ async function safetyMarks(deps: AgentRouteDependencies, orgId: OrgId, agentId: 
 async function listVersions(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<{ versions: Shown[] }> {
   const { agent } = await requireReadableAgent(deps, caller, agentId, "view");
   if (!("owner" in agent)) {
-    const pinned = (await deps.store.getBuiltinSettings(caller.orgId, agentId))?.pinnedVersion ?? deps.store.builtinLatestVersion(agentId);
+    const pinned = (await deps.store.getBuiltinSettings(caller.orgId, agentId))?.pinnedVersion ?? deps.store.builtinDefaultPin(agentId);
     const releases = BUILTIN_AGENTS[agentId as keyof typeof BUILTIN_AGENTS].versions;
     const marks = await safetyMarks(deps, caller.orgId, agentId, undefined, releases.map((release) => release.version));
     return { versions: releases.map((release) => ({ version: release.version, digest: release.digest, releasedIn: release.releasedIn, notes: release.notes, current: release.version === pinned, ...marks.get(release.version) })) };
@@ -1058,7 +1060,7 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     if (sub === "budget" && method === "PUT") return putAgentBudget(deps, caller, agentId, body());
     if (sub === "update-base" && method === "POST") return updateBase(deps, caller, agentId, body());
     if (sub === "adopt" && method === "POST") return adopt(deps, caller, agentId, body());
-    if (sub === "runs" && method === "POST") return startRun(deps, caller, agentId, body());
+    if (sub === "runs" && method === "POST") return startRun(deps, caller, agentId, body(), request.headers);
   }
   throw agentXError("NOT_FOUND", "route not found");
 }

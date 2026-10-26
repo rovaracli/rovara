@@ -15,7 +15,7 @@
 // Nothing a step reports, a branch, an event or a trigger says can reach an approval record. Plan 4 makes no decide ticket and calls nothing that does (M12), and no event text carries a link
 // to the confirmation page (the log is read by people who may not decide: review I-1); whoever decides finds it from their own approvals.
 import { z } from "zod";
-import { ChainRunIdSchema, GATE_DEFAULT_TIMEOUT_HOURS, agentXError, projectAllows, type ApproverRule, type OrgId, type PinnedChainDefinition } from "@agentx/contracts";
+import { ChainRunIdSchema, GATE_DEFAULT_TIMEOUT_HOURS, agentXError, projectAllows, type ApproverRule, type OrgId } from "@agentx/contracts";
 import { orgRoleOf } from "../agents/access.js";
 import {
   createStepApproval, registerApprovalSubjectHandler, registerApproverRefusal, registerApproverRule, shownText,
@@ -26,6 +26,7 @@ import { failedIndexes } from "../agents/table-writes.js";
 import type { ChainRecord } from "./store.js";
 import { readChainRun, readStepAttempt, recordGateDecision, recordGateExpiry, advanceChainRun, isTerminalStatus, type ChainRunRecord, type ChainRunnerDependencies, type StepAttemptRecord } from "./runner.js";
 import { neutralText } from "./run-events.js";
+import { answeredGateOrigin, answeredStepName, gateStepOf, type GateStep } from "./answered-gate.js";
 
 /** The approver rule every chain gate's approval names. */
 export const CHAIN_GATE_RULE = "chain_gate";
@@ -35,7 +36,6 @@ const NAME_MAX = 80;
 const WORDS_MAX = 200;
 const FALLBACK_NAME = "a teammate";
 
-type GateStep = Extract<PinnedChainDefinition["steps"][number], { kind: "gate" }>;
 const GateSubjectSchema = z.object({ kind: z.literal("chain_gate"), chainRunId: ChainRunIdSchema, seq: z.number().int().min(1) }).strict();
 
 /** The part of the dependencies a gate's rule and words read: Plan 3's approvals, with the chain store they already carry. */
@@ -63,8 +63,8 @@ async function locate(deps: Deps, record: AnyApprovalRecord): Promise<Located | 
   const attempt = await readStepAttempt(deps, record.orgId, subject.chainRunId, subject.seq);
   if (attempt === undefined || attempt.kind !== "gate" || attempt.approvalId !== record.approvalId) return undefined;
   const version = await deps.chains.getVersion(record.orgId, run.chainId, run.chainVersion);
-  const gate = version?.definition.steps.find((step) => step.id === attempt.stepId);
-  if (gate === undefined || gate.kind !== "gate") return undefined;
+  const gate = gateStepOf(version?.definition, attempt);
+  if (gate === undefined) return undefined;
   return { run, attempt, gate, seq: subject.seq, live: !isTerminalStatus(run.status) && run.currentSeq === subject.seq && attempt.status === "waiting" };
 }
 
@@ -220,7 +220,9 @@ export async function openGateApproval(deps: Deps, run: ChainRunRecord, gate: Ga
     expiresAt: new Date(deps.now() + hours * HOUR_MS).toISOString(),
     project: run.project, owner: { developerId: run.owner.developerId, name: await displayNameOf(deps, run.owner.developerId) },
   });
-  const waitingText = `Waiting for ${await wordsFor(deps, run, gate)} to approve "${shownText(gate.name, NAME_MAX)}".`;
+  const origin = answeredGateOrigin(gate.id);
+  const waitingText = origin === undefined ? `Waiting for ${await wordsFor(deps, run, gate)} to approve "${shownText(gate.name, NAME_MAX)}".`
+    : `Waiting for ${await wordsFor(deps, run, gate)} to continue or stop: "${shownText(answeredStepName(gate.name), NAME_MAX)}" answered instead of changing code.`;
   return { record, waitingText };
 }
 
