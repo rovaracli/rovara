@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, orgMemberKey, projectMemberKey, changesKey } from "@agentx/contracts";
+import { agentSessionKey, orgMemberKey, projectMemberKey, changesKey, sharedSessionsKey } from "@agentx/contracts";
 import { putSessionShare, deleteSessionShare } from "../../packages/broker/src/agent-sessions/shares.js";
 import { routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, markThreadPosted } from "../support/developer-task-broker.js";
@@ -41,7 +41,7 @@ describe("Rovara Code session shares", () => {
     expect(w.notices()).toEqual([]);
   });
 
-  it("a widening tells the effective owner and DELETE restores the earlier level", async () => {
+  it("C1: deleting a widened member share revokes both grant and index", async () => {
     const w = world();
     w.seedShare(ORG_A, w.sessionId, { kind: "member", developerId: ARJUN }, "edit");
     w.seedShare(ORG_A, w.sessionId, { kind: "member", developerId: PRIYA }, "view");
@@ -49,7 +49,8 @@ describe("Rovara Code session shares", () => {
     const [notice] = w.notices();
     expect(notice).toMatchObject({ by: ARJUN, sessionId: w.sessionId, undo: { principalKey: `MEMBER#${PRIYA}` } });
     await deleteSessionShare(w.deps, w.caller(PRIYA), w.sessionId, `MEMBER#${PRIYA}`);
-    expect(w.db.get(agentSessionKey(ORG_A, w.sessionId, `SHARE#MEMBER#${PRIYA}`))).toMatchObject({ level: "view" });
+    expect(w.db.get(agentSessionKey(ORG_A, w.sessionId, `SHARE#MEMBER#${PRIYA}`))).toBeUndefined();
+    expect(w.db.get(sharedSessionsKey(ORG_A, { kind: "member", developerId: PRIYA }, w.sessionId))).toBeUndefined();
   });
 
   it("the legacy ownership primitive cannot bypass session confirmation", async () => {
