@@ -227,6 +227,9 @@ describe("what a settings change leaves behind", () => {
     const [event] = w.audit.recordedBy("code_settings.changed");
     expect(event).toMatchObject({ action: "code_settings.changed", actor: { kind: "member", id: MAX }, facts: { revision: 1, changed: "mergeMethod,codeReviewers", mergeMethod: "merge", reviewers: 2, selfApproval: false } });
     expect(JSON.stringify(event)).not.toContain("alice");
+    // The fact commits with the change: it is in the same transaction.
+    const written = w.db.transactions().find((items) => items.some((entry) => JSON.stringify(entry).includes("CODE_SETTINGS")))!;
+    expect(JSON.stringify(written)).toContain("AUDIT_PENDING");
   });
 
   it("records self-approval turned on by the administrator who confirmed it, with the page's proof", async () => {
@@ -237,6 +240,9 @@ describe("what a settings change leaves behind", () => {
     const events = w.audit.recordedBy("code_settings.changed");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ actor: { kind: "member", id: OLA }, facts: { revision: 1, changed: "selfApproval", selfApproval: true }, related: [approvalId], proof: { kind: "fresh_sign_in" } });
+    const written = w.db.transactions().filter((items) => items.some((entry) => JSON.stringify(entry).includes("selfApprovalConfirmedBy"))).at(-1)!;
+    expect(JSON.stringify(written)).toContain("AUDIT_PENDING");
+    expect(JSON.stringify(written)).toContain("CHANGE_NOTICE");
   });
 
   it("records nothing when nothing changed", async () => {

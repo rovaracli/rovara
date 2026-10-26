@@ -827,6 +827,18 @@ describe("after a half merge", () => {
   });
 });
 
+describe("after a half merge, a second refusal", () => {
+  it("still says which pull request merged, from what the workflow recorded", async () => {
+    const w = await ready({ pullRequests: [{ repositoryId: "payments", number: 7 }, { repositoryId: "billing", number: 8 }] });
+    const current = (w.db.get(taskKey(w.taskId))!.workflow as { pullRequests: Array<Record<string, unknown>> }).pullRequests;
+    w.setPullRequests(current.map((pr) => (pr.number === 8 ? { ...pr, state: "MERGED" } : pr)));
+    w.db.set({ ...w.trackingOf({ repositoryId: "billing", number: 8 })!, state: "merged" });
+    w.github.statuses.set(8, pullStatus(8, { state: "merged" }));
+    w.github.results.set(7, { outcome: "refused", reason: "not_mergeable" });
+    expect((await confirm(w)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.halfMerged("billing", "payments", "GitHub would not merge it") });
+  });
+});
+
 describe("who pressed, read again by a retry", () => {
   it("refuses a rerun for a presser who can no longer merge the task, before it reads anything from GitHub", async () => {
     const w = await ready();
