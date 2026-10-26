@@ -69,3 +69,32 @@ it("recovers the stored outcome when a committed transaction loses its acknowled
  expect(await f.request()).toEqual({ result: { developerId: target, role: "admin" } });expect(f.role()).toBe("admin");expect(f.audit.pending()).toHaveLength(1);expect(f.db.transactions()).toHaveLength(1);
  expect(await f.request()).toEqual({ result: { developerId: target, role: "admin" } });expect(f.db.transactions()).toHaveLength(1);expect(f.audit.recorded()).toHaveLength(1);
 });
+
+it("refuses an intact local target row whose org pointer names another org without persisting anything", async () => {
+ const control = fixture();expect((await control.request()).result).toBeTruthy();
+ const f = fixture();f.member(other, target, "owner");
+ const localBefore = f.db.get(orgMemberKey(org, target)), foreignBefore = f.db.get(orgMemberKey(other, target)), pointerBefore = f.db.get(developerOrgKey(target));
+ expect(await f.request()).toEqual({ code: "CHANGE_STALE" });
+ expect(f.db.get(orgMemberKey(org, target))).toEqual(localBefore);expect(f.db.get(orgMemberKey(other, target))).toEqual(foreignBefore);expect(f.db.get(developerOrgKey(target))).toEqual(pointerBefore);
+ expect(f.db.find(row => String(row.pk).includes("ROLE_CHANGE"))).toEqual([]);expect(f.audit.recorded()).toEqual([]);expect(f.audit.pending()).toEqual([]);
+});
+it("fences a target pointer moved to another org between review and commit", async () => {
+ const f = fixture();f.beforeCommit(() => f.member(other, target, "owner"));
+ expect(await f.request()).toEqual({ code: "CHANGE_STALE" });expect(f.role()).toBe("member");expect(f.db.get(developerOrgKey(target))).toMatchObject({ orgId: other, role: "owner" });expect(f.db.get(orgMemberKey(other, target))?.role).toBe("owner");expect(f.db.find(row => String(row.pk).includes("ROLE_CHANGE"))).toEqual([]);expect(f.audit.recorded()).toEqual([]);
+});
+it("puts the shared expiry attribute only on the reviewed replay receipt", async () => {
+ const f = fixture();f.audit.queueDown();await f.request();const receipts = f.db.find(row => String(row.pk).includes("ROLE_CHANGE"));
+ expect(receipts).toHaveLength(1);expect(receipts[0]?.indexExpiresAt).toBe(Math.floor(f.deps.now() / 1000) + 30 * 86400);expect(f.db.get(orgMemberKey(org, target))).not.toHaveProperty("indexExpiresAt");expect(f.db.get(developerOrgKey(target))).not.toHaveProperty("indexExpiresAt");
+});
+it("preserves the legacy owner-first refusal for malformed requests without expectedRole", async () => {
+ const f = fixture("member");expect(await f.request({ role: "invalid" }, target, { ...f.caller, orgRole: "member" })).toEqual({ code: "FORBIDDEN" });
+});
+it("preserves field-specific legacy owner validation without expectedRole", async () => {
+ const f = fixture(), path = `/v1/app/org/members/${target}/role`;
+ await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, role: "invalid" }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("role:") });
+});
+it("skips a stale listed owner and consistently verifies the next owner before self-demotion", async () => {
+ const f = fixture(), third = "d".repeat(64);f.member(org, target, "owner");f.member(org, third, "owner");
+ const listed = await f.deps.orgs!.listMembers(org);f.member(org, target, "member");f.deps.orgs!.listMembers = async () => listed;
+ expect(await f.request({ requestId: id, expectedRole: "owner", role: "member" }, actor)).toEqual({ result: { developerId: actor, role: "member" } });expect(f.role(actor)).toBe("member");expect(f.role(third)).toBe("owner");
+});

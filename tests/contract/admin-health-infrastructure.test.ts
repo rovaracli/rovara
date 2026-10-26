@@ -299,3 +299,8 @@ describe("the health route's grants (A13)", () => {
     expect(brokerEnvironment(legacy)).not.toHaveProperty("HEALTH_DEAD_LETTER_QUEUES");
   });
 });
+
+it("uses the shared State TTL attribute for reviewed company role receipts", () => {
+ const source = readFileSync("packages/broker/src/org/role-changes.ts", "utf8");
+ expect(source).toContain("[INDEX_EXPIRY_ATTRIBUTE]");expect(source).not.toMatch(/\bindexExpiresAt\s*:/);
+});
