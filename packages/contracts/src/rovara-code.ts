@@ -37,8 +37,9 @@ export const CODE_REVIEWERS_MAX = 10;
 export const TRACKING_COALESCE_SECONDS = 30;
 export const TRACKING_GATE_SECONDS = 60;
 export const TRACKING_MAX_ROWS = 25;
-export const TRACKING_REQUESTS_BASE = 12;
-export const TRACKING_REQUESTS_PER_EXTRA_PR = 6;
+/** What one pass may ask of GitHub for a task: sized from what one pull request really costs (status 8, a permission lookup for each of up to 8 reviewers, marking ready, asking for reviewers, with each kind of token minted once). */
+export const TRACKING_REQUESTS_BASE = 32;
+export const TRACKING_REQUESTS_PER_EXTRA_PR = 20;
 export const TRACKING_HEARTBEAT_MINUTES = 15;
 export const MERGE_CLAIM_SECONDS = 120;
 

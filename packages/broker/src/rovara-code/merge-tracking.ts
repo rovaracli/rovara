@@ -15,6 +15,7 @@ import {
   mergeTrackingDecisionDigest,
   mergeTrackingKey,
   sessionEventId,
+  type AgentXError,
   type Autonomy,
   type CodeSettings,
   type MergeTrackingItem,
@@ -134,17 +135,23 @@ export interface CiReading {
  */
 export function readCi(status: PullRequestStatus, input: { checksEverSeen: boolean; lastRovaraPushAt: number | undefined; now: number }): CiReading {
   const ciBasis = status.baseHasRequiredChecks ? "required" as const : "all_checks" as const;
+  // Checks that could not be read are not known: nothing may say they passed.
+  if (status.checksUnavailable === true) return { ci: "pending", ciBasis, failingChecks: [] };
+  const requiredNames = new Set(status.requiredCheckNames);
   if (status.checks.length === 0) {
     const settled = input.lastRovaraPushAt !== undefined && input.now - input.lastRovaraPushAt >= NO_CI_GRACE_MS;
-    if (!input.checksEverSeen && !status.headHasWorkflowFiles && settled) return { ci: "none", ciBasis, failingChecks: [] };
-    const waitEnds = !input.checksEverSeen && !status.headHasWorkflowFiles && input.lastRovaraPushAt !== undefined ? input.lastRovaraPushAt + NO_CI_GRACE_MS : undefined;
+    if (!input.checksEverSeen && !status.headHasWorkflowFiles && requiredNames.size === 0 && settled) return { ci: "none", ciBasis, failingChecks: [] };
+    const waitEnds = !input.checksEverSeen && !status.headHasWorkflowFiles && requiredNames.size === 0 && input.lastRovaraPushAt !== undefined ? input.lastRovaraPushAt + NO_CI_GRACE_MS : undefined;
     return { ci: "pending", ciBasis, failingChecks: [], ...(waitEnds === undefined || waitEnds <= input.now ? {} : { recheckAt: waitEnds }) };
   }
-  const counted = ciBasis === "required" ? status.checks.filter((check) => check.required) : status.checks;
-  // A required check that has not reported is not in the list yet: nothing is counted, so nothing has passed.
-  if (counted.length === 0) return { ci: "pending", ciBasis, failingChecks: [] };
+  // A check counts when GitHub says the base requires it for this pull request, or when branch protection names it (the name is the fallback when `isRequired` says nothing).
+  const counted = ciBasis === "required" ? status.checks.filter((check) => check.required || requiredNames.has(check.name)) : status.checks;
   const failing = counted.filter((check) => check.status === "completed" && check.conclusion !== undefined && FAILED_CONCLUSIONS.has(check.conclusion));
   if (failing.length > 0) return { ci: "failing", ciBasis, failingChecks: [...new Set(failing.map((check) => check.name))].slice(0, 10) };
+  // Every required check protection names has to have reported: one that has not is not in the list yet, and nothing has passed for it.
+  const reported = new Set(status.checks.map((check) => check.name));
+  if ([...requiredNames].some((name) => !reported.has(name))) return { ci: "pending", ciBasis, failingChecks: [] };
+  if (counted.length === 0) return { ci: "pending", ciBasis, failingChecks: [] };
   const waiting = counted.some((check) => check.status !== "completed" || check.conclusion === "action_required");
   return { ci: waiting ? "pending" : "passing", ciBasis, failingChecks: [] };
 }
@@ -405,6 +412,7 @@ export interface TrackOutcome {
 }
 
 const COMMIT_ATTEMPTS = 3;
+const isAgentXError = (error: unknown): error is AgentXError => error instanceof Error && error.name === "AgentXError";
 const isCancelled = (error: unknown): boolean => error instanceof Error && (error.name === "TransactionCanceledException" || error.name === "ConditionalCheckFailedException");
 
 /** One line for a milestone or a session: no @-mentions, no control characters. */
@@ -495,29 +503,54 @@ async function trackOne(
     }
     return found;
   };
-  const reviews = await readReviews(status, { requested: status.requestedReviewers > 0 || prior?.reviewersRequestedAt !== undefined, permission });
   const recordedHead = await deps.recordedHead?.(task.workspaceId, pullRequest.repositoryId, pullRequest.number);
   const now = deps.now();
-  const fields = deriveTrackingFields({ task, pullRequest, status, prior, recordedHead, reviews, now });
-  const ci = readCi(status, { checksEverSeen: fields.checksEverSeen, lastRovaraPushAt: fields.lastRovaraPushAt === undefined ? undefined : Date.parse(fields.lastRovaraPushAt), now });
+  const reviewsOf = (reviews: ReviewReading) => deriveTrackingFields({ task, pullRequest, status, prior, recordedHead, reviews, now });
+  // What does not depend on the reviews comes first: whether to mark ready needs only the checks and the head. The effects come before the reviews' permission lookups so
+  // that a pass that runs out of requests there has already done what it could.
+  const early = reviewsOf({ review: "not_requested" });
+  const ci = readCi(status, { checksEverSeen: early.checksEverSeen, lastRovaraPushAt: early.lastRovaraPushAt === undefined ? undefined : Date.parse(early.lastRovaraPushAt), now });
 
   // Ready for review (question 8): a draft whose counted checks pass (or that has none to wait for), on a head that is Rovara's, is taken out of draft, and the project's
   // reviewers are asked unless GitHub already lists some. A pull request that was never a draft is treated alike: the reviewers are asked and `readyAt` says when.
-  const wantsReady = status.state === "open" && fields.readyAt === undefined && fields.headByRovara && (ci.ci === "passing" || ci.ci === "none");
+  // GitHub refusing one of the two (a missing permission, an error) leaves that step undone and the item still written; a rate limit or a spent allowance goes on up.
+  const wantsReady = status.state === "open" && early.readyAt === undefined && early.headByRovara && (ci.ci === "passing" || ci.ci === "none");
   let readyNow = false;
   let asked = false;
+  let markedReady = false;
+  const attempt_ = async (step: () => Promise<unknown>, what: string): Promise<boolean> => {
+    try {
+      await step();
+      return true;
+    } catch (error) {
+      if (!isAgentXError(error) || error.code === "CONFIG_INVALID") throw error;
+      deps.log?.("merge_tracking.step_refused", { taskId: task.taskId, step: what, code: error.code });
+      return false;
+    }
+  };
   if (wantsReady) {
-    if (status.draft) {
-      await deps.github.markPullRequestReady(url, pullRequest.number, scope, budget);
-      fields.draft = false;
+    const drafted = !status.draft || await attempt_(() => deps.github.markPullRequestReady(url, pullRequest.number, scope, budget), "mark_ready");
+    if (drafted) {
+      markedReady = status.draft;
+      if (settings.codeReviewers.length > 0 && status.requestedReviewers === 0 && early.reviewersRequestedAt === undefined) {
+        asked = await attempt_(() => deps.github.requestReviewers(url, pullRequest.number, settings.codeReviewers, scope, budget), "request_reviewers");
+      }
+      readyNow = true;
     }
-    if (settings.codeReviewers.length > 0 && status.requestedReviewers === 0 && fields.reviewersRequestedAt === undefined) {
-      asked = true;
-      await deps.github.requestReviewers(url, pullRequest.number, settings.codeReviewers, scope, budget);
-      if (fields.review === "not_requested") fields.review = "requested";
-    }
-    readyNow = true;
   }
+
+  // The reviews: each reviewer's permission is looked up (once a pass); a pass that runs out of requests here reads the reviews as asked-for and not decided (never approved),
+  // writes the item, and then tries again.
+  let capped = false;
+  const reviews = await readReviews(status, {
+    requested: status.requestedReviewers > 0 || asked || prior?.reviewersRequestedAt !== undefined, permission,
+  }).catch((error: unknown) => {
+    if (!(error instanceof TrackingRequestCapError)) throw error;
+    capped = true;
+    return { review: "requested" as const };
+  });
+  const fields = reviewsOf(reviews);
+  if (markedReady) fields.draft = false;
 
   for (let attempt = 0; attempt < COMMIT_ATTEMPTS; attempt += 1) {
     const current = attempt === 0 ? prior : trackingItemOf(await readTrackingItem(deps, task.taskId, pullRequest.repositoryId, pullRequest.number), task.orgId, task.taskId);
@@ -535,7 +568,10 @@ async function trackOne(
     let action: MergeActionRequest | undefined;
     const decision = nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, await (deps.autonomy?.(task) ?? "prepare"), now);
     if (decision.slot !== "none") action = decision;
-    if (unchanged && action === undefined) return { changed: false, notOpen: status.state !== "open", acted: false, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
+    if (unchanged && action === undefined) {
+      if (capped) throw new TrackingRequestCapError();
+      return { changed: false, notOpen: status.state !== "open", acted: false, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
+    }
     if (!unchanged) {
       items.push(trackingWriteItem(deps.tableName, current, nextItem));
       // The index a check or status event finds the task by: kept up to date whenever the item is, for a head that is Rovara's.
@@ -574,6 +610,7 @@ async function trackOne(
       // After the commit: the handlers are told (a failure is theirs, and the sweep tells them again).
       await deliverCodeMilestones({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.taskId).catch(() => undefined);
     }
+    if (capped) throw new TrackingRequestCapError();
     return { changed: true, notOpen: status.state !== "open", acted: action !== undefined, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
   }
   throw agentXError("RUNTIME_UNAVAILABLE", "the tracking item stayed busy");
@@ -602,24 +639,35 @@ const RETRY_SOON_MS = 60_000;
  */
 export async function reconcileTrackingTask(deps: TrackingReconcileDependencies, taskId: string, budget: GithubMergeReadBudget): Promise<MergeRecoveryResult> {
   const rowKey = { pk: "WORKFLOW_MERGE_RECOVERY", sk: `TASK#${taskId}` };
-  const withBudget = { ...deps, budget };
+  const retry = (): MergeRecoveryResult => ({ kind: "RETRY", retryAt: deps.now() + RETRY_SOON_MS, scope: "task" });
+  const limited = (error: unknown): MergeRecoveryResult | undefined =>
+    error instanceof GithubMergeRateLimitError ? { kind: "RETRY", retryAt: error.retryAt, scope: "github-global" } : undefined;
+  // Tracking and the merge observation are independent: whatever tracking does (a refusal from GitHub, a permission an installation has not accepted, an answer that does
+  // not parse), the observation that records a merge a webhook missed still runs when it is due. Only GitHub's rate limit and a spent sweep budget stop both.
+  let outcome: TrackOutcome | undefined;
+  let failure: MergeRecoveryResult | undefined;
   try {
-    const outcome = await trackTask(withBudget, taskId);
+    outcome = await trackTask({ ...deps, budget }, taskId);
+  } catch (error) {
+    const shared = limited(error);
+    if (shared !== undefined) return shared;
+    if (!(error instanceof TrackingRequestCapError)) deps.log?.("merge_tracking.pass_failed", { taskId, error: error instanceof Error ? error.name : "unknown" });
+    failure = retry();
+    if (error instanceof Error && error.name === "GithubBudgetExhaustedError") return failure;
+  }
+  try {
     const row = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: rowKey, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
     const observedAt = typeof row?.["mergeObservedAt"] === "number" ? row["mergeObservedAt"] : undefined;
     const stale = observedAt === undefined || deps.now() - observedAt >= SWEEP_INTERVAL_MS;
-    if (outcome.result === "gone" || outcome.anyNotOpen || stale) {
+    if (stale || (outcome !== undefined && (outcome.result === "gone" || outcome.anyNotOpen))) {
       const observed = await deps.observeMerge(taskId, budget);
       if (observed.kind !== "OBSERVED") return observed;
       await deps.documentClient.send(new UpdateCommand({
         TableName: deps.tableName, Key: rowKey, UpdateExpression: "SET mergeObservedAt = :now", ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":now": deps.now() },
       })).catch(() => undefined);
     }
-    return { kind: "OBSERVED", ...(outcome.recheckAt === undefined ? {} : { nextAt: outcome.recheckAt }) };
   } catch (error) {
-    if (error instanceof GithubMergeRateLimitError) return { kind: "RETRY", retryAt: error.retryAt, scope: "github-global" };
-    if (error instanceof TrackingRequestCapError) return { kind: "RETRY", retryAt: deps.now() + RETRY_SOON_MS, scope: "task" };
-    deps.log?.("merge_tracking.pass_failed", { taskId, error: error instanceof Error ? error.name : "unknown" });
-    return { kind: "RETRY", retryAt: deps.now() + RETRY_SOON_MS, scope: "task" };
+    return limited(error) ?? failure ?? retry();
   }
+  return failure ?? { kind: "OBSERVED", ...(outcome?.recheckAt === undefined ? {} : { nextAt: outcome.recheckAt }) };
 }

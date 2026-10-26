@@ -191,6 +191,26 @@ describe("a check or status delivery", () => {
     expect(row(s.w)).toEqual(before);
   });
 
+  it("asks the App about the repository once for a delivery: at receive, not again when the delivery is processed", async () => {
+    const s = await setup();
+    await deliver(s, "check_run", checkRun());
+    expect(s.verify).toHaveBeenCalledTimes(1);
+    // The recovery sweep checks again before it retries a delivery: the resolver does, when asked to.
+    s.verify.mockClear();
+    const event = { installationId: INSTALLATION, repositoryId: REPOSITORY, fullName: "acme/payments", headSha: HEAD_A };
+    expect(await resolveHeadEventTask(s.deps, event)).toBeDefined();
+    expect(s.verify).toHaveBeenCalledTimes(1);
+    expect(await resolveHeadEventTask(s.deps, event, { verifyRepository: false })).toBeDefined();
+    expect(s.verify).toHaveBeenCalledTimes(1);
+  });
+
+  it("still compares the project's pinned repository by name when the App's check is skipped", async () => {
+    const s = await setup();
+    const url = s.deps.repositoryUrl;
+    s.deps.repositoryUrl = async (...args) => (await url(...args))?.replace("payments", "other");
+    expect(await resolveHeadEventTask(s.deps, { installationId: INSTALLATION, repositoryId: REPOSITORY, fullName: "acme/payments", headSha: HEAD_A }, { verifyRepository: false })).toBeUndefined();
+  });
+
   it("creates no recovery row for a task that has none", async () => {
     const s = await setup();
     for (const key of [...s.w.db.items.keys()]) if (key.includes("WORKFLOW_MERGE_RECOVERY")) s.w.db.items.delete(key);

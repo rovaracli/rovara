@@ -76,6 +76,8 @@ const LEASE_MS = 30_000;
 export const SWEEP_INTERVAL_MS = 5 * 60_000;
 const TRACKING_GATE_MS = TRACKING_GATE_SECONDS * 1_000;
 const TRACKING_COALESCE_MS = TRACKING_COALESCE_SECONDS * 1_000;
+/** The tracking gate opens this much before its 60 seconds are up: the schedule fires every minute, and an invocation a few milliseconds early would otherwise wait for the next one. */
+const TRACKING_GATE_SLACK_MS = 5_000;
 const TRACKING_HEARTBEAT_MS = TRACKING_HEARTBEAT_MINUTES * 60_000;
 const GITHUB_BUDGET_MS = 20_000;
 const GITHUB_START_RESERVE_MS = 2_000;
@@ -167,14 +169,16 @@ interface Lane {
   /** The sort key of the lane's gate item in the sweep partition. */
   gateSk: string;
   intervalMs: number;
+  /** How much earlier than `intervalMs` the next pass may start, so that a schedule that fires a few milliseconds early is not refused for a whole interval. */
+  slackMs: number;
   maxRows: number;
   /** How long a row waits after its `attempts`th failure. */
   retryDelay(attempts: number): number;
 }
 
-const MERGE_LANE: Lane = { kind: "merge", duePk: RECOVERY_PK, gateSk: SWEEP_SK, intervalMs: SWEEP_INTERVAL_MS, maxRows: MAX_ROWS, retryDelay };
+const MERGE_LANE: Lane = { kind: "merge", duePk: RECOVERY_PK, gateSk: SWEEP_SK, intervalMs: SWEEP_INTERVAL_MS, slackMs: 0, maxRows: MAX_ROWS, retryDelay };
 const TRACKING_LANE: Lane = {
-  kind: "tracking", duePk: TRACKING_DUE_PK, gateSk: TRACKING_SWEEP_SK, intervalMs: TRACKING_GATE_MS, maxRows: TRACKING_MAX_ROWS,
+  kind: "tracking", duePk: TRACKING_DUE_PK, gateSk: TRACKING_SWEEP_SK, intervalMs: TRACKING_GATE_MS, slackMs: TRACKING_GATE_SLACK_MS, maxRows: TRACKING_MAX_ROWS,
   retryDelay: (attempts) => Math.min(TRACKING_GATE_MS * Math.max(1, attempts), TRACKING_HEARTBEAT_MS),
 };
 
@@ -316,7 +320,7 @@ async function claimGlobalSweep(dependencies: MergeRecoveryDependencies, now: nu
         ":entity": SWEEP_PK,
         ":token": token,
         ":lease": now + LEASE_MS,
-        ":next": now + lane.intervalMs,
+        ":next": now + lane.intervalMs - lane.slackMs,
         ":now": now,
         ":nowIso": new Date(now).toISOString(),
       },

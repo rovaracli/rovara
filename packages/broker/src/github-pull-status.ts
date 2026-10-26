@@ -41,6 +41,10 @@ export interface PullRequestStatus {
   /** How many commits of the base the branch lacks, when it was worked out (it is not asked of a branch GitHub already calls dirty, behind or unknown). */
   behindBy?: number;
   checks: PullRequestCheck[];
+  /** The checks could not be read (GitHub refused the checks/statuses access, or the list failed): they are not known, so no reading of them may say "passing". */
+  checksUnavailable?: true;
+  /** The names of the checks the base branch's protection requires (classic protection: contexts and checks), whether or not they have reported. */
+  requiredCheckNames: string[];
   baseHasRequiredChecks: boolean;
   headHasWorkflowFiles: boolean;
   /** How many reviewers (people and teams) are asked for a review now. */

@@ -118,12 +118,13 @@ describe("the tracking pass", () => {
     await enrollTracking(h.db, uuid(1), h.now() - 1);
     await enrollMerge(h.db, uuid(2), h.now() - 1);
     expect((await runDueWorkflowMergeTracking(h.dependencies)).attempted).toBe(1);
-    h.setNow(h.now() + GATE - 1);
+    // The gate opens 5 seconds before its 60 are up, so a schedule that fires a few milliseconds early is not refused for a whole minute.
+    h.setNow(h.now() + GATE - 5_000 - 1);
     await enrollTracking(h.db, uuid(3), h.now() - 1);
     expect((await runDueWorkflowMergeTracking(h.dependencies)).attempted).toBe(0);
     h.setNow(h.now() + 1);
     expect((await runDueWorkflowMergeTracking(h.dependencies)).attempted).toBe(1);
-    expect(h.db.get(SWEEP_PK, "TRACKING")).toMatchObject({ nextSweepAt: h.now() + GATE });
+    expect(h.db.get(SWEEP_PK, "TRACKING")).toMatchObject({ nextSweepAt: h.now() + GATE - 5_000 });
     // The merge pass was not opened by any of that, and still opens on its own gate.
     expect((await runDueWorkflowMergeRecovery(h.dependencies)).attempted).toBe(1);
     expect(h.db.get(SWEEP_PK, "META")).toMatchObject({ nextSweepAt: h.now() + FIVE_MINUTES });

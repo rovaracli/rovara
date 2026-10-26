@@ -20,6 +20,11 @@ interface Fixture {
   graphqlStatus?: number;
   graphqlBody?: (query: string, variables: Record<string, unknown>) => Record<string, unknown> | undefined;
   tokenStatus?: number;
+  /** The status of the token request that asks for the checks and statuses permissions (the installation has not accepted them). */
+  checksTokenStatus?: number;
+  compareStatus?: number;
+  workflowStatus?: number;
+  branchStatus?: number;
 }
 
 function pull(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -48,6 +53,7 @@ function harness(fixture: Fixture = {}, options: { beforeRequest?: () => void } 
     if (url.endsWith("/installation")) return Response.json({ id: 163046162, account: { login: "acme" } });
     if (url.endsWith("/access_tokens")) {
       tokenRequests.push(body);
+      if (fixture.checksTokenStatus !== undefined && JSON.stringify(body).includes('"checks"')) return new Response("{}", { status: fixture.checksTokenStatus });
       return fixture.tokenStatus === undefined ? Response.json({ token: `token-${String(tokenRequests.length)}` }, { status: 201 }) : new Response("{}", { status: fixture.tokenStatus });
     }
     if (url === "https://api.github.com/graphql") {
@@ -65,8 +71,11 @@ function harness(fixture: Fixture = {}, options: { beforeRequest?: () => void } 
     }
     if (/\/pulls\/42$/.test(url)) return Response.json(fixture.pull ?? pull());
     if (/\/pulls\/42\/reviews/.test(url)) return Response.json(fixture.reviews ?? []);
+    if (/\/contents\/\.github\/workflows/.test(url) && fixture.workflowStatus !== undefined) return new Response("{}", { status: fixture.workflowStatus });
     if (/\/contents\/\.github\/workflows/.test(url)) return fixture.workflowFiles === undefined ? new Response("{}", { status: 404 }) : Response.json(fixture.workflowFiles);
+    if (/\/branches\/main$/.test(url) && fixture.branchStatus !== undefined) return new Response("{}", { status: fixture.branchStatus });
     if (/\/branches\/main$/.test(url)) return Response.json(fixture.branch ?? { name: "main", protected: false });
+    if (/\/compare\//.test(url) && fixture.compareStatus !== undefined) return new Response("{}", { status: fixture.compareStatus });
     if (/\/compare\//.test(url)) return Response.json(fixture.compare ?? { behind_by: 0, ahead_by: 1 });
     if (/\/collaborators\/[^/]+\/permission$/.test(url)) return new Response(JSON.stringify(fixture.permission?.body ?? { permission: "write" }), { status: fixture.permission?.status ?? 200 });
     if (/\/requested_reviewers$/.test(url)) return Response.json({}, { status: 201 });
@@ -107,7 +116,7 @@ describe("reading a pull request's status", () => {
         { name: "lint", status: "pending", required: false, url: "https://github.com/acme/payments/actions/runs/1/job/77", jobId: "78" },
         { name: "ci/external", status: "completed", conclusion: "failure", required: false, url: "https://ci.example.test/run/9" },
       ],
-      baseHasRequiredChecks: true, headHasWorkflowFiles: true, requestedReviewers: 2,
+      requiredCheckNames: ["build"], baseHasRequiredChecks: true, headHasWorkflowFiles: true, requestedReviewers: 2,
       reviews: [{ githubUserId: "501", login: "reviewer", userType: "User", state: "APPROVED", commitId: HEAD, submittedAt: "2026-10-25T11:00:00.000Z" }],
     });
   });
@@ -126,8 +135,9 @@ describe("reading a pull request's status", () => {
     const page = (name: string) => [rollupNode({ name })];
     const two = harness({ rollupPages: [page("a"), page("b")] });
     expect((await two.provider.getPullRequestStatus(REPO, 42, SCOPE, two.budget)).checks.map((check) => check.name)).toEqual(["a", "b"]);
+    // More than five pages would be an incomplete list: the checks are said to be unavailable (never read as passing), the rest of the status is still read.
     const many = harness({ rollupPages: Array.from({ length: 6 }, (_, index) => page(`c${String(index)}`)) });
-    await expect(many.provider.getPullRequestStatus(REPO, 42, SCOPE, many.budget)).rejects.toThrow(/too many checks/i);
+    expect(await many.provider.getPullRequestStatus(REPO, 42, SCOPE, many.budget)).toMatchObject({ checks: [], checksUnavailable: true, number: 42 });
   });
 
   it("works out whether the branch is behind only when GitHub's own state does not say", async () => {
@@ -150,16 +160,84 @@ describe("reading a pull request's status", () => {
 
   it("refuses answers that do not fit instead of reading them as fine", async () => {
     for (const bad of [
-      { rollup: [{ __typename: "Mystery" }] },
-      { rollup: [rollupNode({ conclusion: "SHRUGGED" })] },
       { reviews: [{ user: { id: "x", login: "a", type: "User" }, state: "APPROVED", commit_id: HEAD, submitted_at: "2026-10-25T11:00:00Z" }] },
       { reviews: [{ user: { id: 1, login: "a", type: "User" }, state: "APPROVED", commit_id: "short", submitted_at: "2026-10-25T11:00:00Z" }] },
       { pull: pull({ number: 7 }) },
-      { graphqlBody: () => ({ errors: [{ message: "denied" }] }) },
     ] as Fixture[]) {
       const h = harness(bad);
       await expect(h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget)).rejects.toThrow();
     }
+  });
+
+  it("says the checks are unavailable, and reads everything else, when the list cannot be read or does not fit", async () => {
+    for (const bad of [
+      { rollup: [{ __typename: "Mystery" }] },
+      { rollup: [rollupNode({ conclusion: "SHRUGGED" })] },
+      { graphqlBody: () => ({ errors: [{ message: "denied" }] }) },
+      { graphqlStatus: 403 },
+    ] as Fixture[]) {
+      const h = harness({ ...bad, reviews: [{ user: { id: 1, login: "a", type: "User" }, state: "APPROVED", commit_id: HEAD, submitted_at: "2026-10-25T11:00:00Z" }] });
+      const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
+      expect(status).toMatchObject({ number: 42, checks: [], checksUnavailable: true });
+      expect(status.reviews).toHaveLength(1);
+    }
+  });
+
+  it("reads everything but the checks with a token that asks for less when the installation has not accepted the checks and statuses permissions", async () => {
+    const h = harness({ checksTokenStatus: 422, rollup: [rollupNode({})] });
+    const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
+    expect(status).toMatchObject({ number: 42, checks: [], checksUnavailable: true });
+    expect(h.tokenRequests).toEqual([
+      { repositories: ["payments"], permissions: { contents: "read", pull_requests: "read", checks: "read", statuses: "read" } },
+      { repositories: ["payments"], permissions: { contents: "read", pull_requests: "read" } },
+    ]);
+    expect(h.requests.some((request) => request.url.endsWith("/graphql"))).toBe(false);
+  });
+
+  it("degrades one refused item (the comparison, the workflow files, the base branch) and not the whole read; any other failure still throws", async () => {
+    const compare = harness({ compareStatus: 403 });
+    expect((await compare.provider.getPullRequestStatus(REPO, 42, SCOPE, compare.budget)).behindBy).toBeUndefined();
+    const files = harness({ workflowStatus: 403 });
+    expect((await files.provider.getPullRequestStatus(REPO, 42, SCOPE, files.budget)).headHasWorkflowFiles).toBe(true);
+    const branch = harness({ branchStatus: 403 });
+    expect(await branch.provider.getPullRequestStatus(REPO, 42, SCOPE, branch.budget)).toMatchObject({ checksUnavailable: true, requiredCheckNames: [] });
+    for (const broken of [{ compareStatus: 500 }, { workflowStatus: 500 }, { branchStatus: 500 }] as Fixture[]) {
+      const h = harness(broken);
+      await expect(h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget)).rejects.toThrow();
+    }
+  });
+
+  it("names the checks branch protection requires, from the contexts and the checks, whether or not they have reported", async () => {
+    const h = harness({ branch: { name: "main", protected: true, protection: { enabled: true, required_status_checks: { contexts: ["legacy"], checks: [{ context: "build" }, { context: "legacy" }] } } } });
+    const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
+    expect(status.requiredCheckNames.sort()).toEqual(["build", "legacy"]);
+    expect(status.baseHasRequiredChecks).toBe(true);
+  });
+
+  it("mints each kind of token once a pass: a status read, five permission lookups, marking ready and asking for reviewers cost three mints", async () => {
+    const h = harness({ pull: pull({ draft: true }) });
+    await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
+    for (const login of ["a", "b", "c", "d", "e"]) await h.provider.getRepositoryPermission(REPO, login, SCOPE, h.budget);
+    await h.provider.markPullRequestReady(REPO, 42, SCOPE, h.budget);
+    await h.provider.requestReviewers(REPO, 42, ["alice"], SCOPE, h.budget);
+    expect(h.tokenRequests).toHaveLength(3);
+    // Every request is counted, mints and the installation lookup included.
+    expect(h.count()).toBe(h.requests.length);
+    expect(h.requests.filter((request) => request.url.endsWith("/installation"))).toHaveLength(1);
+    // Another pass (another budget) mints for itself; a read with no budget keeps nothing.
+    const other = { signal: new AbortController().signal, beforeRequest: () => undefined };
+    await h.provider.getRepositoryPermission(REPO, "a", SCOPE, other);
+    expect(h.tokenRequests).toHaveLength(4);
+    await h.provider.getRepositoryPermission(REPO, "a", SCOPE);
+    await h.provider.getRepositoryPermission(REPO, "a", SCOPE);
+    expect(h.tokenRequests).toHaveLength(6);
+  });
+
+  it("does not keep a token whose mint was refused", async () => {
+    const h = harness({ tokenStatus: 500 });
+    await expect(h.provider.getRepositoryPermission(REPO, "a", SCOPE, h.budget)).rejects.toThrow();
+    await expect(h.provider.getRepositoryPermission(REPO, "a", SCOPE, h.budget)).rejects.toThrow();
+    expect(h.tokenRequests).toHaveLength(2);
   });
 
   it("reads an unknown mergeable state as unknown and a missing workflow directory as no workflow files", async () => {
@@ -196,6 +274,11 @@ describe("a person's permission on the repository", () => {
   ] as const)("reads %j as %s", async (body, expected) => {
     const h = harness({ permission: { status: 200, body } });
     await expect(h.provider.getRepositoryPermission(REPO, "reviewer", SCOPE, h.budget)).resolves.toBe(expected);
+  });
+
+  it("reads a 403 as none (the App may not ask about that person, who then does not count)", async () => {
+    const h = harness({ permission: { status: 403, body: {} } });
+    await expect(h.provider.getRepositoryPermission(REPO, "someone", SCOPE, h.budget)).resolves.toBe("none");
   });
 
   it("reads a 404 as none, refuses another failure, and refuses a login that is not one", async () => {
@@ -252,6 +335,9 @@ describe("marking a pull request ready and asking for reviewers", () => {
     await expect(provider.requestReviewers(REPO, 42, ["alice"], SCOPE, budget)).resolves.toBe("refused");
     await expect(provider.requestReviewers(REPO, 42, ["bad name"], SCOPE, budget)).rejects.toThrow();
     await expect(provider.requestReviewers(REPO, 42, ["a/b/c"], SCOPE, budget)).rejects.toThrow();
+    // A team of another organization is never asked for: `other-org/admins` would otherwise reach this repository's own `admins`.
+    await expect(provider.requestReviewers(REPO, 42, ["other-org/admins"], SCOPE, budget)).rejects.toThrow(/organization/);
+    await expect(provider.requestReviewers(REPO, 42, ["Acme/admins"], SCOPE, budget)).resolves.toBe("refused");
     await expect(provider.requestReviewers(REPO, 42, [], SCOPE, budget)).rejects.toThrow();
   });
 });

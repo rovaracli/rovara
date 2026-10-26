@@ -5,6 +5,7 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, githubInstallationKey, prHeadKey, type OrgId } from "@agentx/contracts";
 import { findLinkedGithubWorkflowPullRequest, type HeadWebhookEvent } from "../aws/github-webhooks.js";
+import { parseGitHubRepository } from "../github-app.js";
 import { wakeTrackingRow } from "../aws/workflow-merge-recovery.js";
 import { tracksMerge, type TrackedTask } from "./merge-tracking.js";
 export { prHeadItems } from "./head-index.js";
@@ -40,7 +41,12 @@ async function indexed(deps: HeadEventDependencies, orgId: OrgId, fullName: stri
  * names; the task must be that org's, be a tracked task whose workflow holds that pull request, the pull request's link must name the task, and the project's pinned
  * repository must be the one GitHub's delivery came for. Any disagreement is "no task": a delivery never reaches across orgs.
  */
-export async function resolveHeadEventTask(deps: HeadEventDependencies, event: Pick<HeadWebhookEvent, "installationId" | "repositoryId" | "fullName" | "headSha" | "branch">): Promise<FollowedHead | undefined> {
+export async function resolveHeadEventTask(
+  deps: HeadEventDependencies,
+  event: Pick<HeadWebhookEvent, "installationId" | "repositoryId" | "fullName" | "headSha" | "branch">,
+  /** `verifyRepository: false` skips the App's own check (one GitHub read) for a delivery that was verified moments ago, at receive; the project's pinned repository is still compared by name. */
+  options: { verifyRepository?: boolean } = {},
+): Promise<FollowedHead | undefined> {
   const orgId = await deps.orgOfInstallation(event.installationId);
   if (orgId === undefined) return undefined;
   const fullName = event.fullName.toLowerCase();
@@ -53,13 +59,20 @@ export async function resolveHeadEventTask(deps: HeadEventDependencies, event: P
   const linked = await findLinkedGithubWorkflowPullRequest({ documentClient: deps.documentClient, tableName: deps.tableName, repositoryFullName: fullName, number: recorded.number });
   if (linked === undefined || linked.taskId !== task.taskId || linked.repositoryId !== recorded.repositoryId || linked.url !== recorded.url) return undefined;
   const url = await deps.repositoryUrl(task.project, task.startingRevision, recorded.repositoryId, orgId);
-  if (url === undefined || !await deps.verifyRepository(url, { installationId: event.installationId, repositoryId: event.repositoryId, fullName })) return undefined;
+  if (url === undefined) return undefined;
+  const pinned = parseGitHubRepository(url);
+  if (`${pinned.owner}/${pinned.name}`.toLowerCase() !== fullName) return undefined;
+  if (options.verifyRepository !== false && !await deps.verifyRepository(url, { installationId: event.installationId, repositoryId: event.repositoryId, fullName })) return undefined;
   return { taskId: task.taskId, orgId, repositoryId: recorded.repositoryId, number: recorded.number };
 }
 
-/** Wakes the followed task's tracking row for a delivery (the delivery is re-resolved here, under its lease, not trusted from when it was received). */
+/**
+ * Wakes the followed task's tracking row for a delivery. The delivery is re-resolved here, under its lease, not trusted from when it was received: the org's binding, the task,
+ * the link and the pinned repository's name are read again. The App's own repository check (a GitHub read) was made when the delivery was received, and is made again by the
+ * recovery sweep before it retries a delivery, so it is not repeated for every delivery of a CI run's many jobs.
+ */
 export async function wakeFromHeadEvent(deps: HeadEventDependencies, event: HeadWebhookEvent): Promise<"woken" | "none" | "unfollowed"> {
-  const followed = await resolveHeadEventTask(deps, event);
+  const followed = await resolveHeadEventTask(deps, event, { verifyRepository: false });
   if (followed === undefined) return "unfollowed";
   return wakeTrackingRow({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, followed.taskId);
 }

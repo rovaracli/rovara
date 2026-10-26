@@ -11,6 +11,7 @@ import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-c
 import { DEFAULT_CODE_SETTINGS } from "../../packages/contracts/src/rovara-code.js";
 import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
+const FakeReady = (w: TrackingWorld) => async (_u: string, number: number) => { const current = w.github.statuses.get(number)!; w.github.statuses.set(number, { ...current, draft: false }); w.github.calls.push(`ready:${String(number)}`); return "ready" as const; };
 import { HEAD_A, HEAD_B, NOW, SESSION_ID, TASK_ID, sha, status, workflowOf, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -163,9 +164,84 @@ describe("which checks count", () => {
     expect(run("neutral")).toBe("passing");
   });
 
+  it("reads passing only when every required check branch protection names has reported success", () => {
+    const protectedBase = { baseHasRequiredChecks: true, requiredCheckNames: ["build", "test"] };
+    // build reported and passed, test has not reported: pending, not passing.
+    expect(read({ ...protectedBase, checks: [check("build", "success", true)] })).toMatchObject({ ci: "pending", ciBasis: "required" });
+    expect(read({ ...protectedBase, checks: [check("build", "success", true), check("lint", "success", false)] }).ci).toBe("pending");
+    expect(read({ ...protectedBase, checks: [check("build", "success", true), check("test", "success", true)] }).ci).toBe("passing");
+    // A failure still reads failing while another is missing.
+    expect(read({ ...protectedBase, checks: [check("build", "failure", true)] })).toMatchObject({ ci: "failing", failingChecks: ["build"] });
+    // Nothing has reported but two checks are required: never "no CI".
+    expect(readCi(status({ ...protectedBase, checks: [], headHasWorkflowFiles: false }), { checksEverSeen: false, lastRovaraPushAt: NOW - 1e9, now: NOW }).ci).toBe("pending");
+  });
+
+  it("counts a check protection names even when GitHub's isRequired does not say so (the name is the fallback)", () => {
+    const named = { baseHasRequiredChecks: true, requiredCheckNames: ["test"] };
+    expect(read({ ...named, checks: [check("test", "failure", false)] })).toMatchObject({ ci: "failing", failingChecks: ["test"] });
+    expect(read({ ...named, checks: [check("test", "success", false), check("lint", "failure", false)] }).ci).toBe("passing");
+  });
+
+  it("reads pending, never passing, while the checks could not be read", () => {
+    expect(read({ checks: [], checksUnavailable: true }).ci).toBe("pending");
+    expect(read({ checks: [check("test", "success", false)], checksUnavailable: true }).ci).toBe("pending");
+  });
+
   it("keeps ten failing check names at most, each once", () => {
     const many = Array.from({ length: 14 }, (_, index) => check(`job-${String(index)}`, "failure", false));
     expect(read({ checks: [...many, check("job-0", "failure", false)] }).failingChecks).toHaveLength(10);
+  });
+});
+
+describe("a refusal from GitHub on one step", () => {
+  const refused = () => Object.assign(new Error("HTTP 403"), { name: "AgentXError", code: "RUNTIME_UNAVAILABLE" });
+
+  it("leaves a refused mark-ready undone, writes the item anyway, and says nothing of readiness", async () => {
+    const w = world();
+    settingsWith(w, ["alice"]);
+    w.github.markPullRequestReady = async () => { throw refused(); };
+    expect(await trackPullRequest(w.deps, TASK_ID)).toBe("changed");
+    expect(itemOf(w)).toMatchObject({ draft: true, ci: "passing" });
+    expect(itemOf(w).readyAt).toBeUndefined();
+    expect(w.github.calls.some((call) => call.startsWith("reviewers"))).toBe(false);
+    // The next pass tries again, and succeeds.
+    w.github.markPullRequestReady = FakeReady(w);
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(itemOf(w).readyAt).toBeDefined();
+  });
+
+  it("records the pull request as ready when only asking for reviewers was refused, and does not try to ask again for it in a loop of errors", async () => {
+    const w = world();
+    settingsWith(w, ["alice"]);
+    w.github.requestReviewers = async () => { throw refused(); };
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(itemOf(w)).toMatchObject({ draft: false });
+    expect(itemOf(w).readyAt).toBeDefined();
+    expect(itemOf(w).reviewersRequestedAt).toBeUndefined();
+  });
+
+  it("never swallows GitHub's rate limit or a spent allowance, and a configuration error", async () => {
+    for (const error of [new GithubMergeRateLimitError(NOW + 60_000), Object.assign(new Error("x"), { name: "AgentXError", code: "CONFIG_INVALID" })]) {
+      const w = world();
+      w.github.markPullRequestReady = async () => { throw error; };
+      await expect(trackPullRequest(w.deps, TASK_ID)).rejects.toBe(error);
+      expect(w.db.get(trackingKey())).toBeUndefined();
+    }
+  });
+
+  it("reads the reviews as asked-for and not decided when the pass runs out of requests on the permission lookups, writes the item, marks ready first, and then asks to be retried", async () => {
+    const w = world();
+    settingsWith(w, ["alice"]);
+    const reviews = [1, 2, 3].map((id) => ({ githubUserId: String(id), login: `p${String(id)}`, userType: "User", state: "APPROVED" as const, commitId: HEAD_A, submittedAt: `2026-10-25T0${String(id)}:00:00.000Z` }));
+    w.github.statuses.set(7, status({ reviews }));
+    for (const login of ["p1", "p2", "p3"]) w.github.permissions.set(login, "write");
+    w.github.statusCost = 28; // 28 for the status, 2 for marking ready, 1 for asking, then the permission lookups: the allowance (32) ends at the second
+    const parent = { signal: new AbortController().signal, beforeRequest: () => undefined };
+    await expect(trackTask({ ...w.deps, budget: parent }, TASK_ID)).rejects.toMatchObject({ name: "TrackingRequestCapError" });
+    expect(w.github.calls.filter((call) => call.startsWith("ready") || call.startsWith("reviewers"))).toEqual(["ready:7", "reviewers:7:alice"]);
+    expect(itemOf(w)).toMatchObject({ draft: false, review: "requested" });
+    expect(itemOf(w).approval).toBeUndefined();
+    expect(itemOf(w).readyAt).toBeDefined();
   });
 });
 
@@ -495,7 +571,7 @@ describe("the request allowance", () => {
 
   it("a row over its allowance settles as a retry and the next pass finishes the pull requests it did not reach", async () => {
     const w = world({ pullRequests: [{ repositoryId: "a-api", number: 7 }, { repositoryId: "b-ui", number: 8 }, { repositoryId: "c-docs", number: 9 }] });
-    w.github.statusCost = 10; // three pull requests cost 30 requests; the allowance for three is 24
+    w.github.statusCost = 30; // three pull requests cost 90 requests; the allowance for three is 72
     const parent = budget();
     const deps = { ...w.deps, observeMerge: async () => ({ kind: "OBSERVED" as const }) };
     const first = await reconcileTrackingTask(deps, TASK_ID, parent.budget);
@@ -523,6 +599,59 @@ describe("the request allowance", () => {
 });
 
 describe("the merge observation beside tracking", () => {
+  const parent = { signal: new AbortController().signal, beforeRequest: () => undefined };
+
+  it("still runs when tracking fails, whatever the failure: a merge a webhook missed is recorded, and the pass asks to be retried", async () => {
+    for (const failure of [new Error("boom"), Object.assign(new Error("HTTP 403"), { name: "AgentXError", code: "GITHUB_NOT_CONNECTED" }), Object.assign(new Error("x"), { name: "AgentXError", code: "RUNTIME_UNAVAILABLE" })]) {
+      const w = world();
+      w.github.failWith = failure;
+      const observe = vi.fn(async () => ({ kind: "OBSERVED" as const }));
+      const result = await reconcileTrackingTask({ ...w.deps, observeMerge: observe }, TASK_ID, parent);
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ kind: "RETRY", scope: "task" });
+    }
+  });
+
+  it("records the merge the observation finds even when tracking failed (the terminal answer wins over the retry)", async () => {
+    const w = world();
+    w.github.failWith = new Error("boom");
+    const result = await reconcileTrackingTask({ ...w.deps, observeMerge: async () => ({ kind: "TERMINAL" as const, release: "queued" as const }) }, TASK_ID, parent);
+    expect(result).toEqual({ kind: "TERMINAL", release: "queued" });
+  });
+
+  it("is not repeated while it is not due, even when tracking keeps failing", async () => {
+    const w = world();
+    w.github.failWith = new Error("boom");
+    const observe = vi.fn(async () => ({ kind: "OBSERVED" as const }));
+    const deps = { ...w.deps, observeMerge: observe };
+    await reconcileTrackingTask(deps, TASK_ID, parent);
+    w.setNow(NOW + 60_000);
+    await reconcileTrackingTask(deps, TASK_ID, parent);
+    expect(observe).toHaveBeenCalledTimes(1);
+    w.setNow(NOW + 5 * 60_000);
+    await reconcileTrackingTask(deps, TASK_ID, parent);
+    expect(observe).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not run when GitHub is rate limited or the sweep's budget is spent", async () => {
+    const limited = world();
+    limited.github.failWith = new GithubMergeRateLimitError(NOW + 600_000);
+    const observeLimited = vi.fn(async () => ({ kind: "OBSERVED" as const }));
+    expect(await reconcileTrackingTask({ ...limited.deps, observeMerge: observeLimited }, TASK_ID, parent)).toEqual({ kind: "RETRY", retryAt: NOW + 600_000, scope: "github-global" });
+    expect(observeLimited).not.toHaveBeenCalled();
+    const spent = world();
+    spent.github.failWith = Object.assign(new Error("spent"), { name: "GithubBudgetExhaustedError" });
+    const observeSpent = vi.fn(async () => ({ kind: "OBSERVED" as const }));
+    expect(await reconcileTrackingTask({ ...spent.deps, observeMerge: observeSpent }, TASK_ID, parent)).toMatchObject({ kind: "RETRY" });
+    expect(observeSpent).not.toHaveBeenCalled();
+  });
+
+  it("passes on a rate limit the observation meets", async () => {
+    const w = world();
+    const result = await reconcileTrackingTask({ ...w.deps, observeMerge: async () => { throw new GithubMergeRateLimitError(NOW + 300_000); } }, TASK_ID, parent);
+    expect(result).toEqual({ kind: "RETRY", retryAt: NOW + 300_000, scope: "github-global" });
+  });
+
   it("runs when a pull request is no longer open, and otherwise at most once per sweep interval", async () => {
     const w = world();
     const observe = vi.fn(async () => ({ kind: "OBSERVED" as const }));
