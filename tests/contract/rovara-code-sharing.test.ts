@@ -19,7 +19,7 @@ import { widenedShareMessage } from "../../packages/broker/src/developer/share-m
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
-import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { taskIndexKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, PRIYA, ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";
 
 beforeAll(loadSlackBroker);
@@ -31,6 +31,7 @@ function world() {
   w.db.set({ ...task, title: "Bump the Stripe SDK", client: "app", startingRevision: 1, workflow: createWorkflowSnapshot({ taskId: s.taskId, ownerId: PRIYA, now: new Date(w.clock.now).toISOString() }) });
   const deps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore,
     origin: "https://cell.example.com", turnRecordsTableName: "turns", taskView: async () => { throw new Error("ADMITTED"); } } satisfies SessionRouteDependencies;
+  w.db.set({ ...taskIndexKey(PRIYA, String(task.createdAt), s.taskId), taskId: s.taskId, shared: false });
   const notices = () => w.db.find((item) => item.entityType === "CHANGE_NOTICE");
   return { ...w, ...s, deps, notices };
 }
@@ -406,4 +407,19 @@ it("M5: requests sharing a UUID prefix do not overwrite same-millisecond owner n
     await w.db.send(new TransactWriteCommand({ TransactItems: codeShareItems("state", task, { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view", sharedAt: at, sharedReason: "requested" }, requestId, ARJUN, at) }));
   }
   expect(w.notices()).toHaveLength(2);
+});
+
+it("M6: undo cannot create a phantom current-owner index row", async () => {
+  const w = world();
+  const at = new Date(w.clock.now).toISOString();
+  const task = { ...w.db.get(taskKey(w.taskId)), currentOwner: { developerId: ARJUN, name: "Arjun", provider: "oidc", since: at } } as unknown as DeveloperTaskRecord;
+  const share = { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view" as const, sharedAt: at, sharedReason: "requested" as const };
+  const requestId = randomUUID();
+  await w.db.send(new TransactWriteCommand({ TransactItems: codeShareItems("state", task, share, requestId, PRIYA, at) }));
+  w.db.set({ ...task, share, shared: true, shareVersion: 1, codeShareRequestId: requestId });
+  const index = taskIndexKey(ARJUN, task.createdAt, w.taskId);
+  expect(w.db.get(index)).toBeUndefined();
+  await expect(undoCodeShare(w.deps, w.caller(ARJUN), w.sessionId, `SLACK#${requestId}`)).rejects.toBeDefined();
+  expect(w.db.get(index)).toBeUndefined();
+  expect(w.db.get(taskKey(w.taskId))).toMatchObject({ shared: true, shareVersion: 1 });
 });
