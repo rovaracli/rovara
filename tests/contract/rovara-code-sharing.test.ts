@@ -376,3 +376,15 @@ it("M2: revoking an editor share before transact aborts widening and reauthorize
   expect(h.db.get(taskKey(taskId))).not.toHaveProperty("share");
   expect(h.db.find((item) => item.entityType === "CODE_SHARE_UNDO")).toEqual([]);
 });
+
+for (const stage of ["CLOSED", "MERGED"] as const) it(`M3: ${stage} Code work cannot be newly shared`, async () => {
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix retry" } });
+  const { taskId } = started.body.task as { taskId: string };
+  const task = h.db.get(taskKey(taskId))!;
+  h.db.set({ ...task, workflow: { ...(task.workflow as Record<string, unknown>), stage, state: "COMPLETE", outcome: "PASSED" } });
+  const response = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "continue" });
+  expect(response.body.error).toMatchObject({ code: "CONFIG_INVALID" });
+  expect(h.db.get(taskKey(taskId))).not.toHaveProperty("share");
+  expect(h.db.find((item) => item.entityType === "CODE_SHARE_UNDO")).toEqual([]);
+});
