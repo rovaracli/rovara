@@ -312,7 +312,7 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(milestones(e2e, "stuck")).toHaveLength(1);
   }, 240_000);
 
-  it("15.11 a merge that keeps failing is tried twice on the same head, then stops with a plain text: not four times a day, every day", async () => {
+  it("15.11 a behind merge that really fails is tried twice on the same head, then gives up once, in fixed words, without blocking the task: it stays behind and CI fixes still run", async () => {
     const { e2e, github, pullRequest } = await waitingForMerge();
     const head = pullRequest.commit;
     await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
@@ -324,15 +324,90 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(milestones(e2e, "stuck")).toEqual([]);
     e2e.worker.failNext("maintain", "CONFIG_INVALID: one or more registered readiness checks failed");
     await trackAndRun(e2e, 3);
-    const stopped = "Rovara couldn't bring the branch up to date: the project's checks fail once the base is merged in. Update it on GitHub.";
-    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: stopped });
-    expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text: stopped })]);
+    const text = "Rovara couldn't bring the branch up to date: the project's checks fail once the base is merged in. Update it on GitHub.";
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", syncFailures: { headSha: head, count: 2 } });
+    expect(e2e.workflow().blockReason).toBeUndefined();
+    expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text })]);
     expect(maintains()).toBe(2);
-    // And a day later it is still not tried again.
+    // A day later it is still not tried again, and a failing CI is fixed all the same.
     e2e.clock.advance(26 * 60 * 60_000);
-    await trackAndRun(e2e, 2);
+    github.state.red = true;
+    await trackAndRun(e2e);
     expect(maintains()).toBe(2);
-    expect(dispatchRows(e2e)).toEqual([]);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", fixRounds: { ci: 1 } });
+    expect(milestones(e2e, "stuck")).toHaveLength(1);
+  }, 240_000);
+
+  it("15.12 a failure that is not the merge's (GitHub, a lost machine) never stops it: it is tried again later and goes through", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const base = await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    for (let failure = 0; failure < 3; failure += 1) {
+      e2e.worker.failNext("maintain", "RUNTIME_UNAVAILABLE: GitHub answered 503");
+      await trackAndRun(e2e, 3);
+      expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", syncFailures: { count: 0, transient: failure + 1 } });
+      expect(milestones(e2e, "stuck")).toEqual([]);
+      e2e.clock.advance(7 * 60 * 60_000);
+    }
+    await trackAndRun(e2e, 3);
+    expect(e2e.github.parents.get(pullRequest.commit)).toEqual([before, base]);
+    expect(e2e.workflow().syncFailures).toBeUndefined();
+  }, 240_000);
+
+  it("15.13 a conflict merge that really fails twice blocks the task, and the owner's Retry (MCP) is one more try", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const base = await e2e.advanceBase("greeting.ts", BASE_GREETING);
+    github.state.conflicted = true;
+    for (let failure = 0; failure < 2; failure += 1) {
+      e2e.worker.failNext("maintain", "CONFIG_INVALID: one or more registered readiness checks failed");
+      await trackAndRun(e2e, 3);
+    }
+    const stopped = e2e.workflow();
+    expect(stopped).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: branchSyncGiveUpMessage("checks") });
+    expect(milestones(e2e, "stuck")).toHaveLength(1);
+    expect((await e2e.mcp("agentx_get_task", { task_id: e2e.taskId() })).text ?? "").toContain("agentx_retry_workflow");
+    const done = await e2e.mcp("agentx_retry_workflow", { task_id: e2e.taskId(), request_id: "11111111-2222-4333-8444-555555555571", instructions: "Try again.", expected_revision: stopped.revision });
+    expect(done.isError, JSON.stringify(done)).not.toBe(true);
+    expect(e2e.workflow()).toMatchObject({ state: "WAITING", syncFailures: { count: 1 } });
+    await trackAndRun(e2e);
+    expect(e2e.github.parents.get(pullRequest.commit)).toEqual([before, base]);
+  }, 240_000);
+
+  it("15.14 GitHub unreadable through the whole retry budget after a lost merge ends with a visible stop, never a silent stall", async () => {
+    const { e2e, github } = await waitingForMerge();
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    e2e.worker.crashNext("maintain", { afterPush: true });
+    e2e.clock.advance(16 * 60_000);
+    await e2e.runMergeRecovery();
+    await e2e.runRecovery();
+    await e2e.settle();
+    e2e.github.failNext("getPullRequestFeedback", 503, 1_000);
+    for (let round = 0; round < 14; round += 1) {
+      await e2e.runRecovery();
+      await e2e.settle();
+      e2e.clock.advance(3 * 60 * 60_000);
+    }
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: BRANCH_SYNC_UNSURE_MESSAGE });
+    expect(e2e.workflow().branchSync).toBeUndefined();
+    expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text: BRANCH_SYNC_UNSURE_MESSAGE })]);
+  }, 240_000);
+
+  it("15.15 a CI or feedback fix starts from the pull request's head (so an abandoned conflict round's files are gone); a conflict round does not, it works on the merge's files", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const head = pullRequest.commit;
+    github.state.red = true;
+    await trackAndRun(e2e);
+    const fixRun = e2e.invocations.find((invocation) => invocation.kind === "task" && invocation.payload.workflowFix?.source === "ci");
+    expect(fixRun?.kind === "task" && fixRun.payload.workflowFix).toEqual({ source: "ci", startFrom: head });
+    github.state.red = false;
+    await e2e.advanceBase("greeting.ts", BASE_GREETING);
+    github.state.conflicted = true;
+    await trackAndRun(e2e);
+    const conflictRun = e2e.invocations.find((invocation) => invocation.kind === "task" && invocation.payload.workflowFix?.source === "conflict");
+    expect(conflictRun?.kind === "task" && conflictRun.payload.workflowFix).toEqual({ source: "conflict" });
   }, 240_000);
 
   it("15.8 a merge whose machine is lost after its push is judged from what GitHub shows: the merge is recorded as Rovara's own (with no approval to carry), and nothing false is said", async () => {

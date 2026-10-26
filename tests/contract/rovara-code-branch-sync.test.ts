@@ -3,7 +3,7 @@
 // is (clean, conflicted, refused for workflow files, lost) from what GitHub shows. Nothing here rebases or force-pushes, and nothing a person did not leave to Rovara is overwritten.
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  SYNC_FAILURES_MAX, branchSyncGiveUpMessage, isBranchSyncGiveUpReason,
+  BRANCH_SYNC_UNSURE_MESSAGE, SYNC_BACKOFF_MINUTES, SYNC_FAILURES_MAX, branchSyncGiveUpMessage, isBranchSyncGiveUpReason,
   branchConflictAskMessage, isBranchConflictAskReason, retryWorkflowBranchSync,
   BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_ROUNDS_MAX, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowBranchSync, branchConflictStopMessage, createCandidateManifest,
   createWorkflowSnapshot, endWorkflowBranchSync, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
@@ -707,43 +707,108 @@ describe("a conflict fix that would drop what the base brought", () => {
 
 describe("a merge that keeps failing", () => {
   const binding = { repositoryId: "payments", number: 7, baseCommit: BASE_NEW, expectedHeadCommit: HEAD_A };
-  const failed = (workflow: WorkflowSnapshot, error: string) => planBranchSyncOutcome({
-    workflow, binding, terminalStatus: "FAILED", terminalError: error, result: undefined, github: { state: "open", headBranch: "agentx/00000000-0000-4000-8000-000000000001", headCommit: HEAD_A, headTreeSha: "b".repeat(40), parents: [BASE_OLD] },
+  const failed = (workflow: WorkflowSnapshot, error: string | undefined) => planBranchSyncOutcome({
+    workflow, binding, terminalStatus: "FAILED", ...(error === undefined ? {} : { terminalError: error }), result: undefined,
+    github: { state: "open", headBranch: "agentx/00000000-0000-4000-8000-000000000001", headCommit: HEAD_A, headTreeSha: "b".repeat(40), parents: [BASE_OLD] },
     baseBranch: "main", recordedBranch: "agentx/00000000-0000-4000-8000-000000000001", now: at,
   });
   const CHECKS = "CONFIG_INVALID: one or more registered readiness checks failed";
+  const again = (workflow: WorkflowSnapshot, reason: "behind" | "conflict" = "behind") => startWorkflowBranchSyncRun(startWorkflowBranchSync(workflow, { repositoryId: "payments", number: 7, reason, now: at }), at);
 
-  it("is stopped after the second failure on the same head, with a plain text, and not tried on that head again", () => {
+  it("a behind merge that really failed twice on the same head gives up without blocking the task: it stays behind and says so, once", () => {
     expect(SYNC_FAILURES_MAX).toBe(2);
     const first = failed(syncing(), CHECKS);
     expect(first.kind).toBe("unchanged");
     if (first.kind !== "unchanged") return;
     expect(first.workflow).toMatchObject({ state: "WAITING", syncFailures: { headSha: HEAD_A, count: 1 } });
-    const second = failed(startWorkflowBranchSyncRun(startWorkflowBranchSync(first.workflow, { repositoryId: "payments", number: 7, reason: "behind", now: at }), at), CHECKS);
-    expect(second).toMatchObject({ kind: "stopped", message: "Rovara couldn't bring the branch up to date: the project's checks fail once the base is merged in. Update it on GitHub." });
-    if (second.kind === "stopped") expect(second.workflow).toMatchObject({ state: "BLOCKED", blockReason: second.message });
+    const second = failed(again(first.workflow), CHECKS);
+    const text = "Rovara couldn't bring the branch up to date: the project's checks fail once the base is merged in. Update it on GitHub.";
+    expect(second).toMatchObject({ kind: "gave_up", message: text });
+    if (second.kind !== "gave_up") return;
+    // Not blocked: CI fixes, feedback and conflict rounds go on; this head is simply not tried again.
+    expect(second.workflow).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", syncFailures: { headSha: HEAD_A, count: SYNC_FAILURES_MAX } });
+    expect(second.workflow.blockReason).toBeUndefined();
     expect(branchSyncGiveUpMessage("other")).toBe("Rovara couldn't bring the branch up to date: the merge did not go through. Update it on GitHub.");
-    expect(isBranchSyncGiveUpReason(branchSyncGiveUpMessage("checks"))).toBe(true);
+    expect(isBranchSyncGiveUpReason(text)).toBe(true);
     expect(isBranchSyncBlockReason(branchSyncGiveUpMessage("other"))).toBe(true);
   });
 
-  it("counts a failure per head: another head, a head that moved (a person's push) and a merge that went through start again from none", () => {
-    const first = failed(syncing(), CHECKS);
+  it("a conflict merge that really failed twice blocks the task (a conflict has to be dealt with), and its Retry is one more try", () => {
+    const first = failed(syncing({}, "conflict"), CHECKS);
     if (first.kind !== "unchanged") throw new Error("expected unchanged");
-    const elsewhere = { ...first.workflow, syncFailures: { headSha: HEAD_B, count: 1 } };
-    const again = failed(startWorkflowBranchSyncRun(startWorkflowBranchSync(elsewhere, { repositoryId: "payments", number: 7, reason: "behind", now: at }), at), CHECKS);
-    expect(again).toMatchObject({ kind: "unchanged" });
-    if (again.kind === "unchanged") expect(again.workflow.syncFailures).toMatchObject({ headSha: HEAD_A, count: 1 });
-    // A moved head is a person's push, not the merge failing.
+    const second = failed(again(first.workflow, "conflict"), CHECKS);
+    expect(second.kind).toBe("stopped");
+    if (second.kind !== "stopped") return;
+    expect(second.workflow).toMatchObject({ state: "BLOCKED", blockReason: second.message });
+    const retried = retryWorkflowBranchSync(second.workflow, at);
+    expect(retried).toMatchObject({ state: "WAITING", syncFailures: { headSha: HEAD_A, count: SYNC_FAILURES_MAX - 1 } });
+    expect(retried.blockReason).toBeUndefined();
+    // One more try, and a failure of it stops again.
+    const third = failed(again(retried, "conflict"), CHECKS);
+    expect(third.kind).toBe("stopped");
+  });
+
+  it("only a real merge failure counts: GitHub errors, a lost machine and a stale fence retry with a growing delay and never stop", () => {
+    let workflow = syncing();
+    for (const [index, error] of ["RUNTIME_UNAVAILABLE: GitHub answered 503", undefined, "OPERATION_INTERRUPTED: spot reclaimed", "RUNTIME_UNAVAILABLE: rate limited"].entries()) {
+      const outcome = failed(workflow, error);
+      expect(outcome.kind, String(error)).toBe("unchanged");
+      if (outcome.kind !== "unchanged") return;
+      expect(outcome.workflow.syncFailures).toMatchObject({ headSha: HEAD_A, count: 0, transient: index + 1 });
+      const wait = Date.parse(outcome.workflow.syncFailures!.retryAfter!) - Date.parse(at);
+      expect(wait).toBe(Math.min(SYNC_BACKOFF_MINUTES.max, SYNC_BACKOFF_MINUTES.first * 2 ** index) * 60_000);
+      workflow = again(outcome.workflow);
+    }
+    // A moved head is a person's push: nothing is counted.
     const moved = failed(syncing(), "STALE_FENCE: pull request head changed since AgentX last observed it");
     expect(moved.kind === "unchanged" && moved.workflow.syncFailures).toBeFalsy();
-    expect(recordWorkflowBranchSync(syncing({ syncFailures: { headSha: HEAD_A, count: 1 } }), clean).syncFailures).toBeUndefined();
+  });
+
+  it("a merge is not started before its delay is over, nor on a head it gave up on, and a new head starts from none", async () => {
+    installBranchSyncDeciders();
+    const waitingUntil = (iso: string, count = 0) => waiting({ syncFailures: { headSha: HEAD_A, count, transient: 1, retryAfter: iso } });
+    const soon = syncWorld({ workflow: waitingUntil(new Date(NOW + 10 * 60_000).toISOString()) });
+    await trackPullRequest(soon.deps, TASK_ID);
+    expect(dispatchRows(soon)).toEqual([]);
+    const over = syncWorld({ workflow: waitingUntil(new Date(NOW - 60_000).toISOString()) });
+    await trackPullRequest(over.deps, TASK_ID);
+    expect(workflowOf(over)).toMatchObject({ state: "READY" });
+    const gaveUp = syncWorld({ workflow: waiting({ syncFailures: { headSha: HEAD_A, count: SYNC_FAILURES_MAX } }) });
+    await trackPullRequest(gaveUp.deps, TASK_ID);
+    expect(dispatchRows(gaveUp)).toEqual([]);
+    expect(trackingOf(gaveUp).syncs.count).toBe(0);
+    const otherHead = syncWorld({ workflow: waiting({ syncFailures: { headSha: HEAD_B, count: SYNC_FAILURES_MAX } }) });
+    await trackPullRequest(otherHead.deps, TASK_ID);
+    expect(workflowOf(otherHead)).toMatchObject({ state: "READY" });
+  });
+
+  it("a head the merge gave up on does not stop a CI fix", async () => {
+    installCiFixDecider();
+    installBranchSyncDeciders();
+    const w = syncWorld({ workflow: waiting({ syncFailures: { headSha: HEAD_A, count: SYNC_FAILURES_MAX } }),
+      overrides: { checks: [{ name: "test", status: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }] } });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(workflowOf(w)).toMatchObject({ stage: "IMPLEMENT", fixSource: "ci" });
   });
 
   it("names the failure in fixed words: the project's checks, or the merge not going through, never the worker's own text", () => {
     expect(classifySyncFailure(CHECKS)).toBe("checks");
-    expect(classifySyncFailure("RUNTIME_UNAVAILABLE: compute lost")).toBe("other");
+    expect(classifySyncFailure("CONFIG_INVALID: Git could not read the repository's files")).toBe("other");
     expect(classifySyncFailure(`CONFIG_INVALID: ${"ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"} boom`)).toBe("other");
     expect(classifySyncFailure(undefined)).toBe("other");
+  });
+
+  it("a success clears the count", () => {
+    expect(recordWorkflowBranchSync(syncing({ syncFailures: { headSha: HEAD_A, count: 1 } }), clean).syncFailures).toBeUndefined();
+  });
+});
+
+describe("when GitHub cannot be read for a lost merge through the whole retry budget", () => {
+  it("says so: the task stops with a plain text, and the text is a branch-sync stop", () => {
+    expect(BRANCH_SYNC_UNSURE_MESSAGE).toBe("Rovara couldn't tell whether the merge of the base branch went through, because GitHub couldn't be read. Check the pull request on GitHub.");
+    expect(isBranchSyncBlockReason(BRANCH_SYNC_UNSURE_MESSAGE)).toBe(true);
+    const stopped = blockWorkflowBranchSync(syncing(), { reason: BRANCH_SYNC_UNSURE_MESSAGE, now: at });
+    expect(stopped).toMatchObject({ state: "BLOCKED", blockReason: BRANCH_SYNC_UNSURE_MESSAGE });
+    expect(stopped.branchSync).toBeUndefined();
   });
 });

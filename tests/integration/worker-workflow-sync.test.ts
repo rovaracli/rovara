@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { allowGitFileTransportForTests } from "../../packages/worker/src/git.js";
 import { maintainPullRequest } from "../../packages/worker/src/maintain-pull-request.js";
 import { temporaryIndexTree } from "../../packages/worker/src/publish.js";
+import { restoreFixStart } from "../../packages/worker/src/fix-start.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
@@ -258,6 +259,8 @@ describe("a conflict round's fix, pushed as a merge commit", () => {
       const update = sink();
       const failure = await maintainPullRequest({ rootPath: fixture.root, invocation: pushOf(fixture, tree, base), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update }).then(() => undefined, (error: unknown) => error as Error);
       expect(failure?.message, drop).toMatch(/would drop changes the base branch made/);
+      // And it says why, and what is allowed: the files that conflicted and the coder's own files, not one the base changed cleanly.
+      expect(failure?.message).toMatch(/may change the files that conflicted and its own new files, not a file the base branch changed without a conflict/);
       expect(failure?.message).toContain(drop === "ignored" ? "dist/app.js" : "BASE.md");
       expect(update).not.toHaveBeenCalled();
       expect(await remoteHead(fixture)).toBe(fixture.pullRequestHead);
@@ -424,3 +427,27 @@ async function git(directory: string, args: string[]): Promise<string> {
   const result = await execFileAsync("git", ["-C", directory, ...args], { encoding: "utf8" });
   return result.stdout;
 }
+
+describe("a fix round that starts after an abandoned conflict round", () => {
+  it("starts from the pull request's head: the markers, the edits and the local merge commit the abandoned round left are gone", async () => {
+    const fixture = await createFixture({ conflict: true });
+    await maintainPullRequest({ rootPath: fixture.root, invocation: syncOf(fixture, fixture.conflictBase!), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: sink() });
+    await writeFile(join(fixture.checkout, "README.md"), "half way\n", "utf8");
+    await writeFile(join(fixture.checkout, "LEFTOVER.md"), "from the coder\n", "utf8");
+    expect((await git(fixture.checkout, ["rev-parse", "HEAD"])).trim()).not.toBe(fixture.pullRequestHead);
+    await restoreFixStart(fixture.checkout, fixture.pullRequestHead);
+    expect((await git(fixture.checkout, ["rev-parse", "HEAD"])).trim()).toBe(fixture.pullRequestHead);
+    expect((await git(fixture.checkout, ["branch", "--show-current"])).trim()).toBe(fixture.headBranch);
+    expect((await git(fixture.checkout, ["status", "--porcelain=v1"])).trim()).toBe("");
+    expect(await readFile(join(fixture.checkout, "README.md"), "utf8")).toBe("pull request version\n");
+  });
+
+  it("leaves a workspace that is on the head alone (a resumed run keeps its partial work), and one that lacks the head", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.checkout, "PARTIAL.md"), "partial work\n", "utf8");
+    await restoreFixStart(fixture.checkout, fixture.pullRequestHead);
+    expect(await readFile(join(fixture.checkout, "PARTIAL.md"), "utf8")).toBe("partial work\n");
+    await restoreFixStart(fixture.checkout, "e".repeat(40));
+    expect(await readFile(join(fixture.checkout, "PARTIAL.md"), "utf8")).toBe("partial work\n");
+  });
+});
