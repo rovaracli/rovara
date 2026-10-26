@@ -87,7 +87,7 @@ import {
 import { hooksCreate, hooksDelete, hooksList, hooksRotate } from "./developer/hooks.js";
 import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
-import { homeCards, sessionControl, sessionFollow, sessionLink, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
+import { homeCards, sessionControl, sessionFollow, sessionLinkIssue, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -844,7 +844,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--replace", "change the issue when the session already follows another", false)
     .option("--unlink", "let go of the session's Linear issue", false)
     .action(async (ref: string, options: { linear?: string; replace: boolean; unlink: boolean }, command: Command) =>
-      printResult(command, await sessionLink(developerSession(), developerEnv(command), ref, { ...(options.linear === undefined ? {} : { linear: options.linear }), replace: options.replace, unlink: options.unlink })));
+      printResult(command, await sessionLinkIssue(developerSession(), developerEnv(command), ref, { ...(options.linear === undefined ? {} : { linear: options.linear }), replace: options.replace, unlink: options.unlink })));
   program
     .command("home")
     .description("what needs you now: approvals, plans, spend requests, pull requests and failures")

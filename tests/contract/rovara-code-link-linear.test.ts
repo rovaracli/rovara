@@ -25,7 +25,7 @@ function world() {
   };
   const table = { documentClient: w.db, tableName: "state", now: () => w.clock.now };
   const request = (who: string, method: string, sessionId: string, rest: string, body?: unknown, orgId: OrgId = ORG_A) => routeAgentSessionRequest(
-    deps as never, w.caller(who, orgId), { method, path: `/v1/app/sessions/${sessionId}${rest}`, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) } as never,
+    deps, w.caller(who, orgId), { method, path: `/v1/app/sessions/${sessionId}${rest}`, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
     new URL(`/v1/app/sessions/${sessionId}${rest}`, "https://cell.example.com"),
   ) as Promise<{ session: { sessionId: string; bindings: Array<{ kind: string; url: string }> } }>;
   const link = (who: string, sessionId: string, linear: unknown, extra: Record<string, unknown> = {}, orgId: OrgId = ORG_A) => request(who, "POST", sessionId, "/bindings", { linear, ...extra }, orgId);
@@ -194,9 +194,9 @@ describe("linking a session to a Linear issue", () => {
     h.db.send = ((command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
       if (command.constructor.name === "GetCommand" && String(command.input?.Key?.pk ?? "").includes("SESSION_BINDING#")) return Promise.reject(Object.assign(new Error("table down"), { name: "ServiceUnavailable" }));
       return original(command as never);
-    }) as typeof h.db.send;
+    });
     await expect(h.link(PRIYA, sessionId, "ENG-142")).rejects.toThrow();
-    h.db.send = original as typeof h.db.send;
+    h.db.send = original;
     expect(h.binding(sessionId)).toBeUndefined();
     expect(h.audit.recordedBy("session.linked")).toEqual([]);
   });
@@ -342,9 +342,9 @@ describe("unlinking", () => {
         h.db.set({ ...sessionBindingKey(ORG_A, sessionId, "linear_issue"), entityType: "AGENT_SESSION_BINDING", orgId: ORG_A, sessionId, binding: { kind: "linear_issue", issueId: "ENG-777", url: "https://linear.app/issue/ENG-777" }, at: "2026-10-22T09:30:00.000Z" });
       }
       return original(command as never);
-    }) as typeof h.db.send;
+    });
     await h.unlink(PRIYA, sessionId).catch(() => undefined);
-    h.db.send = original as typeof h.db.send;
+    h.db.send = original;
     expect(h.binding(sessionId)?.binding.issueId).toBe("ENG-777");
   });
 });

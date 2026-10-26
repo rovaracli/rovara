@@ -219,7 +219,7 @@ async function sessionOfRef(deps: DeveloperSessionDeps, env: string | undefined,
  * `session link <task-or-session> --linear <KEY|URL> [--replace]` links a Rovara Code session to a Linear issue; `--unlink` lets it go. The pull request Rovara opens (or next updates) then says
  * `Fixes <KEY>`, which Linear's own GitHub integration closes the issue on when it merges. Needs "can edit" on the session; the control plane decides, and its refusal is printed as it wrote it.
  */
-export async function sessionLink(deps: DeveloperSessionDeps, env: string | undefined, ref: string, input: { linear?: string; unlink?: boolean; replace?: boolean }): Promise<AppResult> {
+export async function sessionLinkIssue(deps: DeveloperSessionDeps, env: string | undefined, ref: string, input: { linear?: string; unlink?: boolean; replace?: boolean }): Promise<AppResult> {
   const linear = input.linear?.trim();
   if ((linear === undefined) === (input.unlink !== true)) throw agentXError("CONFIG_INVALID", "give one of --linear <KEY|link> and --unlink");
   if (linear !== undefined && !isLinearIssue(linear)) throw agentXError("CONFIG_INVALID", "--linear takes an issue key like TEAM-123, or the issue's linear.app link");
