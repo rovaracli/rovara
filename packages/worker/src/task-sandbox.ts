@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { availableParallelism } from "node:os";
-import { resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { agentXError, type ProjectCommand } from "@agentx/contracts";
 import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
@@ -126,6 +127,8 @@ export interface TaskSandboxRunInput {
   rootPath: string;
   /** Folders of the workspace volume that are the worker's, not the project's (workspace-state.ts): each gets an empty read-only tmpfs over it. */
   maskedPaths: readonly string[];
+  /** Folders inside a masked one that the sandbox does see, as the workspace itself is mounted: a parallel part's working copies (`.agentx/parts`). Each is mounted at its own path. */
+  exposedPaths?: readonly string[];
   /** The host's CPU count, which sets the sandbox's CPU limit (sandboxCpuLimit). Default: this machine's, which is the host's. */
   hostCpus?: number;
 }
@@ -146,6 +149,7 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--security-opt", "no-new-privileges",
     "--volume", `${input.rootPath}:${input.rootPath}`,
     ...input.maskedPaths.flatMap((path) => ["--tmpfs", `${path}:${MASK_OPTIONS}`]),
+    ...(input.exposedPaths ?? []).flatMap((path) => ["--volume", `${path}:${path}`]),
     "--workdir", input.rootPath,
     "--entrypoint", SANDBOX_INIT,
     input.image, "--", "sleep", "infinity",
@@ -162,6 +166,8 @@ export interface TaskSandboxOptions {
   /** Default: AGENTX_SANDBOX_IMAGE in `environment`. */
   image?: string;
   environment?: NodeJS.ProcessEnv;
+  /** Rovara Code v2: the sandbox also sees `.agentx/parts`, where parallel parts have their working copies (the rest of `.agentx` stays hidden). */
+  exposeParts?: boolean;
   /** Where the sandbox reports what it does not fail on; default: one JSON line on the worker's log. */
   log?: (event: Record<string, unknown>) => void;
 }
@@ -242,8 +248,11 @@ export class TaskSandbox {
     const root = resolve(this.options.rootPath);
     await this.ensureNetwork();
     const maskedPaths = await hiddenWorkspaceDirectories(root);
+    // The hidden folders were just made private; the parts folder inside `.agentx` is the one place in it the task's code may use.
+    const exposedPaths = this.options.exposeParts === true ? [join(root, ".agentx", "parts")] : [];
+    for (const path of exposedPaths) await mkdir(path, { recursive: true, mode: 0o700 });
     const result = await this.docker.run(
-      taskSandboxRunArgs({ name: this.name, taskId: this.options.taskId, image, rootPath: root, maskedPaths }),
+      taskSandboxRunArgs({ name: this.name, taskId: this.options.taskId, image, rootPath: root, maskedPaths, ...(exposedPaths.length === 0 ? {} : { exposedPaths }) }),
       { timeoutMs: SANDBOX_START_TIMEOUT_MS },
     );
     if (result.exitCode !== 0) {
@@ -295,7 +304,7 @@ function logEvent(event: Record<string, unknown>): void {
 }
 
 /** The sandbox for a selection, or undefined for the local shell (refused on the EC2 runtime). */
-export function taskSandboxFor(selection: TaskShellSelection, input: { rootPath: string; taskId: string }): TaskSandbox | undefined {
+export function taskSandboxFor(selection: TaskShellSelection, input: { rootPath: string; taskId: string; exposeParts?: boolean }): TaskSandbox | undefined {
   if (selection.kind === "local") {
     assertLocalTaskExecutionAllowed(process.env, { explicit: true });
     return undefined;

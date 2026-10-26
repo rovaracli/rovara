@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { copyFile, mkdir, rm, rmdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { agentXError } from "@agentx/contracts";
 import { isolatedGitEnvironment } from "./git.js";
@@ -49,7 +49,7 @@ export function partDirectory(rootPath: string, itemId: string, repositoryId: st
 export interface PartWorkingCopy {
   readonly directory: string;
   readonly repositoryId: string;
-  /** Removes the working copy and its parts folder, if the folder is empty after it. Safe to call twice. */
+  /** Removes the working copy and its item folder (the shared parts folder stays). Safe to call twice. */
   remove(): Promise<void>;
 }
 
@@ -69,7 +69,6 @@ export async function createPartWorkingCopy(input: { rootPath: string; repositor
     remove: async () => {
       await rm(directory, { recursive: true, force: true });
       await rm(itemFolder, { recursive: true, force: true });
-      await rmdir(dirname(itemFolder)).catch(() => undefined);
     },
   };
   try {

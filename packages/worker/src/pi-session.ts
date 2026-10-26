@@ -174,11 +174,17 @@ export async function createWorkspacePiSession(
     agentTools?: readonly string[];
     skills?: readonly AgentSkillFile[];
     agentRun?: AgentRunSession;
+    /** Where the agent works, when that is not the workspace root: a folder inside it (a parallel part's working copy). Its saved transcript and settings stay in the root's. */
+    workingDirectory?: string;
   },
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
   assertFileToolsContained(input);
   const rootPath = await realpath(resolve(input.rootPath));
+  const workingDirectory = input.workingDirectory === undefined ? rootPath : await realpath(resolve(input.workingDirectory));
+  if (workingDirectory !== rootPath && !workingDirectory.startsWith(`${rootPath}/`)) {
+    throw agentXError("CONFIG_INVALID", "the agent's working folder is outside the workspace");
+  }
   const sessionDirectory = resolve(rootPath, "agent-sessions");
   const agentDirectory = workerPiDirectory(rootPath);
   await Promise.all([
@@ -188,7 +194,7 @@ export async function createWorkspacePiSession(
   // An agent step reads the repository as information: its context files (written by whoever can push) are not loaded.
   const contextFiles = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths) : [];
   const handle = await adapter.create({
-    cwd: rootPath,
+    cwd: workingDirectory,
     sessionDirectory,
     agentDirectory,
     model: input.model,

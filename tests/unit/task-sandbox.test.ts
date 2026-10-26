@@ -102,6 +102,35 @@ describe("the task sandbox's docker run arguments (R56)", () => {
   });
 });
 
+describe("the parts folder of parallel parts (Rovara Code v2)", () => {
+  it("is mounted at its own path, inside the hidden .agentx, and only when asked for", () => {
+    const base = { name: "n", taskId: TASK, image: IMAGE, rootPath: "/mnt/workspace", maskedPaths: ["/mnt/workspace/.agentx"] };
+    const without = taskSandboxRunArgs(base);
+    expect(without.filter((arg) => arg === "--volume")).toHaveLength(1);
+    const exposed = taskSandboxRunArgs({ ...base, exposedPaths: ["/mnt/workspace/.agentx/parts"] });
+    const volumes = exposed.flatMap((arg, index) => (arg === "--volume" ? [exposed[index + 1]] : []));
+    expect(volumes).toEqual(["/mnt/workspace:/mnt/workspace", "/mnt/workspace/.agentx/parts:/mnt/workspace/.agentx/parts"]);
+    // `.agentx` itself stays hidden behind its tmpfs; only the parts folder is added.
+    expect(exposed.flatMap((arg, index) => (arg === "--tmpfs" ? [exposed[index + 1]] : []))).toEqual(["/mnt/workspace/.agentx:ro,noexec,nosuid,size=4k"]);
+  });
+
+  it("a sandbox started for parts makes the folder first, and a sandbox started without them mounts nothing more", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "agentx-sandbox-parts-")));
+    try {
+      const withParts = fakeDocker();
+      await new TaskSandbox({ rootPath: root, taskId: TASK, docker: withParts.docker, image: IMAGE, exposeParts: true }).start();
+      const run = withParts.verbs("run")[0]!;
+      expect(run).toContain(`${join(root, ".agentx", "parts")}:${join(root, ".agentx", "parts")}`);
+      expect((await stat(join(root, ".agentx", "parts"))).isDirectory()).toBe(true);
+      const plain = fakeDocker();
+      await new TaskSandbox({ rootPath: root, taskId: TASK, docker: plain.docker, image: IMAGE }).start();
+      expect(plain.verbs("run")[0]!.filter((arg) => arg === "--volume")).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("starting and stopping a sandbox", () => {
   const cleanup: string[] = [];
   afterEach(async () => {
