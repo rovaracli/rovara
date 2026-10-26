@@ -92,10 +92,10 @@ describe("a tracking row", () => {
     await enrollTracking(h.db, uuid(1), h.now() - 1_000);
     expect(rowOf(h.db, uuid(1)).kind).toBe("tracking");
     // The merge pass's query still shows the row as it was in the merge partition.
-    const send = h.dependencies.documentClient.send;
+    const original = h.dependencies.documentClient;
     h.dependencies.documentClient = { send: async (command: unknown) => {
       if ((command as { constructor: { name: string } }).constructor.name === "QueryCommand") return { Items: [stale] };
-      return send(command);
+      return original.send(command);
     } };
     expect(await runDueWorkflowMergeRecovery(h.dependencies)).toEqual({ attempted: 0, reconciled: 0, deferred: 0 });
     expect(h.reconcile).not.toHaveBeenCalled();
@@ -138,7 +138,7 @@ describe("the tracking pass", () => {
     expect(TRACKING_MAX_ROWS).toBe(25);
     expect(merge.attempted).toBe(10);
     expect(tracking.attempted).toBe(25);
-    const tracked = h.reconcile.mock.calls.map(([taskId]) => taskId).filter((taskId) => Number(taskId.slice(-12)) <= 30);
+    const tracked = h.reconcile.mock.calls.map(([taskId]) => taskId ?? "").filter((taskId) => Number(taskId.slice(-12)) <= 30);
     expect(tracked).toEqual(Array.from({ length: 25 }, (_, index) => uuid(index + 1)));
     h.setNow(h.now() + GATE);
     expect((await runDueWorkflowMergeTracking(h.dependencies)).attempted).toBe(5);

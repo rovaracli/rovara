@@ -241,12 +241,12 @@ describe("marking a pull request ready and asking for reviewers", () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const provider = new GitHubAppCredentialProvider({
       credentialRef: "github", appId: "5002502", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(), now: () => NOW,
-      fetchImplementation: (async (input: string | URL | Request) => {
+      fetchImplementation: async (input: string | URL | Request) => {
         const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
         if (url.endsWith("/installation")) return Response.json({ id: 1, account: { login: "acme" } });
         if (url.endsWith("/access_tokens")) return Response.json({ token: "t" }, { status: 201 });
         return new Response("{}", { status: 422 });
-      }) as typeof fetch,
+      },
     });
     const budget = { signal: new AbortController().signal, beforeRequest: () => undefined };
     await expect(provider.requestReviewers(REPO, 42, ["alice"], SCOPE, budget)).resolves.toBe("refused");

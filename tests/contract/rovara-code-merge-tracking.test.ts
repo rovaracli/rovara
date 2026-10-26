@@ -471,7 +471,7 @@ describe("the next action", () => {
     const dropped = registerMergeActionDecider("conflict", spy);
     unregister.push(dropped);
     lost.github.statuses.set(7, status({ checks: failing }));
-    const original = lost.deps.loadTask;
+    const original = lost.deps.loadTask.bind(lost.deps);
     let reads = 0;
     lost.deps.loadTask = async (id) => {
       const task = await original(id);
