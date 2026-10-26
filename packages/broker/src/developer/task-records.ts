@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
+  WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   DeveloperSignInMethodSchema,
   agentXError,
   inertName,
@@ -551,7 +552,9 @@ export function deriveTaskStatus(input: {
   }
   if (input.pointer?.pendingPrompt !== undefined || input.workspaceStatus === "PREPARING" || current === undefined) return { status: "STARTING", closing };
   if (LIVE.has(current.status)) return { status: "RUNNING", closing, current };
-  const status = current.status as "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
+  // A build that changed nothing finished its run; the workflow holds it for a person (`noCodeChanged`) in plain words. It is not a failed task with the worker's config wording.
+  const ranToItsEnd = current.kind === "task" && current.status === "FAILED" && current.error?.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE) === true;
+  const status = (ranToItsEnd ? "SUCCEEDED" : current.status) as "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
   return {
     status, closing, current,
     ...(status === "FAILED" || status === "INTERRUPTED" ? { failure: failureOf(current.kind, status, current.error) } : {}),

@@ -762,6 +762,29 @@ describe("a build that changes nothing after approval still blocks", () => {
     expect(t.meta(run.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.noCodeChanged });
     expect(t.meta(run.taskId).workflow.outcome).not.toBe("ANSWERED");
   });
+
+  it("is a stop for a person, not a FAILED task with the worker's config wording: the task view and the session agree (staging 0.4.10, bug B)", async () => {
+    const t = await world();
+    const run = await t.noChangePlan();
+    await t.decide(MAYA, run.taskId, { decision: "APPROVE", reason: "Approved", artifactDigest: run.digest });
+    const build = t.operationOf(run.workspaceId, "IMPLEMENT")!;
+    await t.finish(run.workspaceId, String(build.id), "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_NO_CODE_CHANGE_MESSAGE}` });
+    const task = (await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`)).body.task as { status: string; failure?: { message: string }; workflow: { state: string; blockReason?: string } };
+    expect(task.workflow).toMatchObject({ state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.noCodeChanged });
+    expect(task.status).not.toBe("FAILED");
+    expect(JSON.stringify(task)).not.toContain("CONFIG_INVALID");
+    await t.refreshSummary(run.sessionId);
+    expect(t.sessionRecord(run.sessionId).summary.status).toBe("needs_person");
+  });
+
+  it("any other failed build is still a FAILED task (positive control)", async () => {
+    const t = await world();
+    const run = await t.noChangePlan();
+    await t.decide(MAYA, run.taskId, { decision: "APPROVE", reason: "Approved", artifactDigest: run.digest });
+    await t.finish(run.workspaceId, String(t.operationOf(run.workspaceId, "IMPLEMENT")!.id), "FAILED", { error: "RUNTIME_UNAVAILABLE: the model call failed: provider-outage attempt 4; retry the step" });
+    const task = (await t.dev(MAYA, "GET", `/v1/dev/tasks/${run.taskId}`)).body.task as { status: string };
+    expect(task.status).toBe("FAILED");
+  });
 });
 
 describe("retryOf is checked, not trusted", () => {

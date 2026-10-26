@@ -15794,13 +15794,26 @@ async function cancelledWorkflowStepItems(
   return items;
 }
 
+/**
+ * Whether a worker's failed result is a plain task's no-change end: the first coding turn of a task started without the workflow (it runs in IMPLEMENT mode, the worker's candidate check
+ * refuses a build that changed nothing) and the error is exactly that refusal. A workflow task's build is never this: its no-change stop is `noCodeChanged`, a block a person answers.
+ */
+async function plainTaskLeftCodeAsItWas(dependencies: AwsBrokerDependencies, operation: OperationRecord, status: unknown, error: unknown): Promise<boolean> {
+  if (status !== "FAILED" || operation.kind !== "task" || operation.workflowMode !== "IMPLEMENT" || typeof error !== "string" || !error.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE)) return false;
+  const task = await workspaceTask(dependencies, operation.workspaceId);
+  return task !== undefined && task.workflow === undefined;
+}
+
 async function recordTerminalResult(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
   value: unknown,
 ): Promise<OperationRecord> {
   const input = object(value, "terminal result");
-  const status = input.status;
+  // Staging 0.4.10: a plain task (no workflow) whose run left the code as it was has nothing to approve, check or publish: it answered, and it ended. The worker reports that as a failure
+  // because a workflow's approved build must not pass with no change; here it is the run's end, so it is recorded as one (a workflow task's stays a failure and blocks the build).
+  const plainNoChange = await plainTaskLeftCodeAsItWas(dependencies, operation, input.status, input.error);
+  const status = plainNoChange ? "SUCCEEDED" : input.status;
   if (!TERMINAL.has(status as OperationStatus)) throw agentXError("CONFIG_INVALID", "terminal status is invalid");
   if (TERMINAL.has(operation.status)) {
     // Issue 202: a task whose cancel failed ended INTERRUPTED but kept its workspace, as it might
@@ -15831,7 +15844,7 @@ async function recordTerminalResult(
   const startRefusal: { text?: string } = {};
   // #154: the worker's error can quote a command's output, so it is redacted before it is stored,
   // and redactAndCap redacts before it caps.
-  const error = typeof input.error === "string" ? redactAndCap(input.error, TERMINAL_ERROR_MAX).text : undefined;
+  const error = typeof input.error === "string" && !plainNoChange ? redactAndCap(input.error, TERMINAL_ERROR_MAX).text : undefined;
   const result = operation.kind === "publish" && status === "SUCCEEDED"
     ? PullRequestResultSchema.parse(input.result)
     : operation.kind === "close" && status === "SUCCEEDED"
