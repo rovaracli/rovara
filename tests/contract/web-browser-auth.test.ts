@@ -189,3 +189,9 @@ it("keeps legacy token role writes available while cookie omission is refused", 
  const h = await broker(), target = "b".repeat(64);seedMembership(h.db, target, { orgId: TEST_ORG, role: "member" });
  const response = await h.call("PUT", `/v1/app/org/members/${target}/role`, { authorization: "Bearer test-only-bearer" }, { requestId: randomUUID(), role: "admin" });expect(response.status).toBe(200);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin");
 });
+it("runs reviewed cookie role writes with receipts and audit while preserving live owner authority", async () => {
+ const { capturingAuditDeps } = await import("../support/audit-capture.js");const audit = capturingAuditDeps(), h = await broker({ audit: audit.audit }), target = "b".repeat(64);audit.attach(h.db);seedMembership(h.db, target, { orgId: TEST_ORG, role: "member" });const body = { requestId: randomUUID(), role: "admin", expectedRole: "member" }, headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) };
+ for (let i = 0; i < 2; i++) expect((await h.call("PUT", `/v1/web/org/members/${target}/role`, headers, body)).status).toBe(200);
+ expect(audit.recordedBy("member.role_changed")).toHaveLength(1);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin");
+ for (const role of ["admin", "member"] as const) { seedMembership(h.db, WHO, { orgId: TEST_ORG, role });const response = await h.call("PUT", `/v1/web/org/members/${target}/role`, headers, { requestId: randomUUID(), role: "owner", expectedRole: "admin" });expect(response.status).toBe(403);expect(h.db.get(orgMemberKey(TEST_ORG, target))?.role).toBe("admin"); }
+});

@@ -9,14 +9,16 @@ const id = "11111111-1111-4111-8111-111111111111", nextId = "22222222-2222-4222-
 function fixture(role = "owner") {
  const db = new FakeDynamoDb(), audit = capturingAuditDeps({ db, now: () => Date.parse("2026-10-26T12:00:00Z") });
  function member(orgId: string, developerId: string, r: string) { db.set({ ...orgMemberKey(orgId, developerId), orgId, developerId, role: r, joinedAt: "2026-10-01T00:00:00Z" });db.set({ ...developerOrgKey(developerId), orgId, developerId, role: r }); }
- member(org, actor, role);member(org, target, "member");member(other, outsider, "owner");db.set({ ...orgMetaKey(org), orgId: org, name: "Acme", plan: "team" });
- const deps: DeveloperRouteDependencies = { tableName: "state", now: audit.audit.now, documentClient: db, audit: { ...audit.audit, tableName: "state" }, developer: { issuer: "https://cell.example/v1/auth", env: "test", methods: { slack: false, oidc: false, cloud: true }, signInTableName: "signin", verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) }, orgs: new OrgStore({ documentClient: db, tableName: "state", now: audit.audit.now }) };
+ member(org, actor, role);member(org, target, "member");
+ db.set({ pk: `DEVELOPER#${actor}`, sk: "META", developerId: actor, displayName: "Priya", provider: "cloud" });
+ db.set({ pk: `SESSION#${id}`, sk: "META", developerId: actor, amr: "cloud", endsAt: Math.floor(audit.audit.now() / 1000) + 3600, startedAt: "2026-10-26T11:00:00Z" });member(other, outsider, "owner");db.set({ ...orgMetaKey(org), orgId: org, name: "Acme", plan: "team" });
+ const deps: DeveloperRouteDependencies = { tableName: "state", now: audit.audit.now, documentClient: db, audit: { ...audit.audit, tableName: "state" }, developer: { issuer: "https://cell.example/v1/auth", env: "test", methods: { slack: false, oidc: false, cloud: true }, signInTableName: "signin", verifyAccessToken: async () => ({ iss: "https://cell.example/v1/auth", aud: "agentx-developer", sub: actor, sid: id, amr: "cloud", env: "test", org, org_role: "owner" }), channelMembers: async () => ({ ok: true, memberOf: [] }) }, orgs: new OrgStore({ documentClient: db, tableName: "state", now: audit.audit.now }) };
  const caller: DeveloperCaller = { orgId: org, developerId: actor, orgRole: "owner", name: "Priya", amr: "cloud", sessionId: "fixture" };
  let beforeCommit: (() => void) | undefined;
  const original = db.send.bind(db);db.send = async command => { if (command.constructor.name === "TransactWriteCommand" && beforeCommit) { const run = beforeCommit;beforeCommit = undefined;run(); }return original(command); };
  async function request(body: unknown = { requestId: id, role: "admin", expectedRole: "member" }, who = target, as = caller) {
   const path = `/v1/app/org/members/${who}/role`;
-  try { return { result: await routeDeveloperRequest(deps, { method: "PUT", path, headers: {}, body: JSON.stringify(body), requestId: "role-test" }, new URL(path, "https://cell.example"), { caller: as, csrf: "" }) }; }
+  try { return { result: await routeDeveloperRequest(deps, { method: "PUT", path, headers: {}, body: JSON.stringify(body), requestId: "role-test" }, new URL(path, "https://cell.example"), typeof body === "object" && body !== null && Object.hasOwn(body, "expectedRole") ? { caller: as, csrf: "" } : undefined) }; }
   catch (e) { if (!(e instanceof AgentXError)) throw e;return { code: e.code }; }
  }
  return { db, deps, audit, caller, member, request, beforeCommit(run: () => void) { beforeCommit = run; }, role: (who = target) => db.get(orgMemberKey(org, who))?.role };
@@ -91,7 +93,7 @@ it("preserves the legacy owner-first refusal for malformed requests without expe
 });
 it("preserves field-specific legacy owner validation without expectedRole", async () => {
  const f = fixture(), path = `/v1/app/org/members/${target}/role`;
- await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, role: "invalid" }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).rejects.toThrow(/^CONFIG_INVALID: role:/);
+ await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, role: "invalid" }) }, new URL(path, "https://cell.example"))).rejects.toThrow(/^CONFIG_INVALID: role:/);
 });
 it("skips a stale listed owner and consistently verifies the next owner before self-demotion", async () => {
  const f = fixture(), third = "d".repeat(64);f.member(org, target, "owner");f.member(org, third, "owner");
