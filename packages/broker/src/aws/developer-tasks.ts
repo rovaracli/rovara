@@ -7795,7 +7795,7 @@ async function authorizeShare(deps: DeveloperTaskRouteDependencies, caller: Deve
   if (!codeTask(task)) return authorizeLegacyTaskAction(deps, caller, taskId, "work");
   if (deps.agentSessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Session access cannot be checked right now.");
   const access = await requireSessionLevel(deps.agentSessions, caller, task.sessionId, "edit", "share it");
-  if (task.closedAt !== undefined) throw agentXError("CONFIG_INVALID", CLOSED_TASK);
+  if (task.closedAt !== undefined || task.workflow?.stage === "CLOSED" || task.workflow?.stage === "MERGED") throw agentXError("CONFIG_INVALID", CLOSED_TASK);
   await requireProjectWorkRole(deps, task, caller);
   const people = await loadTaskPeople(deps, taskId);
   const actorId = taskOwnerKey(caller.developerId, taskId);
