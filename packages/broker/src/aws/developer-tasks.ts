@@ -7936,7 +7936,7 @@ async function codeOwnershipConfirmation(deps: DeveloperTaskRouteDependencies, c
   if (task.workflow?.definitionId !== "agentx-task-to-pr") return undefined;
   const sessions = deps.agentRuns?.agentSessions;
   if (sessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
-  const sessionId = task.sessionId ?? await ensureTaskSession({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task, { ownerName: task.developerName, title: inertTaskTitle(task.title) });
+  const sessionId = task.sessionId ?? await ensureTaskSession({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, { ownerName: task.developerName, title: inertTaskTitle(task.title) });
   if (sessionId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "This task's session cannot be created right now.");
   const reply = await askTakeOver(sessions, caller, sessionId, { requestId: input.requestId }, deps.agentRuns);
   return { reply, pending: { status: "PENDING" as const, requestId: input.requestId, confirmationUrl: reply.body.confirmUrl, expiresAt: reply.expiresAt } };

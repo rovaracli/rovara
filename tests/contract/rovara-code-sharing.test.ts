@@ -83,8 +83,9 @@ it("the legacy MCP take-ownership route returns the session confirmation without
   expect(reply).toMatchObject({ statusCode: 202, body: { status: "NEEDS_CONFIRMATION" } });
   const client = httpControlPlaneClient({ session: async () => ({ baseUrl: w.deps.origin, accessToken: "test-token", signInCommand: "test" }),
     fetch: async (_url, init) => {
+      if (typeof init?.body !== "string") throw new Error("expected a serialized request");
       const response = await routeDeveloperTaskRequest({ ...w.deps, orgId: ORG_A, agentRuns: approvals } as unknown as DeveloperTaskRouteDependencies,
-        w.caller(ARJUN), { method: "POST", path, requestId: randomUUID(), headers: {}, body: String(init?.body) }, new URL(path, w.deps.origin));
+        w.caller(ARJUN), { method: "POST", path, requestId: randomUUID(), headers: {}, body: init.body }, new URL(path, w.deps.origin));
       if (!(response instanceof StatusReply)) throw new Error("expected confirmation");
       return new Response(JSON.stringify({ ...response.body, requestId: "transport" }), { status: response.statusCode, headers: { "content-type": "application/json" } });
     } });
@@ -208,7 +209,7 @@ for (const level of ["view", "use", "edit", "owner", "removed", "otherOrg"] as c
     await h.orgOf(actor);
     if (actor === OMAR && level !== "otherOrg") {
       h.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), role: "developer", projectRole: "contributor" });
-      if (level !== "otherOrg") h.db.set({ ...agentSessionKey(TEST_ORG, String(task.sessionId), `SHARE#MEMBER#${OMAR.developerId}`), principal: { kind: "member", developerId: OMAR.developerId }, level, sharedBy: { developerId: MAYA.developerId, name: MAYA.name }, sharedAt: new Date().toISOString() });
+      h.db.set({ ...agentSessionKey(TEST_ORG, String(task.sessionId), `SHARE#MEMBER#${OMAR.developerId}`), principal: { kind: "member", developerId: OMAR.developerId }, level, sharedBy: { developerId: MAYA.developerId, name: MAYA.name }, sharedAt: new Date().toISOString() });
     }
     if (level === "removed") h.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
     const writes = h.db.transactions().length;
