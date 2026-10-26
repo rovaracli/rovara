@@ -115,6 +115,8 @@ const ROWS: readonly Row[] = [
   ["aws/broker.ts", "verifiedSharedStopBinding", "principal", ".developerId*3", ".ownerKey*4", "taskOwnerKey()"],
   ["aws/broker.ts", "sharedStopFences", "principal", ".developerId*2", ".ownerKey*2"],
   ["aws/broker.ts", "taskOperationParts", "money", ".developerId"],
+  // C55: the pull request footer names the identity the workspace was prepared for (as it always did); when its display name is an email address, the GitHub login that same person linked stands in for it (a stored identity, read only to find that login)
+  ["aws/broker.ts", "attributedBody", "history", ".developerId"],
   ["aws/broker.ts", "handleModelAccess>loadScope", "money", ".developerId"],
   ["aws/broker.ts", "workflowE2EPresentationDetailed", "principal", ".ownerKey"],
   ["aws/broker.ts", "currentWorkflowFeedbackApproval", "principal", ".ownerKey"],

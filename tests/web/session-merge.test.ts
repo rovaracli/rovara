@@ -38,7 +38,7 @@ function tracking(extra: Partial<MergeTrackingItem> = {}): MergeTrackingItem {
     checksEverSeen: true, failingChecks: [] as string[], review: "approved" as const, approval: { githubUserId: "1004", login: "arjun-gh", commitId: HEAD }, branch: "up_to_date" as const, headByRovara: true,
     nudges: { count: 0 }, syncs: { day: "2026-10-26", count: 0 }, ...extra,
   };
-  return { ...fields, version: 1, decisionDigest: mergeTrackingDecisionDigest(fields), observedAt: "2026-10-26T22:16:10.000Z" } as MergeTrackingItem;
+  return { ...fields, version: 1, decisionDigest: mergeTrackingDecisionDigest(fields), observedAt: "2026-10-26T22:16:10.000Z" };
 }
 
 /** A task session waiting for its merge, as the server's version 2 task view shows it. */
@@ -46,7 +46,7 @@ function mergeSession(merge: { ready: boolean; message?: string } | undefined, o
   const base = workspaceFixture();
   const level = options.level ?? "edit";
   const task = taskFixture({
-    ...(base.body.kind === "task" ? (base.body.task as object) : {}),
+    ...(base.body.kind === "task" ? (base.body.task) : {}),
     pullRequests: [{ repository: "payments", number: 42, url: "https://github.com/acme/payments/pull/42", state: "open" }],
     mergeTracking: options.items ?? [tracking()], ...(merge === undefined ? {} : { merge }),
   });
@@ -116,7 +116,7 @@ it("says Done only when the server's own view shows every pull request merged", 
   fireEvent.click(await screen.findByRole("button", { name: "Press Merge" }));
   await screen.findByText("Waiting for you to confirm in your browser");
   const merged = mergeSession({ ready: false, message: M.taskClosed }, { items: [tracking({ state: "merged" })] });
-  f.setSession({ ...merged, revision: 5 } as typeof merged);
+  f.setSession({ ...merged, revision: 5 });
   await f.query.invalidateQueries({ queryKey: ["session", SESSION_FIXTURE_ID] });
   await screen.findByText("Merged");
   f.close();

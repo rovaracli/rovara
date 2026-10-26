@@ -9,8 +9,7 @@ import { DEVELOPER_TOOLS, createAgentXMcpServer, httpControlPlaneClient, type To
 import { taskPageStage } from "../../packages/broker/src/aws/developer-tasks.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { MERGE_NOT_READY_MESSAGES as M } from "../../packages/contracts/src/rovara-code.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import type { WorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { CELL, MAYA, mergeButtonBroker, type MergeButtonBroker } from "../support/merge-button-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
@@ -26,7 +25,7 @@ async function pageText(h: MergeButtonBroker): Promise<string> {
     version: "2.0", routeKey: "ANY /review/{proxy+}", rawPath: `/review/${h.taskId}/task`, rawQueryString: "",
     headers: { host: new URL(CELL).host, cookie: `__Host-agentx_review_session=${sessionId}; __Host-agentx_review_csrf=csrf` },
     requestContext: { requestId: randomUUID(), http: { method: "GET" } },
-  }) as { statusCode: number; body: string };
+  });
   expect(response.statusCode, response.body.slice(0, 300)).toBe(200);
   return unHtml(response.body);
 }
@@ -93,7 +92,7 @@ describe("no MCP tool merges", () => {
 
 const NOW = "2026-10-26T22:00:00.000Z";
 /** A task waiting for its merge: one open pull request on a candidate whose checks and reviews passed. */
-function waitingWorkflow(definitionVersion: string): WorkflowSnapshot {
+function waitingWorkflow(definitionVersion: "1.0.0" | "1.1.0"): WorkflowSnapshot {
   const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "a".repeat(40), treeSha: "b".repeat(40) }]);
   return WorkflowSnapshotSchema.parse({
     ...createWorkflowSnapshot({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", ownerId: "a".repeat(64), now: NOW, definitionVersion }), candidate, stage: "WAIT_FOR_MERGE", state: "WAITING",
