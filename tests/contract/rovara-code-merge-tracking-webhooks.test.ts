@@ -154,6 +154,13 @@ describe("a check or status delivery", () => {
     expect(row(crossed.w).wakeAt).toBeUndefined();
   });
 
+  it("is ignored when the pull request's link names another task", async () => {
+    const s = await setup();
+    s.w.db.set({ ...s.w.db.get("GITHUB_PR#acme/payments", "PR#0000000007")!, taskId: "00000000-0000-4000-8000-0000000000b2" });
+    expect((await deliver(s, "check_run", checkRun())).outcome.status).toBe("IGNORED");
+    expect(row(s.w).wakeAt).toBeUndefined();
+  });
+
   it("is refused for a repository the task's project does not pin through this installation", async () => {
     const s = await setup();
     s.verify.mockResolvedValue(false);
@@ -207,6 +214,18 @@ describe("the event as received", () => {
     expect(received.event).toMatchObject({ kind: "HEAD_STATUS", headSha: HEAD_A });
     expect(reserved).toHaveLength(1);
     expect(seen[0]).not.toHaveProperty("pullRequestNumber");
+  });
+
+  it("never asks the caller about a delivery that names no commit", async () => {
+    const authorize = vi.fn(async () => true);
+    for (const sha of ["", "short", "A".repeat(40), `${"a".repeat(39)}#`]) {
+      const body = JSON.stringify({ action: "completed", installation: { id: INSTALLATION }, repository, check_run: { head_sha: sha } });
+      await expect(receiveGithubWebhook({
+        rawBody: body, secret: SECRET, headers: { "x-hub-signature-256": sign(body), "x-github-delivery": randomUUID(), "x-github-event": "check_run" },
+        authorizeRepository: authorize, reserveDelivery: async () => "reserved",
+      })).rejects.toMatchObject({ name: "GithubWebhookIgnorable" });
+    }
+    expect(authorize).not.toHaveBeenCalled();
   });
 
   it("still reads pull request events by their number", async () => {

@@ -85,6 +85,22 @@ describe("a tracking row", () => {
     expect(rowOf(h.db, uuid(1))).toMatchObject({ kind: "tracking", dispatchDuePk: TRACKING_DUE_PK });
   });
 
+  it("is left to the tracking pass when it was converted between the merge pass's query and its read", async () => {
+    const h = harness();
+    await enrollMerge(h.db, uuid(1), h.now() - 1_000);
+    const stale = structuredClone(rowOf(h.db, uuid(1)));
+    await enrollTracking(h.db, uuid(1), h.now() - 1_000);
+    expect(rowOf(h.db, uuid(1)).kind).toBe("tracking");
+    // The merge pass's query still shows the row as it was in the merge partition.
+    const send = h.dependencies.documentClient.send;
+    h.dependencies.documentClient = { send: async (command: unknown) => {
+      if ((command as { constructor: { name: string } }).constructor.name === "QueryCommand") return { Items: [stale] };
+      return send(command);
+    } };
+    expect(await runDueWorkflowMergeRecovery(h.dependencies)).toEqual({ attempted: 0, reconciled: 0, deferred: 0 });
+    expect(h.reconcile).not.toHaveBeenCalled();
+  });
+
   it("is refused as malformed when its partition does not match its kind, and is then quarantined, never reconciled", async () => {
     const h = harness();
     await enrollTracking(h.db, uuid(1), h.now() - 1_000);
