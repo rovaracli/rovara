@@ -50,3 +50,9 @@ it("validates reviewed changes again at the internal write boundary before any s
   expect(f.db.commandNames()).toHaveLength(before);
  }
 });
+it("does not deduplicate a reviewed change against a previous legacy CLI change", async () => {
+ const f = fixture();f.deps.orgs = new OrgStore({ documentClient: f.db, tableName: "state", now: f.deps.now, audit: f.audit.audit });
+ expect((await f.request({ requestId: id, role: "admin" })).result).toBeTruthy();
+ expect((await f.request({ requestId: nextId, role: "member" })).result).toBeTruthy();
+ expect((await f.request()).result).toBeTruthy();expect(f.role()).toBe("admin");expect(f.audit.recordedBy("member.role_changed")).toHaveLength(3);
+});
