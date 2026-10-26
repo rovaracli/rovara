@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -145,6 +145,25 @@ describe("a v2 task's parts, run by the worker", () => {
     expect(new Set(usage).size).toBe(4);
     expect(outcome.artifacts.filter((name) => name.startsWith("usage-part-"))).toHaveLength(3);
     expect(outcome.artifacts).toContain("usage.json");
+  });
+
+  it("clears the folders an earlier run left in the parts folder, links included, without following them", async () => {
+    const decoy = await mkdtemp(join(tmpdir(), "rovara-decoy-"));
+    try {
+      await writeFile(join(decoy, "keep.txt"), "keep\n");
+      await mkdir(join(root, ".agentx-parts/old-run/app"), { recursive: true });
+      await writeFile(join(root, ".agentx-parts/old-run/app/leftover.txt"), "x\n");
+      await symlink(decoy, join(root, ".agentx-parts/link-run"));
+      const outcome = await run({
+        graph: { schemaVersion: 1, taskId: randomUUID(), version: 1, items: [item(A, "A")] }, parallel: { max: 3 },
+        act: async (title, cwd) => { await writeFile(join(cwd, `${title}.txt`), "x\n"); return undefined; },
+      });
+      expect(outcome.error).toBeUndefined();
+      expect(await readdir(join(root, ".agentx-parts"))).toEqual([]);
+      expect(await readFile(join(decoy, "keep.txt"), "utf8")).toBe("keep\n");
+    } finally {
+      await rm(decoy, { recursive: true, force: true });
+    }
   });
 
   it("builds the parts one after another when the project repository is the workspace root", async () => {
