@@ -390,6 +390,7 @@ import { answeredMilestoneItems } from "../rovara-code/answered.js";
 import { questionsMilestoneItems } from "../rovara-code/question-answers.js";
 import { mergedMilestoneItems } from "../rovara-code/merged.js";
 import { linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
+import { withLinearCloseLine } from "../rovara-code/pull-request-body.js";
 import { estimateDuration, noteDurationAtPullRequest } from "../rovara-code/duration.js";
 import { parallelStartTrees, workflowDependenciesAllowed } from "../rovara-code/parallel-parts.js";
 import { PLAN_EVIDENCE_PK, attachEvidence, planCitesCode, planEvidenceDueKey, planEvidenceEvent, planEvidenceJobItem, planEvidenceSources, type PlanEvidenceEvent, type PlanEvidenceJob } from "../developer/plan-evidence-jobs.js";
@@ -1713,6 +1714,7 @@ function developerTaskActions(dependencies: AwsBrokerDependencies): DeveloperTas
       const object = await dependencies.s3.send(new GetObjectCommand({ Bucket: dependencies.artifactBucketName, Key: objectKey, Range: `bytes=0-${maxBytes - 1}` }));
       return object.Body ? await object.Body.transformToString("utf8") : "";
     },
+    rewriteLinearCloseLine: (task, key) => rewriteOpenLinearCloseLines(dependencies, task, key),
     pullRequests: async (workspaceId) => (await query(`WORKSPACE#${workspaceId}`, "PULL_REQUEST#"))
       .map((item) => ({ repository: String(item.repository), number: Number(item.number), url: String(item.url), state: item.state as "open" | "closed" | "merged" })),
     acceptTask: (identity, workspaceId, request, extra, options) => acceptTask(dependencies, identity, workspaceId, request, extra, options),
@@ -11570,6 +11572,36 @@ async function reconcilePullRequestUpdate(
   }));
   if (expected.workflowCandidate !== undefined) await describeFeedbackFixes(dependencies, operation, record, expected.workflowCandidate.candidateDigest);
   return { url: remote.url, state: remote.state, reconciled: false };
+}
+
+/**
+ * Plan 6 Task 20: after a session's Linear issue was linked, replaced or unlinked, the open pull requests' descriptions say so at once: the `Fixes <KEY>` line inside Rovara's block is set, changed or taken
+ * out (`withLinearCloseLine`), each description read just before it is written. Bounded in time like the feedback description update; a pull request that could not be read or written, whose block is not as
+ * Rovara wrote it, or past the time limit, counts as failed. Never throws.
+ */
+async function rewriteOpenLinearCloseLines(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, key: string | undefined): Promise<{ updated: number; failed: number }> {
+  const open = (task.workflow?.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN");
+  const result = { updated: 0, failed: 0 };
+  const deadline = Date.now() + (dependencies.descriptionUpdateMaxMs ?? DESCRIPTION_UPDATE_MAX_MS);
+  let scope: Awaited<ReturnType<typeof githubScopeOf>> | undefined;
+  for (const pullRequest of open) {
+    if (Date.now() > deadline) { result.failed += 1; continue; }
+    try {
+      scope ??= await githubScopeOf(dependencies, task);
+      const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, pullRequest.repositoryId, pullRequest.number));
+      if (record === undefined) { result.failed += 1; continue; }
+      const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, pullRequest.number, scope)).body;
+      const next = withLinearCloseLine(current, key);
+      if (next.kind === "same") continue;
+      if (next.kind === "no_block" || next.body.length > PULL_REQUEST_BODY_MAX_CHARS || Date.now() > deadline) { result.failed += 1; continue; }
+      await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, pullRequest.number, { body: next.body }, scope);
+      result.updated += 1;
+    } catch (error) {
+      result.failed += 1;
+      console.log(JSON.stringify({ component: "broker", event: "linear_close.description_not_updated", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
+    }
+  }
+  return result;
 }
 
 /** How long the description update may hold up the worker's callback; past it the push is answered and the update gives up. */

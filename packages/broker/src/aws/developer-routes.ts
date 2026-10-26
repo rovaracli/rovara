@@ -1636,6 +1636,8 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
           console.log(JSON.stringify({ component: "broker", event: "rovara_code.understand_start_deferred", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
         }
       },
+      // Plan 6 Task 20: the open pull request's Fixes line follows a link, an unlink or a replace of the session's Linear issue at once.
+      ...(taskDeps.actions.rewriteLinearCloseLine === undefined ? {} : { rewritePullRequestLinearLine: (task: DeveloperTaskRecord, key: string | undefined) => taskDeps.actions.rewriteLinearCloseLine!(task, key) }),
       startAgentRun: async (request) => {
         const starter = agentRunStarterOf(deps);
         if (starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting runs is not set up in this deployment");

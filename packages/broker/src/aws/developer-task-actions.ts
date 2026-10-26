@@ -4,7 +4,7 @@
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import type { OrgId, RunCheckout, ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowFixPayload, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
-import type { StoredEvent } from "../developer/task-records.js";
+import type { DeveloperTaskRecord, StoredEvent } from "../developer/task-records.js";
 import type { RegisteredProjectRecord } from "./broker.js";
 import type { AgentRunStepInput } from "../agents/dispatch.js";
 
@@ -57,6 +57,11 @@ export interface DeveloperTaskActions {
   readArtifact(objectKey: string, maxBytes: number): Promise<string>;
   /** The workspace's pull requests, across all pages. Unchecked: callers must load the owned task and check project access first. */
   pullRequests(workspaceId: string): Promise<StoredPullRequest[]>;
+  /**
+   * Plan 6 Task 20: rewrites the `Fixes <KEY>` line in the descriptions of the task's open pull requests (`key` undefined takes it out), as GitHub has them now. Answers how many descriptions it changed
+   * and how many it could not (GitHub refused, or the block is not as Rovara wrote it). Never throws for one pull request. Unchecked: callers have checked the person's level on the session.
+   */
+  rewriteLinearCloseLine?(task: DeveloperTaskRecord, key: string | undefined): Promise<{ updated: number; failed: number }>;
   /** `sharedTask`: the task is shared, so the worker's prompt gets the re-read line (25c note 1). */
   acceptTask(identity: AuthenticatedIdentity, workspaceId: string, request: OperationRequest, extra: ExtraItems, options?: { sharedTask?: boolean; planRevision?: true; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput }): Promise<{ operation: Operation; duplicate: boolean }>;
   /**

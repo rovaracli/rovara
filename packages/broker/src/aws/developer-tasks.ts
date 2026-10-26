@@ -304,7 +304,7 @@ import { wakeTrackingRow } from "./workflow-merge-recovery.js";
 import { parseChangedFiles } from "../rovara-code/changed-files.js";
 import { inertPlanLine } from "../rovara-code/inert-text.js";
 import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFilesRead, type PullRequestBodyContext } from "../rovara-code/pull-request-body.js";
-import { breakLinearCloseWords, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
+import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -5781,8 +5781,8 @@ export async function startTaskWorkflowPublicationFromSystem(
   const linearIssueKey = rovaraV2 ? await linearIssueKeyOfTask({ documentClient: deps.documentClient, tableName: deps.tableName }, task) : undefined;
   const bodyContext: PullRequestBodyContext | undefined = rovaraV2 ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }) } : undefined;
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
-  // Linear reads the title as well as the body: a closing word with a key in a task's title must not close another issue.
-  const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearCloseWords(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);
+  // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
+  const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);
   const body = workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext);
   const receivedAt = iso(deps);
   const unchanged = {

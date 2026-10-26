@@ -233,7 +233,13 @@ export async function sessionLinkIssue(deps: DeveloperSessionDeps, env: string |
   const issueUrl = typeof issue?.url === "string" && /^https:\/\/linear\.app\/[^\s]+$/u.test(issue.url) ? issue.url : undefined;
   const key = issueUrl === undefined ? undefined : /\/issue\/([A-Za-z0-9-]+)$/u.exec(issueUrl)?.[1];
   const what = linear === undefined ? "Unlinked the Linear issue from this session." : `Linked this session to Linear issue ${key ?? clean(linear)}.`;
-  const note = linear === undefined ? [] : ["Its pull request will say Fixes " + (key ?? clean(linear)) + ", so Linear's GitHub integration closes the issue when it merges."];
+  // What became of the pull request's description, as the server says it: the promise of a Fixes line only where it will be there, and its note (clean) where the person has to act.
+  const description = (answer.body.pullRequest ?? {}) as Body;
+  const carries = linear !== undefined && (description.description === "updated" || description.description === "next_update");
+  const note = [
+    ...(carries ? [`Its pull request description will say Fixes ${key ?? clean(linear)}, so Linear's GitHub integration closes the issue when it merges.`] : []),
+    ...(typeof description.note === "string" && description.note.trim() !== "" ? [clean(description.note)] : []),
+  ];
   return result(answer, answer.body, `${[what, ...note, linkOf(answer.url, id, view.link)].join("\n")}\n`);
 }
 

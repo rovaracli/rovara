@@ -190,3 +190,53 @@ export async function unbindSessionSurface(
     }
   }
 }
+
+/**
+ * Replaces a session's binding of one kind with another surface in ONE transaction (Plan 6 Task 20: replacing a Linear issue): the session's own `BINDING#<kind>` item is overwritten behind a check
+ * that it is still the one that was read, the old reverse surface item is deleted (only if it names this session), the new one is put only if absent (an issue that follows another session is
+ * refused as `bindSessionSurface` refuses it), and `extraItems` (built from the binding that is let go) commit with it. A refusal leaves everything as it was. "not_bound" when the session follows
+ * nothing of that kind now (nothing is written; the caller says so).
+ */
+export async function replaceSessionSurface(
+  table: TableInput,
+  input: { orgId: OrgId; sessionId: SessionId; binding: SessionBinding; extraItems?: (previous: SessionBinding) => Promise<TransactItem[]> },
+): Promise<{ result: "replaced"; previous: SessionBinding } | { result: "not_bound" }> {
+  const parsedBinding = SessionBindingSchema.safeParse(input.binding);
+  const parsedId = SessionIdSchema.safeParse(input.sessionId);
+  if (!parsedBinding.success || !parsedId.success) throw agentXError("CONFIG_INVALID", "This link can't be bound to a session.");
+  const binding = parsedBinding.data;
+  const sessionId = parsedId.data;
+  const ownKey = sessionBindingKey(input.orgId, sessionId, binding.kind);
+  const newSurface = sessionSurfaceKey(input.orgId, binding);
+  for (let attempt = 1; ; attempt += 1) {
+    const own = await getItem(table, ownKey);
+    if (own === undefined || own["orgId"] !== input.orgId) return { result: "not_bound" };
+    const old = SessionBindingSchema.safeParse(own["binding"]);
+    if (!old.success || old.data.kind !== binding.kind) throw agentXError("RUNTIME_UNAVAILABLE", "This link can't be read right now.");
+    const taken = await getItem(table, newSurface);
+    if (taken !== undefined && taken["orgId"] === input.orgId && taken["sessionId"] !== sessionId) throw agentXError("CONFIG_INVALID", `This ${NOUN[binding.kind]} already follows another session.`);
+    const at = new Date(table.now()).toISOString();
+    const items: TransactItem[] = [
+      { ConditionCheck: { TableName: table.tableName, Key: agentSessionKey(input.orgId, sessionId, "META"), ConditionExpression: "attribute_exists(pk) AND orgId = :orgId AND attribute_not_exists(endedAt)", ExpressionAttributeValues: { ":orgId": input.orgId } } },
+      { Put: { TableName: table.tableName, Item: { ...ownKey, entityType: "AGENT_SESSION_BINDING", orgId: input.orgId, sessionId, binding, at }, ConditionExpression: "attribute_exists(pk) AND orgId = :orgId AND #at = :at", ExpressionAttributeNames: { "#at": "at" }, ExpressionAttributeValues: { ":orgId": input.orgId, ":at": own["at"] } } },
+      { Delete: { TableName: table.tableName, Key: sessionSurfaceKey(input.orgId, old.data), ConditionExpression: "attribute_not_exists(pk) OR (orgId = :orgId AND sessionId = :sessionId)", ExpressionAttributeValues: { ":orgId": input.orgId, ":sessionId": sessionId } } },
+      putNew(table, newSurface, "SESSION_SURFACE", { orgId: input.orgId, sessionId, kind: binding.kind, at }),
+      ...(await input.extraItems?.(old.data) ?? []),
+    ];
+    try {
+      await table.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      return { result: "replaced", previous: old.data };
+    } catch (error) {
+      if (isTransactionConflict(error)) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
+      if (failedIndexes(error) === undefined) throw error;
+      // Something moved between the read and the write: read again. A binding that changed meanwhile is not replaced, because it is not the one the person asked about.
+      const now = await getItem(table, ownKey);
+      if (now === undefined || now["at"] !== own["at"] || now["orgId"] !== input.orgId) throw agentXError("CONFIG_INVALID", "This session's link changed just now. Check it and try again.");
+      const claimed = await getItem(table, newSurface);
+      if (claimed !== undefined && claimed["orgId"] === input.orgId && claimed["sessionId"] !== sessionId) throw agentXError("CONFIG_INVALID", `This ${NOUN[binding.kind]} already follows another session.`);
+      const meta = await getItem(table, agentSessionKey(input.orgId, sessionId, "META"));
+      if (meta !== undefined && meta["endedAt"] !== undefined) throw agentXError("SESSION_ENDED", "This session has ended.");
+      if (attempt >= ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", BUSY);
+    }
+  }
+}

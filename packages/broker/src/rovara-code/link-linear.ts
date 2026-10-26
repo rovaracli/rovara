@@ -4,13 +4,14 @@
 // Authority: a live "can edit" on the session in the caller's own org (the owner has it), read on every request; a session of another org, or one the caller cannot see, is `NOT_FOUND`. The key is
 // checked to be an issue key. A session follows one Linear issue and an issue follows one session in the org (`bindSessionSurface` refuses the second); changing the issue is explicit (`replace`).
 // The binding, its timeline line and its audit record are one transaction. A binding is a routing hint only: it names no person and gives nobody a level on the session.
-import { agentXError, sessionEventId, sessionSurfaceKey, type OrgId, type SessionBinding, type SessionId, type SessionView } from "@agentx/contracts";
+import { agentXError, sessionEventId, type OrgId, type SessionBinding, type SessionId, type SessionView } from "@agentx/contracts";
 import { z } from "zod";
 import type { TransactItem } from "../agents/table-writes.js";
-import { bindSessionSurface, unbindSessionSurface } from "../agent-sessions/bindings.js";
+import { bindSessionSurface, replaceSessionSurface, unbindSessionSurface } from "../agent-sessions/bindings.js";
 import { requireSessionLevel } from "../agent-sessions/access.js";
 import { sessionEventItem } from "../agent-sessions/store.js";
-import { answerOf, getItem, isEnded, isoOf, nameOrSomeone, type ControlCaller } from "../agent-sessions/stop.js";
+import type { DeveloperTaskRecord } from "../developer/task-records.js";
+import { answerOf, isEnded, isoOf, nameOrSomeone, taskOfSession, type ControlCaller } from "../agent-sessions/stop.js";
 import type { SessionReadDependencies } from "../agent-sessions/read.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditSessionLinked, auditSessionUnlinked, auditOccurrence } from "../audit/events.js";
@@ -61,11 +62,46 @@ async function lineItems(
 const linearOf = async (deps: SessionReadDependencies, orgId: OrgId, sessionId: string): Promise<SessionBinding | undefined> =>
   (await sessionBindingsOf(deps, orgId, sessionId)).find((binding) => binding.kind === "linear_issue");
 
+/** What happened to the open pull request's description, for the person who linked or unlinked (`GET`-free: it is part of the answer). */
+export interface PullRequestDescriptionResult {
+  /** `updated`: the open description was rewritten now. `next_update`: no pull request is open yet, so the first description (or the next rewrite) carries the line. `failed`: it could not be rewritten; `note` says what to do. `not_for_version`: an older Rovara Code task never writes the line. `none`: nothing to say. */
+  description: "updated" | "next_update" | "failed" | "not_for_version" | "none";
+  note?: string;
+}
+
+const OPEN_STATES = new Set(["OPEN", "UNKNOWN"]);
+
 /**
- * `POST /v1/app/sessions/{id}/bindings`. Needs "can edit". Links the session to the issue; the same issue again changes nothing; another issue is refused unless `replace` is sent, which lets the
- * old one go first (its own timeline line and audit record). An issue that follows another session in the org is refused before anything is changed. Answers the session.
+ * Brings the open pull request's description in line with the binding at once (never throws; the binding is already committed). `key` is the issue the session follows now, or undefined when it follows
+ * none; `stale` is the issue it followed before, whose line may still stand if the rewrite fails.
  */
-export async function linkLinearOnSession(deps: SessionReadDependencies, caller: ControlCaller, sessionId: string, body: unknown): Promise<{ session: SessionView }> {
+async function descriptionAfter(deps: SessionReadDependencies, task: DeveloperTaskRecord | undefined, key: string | undefined, stale: string | undefined): Promise<PullRequestDescriptionResult> {
+  const workflow = task?.workflow;
+  if (task === undefined || workflow === undefined) return key === undefined ? { description: "none" } : { description: "not_for_version", note: `This is an older Rovara Code task, so its pull request description won't say Fixes ${key}; write it there yourself if you want Linear to close the issue.` };
+  if (workflow.definitionVersion !== "1.1.0") {
+    return key === undefined ? { description: "none" } : { description: "not_for_version", note: `This is an older Rovara Code task, so its pull request description won't say Fixes ${key}; write it there yourself if you want Linear to close the issue.` };
+  }
+  const open = (workflow.pullRequests ?? []).filter((pullRequest) => OPEN_STATES.has(pullRequest.state));
+  if (open.length === 0) return key === undefined ? { description: "none" } : { description: "next_update" };
+  const failed = (): PullRequestDescriptionResult => ({
+    description: "failed",
+    note: `Rovara couldn't update the open pull request's description${stale !== undefined ? `, which may still say Fixes ${stale}` : key !== undefined ? `, which may not say Fixes ${key}` : ""}: edit it on GitHub.`,
+  });
+  try {
+    const outcome = await deps.control?.rewritePullRequestLinearLine?.(task, key);
+    return outcome === undefined || outcome.failed > 0 ? failed() : { description: "updated" };
+  } catch (error) {
+    (deps.log ?? ((entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry }))))({ event: "linear_close.description_not_updated", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
+    return failed();
+  }
+}
+
+/**
+ * `POST /v1/app/sessions/{id}/bindings`. Needs "can edit". Links the session to the issue; the same issue again changes nothing; another issue is refused unless `replace` is sent, which changes
+ * the issue in one transaction (the old issue's timeline line and audit record with the new issue's). An issue that follows another session in the org is refused and nothing changes. The open pull
+ * request's description is brought in line at once. Answers the session and what happened to the description.
+ */
+export async function linkLinearOnSession(deps: SessionReadDependencies, caller: ControlCaller, sessionId: string, body: unknown): Promise<{ session: SessionView; pullRequest: PullRequestDescriptionResult }> {
   const input = parseBody(body);
   const access = await requireSessionLevel(deps, caller, sessionId, "edit", "link it to a Linear issue");
   const { session } = access;
@@ -74,45 +110,61 @@ export async function linkLinearOnSession(deps: SessionReadDependencies, caller:
   const binding: SessionBinding = { kind: "linear_issue", issueId: input.issue.issueId, url: input.issue.url };
   const current = await linearOf(deps, session.orgId, session.sessionId);
   const currentKey = current === undefined ? undefined : linearIssueKeyOf(current);
-  if (current !== undefined && currentKey === input.issue.issueId) return answerOf(deps, caller, session.sessionId);
+  const task = await taskOfSession(deps, session);
+  if (current !== undefined && currentKey === input.issue.issueId) return { ...await answerOf(deps, caller, session.sessionId), pullRequest: { description: "none" } };
   if (current !== undefined && !input.replace) {
     throw agentXError("CONFIG_INVALID", `This session already follows ${currentKey === undefined ? "another Linear issue" : `Linear issue ${currentKey}`}. Unlink it first, or ask to replace it.`);
   }
   const table = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
-  const task = { orgId: session.orgId, sessionId: session.sessionId, subject: session.subject };
-  const letGo = { events: [] as Awaited<ReturnType<typeof tryAuditEvents>> };
+  const ref = { orgId: session.orgId, sessionId: session.sessionId, subject: session.subject };
   const kept = { events: [] as Awaited<ReturnType<typeof tryAuditEvents>> };
+  const key = input.issue.issueId;
+  let stale: string | undefined;
   if (current !== undefined) {
-    // The new issue must be free before the old one is let go, so a refusal leaves the session as it was.
-    const owner = await getItem(deps, sessionSurfaceKey(session.orgId, binding));
-    if (owner !== undefined && owner["orgId"] === session.orgId && owner["sessionId"] !== session.sessionId) throw agentXError("CONFIG_INVALID", ISSUE_TAKEN);
-    const oldKey = currentKey ?? "the issue";
-    await unbindSessionSurface(table, { orgId: session.orgId, sessionId: session.sessionId, kind: "linear_issue", extraItems: () => lineItems(deps, caller, task, { kind: "unlinked", key: oldKey, at: isoOf(deps.now()) }, letGo) });
-    // The old issue is let go for good, so its audit record is sent now, whatever happens to the new link.
-    await flushAuditEvents(deps, letGo.events);
+    // One transaction: the old issue is let go and the new one bound together, or nothing changes.
+    const replaced = await replaceSessionSurface(table, {
+      orgId: session.orgId, sessionId: session.sessionId, binding,
+      extraItems: async (previous) => {
+        const at = isoOf(deps.now());
+        const oldKey = linearIssueKeyOf(previous) ?? "the issue";
+        const gone = await lineItems(deps, caller, ref, { kind: "unlinked", key: oldKey, at }, kept);
+        const goneEvents = kept.events;
+        const added = await lineItems(deps, caller, ref, { kind: "linked", key, at }, kept);
+        kept.events = [...goneEvents, ...kept.events];
+        return [...gone, ...added];
+      },
+    });
+    if (replaced.result === "not_bound") throw agentXError("CONFIG_INVALID", "This session's link changed just now. Check it and try again.");
+    stale = linearIssueKeyOf(replaced.previous);
+    await flushAuditEvents(deps, kept.events);
+  } else {
+    const extraItems = await lineItems(deps, caller, ref, { kind: "linked", key, at: isoOf(deps.now()) }, kept);
+    // A refusal here is the library's own: "This issue already follows another session." or "This session already follows another issue."
+    const outcome = await bindSessionSurface(table, { orgId: session.orgId, sessionId: session.sessionId, binding, extraItems });
+    if (outcome === "bound") await flushAuditEvents(deps, kept.events);
   }
-  const at = isoOf(deps.now());
-  const extraItems = await lineItems(deps, caller, task, { kind: "linked", key: input.issue.issueId, at }, kept);
-  // A refusal here is the library's own: "This issue already follows another session." or "This session already follows another issue."
-  const outcome = await bindSessionSurface(table, { orgId: session.orgId, sessionId: session.sessionId, binding, extraItems });
-  if (outcome === "bound") await flushAuditEvents(deps, kept.events);
-  return answerOf(deps, caller, session.sessionId);
+  const pullRequest = await descriptionAfter(deps, task, key, stale);
+  return { ...await answerOf(deps, caller, session.sessionId), pullRequest };
 }
 
 /**
  * `DELETE /v1/app/sessions/{id}/bindings/linear`. Needs "can edit". Lets go of the session's Linear issue (and frees the issue for another session) with its timeline line and audit record; a session that
- * follows none changes nothing. Works on a session that has ended. Its Slack thread is not touched. Answers the session.
+ * follows none changes nothing. Works on a session that has ended. Its Slack thread is not touched. The open pull request's description loses its Fixes line at once. Answers the session and what happened
+ * to the description.
  */
-export async function unlinkLinearOnSession(deps: SessionReadDependencies, caller: ControlCaller, sessionId: string): Promise<{ session: SessionView }> {
+export async function unlinkLinearOnSession(deps: SessionReadDependencies, caller: ControlCaller, sessionId: string): Promise<{ session: SessionView; pullRequest: PullRequestDescriptionResult }> {
   const access = await requireSessionLevel(deps, caller, sessionId, "edit", "unlink its Linear issue");
   const { session } = access;
   const table = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
-  const task = { orgId: session.orgId, sessionId: session.sessionId, subject: session.subject };
+  const ref = { orgId: session.orgId, sessionId: session.sessionId, subject: session.subject };
   const kept = { events: [] as Awaited<ReturnType<typeof tryAuditEvents>> };
   const outcome = await unbindSessionSurface(table, {
     orgId: session.orgId, sessionId: session.sessionId, kind: "linear_issue",
-    extraItems: (binding) => lineItems(deps, caller, task, { kind: "unlinked", key: linearIssueKeyOf(binding) ?? "the issue", at: isoOf(deps.now()) }, kept),
+    extraItems: (binding) => lineItems(deps, caller, ref, { kind: "unlinked", key: linearIssueKeyOf(binding) ?? "the issue", at: isoOf(deps.now()) }, kept),
   });
-  if (outcome.result === "unbound") await flushAuditEvents(deps, kept.events);
-  return answerOf(deps, caller, session.sessionId);
+  if (outcome.result !== "unbound") return { ...await answerOf(deps, caller, session.sessionId), pullRequest: { description: "none" } };
+  await flushAuditEvents(deps, kept.events);
+  const task = session.subject.kind === "task" ? await taskOfSession(deps, session) : undefined;
+  const pullRequest = await descriptionAfter(deps, task, undefined, linearIssueKeyOf(outcome.binding));
+  return { ...await answerOf(deps, caller, session.sessionId), pullRequest };
 }

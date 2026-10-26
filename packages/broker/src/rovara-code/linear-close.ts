@@ -1,6 +1,6 @@
 // Rovara Code (Plan 6 Task 20): until Plan 9 closes Linear issues itself, Linear's own GitHub integration closes an issue when a pull request whose title or body says "Fixes <KEY>"
 // merges. This says that line for a session bound to a Linear issue, and only that line: the key comes from the session's own Linear binding in the task's org, is checked to be an
-// issue key (never free text), and every model-written line is stopped from saying a closing word with a key of its own (`breakLinearCloseWords`), so the pull request names one issue.
+// issue key (never free text), and every other Linear-key-shaped token in text a model or a person wrote is broken (`breakLinearKeys`, `sealLinearKeys`), so the pull request names one issue.
 import type { OrgId, SessionBinding } from "@agentx/contracts";
 import { sessionBindingsOf, type SessionBindingReader } from "./session-bindings.js";
 
@@ -12,52 +12,48 @@ export function normalizeIssueKey(text: string | undefined): string | undefined 
   return text !== undefined && ISSUE_KEY.test(text) ? text.toUpperCase() : undefined;
 }
 
-const WORKSPACE = /^[A-Za-z0-9_-]{1,64}$/u;
-
-/**
- * The issue a Linear link names: `https://linear.app/<workspace>/issue/<KEY>[/<slug>]`, or the short `https://linear.app/issue/<KEY>`. Only https on `linear.app` itself, with no user name,
- * password or port, counts; anything after the key (a slug, a query, a fragment) is dropped.
- */
-function issueOfLink(link: string): { key: string; workspace?: string } | undefined {
+/** The URL of a Linear link, or undefined unless it is https on `linear.app` itself with no user name, password or port. */
+function linearUrl(link: string): URL | undefined {
   let url: URL;
   try {
     url = new URL(link);
   } catch {
     return undefined;
   }
-  if (url.protocol !== "https:" || url.hostname !== "linear.app" || url.username !== "" || url.password !== "" || url.port !== "") return undefined;
-  const parts = url.pathname.split("/").filter((part) => part !== "");
-  const workspace = parts[0];
-  const inWorkspace = parts[1] === "issue" ? normalizeIssueKey(parts[2]) : undefined;
-  if (workspace !== undefined && inWorkspace !== undefined && WORKSPACE.test(workspace)) return { key: inWorkspace, workspace };
-  const short = parts[0] === "issue" ? normalizeIssueKey(parts[1]) : undefined;
-  return short === undefined ? undefined : { key: short };
+  return url.protocol === "https:" && url.hostname === "linear.app" && url.username === "" && url.password === "" && url.port === "" ? url : undefined;
 }
 
-/** The key in an issue's Linear link, or undefined for any other host or shape. */
-const keyOfLink = (link: string): string | undefined => issueOfLink(link)?.key;
+/** The issue key in a Linear URL: `/<workspace>/issue/<KEY>[/<slug>]`, or the short `/issue/<KEY>`. Anything after the key is dropped. */
+function keyOfUrl(url: URL): string | undefined {
+  const parts = url.pathname.split("/").filter((part) => part !== "");
+  const inWorkspace = parts[1] === "issue" ? normalizeIssueKey(parts[2]) : undefined;
+  return inWorkspace ?? (parts[0] === "issue" ? normalizeIssueKey(parts[1]) : undefined);
+}
 
 /**
  * What a person typed to name a Linear issue (Plan 6 Task 20's link command): the issue key (`ENG-142`, any case) or the issue's Linear link. The result is the binding's issue id (the key in
- * capitals) and a clean https link (the workspace's, when the link had one; else Linear's short form). Anything else is undefined.
+ * capitals) and Linear's short link `https://linear.app/issue/<KEY>`. A typed workspace is dropped, not stored: the company's own Linear workspace is not known here, so a link into another one
+ * cannot be told from the right one. Anything else is undefined.
  */
 export function parseLinearIssue(text: string): { issueId: string; url: string } | undefined {
   const typed = text.trim();
   if (typed.length === 0 || typed.length > 2048) return undefined;
-  const key = normalizeIssueKey(typed);
-  if (key !== undefined) return { issueId: key, url: `https://linear.app/issue/${key}` };
-  const found = issueOfLink(typed);
-  return found === undefined ? undefined : { issueId: found.key, url: `https://linear.app/${found.workspace === undefined ? "" : `${found.workspace}/`}issue/${found.key}` };
+  const url = linearUrl(typed);
+  const key = normalizeIssueKey(typed) ?? (url === undefined ? undefined : keyOfUrl(url));
+  return key === undefined ? undefined : { issueId: key, url: `https://linear.app/issue/${key}` };
 }
 
 /**
  * The key of the Linear issue a binding follows. The issue id is the key where the binder used it; otherwise the key is read from the issue's Linear link. An id and a link that name
- * different issues are no key at all, and a Slack thread has none.
+ * different issues are no key at all, a link that is not Linear's makes the binding unusable, and a Slack thread has none.
  */
 export function linearIssueKeyOf(binding: SessionBinding): string | undefined {
   if (binding.kind !== "linear_issue") return undefined;
+  // A link that is not Linear's makes the binding unusable, whatever its id says.
+  const url = linearUrl(binding.url);
+  if (url === undefined) return undefined;
   const fromId = normalizeIssueKey(binding.issueId);
-  const fromLink = keyOfLink(binding.url);
+  const fromLink = keyOfUrl(url);
   if (fromId !== undefined && fromLink !== undefined && fromId !== fromLink) return undefined;
   return fromId ?? fromLink;
 }
@@ -83,14 +79,36 @@ export async function linearIssueKeyOfTask(
   }
 }
 
-const CLOSING_WORD = "(?:close[sd]?|closing|fix(?:es|ed)?|fixing|resolve[sd]?|resolving|complete[sd]?|completing)";
-const KEY_TEXT = "[A-Za-z][A-Za-z0-9]{0,9}-\\d+";
-const CLOSING_KEYS = new RegExp(`\\b(${CLOSING_WORD})([\\s:]*)(${KEY_TEXT}(?:(?:\\s*[,&]\\s*|\\s+and\\s+)${KEY_TEXT})*)`, "giu");
+const isAlphanumeric = (code: number): boolean => (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+const isLetter = (code: number): boolean => (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+const JOINER = "\u200D";
 
 /**
- * A line of model-written or user-written text that cannot close a Linear issue: where a closing word (Linear's "magic words") is followed by an issue key, a joiner (invisible) is put
- * after each key's hyphen, so the text reads the same and Linear's reader finds no key. Other text is returned as it is.
+ * Text in which no Linear issue key can be read: after the hyphen of every key-shaped token (a run of letters and digits with a letter in it, a hyphen, a digit) an invisible joiner is put,
+ * whatever comes before it (a closing word, markdown, a bracket, a quote, nothing) or after it. Nobody knows what Linear's reader strips or accepts, so the key is broken, never the words
+ * around it. The text reads the same. Dates and version numbers (`2026-10-26`, `12-34`) have no letter in the run and stay as they are. One pass, linear in the text.
  */
-export function breakLinearCloseWords(text: string): string {
-  return text.replace(CLOSING_KEYS, (_match, word: string, gap: string, keys: string) => `${word}${gap}${keys.replace(/([A-Za-z0-9])-(?=\d)/gu, "$1-‍")}`);
+export function breakLinearKeys(text: string): string {
+  let out = "";
+  let copied = 0;
+  for (let at = text.indexOf("-"); at !== -1; at = text.indexOf("-", at + 1)) {
+    const next = text.charCodeAt(at + 1);
+    if (!(next >= 48 && next <= 57)) continue;
+    let start = at - 1;
+    let letter = false;
+    while (start >= 0 && isAlphanumeric(text.charCodeAt(start))) {
+      if (isLetter(text.charCodeAt(start))) letter = true;
+      start -= 1;
+    }
+    if (!letter) continue;
+    out += text.slice(copied, at + 1) + JOINER;
+    copied = at + 1;
+  }
+  return copied === 0 ? text : out + text.slice(copied);
+}
+
+/** The lines with every key broken but Rovara's own `Fixes <KEY>` line (exactly that line, for exactly the key given), which is left whole. */
+export function sealLinearKeys(lines: readonly string[], ownKey: string | undefined): string[] {
+  const own = ownKey === undefined ? undefined : linearCloseLine(ownKey);
+  return lines.map((line) => (own !== undefined && line === own ? line : breakLinearKeys(line)));
 }
