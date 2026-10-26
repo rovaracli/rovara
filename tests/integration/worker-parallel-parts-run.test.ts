@@ -30,6 +30,9 @@ beforeEach(async () => {
 });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
+type Entry = { itemId: string; sequence: number; state: string; integratedTreeSha?: string };
+type Ev = { payload?: { workItemProgress?: Entry } };
+
 interface Scenario {
   graph: TaskGraphV1;
   parallel?: { max: number } | undefined;
@@ -40,7 +43,7 @@ interface Scenario {
   sequenceStart?: number;
 }
 
-async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult; error?: Error; events: Array<Record<string, any>>; cwds: string[]; peak: number; operationId: string }> {
+async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult; error?: Error; events: Ev[]; cwds: string[]; peak: number; operationId: string }> {
   const git = (...args: string[]) => execFileSync("git", ["-C", repository, ...args], { encoding: "utf8" }).trim();
   const resolvedCommit = git("rev-parse", "HEAD");
   const at = new Date().toISOString();
@@ -53,7 +56,7 @@ async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult;
   const graph = scenario.graph;
   const cwds: string[] = [];
   const running = { now: 0, peak: 0 };
-  const events: Array<Record<string, any>> = [];
+  const events: Ev[] = [];
   const adapter = {
     async create({ sessionDirectory, cwd }: { sessionDirectory: string; cwd: string }) {
       cwds.push(cwd);
@@ -86,15 +89,15 @@ async function run(scenario: Scenario): Promise<{ result?: TaskInvocationResult;
         ...(scenario.resumeProgress === undefined ? {} : { resumeProgress: scenario.resumeProgress }),
         approval: { artifactDigest: "a".repeat(64), graphDigest: taskGraphDigest(graph), workflowRevision: 2, actorId: "b".repeat(64), runId } } } };
   try {
-    const result = await runTaskInvocation(invocation as never, { rootPath: root, model: { provider: "fixture", modelId: "fixture" }, piAdapter: adapter as never,
-      ...(scenario.controller === undefined ? {} : { cancellationController: scenario.controller }), eventSink: async (batch) => { events.push(...(batch as Array<Record<string, any>>)); }, artifactSink: async () => undefined });
+    const result = await runTaskInvocation(invocation as never, { rootPath: root, model: { provider: "fixture", modelId: "fixture" }, piAdapter: adapter,
+      ...(scenario.controller === undefined ? {} : { cancellationController: scenario.controller }), eventSink: async (batch) => { events.push(...(batch as unknown as Ev[])); }, artifactSink: async () => undefined });
     return { result, events, cwds, peak: running.peak, operationId };
   } catch (error) {
     return { error: error as Error, events, cwds, peak: running.peak, operationId };
   }
 }
 
-const progressOf = (events: Array<Record<string, any>>) => events.flatMap((event) => event.payload?.workItemProgress === undefined ? [] : [event.payload.workItemProgress as Record<string, any>]);
+const progressOf = (events: Ev[]): Entry[] => events.flatMap((event) => event.payload?.workItemProgress === undefined ? [] : [event.payload.workItemProgress]);
 /** Where the fake model writes: the part's working copy, or (with no parts) the repository inside the workspace. */
 const workFolder = (cwd: string): string => (cwd.endsWith("/app") ? cwd : join(cwd, "repo/app"));
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

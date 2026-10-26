@@ -32,7 +32,7 @@ function event(itemId: string, sequence: number, state: WorkItemProgressV1["stat
   });
 }
 const project = (history: WorkItemProgressV1[], over: Record<string, unknown> = {}) =>
-  workflowDependencyAttemptTerminalProgress({ graph, approval, operationId, sequenceStart: 0, resumeProgress: [], history, parallel: { max: 3 }, ...over } as never);
+  workflowDependencyAttemptTerminalProgress({ graph, approval, operationId, sequenceStart: 0, resumeProgress: [], history, parallel: { max: 3 }, ...over });
 
 describe("parallel parts: contract shapes", () => {
   it("the invocation carries parallel.max, from 1 to the plan's cap, and nothing else", () => {

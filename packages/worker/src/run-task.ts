@@ -1017,7 +1017,7 @@ async function runTask(
         try { assertWorkflowDependencyResumeTree(initialTreeSha, workflowDependencies.resumeTreeSha); }
         catch (error) { throw agentXError("OPERATION_INTERRUPTED", error instanceof Error ? error.message : "the workspace changed since the retained ordered-work checkpoint"); }
         const finalItemId = taskGraphOrder(graph).at(-1);
-        const serialInput: ExecuteSerialWorkflowDependenciesInput = {
+        const common: Omit<ExecuteSerialWorkflowDependenciesInput, "execute"> = {
           graph, graphDigest: workflowDependencies.approval.graphDigest, runId: workflowDependencies.approval.runId,
           operationId: invocation.operationId, initialTreeSha,
           ...(workflowDependencies.sequenceStart === undefined ? {} : { sequenceStart: workflowDependencies.sequenceStart }),
@@ -1030,6 +1030,9 @@ async function runTask(
             await events.flush();
             workflowDependencyProgressEvents.push(valid);
           },
+        };
+        const serialInput: ExecuteSerialWorkflowDependenciesInput = {
+          ...common,
           execute: async (item, context) => {
             const current = await readCandidateRepositories(repositoryInputs);
             if (current.length !== 1 || current[0]?.repositoryId !== item.repository || current[0]?.treeSha !== context.baseTreeSha) {
@@ -1054,8 +1057,6 @@ async function runTask(
         let execution: Awaited<ReturnType<typeof executeSerialWorkflowDependencies>>;
         if (partsAllowed && workflowDependencies.parallel !== undefined) {
           builtByParts = true;
-          const { execute: _serialExecute, ...common } = serialInput;
-          void _serialExecute;
           const repositoryDirectory = repositoryInputs[0]!.directory;
           const repositoryId = repositoryInputs[0]!.repositoryId;
           execution = await runPartsInParallel({ common, maxParallel: workflowDependencies.parallel.max, repositoryDirectory, repositoryId, initialTreeSha });

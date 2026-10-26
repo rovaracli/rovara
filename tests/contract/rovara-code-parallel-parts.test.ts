@@ -53,7 +53,7 @@ function harness(graph: TaskGraphV1, over: Partial<ExecuteParallelWorkflowDepend
       attempts.set(workItem.id, attempt);
       running += 1;
       peak = Math.max(peak, running);
-      log.push(`start ${workItem.id.slice(0, 2)}#${attempt} on [${trees.parts(context.baseTreeSha).map((id) => id.slice(0, 2))}]`);
+      log.push(`start ${workItem.id.slice(0, 2)}#${attempt} on [${trees.parts(context.baseTreeSha).map((id) => id.slice(0, 2)).join(",")}]`);
       try {
         await over.run?.(workItem.id, context.baseTreeSha, attempt);
         return { treeSha: trees.make([...trees.parts(context.baseTreeSha), workItem.id]) };
@@ -67,7 +67,7 @@ function harness(graph: TaskGraphV1, over: Partial<ExecuteParallelWorkflowDepend
       if (over.conflicts?.(itemId, attempts.get(itemId) ?? 1) === true && integratedTreeSha !== baseTreeSha) return { ok: false };
       return { ok: true, treeSha: trees.make([...trees.parts(integratedTreeSha), ...trees.parts(partTreeSha)]) };
     },
-    checkout: async (treeSha) => { log.push(`checkout [${trees.parts(treeSha).map((id) => id.slice(0, 2))}]`); },
+    checkout: async (treeSha) => { log.push(`checkout [${trees.parts(treeSha).map((id) => id.slice(0, 2)).join(",")}]`); },
     ...over,
   };
   delete (input as { conflicts?: unknown }).conflicts;
