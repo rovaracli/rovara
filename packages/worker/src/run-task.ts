@@ -1,6 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { AGENTX_PREAMBLE_VERSION, AGENT_WORKER_OUTDATED, PLAN_DOCUMENT_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
+import { AGENTX_PREAMBLE_VERSION, AGENT_WORKER_OUTDATED, PLAN_DOCUMENT_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
+import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
@@ -38,6 +39,7 @@ import {
   openRegisteredWorkspacePiSession,
   type PiSessionAdapter,
   type PiSessionHandle,
+  type PiWorkflowMode,
   type WorkspaceModelConfiguration,
 } from "./pi-session.js";
 import { verifyCheckedOutHeads, type PreparationManifest } from "./prepare.js";
@@ -69,7 +71,9 @@ export interface TaskInvocationResult {
   reopened: boolean;
   /** Spec 051 FR-007: AgentX's check of the agent's work, with outputs cut to fit (compactCheckReport). */
   checks?: CheckReport;
-  workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND";
+  workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT";
+  /** Rovara Code Task 10: the draft a setup-draft run read, already bounded and redacted (the broker reads it again). */
+  setupDraft?: SetupDraft;
   /** Worker-reported Git object identities; the broker recomputes and stores the canonical digest. */
   workflowCandidateRepositories?: Array<{ repositoryId: string; commitSha: string; treeSha: string }>;
   /** Fixed worker export, uploaded on its separate capability before the model-visible terminal result. */
@@ -507,8 +511,11 @@ async function runTask(
   const readiness = invocation.payload.readiness;
   // The plan check (Rovara Code version 2) is a read-only model run like planning: no checks of the code, the planning deadline and stall limit, and a planning session's read-only tools.
   const critiquing = invocation.payload.workflowMode === "PLAN_CRITIQUE";
-  const planning = invocation.payload.workflowMode === "PLAN" || critiquing;
-  const piMode = invocation.payload.workflowMode === "PLAN_CRITIQUE" ? "PLAN" as const : invocation.payload.workflowMode ?? "IMPLEMENT";
+  const settingUpDraft = invocation.payload.workflowMode === "SETUP_DRAFT";
+  // A setup draft is a planning session too: read, grep, find and ls only, one deadline, a no-activity limit.
+  const planning = invocation.payload.workflowMode === "PLAN" || critiquing || settingUpDraft;
+  const payloadMode = invocation.payload.workflowMode;
+  const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" ? "PLAN" : payloadMode ?? "IMPLEMENT";
   // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
   const understanding = invocation.payload.workflowMode === "UNDERSTAND";
   const reviewing = invocation.payload.workflowMode === "REVIEW";
@@ -897,7 +904,7 @@ async function runTask(
         if (modelFailure !== undefined) throw modelFailure;
       };
       if (workflowDependencies === undefined) {
-        await promptAndSettle(invocation.payload.prompt);
+        await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupDraftInstructions(manifest.repositories)}` : invocation.payload.prompt);
       } else {
         const graph = workflowDependencies.graph;
         const repositoryInputs = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
@@ -965,6 +972,20 @@ async function runTask(
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN_CRITIQUE" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN_CRITIQUE" };
+      } else if (settingUpDraft) {
+        const reading = { basedOnRevision: invocation.projectRevision, rootPath: canonicalRoot, repositories: manifest.repositories };
+        let read = await readSetupDraftAnswer(finalText ?? "", reading);
+        // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported.
+        if (!read.ok) {
+          await emit("progress", { message: "The draft could not be read; the agent is asked to answer again." });
+          await promptAndSettle(setupDraftRetryPrompt(read.errors));
+          read = await readSetupDraftAnswer(finalText ?? "", reading);
+        }
+        monitor.stop();
+        if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the setup draft run produced no readable draft");
+        outcome = "SUCCEEDED";
+        await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupDraft: read.draft };
       } else if (planning) {
         let plan = finalText?.trim();
         // Spec 061: when the broker asked for a structured plan, an answer AgentX cannot read, or that is too long, gets

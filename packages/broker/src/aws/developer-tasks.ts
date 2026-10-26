@@ -280,6 +280,7 @@ import {
 import type { TaskPeopleDisplayAdmission } from "../developer/task-people-display-budget.js";
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
+import { setupDraftPointerItem } from "../rovara-code/setup-draft.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { bindingItems, threadBindingItems } from "../agent-sessions/bindings.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
@@ -1807,6 +1808,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     return refused(agentXError("CONFIG_INVALID", "agents are not set up in this deployment"));
   }
   const paused = prepared?.paused === true;
+  // Plan 6 Task 10: Rovara drafting the project's dev setup. A read-only look at the repositories with no workflow; paid, admitted and limited like a Quick plan.
+  const settingUpDraft = run?.setupDraft !== undefined;
+  if (settingUpDraft && (prepared === undefined || prepared.runner !== "coding")) return refused(agentXError("CONFIG_INVALID", "a setup draft is a coding run of Rovara Code"));
   // Plan 6 Task 3: the binding a Rovara Code intent asks for. A Slack thread is bound only by the share this start makes
   // to that very thread, so a start that could not share to it is refused rather than left unbound.
   const codeBinding = run?.codeIntent?.binding;
@@ -1823,7 +1827,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const starterName = sessionStartedBy?.kind === "member" && sessionStartedBy.developerId !== caller.developerId
     ? await deps.agentRuns?.signInStore.getDeveloper(sessionStartedBy.developerId).then((developer) => developer?.displayName, () => undefined) : undefined;
   // A coding agent chosen by name is a workflow; a start that names none is a workflow only when it says so, as it always was.
-  const asWorkflow = request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding");
+  // (A setup draft names Rovara Code but is no workflow: it is a read-only look, answered with a draft.)
+  const asWorkflow = !settingUpDraft && (request.workflow === true || (request.agent !== undefined && prepared?.runner === "coding"));
   // Plan 6: a recipe with a plan check step (Rovara Code version 2, or an agent built on it) makes a 1.1.0 workflow, which starts by understanding the intent. Every other task stays 1.0.0.
   const hasPlanCheck = asWorkflow && prepared?.recipe.steps.some((step) => step.kind === "plan_critic") === true;
   // It starts by understanding the intent only once Understand runs (Task 4); until then (`rovaraCodeV2Live`, off) a 1.1.0 task starts on the plan step as before, and needs an explicit path.
@@ -1845,7 +1850,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // Plan 3, Task 34: with a model proxy a workflow task starts at its planning limit, a task with no workflow at the TASK estimate's run limit and an
   // agent-step run at the AGENT estimate's; a request can only lower it. Without a proxy nothing is limited, as before.
   const startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
-    project: request.project, asWorkflow, workflowPath, prepared,
+    project: request.project, asWorkflow: asWorkflow || settingUpDraft, workflowPath, prepared,
   });
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
   // What a coding run is asked: the text as sent, or the text with its context rendered and cut to the request limit (G3).
@@ -1861,7 +1866,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         // A run with no agent (an install without agents) is Rovara Code's and the caller's own.
         payer: prepared?.payer ?? { kind: "member", developerId: caller.developerId },
         agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, agentName: prepared?.ref.name ?? "Rovara Code",
-        path: admissionPath({ asWorkflow, workflowPath, prepared }),
+        path: admissionPath({ asWorkflow: asWorkflow || settingUpDraft, workflowPath, prepared }),
         // A draft agent's test run is counted on its starter's testing allowance, as `paymentOfTask` counts it afterwards.
         ...(prepared?.origin === "test_run" ? { testRunBy: startedBy?.developerId ?? caller.developerId } : {}),
       });
@@ -1879,7 +1884,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
-  const preparation = await deps.actions.preparation(identity, project, request.requestId, prepared?.runner !== "agent_steps" ? undefined : { ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }), readOnly: true });
+  // A setup draft's preparation clones and checks out only (no devcontainer, no setup command, no readiness command), as an agent-step run's does.
+  const preparation = await deps.actions.preparation(identity, project, request.requestId, settingUpDraft ? { readOnly: true } : prepared?.runner !== "agent_steps" ? undefined : { ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }), readOnly: true });
   const workspaceId = preparation.workspace.id;
   const conversationId = randomUUID();
   const revision = project.definition.revision;
@@ -1895,6 +1901,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.
     ...(asWorkflow ? { requestText: storedRequestText(requestText) } : {}),
     ...(run?.codeIntent?.retryOf === undefined ? {} : { retryOfTaskId: run.codeIntent.retryOf }),
+    ...(settingUpDraft ? { purpose: "setup_draft" as const } : {}),
     charge, shared: share !== undefined, ...(share === undefined ? {} : { share, shareVersion: 1 }),
     createdAt: receivedAt, updatedAt: receivedAt,
     ...(asWorkflow ? { workflow: createWorkflowSnapshot({
@@ -1911,7 +1918,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(prepared.chain === undefined ? {} : { chain: prepared.chain }),
       ...(prepared.maxPerRunUsd === undefined ? {} : { maxPerRunUsd: prepared.maxPerRunUsd }),
       // The pull requests the held preparation checks out are kept with the pause: its dispatch is built again when the run limit is raised (Task 32).
-      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }), ...(prepared.runner === "agent_steps" ? { readOnly: true as const } : {}) } } } : {}),
+      ...(paused ? { budgetPause: { scope: { kind: "task" as const, taskId }, at: receivedAt, firstDispatch: { operationId: preparation.operationId, ...(prepared.checkout.length === 0 ? {} : { checkout: [...prepared.checkout] }), ...(prepared.runner === "agent_steps" || settingUpDraft ? { readOnly: true as const } : {}) } } } : {}),
     }),
   };
   const index: DeveloperTaskIndexRecord = {
@@ -1925,7 +1932,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // An agent-step run queues no coding task: its first step is the engine's (Task 22), never Pi's task run.
     // A task that understands first queues no planning run: its first step is the engine's (like an agent-step run's), so no model is asked before Understand runs.
     conversationId, firstRequestId: randomUUID(), ...(prepared?.runner === "agent_steps" || understandsFirst ? {} : { pendingPrompt: requestText }),
-    ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : {}),
+    ...(asWorkflow && !understandsFirst ? { pendingWorkflowMode: "PLAN" as const } : settingUpDraft ? { pendingWorkflowMode: "SETUP_DRAFT" as const } : {}),
   };
   const turn = aiToolTurn({
     party: { ...party, workspaceId, settingsRevision: revision }, turnId: randomUUID(), action: "start", phase: "accepted", outcome: "accepted",
@@ -1960,6 +1967,10 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(understandsFirst ? [workflowDispatchItem(deps.tableName, taskId, 1, "UNDERSTAND", WORKFLOW_NO_CANDIDATE_DIGEST, receivedAt)] : []),
     // R12: the accepted record commits with the start or not at all (ruling F15).
     putNew(turns, turn),
+    // Plan 6 Task 10: the project's pointer to this draft, in this same transaction; it holds only while the pointer is the one the route read.
+    ...(run?.setupDraft === undefined ? [] : [setupDraftPointerItem(deps.tableName, {
+      orgId: deps.orgId, project: request.project, taskId, requestId: request.requestId, requestedBy: caller.developerId, basedOnRevision: revision, startedAt: receivedAt, seenTaskId: run.setupDraft.seenTaskId,
+    })]),
     // Plan 3, Task 15: the frozen recipe, the agent's task index, an agent-step run's state and (for startAgentRun) the run's request item.
     ...(prepared === undefined ? [] : runStartItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {
       orgId: deps.orgId, taskId, createdAt: receivedAt, project: request.project, developerId: caller.developerId, prepared,
@@ -7073,7 +7084,8 @@ export type ReleaseDeps = {
  * proxy that can't say is logged; the next release of the task before it is released tries again, and after that the run's cost is not in the history.
  */
 export async function recordFinishedRunCost(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<void> {
-  if (deps.modelAccess === undefined || task.orgId === undefined || task.runCostRecordedAt !== undefined) return;
+  // A setup draft is no run of the agent's kind of work: its cost never feeds the estimates.
+  if (deps.modelAccess === undefined || task.orgId === undefined || task.runCostRecordedAt !== undefined || task.purpose === "setup_draft") return;
   let ended: { path: "QUICK" | "FULL" | "AGENT"; endedAt: string };
   if (task.agentRunEnd !== undefined) {
     if (task.agentRunEnd.state !== "COMPLETE") return;

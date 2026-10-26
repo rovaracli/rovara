@@ -118,6 +118,11 @@ export interface AgentRunRequest {
   versionApproved?: true;
   /** Plan 6 Task 3: the run is a Rovara Code intent, started as a coding workflow. Only `startCodeIntent` sets it, never a request body. */
   codeIntent?: CodeIntentStart;
+  /**
+   * Plan 6 Task 10: the run is Rovara drafting the project's dev setup (a read-only look at the repositories, no workflow). Only `startSetupDraft` sets it, never a request body.
+   * `seenTaskId` is the draft the project's pointer named when the route read it; it is not part of what the request IS, so it is not in the fingerprint.
+   */
+  setupDraft?: { seenTaskId?: string | undefined };
 }
 
 /**
@@ -150,6 +155,8 @@ export interface RunStartOptions {
   requestFingerprint?: string;
   /** Plan 6 Task 3: the binding a Rovara Code intent's session follows (see `CodeIntentStart`). The workflow itself is asked for in the body. */
   codeIntent?: CodeIntentStart;
+  /** Plan 6 Task 10: the run is a setup draft (see `AgentRunRequest.setupDraft`). */
+  setupDraft?: { seenTaskId?: string | undefined };
 }
 
 /** What `startAgentRun` needs from the developer API: who the owner is as a caller, and the task start. */
@@ -181,6 +188,7 @@ const AgentRunRequestShape = z.object({
   trigger: SessionTriggerSchema.optional(),
   runLimitUsd: z.number().finite().min(0).optional(),
   codeIntent: z.object({ path: WorkflowPathSchema.optional(), binding: SessionBindingSchema.optional(), retryOf: z.string().uuid().optional() }).strict().optional(),
+  setupDraft: z.object({ seenTaskId: z.string().uuid().optional() }).strict().optional(),
 }).passthrough().refine((request) => request.trigger === undefined || request.startedBy === undefined, { path: ["trigger"], message: "a run a person started has no trigger" });
 
 const sha256 = (value: unknown) => createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
@@ -500,6 +508,8 @@ export function runRequestFingerprint(request: Omit<AgentRunRequest, "caller">):
     ...(request.trigger === undefined ? {} : { trigger: request.trigger }),
     // Likewise: a run that is not a Rovara Code intent keeps the fingerprint it always had.
     ...(request.codeIntent === undefined ? {} : { codeIntent: request.codeIntent }),
+    // Likewise: only a setup draft carries this (its pointer's seen task is not part of the request).
+    ...(request.setupDraft === undefined ? {} : { purpose: "setup_draft" }),
   });
 }
 
@@ -560,6 +570,7 @@ export async function startAgentRun(deps: AgentRunStarter, request: AgentRunRequ
     ...(request.resultContract === undefined ? {} : { resultContract: request.resultContract }),
     ...(request.versionApproved === true ? { versionApproved: true as const } : {}),
     ...(intent === undefined ? {} : { codeIntent: intent }),
+    ...(request.setupDraft === undefined ? {} : { setupDraft: request.setupDraft }),
   });
   return started.run;
 }

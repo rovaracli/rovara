@@ -19,4 +19,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowUnderstand",
   // Plan 6 Task 8: the plan check of Rovara Code version 2 (a read-only model run that answers with a rovara-plan-critique block).
   "task.workflowPlanCritique",
+  // Rovara Code (Plan 6 Task 10): a read-only run that drafts a project's dev setup.
+  "task.setupDraft",
 ] as const satisfies readonly WorkerInvocationFeature[];

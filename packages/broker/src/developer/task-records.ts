@@ -32,6 +32,7 @@ import {
   type Operation,
   type PauseScope,
   type RunCheckout,
+  type SetupDraft,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
@@ -171,6 +172,13 @@ export interface DeveloperTaskRecord {
    */
   agentRunEnd?: { state: "COMPLETE" | "FAILED" | "CANCELLED"; at: string };
   /**
+   * Plan 6, Task 10: the task is Rovara drafting a project's dev setup (read-only look at the repositories; its result is a proposal in the project's `SETUP_DRAFT` item). It is
+   * no workflow and no agent-step run: its result sets `agentRunEnd`, which is how it gives back its workspace, and it never feeds the run-cost estimates.
+   */
+  purpose?: "setup_draft";
+  /** Plan 6, Task 10: what a setup-draft task ended with, written in the same transaction as `agentRunEnd`: the sanitized draft, or a fixed sentence saying why there is none. */
+  setupDraftResult?: { status: "ready"; draft: SetupDraft } | { status: "failed"; failure: string };
+  /**
    * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches
    * review on an install with a model proxy. Approving the plan accepts `runLimitUsd` (`acceptRunLimit`); the plan-ready message and the task view show it.
    */
@@ -258,7 +266,7 @@ export interface DeveloperTaskPointerRecord {
   /** The first instructions, until the prepare's result queues them (R3). */
   pendingPrompt?: string;
   /** The first plan-only operation is selected by the broker, never by the request. */
-  pendingWorkflowMode?: "PLAN" | "IMPLEMENT";
+  pendingWorkflowMode?: "PLAN" | "IMPLEMENT" | "SETUP_DRAFT";
   /** Set when the task was cancelled before its instructions ran (R16). */
   cancelledAt?: string;
 }

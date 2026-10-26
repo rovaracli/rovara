@@ -410,7 +410,7 @@ async function setup(options: SetupOptions = {}) {
     };
     /** What the broker builds for the next operation of `mode`, as the engine's own calls would. */
     // The broker accepts the plan check's mode with Task 8 (the critic step); until then these tests drive the modes it already accepts.
-    const accept = async (mode: Exclude<DispatchMode, "PLAN_CRITIQUE">, programStepId?: string) => {
+    const accept = async (mode: Exclude<DispatchMode, "PLAN_CRITIQUE" | "SETUP_DRAFT">, programStepId?: string) => {
       await endActive();
       const task = meta();
       const accepted = await h.actions.acceptTask(developerTaskIdentity(task, TEST_ORG), workspaceId, { requestId: randomUUID(), conversationId: task.conversationId, prompt: `Do the ${mode} step` }, () => [],

@@ -549,6 +549,7 @@ import { batchResults, parseStartBody, requireBatchProject, showBatch, startBatc
 import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { slackWorkflowCaller } from "./slack-workflow-caller.js";
 import { startCodeIntent, type CodeIntentDependencies } from "../rovara-code/intent.js";
+import { SETUP_DRAFT_PREAMBLE, setupDraftEndItems } from "../rovara-code/setup-draft.js";
 import { WORK_ACTIONS, can, requireProjectWorkRole, resolveTaskAccess, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import { resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 
@@ -5912,7 +5913,7 @@ async function chatGptSelectionForOrg(dependencies: AwsBrokerDependencies, orgId
 async function taskOperationParts(
   dependencies: AwsBrokerDependencies,
   workspace: WorkspaceInstance,
-  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
+  input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput },
   now: string,
 ): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
@@ -6014,7 +6015,9 @@ async function taskOperationParts(
   const gated = input.workflowMode !== undefined && input.legacyTask !== true;
   // The agent's instructions come after Rovara's own rules and the phase text, in a block that says it adds to them (Plan 3, Task 16).
   const agentSection = applied?.promptSection === undefined ? "" : `\n\n${applied.promptSection}`;
-  const selectedPrompt = input.workflowMode === "PLAN"
+  const selectedPrompt = input.workflowMode === "SETUP_DRAFT"
+    ? `${SETUP_DRAFT_PREAMBLE}${agentSection}\n\nRequest:\n${input.prompt}`
+    : input.workflowMode === "PLAN"
     ? `${WORKFLOW_PREAMBLE}\n\nPlanning phase only. Do not edit, write, or create files. Inspect the request and repository. ${PLAN_PHASE_LIMITS} Avoid filler and include only material risks or genuine unanswered questions. This linked detail is shown to the owner for approval before the next phase or code changes.\n\n${documentInstructions}${checksInstructions}${agentSection}\n\nRequest:\n${input.prompt}`
     : input.workflowMode === "REVIEW"
       ? `${WORKFLOW_PREAMBLE}\n\nReview the current code read-only for the current task. Do not edit files or run commands that modify the workspace. Return concise critic and security review findings. The broker will bind your reports to this operation and candidate.${agentSection}\n\n${input.prompt}`
@@ -6076,7 +6079,7 @@ async function taskOperationParts(
       ...(resolvedModel.diagnostic === undefined ? {} : { modelSelectionDiagnostic: resolvedModel.diagnostic }),
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as
       // publicationProject merges it, since that is what publication gates on. None when the project has none.
-      ...(input.agentRun !== undefined || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),
+      ...(input.agentRun !== undefined || input.workflowMode === "SETUP_DRAFT" || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),
     },
   };
   return { operation, outbox: outboxRecord(workspace, invocation), fence };
@@ -14357,6 +14360,7 @@ function laterProgramBuild(workflow: WorkflowSnapshot): boolean {
   return first !== undefined && workflow.programStepId !== undefined && workflow.programStepId !== first.id;
 }
 
+/* Plan 6 Task 10 note: the setup-draft branch is first in completedWorkflowItems. */
 async function completedWorkflowItems(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
@@ -14376,6 +14380,12 @@ async function completedWorkflowItems(
 ): Promise<TransactItems> {
   if (pointer === undefined) return [];
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  // Plan 6 Task 10: a setup draft's result is its draft (or the reason there is none), written with the result.
+  if (task?.purpose === "setup_draft") {
+    const repositories = terminalStatus === "SUCCEEDED" && operation.kind === "task"
+      ? (await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition.repositories.map((repository) => repository.name) : [];
+    return setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
+  }
   if (task?.workflow === undefined) return [];
   if (operation.kind === "prepare") {
     // The commit preparation checked out is the task's base until a verified candidate pins it. It comes from the
@@ -15474,7 +15484,9 @@ async function cancelledWorkflowStepItems(
 ): Promise<TransactItems> {
   if (target === undefined || pointer === undefined || target.kind !== "task" || target.workflowMode === undefined) return [];
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
-  if (task === undefined || !stopBlocksWorkflowStep(task, target)) return [];
+  // A cancelled setup draft ends as cancelled, in the cancel's own transaction (it has no workflow step to block).
+  if (task?.purpose === "setup_draft") return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
+  if (task === undefined || target.workflowMode === "SETUP_DRAFT" || !stopBlocksWorkflowStep(task, target)) return [];
   const items = await completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
   // Only the one conditional update of the step the target ran, exactly; anything else is left to the owner's Retry.
   const update = items.length === 1 ? items[0]?.Update : undefined;
