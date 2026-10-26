@@ -684,7 +684,7 @@ describe("Make a change anyway after an answer", () => {
     await t.share(run.sessionId, ARJUN, "use");
     t.db.delete(projectMemberKey(TEST_ORG, ARJUN.developerId, "payments").pk, projectMemberKey(TEST_ORG, ARJUN.developerId, "payments").sk);
     const refused = await t.changeAnyway(ARJUN, run.sessionId);
-    expect(errorOf(refused).code).toBe("SESSION_LEVEL_REQUIRED");
+    expect(errorOf(refused).code).toBe("PROJECT_ACCESS_DENIED");
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.retryOfTaskId === run.taskId)).toEqual([]);
   });
 
@@ -742,7 +742,7 @@ describe("retryOf is checked, not trusted", () => {
     return createCodeIntentStarter(t.brokerInput as never);
   };
   const intent = (retryOf: string) => ({ requestId: randomUUID(), project: "payments", input: { text: "Make it so" }, source: "app", retryOf });
-  const refused = async (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message }));
+  const refused = async (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
 
   it("accepts the task an answered, visible session of the caller's org belongs to", async () => {
     const t = await world();

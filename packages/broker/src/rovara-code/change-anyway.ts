@@ -12,6 +12,8 @@ const BodySchema = z.object({ requestId: z.string().uuid() }).strict();
 
 export const NOT_ANSWERED_MESSAGE = "This task didn't end with an answer, so there is no answer to ask for a change after.";
 export const CHANGE_ANYWAY_UNAVAILABLE = "Starting the change isn't available right now.";
+/** What a follow-up start hears when the task it names is not one it may follow: missing, another org's, not visible, or not ended Answered. One message for all, so nothing is learned from which. */
+export const FOLLOW_UP_UNAVAILABLE_MESSAGE = "That task can't be followed up.";
 
 /** The first `max` bytes of `text`, never in the middle of a character. */
 function cutToBytes(text: string, max: number): string {
@@ -30,7 +32,8 @@ export async function changeAnywayOnSession(deps: SessionReadDependencies, calle
   if (task === undefined || workflow === undefined || answer === undefined || task.requestText === undefined) throw agentXError("CONFIG_INVALID", NOT_ANSWERED_MESSAGE);
   if (deps.control?.startCodeIntent === undefined) throw agentXError("RUNTIME_UNAVAILABLE", CHANGE_ANYWAY_UNAVAILABLE);
   return deps.control.startCodeIntent({
-    requestId: parsed.data.requestId, project: task.project, source: "app", path: workflow.path, retryOf: task.taskId,
+    // The path is the person's only when the first request named it; otherwise Understand chooses again, as for any new intent (the answered task's own path was never chosen).
+    requestId: parsed.data.requestId, project: task.project, source: "app", ...(workflow.intent?.pathFrom === "request" ? { path: workflow.path } : {}), retryOf: task.taskId,
     input: {
       text: cutToBytes(task.requestText, RUN_INPUT_TEXT_MAX_BYTES),
       context: [{ kind: "report", ref: `task:${task.taskId}`, title: "Rovara's earlier answer", body: cutToBytes(answeredMessage(answer), 16_000) }],

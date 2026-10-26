@@ -44,6 +44,7 @@ export const CodeIntentRequestSchema = z
     if (request.binding !== undefined && request.binding.kind !== wanted) context.addIssue({ code: "custom", path: ["binding"], message: "a binding must match the source it came from" });
     if (wanted !== undefined && request.binding === undefined) context.addIssue({ code: "custom", path: ["binding"], message: `a ${request.source} intent names its ${request.source === "slack" ? "thread" : "issue"}` });
     if (request.assignedBy !== undefined && request.source !== "linear") context.addIssue({ code: "custom", path: ["assignedBy"], message: "only a Linear intent has an assigner" });
+    if (request.retryOf !== undefined && request.source !== "app") context.addIssue({ code: "custom", path: ["retryOf"], message: "only an app intent can follow an answered task" });
     if (request.offerId !== undefined && request.source !== "offer") context.addIssue({ code: "custom", path: ["offerId"], message: "only an offer has an offer id" });
   });
 export type CodeIntentRequest = z.infer<typeof CodeIntentRequestSchema>;

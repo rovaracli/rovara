@@ -404,10 +404,10 @@ describe("startCodeIntent for the surfaces that call it directly", () => {
     const startAt = await refusal(t.start(MAYA, t.intent({ startAt: { repository: "demo", commit: "a".repeat(40), summary: "Half done" } })));
     expect(startAt?.code).toBe("RUNTIME_UNAVAILABLE");
     expect(t.taskCount()).toBe(0);
-    // Task 6: `retryOf` (the "change anyway" start) is trusted input from broker code and is kept as a link on the new task.
-    const retried = await t.start(MAYA, t.intent({ retryOf: TASK_ID_A }));
-    expect(retried.task.taskId).toBeDefined();
-    expect(t.taskCount()).toBe(1);
+    // Task 6: `retryOf` (the "change anyway" start) is checked: a task that is not an answered one the caller can see is refused (the accepted case is in rovara-code-answered.test.ts).
+    const retried = await refusal(t.start(MAYA, t.intent({ retryOf: TASK_ID_A })));
+    expect(retried).toMatchObject({ code: "CONFIG_INVALID", message: "That task can't be followed up." });
+    expect(t.taskCount()).toBe(0);
   });
 
   it("records the surface as the origin for every source a person can start from", async () => {

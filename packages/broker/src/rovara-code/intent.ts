@@ -17,6 +17,7 @@ import { startAgentRun, type AgentRunRequest, type AgentRunStarter } from "../ag
 import { SLACK_WORKFLOW_SESSION_ID } from "../developer/task-records.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { PayerFacts } from "../spend/payer.js";
+import { CHANGE_ANYWAY_UNAVAILABLE, FOLLOW_UP_UNAVAILABLE_MESSAGE } from "./change-anyway.js";
 
 /** What `startCodeIntent` needs from the developer API, built for one caller (see `codeIntentDependenciesOf`). */
 export interface CodeIntentDependencies {
@@ -28,6 +29,8 @@ export interface CodeIntentDependencies {
   ownedTask(caller: DeveloperCaller, taskId: string): Promise<DeveloperTaskView>;
   /** The origin session links are made from (the cell's own). */
   origin: string;
+  /** Whether `taskId` is a task a follow-up may follow for this caller: in their org, its session visible to them, and ended Answered. Without it no follow-up starts (fail closed). */
+  retryable?(caller: DeveloperCaller, taskId: string): Promise<boolean>;
 }
 
 /** The sources that are a person's own start, so a deployment without agents (no payer rules, no sessions) may still start them. */
@@ -62,6 +65,13 @@ function parsed(value: unknown): CodeIntentRequest {
 export async function startCodeIntent(deps: CodeIntentDependencies, caller: DeveloperCaller, value: unknown): Promise<CodeIntentResult<DeveloperTaskView>> {
   const request = parsed(value);
   if (request.startAt !== undefined) throw agentXError("RUNTIME_UNAVAILABLE", "starting from a hand-off isn't available yet");
+  if (request.retryOf !== undefined) {
+    // A follow-up needs sessions and the payer rules, so a deployment without agents says so plainly.
+    if (deps.starter === undefined) throw agentXError("RUNTIME_UNAVAILABLE", CHANGE_ANYWAY_UNAVAILABLE);
+    // Checked, not trusted: the task must be in the caller's org, visible to them and ended Answered. Anything else, or a check that cannot be made, refuses with one message.
+    const followable = await (deps.retryable?.(caller, request.retryOf) ?? Promise.resolve(false)).catch(() => false);
+    if (!followable) throw agentXError("CONFIG_INVALID", FOLLOW_UP_UNAVAILABLE_MESSAGE);
+  }
   if (request.source === "slack" && (caller.sessionId !== SLACK_WORKFLOW_SESSION_ID || caller.slackUserId === undefined)) {
     throw agentXError("FORBIDDEN", "only a Slack member's own request can start work as Slack");
   }

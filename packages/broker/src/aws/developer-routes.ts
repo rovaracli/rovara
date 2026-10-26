@@ -94,6 +94,7 @@ import {
   type TaskPeopleDisplayReadRequest,
   type TaskPeopleDisplayReadResponse,
   SESSION_PROJECT_BINDINGS_MAX,
+  workflowAnswer,
 } from "@agentx/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../developer/access.js";
 import { clearOrgEgress, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
@@ -138,6 +139,7 @@ import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
 import { stopSession } from "../agent-sessions/stop.js";
+import { requireSessionLevel } from "../agent-sessions/access.js";
 import { isAgentSessionRoute, isSessionLinkPath, routeAgentSessionRequest, sessionRedirect, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
@@ -1482,6 +1484,16 @@ export function codeIntentDependenciesOf(deps: DeveloperRouteDependencies, calle
     ownedTask: async (who, taskId) => taskView(taskDeps, await loadOwnedTask(taskDeps, who, taskId), { events: 0, details: false }),
     origin: new URL(deps.developer.issuer).origin,
     visibleProject: async (who, rawName) => (await projectRoleForRoute(deps, who, rawName)).name,
+    // A follow-up may follow only a task of the caller's own org, whose session they can see, that ended Answered (read now, never trusted from the request).
+    retryable: async (who, taskId) => {
+      const sessions = sessionDependenciesOf(deps);
+      if (sessions === undefined) return false;
+      const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true }))) as { Item?: DeveloperTaskRecord };
+      const task = item.Item;
+      if (task === undefined || task.orgId !== who.orgId || task.sessionId === undefined || task.workflow === undefined || workflowAnswer(task.workflow) === undefined) return false;
+      await requireSessionLevel(sessions, who, task.sessionId, "view", "follow it up");
+      return true;
+    },
   };
 }
 
