@@ -107,13 +107,14 @@ const routes = [
   { method: "POST", tail: "/retry", level: "edit" },
   { method: "POST", tail: "/stop", level: "edit" },
   { method: "POST", tail: "/messages", level: "use", body: { kind: "steer", text: "What should happen next?" } },
+  { method: "POST", tail: "/messages", level: "view", body: { kind: "comment", text: "Please keep this comment for the team." } },
   { method: "POST", tail: "/take-over", level: "edit" },
   { method: "PUT", tail: "/shares", level: "edit", body: { principal: { kind: "member", developerId: PRIYA }, level: "view" } },
   { method: "DELETE", tail: `/shares/MEMBER%23${PRIYA}`, level: "edit" },
 ] as const;
 const ranks = { view: 1, use: 2, edit: 3, owner: 4, removed: 0, otherOrg: 0 };
 for (const route of routes) for (const standing of Object.keys(ranks) as Array<keyof typeof ranks>) {
-  it(`${route.method} ${route.tail || "/"}: ${standing}`, async () => {
+  it(`${route.method} ${route.tail || "/"} ${"body" in route && "kind" in route.body ? route.body.kind : ""}: ${standing}`, async () => {
     const w = world();
     const who = standing === "owner" ? PRIYA : ARJUN;
     if (standing !== "owner" && standing !== "removed" && standing !== "otherOrg") w.seedShare(ORG_A, w.sessionId, { kind: "member", developerId: ARJUN }, standing);
@@ -134,6 +135,7 @@ for (const route of routes) for (const standing of Object.keys(ranks) as Array<k
     } else {
       expect(error?.code).not.toBe("SESSION_LEVEL_REQUIRED");
       expect(error?.code).not.toBe("NOT_FOUND");
+      for (const code of ["FORBIDDEN", "TASK_ACCESS_DENIED", "PROJECT_ACCESS_DENIED", "AUTH_REQUIRED"]) expect(error?.code).not.toBe(code);
     }
   });
 }
