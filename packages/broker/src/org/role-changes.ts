@@ -1,7 +1,7 @@
 // Reviewed console writes: authority, result receipt and audit commit together.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgMemberRoleChangeBodySchema, OrgIdSchema, OrgRoleSchema, agentXError, developerOrgKey, orgMemberKey, orgScoped, type OrgRole } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OrgMemberRoleChangeBodySchema, OrgIdSchema, OrgRoleSchema, agentXError, developerOrgKey, orgMemberKey, orgScoped, type OrgRole } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { auditMemberRoleChanged, auditOccurrence } from "../audit/events.js";
 import { auditPending, type TransactItem } from "../audit/outbox.js";
@@ -45,11 +45,18 @@ export async function changeReviewedMemberRole(deps: Deps, caller: DeveloperCall
  // Self-change's target fence already verifies owner; DynamoDB forbids two operations on the same item.
  if (actor !== target) add("actor", roleFence(actor, "owner"));
  if (changing && actor === target && change.expectedRole === "owner" && change.role !== "owner") {
-  const owners = await deps.orgs?.listMembers(orgId), otherOwner = owners?.find(person => person.developerId !== actor && person.role === "owner" && person.orgId === orgId);
+  const owners = await deps.orgs?.listMembers(orgId);
+  let otherOwner: string | undefined;
+  // A directory query may lag a demotion. Verify candidates consistently and skip stale rows.
+  for (const person of owners ?? []) {
+   if (person.developerId === actor || person.role !== "owner" || person.orgId !== orgId) continue;
+   const candidate = await read(deps, orgMemberKey(orgId, person.developerId));
+   if (candidate?.orgId === orgId && candidate.developerId === person.developerId && candidate.role === "owner") { otherOwner = person.developerId;break; }
+  }
   if (otherOwner === undefined) throw agentXError("LAST_OWNER", "Add another company owner before changing your own role.");
-  add("owner", roleFence(otherOwner.developerId, "owner"));
+  add("owner", roleFence(otherOwner, "owner"));
  }
- add("receipt", { Put: { TableName: deps.tableName, Item: { ...receiptKey, digest, developerId: target, role: change.role, indexExpiresAt: Math.floor(deps.now() / 1000) + 30 * 86400 }, ConditionExpression: "attribute_not_exists(pk)" } });
+ add("receipt", { Put: { TableName: deps.tableName, Item: { ...receiptKey, digest, developerId: target, role: change.role, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(deps.now() / 1000) + 30 * 86400 }, ConditionExpression: "attribute_not_exists(pk)" } });
  const event = changing ? auditMemberRoleChanged({ orgId, actor: { kind: "member", id: actor }, memberId: target, fromRole: change.expectedRole, toRole: change.role, occurredAt: at, occurrence: auditOccurrence("reviewed-role", orgId, change.requestId, target, change.role) }) : undefined;
  if (event !== undefined) {
   const pending = auditPending(deps, event);if (pending.length !== 1) throw unavailable();for (const item of pending) add("audit", item);

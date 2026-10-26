@@ -2153,8 +2153,11 @@ const ChangeRoleBodySchema = OrgMemberRoleChangeBodySchema;
 /** `PUT /v1/app/org/members/{developerId}/role`: owners only. Demoting the last owner is LAST_OWNER (409). */
 async function changeMemberRole(deps: DeveloperRouteDependencies, caller: DeveloperCaller, developerId: string, body: unknown): Promise<{ developerId: string; role: OrgRole }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
+  const reviewed = typeof body === "object" && body !== null && Object.hasOwn(body, "expectedRole");
+  // Preserve the released CLI's owner-first check and field-specific validation on legacy bodies.
+  if (!reviewed && caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
   const parsed = ChangeRoleBodySchema.safeParse(body);
-  if (!parsed.success) throw agentXError("CONFIG_INVALID", "Review a valid company role change before submitting.");
+  if (!parsed.success) throw reviewed ? agentXError("CONFIG_INVALID", "Review a valid company role change before submitting.") : bodyError(parsed.error);
   if (parsed.data.expectedRole !== undefined) return changeReviewedMemberRole(deps, caller, developerId, { ...parsed.data, expectedRole: parsed.data.expectedRole });
   if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
   await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role, by: { kind: "member", id: caller.developerId }, requestId: parsed.data.requestId });

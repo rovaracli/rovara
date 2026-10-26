@@ -91,7 +91,7 @@ it("preserves the legacy owner-first refusal for malformed requests without expe
 });
 it("preserves field-specific legacy owner validation without expectedRole", async () => {
  const f = fixture(), path = `/v1/app/org/members/${target}/role`;
- await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, role: "invalid" }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("role:") });
+ await expect(routeDeveloperRequest(f.deps, { method: "PUT", path, headers: {}, requestId: "role-test", body: JSON.stringify({ requestId: id, role: "invalid" }) }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).rejects.toThrow(/^CONFIG_INVALID: role:/);
 });
 it("skips a stale listed owner and consistently verifies the next owner before self-demotion", async () => {
  const f = fixture(), third = "d".repeat(64);f.member(org, target, "owner");f.member(org, third, "owner");
