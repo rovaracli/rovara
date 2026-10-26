@@ -814,12 +814,13 @@ describe("every task launch checks that the creator is still a member (ruling R6
   // Only reached from startTaskWorkflowPublicationFromSystem, which checks first.
   const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate"];
 
-  it("finds the fourteen acceptTask call sites and the pull request call sites, and every one is checked first", () => {
+  it("finds the eighteen acceptTask call sites and the pull request call sites, and every one is checked first", () => {
     const launching = functions.filter((chunk) => /deps\.actions\.(acceptTask|acceptPullRequest|acceptPullRequestUpdate)\(/.test(chunk));
     expect(launching.length).toBeGreaterThanOrEqual(9);
     // The eleventh is Plan 3 Task 32's system Continue after a spend approval (`resumeTaskAfterSpendApproval`); the twelfth is Task 34's start of a plan whose run
     // limit was approved (`resumeAfterRunLimitApproval`), which checks the creator first.
-    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(14);
+    // Plan 6 adds four, each checked first like the rest: the Understand step and the plan step after it (Task 4), the plan check and the plan's one revision (Task 8).
+    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(18);
     for (const chunk of launching) {
       const name = /function (\w+)/.exec(chunk)?.[1] ?? "?";
       if (CHECKED_BY_CALLER.includes(name)) continue;
