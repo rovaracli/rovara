@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -11,6 +11,7 @@ import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+import userEvent from "@testing-library/user-event";
 import { expectNoAxeViolations } from "./support/axe.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
@@ -44,7 +45,7 @@ it("clears visible people and the directory cache when the role is revoked", asy
  const f = mount();await screen.findByText("Maya");f.me.developer.orgRole = "member";await f.query.invalidateQueries({ queryKey: ["admin", "identity"] });await waitFor(() => expect(screen.queryByText("Maya")).toBeNull());expect(await screen.findByRole("heading", { name: "Administration unavailable" })).toBeTruthy();expect(f.query.getQueriesData({ queryKey: ["admin", "members"] })).toEqual([]);f.close();
 });
 it("does not present failed reads as empty and can retry", async () => {
- let failed = true;const f = mount({ respond: async r => r.path.endsWith("/members") ? failed ? { status: 403, body: { error: { code: "FORBIDDEN", message: "private provider response" } } } : { status: 200, body: { members: [] } } : { status: 200, body: AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: "admin" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] }) } });
+ let failed = true;const f = mount({ respond: async r => r.path.endsWith("/members") ? failed ? { status: 404, body: { error: { code: "FORBIDDEN", message: "private provider response" } } } : { status: 200, body: { members: [] } } : { status: 200, body: AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Priya", orgRole: "admin" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] }) } });
  expect(await screen.findByText("Couldn't load company members. Try again.")).toBeTruthy();expect(screen.queryByText("No company members were returned.")).toBeNull();expect(screen.queryByText("private provider response")).toBeNull();failed = false;fireEvent.click(screen.getByRole("button", { name: "Try again" }));expect(await screen.findByText("No company members were returned.")).toBeTruthy();f.close();
 });
 it("searches only loaded members and renders hostile names as text", async () => {
@@ -64,4 +65,31 @@ it("rejects an unreadable directory without rendering a partial list", async () 
 
 it("keeps the member-name filter when inspecting roles and returning", async () => {
  const f = mount();await screen.findByText("Maya");fireEvent.change(screen.getByRole("searchbox", { name: "Find in this member list" }), { target: { value: "Maya" } });fireEvent.click(screen.getByRole("link", { name: "Roles explained" }));await screen.findByRole("heading", { name: "Roles" });fireEvent.click(screen.getByRole("link", { name: "Back to people" }));await screen.findByText("Maya");expect(screen.getByRole("searchbox")).toHaveProperty("value", "Maya");f.close();
+});
+
+function pendingResponse() { let resolve!: (r: ApiResponse) => void;return { promise: new Promise<ApiResponse>(r => { resolve = r; }), resolve: (r: ApiResponse) => resolve(r) }; }
+for (const field of ["org", "developer"] as const) it(`isolates the mounted directory when the ${field} changes`, async () => {
+ const f = mount();await screen.findByText("Maya");const oldKey = ["admin", "members", f.me.org.orgId, f.me.developer.id];const next = structuredClone(f.me);
+ if (field === "org") { next.org.orgId = "org_bbbbbbbbbbbbbbbbbbbb";next.org.name = "Other company"; } else next.developer.id = "c".repeat(64);
+ const response = pendingResponse();let reads = 0;f.request.mockImplementation(async r => { if (r.path === "/v1/app/me") return { status: 200, body: next };if (r.path === "/v1/app/org/members") { reads++;return response.promise; }return { status: 200, body: {} }; });
+ await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });
+ await waitFor(() => expect(reads).toBe(1));expect(screen.queryByText("Maya")).toBeNull();
+ await act(async () => response.resolve({ status: 200, body: { members: [{ ...member, developerId: "d".repeat(64), name: "New directory person" }] } }));await screen.findByText("New directory person");expect(screen.queryByText("Maya")).toBeNull();await waitFor(() => expect(f.query.getQueryData(oldKey)).toBeUndefined());
+ expect(f.query.getQueriesData({ queryKey: ["admin", "members"] }).map(([key]) => key)).toEqual([["admin", "members", next.org.orgId, next.developer.id]]);f.close();
+});
+for (const key of ["identity", "members"] as const) it(`keeps the page and focus mounted during a background ${key} recheck`, async () => {
+ const f = mount();await screen.findByText("Maya");const input = screen.getByRole("searchbox"), heading = screen.getByRole("heading", { name: "People" }), table = screen.getByRole("table");input.focus();const response = pendingResponse();
+ f.request.mockImplementation(async r => key === "identity" && r.path.endsWith("/me") || key === "members" && r.path.endsWith("/members") ? response.promise : { status: 200, body: r.path.endsWith("/me") ? f.me : { members: [member] } });
+ let refresh!: Promise<unknown>;await act(async () => { refresh = f.query.invalidateQueries({ queryKey: ["admin", key] });await new Promise(resolve => setTimeout(resolve, 25)); });
+ expect(screen.getByRole("heading", { name: "People" })).toBe(heading);expect(screen.getByRole("table")).toBe(table);expect(document.activeElement).toBe(input);expect(screen.queryByRole("progressbar")).toBeNull();
+ await act(async () => { response.resolve({ status: 200, body: key === "identity" ? f.me : { members: [member] } });await refresh; });expect(screen.getByRole("searchbox")).toBe(input);expect(document.activeElement).toBe(input);f.close();
+});
+it("labels the access-loading region busy", async () => { const response = pendingResponse(), f = mount({ respond: () => response.promise });const progress = await screen.findByRole("progressbar", { name: "Checking administration access" });expect(progress.closest('[aria-busy="true"]')).not.toBeNull();await act(async () => response.resolve({ status: 403, body: {} }));f.close(); });
+it("labels the first members load busy", async () => { const response = pendingResponse(), f = mount();await screen.findByText("Maya");f.close();const other = mount({ respond: async r => r.path.endsWith("/me") ? { status: 200, body: f.me } : response.promise });const progress = await screen.findByRole("progressbar", { name: "Loading company members" });expect(progress.closest('[aria-busy="true"]')).not.toBeNull();await act(async () => response.resolve({ status: 200, body: { members: [] } }));other.close(); });
+it("explains a members permission refusal", async () => { const f = mount();await screen.findByText("Maya");f.request.mockImplementation(async () => ({ status: 403, body: {} }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "members"] }); });expect(await screen.findByText("You don't have permission to view company members.")).toBeTruthy();f.close(); });
+it("describes a failed background identity recheck and preserves the route", async () => { const f = mount();await screen.findByText("Maya");f.request.mockImplementation(async () => ({ status: 403, body: {} }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "identity"] }); });expect(await screen.findByText("Couldn't re-check your administration access. Try again.")).toBeTruthy();expect(f.router.state.location.pathname).toBe("/app/admin/people");expect(screen.queryByText("Maya")).toBeNull();f.close(); });
+it("strips email and unknown metadata before caching the admin directory", async () => { const f = mount();await screen.findByText("Maya");f.request.mockImplementation(async () => ({ status: 200, body: { members: [{ ...member, email: "synthetic@example.test", privateMetadata: "unneeded" }] } }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "members"] }); });expect(f.query.getQueriesData({ queryKey: ["admin", "members"] }).map(([,data]) => data)).toEqual([{ members: [member] }]);f.close(); });
+it("supports one self member, empty identity methods, long wrapping names and keyboard controls", async () => {
+ const f = mount();await screen.findByText("Maya");const longName = "Long display name ".repeat(30);f.request.mockImplementation(async () => ({ status: 200, body: { members: [{ ...member, developerId: f.me.developer.id, name: longName.trim(), identities: [] }] } }));await act(async () => { await f.query.invalidateQueries({ queryKey: ["admin", "members"] }); });expect(await screen.findByText("None returned")).toBeTruthy();expect(screen.getByText("(you)")).toBeTruthy();expect(screen.getByRole("status").textContent).toBe("1 of 1 members");
+ const user = userEvent.setup();screen.getByRole("heading", { name: "People" }).focus();await user.tab();expect(document.activeElement).toBe(screen.getByRole("link", { name: "Roles explained" }));await user.tab();expect(document.activeElement).toBe(screen.getByRole("searchbox"));expect(screen.getByRole("table").textContent).toContain(longName.trim());f.close();
 });

@@ -25,6 +25,6 @@ test("refuses a member deep link after a live role change", async ({ page, reque
 });
 test("shows the large-screen boundary on phones and at 200 percent zoom equivalent", async ({ page }) => {
  await page.emulateMedia({ reducedMotion: "reduce" });
- for (const width of [390, 640, 1023]) { await page.setViewportSize({ width, height: 844 });await page.goto("/app/admin/people");await expect(page.getByText("Open this on a larger screen to use it.", { exact: false })).toBeVisible();await expect(page.getByRole("table")).not.toBeVisible();expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); }
+ for (const width of [390, 640, 1023]) { await page.setViewportSize({ width, height: 844 });await page.goto("/app/admin/people");await expect(page.getByText("Open this on a larger screen to use it.", { exact: false })).toBeVisible();await expect(page.getByRole("heading", { name: "Administration" , exact: true })).toBeVisible();await expect(page.getByRole("table")).toHaveCount(0);const reads = await (await page.request.get("/__mock/requests")).json() as Array<{ path: string }>;expect(reads.some(r => r.path === "/v1/web/org/members")).toBe(false);expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); }
  await page.setViewportSize({ width: 1440, height: 1000 });await page.goto("/app/admin/people");await expect(page.getByRole("table")).toBeVisible();await page.screenshot({ path: ".superpowers/sdd/codex/m1-people.png" });
 });
