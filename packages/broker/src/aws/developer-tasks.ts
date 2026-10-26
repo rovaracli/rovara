@@ -296,10 +296,10 @@ import { setupDraftPointerItem } from "../rovara-code/setup-draft.js";
 import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { bindingItems, threadBindingItems } from "../agent-sessions/bindings.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
-import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
+import { createTaskSessionItems, ensureTaskSession, lazyTaskSessionRecord, sessionStarterFor } from "../agent-sessions/create.js";
 import { requireSessionLevel, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { codeTask, codeShareItems } from "../rovara-code/sharing.js";
-import { askTakeOver } from "../agent-sessions/take-over.js";
+import { askTakeOver, requireTakeOverOfNewSession } from "../agent-sessions/take-over.js";
 import { StatusReply } from "./status-reply.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
@@ -8084,6 +8084,12 @@ async function codeOwnershipConfirmation(deps: DeveloperTaskRouteDependencies, c
   if (task.workflow?.definitionId !== "agentx-task-to-pr") return undefined;
   const sessions = deps.agentRuns?.agentSessions;
   if (sessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
+  // Authority first (Task 23 re-check N2): the take-over rules are run over the session the task would get, and only a caller who passes them causes the missing row to be made.
+  if (task.sessionId === undefined) {
+    const pending = lazyTaskSessionRecord(task, { ownerName: task.developerName, title: inertTaskTitle(task.title) });
+    if (pending === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "This task's session cannot be created right now.");
+    await requireTakeOverOfNewSession(sessions, caller, pending);
+  }
   const sessionId = task.sessionId ?? await ensureTaskSession({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, { ownerName: task.developerName, title: inertTaskTitle(task.title) });
   if (sessionId === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "This task's session cannot be created right now.");
   const reply = await askTakeOver(sessions, caller, sessionId, { requestId: input.requestId }, deps.agentRuns);

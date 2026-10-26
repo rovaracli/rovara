@@ -48,7 +48,7 @@ import { UNNAMED_MEMBER, effectiveTaskOwner, ownerFenceOf, taskIndexKey, taskKey
 import { followerIds } from "../realtime/sink.js";
 import { writeChanges } from "../realtime/changes.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
-import { requireSessionLevel, type SessionAccess } from "./access.js";
+import { requireLevelOf, requireSessionLevel, sessionAccessFor, type SessionAccess } from "./access.js";
 import { confirmationReply, type SessionShareDependencies, type ShareCaller } from "./shares.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
@@ -104,7 +104,22 @@ function parseBody(body: unknown): z.infer<typeof BodySchema> {
  * asked for, when it is decided and when it is applied.
  */
 export async function requireTakeOver(deps: SessionTakeOverDependencies, caller: { orgId: OrgId; developerId: string }, sessionId: string): Promise<SessionAccess> {
-  const access = await requireSessionLevel(deps, caller, sessionId, "edit", "take it over");
+  return takeOverRules(deps, caller, await requireSessionLevel(deps, caller, sessionId, "edit", "take it over"));
+}
+
+/**
+ * `requireTakeOver` for a task that has no session yet: the rules run over the session it would get (`lazyTaskSessionRecord`), so a caller who could not take it over
+ * does not cause the session to be made. Writes nothing.
+ */
+export async function requireTakeOverOfNewSession(deps: SessionTakeOverDependencies, caller: { orgId: OrgId; developerId: string }, session: AgentSessionRecord): Promise<void> {
+  const role = OrgRoleSchema.safeParse((await getItem(deps, orgMemberKey(caller.orgId, caller.developerId)))?.["role"]);
+  if (!role.success) throw agentXError("NOT_FOUND", "session not found");
+  const { access } = await sessionAccessFor(deps, caller, role.data, session);
+  if (access === undefined) throw agentXError("NOT_FOUND", "session not found");
+  await takeOverRules(deps, caller, requireLevelOf(access, "edit", "take it over"));
+}
+
+async function takeOverRules(deps: SessionTakeOverDependencies, caller: { orgId: OrgId; developerId: string }, access: SessionAccess): Promise<SessionAccess> {
   const { session } = access;
   if (session.where.kind !== "cloud") throw agentXError("SESSION_ON_MAC", sessionOnMacMessage(access.effectiveOwner.name));
   if (session.endedAt !== undefined) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);

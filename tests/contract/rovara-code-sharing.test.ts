@@ -468,6 +468,28 @@ it("M9: legacy Code ownership creates its missing session before requesting conf
   expect(h.db.find((item) => (item.subject as { kind?: string } | undefined)?.kind === "session_owner")).toHaveLength(1);
 });
 
+// Task 23 re-check N2 (C43 b): the ownership route checked only "same org" before it made the task's missing session row; the take-over then refused the caller. The row is made only for a caller who may take it over.
+for (const [who, setup] of [
+  ["an org member with no access to the task", undefined],
+  ["a project viewer", "viewer"],
+] as const) it(`N2: ${who} cannot make the task's session row by asking to take ownership`, async () => {
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix retry" } });
+  const { taskId } = started.body.task as { taskId: string };
+  const task = { ...h.db.get(taskKey(taskId))! };
+  h.db.delete(agentSessionKey(TEST_ORG, String(task.sessionId), "META"));
+  delete task.sessionId;
+  h.db.set(task);
+  await h.orgOf(OMAR);
+  if (setup !== undefined) h.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), role: "developer", projectRole: setup });
+  const before = h.db.find(() => true).length;
+  const result = await h.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/people/take-ownership`, { requestId: randomUUID(), expectedPeopleRevision: 1 });
+  expect(result.status).toBeGreaterThanOrEqual(400);
+  expect(h.db.get(taskKey(taskId))).not.toHaveProperty("sessionId");
+  expect(h.db.find((item) => item.entityType === "AGENT_SESSION" || item.sk === "META" && String(item.pk).startsWith("AGENTSESSION#"))).toEqual([]);
+  expect(h.db.find(() => true).length).toBe(before);
+});
+
 it("M4: an owner's own widening keeps its undo without sending a self-notice", () => {
   const w = world();
   const task = w.db.get(taskKey(w.taskId)) as unknown as DeveloperTaskRecord;
