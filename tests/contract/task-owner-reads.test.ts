@@ -154,6 +154,8 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/create.ts", "ensureTaskSession", "history", ".developerId*2", ".startedBy"],
   ["agent-sessions/create.ts", "startedText", "history", ".startedBy*4"],
   ["agent-sessions/retry.ts", "repairLink", "other-record", ".developerId"],
+  // a move to the cloud (Plan 5 Task 19): the task the runtime answered with must be the caller's own new one (its row names the caller as creator); it validates the shape of the runtime's answer and decides nothing about ownership
+  ["agent-sessions/handoff.ts", "toCloud", "shape", ".developerId"],
   // Task 14 minor: a retry is recorded as the caller's only when the idempotency item of ITS request id exists (the key is the task's owner key, as Plan 3 writes it)
   ["agent-sessions/retry.ts", "workflowMovedOn", "principal", ".ownerKey"],
   ["agents/agent-tools-routes.ts", "callAgentTool>holdRecord", "principal", ".ownerKey"],
