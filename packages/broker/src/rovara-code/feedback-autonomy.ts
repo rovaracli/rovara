@@ -1,0 +1,177 @@
+// Rovara Code (Plan 6 Task 16): fixing review comments under autonomy. The feedback slot of merge tracking. When the owner's feedback card waits (a complete review of the comments on a
+// pull request Rovara opened), Rovara may decide it itself, as itself (`actorId: "rovara"`, `actorRole: "ROVARA_AUTONOMY"`, never the owner's), but only when ALL of these hold:
+//   - the task's autonomy is `prepare` or `run` (`suggest` asks about everything);
+//   - fewer than `FEEDBACK_AUTO_ROUNDS_MAX` automatic rounds have run on the task;
+//   - every comment of the round's WHOLE comment set was written by a human with write access to the repository (read live, from GitHub, in this pass), whatever the findings cite;
+//   - every finding is one the review marked actionable and recommended (a fix to make).
+// Anything else leaves the card to the owner, as before. Comments are untrusted input: the rule never reads what a comment says, only who wrote it and what the review made of it, and a
+// comment cannot change the run's tools, limits, push target or path (the round is an ordinary coding run, paid like any other, that pushes to the task's own branch at the expected head).
+// While the card waits, failing CI is added to it (and folded into the decision that follows) instead of starting a CI round of its own.
+import {
+  FEEDBACK_AUTONOMY_ACTOR_ID,
+  FEEDBACK_AUTO_ROUNDS_MAX,
+  FEEDBACK_CI_CHECKS_MAX,
+  decideWorkflowFeedbackFindings,
+  feedbackCardCiFailures,
+  feedbackCiFailuresDigest,
+  recordWorkflowFeedbackCiFailures,
+  workflowFixRounds,
+  workflowRequestId,
+  type Autonomy,
+  type WorkflowFixRounds,
+  type WorkflowSnapshot,
+} from "@agentx/contracts";
+import { GithubMergeRateLimitError } from "../github-app.js";
+import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
+import type { TransactItem } from "../agents/table-writes.js";
+import { ciEvidenceItem, ciOutputBlock, collectCiEvidence, oneLine } from "./ci-fix.js";
+import { codeMilestoneItems } from "./milestones.js";
+import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, registerMergeActionDecider, type MergeActionContext, type MergeActionInput, type MergeActionRequest, type RepositoryStanding } from "./merge-tracking.js";
+
+/** A login GitHub gives only to an App's bot account ends like this; a person's login can never contain brackets. */
+export function isBotLogin(login: string): boolean {
+  return /\[bot\]$/iu.test(login);
+}
+
+/** What the rule reads of a round: who wrote each comment of the whole set, and what the review made of each finding. */
+export interface FeedbackRound {
+  comments: ReadonlyArray<{ id: string; author: string }>;
+  findings: ReadonlyArray<{ assessment: string; recommended: boolean }>;
+}
+
+/**
+ * Whether Rovara may fix a feedback round on its own (question 5). `standings` holds each author's live permission, keyed by lower-case login; an author nobody looked up is unknown, and unknown
+ * is not a writer. A bot, or any account GitHub does not call a `User` (an organization, a bot), never counts, whatever its permission. Any finding that is not actionable, or has no fix to make, sends
+ * the whole round to the owner.
+ */
+export function autoFixableRound(round: FeedbackRound, standings: ReadonlyMap<string, RepositoryStanding>, autonomy: Autonomy, fixRounds: WorkflowFixRounds): boolean {
+  if (autonomy !== "prepare" && autonomy !== "run") return false;
+  if (fixRounds.feedbackAuto >= FEEDBACK_AUTO_ROUNDS_MAX) return false;
+  if (round.comments.length === 0 || round.findings.length === 0) return false;
+  for (const comment of round.comments) {
+    const standing = standings.get(comment.author.toLowerCase());
+    if (standing === undefined || isBotLogin(comment.author)) return false;
+    if (standing.userType !== undefined && standing.userType !== "User") return false;
+    if (standing.permission !== "write" && standing.permission !== "admin") return false;
+  }
+  return round.findings.every((finding) => finding.assessment === "ACTIONABLE" && finding.recommended);
+}
+
+/** Every different author of the round's comments, in the order they first appear (logins compared without regard to case). */
+export function commentAuthors(workflow: Pick<WorkflowSnapshot, "feedbackReview">): string[] {
+  const seen = new Map<string, string>();
+  for (const bundle of workflow.feedbackReview?.bundleRefs ?? []) for (const comment of bundle.comments) if (!seen.has(comment.author.toLowerCase())) seen.set(comment.author.toLowerCase(), comment.author);
+  return [...seen.values()];
+}
+
+const isPassLimit = (error: unknown): boolean => error instanceof GithubMergeRateLimitError || error instanceof TrackingRequestCapError || (error instanceof Error && error.name === "GithubBudgetExhaustedError");
+
+/** The cheap checks first, so a round that cannot be automatic costs nobody a lookup: autonomy, rounds left, what the review made of every finding, how many people wrote. */
+function mayBeAutomatic(workflow: WorkflowSnapshot, autonomy: Autonomy): boolean {
+  const review = workflow.feedbackReview;
+  if (review?.status !== "PENDING" || review.reviewRef.status !== "COMPLETE") return false;
+  if (autonomy !== "prepare" && autonomy !== "run") return false;
+  if (workflowFixRounds(workflow).feedbackAuto >= FEEDBACK_AUTO_ROUNDS_MAX) return false;
+  const findings = review.reviewRef.findingRefs;
+  if (findings.length === 0 || !findings.every((finding) => finding.assessment === "ACTIONABLE" && finding.recommended)) return false;
+  const authors = commentAuthors(workflow);
+  return authors.length > 0 && authors.length <= PERMISSION_LOOKUPS_MAX && !authors.some(isBotLogin);
+}
+
+/** The pull request whose pass owns the card's failing checks: the first open one, so several pull requests never take turns rewriting the same list. */
+function drivesCard(workflow: WorkflowSnapshot, context: MergeActionContext): boolean {
+  const open = (workflow.pullRequests ?? []).filter((entry) => entry.state === "OPEN" || entry.state === "UNKNOWN")
+    .sort((left, right) => left.repositoryId.localeCompare(right.repositoryId) || left.number - right.number);
+  return open[0]?.repositoryId === context.repositoryId && open[0].number === context.pullRequestNumber;
+}
+
+/** Whether the round is Rovara's to fix, from live reads. A lookup that fails, a report that cannot be read, or a person who cannot be told from a writer leaves it to the owner. */
+async function roundIsAutomatic(input: MergeActionInput, context: MergeActionContext): Promise<boolean> {
+  const { workflow, autonomy } = input;
+  if (!mayBeAutomatic(workflow, autonomy) || context.standingOf === undefined || context.feedbackRoundCheck === undefined) return false;
+  try {
+    // The stored report and comments are read before anyone is asked about on GitHub: it is free of the allowance.
+    if (!await context.feedbackRoundCheck()) return false;
+    const standings = new Map<string, RepositoryStanding>();
+    for (const author of commentAuthors(workflow)) standings.set(author.toLowerCase(), await context.standingOf(author));
+    const review = workflow.feedbackReview!;
+    return autoFixableRound({
+      comments: review.bundleRefs.flatMap((bundle) => bundle.comments.map((comment) => ({ id: comment.id, author: comment.author }))),
+      findings: review.reviewRef!.findingRefs.map((finding) => ({ assessment: finding.assessment, recommended: finding.recommended })),
+    }, standings, autonomy, workflowFixRounds(workflow));
+  } catch (error) {
+    if (error instanceof TrackingRequestCapError) {
+      // Out of requests while deciding: the card stays with the owner for now, and the pass is tried again once its item is written.
+      context.noteCapped?.();
+      return false;
+    }
+    if (isPassLimit(error)) throw error;
+    context.log?.("feedback_autonomy.round_unchecked", { taskId: context.taskId, error: error instanceof Error ? error.name : "unknown" });
+    return false;
+  }
+}
+
+const names = (checks: readonly string[]): string => checks.slice(0, 3).join(", ") + (checks.length > 3 ? ` and ${String(checks.length - 3)} more` : "");
+
+/**
+ * The feedback slot. Called only while the owner's card is being prepared or waits (`nextMergeAction`); it acts only on a complete review waiting for a decision.
+ * Either Rovara decides it (a counted round, decided as Rovara's own, with the coding run's dispatch row and its milestone), or the failing checks are added to (or taken off) the card.
+ */
+export async function feedbackDecider(input: MergeActionInput): Promise<MergeActionRequest | undefined> {
+  const { item, workflow, context } = input;
+  if (context === undefined) return undefined;
+  const review = workflow.feedbackReview;
+  if (review?.status !== "PENDING" || review.reviewRef.status !== "COMPLETE") return undefined;
+  const at = new Date(input.now).toISOString();
+  const driver = drivesCard(workflow, context);
+  const failing = driver && item.ci === "failing"
+    ? [...new Set(item.failingChecks.map((check) => oneLine(check, 200)).filter((check) => check !== ""))].sort().slice(0, FEEDBACK_CI_CHECKS_MAX) : [];
+  const shown = feedbackCardCiFailures(workflow);
+  const changes = driver && (failing.length === 0 ? shown !== undefined : shown?.digest !== feedbackCiFailuresDigest(failing));
+  const automatic = await roundIsAutomatic(input, context);
+  if (!automatic && !changes) return undefined;
+
+  let next = workflow;
+  const items: TransactItem[] = [];
+  if (changes) {
+    next = recordWorkflowFeedbackCiFailures(next, { checks: failing, now: at });
+    // What CI said, kept for the decision that follows (under the revision that added it to the card).
+    if (failing.length > 0) {
+      const evidence = await collectCiEvidence(context);
+      items.push(ciEvidenceItem(context.tableName, { orgId: context.orgId, taskId: context.taskId, revision: next.revision, block: ciOutputBlock(evidence), now: input.now }));
+    }
+  }
+  if (!automatic) return { slot: "feedback", workflow: next, items };
+
+  const decided = decideWorkflowFeedbackFindings(next, {
+    requestId: workflowRequestId("agentx-auto-feedback", context.taskId, workflow.revision, review.reviewRef.sha256),
+    expectedRevision: next.revision, reviewDigest: review.reviewRef.sha256, proposalDigest: review.reviewRef.proposalDigest,
+    bundleDigests: review.bundleRefs.map((bundle) => bundle.sha256), selectedFindingIds: review.reviewRef.findingRefs.map((finding) => finding.id), decision: "APPROVE",
+  }, {
+    actorId: FEEDBACK_AUTONOMY_ACTOR_ID, role: "ROVARA_AUTONOMY",
+    autonomy: { level: input.autonomy as "prepare" | "run", ...(context.recipeDigest === undefined ? {} : { recipeDigest: context.recipeDigest }) },
+  }, at);
+  const round = workflowFixRounds(decided).feedbackAuto;
+  items.push(
+    workflowDispatchItem(context.tableName, context.taskId, decided.revision, "IMPLEMENT", decided.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, at),
+    ...codeMilestoneItems({ tableName: context.tableName }, {
+      kind: "fixing", orgId: context.orgId, taskId: context.taskId, ...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }), at,
+      text: `Rovara is fixing the review comments on its own (round ${String(round)} of ${String(FEEDBACK_AUTO_ROUNDS_MAX)}).${failing.length === 0 ? "" : ` It is fixing the failing ${names(failing)} in the same round.`}`.slice(0, 500),
+      pullRequests: [{ repository: context.repositoryId, number: context.pullRequestNumber, url: context.pullRequestUrl }],
+    }, decided.revision),
+  );
+  return { slot: "feedback", workflow: decided, items };
+}
+
+let installed: (() => void) | undefined;
+
+/** Fills the feedback slot of merge tracking, once for the process. */
+export function installFeedbackDecider(): void {
+  installed ??= registerMergeActionDecider("feedback", feedbackDecider);
+}
+
+/** For tests: empties the slot again. */
+export function uninstallFeedbackDecider(): void {
+  installed?.();
+  installed = undefined;
+}

@@ -77,7 +77,7 @@ const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, "gu"
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z /u;
 
 /** One line of untrusted text (a check's name): control and format characters out, redacted, cut. */
-function oneLine(text: string, max: number): string {
+export function oneLine(text: string, max: number): string {
   return Array.from(redactText(text.replace(/[\p{Cc}\p{Cf}]/gu, " ")).replace(/\s+/gu, " ").trim()).slice(0, max).join("");
 }
 

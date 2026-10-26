@@ -2,13 +2,20 @@
 // that says when a round may be fixed without asking (writers only, actionable, under the cap, autonomy prepare or run), and the feedback slot of merge tracking over a fake GitHub:
 // a writer's actionable comment starts a counted round decided as Rovara's own; every other case leaves the round to the owner, and nothing a comment says can change that.
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_AUTO_ROUNDS_MAX, FEEDBACK_CI_CHECKS_MAX, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackDecisionSchema, WorkflowSnapshotSchema, WorkflowTransitionError,
+  CI_OUTPUT_BLOCK_HEADER, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_AUTO_ROUNDS_MAX, FEEDBACK_CI_CHECKS_MAX, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackDecisionSchema, WorkflowSnapshotSchema, WorkflowTransitionError,
   createCandidateManifest, createWorkflowSnapshot, decideWorkflowFeedbackFindings, feedbackCardCiFailures, feedbackCiFailuresDigest, feedbackDecidedByText, feedbackFixedReply,
   recordWorkflowFeedbackCiFailures, recordWorkflowPullRequestUpdate, requestWorkflowFeedbackReview, startWorkflowFix, workflowFixRoundsLeft,
   type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
+import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
+import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
+import { readCiEvidence, uninstallCiFixDecider, installCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
+import { autoFixableRound, installFeedbackDecider, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
+import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
+import { FakeGithub, SESSION_ID, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
+import { TEST_ORG } from "../support/orgs.js";
 
 const at = "2026-10-26T12:00:00.000Z";
 const OWNER = "a".repeat(64);
@@ -212,5 +219,314 @@ describe("what Rovara says", () => {
     expect(feedbackDecidedByText("prepare")).toBe("Decided by Rovara (autonomy: prepare)");
     expect(feedbackDecidedByText("run")).toBe("Decided by Rovara (autonomy: run)");
     expect(feedbackFixedReply("0123456789abcdef0123456789abcdef01234567")).toBe("Fixed in 0123456.");
+  });
+});
+
+// ---- when a round may be fixed without asking
+
+const standing = (permission: "admin" | "write" | "read" | "none", userType?: string) => ({ permission, ...(userType === undefined ? {} : { userType }) });
+const standings = (entries: Record<string, ReturnType<typeof standing>>) => new Map(Object.entries(entries).map(([login, value]) => [login.toLowerCase(), value]));
+const roundOf = (comments: Array<{ id: string; author: string }>, findings: Array<{ assessment?: string; recommended?: boolean }> = [{}]) =>
+  ({ comments, findings: findings.map((finding) => ({ assessment: finding.assessment ?? "ACTIONABLE", recommended: finding.recommended ?? true })) });
+const NO_ROUNDS = { ci: 0, conflict: 0, feedbackAuto: 0 };
+
+describe("autoFixableRound", () => {
+  const maya = [{ id: "c1", author: "maya" }];
+  it("is true only for a writer's actionable comments, under prepare or run, with rounds left", () => {
+    for (const level of ["prepare", "run"] as const) {
+      expect(autoFixableRound(roundOf(maya), standings({ maya: standing("write") }), level, NO_ROUNDS)).toBe(true);
+      expect(autoFixableRound(roundOf(maya), standings({ maya: standing("admin", "User") }), level, NO_ROUNDS)).toBe(true);
+    }
+    expect(autoFixableRound(roundOf(maya), standings({ maya: standing("write") }), "prepare", { ...NO_ROUNDS, feedbackAuto: FEEDBACK_AUTO_ROUNDS_MAX - 1 })).toBe(true);
+  });
+
+  it("suggest waits for everything", () => {
+    expect(autoFixableRound(roundOf(maya), standings({ maya: standing("admin") }), "suggest", NO_ROUNDS)).toBe(false);
+  });
+
+  it("the fourth automatic round waits", () => {
+    expect(autoFixableRound(roundOf(maya), standings({ maya: standing("write") }), "run", { ...NO_ROUNDS, feedbackAuto: FEEDBACK_AUTO_ROUNDS_MAX })).toBe(false);
+    // Rounds of other kinds do not count against it.
+    expect(autoFixableRound(roundOf(maya), standings({ maya: standing("write") }), "run", { ci: 3, conflict: 2, feedbackAuto: 0 })).toBe(true);
+  });
+
+  it("a read-only member, a triager and a stranger wait", () => {
+    for (const permission of ["read", "none"] as const) expect(autoFixableRound(roundOf(maya), standings({ maya: standing(permission) }), "prepare", NO_ROUNDS)).toBe(false);
+  });
+
+  it("one comment from someone without write access beside a writer's sends the whole round to the owner, however the findings cite them", () => {
+    const set = [{ id: "c1", author: "maya" }, { id: "c2", author: "stranger" }];
+    expect(autoFixableRound(roundOf(set), standings({ maya: standing("write"), stranger: standing("none") }), "prepare", NO_ROUNDS)).toBe(false);
+    // A person nobody looked up counts as unknown, and unknown is not a writer.
+    expect(autoFixableRound(roundOf(set), standings({ maya: standing("write") }), "prepare", NO_ROUNDS)).toBe(false);
+    expect(autoFixableRound(roundOf(set), standings({ maya: standing("write"), stranger: standing("write") }), "prepare", NO_ROUNDS)).toBe(true);
+  });
+
+  it("a bot never counts, by its name or by what GitHub says it is, whatever its permission", () => {
+    expect(autoFixableRound(roundOf([{ id: "c1", author: "dependabot[bot]" }]), standings({ "dependabot[bot]": standing("write") }), "prepare", NO_ROUNDS)).toBe(false);
+    expect(autoFixableRound(roundOf([{ id: "c1", author: "reviewbot" }]), standings({ reviewbot: standing("write", "Bot") }), "prepare", NO_ROUNDS)).toBe(false);
+    expect(autoFixableRound(roundOf([{ id: "c1", author: "acme-org" }]), standings({ "acme-org": standing("admin", "Organization") }), "prepare", NO_ROUNDS)).toBe(false);
+  });
+
+  it("every finding must be actionable and recommended (a fix to make); any other assessment sends the round to the owner", () => {
+    for (const assessment of ["ALREADY_ADDRESSED", "STALE", "TECHNICALLY_INCORRECT", "OUT_OF_SCOPE", "CONFLICTING", "NEEDS_OWNER_DECISION"]) {
+      expect(autoFixableRound(roundOf(maya, [{}, { assessment }]), standings({ maya: standing("write") }), "prepare", NO_ROUNDS), assessment).toBe(false);
+    }
+    expect(autoFixableRound(roundOf(maya, [{ recommended: false }]), standings({ maya: standing("write") }), "prepare", NO_ROUNDS)).toBe(false);
+  });
+
+  it("an empty round (no comments, or no findings) is not fixed on its own", () => {
+    expect(autoFixableRound(roundOf([]), standings({}), "prepare", NO_ROUNDS)).toBe(false);
+    expect(autoFixableRound({ comments: maya, findings: [] }, standings({ maya: standing("write") }), "prepare", NO_ROUNDS)).toBe(false);
+  });
+
+  it("logins are compared without regard to case, as GitHub does", () => {
+    expect(autoFixableRound(roundOf([{ id: "c1", author: "Maya" }]), standings({ maya: standing("write") }), "prepare", NO_ROUNDS)).toBe(true);
+  });
+});
+
+// ---- the feedback slot of merge tracking
+
+const TRACKED_APPROVAL = hash("9");
+const GHP = `ghp_${"A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"}`;
+const redCheck = (overrides: Record<string, unknown> = {}) => ({ name: "test", status: "completed" as const, conclusion: "failure" as const, required: false, url: "https://github.com/acme/payments/actions/runs/1/job/4242", jobId: "4242", appId: 15_368, ...overrides });
+
+class FeedbackGithub extends FakeGithub {
+  readonly types = new Map<string, string>();
+  readonly logs = new Map<string, string>([["4242", `2026-10-26T11:00:00.0000000Z Error: boom\n2026-10-26T11:00:01.0000000Z leaked ${GHP}\n`]]);
+  throwFor: string | undefined;
+  override async getRepositoryPermission(url: string, login: string, scope: unknown, budget?: GithubMergeReadBudget) {
+    if (login === this.throwFor) { this.calls.push(`permission:${login}`); throw new Error("GitHub is down"); }
+    return super.getRepositoryPermission(url, login, scope, budget);
+  }
+  async getRepositoryStanding(url: string, login: string, scope: unknown, budget?: GithubMergeReadBudget) {
+    const permission = await this.getRepositoryPermission(url, login, scope, budget);
+    const userType = this.types.get(login);
+    return { permission, ...(userType === undefined ? {} : { userType }) };
+  }
+  async getJobLogTail(_url: string, jobId: string): Promise<string | undefined> { this.calls.push(`log:${jobId}`); return this.logs.get(jobId); }
+}
+
+function feedbackWorld(options: { card?: ReturnType<typeof pendingCard>; autonomy?: "suggest" | "prepare" | "run"; red?: boolean; roundCheck?: boolean | (() => Promise<boolean>) } = {}) {
+  const github = new FeedbackGithub();
+  const w = world({ sessionId: SESSION_ID });
+  const fixture = Object.assign(w, { github });
+  (fixture.deps as { github: unknown }).github = github;
+  github.statuses.set(7, status({ draft: false, ...(options.red === true ? { checks: [redCheck()] } : {}) }));
+  fixture.setTask({ workflow: (options.card ?? pendingCard()).workflow });
+  (fixture.deps as { autonomy?: unknown }).autonomy = () => options.autonomy ?? "prepare";
+  (fixture.deps as { recipeDigest?: unknown }).recipeDigest = () => TRACKED_APPROVAL;
+  const check = options.roundCheck;
+  (fixture.deps as { feedbackRoundCheck?: unknown }).feedbackRoundCheck = check === undefined ? async () => true : typeof check === "boolean" ? async () => check : check;
+  github.permissions.set("maya", "write");
+  return fixture;
+}
+const storedWorkflow = (w: TrackingWorld): WorkflowSnapshot => WorkflowSnapshotSchema.parse(w.task().workflow);
+const dispatchRows = (w: TrackingWorld) => w.db.find((item) => item.pk === "WORKFLOW_DISPATCH");
+const milestonesOf = (w: TrackingWorld, kind: string) => w.db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === kind);
+const lookups = (w: { github: FakeGithub }) => w.github.calls.filter((call) => call.startsWith("permission:"));
+
+describe("the feedback slot of merge tracking", () => {
+  beforeEach(() => installFeedbackDecider());
+  afterEach(() => {
+    uninstallFeedbackDecider();
+    uninstallCiFixDecider();
+  });
+
+  it("a writer's actionable comment is fixed on Rovara's own decision: a counted round, decided as Rovara's, with the run's dispatch row and its milestone", async () => {
+    const w = feedbackWorld();
+    expect(await trackPullRequest(w.deps, TASK_ID)).toBe("changed");
+    const next = storedWorkflow(w);
+    expect(next).toMatchObject({ revision: 11, stage: "IMPLEMENT", state: "READY", fixSource: "feedback", fixRounds: { ci: 0, conflict: 0, feedbackAuto: 1 }, programStepId: "build", feedbackReview: { status: "APPROVED" } });
+    expect(next.feedbackDecisions).toEqual([expect.objectContaining({
+      actorId: "rovara", actorRole: "ROVARA_AUTONOMY", decision: "APPROVE", autonomy: { level: "prepare", recipeDigest: TRACKED_APPROVAL }, selectedFindingIds: ["f1"], selectedCommentIds: ["review_comment:1"],
+    })]);
+    expect(dispatchRows(w)).toEqual([expect.objectContaining({ sk: `${TASK_ID}#11`, kind: "IMPLEMENT", workflowRevision: 11, attempts: 0 })]);
+    expect(milestonesOf(w, "fixing")).toEqual([expect.objectContaining({ text: "Rovara is fixing the review comments on its own (round 1 of 3).", pullRequests: [expect.objectContaining({ number: 7 })] })]);
+    expect(lookups(w)).toEqual(["permission:maya"]);
+    // Another pass finds the task busy and does nothing more.
+    w.setNow(w.now() + 120_000);
+    expect(await trackPullRequest(w.deps, TASK_ID)).toBe("unchanged");
+    expect(storedWorkflow(w).revision).toBe(11);
+    expect(dispatchRows(w)).toHaveLength(1);
+  });
+
+  it("autonomy run decides the same way, under its own name", async () => {
+    const w = feedbackWorld({ autonomy: "run" });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w).feedbackDecisions?.[0]?.autonomy?.level).toBe("run");
+  });
+
+  it("a read-only member's comment waits for the owner: nothing is decided, started or paid for", async () => {
+    const w = feedbackWorld();
+    w.github.permissions.set("maya", "read");
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w)).toMatchObject({ revision: 10, stage: "WAIT_FOR_MERGE", state: "WAITING", feedbackReview: { status: "PENDING" } });
+    expect(dispatchRows(w)).toEqual([]);
+    expect(milestonesOf(w, "fixing")).toEqual([]);
+    expect(lookups(w)).toEqual(["permission:maya"]);
+  });
+
+  it("a non-collaborator's comment beside a collaborator's '+1' (cited alone by the model) sends the whole round to the owner", async () => {
+    const card = pendingCard({
+      comments: [{ id: "discussion:2", author: "maya", kind: "DISCUSSION" }, { id: "review_comment:1", author: "stranger", threadId: "t1" }],
+      findings: [{ id: "f1", commentIds: ["discussion:2"] }, { id: "f2", commentIds: ["review_comment:1"] }],
+    });
+    const w = feedbackWorld({ card });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w)).toMatchObject({ revision: 10, feedbackReview: { status: "PENDING" } });
+    expect(dispatchRows(w)).toEqual([]);
+    expect(lookups(w).sort()).toEqual(["permission:maya", "permission:stranger"]);
+  });
+
+  it("the fourth automatic round waits for the owner, and a person's decision on it still works", async () => {
+    const card = pendingCard({ extra: { fixRounds: { ci: 0, conflict: 0, feedbackAuto: FEEDBACK_AUTO_ROUNDS_MAX } } });
+    const w = feedbackWorld({ card });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w)).toMatchObject({ revision: 10, feedbackReview: { status: "PENDING" } });
+    expect(lookups(w)).toEqual([]);
+    expect(dispatchRows(w)).toEqual([]);
+  });
+
+  it("suggest waits for everything, and asks GitHub about nobody", async () => {
+    const w = feedbackWorld({ autonomy: "suggest" });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w)).toMatchObject({ revision: 10, feedbackReview: { status: "PENDING" } });
+    expect(lookups(w)).toEqual([]);
+    expect(dispatchRows(w)).toEqual([]);
+  });
+
+  it("a finding that is not actionable sends the round to the owner before anyone is looked up", async () => {
+    const w = feedbackWorld({ card: pendingCard({ findings: [{ id: "f1", commentIds: ["review_comment:1"], assessment: "TECHNICALLY_INCORRECT", recommended: false }] }) });
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w).revision).toBe(10);
+    expect(lookups(w)).toEqual([]);
+  });
+
+  it("a bot (by name, or as GitHub types it) waits for the owner", async () => {
+    for (const [author, type] of [["renovate[bot]", undefined], ["reviewbot", "Bot"]] as const) {
+      const w = feedbackWorld({ card: pendingCard({ comments: [{ id: "review_comment:1", author, threadId: "t1" }] }) });
+      w.github.permissions.set(author, "write");
+      if (type !== undefined) w.github.types.set(author, type);
+      await trackPullRequest(w.deps, TASK_ID);
+      expect(storedWorkflow(w), author).toMatchObject({ revision: 10, feedbackReview: { status: "PENDING" } });
+    }
+  });
+
+  it("more different people than a pass looks up wait for the owner", async () => {
+    const comments = Array.from({ length: PERMISSION_LOOKUPS_MAX + 1 }, (_, index) => ({ id: `review_comment:${String(index + 1)}`, author: `person${String(index)}`, threadId: `t${String(index)}` }));
+    const w = feedbackWorld({ card: pendingCard({ comments, findings: [{ id: "f1", commentIds: comments.map((comment) => comment.id) }] }) });
+    for (const comment of comments) w.github.permissions.set(comment.author, "write");
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w).revision).toBe(10);
+    expect(lookups(w)).toEqual([]);
+  });
+
+  it("a report or comments that cannot be read and checked wait for the owner; so does a lookup that fails (fail closed, and the pass goes on)", async () => {
+    const unreadable = feedbackWorld({ roundCheck: false });
+    await trackPullRequest(unreadable.deps, TASK_ID);
+    expect(storedWorkflow(unreadable).revision).toBe(10);
+    const throwing = feedbackWorld({ roundCheck: async () => { throw new Error("S3 is down"); } });
+    await trackPullRequest(throwing.deps, TASK_ID);
+    expect(storedWorkflow(throwing).revision).toBe(10);
+    const failed = feedbackWorld();
+    failed.github.throwFor = "maya";
+    await trackPullRequest(failed.deps, TASK_ID);
+    expect(storedWorkflow(failed)).toMatchObject({ revision: 10, feedbackReview: { status: "PENDING" } });
+    expect(dispatchRows(failed)).toEqual([]);
+  });
+
+  it("GitHub's rate limit and the pass's own allowance are not swallowed: the pass is tried again", async () => {
+    const limited = feedbackWorld();
+    limited.github.throwFor = "maya";
+    limited.github.getRepositoryPermission = async () => { throw new GithubMergeRateLimitError(Date.now() + 60_000); };
+    await expect(trackPullRequest(limited.deps, TASK_ID)).rejects.toBeInstanceOf(GithubMergeRateLimitError);
+    const capped = feedbackWorld({ roundCheck: async () => { throw new TrackingRequestCapError(); } });
+    await expect(trackPullRequest(capped.deps, TASK_ID)).rejects.toBeInstanceOf(TrackingRequestCapError);
+  });
+
+  it("an injection in a writer's comment merges nothing and widens nothing: the round is the same ordinary one", async () => {
+    // What a comment says is never read by the rule: only who wrote it and what the review made of it.
+    const w = feedbackWorld();
+    await trackPullRequest(w.deps, TASK_ID);
+    const next = storedWorkflow(w);
+    expect(next.pullRequests?.every((pullRequest) => pullRequest.state === "OPEN")).toBe(true);
+    expect(w.github.calls.filter((call) => !call.startsWith("status") && !call.startsWith("permission"))).toEqual([]);
+    expect(next.stage).toBe("IMPLEMENT");
+  });
+
+  it("only a card that waits for a decision is acted on: nothing is decided while the review is being prepared or failed", async () => {
+    const card = pendingCard();
+    const collecting = feedbackWorld();
+    collecting.setWorkflow({ feedbackReview: { status: "COLLECTING", bundleRefs: card.workflow.feedbackReview!.bundleRefs, threadObservations: [] } });
+    await trackPullRequest(collecting.deps, TASK_ID);
+    expect(storedWorkflow(collecting).revision).toBe(10);
+    expect(lookups(collecting)).toEqual([]);
+    const failed = feedbackWorld();
+    failed.setWorkflow({ feedbackReview: { ...card.workflow.feedbackReview!, reviewRef: { ...card.workflow.feedbackReview!.reviewRef!, status: "FAILED", blockReason: "review timed out" } } });
+    await trackPullRequest(failed.deps, TASK_ID);
+    expect(storedWorkflow(failed).revision).toBe(10);
+    expect(lookups(failed)).toEqual([]);
+  });
+
+  it("someone else's push stops it: nothing is decided on a head that is not Rovara's", async () => {
+    const w = feedbackWorld();
+    w.github.statuses.set(7, status({ draft: false, headSha: "7".repeat(40) }));
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w).revision).toBe(10);
+    expect(lookups(w)).toEqual([]);
+  });
+
+  it("a task of version 1 is not tracked, so it is never decided", async () => {
+    const w = feedbackWorld({ card: pendingCard({ version: "1.0.0" }) });
+    expect(await trackPullRequest(w.deps, TASK_ID)).toBe("gone");
+    expect(storedWorkflow(w).revision).toBe(10);
+  });
+});
+
+describe("failing CI while the owner's card waits", () => {
+  beforeEach(() => { installFeedbackDecider(); installCiFixDecider(); });
+  afterEach(() => { uninstallFeedbackDecider(); uninstallCiFixDecider(); });
+
+  it("starts no CI round; the failing check is added to the card (and what CI said is kept for the decision), once", async () => {
+    const w = feedbackWorld({ autonomy: "suggest", red: true });
+    await trackPullRequest(w.deps, TASK_ID);
+    const next = storedWorkflow(w);
+    expect(next).toMatchObject({ revision: 11, stage: "WAIT_FOR_MERGE", state: "WAITING", feedbackReview: { status: "PENDING" }, feedbackCiFailures: { checks: ["test"], digest: feedbackCiFailuresDigest(["test"]), evidenceRevision: 11 } });
+    expect(next.fixSource).toBeUndefined();
+    expect(dispatchRows(w)).toEqual([]);
+    const block = await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 11);
+    expect(block?.startsWith(`${CI_OUTPUT_BLOCK_HEADER}\n`)).toBe(true);
+    expect(block).toContain("Error: boom");
+    expect(block).not.toContain(GHP);
+    // The same failure again changes nothing; CI going green takes it off the card.
+    w.setNow(w.now() + 120_000);
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w).revision).toBe(11);
+    w.github.statuses.set(7, status({ draft: false }));
+    w.setNow(w.now() + 120_000);
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w)).toMatchObject({ revision: 12 });
+    expect(storedWorkflow(w).feedbackCiFailures).toBeUndefined();
+  });
+
+  it("a round Rovara decides takes the failing check into the same round and starts no CI round of its own", async () => {
+    const w = feedbackWorld({ red: true });
+    await trackPullRequest(w.deps, TASK_ID);
+    const next = storedWorkflow(w);
+    expect(next).toMatchObject({ revision: 12, stage: "IMPLEMENT", state: "READY", fixSource: "feedback", fixRounds: { ci: 0, feedbackAuto: 1 } });
+    expect(next.feedbackDecisions?.[0]?.ciFailures).toMatchObject({ checks: ["test"], evidenceRevision: 11 });
+    expect(await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 11)).toContain("Error: boom");
+    expect(dispatchRows(w)).toEqual([expect.objectContaining({ sk: `${TASK_ID}#12`, kind: "IMPLEMENT" })]);
+  });
+
+  it("nothing is added to a card that was decided", async () => {
+    const w = feedbackWorld({ autonomy: "suggest" });
+    const card = pendingCard();
+    const decided = decideWorkflowFeedbackFindings(card.workflow, requestFor(card), owner, at);
+    w.setTask({ workflow: decided });
+    w.github.statuses.set(7, status({ draft: false, checks: [redCheck()] }));
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(storedWorkflow(w).feedbackCiFailures).toBeUndefined();
   });
 });
