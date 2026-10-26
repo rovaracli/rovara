@@ -35,7 +35,7 @@ const operation = (extra: Record<string, unknown>) => ({
   pk: `WORKSPACE#${WORKSPACE}`, sk: `OPERATION#${OPERATION}`, entityType: "OPERATION", id: OPERATION, workspaceId: WORKSPACE,
   kind: "task", status: "RUNNING", createdAt: "2026-09-30T08:00:00.000Z", updatedAt: "2026-09-30T08:00:00.000Z", fence: 2, ...extra,
 });
-const slackWorkspace = [
+const slackWorkspace: Record<string, unknown>[] = [
   { pk: `WORKSPACE#${WORKSPACE}`, sk: "META", projectName: "payments", ownerKey: OWNER, orgId: TEST_ORG },
   { ...slackThreadKey(TEST_ORG, OWNER), workspaceId: WORKSPACE, thread: "T0BSHLLUGBD/C0123456789/1695500000.000100" },
 ];
@@ -295,7 +295,7 @@ describe("the index's deadline (A4)", () => {
 });
 
 it("K1 retains a realistic pre-org legacy thread link in the install's org", async () => {
-  const legacy = { ...slackWorkspace[1]!, pk: `SLACK_THREAD#${OWNER}`, workspaceId: WORKSPACE };
+  const legacy: Record<string, unknown> = { ...slackWorkspace[1]!, pk: `SLACK_THREAD#${OWNER}`, workspaceId: WORKSPACE };
   const workspace = { ...slackWorkspace[0]! };
   delete workspace.orgId;
   const index = store([workspace, legacy]);

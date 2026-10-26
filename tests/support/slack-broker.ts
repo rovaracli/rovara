@@ -249,7 +249,7 @@ export async function finishOperation(
   db: FakeDynamoDb,
   workspaceId: string,
   operationId: string,
-  status: "SUCCEEDED" | "FAILED",
+  status: "SUCCEEDED" | "FAILED" | "CANCELLED",
   result?: unknown,
 ): Promise<void> {
   const outbox = db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0];

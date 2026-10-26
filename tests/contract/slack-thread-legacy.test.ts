@@ -73,7 +73,7 @@ it("K1 keeps admin provenance for a pre-org thread", async () => {
   await registerSlackProject(handler);
   const workspaceId = String((await ensureWorkspace(handler, subject, user)).body.workspaceId);
   legacySlackThread(db, workspaceId);
-  const answer = await workspaceOwner({ documentClient: db, tableName: "state", limitDefaults: { member: 3, organization: 20 } }, db.get(`WORKSPACE#${workspaceId}`, "META") as never);
+  const answer = await workspaceOwner({ documentClient: db, tableName: "state", limitDefaults: { member: 3, organization: 20 }, now: Date.now, log: () => undefined }, db.get(`WORKSPACE#${workspaceId}`, "META") as never);
   expect(answer.owner).toMatchObject({ slackUserId: user, slackTeamId: SLACK_TEAM });
 });
 
@@ -92,7 +92,7 @@ describe("I2: scoped thread rows cannot confer workspace authority", () => {
     const data = structuredClone(db.find(() => true));
     const before = db.commandNames().length;
     expect(await prepareThread(handler, subject, user)).toMatchObject({ status: 404, body: { error: { code: "NOT_FOUND" } } });
-    expect((await serviceCall(handler, subject, user, "POST", "/v1/service/threads/workspace/close", { requestId: randomUUID() })).body).toEqual({ outcome: "NOT_FOUND", requestId: expect.any(String) });
+    expect((await serviceCall(handler, subject, user, "POST", "/v1/service/threads/workspace/close", { requestId: randomUUID() })).body).toEqual({ outcome: "NOT_FOUND", requestId: expect.any(String) as unknown });
     expect(db.commandNames().slice(before).filter((name) => /^(Put|Update|Delete|TransactWrite)/.test(name))).toEqual([]);
     expect(db.find(() => true)).toEqual(data);
     // Restoring this same mapping to its own workspace admits preparation, rather than a blanket refusal.
