@@ -1596,6 +1596,7 @@ function sessionReadDependencies(deps: DeveloperRouteDependencies, caller: Devel
   const chainDeps = chainRouteDependenciesFor(deps, caller);
   return {
     ...sessions, origin: new URL(deps.developer.issuer).origin,
+    ...(taskDeps.actions.turnRecordsTableName === undefined ? {} : { turnRecordsTableName: taskDeps.actions.turnRecordsTableName }),
     ...(chainDeps === undefined ? {} : {
       chain: chainSessionReads(chainDeps, caller.orgId),
       chainSteer: chainSteerReadsFor(chainDeps),

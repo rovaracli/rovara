@@ -57,6 +57,8 @@ import { removeFollower } from "./followers.js";
 import { sessionEventItem } from "./store.js";
 
 export interface SessionShareDependencies extends SessionAccessDependencies {
+  /** Existing AI-tool turn table; access changes fail closed when it is absent. */
+  turnRecordsTableName?: string;
   /** Where the names in events and the people a share names are read from. */
   signInStore: Pick<DeveloperSignInStore, "getDeveloper">;
 }

@@ -1,12 +1,12 @@
 // Legacy Slack shares use the session's live authority and the existing share DELETE route.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentSessionKey, agentXError, changesKey, sharedTaskKey, sessionEventId, INDEX_EXPIRY_ATTRIBUTE, type OrgId } from "@agentx/contracts";
+import { agentSessionKey, agentXError, changesKey, sharedTaskKey, sessionEventId, INDEX_EXPIRY_ATTRIBUTE, cleanSessionName, type OrgId } from "@agentx/contracts";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import { widenedShareMessage } from "../developer/share-messages.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { requireSessionLevel, type SessionCaller } from "../agent-sessions/access.js";
 import type { SessionShareDependencies } from "../agent-sessions/shares.js";
-import { effectiveTaskOwner, taskIndexKey, taskKey, type DeveloperTaskRecord, type TaskShare } from "../developer/task-records.js";
+import { aiToolTurn, effectiveTaskOwner, taskIndexKey, taskKey, type DeveloperTaskRecord, type TaskShare } from "../developer/task-records.js";
 
 export const codeTask = (task: DeveloperTaskRecord): task is DeveloperTaskRecord & { orgId: OrgId; sessionId: string } => task.orgId !== undefined && task.sessionId !== undefined && task.workflow?.definitionId === "agentx-task-to-pr";
 
@@ -53,8 +53,27 @@ export async function undoCodeShare(deps: SessionShareDependencies, caller: Sess
   // The record was written internally, but malformed storage must not widen access.
   if (previous !== null && (previous === undefined || previous.mode !== "view" || previous.teamId !== task.share?.teamId || previous.channelId !== task.share.channelId)) throw agentXError("CONFIG_INVALID", "This share undo cannot be read.");
   const restore = previous === null ? undefined : { ...previous, ...(task.share?.threadTs === undefined ? {} : { threadTs: task.share.threadTs }) };
+  if (deps.turnRecordsTableName === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Share undo audit is unavailable.");
+  const member = await deps.signInStore.getDeveloper(caller.developerId);
+  if (member === undefined || member.revoked) throw agentXError("NOT_FOUND", "session not found");
+  const name = cleanSessionName(member.displayName) ?? "A member";
+  const at = new Date(deps.now()).toISOString();
   const owner = effectiveTaskOwner(task);
   const items: TransactItem[] = [
+    { Update: { TableName: deps.tableName, Key: agentSessionKey(caller.orgId, sessionId, "META"),
+      UpdateExpression: "ADD #revision :one", ConditionExpression: "orgId = :org AND #revision = :revision",
+      ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":org": caller.orgId, ":revision": session.revision, ":one": 1 },
+    } },
+    sessionEventItem(deps, { orgId: caller.orgId, sessionId }, {
+      eventId: sessionEventId("shared", `undo-code-share|${requestId}`), at, type: "shared",
+      actor: { kind: "member", developerId: caller.developerId, name },
+      text: `${name} undid sharing with ${cleanSessionName(task.share?.channelName ?? task.share?.channelId ?? "the channel") ?? "the channel"}.`,
+    }),
+    { Put: { TableName: deps.turnRecordsTableName, ConditionExpression: "attribute_not_exists(pk)", Item: aiToolTurn({
+      party: { taskId: task.taskId, developerId: caller.developerId, provider: member.provider, developerName: name, client: task.client,
+        workspaceId: task.workspaceId, settingsRevision: task.startingRevision }, turnId: requestId, action: "share", phase: "accepted", outcome: "accepted",
+      receivedAt: at, finishedAt: at, request: "Undo Slack sharing", response: "Sharing was narrowed.",
+    }) } },
     { Update: { TableName: deps.tableName, Key: taskKey(task.taskId),
       UpdateExpression: restore === undefined ? "SET #shared = :shared, shareVersion = :next REMOVE #share, codeShareRequestId" : "SET #shared = :shared, #share = :share, shareVersion = :next REMOVE codeShareRequestId",
       ConditionExpression: "orgId = :org AND codeShareRequestId = :request AND shareVersion = :version AND attribute_not_exists(closedAt)",
