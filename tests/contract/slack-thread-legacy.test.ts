@@ -1,3 +1,4 @@
+import { slackTeamOrgKey } from "@agentx/contracts";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveSlackThreadKey, slackThreadKey } from "../../packages/broker/src/aws/slack-thread-key.js";
@@ -19,15 +20,16 @@ describe("K1: pre-org Slack workspaces", () => {
     expect(first.body.outcome).toBe("WORKSPACE");
     const workspaceId = String(first.body.workspaceId);
     markReady(db, workspaceId);
+    const conversation = await serviceCall(handler, subject, user, "POST", `/v1/service/workspaces/${workspaceId}/conversations`);
+    expect(conversation.status, JSON.stringify(conversation.body)).toBe(201);
+    const task = await serviceCall(handler, subject, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId: (conversation.body.conversation as { id: string }).id, prompt: "synthetic work" });
+    expect(task.status).toBe(202);
     const legacy = legacySlackThread(db, workspaceId);
     const charges = structuredClone(db.find((row) => row.entityType === "SLACK_LIMIT"));
     const again = await lazyEnsureWorkspace(handler, subject, user);
     expect(again.body).toMatchObject({ outcome: "WORKSPACE", workspaceId, created: false });
     expect(db.find((row) => row.entityType === "SLACK_LIMIT")).toEqual(charges);
     expect(db.find((row) => row.entityType === "SLACK_THREAD")).toEqual([legacy]);
-    const conversation = await serviceCall(handler, subject, user, "POST", `/v1/service/workspaces/${workspaceId}/conversations`);
-    const task = await serviceCall(handler, subject, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId: (conversation.body.conversation as { id: string }).id, prompt: "synthetic work" });
-    expect(task.status).toBe(202);
     const stopped = await handler({ source: "agentx.slack-ingress", action: "stop-task", thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" }, userId: user });
     expect(JSON.parse(stopped.body)).toMatchObject({ outcome: "CANCEL_REQUESTED", workspaceId });
     await finishOperation(handler, db, workspaceId, (task.body.operation as { id: string }).id, "CANCELLED");
@@ -49,8 +51,19 @@ describe("K1: pre-org Slack workspaces", () => {
     const table = { documentClient: db, tableName: "state" };
     const before = structuredClone(db.find(() => true));
     expect(await resolveSlackThreadKey(table, "org_bbbbbbbbbbbbbbbbbbbb", owner)).toEqual(slackThreadKey("org_bbbbbbbbbbbbbbbbbbbb", owner));
-    expect(await resolveSlackThreadKey(table, TEST_ORG, owner)).toEqual({ pk: row.pk, sk: row.sk });
+    expect(await resolveSlackThreadKey(table, TEST_ORG, owner, TEST_ORG)).toEqual({ pk: row.pk, sk: row.sk });
     expect(db.find(() => true)).toEqual(before);
+    const foreign = "org_bbbbbbbbbbbbbbbbbbbb";
+    const other = createBroker({ extra: { documentClient: db, orgResolver: async () => foreign } });
+    db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: foreign });
+    await registerSlackProject(other.handler);
+    const prior = structuredClone(db.get(`WORKSPACE#${workspaceId}`, "META"));
+    const reply = await lazyEnsureWorkspace(other.handler, subject, user);
+    expect(reply.body).toMatchObject({ outcome: "WORKSPACE", created: true });
+    expect(reply.body.workspaceId).not.toBe(workspaceId);
+    expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toEqual(prior);
+    expect(db.get(String(row.pk), String(row.sk))).toEqual(row);
+
   });
 });
 

@@ -335,7 +335,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPullRequestOpened } from "../audit/events.js";
 import { recordPrepareFailureEvent } from "./operation-events.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";
-import { resolveSlackThreadKey } from "./slack-thread-key.js";
+import { resolveSlackThreadKey as resolveSlackThreadKeyForInstall } from "./slack-thread-key.js";
 import { closeSetupCheck } from "./setup-check-close.js";
 import { requireSameRequest } from "../org/request-records.js";
 import { releaseFailedCancelWorkspace } from "./failed-cancel-release.js";
@@ -841,6 +841,11 @@ function brokerEnvironmentName(dependencies: Pick<AwsBrokerDependencies, "enviro
 /** The org of a single-org install, for a writer or reader that has no caller and whose record names no org yet. */
 function installOrgId(dependencies: Pick<AwsBrokerDependencies, "environmentName" | "developer">): OrgId {
   return singleOrgIdForEnv(brokerEnvironmentName(dependencies));
+}
+
+/** C25 compatibility: a pre-org workspace belongs only to the checked install's single org. */
+function resolveSlackThreadKey(dependencies: AwsBrokerDependencies, orgId: OrgId, ownerKey: string) {
+  return resolveSlackThreadKeyForInstall(dependencies, orgId, ownerKey, installOrgId(dependencies));
 }
 
 function orgResolverOf(dependencies: Pick<AwsBrokerDependencies, "orgResolver" | "environmentName" | "developer">): OrgResolver {
@@ -8461,7 +8466,7 @@ async function stopSlackThreadTask(dependencies: AwsBrokerDependencies, event: S
   const record = await getItem<{ workspaceId?: string; closedAt?: string }>(dependencies, await resolveSlackThreadKey(dependencies, orgId, ownerKey));
   if (typeof record?.workspaceId !== "string" || record.closedAt !== undefined) return { outcome: "NOTHING_RUNNING" };
   const workspace = await requireWorkspace(dependencies, record.workspaceId);
-  if (workspace.ownerKey !== ownerKey || workspace.orgId !== orgId) throw agentXError("FORBIDDEN", "workspace does not belong to this thread");
+  if (workspace.ownerKey !== ownerKey || (workspace.orgId ?? installOrgId(dependencies)) !== orgId) throw agentXError("FORBIDDEN", "workspace does not belong to this thread");
   return cancelRunningTask(dependencies, workspace, { requestedBy: requester });
 }
 
@@ -15152,7 +15157,7 @@ async function recordTerminalResult(
     // #213: a repeated result releases a failed prepare's slot too, in case the first one's release
     // did not land (the release is idempotent, and does nothing to a workspace that moved on).
     if (operation.kind === "prepare" && operation.status !== "SUCCEEDED") {
-      await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, operation.workspaceId);
+      await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, operation.workspaceId, undefined, installOrgId(dependencies));
       // #225 review: and records its failure event, in case the first one's did not land (once per prepare).
       await repeatPrepareFailureEvent(dependencies, operation);
     }
@@ -15345,7 +15350,7 @@ async function recordTerminalResult(
     const existing = await requireOperation(dependencies, operation.workspaceId, operation.id);
     if (existing.status === terminalStatus || isQueueFailedPrepare(existing, terminalStatus) || isSweptPrepare(existing)) {
       if (existing.kind === "prepare" && existing.status !== "SUCCEEDED") {
-        await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, existing.workspaceId);
+        await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, existing.workspaceId, undefined, installOrgId(dependencies));
         await repeatPrepareFailureEvent(dependencies, existing);
       }
       return existing;
@@ -15417,7 +15422,7 @@ async function recordTerminalResult(
   // closed and its limit slot given back now. A close that cannot land here is the next check's, or the sweep's. Never fails the callback.
   if (operation.kind === "prepare") await closeCheckAfterPrepare(dependencies, workspace.id);
   if (operation.kind === "prepare" && recordedStatus !== "SUCCEEDED") {
-    await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, workspace.id);
+    await releaseFailedPreparation(dependencies.documentClient, dependencies.tableName, workspace.id, undefined, installOrgId(dependencies));
     // #225: a developer task's failed setup is an event of its own, so the task shows when it failed.
     if (taskPointer !== undefined) {
       await recordPrepareFailureEvent(dependencies.documentClient, dependencies.tableName, {
@@ -15797,7 +15802,7 @@ async function getThreadWorkspace(
   const thread = await getItem<{ workspaceId?: string }>(dependencies, await resolveSlackThreadKey(dependencies, orgId, ownerKey));
   if (typeof thread?.workspaceId !== "string") return undefined;
   const workspace = await requireWorkspace(dependencies, thread.workspaceId);
-  return workspace.orgId === orgId && workspace.ownerKey === ownerKey ? workspace : undefined;
+  return (workspace.orgId ?? installOrgId(dependencies)) === orgId && workspace.ownerKey === ownerKey ? workspace : undefined;
 }
 
 /**

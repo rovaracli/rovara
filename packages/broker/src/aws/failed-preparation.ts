@@ -1,3 +1,4 @@
+import { installOrgIdFromEnvironment } from "../org/resolve.js";
 // Issue #213: a workspace whose preparation failed stops counting toward the workspace limits at
 // once. Every writer that moves a workspace to PREPARATION_FAILED calls releaseFailedPreparation
 // after its own transaction commits. The release gives back the charge the workspace's owner took:
@@ -6,7 +7,7 @@
 // the task in the member counter's `tasks` set). Each marker is removed in the same transaction
 // that decrements, so a repeated release, or a later close, never gives the slot back twice.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, parseSlackThreadSubject, slackMemberLimitKey, slackOrganizationLimitKey } from "@agentx/contracts";
+import { type OrgId, OrgIdSchema, parseSlackThreadSubject, slackMemberLimitKey, slackOrganizationLimitKey } from "@agentx/contracts";
 import { releaseConflict, releaseItems } from "../developer/limits.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord, type DeveloperTaskPointerRecord } from "../developer/task-records.js";
 
@@ -34,10 +35,10 @@ interface ThreadRecord { thread?: unknown; starterUserId?: unknown; closedAt?: u
  * error's name only) and the slot stays held, as it did before #213; the thread's next message then
  * retries under that charge.
  */
-export async function releaseFailedPreparation(client: Client, tableName: string, workspaceId: string, log: Log = defaultLog): Promise<FailedPreparationRelease> {
+export async function releaseFailedPreparation(client: Client, tableName: string, workspaceId: string, log: Log = defaultLog, installOrg: OrgId = installOrgIdFromEnvironment()): Promise<FailedPreparationRelease> {
   try {
     for (let attempt = 0; attempt < RELEASE_ATTEMPTS; attempt += 1) {
-      const outcome = await attemptRelease(client, tableName, workspaceId);
+      const outcome = await attemptRelease(client, tableName, workspaceId, installOrg);
       if (outcome === "retry") continue;
       if (outcome === "slack_thread" || outcome === "developer_task") {
         log({ event: "workspace.preparation_failed_released", workspaceId, owner: outcome });
@@ -52,7 +53,7 @@ export async function releaseFailedPreparation(client: Client, tableName: string
   return "failed";
 }
 
-async function attemptRelease(client: Client, tableName: string, workspaceId: string): Promise<"slack_thread" | "developer_task" | "not_charged" | "not_failed" | "retry"> {
+async function attemptRelease(client: Client, tableName: string, workspaceId: string, installOrg: OrgId): Promise<"slack_thread" | "developer_task" | "not_charged" | "not_failed" | "retry"> {
   const get = async <T>(key: { pk: string; sk: string }) =>
     ((await client.send(new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true }))) as { Item?: T }).Item;
   const workspace = await get<FailedWorkspace>({ pk: `WORKSPACE#${workspaceId}`, sk: "META" });
@@ -69,11 +70,11 @@ async function attemptRelease(client: Client, tableName: string, workspaceId: st
     ExpressionAttributeValues: { ":failed": "PREPARATION_FAILED", ":fence": workspace.fence },
   } };
 
-  const org = OrgIdSchema.safeParse(workspace.orgId);
-  const threadKey = org.success ? await resolveSlackThreadKey({ documentClient: client, tableName }, org.data, workspace.ownerKey) : undefined;
+  const org = OrgIdSchema.safeParse(workspace.orgId ?? installOrg);
+  const threadKey = org.success ? await resolveSlackThreadKey({ documentClient: client, tableName }, org.data, workspace.ownerKey, installOrg) : undefined;
   const thread = threadKey === undefined ? undefined : await get<ThreadRecord>(threadKey);
   if (threadKey !== undefined && thread !== undefined && typeof thread.starterUserId === "string" && thread.closedAt === undefined && typeof thread.thread === "string") {
-    return releaseThreadCharge(client, tableName, get, { subject: thread.thread, starterUserId: thread.starterUserId, ownerKey: workspace.ownerKey, orgId: thread.orgId, key: threadKey }, stillFailed);
+    return releaseThreadCharge(client, tableName, get, { subject: thread.thread, starterUserId: thread.starterUserId, ownerKey: workspace.ownerKey, orgId: thread.orgId ?? org.data, key: threadKey }, stillFailed);
   }
   // A Slack thread with no charge left falls through: it has no task pointer, so it ends "not_charged".
 
