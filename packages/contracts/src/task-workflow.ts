@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { sha256Hex } from "./web-hash.js";
 import { readerOf, type ForwardReader } from "./forward-reader.js";
-import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE } from "./rovara-code.js";
+import { FixSourceSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, UNDERSTAND_UNREADABLE_MESSAGE, isBranchSyncBlockReason, WorkflowBranchSyncSchema, SYNC_FAILURES_MAX, type WorkflowBranchSync } from "./rovara-code.js";
 import { StepIdSchema, CODING_STEP_KINDS, ReviewerSchema, OnFindingsSchema, MAX_RECIPE_STEPS } from "./agent-recipe.js";
 import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
@@ -663,7 +663,9 @@ export const WorkflowReviewBaseSchema = z.array(z.object({
 export const PROGRAM_ROUNDS_MAX = 100;
 
 /** Why pushing a fix to a pull request failed: its head moved on GitHub, GitHub refused it, or the worker cannot push a reviewed fix. */
-export const WORKFLOW_PULL_REQUEST_UPDATE_CAUSES = ["HEAD_MOVED", "PUSH_REFUSED", "WORKER_OUTDATED"] as const;
+/** What the worker says when a conflict round's tree would drop what the base branch brought (Plan 6 Task 17): the cause `BASE_CHANGES_DROPPED` is told from it. */
+export const WORKFLOW_FIX_DROPS_BASE_CHANGES = "the fix would drop changes the base branch made";
+export const WORKFLOW_PULL_REQUEST_UPDATE_CAUSES = ["HEAD_MOVED", "PUSH_REFUSED", "WORKER_OUTDATED", "BASE_CHANGES_DROPPED"] as const;
 
 export const WorkflowPullRequestUpdateFailureSchema = z.object({
   numbers: z.array(z.number().int().positive()).min(1).max(32),
@@ -749,6 +751,27 @@ export const WorkflowSnapshotShapeSchema = z.object({
    * failure on one of those heads is covered. The next CI fix round starts whatever the autonomy and the rounds used (that one round is not counted), and clears it.
    */
   ciFixApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
+  /**
+   * Both versions (Plan 6 Task 17): Rovara is merging the base branch into one pull request's branch. WAIT_FOR_MERGE/READY while the merge is queued, WAIT_FOR_MERGE/RUNNING while the worker
+   * runs it. It names the head the merge is for: a head that is no longer that one (a person pushed) stops it.
+   */
+  branchSync: WorkflowBranchSyncSchema.optional(),
+  /**
+   * Both versions (Plan 6 Task 17): the commit of the base branch whose merge conflicted, while a conflict round resolves it. The round's fix is pushed as a merge commit with this commit as its second
+   * parent. Present only with `fixSource: "conflict"`.
+   */
+  conflictBase: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  /** Both versions: a person told Rovara to go on with a conflict it asked about (Retry): the heads of the open pull requests then. The merge it starts uses it up. */
+  conflictApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
+  /** Both versions: how many times a merge of the base failed on this head (a head a person pushes starts the count again). Rovara stops at `SYNC_FAILURES_MAX`. */
+  syncFailures: z.object({
+    headSha: z.string().regex(/^[a-f0-9]{40}$/),
+    /** Real failures of the merge (its checks failed, Git refused): at `SYNC_FAILURES_MAX` Rovara stops trying this head. */
+    count: z.number().int().min(0).max(SYNC_FAILURES_MAX),
+    /** Failures that were not the merge's (GitHub, a lost machine): never a stop, but each doubles the wait before the next try. */
+    transient: z.number().int().min(1).max(1000).optional(),
+    retryAfter: z.string().datetime().optional(),
+  }).strict().optional(),
 }).superRefine((workflow, context) => {
   if (workflow.definitionVersion === "1.0.0") {
     if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
@@ -766,6 +789,12 @@ export const WorkflowSnapshotShapeSchema = z.object({
   }
   if (workflow.fixProblems !== undefined && workflow.fixSource === undefined) {
     context.addIssue({ code: "custom", path: ["fixProblems"], message: "the problems a fix is for need the fix's source" });
+  }
+  if (workflow.conflictBase !== undefined && workflow.fixSource !== "conflict") {
+    context.addIssue({ code: "custom", path: ["conflictBase"], message: "the base commit of a conflict is kept only while a conflict round runs" });
+  }
+  if (workflow.branchSync !== undefined && !(workflow.stage === "WAIT_FOR_MERGE" && (workflow.state === "READY" || workflow.state === "RUNNING"))) {
+    context.addIssue({ code: "custom", path: ["branchSync"], message: "a merge of the base branch is queued or running only while waiting for the merge" });
   }
   if (workflow.program === undefined) {
     if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {

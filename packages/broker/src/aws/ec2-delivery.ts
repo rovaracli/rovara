@@ -306,6 +306,8 @@ async function forWorkerFeatures(
   const carriesPublicationContextDigest = invocation.kind === "publish" && invocation.payload.publicationContextDigest !== undefined;
   const carriesPublishBase = invocation.kind === "publish" && invocation.payload.workflowBaseCommit !== undefined;
   const carriesPullRequestUpdate = invocation.kind === "maintain" && invocation.payload.workflowCandidateTreeSha !== undefined;
+  // Plan 6 Task 17: a merge of the base branch, and a fix pushed as a merge commit. An older worker would merge whatever the base is by now, or push a commit with one parent.
+  const carriesBranchSync = invocation.kind === "maintain" && (invocation.payload.workflowSync !== undefined || invocation.payload.workflowMergeBase !== undefined);
   const carriesChatGpt = invocation.kind === "task" && invocation.payload.chatgpt !== undefined;
   const carriesProjectSetupSmoke = invocation.kind === "project-setup-smoke";
   const agentStep = invocation.kind === "task" ? invocation.payload.agentStep : undefined;
@@ -316,7 +318,7 @@ async function forWorkerFeatures(
   const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesCheckout) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesCheckout) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -441,6 +443,10 @@ async function forWorkerFeatures(
   }
   // A reviewed fix is pushed only as exactly its reviewed tree; an older worker would push the workspace as it is, so it gets nothing.
   if (carriesPullRequestUpdate && !features.includes("task.workflowPullRequestUpdate")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED);
+  }
+  // The base commit a merge names changes what the push is, so the field is never dropped.
+  if (carriesBranchSync && !features.includes("maintain.workflowSync")) {
     throw agentXError("RUNTIME_UNAVAILABLE", WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED);
   }
   const reason = workerFeatures === undefined ? "no-probe" : "worker-lacks-feature";

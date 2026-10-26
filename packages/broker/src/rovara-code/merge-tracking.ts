@@ -299,6 +299,11 @@ export interface MergeActionRequest {
   slot: MergeActionSlot;
   workflow: WorkflowSnapshot;
   items: TransactItem[];
+  /**
+   * The pull request's day count of merges of the base (Plan 6 Task 17), when the action uses one. It is written to the tracking item in the same transaction (the pass writes that item, so an
+   * action cannot also write it), which is what keeps the count from being used twice.
+   */
+  syncs?: MergeTrackingItem["syncs"];
 }
 
 export type MergeAction =
@@ -324,6 +329,8 @@ export interface MergeActionContext {
   failing: readonly FailingCheck[];
   /** The end of a job's log, or undefined where there is none or this provider cannot read logs. Throws what GitHub's failure throws; a rate limit and a spent allowance are the sweep's to handle. */
   readJobLog?: ((jobId: string) => Promise<string | undefined>) | undefined;
+  /** GitHub itself calls the branch `behind` (its `mergeable_state`), which it does only for a base that requires up-to-date branches: a branch a commit behind a base that does not care is not. */
+  behindRequired?: boolean | undefined;
   log?: ((event: string, fields: Record<string, unknown>) => void) | undefined;
 }
 
@@ -359,6 +366,9 @@ export function ownerCardPending(workflow: WorkflowSnapshot): boolean {
 export async function nextMergeAction(item: MergeTrackingItem, workflow: WorkflowSnapshot, settings: CodeSettings, autonomy: Autonomy, now: number = Date.now(), context?: MergeActionContext): Promise<MergeAction> {
   if (item.state !== "open") return { slot: "none", reason: "not_open" };
   if (!item.headByRovara) return { slot: "none", reason: "someone_else_pushed" };
+  // A head the pull request record has and the workflow has not recorded yet (a push whose result is still to be judged) is not acted on: nothing is fixed, merged or asked about it until the workflow knows it.
+  const recorded = context === undefined ? undefined : workflow.pullRequests?.find((entry) => entry.repositoryId === context.repositoryId && entry.number === context.pullRequestNumber);
+  if (context !== undefined && recorded?.headSha !== undefined && recorded.headSha !== context.headSha) return { slot: "none", reason: "in_flight" };
   if (workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "WAITING") return { slot: "none", reason: "in_flight" };
   if (ownerCardPending(workflow)) return { slot: "none", reason: "owner_card", ...(item.failingChecks.length === 0 ? {} : { ciFailures: item.failingChecks }) };
   for (const slot of MERGE_ACTION_ORDER) {
@@ -635,6 +645,7 @@ async function trackOne(
     const decision = await nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, await (deps.autonomy?.(task) ?? "prepare"), now, {
       tableName: deps.tableName, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }),
       repositoryId: pullRequest.repositoryId, pullRequestNumber: pullRequest.number, pullRequestUrl: pullRequest.url, headSha: status.headSha, failing: ci.failingDetails,
+      behindRequired: status.mergeableState === "behind",
       ...(readLog === undefined ? {} : { readJobLog: readLog }),
       ...(deps.log === undefined ? {} : { log: (event: string, fields: Record<string, unknown>) => deps.log?.(event, fields) }),
     });
@@ -643,8 +654,10 @@ async function trackOne(
       if (capped) throw new TrackingRequestCapError();
       return { changed: false, notOpen: status.state !== "open", acted: false, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
     }
-    if (!unchanged) {
-      items.push(trackingWriteItem(deps.tableName, current, nextItem));
+    // An action that uses the day's count of merges of the base (Plan 6 Task 17) keeps it on this item, in this transaction: the item is written even when nothing GitHub said changed.
+    const written: MergeTrackingItem = action?.syncs === undefined ? nextItem : { ...withDigest({ ...merged, syncs: action.syncs }), version: nextItem.version, observedAt: stamp };
+    if (!unchanged || action?.syncs !== undefined) {
+      items.push(trackingWriteItem(deps.tableName, current, written));
       // The index a check or status event finds the task by: kept up to date whenever the item is, for a head that is Rovara's.
       if (merged.headByRovara) items.push(...prHeadItems(deps.tableName, { orgId: task.orgId, repositoryFullName: fullName, headSha: status.headSha, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, now).slice(0, 1));
     }

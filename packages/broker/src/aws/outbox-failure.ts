@@ -1,9 +1,10 @@
-import { GetCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate, closePlanCritique } from "@agentx/contracts";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskKey, taskPointerKey } from "../developer/task-records.js";
 import { wakeAgentRun } from "./agent-run-wakeup.js";
+import { WORKFLOW_NO_CANDIDATE_DIGEST, branchSyncSettleItem } from "./broker-shared.js";
 
 /**
  * Fails an outbox record's operation for good: the operation becomes FAILED, the workspace is
@@ -155,13 +156,25 @@ async function blockFailedWorkflowRun(documentClient: Pick<DynamoDBDocumentClien
 async function blockFailedPullRequestUpdate(documentClient: Pick<DynamoDBDocumentClient, "send">, tableName: string, workspaceId: string, operationId: string, error: string): Promise<void> {
   try {
     const read = async (key: { pk: string; sk: string }) => (await documentClient.send(new GetCommand({ TableName: tableName, Key: key }))).Item;
-    const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as { maintenance?: { repository?: string; pullRequestNumber?: number; workflowCandidate?: { candidateDigest?: string } } } | undefined;
+    const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as { maintenance?: { repository?: string; pullRequestNumber?: number; workflowCandidate?: { candidateDigest?: string }; workflowSync?: { expectedHeadCommit?: string } } } | undefined;
     const binding = operation?.maintenance?.workflowCandidate;
-    if (binding === undefined) return;
+    const sync = operation?.maintenance?.workflowSync;
+    if (binding === undefined && sync === undefined) return;
     const pointer = await read(taskPointerKey(workspaceId)) as { taskId?: string } | undefined;
     if (typeof pointer?.taskId !== "string") return;
     const task = await read(taskKey(pointer.taskId)) as { closedAt?: string; workflow?: unknown } | undefined;
     const workflow = WorkflowSnapshotSchema.safeParse(task?.workflow);
+    // Plan 6 Task 17: a merge of the base branch that never reached the worker's result may still have pushed. Nothing here can ask GitHub, so the task stays at its merge and a row brings the broker's
+    // sweep back to it, which judges the merge from what GitHub shows (and ends it when it shows nothing); until then nothing else is decided about the pull request's head.
+    if (sync !== undefined) {
+      if (task === undefined || task.closedAt !== undefined || !workflow.success || workflow.data.stage !== "WAIT_FOR_MERGE" || workflow.data.state !== "RUNNING"
+        || workflow.data.branchSync?.expectedHeadCommit !== sync.expectedHeadCommit) return;
+      const row = branchSyncSettleItem(tableName, { taskId: pointer.taskId, workflowRevision: workflow.data.revision, workspaceId, operationId,
+        candidateDigest: workflow.data.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, now: new Date().toISOString() });
+      await documentClient.send(new PutCommand({ ...row.Put }));
+      return;
+    }
+    if (binding === undefined) return;
     if (task === undefined || task.closedAt !== undefined || !workflow.success || workflow.data.stage !== "PULL_REQUEST" || workflow.data.state !== "RUNNING"
       || workflow.data.candidate?.digest !== binding.candidateDigest || typeof operation?.maintenance?.pullRequestNumber !== "number") return;
     const now = new Date().toISOString();

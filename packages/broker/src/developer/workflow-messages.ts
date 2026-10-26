@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  answeredMessage, formatMinutes, intentQuestionsMessage, isCiFixBlockReason, isRunLimitBlockReason, workflowAnswer, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
+  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isRunLimitBlockReason, workflowAnswer, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
@@ -560,6 +560,13 @@ function waitingForMerge(workflow: WorkflowSnapshot): string | undefined {
   const name = (pullRequest: { url: string; number: number }) => link(pullRequest.url, `PR #${pullRequest.number}`);
   const merged = required.filter((pullRequest) => pullRequest.state === "MERGED").length;
   if (merged === 0) {
+    // Plan 6 Task 17: Rovara brought a pull request up to date with its base branch (a clean merge, not a fix).
+    const synced = required.filter((pullRequest) => pullRequest.syncedFrom !== undefined);
+    if (workflow.pullRequestUpdatedAt !== undefined && synced.length > 0) {
+      return required.length === 1
+        ? `Brought ${name(required[0]!)} up to date with its base branch. Review it and merge it on GitHub; I'll finish this task when it's merged.`
+        : `Brought ${pullRequestNames(synced, name)} up to date with the base branch. Review them and merge them on GitHub; I'll finish this task when they're all merged.`;
+    }
     // After approved PR feedback, AgentX pushed the fixed code to the same pull requests.
     if (workflow.pullRequestUpdatedAt !== undefined) {
       return required.length === 1
@@ -653,6 +660,8 @@ export function feedbackReviewFailedMessage(input: {
 const PULL_REQUEST_UPDATE_CAUSES: Record<string, { cause: string; then: string }> = {
   HEAD_MOVED: { cause: "it changed on GitHub since I opened it", then: "I've stopped following it, so merge or close it on GitHub and then close this task." },
   PUSH_REFUSED: { cause: "GitHub refused the push", then: STILL_WATCHING },
+  // Plan 6 Task 17: the fix to a conflict would have dropped what the base branch brought.
+  BASE_CHANGES_DROPPED: { cause: "the fix would have dropped changes the base branch made, so I didn't push it (a fix may change the files that conflicted, not a file the base changed without a conflict)", then: "Update the branch on GitHub, or close this task. I'll keep watching for the merge." },
 };
 
 /** The approved fix could not be pushed to the pull requests: which, and why, when AgentX knows. */
@@ -675,6 +684,11 @@ function pushingFixTo(workflow: WorkflowSnapshot): string | undefined {
 
 function implementRunning(context: WorkflowMessageContext): string {
   const { workflow } = context;
+  // Plan 6 Task 17: the first run of a conflict round says so, naming the files (the repository's own words, escaped); what the fix's own checks and reviews send back says what a send-back says.
+  if (workflow.fixSource === "conflict" && sendBackProblems(workflow).length === 0) {
+    const names = (workflow.fixProblems ?? []).map(slackText);
+    return `The pull request's branch conflicts with the base branch${names.length === 0 ? "" : ` (${names.join(", ")})`}. Resolving it now; the checks and reviews run again after, and I'll push the merge if they pass.`;
+  }
   // Plan 6 Task 15: the first run of a fix for failing CI says so, in the failing checks' own names (GitHub's words, escaped); what the fix's own checks and reviews send back says what a send-back says.
   if (workflow.fixSource === "ci" && sendBackProblems(workflow).length === 0) {
     const names = (workflow.fixProblems ?? []).map(slackText);
@@ -815,11 +829,13 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       return text === undefined ? undefined : { text, buttons: [exits.close] };
     }
     // The feedback review runs before anything is proposed; no button, as nothing is waiting on the owner yet.
-    case "WAIT_FOR_MERGE/RUNNING": return plain(feedbackReviewStarted(workflow));
+    // Plan 6 Task 17: while the base branch is merged into the pull request's branch nothing is said (nothing the owner can act on, and a merge that changes nothing must not leave a message the thread never takes back).
+    case "WAIT_FOR_MERGE/RUNNING": return plain(workflow.branchSync === undefined ? feedbackReviewStarted(workflow) : undefined);
     // Nothing on GitHub is retried from here: the owner closes the task (its pull request stays on GitHub). Only a changed
     // pull request ends the following; a failed feedback review or push leaves the merge still tracked.
     // Plan 6 Task 15: CI failing and a person needed (Rovara is set to suggest, three fixes did not help, or a fix changed nothing): the reason says it (its check name and log line are GitHub's words, escaped); Retry the fix is in the app.
-    case "WAIT_FOR_MERGE/BLOCKED": if (isCiFixBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason!), buttons: [exits.close] };
+    // Plan 6 Task 17: the branch still conflicts after the conflict rounds, or the base changed CI workflow files, which Rovara can't push: a person updates the branch on GitHub.
+    case "WAIT_FOR_MERGE/BLOCKED": if (isCiFixBlockReason(workflow.blockReason) || isBranchSyncBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason!), buttons: [exits.close] };
       return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestChanged
       ? `I stopped following the pull request. ${plainBlockReason(workflow.blockReason)}`
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestClosed ? plainBlockReason(workflow.blockReason)

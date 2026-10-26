@@ -1220,6 +1220,30 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
+    it("never sends a merge of the base branch, or a fix pushed as a merge commit, to a worker that does not list maintain.workflowSync: it is refused before the POST and the field is not dropped (Plan 6 Task 17)", async () => {
+      const maintain = (extra: Record<string, unknown>) => {
+        const record = recordFor();
+        const invocation = { ...record.invocation, kind: "maintain", payload: {
+          action: "sync", project: { name: "demo", revision: 1, setup: [], readiness: [], orchestratorInstructions: "x",
+            repositories: [{ name: "demo", url: "https://github.com/example/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "github-app" }] },
+          repository: "demo", pullRequestNumber: 42, headBranch: `agentx/${randomUUID()}`, baseBranch: "main", expectedHeadCommit: "d".repeat(40), repositoryGrant: "g", ...extra,
+        } } as WorkerInvocation;
+        return { ...record, invocation };
+      };
+      const merge = maintain({ workflowSync: { baseCommit: "b".repeat(40), expectedHeadCommit: "d".repeat(40) } });
+      const mergeFix = maintain({ action: "append", workflowCandidateTreeSha: "c".repeat(40), workflowBaseCommit: "e".repeat(40), workflowMergeBase: "b".repeat(40) });
+      for (const record of [merge, mergeFix]) {
+        const refused = delivery({ workerFeatures: async () => ["task.workflowPullRequestUpdate"] });
+        await expect(refused.deliver(record, record.invocation)).rejects.toThrow(/pushing a reviewed fix needs a worker/);
+        expect(refused.post).not.toHaveBeenCalled();
+        const accepted = delivery({ workerFeatures: async () => ["task.workflowPullRequestUpdate", "maintain.workflowSync"] });
+        expect(await accepted.deliver(record, record.invocation)).toBe("DELIVERED");
+      }
+      const accepted = delivery({ workerFeatures: async () => ["maintain.workflowSync"] });
+      expect(await accepted.deliver(merge, merge.invocation)).toBe("DELIVERED");
+      expect(postedPayload(accepted.post).workflowSync).toEqual({ baseCommit: "b".repeat(40), expectedHeadCommit: "d".repeat(40) });
+    });
+
     it("refuses a publication carrying the task's pinned base before POST unless the worker advertises it, and never drops it", async () => {
       const record = publishRecord({ candidateTreeSha: "b".repeat(40), publicationMode: "CHECKED_TREE", workflowBaseCommit: "c".repeat(40) });
       const refused = delivery({ workerFeatures: async () => ["publish.candidateTree", "publish.mode", "publish.contextDigest"] });

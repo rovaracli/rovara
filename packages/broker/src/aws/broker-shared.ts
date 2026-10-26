@@ -340,12 +340,13 @@ export interface WorkflowDispatchRecord {
   workflowRevision: number;
   /**
    * CRITIQUE (Plan 6, Task 8): a Rovara Code version 2 plan is ready for its plan check; CRITIC_REPLAN: the plan check found a blocking problem and the planner revises the plan once.
+   * SYNC (Plan 6, Task 17): Rovara merges the base branch into a pull request's branch (a row at the READY revision of the wait for the merge).
    * UNDERSTAND (Plan 6, Task 4): Rovara Code version 2 reads the request and the code (a row at a READY revision starts it, a row at the RUNNING revision is its watchdog and
    * is due only after the step's time limit); PLAN: the plan step starts after Understand. UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
    * has something to do for the task. `operation_end`: a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel
    * sweep), so the broker's recovery sweep blocks its keys and tells the task's end handlers.
    */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "UNDERSTAND" | "PLAN" | "CRITIQUE" | "CRITIC_REPLAN" | "agent_run" | "operation_end";
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "UNDERSTAND" | "PLAN" | "CRITIQUE" | "CRITIC_REPLAN" | "SYNC" | "agent_run" | "operation_end";
   /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. */
   candidateDigest: string;
   /** A single internal resume operation warms EC2 before a required E2E round is immutably admitted. */
@@ -409,6 +410,14 @@ export function operationEndDispatchItem(tableName: string, input: { taskId: str
   // The agent-step engine's row with its own key and kind (one builder keeps the due-time index keys and the expiry backstop the same for every row).
   const base = agentRunDispatchItem(tableName, { taskId: input.taskId, orgId: input.orgId, revision: 0, dueAt, now: input.now }) as { Put: { Item: Record<string, unknown> } };
   return { Put: { TableName: tableName, Item: { ...base.Put.Item, ...key, kind: "operation_end", dispatchDueSk: `${dueAt}#${key.sk}`, workspaceId: input.workspaceId, operationId: input.operationId, ...(input.endOf === undefined ? {} : { endOf: input.endOf }) } } };
+}
+/**
+ * Plan 6 Task 17: the row that brings the broker back to a merge of the base branch whose machine was lost (it reached no result): at the merge's RUNNING revision, naming the operation, so the
+ * sweep can judge what the merge was from what GitHub shows. The task stays RUNNING until it does.
+ */
+export function branchSyncSettleItem(tableName: string, input: { taskId: string; workflowRevision: number; workspaceId: string; operationId: string; candidateDigest: string; now: string }): { Put: { TableName: string; Item: Record<string, unknown> } } {
+  const base = workflowDispatchItem(tableName, input.taskId, input.workflowRevision, "SYNC", input.candidateDigest, input.now) as { Put: { TableName: string; Item: Record<string, unknown> } };
+  return { Put: { ...base.Put, Item: { ...base.Put.Item, workspaceId: input.workspaceId, operationId: input.operationId } } };
 }
 /** The candidate digest of a dispatch row due before the task has a candidate. */
 export const WORKFLOW_NO_CANDIDATE_DIGEST = "0".repeat(64);

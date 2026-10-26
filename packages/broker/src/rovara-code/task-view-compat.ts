@@ -11,7 +11,7 @@ export function readsTaskViewVersion2(headers: Headers): boolean {
 }
 
 /** What version 1 clients do not know and must not be sent: the new snapshot fields (all of them, on both versions) and a pull request's `syncedFrom`. */
-const NEW_WORKFLOW_FIELDS = ["intent", "critique", "risk", "fixRounds", "fixSource"] as const;
+const NEW_WORKFLOW_FIELDS = ["intent", "critique", "risk", "fixRounds", "fixSource", "branchSync", "conflictBase"] as const;
 
 /** The run estimate without the time range (Plan 6 Task 7), which version 1 clients' strict estimate does not know. A view with no time range is returned as it is. */
 function withoutRunMinutes(view: DeveloperTaskView): DeveloperTaskView {
@@ -33,6 +33,9 @@ export function taskViewForClient(input: DeveloperTaskView, headers: Headers): D
   if (workflow === undefined) return "verificationReport" in view || "reviewRound" in view || "mergeTracking" in view ? withoutNewFields : view;
   const rest: Record<string, unknown> = { ...workflow };
   for (const field of NEW_WORKFLOW_FIELDS) delete rest[field];
+  // A cause of a failed push that version 1 clients do not know reads as the one they do (Plan 6 Task 17).
+  const failure = rest["pullRequestUpdateFailure"] as { cause?: string } | undefined;
+  if (failure?.cause === "BASE_CHANGES_DROPPED") rest["pullRequestUpdateFailure"] = { ...failure, cause: "PUSH_REFUSED" };
   const pullRequests = workflow.pullRequests?.map(({ syncedFrom: _syncedFrom, ...pullRequest }) => pullRequest); // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
   return {
     ...withoutNewFields,

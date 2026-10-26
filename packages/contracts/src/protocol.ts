@@ -447,9 +447,26 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * "task.workflowFix" is sent the push without it, and its commit keeps the usual message.
          */
         workflowFix: WorkflowFixPayloadSchema.optional(),
+        /**
+         * A workflow task's merge of the base branch into its pull request's branch (Plan 6 Task 17, `sync` only): the worker merges exactly `baseCommit` (no rebase, no force-push), runs the readiness
+         * checks and pushes to the head it was told (`expectedHeadCommit`); a conflict is returned as the conflicting files, nothing pushed, the merge's files left in the workspace. Sent only to a
+         * worker whose /ping lists "maintain.workflowSync"; never dropped, because an older worker would merge whatever the base is now.
+         */
+        workflowSync: z.object({ baseCommit: z.string().regex(/^[a-f0-9]{40}$/), expectedHeadCommit: z.string().regex(/^[a-f0-9]{40,64}$/) }).strict().optional(),
+        /**
+         * A conflict round's reviewed fix is pushed as a merge commit (`append` with the reviewed tree only): the first parent is the head the pull request has, the second is this commit of the base.
+         * Sent only to a worker whose /ping lists "maintain.workflowSync".
+         */
+        workflowMergeBase: z.string().regex(/^[a-f0-9]{40}$/).optional(),
       })
       .strict()
       .superRefine((value, context) => {
+        if (value.workflowSync !== undefined && (value.action !== "sync" || value.workflowCandidateTreeSha !== undefined || value.workflowSync.expectedHeadCommit !== value.expectedHeadCommit)) {
+          context.addIssue({ code: "custom", path: ["workflowSync"], message: "a merge of the base branch is a sync of the recorded head, with no reviewed tree" });
+        }
+        if (value.workflowMergeBase !== undefined && value.workflowCandidateTreeSha === undefined) {
+          context.addIssue({ code: "custom", path: ["workflowMergeBase"], message: "the base a fix was merged with goes with the reviewed tree" });
+        }
         if (value.workflowFix !== undefined && value.workflowCandidateTreeSha === undefined) {
           context.addIssue({ code: "custom", path: ["workflowFix"], message: "the fix a push is for goes with the reviewed tree" });
         }

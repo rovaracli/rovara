@@ -4,7 +4,7 @@
 import {
   DEFAULT_DEVELOPER_TASK_POLICY, DEVELOPER_EVENTS_DEFAULT, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_LIST_DEFAULT, DEVELOPER_TASK_LIST_MAX,
   DEVELOPER_WAIT_MAX_SECONDS, DeveloperInstructionsSchema, DeveloperTaskStatusSchema, SHARED_BY_POLICY, VIEW_ONLY_BY_POLICY, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, WORKFLOW_REVIEW_FAILURE_REASONS,
-  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, isCiFixBlockReason, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
+  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, isBranchConflictAskReason, isBranchSyncBlockReason, isBranchSyncGiveUpReason, isCiFixBlockReason, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
   TaskPeopleRoleSchema, RUN_CONTEXT_KINDS, RUN_INPUT_TEXT_MAX_BYTES, ApprovalIdSchema, RunInputSchema, type RunInput, type StartAgentSelection,
   SessionIdSchema, CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, formatMinutes, type WorkflowCritique,
 } from "@agentx/contracts";
@@ -309,6 +309,13 @@ function nextFor(shown: DeveloperTaskClientView): string {
   if (task.workflow?.state === "BLOCKED" && task.workflow.stage === "WAIT_FOR_MERGE" && isCiFixBlockReason(task.workflow.blockReason)) {
     return `CI is failing on the pull request and Rovara is waiting for you (the reason is in the task's block reason). To let it fix CI, use agentx_retry_workflow with expected_revision ${task.workflow.revision}. Or fix or merge the pull request on GitHub, or use agentx_close_task to stop.`;
   }
+  // Plan 6 Task 17: Rovara could not keep the branch up to date (it still conflicts after its tries, or the base changed CI workflow files, which it can't push): a person updates the branch on GitHub.
+  if (task.workflow?.state === "BLOCKED" && task.workflow.stage === "WAIT_FOR_MERGE" && (isBranchConflictAskReason(task.workflow.blockReason) || isBranchSyncGiveUpReason(task.workflow.blockReason))) {
+    return `${task.workflow.blockReason!} To let Rovara try once more, use agentx_retry_workflow with expected_revision ${task.workflow.revision}. Or update the branch on GitHub, or close the task.`;
+  }
+  if (task.workflow?.state === "BLOCKED" && task.workflow.stage === "WAIT_FOR_MERGE" && isBranchSyncBlockReason(task.workflow.blockReason)) {
+    return `${task.workflow.blockReason!} Rovara keeps watching the pull request for its merge; it does not change the branch again.`;
+  }
   if (task.workflow?.state === "BLOCKED") return `The workflow is blocked: ${task.workflow.blockReason ?? "required evidence is missing"}. Review it before continuing.`;
   // After the draft pull request opens, the task waits for its merge on GitHub; PR feedback is decided here or in Slack.
   if (task.workflow?.stage === "WAIT_FOR_MERGE") {
@@ -318,6 +325,7 @@ function nextFor(shown: DeveloperTaskClientView): string {
         ? `PR feedback is ready for your decision. Read it with agentx_get_pr_feedback, then approve, request changes or dismiss it with agentx_decide_pr_feedback and expected_revision ${task.workflow.revision}. Nothing changes in the code until you approve.`
         : `The review of the pull request's feedback couldn't finish. Retry it with agentx_decide_pr_feedback, decision RETRY_REVIEW and review_digest ${review.reviewRef.sha256}, or merge or close the pull request on GitHub.`;
     }
+    if ((task.workflow.state === "RUNNING" || task.workflow.state === "READY") && task.workflow.branchSync !== undefined) return "Rovara is merging the latest base branch into the pull request's branch. Check again with agentx_get_task.";
     if (task.workflow.state === "RUNNING") return "AgentX is reviewing the feedback on the pull request and will propose a fix before changing any code. Check again with agentx_get_task.";
     return "Waiting for the pull request to be merged. Review and merge it on GitHub; the task finishes when it's merged.";
   }
