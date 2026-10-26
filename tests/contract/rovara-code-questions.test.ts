@@ -770,6 +770,8 @@ describe("an owner's Slack reply while the task waits", () => {
     }
     expect(t.meta(run.taskId).workflow).toMatchObject({ state: "WAITING", intent: { answers: [] } });
     expect(t.db.find((item) => item.pk === `DEVTASK#${run.taskId}` && String(item.sk).startsWith("NOTE#"))).toHaveLength(2);
+    // The viewer whose reply was refused outright is not told anything about answers.
+    expect(t.db.find((item) => item.entityType === "WORKFLOW_ACTION_REFUSAL" && item.taskId === run.taskId)).toEqual([]);
   });
 
   it("is told to a person who may answer, privately in the thread, when their reply cannot be taken as an answer, once for the message", async () => {
