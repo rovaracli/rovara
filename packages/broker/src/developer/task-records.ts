@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import {
   BUDGET_EXHAUSTED_FAILURE_MESSAGE,
+  WORKFLOW_NO_CODE_CHANGE_MESSAGE,
   DeveloperSignInMethodSchema,
   agentXError,
   inertName,
@@ -465,7 +466,7 @@ export function ownerFenceOf(task: TaskOwnerSource): { expression: string; names
   };
 }
 
-export interface OperationFacts { id: string; kind: string; status: string; error?: string | undefined; createdAt: string; updatedAt?: string | undefined; fence?: number | undefined }
+export interface OperationFacts { id: string; kind: string; status: string; error?: string | undefined; createdAt: string; updatedAt?: string | undefined; fence?: number | undefined; workflowMode?: string | undefined }
 
 const LIVE = new Set(["ACCEPTED", "DISPATCHING", "RUNNING", "CANCEL_REQUESTED"]);
 
@@ -477,9 +478,15 @@ const LIVE = new Set(["ACCEPTED", "DISPATCHING", "RUNNING", "CANCEL_REQUESTED"])
 export const byCreated = (left: OperationFacts, right: OperationFacts) =>
   left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : (left.fence ?? 0) - (right.fence ?? 0);
 
-/** The newest task or publish operation: what the developer last asked for (R4). */
+/**
+ * A plan check that failed. The check is advice that a person never asked for and that never holds a plan back (the plan goes to review, shown as not checked), so its failure is not the task's:
+ * v0.4.10 staging showed `FAILED` for a task whose plan waited at review (and the session `Needs a person`).
+ */
+const failedPlanCheck = (operation: OperationFacts): boolean => operation.kind === "task" && operation.workflowMode === "PLAN_CRITIQUE" && operation.status === "FAILED";
+
+/** The newest task or publish operation: what the developer last asked for (R4). A failed plan check is not one of them. */
 export function currentOperation(operations: readonly OperationFacts[]): OperationFacts | undefined {
-  return operations.filter((operation) => operation.kind === "task" || operation.kind === "publish").sort(byCreated).at(-1);
+  return operations.filter((operation) => (operation.kind === "task" || operation.kind === "publish") && !failedPlanCheck(operation)).sort(byCreated).at(-1);
 }
 
 const DISPATCH_OR_COMPUTE = /^RUNTIME_UNAVAILABLE:/;
@@ -545,7 +552,9 @@ export function deriveTaskStatus(input: {
   }
   if (input.pointer?.pendingPrompt !== undefined || input.workspaceStatus === "PREPARING" || current === undefined) return { status: "STARTING", closing };
   if (LIVE.has(current.status)) return { status: "RUNNING", closing, current };
-  const status = current.status as "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
+  // A build that changed nothing finished its run; the workflow holds it for a person (`noCodeChanged`) in plain words. It is not a failed task with the worker's config wording.
+  const ranToItsEnd = current.kind === "task" && current.status === "FAILED" && current.error?.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE) === true;
+  const status = (ranToItsEnd ? "SUCCEEDED" : current.status) as "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
   return {
     status, closing, current,
     ...(status === "FAILED" || status === "INTERRUPTED" ? { failure: failureOf(current.kind, status, current.error) } : {}),

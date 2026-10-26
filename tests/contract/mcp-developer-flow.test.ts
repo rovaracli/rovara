@@ -9,6 +9,9 @@ import { DeveloperTaskResponseSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSc
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
 import { URL_BASE, signedInClient } from "../support/mcp-broker-client.js";
+import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { fakeModelAccess } from "../support/fake-model-access.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 
@@ -214,5 +217,58 @@ describe("wait for a small task (US2)", () => {
     const taskId = String((await tool("agentx_start_task", { project: "payments", instructions: "long" })).value.task_id);
     const waited = await tool("agentx_wait_for_task", { task_id: taskId, wait_seconds: 5 });
     expect(waited).toMatchObject({ isError: false, value: { timed_out: true, status: "STARTING" } });
+  });
+});
+
+describe("what an AI tool reads of a Rovara Code v2 plan (staging 0.4.10, bug D)", () => {
+  const PLAN = planDocument({ claims: [
+    { id: "1", text: "Payments that fail with a timeout are retried.", evidence: [{ kind: "code", path: "payments/src/charge.ts", startLine: 10, endLine: 24, note: "Today a timeout throws." }] },
+    { id: "2", text: "A test proves a timed-out payment is retried once and never charged twice." },
+  ] });
+  const v2PlanAtReview = async () => {
+    const access = fakeModelAccess();
+    const harness = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
+    access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
+    access.setOrgSpent(TEST_ORG, 0);
+    await new AgentStore({ documentClient: harness.db, tableName: "state", now: Date.now }).ensureBuiltinSettings(TEST_ORG, "rovara-code");
+    harness.db.set({ ...builtinSettingsKey(TEST_ORG, "rovara-code"), entityType: "BUILTIN_AGENT_SETTINGS", pinnedVersion: 2, updatedBy: "test", updatedAt: "2026-10-26T12:00:00.000Z" });
+    const { tool } = await signedInClient(harness, MAYA);
+    const started = await harness.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Fix the retry bug" }, path: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = workspaceOf(harness, taskId);
+    await harness.finish(workspaceId, activeOf(harness, workspaceId), "SUCCEEDED", { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } });
+    const planning = activeOf(harness, workspaceId);
+    await harness.artifact(workspaceId, planning, "plan.md", planAnswer(PLAN));
+    await harness.finish(workspaceId, planning, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    return { harness, tool, taskId, workspaceId };
+  };
+
+  it("reads the plan's cost and time estimate and what the plan check made of it, beside the plan", async () => {
+    const { harness, tool, taskId, workspaceId } = await v2PlanAtReview();
+    const check = activeOf(harness, workspaceId);
+    await harness.artifact(workspaceId, check, "plan-critique.md", "Read it.\n\n```rovara-plan-critique\n{\"verdict\":\"ok\",\"points\":[{\"id\":\"p1\",\"severity\":\"note\",\"text\":\"Name the test file.\"}]}\n```\n");
+    await harness.finish(workspaceId, check, "SUCCEEDED", { result: { workflowMode: "PLAN_CRITIQUE" } });
+    const read = (await tool("agentx_get_task", { task_id: taskId })).value as unknown as { workflow: { stage: string }; run_estimate?: { cost: string; run_limit_usd: number; time?: string }; plan_check?: { status: string; notes: string[]; points: Array<{ severity: string; text: string }> } };
+    expect(read.workflow.stage).toBe("PLAN_REVIEW");
+    expect(read.run_estimate).toMatchObject({ time: "about 20–45 minutes to a pull request" });
+    expect(typeof read.run_estimate?.run_limit_usd).toBe("number");
+    expect(read.run_estimate?.cost).toMatch(/^about \$/u);
+    expect(read.plan_check).toMatchObject({ status: "checked", points: [{ severity: "note", text: "Name the test file." }] });
+  });
+
+  it("says in plain words that the plan check was unavailable, as the plan card does", async () => {
+    const { harness, tool, taskId, workspaceId } = await v2PlanAtReview();
+    await harness.finish(workspaceId, activeOf(harness, workspaceId), "FAILED", { error: "RUNTIME_UNAVAILABLE: the model call failed: provider-outage attempt 4; retry the step" });
+    const read = (await tool("agentx_get_task", { task_id: taskId })).value as unknown as { plan_check?: { status: string; notes: string[] }; status: string };
+    expect(read.plan_check).toMatchObject({ status: "unavailable", notes: ["Plan check unavailable: this plan was not checked by a second model."] });
+    expect(read.status).not.toBe("FAILED");
+  });
+
+  it("reads nothing about a plan check or an estimate on a task that has neither", async () => {
+    const harness = await createDeveloperTaskBroker();
+    const { tool } = await signedInClient(harness, MAYA);
+    const started = await tool("agentx_start_task", { project: "payments", instructions: "Fix it" });
+    expect(started.value).not.toHaveProperty("plan_check");
+    expect(started.value).not.toHaveProperty("run_estimate");
   });
 });

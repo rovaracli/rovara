@@ -1,16 +1,13 @@
 // Plan 6 Task 8: what a person reads about the plan check, under the plan. Kept apart from the critic's model choice so the message wording can use it without the model routing.
-import { redactText, type WorkflowCritique } from "@agentx/contracts";
+import { CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, redactText, type WorkflowCritique } from "@agentx/contracts";
+
+export { CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE };
 
 /** The line the plan view shows when the project allows only one model, so the same one wrote and checked the plan. */
 export const sameModelNote = (project: string): string => `This plan was checked by the same model that wrote it, because ${project} allows only one model.`;
-/** The line the plan view shows when the check ran out of the task's planning budget; any other spending limit that stopped it is said without naming one. */
-export const CRITIC_STOPPED_AT_LIMIT_LINE = "The plan check stopped at the planning limit.";
-export const CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE = "The plan check stopped at a spending limit.";
 /** The line the plan view shows when the one revision the check asked for could not be paid for, so the plan is shown as it was written. */
 export const notRevisedLine = (limit: "planning" | "other" | undefined): string =>
   `I couldn't revise this plan for the second model's points, because ${limit === "planning" ? "the planning limit" : "a spending limit"} was reached first. It is shown as it was.`;
-/** The line the plan view shows when no check was made at all. */
-export const CRITIC_NOT_CHECKED_LINE = "This plan was not checked by a second model.";
 
 /**
  * The lines a person reads about the plan check, under the plan: the same-model note, how many problems the second model found (and what they were), and when the check stopped short.

@@ -262,6 +262,11 @@ export const WorkflowCritiqueSchema = z
   .strict();
 export type WorkflowCritique = z.infer<typeof WorkflowCritiqueSchema>;
 
+/** What a person reads when the plan check stopped at a limit, or never made a check (no model could be used for it, or it gave no answer). One wording for the thread, the task page and the AI tools. */
+export const CRITIC_STOPPED_AT_LIMIT_LINE = "The plan check stopped at the planning limit.";
+export const CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE = "The plan check stopped at a spending limit.";
+export const CRITIC_NOT_CHECKED_LINE = "Plan check unavailable: this plan was not checked by a second model.";
+
 // ---- risk and fixes
 
 export const RiskAssessmentSchema = z

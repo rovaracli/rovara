@@ -62,6 +62,7 @@ import {
   submitWorkflowArtifact,
   submitPlanCritique,
   closePlanCritique,
+  retryPlanCritique,
   skipPlanRevision,
   readPlanCritique,
   parsePlanDocument,
@@ -505,7 +506,7 @@ import { readTaskRecipe, startAgentRun, type AgentRunStarter } from "../agents/r
 import { agentGitHubConnector, approvalsNotWiredGate, approvalsWriteGate, attributionOf, callAgentTool, classifyDependenciesOf, listAgentTools, regrantAgentTool, type AgentToolsDependencies, type AgentToolsRun } from "../agents/agent-tools-routes.js";
 import { answerForHeldCall, type WriteGateRuntime } from "../agents/write-gate.js";
 import { taskRunCache } from "../agents/run-cache.js";
-import { criticModelFor, critiqueModelOf } from "../rovara-code/critic.js";
+import { CRITIC_MODEL_ATTEMPTS_MAX, PlanCheckUnavailableError, criticModelFor, criticModelUnusable, critiqueModelOf } from "../rovara-code/critic.js";
 import { applyAgentStep, defaultWorkerModel, givesAgentTools, inGeography, priorStepIds, routeStep, stepForOperation, stepName as stepNameOf, type AgentRunStepInput, type AppliedAgentStep, type DispatchMode } from "../agents/dispatch.js";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { chatGptServing, effectiveSources, routeOnWire, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
@@ -5910,22 +5911,43 @@ async function criticModelOfStep(
   guardrails: AgentGuardrails, approved: ReadonlyArray<ModelIdentifier> | undefined, projectModel: ModelSelection | undefined,
 ): Promise<{ recipe: ResolvedRecipe; sameModelAsPlanner: boolean }> {
   const step = stepForOperation(recipe, "PLAN_CRITIQUE", programStepId);
-  const planner = (await queryAllItems(dependencies, `WORKSPACE#${workspace.id}`, "OPERATION#"))
-    .filter((item) => item.entityType === "OPERATION" && item.kind === "task" && item.workflowMode === "PLAN" && item.conversationId === task.conversationId)
+  const operations = (await queryAllItems(dependencies, `WORKSPACE#${workspace.id}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task");
+  const planner = operations
+    .filter((item) => item.workflowMode === "PLAN" && item.conversationId === task.conversationId)
     .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
   const recorded = ModelSelectionSchema.safeParse(planner?.model);
+  // Staging 0.4.10: Bedrock answered 403 for the strongest model, which this account had not enabled. The checks that failed that way already named the models to leave out, and only so many are tried.
+  const history = criticFailures(operations, planner);
+  if (history.sinceLatestPlan >= CRITIC_MODEL_ATTEMPTS_MAX) throw new PlanCheckUnavailableError();
   const routing = routingOf(dependencies);
   const chosen = criticModelFor({
     step, agentName: task.agent?.name ?? ROVARA_CODE_NAME, planModel: recorded.success ? recorded.data : projectModel ?? defaultWorkerModel(routing?.rovaraGeography),
     project: { name: workspace.projectName, approved }, guardrails,
     sources: routing === undefined ? [] : await servableModels(routing, orgId, workspace.projectName),
+    unusable: history.models,
   });
   if ("refuse" in chosen) throw chosen.refuse;
+  if ("unavailable" in chosen) throw new PlanCheckUnavailableError();
   if (step === undefined || chosen.chosenBy === "company" || chosen.model === undefined) return { recipe, sameModelAsPlanner: chosen.sameModelAsPlanner };
   return {
     recipe: { ...recipe, steps: recipe.steps.map((candidate) => (candidate.id === step.id ? { ...candidate, settings: { ...candidate.settings, model: chosen.model } } as ResolvedStep : candidate)) },
     sameModelAsPlanner: chosen.sameModelAsPlanner,
   };
+}
+
+/**
+ * The plan checks of one workspace that failed because their model could not serve this account (`criticModelUnusable`): the models they ran on, to leave out of the next choice, and how many
+ * of them came after the latest planning run (a revised plan is checked again, with the earlier refusals remembered but the tries counted afresh). A failed check that recorded no usable model counts as a try.
+ */
+function criticFailures(operations: ReadonlyArray<Record<string, unknown>>, latestPlanner: Record<string, unknown> | undefined): { models: ModelSelection[]; sinceLatestPlan: number } {
+  const failed = operations.filter((item) => item.workflowMode === "PLAN_CRITIQUE" && item.status === "FAILED" && criticModelUnusable(typeof item.error === "string" ? item.error : undefined));
+  const models: ModelSelection[] = [];
+  for (const item of failed) {
+    const model = ModelSelectionSchema.safeParse(item.model);
+    if (model.success) models.push(model.data);
+  }
+  const from = typeof latestPlanner?.createdAt === "string" ? latestPlanner.createdAt : "";
+  return { models, sinceLatestPlan: failed.filter((item) => String(item.createdAt) >= from).length };
 }
 
 /** The models the workspace's earlier coding operations ran on, by the recipe step each was; one that recorded none has no model. */
@@ -13665,7 +13687,8 @@ async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, item: Ac
     if (error instanceof AgentXError && error.code === "MODEL_NOT_ALLOWED") {
       console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_refused", taskId: item.taskId, kind: item.kind, error: error.code }));
       // Plan 6 Task 8: only a model the company chose for the plan check blocks it. Rovara's own recommendation that no source can serve is no one's fault: the plan goes on, unchecked.
-      if (item.kind === "CRITIQUE" && !await companyChoseCriticModel(dependencies, item.taskId).catch(() => true)) {
+      // ... and a plan check whose every usable model was tried (the account could not use them) is no one's refusal either.
+      if (item.kind === "CRITIQUE" && (error instanceof PlanCheckUnavailableError || !await companyChoseCriticModel(dependencies, item.taskId).catch(() => true))) {
         await closeUncheckedPlanCheck(dependencies, item);
         return "STALE";
       }
@@ -15212,6 +15235,9 @@ async function completedWorkflowItems(
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "PLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
     : operation.workflowMode === "PLAN" && next.stage === "PLAN_CRITIQUE" && next.state === "READY"
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
+    // A plan check whose model the account could not use goes again on the next one (retryPlanCritique); the same dispatch row as the first start.
+    : operation.workflowMode === "PLAN_CRITIQUE" && next.stage === "PLAN_CRITIQUE" && next.state === "READY"
+    ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIQUE", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
     : operation.workflowMode === "PLAN_CRITIQUE" && next.stage === "PLAN" && next.state === "READY"
     ? [workflowDispatchItem(dependencies.tableName, task.taskId, next.revision, "CRITIC_REPLAN", WORKFLOW_NO_CANDIDATE_DIGEST, now)]
     : operation.workflowMode === "IMPLEMENT" && task.workflow.e2e?.required === true
@@ -15323,9 +15349,20 @@ async function planCritiqueOutcome(
   const workflow = task.workflow;
   // The check is advice: whatever goes wrong with it, the plan goes on to the person, who is told it was not checked (or that the check stopped at a limit).
   if (terminalStatus !== "SUCCEEDED") {
-    return terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE
-      ? closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "stopped_at_limit", limit: await spendLimitKind(dependencies, task), now })
-      : closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
+    if (terminalError === BUDGET_EXHAUSTED_FAILURE_MESSAGE) {
+      return closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "stopped_at_limit", limit: await spendLimitKind(dependencies, task), now });
+    }
+    // Staging 0.4.10: the account could not use the check's model (Bedrock's 403). The check is made again on the next-ranked model, one try for each, up to CRITIC_MODEL_ATTEMPTS_MAX; the
+    // next start leaves out the models that failed and, when none is left, closes the check as unavailable.
+    if (terminalStatus === "FAILED" && criticModelUnusable(terminalError)) {
+      const operations = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "OPERATION#")).filter((item) => item.entityType === "OPERATION" && item.kind === "task");
+      const planner = operations.filter((item) => item.workflowMode === "PLAN" && item.conversationId === task.conversationId)
+        .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt))).at(-1);
+      // This operation is not yet stored as failed: it is one more try than the stored ones.
+      const earlier = criticFailures(operations.filter((item) => item.id !== operation.id), planner).sinceLatestPlan;
+      if (earlier + 1 < CRITIC_MODEL_ATTEMPTS_MAX) return retryPlanCritique(workflow, { expectedRevision: workflow.revision, now });
+    }
+    return closePlanCritique(workflow, { expectedRevision: workflow.revision, status: "done", now });
   }
   const answers = (await queryAllItems(dependencies, `WORKSPACE#${operation.workspaceId}`, "ARTIFACT#"))
     .filter((item) => item.operationId === operation.id && item.name === "plan-critique.md")
@@ -15757,13 +15794,26 @@ async function cancelledWorkflowStepItems(
   return items;
 }
 
+/**
+ * Whether a worker's failed result is a plain task's no-change end: the first coding turn of a task started without the workflow (it runs in IMPLEMENT mode, the worker's candidate check
+ * refuses a build that changed nothing) and the error is exactly that refusal. A workflow task's build is never this: its no-change stop is `noCodeChanged`, a block a person answers.
+ */
+async function plainTaskLeftCodeAsItWas(dependencies: AwsBrokerDependencies, operation: OperationRecord, status: unknown, error: unknown): Promise<boolean> {
+  if (status !== "FAILED" || operation.kind !== "task" || operation.workflowMode !== "IMPLEMENT" || typeof error !== "string" || !error.includes(WORKFLOW_NO_CODE_CHANGE_MESSAGE)) return false;
+  const task = await workspaceTask(dependencies, operation.workspaceId);
+  return task !== undefined && task.workflow === undefined;
+}
+
 async function recordTerminalResult(
   dependencies: AwsBrokerDependencies,
   operation: OperationRecord,
   value: unknown,
 ): Promise<OperationRecord> {
   const input = object(value, "terminal result");
-  const status = input.status;
+  // Staging 0.4.10: a plain task (no workflow) whose run left the code as it was has nothing to approve, check or publish: it answered, and it ended. The worker reports that as a failure
+  // because a workflow's approved build must not pass with no change; here it is the run's end, so it is recorded as one (a workflow task's stays a failure and blocks the build).
+  const plainNoChange = await plainTaskLeftCodeAsItWas(dependencies, operation, input.status, input.error);
+  const status = plainNoChange ? "SUCCEEDED" : input.status;
   if (!TERMINAL.has(status as OperationStatus)) throw agentXError("CONFIG_INVALID", "terminal status is invalid");
   if (TERMINAL.has(operation.status)) {
     // Issue 202: a task whose cancel failed ended INTERRUPTED but kept its workspace, as it might
@@ -15794,7 +15844,7 @@ async function recordTerminalResult(
   const startRefusal: { text?: string } = {};
   // #154: the worker's error can quote a command's output, so it is redacted before it is stored,
   // and redactAndCap redacts before it caps.
-  const error = typeof input.error === "string" ? redactAndCap(input.error, TERMINAL_ERROR_MAX).text : undefined;
+  const error = typeof input.error === "string" && !plainNoChange ? redactAndCap(input.error, TERMINAL_ERROR_MAX).text : undefined;
   const result = operation.kind === "publish" && status === "SUCCEEDED"
     ? PullRequestResultSchema.parse(input.result)
     : operation.kind === "close" && status === "SUCCEEDED"
