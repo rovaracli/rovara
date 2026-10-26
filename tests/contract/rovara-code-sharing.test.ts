@@ -441,3 +441,22 @@ it("M8: a company grant disappearing before narrowing cannot become an unconfirm
   expect(raced).toBe(true);
   expect(w.db.get(key)).toBeUndefined();
 });
+
+it("M9: legacy Code ownership creates its missing session before requesting confirmation", async () => {
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix retry" } });
+  const { taskId } = started.body.task as { taskId: string };
+  const task = { ...h.db.get(taskKey(taskId))! };
+  h.db.delete(agentSessionKey(TEST_ORG, String(task.sessionId), "META"));
+  delete task.sessionId;
+  h.db.set(task);
+  await h.orgOf(OMAR);
+  h.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), role: "developer", projectRole: "maintainer" });
+  const result = await h.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/people/take-ownership`, { requestId: randomUUID(), expectedPeopleRevision: 1 });
+  expect(result.status).toBe(202);
+  expect(result.body).toMatchObject({ status: "NEEDS_CONFIRMATION" });
+  const sessionId = String(h.db.get(taskKey(taskId))!.sessionId);
+  expect(h.db.get(agentSessionKey(TEST_ORG, sessionId, "META"))).toMatchObject({ owner: { developerId: MAYA.developerId } });
+  expect(h.db.get(taskKey(taskId))).not.toHaveProperty("currentOwner");
+  expect(h.db.find((item) => (item.subject as { kind?: string } | undefined)?.kind === "session_owner")).toHaveLength(1);
+});
