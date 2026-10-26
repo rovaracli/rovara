@@ -22,18 +22,20 @@ function withoutRunMinutes(view: DeveloperTaskView): DeveloperTaskView {
 
 /**
  * The task as a client that does not send `x-agentx-task-view: 2` may read it: UNDERSTAND and PLAN_CRITIQUE read as PLAN, the outcome ANSWERED as CLOSED, the
- * definition version as 1.0.0, and the fields version 1 did not have are left out. A view with no workflow is returned as it is, less the estimate's time range.
+ * definition version as 1.0.0, and the fields version 1 did not have are left out. The version 2 fields of the view (`verificationReport`, `reviewRound`) are left out too, and the estimate's time range. A view with no workflow and none of those fields is returned as it is.
  */
 export function taskViewForClient(input: DeveloperTaskView, headers: Headers): DeveloperTaskView {
   if (readsTaskViewVersion2(headers)) return input;
   const view = withoutRunMinutes(input);
-  const workflow = view.workflow;
-  if (workflow === undefined) return view;
+  // Version 2 fields of the view itself (Task 12): an older client's strict view has no place for them, so they are left out whether or not a workflow is there.
+  const { verificationReport: _verificationReport, reviewRound: _reviewRound, ...withoutNewFields } = view; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+  const workflow = withoutNewFields.workflow;
+  if (workflow === undefined) return "verificationReport" in view || "reviewRound" in view ? withoutNewFields : view;
   const rest: Record<string, unknown> = { ...workflow };
   for (const field of NEW_WORKFLOW_FIELDS) delete rest[field];
   const pullRequests = workflow.pullRequests?.map(({ syncedFrom: _syncedFrom, ...pullRequest }) => pullRequest); // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
   return {
-    ...view,
+    ...withoutNewFields,
     workflow: {
       ...rest,
       definitionVersion: "1.0.0",
@@ -44,11 +46,18 @@ export function taskViewForClient(input: DeveloperTaskView, headers: Headers): D
   };
 }
 
+/** Whether a task in a route's answer has anything the version 1 projection changes: a workflow, or a version 2 field of the view. */
+function projectable(task: unknown): boolean {
+  if (task === null || typeof task !== "object") return false;
+  const view = task as Record<string, unknown>;
+  return view.workflow !== undefined || "verificationReport" in view || "reviewRound" in view;
+}
+
 /** A route's answer with its `task` (if it has one) projected for the client; any other answer is returned as it is. */
 export function taskResponseForClient<T>(answer: T, headers: Headers): T {
   if (readsTaskViewVersion2(headers) || answer === null || typeof answer !== "object" || Array.isArray(answer)) return answer;
   const task = (answer as { task?: unknown }).task;
-  if (task === null || typeof task !== "object" || (task as { workflow?: unknown }).workflow === undefined) return answer;
+  if (!projectable(task)) return answer;
   return { ...answer, task: taskViewForClient(task as DeveloperTaskView, headers) };
 }
 
@@ -60,6 +69,6 @@ export function sessionResponseForClient<T>(answer: T, headers: Headers): T {
   const body = (session as { body?: unknown }).body;
   if (body === null || typeof body !== "object" || (body as { kind?: unknown }).kind !== "task") return answer;
   const task = (body as { task?: unknown }).task;
-  if (task === null || typeof task !== "object" || (task as { workflow?: unknown }).workflow === undefined) return answer;
+  if (!projectable(task)) return answer;
   return { ...answer, session: { ...session, body: { ...body, task: taskViewForClient(task as DeveloperTaskView, headers) } } };
 }

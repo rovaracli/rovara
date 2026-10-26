@@ -7,6 +7,7 @@ import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, RunInputSchema } from "./age
 import { StepIdSchema } from "./agent-recipe.js";
 import { SessionIdSchema } from "./agent-sessions.js";
 import { RunEstimateSchema } from "./spend.js";
+import { VerificationReportSchema } from "./rovara-code.js";
 import { cleanDisplayName } from "./display-name.js";
 import { OperationStatusSchema } from "./operation.js";
 import { DeveloperShareModeSchema } from "./project.js";
@@ -364,6 +365,14 @@ export const DeveloperTaskViewSchema = z.object({
    * minutes: `askAgainAfter` is when). Absent unless the plan is blocked on its run limit.
    */
   runLimit: z.object({ limitUsd: z.number().nonnegative(), spendRequestId: SpendRequestIdSchema.optional(), canAskAgain: z.boolean(), askAgainAfter: z.string().max(40).optional() }).strict().optional(),
+  /**
+   * Plan 6, Task 12 (Rovara Code version 2 only; the broker leaves it out of a version 1 task's view, and out of a client that does not send `x-agentx-task-view: 2`):
+   * what passed, what failed, what could not be checked and which tests the change added, for the code the checks ran on. Worker output, redacted and bounded; plain
+   * text that every reader escapes for its own markup.
+   */
+  verificationReport: VerificationReportSchema.optional(),
+  /** Plan 6, Task 12 (version 2 only, like `verificationReport`): the review round whose problems are being fixed, with the sentence the thread says. */
+  reviewRound: z.object({ round: z.number().int().min(1).max(100), max: z.number().int().min(1).max(5), message: z.string().min(1).max(200) }).strict().optional(),
 });
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
 

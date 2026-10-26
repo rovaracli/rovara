@@ -293,6 +293,7 @@ import { understandPrompt } from "../rovara-code/understand.js";
 import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal } from "@agentx/contracts";
 import { answeredEventItem, answersFromReply, intentAnswerItems, openQuestions } from "../rovara-code/question-answers.js";
 import { answeredMilestoneItems } from "../rovara-code/answered.js";
+import { verificationReport, withTestRule, workflowReviewRound } from "../rovara-code/verification-report.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -1519,12 +1520,23 @@ export async function taskView(
     try { e2ePresentation = await deps.workflowE2EPresentation({ task, operations, actor: options.actor ?? "owner" }); }
     catch (error) { log(deps, { event: "developer.task_e2e_view_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" }); }
   }
+  // Plan 6, Task 12: a Rovara Code version 2 task shows its verification report (once checks have run on its current code; the changed files come with the full
+  // read) and the review round being fixed. A version 1 task shows neither (m20), and a client that does not ask for the version 2 view never receives them.
+  const rovaraCodeV2 = task.workflow?.definitionVersion === "1.1.0" && removedReason === undefined;
+  // Not while the code is being rewritten (the old candidate and its results stay until the next candidate replaces them), and not when the changed files were not
+  // loaded (the full read skips them while the task runs), where "no tests added" would be a guess.
+  const detailsLoaded = options.details && derived.status !== "STARTING" && derived.status !== "RUNNING";
+  const verification = rovaraCodeV2 && detailsLoaded && task.workflow?.verification !== undefined && task.workflow.stage !== "IMPLEMENT"
+    ? verificationReport(task.workflow, details.changedFiles ?? [], {}) : undefined;
+  const reviewRound = rovaraCodeV2 && task.workflow !== undefined && workflow?.state !== "BLOCKED" ? workflowReviewRound(task.workflow) : undefined;
   return {
     taskId: task.taskId,
     title: task.title,
     project: task.project,
     status: derived.status,
     ...(workflow === undefined ? {} : { workflow }),
+    ...(verification === undefined ? {} : { verificationReport: verification }),
+    ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
     ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: capText(removedReason, 1000).text }),
@@ -2908,7 +2920,7 @@ export async function decideTaskWorkflow(
     // Gap 2: replies posted in the task's thread and not yet given to a step go with this one, once.
     await withCurrentThreadNotes(deps, task, request.requestId, (current, notes) => {
       const fed = fedThroughUpdate(notes);
-      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: basePrompt + notes.suffix }, (operation) => {
+      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: request.requestId, conversationId: current.conversationId, prompt: mode === "IMPLEMENT" ? withTestRule(basePrompt + notes.suffix, next) : basePrompt + notes.suffix }, (operation) => {
         const workflowToStore = workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies);
         return [
           { Update: {
@@ -3567,7 +3579,7 @@ async function queueWorkflowCoding(
   try {
     await withCurrentThreadNotes(deps, task, input.requestId, (current, notes) => {
       const fed = fedThroughUpdate(notes);
-      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt: input.prompt(notes.suffix) }, (operation) => [
+      return deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId, { requestId: input.requestId, conversationId: current.conversationId, prompt: input.recovery === undefined ? withTestRule(input.prompt(notes.suffix), input.next) : input.prompt(notes.suffix) }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(task.taskId),
           UpdateExpression: `SET workflow = :workflow, updatedAt = :now${fed.clause}${cap.clause}`,
@@ -3642,7 +3654,8 @@ export async function resumeAfterRunLimitApproval(
   const { blockReason: _blockReason, ...unblocked } = workflow;
   void _blockReason;
   const next: WorkflowSnapshot = { ...unblocked, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
-  const prompt = `Implement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`;
+  // Rovara Code version 2 ends every build prompt with the test rule (Task 12).
+  const prompt = withTestRule(`Implement the human-approved plan below. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`, next);
   const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: input.requestId, conversationId: task.conversationId, prompt }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
@@ -4178,9 +4191,9 @@ export async function startTaskWorkflowImplementationFromSystem(
   // A step sent back by its reviews or checks is given what they found; a step that simply follows another is given the plan.
   const found = sendBackProblems(workflow);
   const problems = found.length === 0 ? "" : `${sendBackProblemsPromptSection(found, promptTagId(task, requestId))}\n\n`;
-  const prompt = found.length === 0
+  const prompt = withTestRule(found.length === 0
     ? `Implement the human-approved plan below, one coding step of a longer sequence: the previous step's work is in the code now. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}`
-    : `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}Approved plan (sha256 ${plan.sha256}):\n${plan.text}`;
+    : `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}Approved plan (sha256 ${plan.sha256}):\n${plan.text}`, next);
   const accepted = await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),

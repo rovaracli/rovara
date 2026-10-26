@@ -9,6 +9,7 @@ import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
 import { WORKFLOW_ACTION_IDS } from "./workflow-actions.js";
 import { isE2EPlanCorrectionBlockReason } from "./task-records.js";
+import { workflowReviewRound } from "../rovara-code/verification-report.js";
 
 export interface WorkflowMessageContext {
   taskId: string;
@@ -679,6 +680,10 @@ function implementRunning(context: WorkflowMessageContext): string {
   if (feedback?.decision === "APPROVE" && feedback.workflowRevision >= workflow.revision - 2 && (decision === undefined || feedback.at >= decision.at)) {
     return "PR feedback approved. Updating the code now; the checks and reviews run again after.";
   }
+  // Rovara Code version 2 (Task 12): a review round that found problems sends the work back on its own, and the thread says which round it is. It comes after the
+  // approved PR feedback fix (above), and an owner's own send-back keeps its wording (below); a version 1 task, and a fix for CI, a conflict or comments, have no round.
+  const round = workflowReviewRound(workflow);
+  if (round !== undefined && decision?.source !== "SEND_BACK" && decision?.source !== "FINDINGS") return round.message;
   if (decision?.source === "SEND_BACK" || decision?.source === "FINDINGS") {
     const problems = sendBackProblems(workflow);
     const issues = problems.filter((problem) => problem.source !== "check").length;
