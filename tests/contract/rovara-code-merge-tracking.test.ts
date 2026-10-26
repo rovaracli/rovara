@@ -165,7 +165,7 @@ describe("which checks count", () => {
   });
 
   it("reads passing only when every required check branch protection names has reported success", () => {
-    const protectedBase = { baseHasRequiredChecks: true, requiredCheckNames: ["build", "test"] };
+    const protectedBase = { baseHasRequiredChecks: true, requiredChecks: [{ name: "build" }, { name: "test" }] };
     // build reported and passed, test has not reported: pending, not passing.
     expect(read({ ...protectedBase, checks: [check("build", "success", true)] })).toMatchObject({ ci: "pending", ciBasis: "required" });
     expect(read({ ...protectedBase, checks: [check("build", "success", true), check("lint", "success", false)] }).ci).toBe("pending");
@@ -177,9 +177,28 @@ describe("which checks count", () => {
   });
 
   it("counts a check protection names even when GitHub's isRequired does not say so (the name is the fallback)", () => {
-    const named = { baseHasRequiredChecks: true, requiredCheckNames: ["test"] };
+    const named = { baseHasRequiredChecks: true, requiredChecks: [{ name: "test" }] };
     expect(read({ ...named, checks: [check("test", "failure", false)] })).toMatchObject({ ci: "failing", failingChecks: ["test"] });
     expect(read({ ...named, checks: [check("test", "success", false), check("lint", "failure", false)] }).ci).toBe("passing");
+  });
+
+  it("keeps CI pending while a check a ruleset requires has not reported (it is in the list the status carries, whichever rule it came from)", () => {
+    const fromRuleset = { baseHasRequiredChecks: true, requiredChecks: [{ name: "deploy" }] };
+    expect(read({ ...fromRuleset, checks: [check("build", "success", false)] }).ci).toBe("pending");
+    expect(read({ ...fromRuleset, checks: [check("build", "success", false), check("deploy", "success", false)] }).ci).toBe("passing");
+  });
+
+  it("respects the app a required check names: a check of the same name from another app does not satisfy it, and a commit status cannot", () => {
+    const named = { baseHasRequiredChecks: true, requiredChecks: [{ name: "build", appId: 15368 }] };
+    const ofApp = (appId: number | undefined, conclusion: "success" | "failure" = "success") => ({ ...check("build", conclusion, false), ...(appId === undefined ? {} : { appId }) });
+    expect(read({ ...named, checks: [ofApp(15368)] }).ci).toBe("passing");
+    expect(read({ ...named, checks: [ofApp(1)] }).ci).toBe("pending");
+    expect(read({ ...named, checks: [ofApp(undefined)] }).ci).toBe("pending");
+    // The right app's failure fails; another app's failure under the same name is not the required check's.
+    expect(read({ ...named, checks: [ofApp(15368, "failure")] }).ci).toBe("failing");
+    expect(read({ ...named, checks: [ofApp(1, "failure"), ofApp(15368)] }).ci).toBe("passing");
+    // A name with no app accepts any.
+    expect(read({ baseHasRequiredChecks: true, requiredChecks: [{ name: "build" }], checks: [ofApp(1)] }).ci).toBe("passing");
   });
 
   it("reads pending, never passing, while the checks could not be read", () => {
@@ -248,6 +267,16 @@ describe("a refusal from GitHub on one step", () => {
 describe("approvals and reviews", () => {
   const review = (id: number, login: string, state: "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED" | "COMMENTED", at: string, userType = "User") =>
     ({ githubUserId: String(id), login, userType, state, commitId: HEAD_A, submittedAt: `2026-10-25T${at}:00.000Z` });
+
+  it("does not read an approval when the reviews list was cut short: undecided, and no permission lookups", async () => {
+    const w = world();
+    w.github.permissions.set("maint", "write");
+    w.github.statuses.set(7, status({ reviewsIncomplete: true, reviews: [review(1, "maint", "APPROVED", "09:00")] }));
+    await trackPullRequest(w.deps, TASK_ID);
+    expect(itemOf(w)).toMatchObject({ review: "requested" });
+    expect(itemOf(w).approval).toBeUndefined();
+    expect(w.github.calls.some((call) => call.startsWith("permission"))).toBe(false);
+  });
 
   it("counts an approval only from a person with write access, and takes the latest review of each reviewer", async () => {
     const w = world();

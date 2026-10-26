@@ -4,7 +4,8 @@ import type { RepositoryAccess, RepositoryCredential } from "./repository-access
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { checkAgentTokenPermissions, type GitHubAgentTokenPermissions } from "./agents/github-agent-tools.js";
 import {
-  parseMergeableState, parseRepositoryPermission, parseReview, parseRollupContext, requestedReviewerCount, statusRecord,
+  mergeRequiredChecks, parseMergeableState, parseRepositoryPermission, parseReview, parseRollupContext, requestedReviewerCount, requiredChecksFromProtection, requiredChecksFromRules, statusRecord,
+  type RequiredCheck,
   type PullRequestCheck, type PullRequestReview, type PullRequestStatus,
 } from "./github-pull-status.js";
 
@@ -237,6 +238,8 @@ const WEBHOOK_SCOPE: GitHubTokenScope = { system: "webhook" };
 /** What a tracking pass's reads ask for: the pull request, its reviews, the head's checks and statuses, the base branch and the workflow files, all at read. */
 const STATUS_TOKEN_PERMISSIONS = { contents: "read", pull_requests: "read", checks: "read", statuses: "read" } as const;
 /** The same without the checks and statuses access, for an installation that has not accepted it yet. */
+/** How many pages of 100 reviews a tracking read takes. */
+const REVIEW_PAGES_MAX = 5;
 const BASIC_TOKEN_PERMISSIONS = { contents: "read", pull_requests: "read" } as const;
 
 /** A repository the App can reach: its installation, and the owner as GitHub spells it. */
@@ -656,7 +659,9 @@ export class GitHubAppCredentialProvider {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid pull request status identity");
     }
     const reviews: PullRequestReview[] = [];
-    for (const value of await provider.feedbackPages(`${pullRequestUrl(repository, number)}/reviews`, token)) {
+    let reviewsIncomplete = false;
+    // At most five pages of reviews: past that, what is on the pull request is not known, and no approval is read from the list.
+    for (const value of await provider.feedbackPages(`${pullRequestUrl(repository, number)}/reviews`, token, { maxPages: REVIEW_PAGES_MAX, onTruncated: () => { reviewsIncomplete = true; } })) {
       const review = parseReview(value);
       if (review !== undefined) reviews.push(review);
     }
@@ -689,31 +694,35 @@ export class GitHubAppCredentialProvider {
     } else if (files.status !== 404 && files.status !== 403) {
       throw agentXError("RUNTIME_UNAVAILABLE", `GitHub workflow files lookup failed with HTTP ${files.status}`);
     }
+    // Which checks the base requires, from classic protection and from the rulesets, taken together. A read that fails, is refused, finds no branch or does not parse leaves
+    // the required checks unknown, and unknown checks are never a pass.
+    const requiredChecks: RequiredCheck[] = [];
     const branch = await provider.trackingJson(`${root}/branches/${baseRef}`, token);
-    const requiredCheckNames: string[] = [];
     if (branch.status === 200) {
-      const protection = statusRecord(branch.body).protection;
-      const required = protection === undefined || protection === null ? undefined : statusRecord(statusRecord(protection).required_status_checks ?? {});
-      if (required !== undefined) {
-        if (Array.isArray(required.contexts)) for (const name of required.contexts) if (typeof name === "string" && name.length > 0) requiredCheckNames.push(name.slice(0, 200));
-        if (Array.isArray(required.checks)) for (const entry of required.checks) {
-          const context = entry !== null && typeof entry === "object" ? (entry as { context?: unknown }).context : undefined;
-          if (typeof context === "string" && context.length > 0) requiredCheckNames.push(context.slice(0, 200));
-        }
+      try {
+        mergeRequiredChecks(requiredChecks, requiredChecksFromProtection(branch.body));
+      } catch {
+        checksUnavailable = true;
       }
-    } else if (branch.status === 403) {
-      // The protection cannot be read, so which checks are required is not known.
+    } else {
       checksUnavailable = true;
-    } else if (branch.status !== 404) {
-      throw agentXError("RUNTIME_UNAVAILABLE", `GitHub base branch lookup failed with HTTP ${branch.status}`);
     }
-    const names = [...new Set(requiredCheckNames)];
+    const rules = await provider.trackingJson(`${root}/rules/branches/${baseRef}`, token);
+    if (rules.status === 200) {
+      try {
+        mergeRequiredChecks(requiredChecks, requiredChecksFromRules(rules.body));
+      } catch {
+        checksUnavailable = true;
+      }
+    } else {
+      checksUnavailable = true;
+    }
     return {
       number: details.number, state: details.state, draft: raw.draft, headSha: details.headCommit, baseBranch: details.baseBranch, mergeableState,
       ...(typeof raw.mergeable === "boolean" ? { mergeable: raw.mergeable } : {}),
-      ...(behindBy === undefined ? {} : { behindBy }), checks, ...(checksUnavailable ? { checksUnavailable: true as const } : {}), requiredCheckNames: names,
-      baseHasRequiredChecks: names.length > 0 || checks.some((check) => check.required),
-      headHasWorkflowFiles, requestedReviewers: requestedReviewerCount(raw), reviews,
+      ...(behindBy === undefined ? {} : { behindBy }), checks, ...(checksUnavailable ? { checksUnavailable: true as const } : {}), requiredChecks,
+      baseHasRequiredChecks: requiredChecks.length > 0 || checks.some((check) => check.required),
+      headHasWorkflowFiles, requestedReviewers: requestedReviewerCount(raw), reviews, ...(reviewsIncomplete ? { reviewsIncomplete: true as const } : {}),
     };
   }
 
@@ -728,7 +737,7 @@ export class GitHubAppCredentialProvider {
           commits(last:1) { nodes { commit { oid statusCheckRollup { state contexts(first:100,after:$cursor) {
             pageInfo { hasNextPage endCursor }
             nodes { __typename
-              ... on CheckRun { name status conclusion detailsUrl databaseId isRequired(pullRequestNumber:$number) }
+              ... on CheckRun { name status conclusion detailsUrl databaseId checkSuite { app { databaseId } } isRequired(pullRequestNumber:$number) }
               ... on StatusContext { context state targetUrl isRequired(pullRequestNumber:$number) } } } } } } }
         } }
       }`, { owner: repository.owner, name: repository.name, number, cursor });
@@ -1160,10 +1169,11 @@ export class GitHubAppCredentialProvider {
     return feedbackRecord(await response.json());
   }
 
-  private async feedbackPages(path: string, token: string): Promise<unknown[]> {
+  private async feedbackPages(path: string, token: string, limit?: { maxPages: number; onTruncated(): void }): Promise<unknown[]> {
     const values: unknown[] = [];
     let next: string | undefined = `${path}?per_page=100&page=1`;
     const seen = new Set<string>();
+    let pages = 0;
     while (next) {
       if (seen.has(next)) throw feedbackReadError("pagination did not advance");
       seen.add(next);
@@ -1183,6 +1193,11 @@ export class GitHubAppCredentialProvider {
       } else if (!link && page.length === 100) {
         const url: URL = new URL(next); url.searchParams.set("page", String(Number(url.searchParams.get("page")) + 1)); next = url.href;
       } else next = undefined;
+      pages += 1;
+      if (next !== undefined && limit !== undefined && pages >= limit.maxPages) {
+        limit.onTruncated();
+        next = undefined;
+      }
     }
     return values;
   }

@@ -25,6 +25,11 @@ interface Fixture {
   compareStatus?: number;
   workflowStatus?: number;
   branchStatus?: number;
+  /** The body of `rules/branches/main` (the rulesets that apply to the base), and its status. */
+  rules?: unknown;
+  rulesStatus?: number;
+  /** Reviews as pages of the reviews list (a Link header names the next page). */
+  reviewPages?: unknown[][];
 }
 
 function pull(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -70,7 +75,13 @@ function harness(fixture: Fixture = {}, options: { beforeRequest?: () => void } 
         state: "SUCCESS", contexts: { nodes: pages[index] ?? [], pageInfo: { hasNextPage: index + 1 < pages.length, endCursor: `c${String(index + 1)}` } } } } }] } } } } });
     }
     if (/\/pulls\/42$/.test(url)) return Response.json(fixture.pull ?? pull());
+    if (/\/pulls\/42\/reviews/.test(url) && fixture.reviewPages !== undefined) {
+      const page = Number(new URL(url).searchParams.get("page") ?? "1");
+      const more = page < fixture.reviewPages.length;
+      return new Response(JSON.stringify(fixture.reviewPages[page - 1] ?? []), { status: 200, headers: more ? { link: `<https://api.github.com/repos/acme/payments/pulls/42/reviews?per_page=100&page=${String(page + 1)}>; rel="next"` } : {} });
+    }
     if (/\/pulls\/42\/reviews/.test(url)) return Response.json(fixture.reviews ?? []);
+    if (/\/rules\/branches\/main$/.test(url)) return new Response(JSON.stringify(fixture.rules ?? []), { status: fixture.rulesStatus ?? 200 });
     if (/\/contents\/\.github\/workflows/.test(url) && fixture.workflowStatus !== undefined) return new Response("{}", { status: fixture.workflowStatus });
     if (/\/contents\/\.github\/workflows/.test(url)) return fixture.workflowFiles === undefined ? new Response("{}", { status: 404 }) : Response.json(fixture.workflowFiles);
     if (/\/branches\/main$/.test(url) && fixture.branchStatus !== undefined) return new Response("{}", { status: fixture.branchStatus });
@@ -116,7 +127,7 @@ describe("reading a pull request's status", () => {
         { name: "lint", status: "pending", required: false, url: "https://github.com/acme/payments/actions/runs/1/job/77", jobId: "78" },
         { name: "ci/external", status: "completed", conclusion: "failure", required: false, url: "https://ci.example.test/run/9" },
       ],
-      requiredCheckNames: ["build"], baseHasRequiredChecks: true, headHasWorkflowFiles: true, requestedReviewers: 2,
+      requiredChecks: [{ name: "build" }], baseHasRequiredChecks: true, headHasWorkflowFiles: true, requestedReviewers: 2,
       reviews: [{ githubUserId: "501", login: "reviewer", userType: "User", state: "APPROVED", commitId: HEAD, submittedAt: "2026-10-25T11:00:00.000Z" }],
     });
   });
@@ -200,8 +211,8 @@ describe("reading a pull request's status", () => {
     const files = harness({ workflowStatus: 403 });
     expect((await files.provider.getPullRequestStatus(REPO, 42, SCOPE, files.budget)).headHasWorkflowFiles).toBe(true);
     const branch = harness({ branchStatus: 403 });
-    expect(await branch.provider.getPullRequestStatus(REPO, 42, SCOPE, branch.budget)).toMatchObject({ checksUnavailable: true, requiredCheckNames: [] });
-    for (const broken of [{ compareStatus: 500 }, { workflowStatus: 500 }, { branchStatus: 500 }] as Fixture[]) {
+    expect(await branch.provider.getPullRequestStatus(REPO, 42, SCOPE, branch.budget)).toMatchObject({ checksUnavailable: true, requiredChecks: [] });
+    for (const broken of [{ compareStatus: 500 }, { workflowStatus: 500 }] as Fixture[]) {
       const h = harness(broken);
       await expect(h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget)).rejects.toThrow();
     }
@@ -210,8 +221,63 @@ describe("reading a pull request's status", () => {
   it("names the checks branch protection requires, from the contexts and the checks, whether or not they have reported", async () => {
     const h = harness({ branch: { name: "main", protected: true, protection: { enabled: true, required_status_checks: { contexts: ["legacy"], checks: [{ context: "build" }, { context: "legacy" }] } } } });
     const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
-    expect(status.requiredCheckNames.sort()).toEqual(["build", "legacy"]);
+    expect(status.requiredChecks).toEqual([{ name: "legacy" }, { name: "build" }]);
     expect(status.baseHasRequiredChecks).toBe(true);
+  });
+
+  it("names the app a required check must come from when protection or a ruleset names one, and any app for -1 or null", async () => {
+    const h = harness({
+      branch: { name: "main", protected: true, protection: { enabled: true, required_status_checks: { contexts: [], checks: [{ context: "build", app_id: 15368 }, { context: "lint", app_id: -1 }, { context: "docs", app_id: null }] } } },
+      rules: [{ type: "required_status_checks", ruleset_id: 3, parameters: { required_status_checks: [{ context: "deploy", integration_id: 99 }, { context: "smoke" }] } }],
+    });
+    const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
+    expect(status.requiredChecks).toEqual([{ name: "build", appId: 15368 }, { name: "lint" }, { name: "docs" }, { name: "deploy", appId: 99 }, { name: "smoke" }]);
+  });
+
+  it("takes the checks a ruleset requires as well as branch protection's (the union), and counts that read as one more request", async () => {
+    const h = harness({
+      branch: { name: "main", protected: true, protection: { enabled: true, required_status_checks: { contexts: ["build"], checks: [] } } },
+      rules: [{ type: "pull_request", parameters: {} }, { type: "required_status_checks", ruleset_id: 3, parameters: { required_status_checks: [{ context: "deploy" }, { context: "build" }] } }],
+    });
+    const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
+    expect(status.requiredChecks).toEqual([{ name: "build" }, { name: "deploy" }]);
+    expect(status.baseHasRequiredChecks).toBe(true);
+    expect(h.requests.filter((request) => /\/rules\/branches\/main$/.test(request.url))).toHaveLength(1);
+    expect(h.count()).toBe(h.requests.length);
+  });
+
+  it("reads the checks as unavailable when the rulesets or the base branch cannot be read or do not parse (a missing branch is not 'no protection')", async () => {
+    for (const unreadable of [
+      { rulesStatus: 403 }, { rulesStatus: 404 }, { rulesStatus: 500 }, { rules: { not: "a list" } },
+      { rules: [{ type: "required_status_checks", parameters: { required_status_checks: "nope" } }] },
+      { branchStatus: 404 }, { branchStatus: 403 }, { branchStatus: 500 },
+      { branch: { name: "main", protected: true, protection: { enabled: true, required_status_checks: "nope" } } },
+    ] as Fixture[]) {
+      const h = harness({ ...unreadable, rollup: [rollupNode({})] });
+      const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
+      expect(status, JSON.stringify(unreadable)).toMatchObject({ checksUnavailable: true, number: 42 });
+    }
+  });
+
+  it("reads the app of each check run from the list", async () => {
+    const h = harness({ rollup: [rollupNode({ name: "build", checkSuite: { app: { databaseId: 15368 } } }), rollupNode({ name: "other", checkSuite: { app: null } })] });
+    const status = await h.provider.getPullRequestStatus(REPO, 42, SCOPE, h.budget);
+    expect(status.checks.map((check) => [check.name, check.appId])).toEqual([["build", 15368], ["other", undefined]]);
+  });
+
+  it("reads at most five pages of reviews, and says the reviews are incomplete when there are more", async () => {
+    const review = (id: number) => ({ user: { id, login: `p${String(id)}`, type: "User" }, state: "APPROVED", commit_id: HEAD, submitted_at: "2026-10-25T11:00:00Z" });
+    const six = harness({ reviewPages: Array.from({ length: 6 }, (_, page) => [review(page + 1)]) });
+    const capped = await six.provider.getPullRequestStatus(REPO, 42, SCOPE, six.budget);
+    expect(capped.reviewsIncomplete).toBe(true);
+    expect(capped.reviews).toHaveLength(5);
+    expect(six.requests.filter((request) => /\/reviews/.test(request.url))).toHaveLength(5);
+    const three = harness({ reviewPages: Array.from({ length: 3 }, (_, page) => [review(page + 1)]) });
+    const all = await three.provider.getPullRequestStatus(REPO, 42, SCOPE, three.budget);
+    expect(all.reviews).toHaveLength(3);
+    expect(all).not.toHaveProperty("reviewsIncomplete");
+    const five = harness({ reviewPages: Array.from({ length: 5 }, (_, page) => [review(page + 1)]) });
+    expect(await five.provider.getPullRequestStatus(REPO, 42, SCOPE, five.budget)).not.toHaveProperty("reviewsIncomplete");
   });
 
   it("mints each kind of token once a pass: a status read, five permission lookups, marking ready and asking for reviewers cost three mints", async () => {

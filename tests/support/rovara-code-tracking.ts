@@ -20,7 +20,7 @@ export function status(overrides: Partial<PullRequestStatus> = {}): PullRequestS
   return {
     number: 7, state: "open", draft: true, headSha: HEAD_A, baseBranch: "main", mergeableState: "clean", mergeable: true, behindBy: 0,
     checks: [{ name: "test", status: "completed", conclusion: "success", required: false, url: "https://example.test/1" }],
-    requiredCheckNames: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [], ...overrides,
+    requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [], ...overrides,
   };
 }
 

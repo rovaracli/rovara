@@ -49,6 +49,7 @@ function counting(options: { reviewers: number; permission?: (login: string) => 
     });
     if (/\/pulls\/7\/reviews/.test(url)) return Response.json(reviews);
     if (/\/contents\/\.github\/workflows/.test(url)) return Response.json([{ name: "ci.yml" }]);
+    if (/\/rules\/branches\/main$/.test(url)) return Response.json([]);
     if (/\/branches\/main$/.test(url)) return Response.json({ name: "main", protected: false });
     if (/\/compare\//.test(url)) return Response.json({ behind_by: 0 });
     const permission = /\/collaborators\/([^/]+)\/permission$/.exec(url);
@@ -87,6 +88,8 @@ describe("a tracking pass over a draft that five people reviewed (the real provi
     expect(github.budget.used()).toBeLessThanOrEqual(trackingRequestCap(1));
     // Three kinds of token, each minted once, and one installation lookup.
     expect(github.mints).toBe(3);
+    // The rulesets are read too: one more request in the status read.
+    expect(github.fetched.filter((request) => /\/rules\/branches\/main$/.test(request))).toHaveLength(1);
     expect(github.fetched.filter((request) => request.endsWith("/installation"))).toHaveLength(1);
   });
 

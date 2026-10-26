@@ -137,20 +137,22 @@ export function readCi(status: PullRequestStatus, input: { checksEverSeen: boole
   const ciBasis = status.baseHasRequiredChecks ? "required" as const : "all_checks" as const;
   // Checks that could not be read are not known: nothing may say they passed.
   if (status.checksUnavailable === true) return { ci: "pending", ciBasis, failingChecks: [] };
-  const requiredNames = new Set(status.requiredCheckNames);
+  const required = status.requiredChecks;
+  // A required check is met by a check of that name, from the named app when the setting names one (a commit status has no app, so it cannot meet one that does).
+  const meets = (entry: PullRequestStatus["requiredChecks"][number], check: PullRequestStatus["checks"][number]): boolean =>
+    check.name === entry.name && (entry.appId === undefined || check.appId === entry.appId);
   if (status.checks.length === 0) {
     const settled = input.lastRovaraPushAt !== undefined && input.now - input.lastRovaraPushAt >= NO_CI_GRACE_MS;
-    if (!input.checksEverSeen && !status.headHasWorkflowFiles && requiredNames.size === 0 && settled) return { ci: "none", ciBasis, failingChecks: [] };
-    const waitEnds = !input.checksEverSeen && !status.headHasWorkflowFiles && requiredNames.size === 0 && input.lastRovaraPushAt !== undefined ? input.lastRovaraPushAt + NO_CI_GRACE_MS : undefined;
+    if (!input.checksEverSeen && !status.headHasWorkflowFiles && required.length === 0 && settled) return { ci: "none", ciBasis, failingChecks: [] };
+    const waitEnds = !input.checksEverSeen && !status.headHasWorkflowFiles && required.length === 0 && input.lastRovaraPushAt !== undefined ? input.lastRovaraPushAt + NO_CI_GRACE_MS : undefined;
     return { ci: "pending", ciBasis, failingChecks: [], ...(waitEnds === undefined || waitEnds <= input.now ? {} : { recheckAt: waitEnds }) };
   }
-  // A check counts when GitHub says the base requires it for this pull request, or when branch protection names it (the name is the fallback when `isRequired` says nothing).
-  const counted = ciBasis === "required" ? status.checks.filter((check) => check.required || requiredNames.has(check.name)) : status.checks;
+  // A check counts when GitHub says the base requires it for this pull request, or when branch protection or a ruleset names it (the name is the fallback when `isRequired` says nothing).
+  const counted = ciBasis === "required" ? status.checks.filter((check) => check.required || required.some((entry) => meets(entry, check))) : status.checks;
   const failing = counted.filter((check) => check.status === "completed" && check.conclusion !== undefined && FAILED_CONCLUSIONS.has(check.conclusion));
   if (failing.length > 0) return { ci: "failing", ciBasis, failingChecks: [...new Set(failing.map((check) => check.name))].slice(0, 10) };
-  // Every required check protection names has to have reported: one that has not is not in the list yet, and nothing has passed for it.
-  const reported = new Set(status.checks.map((check) => check.name));
-  if ([...requiredNames].some((name) => !reported.has(name))) return { ci: "pending", ciBasis, failingChecks: [] };
+  // Every required check has to have reported: one that has not is not in the list yet, and nothing has passed for it.
+  if (required.some((entry) => !status.checks.some((check) => meets(entry, check)))) return { ci: "pending", ciBasis, failingChecks: [] };
   if (counted.length === 0) return { ci: "pending", ciBasis, failingChecks: [] };
   const waiting = counted.some((check) => check.status !== "completed" || check.conclusion === "action_required");
   return { ci: waiting ? "pending" : "passing", ciBasis, failingChecks: [] };
@@ -172,6 +174,8 @@ export async function readReviews(
   status: PullRequestStatus,
   input: { requested: boolean; permission(login: string): Promise<"admin" | "write" | "read" | "none"> },
 ): Promise<ReviewReading> {
+  // A list cut at the page limit is not the whole story (a later review may withdraw an approval): nothing is read as approved from it.
+  if (status.reviewsIncomplete === true) return { review: "requested" };
   const latest = new Map<string, PullRequestStatus["reviews"][number]>();
   const ordered = [...status.reviews].sort((left, right) => left.submittedAt.localeCompare(right.submittedAt));
   for (const review of ordered) {

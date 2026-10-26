@@ -16,6 +16,14 @@ export interface PullRequestCheck {
   url: string;
   /** The check run's database id, which is the job id of a GitHub Actions job. */
   jobId?: string;
+  /** The GitHub App that made the check run (a commit status has none). */
+  appId?: number;
+}
+
+/** A check the base branch requires by name (branch protection or a ruleset), and the app it must come from when one is named. */
+export interface RequiredCheck {
+  name: string;
+  appId?: number;
 }
 
 export interface PullRequestReview {
@@ -43,8 +51,10 @@ export interface PullRequestStatus {
   checks: PullRequestCheck[];
   /** The checks could not be read (GitHub refused the checks/statuses access, or the list failed): they are not known, so no reading of them may say "passing". */
   checksUnavailable?: true;
-  /** The names of the checks the base branch's protection requires (classic protection: contexts and checks), whether or not they have reported. */
-  requiredCheckNames: string[];
+  /** The checks the base branch requires, from classic branch protection and from the rulesets that apply to it (the union), whether or not they have reported. */
+  requiredChecks: RequiredCheck[];
+  /** The list of reviews was cut at the page limit: what is past it is not known, so no approval may be read from this list. */
+  reviewsIncomplete?: true;
   baseHasRequiredChecks: boolean;
   headHasWorkflowFiles: boolean;
   /** How many reviewers (people and teams) are asked for a review now. */
@@ -96,9 +106,12 @@ export function parseRollupContext(value: unknown): PullRequestCheck {
     // A finished run with a conclusion this reader does not know is not a pass.
     if (completed && conclusion === undefined) return fail("unknown check conclusion");
     const id = typeof node.databaseId === "number" && Number.isSafeInteger(node.databaseId) && node.databaseId > 0 ? String(node.databaseId) : undefined;
+    const suite = node.checkSuite === null || typeof node.checkSuite !== "object" ? undefined : node.checkSuite as Record<string, unknown>;
+    const app = suite?.app === null || typeof suite?.app !== "object" ? undefined : suite.app as Record<string, unknown>;
+    const appId = typeof app?.databaseId === "number" && Number.isSafeInteger(app.databaseId) && app.databaseId > 0 ? app.databaseId : undefined;
     return {
       name: cleanName(node.name), status: completed ? "completed" : "pending", ...(completed && conclusion !== undefined ? { conclusion } : {}),
-      required, url: safeUrl(node.detailsUrl), ...(id === undefined ? {} : { jobId: id }),
+      required, url: safeUrl(node.detailsUrl), ...(id === undefined ? {} : { jobId: id }), ...(appId === undefined ? {} : { appId }),
     };
   }
   if (node.__typename === "StatusContext") {
@@ -162,4 +175,52 @@ export function parseRepositoryPermission(value: unknown): "admin" | "write" | "
 export function requestedReviewerCount(pull: Record<string, unknown>): number {
   const count = (value: unknown): number => Array.isArray(value) ? value.length : 0;
   return count(pull.requested_reviewers) + count(pull.requested_teams);
+}
+
+function requiredEntry(context: unknown, app: unknown): RequiredCheck | undefined {
+  if (typeof context !== "string" || context.length === 0) return undefined;
+  const name = context.slice(0, MAX_NAME);
+  // -1 and null mean "any app" in GitHub's settings.
+  return typeof app === "number" && Number.isSafeInteger(app) && app > 0 ? { name, appId: app } : { name };
+}
+
+/** Adds the entries not already there (same name, same app). */
+export function mergeRequiredChecks(into: RequiredCheck[], more: readonly RequiredCheck[]): RequiredCheck[] {
+  for (const entry of more) if (!into.some((have) => have.name === entry.name && have.appId === entry.appId)) into.push(entry);
+  return into;
+}
+
+/** The checks classic branch protection requires: `required_status_checks.contexts` and `.checks[]` (a name and the app it must come from). Throws when the body does not fit. */
+export function requiredChecksFromProtection(branch: unknown): RequiredCheck[] {
+  const protection = statusRecord(branch).protection;
+  if (protection === undefined || protection === null) return [];
+  const required = statusRecord(protection).required_status_checks;
+  if (required === undefined || required === null) return [];
+  const record = statusRecord(required);
+  const found: RequiredCheck[] = [];
+  if (record.contexts !== undefined && !Array.isArray(record.contexts)) return fail("invalid required contexts");
+  if (record.checks !== undefined && !Array.isArray(record.checks)) return fail("invalid required checks");
+  for (const context of (record.contexts ?? []) as unknown[]) mergeRequiredChecks(found, [requiredEntry(context, undefined)].filter((entry) => entry !== undefined));
+  for (const entry of (record.checks ?? []) as unknown[]) {
+    const item = statusRecord(entry);
+    mergeRequiredChecks(found, [requiredEntry(item.context, item.app_id)].filter((value) => value !== undefined));
+  }
+  return found;
+}
+
+/** The checks the rulesets that apply to the base branch require (`GET rules/branches/{branch}`, the `required_status_checks` rules). Throws when the body does not fit. */
+export function requiredChecksFromRules(rules: unknown): RequiredCheck[] {
+  if (!Array.isArray(rules)) return fail("invalid rules list");
+  const found: RequiredCheck[] = [];
+  for (const rule of rules as unknown[]) {
+    const record = statusRecord(rule);
+    if (record.type !== "required_status_checks") continue;
+    const list = statusRecord(record.parameters).required_status_checks;
+    if (!Array.isArray(list)) return fail("invalid required checks rule");
+    for (const entry of list as unknown[]) {
+      const item = statusRecord(entry);
+      mergeRequiredChecks(found, [requiredEntry(item.context, item.integration_id)].filter((value) => value !== undefined));
+    }
+  }
+  return found;
 }
