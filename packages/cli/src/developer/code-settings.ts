@@ -3,7 +3,7 @@
 // once except self-approval turned on, which answers `202 NEEDS_CONFIRMATION`: the command prints the link where an organization owner or admin confirms it and exits 0. Nothing here
 // decides anything (R66): the CLI never decides an approval.
 import { randomUUID } from "node:crypto";
-import { CLI_PACKAGE_NAME, CODE_REVIEWERS_MAX, CodeSettingsResponseSchema, NeedsConfirmationSchema, agentXError, type CodeSettings } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, CODE_REVIEWERS_MAX, CodeSettingsResponseReaderSchema, NeedsConfirmationReaderSchema, agentXError, type CodeSettingsResponseRead } from "@agentx/contracts";
 import { appRequest, clean, result, seg, type AppResult } from "./agents.js";
 import { safeUrl } from "./sessions.js";
 import type { DeveloperSessionDeps } from "./session.js";
@@ -12,6 +12,9 @@ const UNEXPECTED = `AgentX answered with something unexpected; try again, or upg
 const REVIEWER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\/[A-Za-z0-9_.-]{1,100})?$/;
 
 export interface CodeSettingsOptions { selfApproval?: string | undefined; mergeMethod?: string | undefined; reviewers?: string | undefined }
+
+/** The settings as the answer reads: the broker also sends `requestId`, which is not part of them, and a merge method a newer control plane added reads as "unknown". */
+type ReadCodeSettings = CodeSettingsResponseRead["settings"];
 
 interface Change { allowSelfApproval?: boolean; mergeMethod?: "squash" | "merge"; codeReviewers?: string[] }
 
@@ -37,7 +40,7 @@ function changeOf(options: CodeSettingsOptions): Change {
 
 const reviewersWords = (reviewers: readonly string[]): string => (reviewers.length === 0 ? "none" : reviewers.map(clean).join(", "));
 
-function settingsLines(settings: CodeSettings): string[] {
+function settingsLines(settings: ReadCodeSettings): string[] {
   return [`  Self-approval: ${settings.allowSelfApproval ? "on" : "off"}`, `  Merge method: ${settings.mergeMethod}`, `  Reviewers: ${reviewersWords(settings.codeReviewers)}`];
 }
 
@@ -45,7 +48,7 @@ export async function projectCodeSettings(deps: DeveloperSessionDeps, env: strin
   const change = changeOf(options);
   const path = `/v1/app/projects/${seg(project)}/code-settings`;
   const read = await appRequest(deps, env, path);
-  const current = CodeSettingsResponseSchema.safeParse(read.body);
+  const current = CodeSettingsResponseReaderSchema.safeParse(read.body);
   if (!current.success) throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
   const name = clean(project);
   if (Object.keys(change).length === 0) {
@@ -53,7 +56,7 @@ export async function projectCodeSettings(deps: DeveloperSessionDeps, env: strin
   }
   const answer = await appRequest(deps, env, path, { method: "PUT", body: { requestId: randomUUID(), expectedRevision: current.data.settings.revision, ...change } });
   if (answer.status === 202 || answer.body["status"] === "NEEDS_CONFIRMATION") {
-    const confirmation = NeedsConfirmationSchema.safeParse(answer.body);
+    const confirmation = NeedsConfirmationReaderSchema.safeParse(answer.body);
     const link = confirmation.success ? safeUrl(confirmation.data.confirmUrl, answer.url) : undefined;
     if (!confirmation.success || link === undefined) throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
     const changedNow = [
@@ -68,7 +71,7 @@ export async function projectCodeSettings(deps: DeveloperSessionDeps, env: strin
     ];
     return result(answer, { status: confirmation.data.status, confirmUrl: link, changes: confirmation.data.changes, ...(changedNow.length === 0 ? {} : { changedNow }) }, lines.join("\n"));
   }
-  const changed = CodeSettingsResponseSchema.safeParse(answer.body);
+  const changed = CodeSettingsResponseReaderSchema.safeParse(answer.body);
   if (!changed.success) throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
   return result(answer, { settings: changed.data.settings }, `${[`Changed the code settings of ${name}.`, ...settingsLines(changed.data.settings), ""].join("\n")}`);
 }

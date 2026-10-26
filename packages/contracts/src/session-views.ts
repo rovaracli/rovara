@@ -320,6 +320,9 @@ export const NeedsConfirmationSchema = z
 
 export type NeedsConfirmation = z.infer<typeof NeedsConfirmationSchema>;
 
+/** How a client reads a `202 NEEDS_CONFIRMATION`: the broker adds the gateway's `requestId` to it, which the strict schema above refuses (bug E). */
+export const NeedsConfirmationReaderSchema = forwardReader(NeedsConfirmationSchema);
+
 /** Plan 7 Task 13c: a bounded, redacted page of an authorized session's PR files. */
 export const DIFF_FILES_PAGE_MAX = 100;
 

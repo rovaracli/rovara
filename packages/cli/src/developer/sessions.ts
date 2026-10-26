@@ -7,7 +7,7 @@
 // Nothing in this file decides an approval (R66).
 import { randomUUID } from "node:crypto";
 import {
-  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, LEVEL_WORDS, LIVE_FILTERS, NeedsConfirmationSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, agentXError, sessionLink,
+  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, LEVEL_WORDS, LIVE_FILTERS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SESSION_STATUS_WORDS, SessionIdSchema, agentXError, sessionLink,
   type SessionLevel,
 } from "@agentx/contracts";
 import { appRequest, clean, developerRef, list, result, seg, str, type AppResult } from "./agents.js";
@@ -59,7 +59,7 @@ const nameOf = (value: unknown): string => str((value as Body | undefined)?.name
  * printed; an answer without one is an unexpected answer, not a confirmation.
  */
 function confirmationOf(answer: { env: string; url: string; body: Body }): AppResult {
-  const parsed = NeedsConfirmationSchema.safeParse(answer.body);
+  const parsed = NeedsConfirmationReaderSchema.safeParse(answer.body);
   if (!parsed.success || safeUrl(parsed.data.confirmUrl, answer.url) === undefined) {
     throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
   }

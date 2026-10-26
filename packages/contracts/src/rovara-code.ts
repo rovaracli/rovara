@@ -3,6 +3,7 @@
 // digest) lives in `rovara-code-node.ts`.
 import { z } from "zod";
 import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
+import { forwardReader } from "./forward-reader.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { redactText } from "./redaction.js";
 
@@ -476,6 +477,13 @@ export type CodeSettingsBody = z.infer<typeof CodeSettingsBodySchema>;
 /** `GET` and an applied `PUT` of a project's code settings. */
 export const CodeSettingsResponseSchema = z.object({ settings: CodeSettingsSchema }).strict();
 export type CodeSettingsResponse = z.infer<typeof CodeSettingsResponseSchema>;
+
+/**
+ * How a client reads that answer. The broker puts the gateway's `requestId` beside the fields of every answer it sends, so a client that read it with the strict schema above rejected
+ * the control plane's real answer (bug E, staging 0.4.11). Clients read it through this, as they read every other strict app answer: unknown fields are kept and not refused.
+ */
+export const CodeSettingsResponseReaderSchema = forwardReader(CodeSettingsResponseSchema);
+export type CodeSettingsResponseRead = z.output<typeof CodeSettingsResponseReaderSchema>;
 
 /** What a stale `PUT` hears. */
 export const CODE_SETTINGS_STALE_MESSAGE = "Someone changed these settings. Reload and try again.";
