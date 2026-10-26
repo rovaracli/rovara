@@ -44,7 +44,7 @@ async function world() {
     call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": invocationOf(operationId).callbackCapability } });
 
   /** A real version 2 task whose planning was cancelled, so its workspace is free, then put where the tracking pass leaves it when Rovara decides a round of comments: coding, ready, marked, with its row. */
-  async function inRound() {
+  async function inRound(review: { finding?: Record<string, unknown> } = {}) {
     const reply = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), input: { text: "Fix the retry bug" }, path: "QUICK" });
     expect(reply.status, JSON.stringify(reply.body)).toBe(202);
     const taskId = String((reply.body.task as { taskId: string }).taskId);
@@ -52,7 +52,7 @@ async function world() {
     await h.finish(workspaceId, String(operations(workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
     await h.finish(workspaceId, String(byMode(workspaceId, "PLAN").at(-1)!.id), "CANCELLED");
     const real = meta(taskId).workflow;
-    const seeded = seedReview(h, taskId, { extra: { definitionVersion: "1.1.0", program: PROGRAM, programStepId: "pull_request", revision: 30, path: real.path } });
+    const seeded = seedReview(h, taskId, { ...review, extra: { definitionVersion: "1.1.0", program: PROGRAM, programStepId: "pull_request", revision: 30, path: real.path } });
     const waiting = meta(taskId).workflow;
     const card = waiting.feedbackReview!;
     const decided = decideWorkflowFeedbackFindings(waiting, {
@@ -104,6 +104,17 @@ describe("a round whose stored comments can no longer be read as they were", () 
     expect(t.access.mintKey).not.toHaveBeenCalled();
     expect(t.h.db.find((item) => item.pk === "WORKFLOW_DISPATCH" && item.taskId === taskId)).toHaveLength(1);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "feedback" });
+  });
+});
+
+describe("a round whose report does not propose a fix to make", () => {
+  it("is not run either (the stored report says skip, though the reference said fix): nothing is accepted or paid for", async () => {
+    const t = await world();
+    const { taskId, workspaceId } = await t.inRound({ finding: { proposedDisposition: "SKIP" } });
+    await t.sweep();
+    expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
+    expect(t.access.mintKey).not.toHaveBeenCalled();
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "READY" });
   });
 });
 
