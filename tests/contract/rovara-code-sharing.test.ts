@@ -185,7 +185,7 @@ it("the real Code start and legacy Slack share route use session authority and s
   const before = h.db.find((item) => item.entityType === "CHANGE_NOTICE").length;
   const requestId = randomUUID();
   expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId, shareMode: "continue" })).status).toBe(200);
-  expect(h.db.find((item) => item.entityType === "CHANGE_NOTICE")).toHaveLength(before + 1);
+  expect(h.db.find((item) => item.entityType === "CHANGE_NOTICE")).toHaveLength(before);
   const undo = await h.dev(MAYA, "DELETE", `/v1/app/sessions/${sessionId}/shares/${encodeURIComponent(`SLACK#${requestId}`)}`);
   expect(undo.status).toBe(200);
   expect(task()).toMatchObject({ share: { mode: "view" } });
@@ -459,4 +459,13 @@ it("M9: legacy Code ownership creates its missing session before requesting conf
   expect(h.db.get(agentSessionKey(TEST_ORG, sessionId, "META"))).toMatchObject({ owner: { developerId: MAYA.developerId } });
   expect(h.db.get(taskKey(taskId))).not.toHaveProperty("currentOwner");
   expect(h.db.find((item) => (item.subject as { kind?: string } | undefined)?.kind === "session_owner")).toHaveLength(1);
+});
+
+it("M4: an owner's own widening keeps its undo without sending a self-notice", () => {
+  const w = world();
+  const task = w.db.get(taskKey(w.taskId)) as unknown as DeveloperTaskRecord;
+  const at = new Date(w.clock.now).toISOString();
+  const items = codeShareItems("state", task, { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view", sharedAt: at, sharedReason: "requested" }, randomUUID(), PRIYA, at);
+  expect(items.some((entry) => entry.Put?.Item?.entityType === "CODE_SHARE_UNDO")).toBe(true);
+  expect(items.filter((entry) => entry.Put?.Item?.entityType === "CHANGE_NOTICE")).toEqual([]);
 });
