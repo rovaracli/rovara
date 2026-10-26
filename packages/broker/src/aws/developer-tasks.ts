@@ -1293,7 +1293,7 @@ export async function submitWorkflowFeedbackDecision(
  * note (a person's, for the findings that asked for it) and then the failing checks the card showed (CI's own text, in its labelled block) follow. A round Rovara decided itself says whose approval
  * it is, and carries no note.
  */
-function feedbackFixPrompt(input: {
+export function feedbackFixPrompt(input: {
   requestId: string; reviewDigest: string; proposalDigest: string; selected: ReadonlyArray<Record<string, unknown>>;
   ownerNote?: string | undefined; ciBlock?: string | undefined; byRovara?: true;
 }): string {
