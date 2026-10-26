@@ -209,6 +209,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/feedback-autonomy.ts",
       // Rovara Code (Plan 6 Task 18): the record that a review reminder was sent (and when the next may be), kept for the waiting window (REVIEW_WAIT_RETENTION_DAYS), then the TTL deletes it; only nudges.ts writes and reads it.
       "packages/broker/src/rovara-code/nudges.ts",
+      // Rovara Code (Plan 6 Task 19): the change notice a confirmed code-settings change leaves for the people it concerns is an ordinary notice (it expires like the others); only code-settings.ts writes it.
+      "packages/broker/src/rovara-code/code-settings.ts",
+      // Rovara Code (Plan 6 Task 23): a Slack share's undo record and the owner's change notice of a widened share last seven days, then the TTL deletes them; only sharing.ts writes them.
+      "packages/broker/src/rovara-code/sharing.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
