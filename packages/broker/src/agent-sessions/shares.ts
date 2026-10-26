@@ -151,6 +151,7 @@ async function checkPrincipal(deps: SessionShareDependencies, orgId: OrgId, sess
 // ---- writing one share
 
 interface ApplyInput {
+  narrowingOrg?: true;
   orgId: OrgId;
   session: AgentSessionRecord;
   sharer: { developerId: string; name: string };
@@ -190,6 +191,9 @@ async function applyShare(deps: SessionShareDependencies, input: ApplyInput): Pr
 
   const shares = await readSessionShares(deps, orgId, session.sessionId);
   const existing = shares.find((share) => sameKey(share.principal, principal));
+  if (input.narrowingOrg && (principal.kind !== "org" || existing === undefined || existing.level === level || !atLeast(existing.level, level))) {
+    throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
+  }
   if (existing !== undefined && existing.level === level) {
     await send(deps, [requestItem({ share: existing })], undefined, input);
     return existing;
@@ -218,6 +222,12 @@ async function applyShare(deps: SessionShareDependencies, input: ApplyInput): Pr
       text: `${cleanSessionName(input.sharer.name) ?? "Someone"} shared this session with ${who} (${LEVEL_WORDS[level]})`,
     }),
   ];
+  if (input.narrowingOrg && existing !== undefined) {
+    const grant = items[1]!.Put!;
+    grant.ConditionExpression = "attribute_exists(pk) AND #priorLevel = :priorLevel AND sharedAt = :priorAt";
+    grant.ExpressionAttributeNames = { "#priorLevel": "level" };
+    grant.ExpressionAttributeValues = { ":priorLevel": existing.level, ":priorAt": existing.sharedAt };
+  }
   // The owner who is told is the effective one, who may be the person that took the session over (m-2).
   const ownerId = await effectiveOwnerOf(deps, session);
   if (input.sharer.developerId !== ownerId && (!code || widening)) {
@@ -247,7 +257,7 @@ async function send(deps: SessionShareDependencies, items: TransactItem[], revis
         return;
       }
     }
-    if (revisionIndex !== undefined && failed.has(revisionIndex)) throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
+    if ((input.narrowingOrg && failed.has(1)) || (revisionIndex !== undefined && failed.has(revisionIndex))) throw agentXError("SESSION_REVISION_CONFLICT", SESSION_REVISION_CONFLICT_MESSAGE);
     throw error;
   }
 }
@@ -313,7 +323,7 @@ export async function putSessionShare(deps: SessionShareDependencies, caller: Sh
     return { status: 200, body: earlier.result as { share: SessionShareRow } };
   }
   await checkPrincipal(deps, caller.orgId, session, input.principal, input.level);
-  const share = await applyShare(deps, { orgId: caller.orgId, session, sharer: { developerId: caller.developerId, name: caller.name }, principal: input.principal, level: input.level, requestId: input.requestId, fingerprint });
+  const share = await applyShare(deps, { orgId: caller.orgId, session, sharer: { developerId: caller.developerId, name: caller.name }, principal: input.principal, level: input.level, requestId: input.requestId, fingerprint, ...(narrowingCodeOrg ? { narrowingOrg: true as const } : {}) });
   return { status: 200, body: { share } };
 }
 
