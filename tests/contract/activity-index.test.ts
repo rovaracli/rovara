@@ -4,6 +4,7 @@
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { FailureIndexRecordSchema, UsageIndexRecordSchema } from "../../packages/contracts/src/index.js";
+import { slackThreadKey } from "../../packages/broker/src/aws/slack-thread-key.js";
 import { indexActivity, type IndexStore } from "../../packages/broker/src/aws/activity-index.js";
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
 import { orgFailureDayPk, orgUsageDayPk } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -294,4 +295,16 @@ it("K1 retains a realistic pre-org legacy thread link in the install's org", asy
   const index = store([slackWorkspace[0]!, legacy]);
   await indexActivity([modified(operation({}), operation({ status: "FAILED", updatedAt: "2026-09-30T08:15:00.000Z" }))], index, vi.fn());
   expect(index.puts[0]).toMatchObject({ pk: orgFailureDayPk(TEST_ORG, "2026-09-30"), thread: legacy.thread });
+});
+
+it("I4 indexes a real scoped Slack thread link and excludes another org's row", async () => {
+  const subject = "T0BSHLLUGBD/C0123456789/1695500000.000100";
+  const workspace = { ...slackWorkspace[0]!, orgId: TEST_ORG };
+  for (const foreign of [false, true]) {
+    const thread = { ...slackThreadKey(foreign ? "org_bbbbbbbbbbbbbbbbbbbb" : TEST_ORG, OWNER), workspaceId: WORKSPACE, thread: subject };
+    const index = store([workspace, thread]);
+    await indexActivity([modified(operation({}), operation({ status: "FAILED", updatedAt: "2026-09-30T08:15:00.000Z" }))], index, vi.fn());
+    if (foreign) expect(index.puts[0]).not.toHaveProperty("thread");
+    else expect(index.puts[0]).toMatchObject({ thread: subject });
+  }
 });
