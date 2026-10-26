@@ -1,3 +1,5 @@
+import { httpControlPlaneClient } from "../../packages/mcp/src/client.js";
+import { DEVELOPER_TOOLS } from "../../packages/mcp/src/tools.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { agentSessionKey, orgMemberKey, projectMemberKey, changesKey, sharedSessionsKey } from "@agentx/contracts";
@@ -76,6 +78,18 @@ it("the legacy MCP take-ownership route returns the session confirmation without
     w.caller(ARJUN), { method: "POST", path, requestId: randomUUID(), headers: {}, body: JSON.stringify({ requestId: randomUUID(), expectedPeopleRevision: 1 }) }, new URL(path, w.deps.origin));
   expect(reply).toBeInstanceOf(StatusReply);
   expect(reply).toMatchObject({ statusCode: 202, body: { status: "NEEDS_CONFIRMATION" } });
+  const client = httpControlPlaneClient({ session: async () => ({ baseUrl: w.deps.origin, accessToken: "test-token", signInCommand: "test" }),
+    fetch: async (_url, init) => {
+      const response = await routeDeveloperTaskRequest({ ...w.deps, orgId: ORG_A, agentRuns: approvals } as unknown as DeveloperTaskRouteDependencies,
+        w.caller(ARJUN), { method: "POST", path, requestId: randomUUID(), headers: {}, body: String(init?.body) }, new URL(path, w.deps.origin));
+      if (!(response instanceof StatusReply)) throw new Error("expected confirmation");
+      return new Response(JSON.stringify({ ...response.body, requestId: "transport" }), { status: response.statusCode, headers: { "content-type": "application/json" } });
+    } });
+  const tool = DEVELOPER_TOOLS.find((entry) => entry.name === "agentx_take_task_ownership")!;
+  const result = await tool.handler({ client, newRequestId: randomUUID, now: () => w.clock.now } as never,
+    { task_id: w.taskId, request_id: randomUUID(), expected_people_revision: 1 }, {} as never);
+  expect(result.structured).toMatchObject({ status: "PENDING", confirmation_url: "https://cell.example.com/v1/app/approve/test" });
+
   expect(w.db.get(taskKey(w.taskId))).toEqual(before);
   expect(w.db.find((item) => item.subject !== undefined)).toEqual(expect.arrayContaining([expect.objectContaining({ subject: expect.objectContaining({ kind: "session_owner", sessionId: w.sessionId, to: ARJUN }) as unknown })]));
 });
