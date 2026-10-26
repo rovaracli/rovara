@@ -430,6 +430,17 @@ describe("Understand answers a question: the task ends Answered", () => {
     expect(t.access.mintKey.mock.calls.length).toBe(minted);
   });
 
+  it("is in the duration history (Task 7 hand-off): an Answered task's time is written once, when it is released, on the path it ran", async () => {
+    const t = await world();
+    const run = await t.answeredTask();
+    const task = t.meta(run.taskId);
+    expect(task.releasedAt).toBeDefined();
+    expect(task.durationRecordedAt).toBeDefined();
+    const history = t.db.find((item) => item.entityType === "DURATION_HISTORY");
+    expect(history).toHaveLength(1);
+    expect((history[0]!.durations as number[]).length).toBe(1);
+  });
+
   it("is not in the run-cost history: an Answered run teaches the next estimate nothing", async () => {
     const t = await world();
     const run = await t.answeredTask();
