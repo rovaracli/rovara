@@ -1278,3 +1278,14 @@ describe("a confirmed change applied before its record ended is done when its ha
     expect(refused?.message).toMatch(/^AGENT_REVISION_CONFLICT: Who this agent is shared with changed/);
   });
 });
+
+for (const issue of ["archived base", "missing version", "missing skill", "layer loop"] as const) it("keeps a draft readable and repairable with " + issue, async () => {
+ const f=await setup(),base=await f.create(MAYA);await f.seed(base,SAFE);const child=await f.create(MAYA,SAFE,{extends:base});
+ const {agentKey}=await import("@agentx/contracts"),key=agentKey(TEST_ORG,child,"DRAFT"),stored=f.db.get(key)!;
+ if(issue==="archived base")await f.call(MAYA,"POST",`/v1/app/agents/${base}/archive`,{});
+ if(issue==="missing version")f.db.set({...stored,extends:{agentId:base,version:999}});
+ if(issue==="missing skill")f.db.set({...stored,overlay:{...SAFE,skills:{add:[{skillId:"skl_"+"z".repeat(20)}]}}});
+ if(issue==="layer loop")f.db.set({...stored,extends:{agentId:child,version:1}});
+ const answer=await f.call(MAYA,"GET",`/v1/app/agents/${child}/draft`);expect(answer.status).toBe(200);expect(answer.body.draft).toMatchObject({revision:stored.revision});expect(answer.body.resolved).toBeUndefined();expect(answer.body.base).toBeUndefined();expect(answer.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({path:issue==="missing skill"?"skills":"extends",message:expect.any(String)})]));
+ const repaired=await f.call(MAYA,"PUT",`/v1/app/agents/${child}/draft`,{expectedRevision:stored.revision,overlay:SAFE,extends:"rovara-code"});expect(repaired.status).toBe(200);
+});
