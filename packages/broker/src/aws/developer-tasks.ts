@@ -4550,7 +4550,7 @@ export async function startTaskWorkflowPlanCritiqueFromSystem(
  * one transaction. The planner is given the plan it wrote as data, to write back whole, and the critic's points in the labelled block after Rovara's own words; it decides what to change. Answers STALE
  * unless the task is open, at that revision, and the check did send the plan back.
  */
-export async function startTaskWorkflowPlanRevisionFromSystem(
+export async function startTaskWorkflowCriticRevisionFromSystem(
   deps: DeveloperTaskRouteDependencies,
   taskId: string,
   expected: { workflowRevision: number },
