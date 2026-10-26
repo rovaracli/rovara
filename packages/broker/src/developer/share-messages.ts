@@ -118,3 +118,8 @@ export function modeReply(mode: "view" | "continue"): string {
 
 export const CANCELLED_REPLY = "The task was cancelled before it ran.";
 export const CLOSED_REPLY = "The task is closed, and its workspace is released. This thread no longer drives it.";
+
+/** Copy used by surfaces resolving an owner share notice's ids. The undo is the session share DELETE route. */
+export function widenedShareMessage(input: { actor: string; title: string; who: string; undoUrl: string }): string {
+  return `${clean(input.actor, 80)} shared "${clean(input.title, 300)}" with ${clean(input.who, 100)}. Undo: ${input.undoUrl}`;
+}

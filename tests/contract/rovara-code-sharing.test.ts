@@ -1,18 +1,31 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { agentSessionKey, orgMemberKey } from "@agentx/contracts";
+import { beforeAll, describe, expect, it } from "vitest";
+import { agentSessionKey, orgMemberKey, projectMemberKey, changesKey } from "@agentx/contracts";
 import { putSessionShare, deleteSessionShare } from "../../packages/broker/src/agent-sessions/shares.js";
 import { routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, markThreadPosted } from "../support/developer-task-broker.js";
+import { loadSlackBroker } from "../support/slack-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { routeDeveloperTaskRequest, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
+import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { takeTaskOwnership } from "../../packages/broker/src/developer/task-people.js";
+import { codeShareItems, undoCodeShare } from "../../packages/broker/src/rovara-code/sharing.js";
+import { noticesOf } from "../../packages/broker/src/developer/notifications.js";
+import { widenedShareMessage } from "../../packages/broker/src/developer/share-messages.js";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, PRIYA, ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";
+
+beforeAll(loadSlackBroker);
 
 function world() {
   const w = sessionWorld();
   const s = w.seedSession();
   const task = w.db.get(taskKey(s.taskId))!;
-  w.db.set({ ...task, workflow: createWorkflowSnapshot({ taskId: s.taskId, ownerId: PRIYA, now: new Date(w.clock.now).toISOString() }) });
+  w.db.set({ ...task, title: "Bump the Stripe SDK", workflow: createWorkflowSnapshot({ taskId: s.taskId, ownerId: PRIYA, now: new Date(w.clock.now).toISOString() }) });
   const deps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore,
     origin: "https://cell.example.com", taskView: async () => { throw new Error("ADMITTED"); } } satisfies SessionRouteDependencies;
   const notices = () => w.db.find((item) => item.entityType === "CHANGE_NOTICE");
@@ -41,9 +54,29 @@ describe("Rovara Code session shares", () => {
 
   it("the legacy ownership primitive cannot bypass session confirmation", async () => {
     const w = world();
-    await expect(takeTaskOwnership(w.deps, w.caller(ARJUN), w.taskId, { requestId: randomUUID(), expectedPeopleRevision: 1 })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
+    w.seedShare(ORG_A, w.sessionId, { kind: "member", developerId: ARJUN }, "edit");
+    await expect(takeTaskOwnership({ ...w.deps, agentSessions: w.deps }, w.caller(ARJUN), w.taskId, { requestId: randomUUID(), expectedPeopleRevision: 1 })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
     expect(w.db.get(taskKey(w.taskId))).not.toHaveProperty("currentOwner");
   });
+});
+
+it("the legacy MCP take-ownership route returns the session confirmation without moving authority", async () => {
+  const w = world();
+  w.seedShare(ORG_A, w.sessionId, { kind: "member", developerId: ARJUN }, "edit");
+  const approvals = {
+    store: new AgentStore({ documentClient: w.db, tableName: "state", now: () => w.clock.now }),
+    documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members,
+    signInStore: w.signInStore, agentSessions: w.deps, confirmOrigin: w.deps.origin,
+    mintConfirmUrl: async () => "https://cell.example.com/v1/app/approve/test",
+  };
+  const path = `/v1/dev/tasks/${w.taskId}/people/take-ownership`;
+  const before = structuredClone(w.db.get(taskKey(w.taskId)));
+  const reply = await routeDeveloperTaskRequest({ ...w.deps, orgId: ORG_A, agentRuns: approvals } as unknown as DeveloperTaskRouteDependencies,
+    w.caller(ARJUN), { method: "POST", path, requestId: randomUUID(), headers: {}, body: JSON.stringify({ requestId: randomUUID(), expectedPeopleRevision: 1 }) }, new URL(path, w.deps.origin));
+  expect(reply).toBeInstanceOf(StatusReply);
+  expect(reply).toMatchObject({ statusCode: 202, body: { status: "NEEDS_CONFIRMATION" } });
+  expect(w.db.get(taskKey(w.taskId))).toEqual(before);
+  expect(w.db.find((item) => item.subject !== undefined)).toEqual(expect.arrayContaining([expect.objectContaining({ subject: expect.objectContaining({ kind: "session_owner", sessionId: w.sessionId, to: ARJUN }) as unknown })]));
 });
 
 // Every Code session route is exercised with the same live authority table. Allowed callers
@@ -55,6 +88,8 @@ const routes = [
   { method: "POST", tail: "/answers", level: "use", body: { round: 1, answers: [{ questionId: "q1", text: "Yes" }] } },
   { method: "POST", tail: "/change-anyway", level: "use" },
   { method: "POST", tail: "/retry", level: "edit" },
+  { method: "POST", tail: "/stop", level: "edit" },
+  { method: "POST", tail: "/messages", level: "use", body: { kind: "steer", text: "What should happen next?" } },
   { method: "POST", tail: "/take-over", level: "edit" },
   { method: "PUT", tail: "/shares", level: "edit", body: { principal: { kind: "member", developerId: PRIYA }, level: "view" } },
   { method: "DELETE", tail: `/shares/MEMBER%23${PRIYA}`, level: "edit" },
@@ -85,3 +120,141 @@ for (const route of routes) for (const standing of Object.keys(ranks) as Array<k
     }
   });
 }
+
+describe("legacy Slack sharing", () => {
+  const share = { teamId: "T0TEAM001", channelId: "C0CHANNEL001", threadTs: "1695500000.000100", sharedReason: "requested" as const, sharedAt: "2026-10-22T08:00:00.000Z", mode: "view" as const };
+  it("widens with the exact notice copy and the existing DELETE undo, and narrowing sends no notice", async () => {
+    const w = world();
+    const task = { ...w.db.get(taskKey(w.taskId)), title: "Retry the job", share, shareVersion: 1 } as unknown as DeveloperTaskRecord;
+    const requestId = randomUUID();
+    const next = { ...share, mode: "continue" as const };
+    const items = codeShareItems("state", task, next, requestId, ARJUN, new Date(w.clock.now).toISOString());
+    await w.db.send(new TransactWriteCommand({ TransactItems: items }));
+    w.db.set({ ...task, share: next, shareVersion: 2, codeShareRequestId: requestId });
+    expect(w.db.find((item) => item.text !== undefined)).toEqual(expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining('shared "Retry the job" with') as unknown })]));
+    const notice = w.notices()[0]!;
+    expect(notice).toMatchObject({ by: ARJUN, sessionId: w.sessionId, undo: { principalKey: `SLACK#${requestId}` } });
+    const undoUrl = `/v1/app/sessions/${w.sessionId}/shares/${encodeURIComponent(`SLACK#${requestId}`)}`;
+    expect(widenedShareMessage({ actor: "Arjun", title: task.title, who: "#web", undoUrl })).toBe(`Arjun shared "Retry the job" with #web. Undo: ${undoUrl}`);
+    const url = new URL(undoUrl, w.deps.origin);
+    await routeAgentSessionRequest(w.deps, w.caller(PRIYA), { method: "DELETE", path: url.pathname, requestId: randomUUID(), headers: {} }, url);
+    expect(w.db.get(taskKey(w.taskId))).toMatchObject({ share: { mode: "view" }, shareVersion: 3 });
+    expect(codeShareItems("state", { ...task, share: next }, share, randomUUID(), ARJUN, new Date(w.clock.now).toISOString())).toEqual([]);
+    expect(await undoCodeShare(w.deps, w.caller(PRIYA), w.sessionId, `SLACK#${requestId}`)).toEqual({ removed: false });
+  });
+
+  it("a stale undo cannot replace a later share, another org cannot use it", async () => {
+    const w = world();
+    const task = { ...w.db.get(taskKey(w.taskId)), share, shareVersion: 1 } as unknown as DeveloperTaskRecord;
+    const requestId = randomUUID();
+    await w.db.send(new TransactWriteCommand({ TransactItems: codeShareItems("state", task, { ...share, mode: "continue" }, requestId, ARJUN, new Date(w.clock.now).toISOString()) }));
+    w.db.set({ ...task, codeShareRequestId: randomUUID() });
+    const count = w.db.transactions().length;
+    await expect(undoCodeShare(w.deps, w.caller(PRIYA), w.sessionId, `SLACK#${requestId}`)).rejects.toMatchObject({ code: "SESSION_REVISION_CONFLICT" });
+    await expect(undoCodeShare(w.deps, w.caller(PRIYA, ORG_B), w.sessionId, `SLACK#${requestId}`)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(w.db.transactions()).toHaveLength(count);
+  });
+});
+
+it("the real Code start and legacy Slack share route use session authority and support undo after thread posting", async () => {
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+  const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix the retry" } });
+  expect(started.status).toBe(202);
+  const { taskId } = started.body.task as { taskId: string };
+  const task = () => h.db.get(taskKey(taskId))!;
+  const sessionId = String(task().sessionId);
+  expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "view" })).status).toBe(200);
+  markThreadPosted(h.db, taskId);
+  const before = h.db.find((item) => item.entityType === "CHANGE_NOTICE").length;
+  const requestId = randomUUID();
+  expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId, shareMode: "continue" })).status).toBe(200);
+  expect(h.db.find((item) => item.entityType === "CHANGE_NOTICE")).toHaveLength(before + 1);
+  const undo = await h.dev(MAYA, "DELETE", `/v1/app/sessions/${sessionId}/shares/${encodeURIComponent(`SLACK#${requestId}`)}`);
+  expect(undo.status).toBe(200);
+  expect(task()).toMatchObject({ share: { mode: "view" } });
+  await h.orgOf(OMAR);
+  expect((await h.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "continue" })).status).toBe(404);
+  h.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+  expect((await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "continue" })).status).not.toBe(200);
+});
+
+for (const level of ["view", "use", "edit", "owner", "removed", "otherOrg"] as const) {
+  it(`legacy POST share: ${level} (live session authority)`, async () => {
+    const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {} } });
+    const started = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId: randomUUID(), path: "QUICK", input: { text: "Fix the retry" } });
+    const { taskId } = started.body.task as { taskId: string };
+    const task = h.db.get(taskKey(taskId))!;
+    const actor = level === "owner" || level === "removed" ? MAYA : OMAR;
+    await h.orgOf(actor);
+    if (actor === OMAR) {
+      h.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), role: "developer", projectRole: "contributor" });
+      if (level !== "otherOrg") h.db.set({ ...agentSessionKey(TEST_ORG, String(task.sessionId), `SHARE#MEMBER#${OMAR.developerId}`), principal: { kind: "member", developerId: OMAR.developerId }, level, sharedBy: { developerId: MAYA.developerId, name: MAYA.name }, sharedAt: new Date().toISOString() });
+    }
+    if (level === "otherOrg") h.db.set({ ...task, orgId: ORG_B });
+    if (level === "removed") h.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+    const writes = h.db.transactions().length;
+    const result = await h.dev(actor, "POST", `/v1/dev/tasks/${taskId}/share`, { requestId: randomUUID(), shareMode: "view" });
+    if (level === "edit" || level === "owner") expect(result.status).toBe(200);
+    else {
+      expect(result.status).not.toBe(200);
+      expect(h.db.transactions()).toHaveLength(writes);
+    }
+  });
+}
+
+it("a Code company share narrows immediately, while widening still needs confirmation", async () => {
+  const w = world();
+  w.seedShare(ORG_A, w.sessionId, { kind: "org" }, "edit");
+  const result = await putSessionShare(w.deps, w.caller(PRIYA), w.sessionId, { requestId: randomUUID(), principal: { kind: "org" }, level: "view" });
+  expect(result.status).toBe(200);
+  expect(w.notices()).toEqual([]);
+  await expect(putSessionShare(w.deps, w.caller(PRIYA), w.sessionId, { requestId: randomUUID(), principal: { kind: "org" }, level: "edit" })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+});
+
+it("narrowing a Code Slack thread emits no notification; plain task behavior stays the same", () => {
+  const base = { entityType: "DEVELOPER_TASK", taskId: randomUUID(), share: { mode: "continue" } };
+  const next = { ...base, share: { mode: "view" } };
+  expect(noticesOf(base, next, "2026-10-26T12:00:00.000Z", "event")).toEqual([expect.objectContaining({ kind: "mode" })]);
+  const workflow = { definitionId: "agentx-task-to-pr" };
+  expect(noticesOf({ ...base, workflow }, { ...next, workflow }, "2026-10-26T12:00:00.000Z", "event")).toEqual([]);
+});
+
+it("undoing an initial Slack share after thread posting removes access, without losing the owner", async () => {
+  const w = world();
+  const task = { ...w.db.get(taskKey(w.taskId)), title: "Retry" } as unknown as DeveloperTaskRecord;
+  const share = { teamId: "T0TEAM001", channelId: "C0CHANNEL001", sharedReason: "requested" as const, sharedAt: new Date(w.clock.now).toISOString(), mode: "continue" as const };
+  const requestId = randomUUID();
+  await w.db.send(new TransactWriteCommand({ TransactItems: codeShareItems("state", task, share, requestId, ARJUN, share.sharedAt) }));
+  // Posting the thread advances shareVersion but preserves the request marker.
+  w.db.set({ ...task, share: { ...share, threadTs: "1695500000.000100" }, shared: true, shareVersion: 2, codeShareRequestId: requestId });
+  await undoCodeShare(w.deps, w.caller(PRIYA), w.sessionId, `SLACK#${requestId}`);
+  expect(w.db.get(taskKey(w.taskId))).toMatchObject({ shared: false, developerId: PRIYA });
+  expect(w.db.get(taskKey(w.taskId))).not.toHaveProperty("share");
+});
+
+it("expired and malformed undo records fail closed with no writes", async () => {
+  const w = world();
+  const requestId = randomUUID();
+  const key = agentSessionKey(ORG_A, w.sessionId, `SHARE#SLACK#${requestId}`);
+  const task = w.db.get(taskKey(w.taskId))!;
+  w.db.set({ ...task, share: { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "continue" }, shareVersion: 2, codeShareRequestId: requestId });
+  for (const record of [
+    { previousShare: null, expiresAt: Math.floor(w.clock.now / 1000) - 1 },
+    { previousShare: { mode: "continue" }, expiresAt: Math.floor(w.clock.now / 1000) + 600 },
+  ]) {
+    w.db.set({ ...key, orgId: ORG_A, taskId: w.taskId, ...record });
+    const count = w.db.transactions().length;
+    await expect(undoCodeShare(w.deps, w.caller(PRIYA), w.sessionId, `SLACK#${requestId}`)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(w.db.transactions()).toHaveLength(count);
+  }
+});
+
+it("widening resolves the effective owner from the current task rather than its creator", async () => {
+  const w = world();
+  const at = new Date(w.clock.now).toISOString();
+  const task = { ...w.db.get(taskKey(w.taskId)), currentOwner: { developerId: ARJUN, name: "Arjun", provider: "oidc", since: at } } as unknown as DeveloperTaskRecord;
+  const items = codeShareItems("state", task, { teamId: "T0TEAM001", channelId: "C0CHANNEL001", mode: "view", sharedAt: at, sharedReason: "requested" }, randomUUID(), PRIYA, at);
+  await w.db.send(new TransactWriteCommand({ TransactItems: items }));
+  expect(w.notices()).toHaveLength(1);
+  expect(w.notices()[0]).toMatchObject({ pk: changesKey(ORG_A, ARJUN, at, 0).pk, by: PRIYA });
+});

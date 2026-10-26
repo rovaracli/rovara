@@ -237,6 +237,7 @@ import {
   taskShare,
   isTaskOwner,
   ownerDisplayName,
+  ownerFenceOf,
   tryEffectiveTaskOwner,
   type DeveloperTaskIndexRecord,
   type DeveloperTaskPointerRecord,
@@ -288,7 +289,10 @@ import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems
 import { bindingItems, threadBindingItems } from "../agent-sessions/bindings.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
 import { createTaskSessionItems, ensureTaskSession, sessionStarterFor } from "../agent-sessions/create.js";
-import type { SessionAccessDependencies } from "../agent-sessions/access.js";
+import { requireSessionLevel, type SessionAccessDependencies } from "../agent-sessions/access.js";
+import { codeTask, codeShareItems } from "../rovara-code/sharing.js";
+import { askTakeOver } from "../agent-sessions/take-over.js";
+import { StatusReply } from "./status-reply.js";
 import { advanceAgentRun, agentRunView, cancelAgentRun, taskLevelEvents, type AgentRunEngineDependencies } from "../agents/run-engine.js";
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, onTaskResumed, type TaskEndOutcome } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "./task-end-row.js";
@@ -7746,15 +7750,16 @@ function shareItems(
   audit: { idempotencyKey: { pk: string; sk: string }; payloadHash: string; receivedAt: string; request: string; admin?: ShareAdmin; actor?: DeveloperCaller },
 ): TransactItems {
   const version = task.shareVersion ?? 0;
+  const ownerFence = codeTask(task) ? ownerFenceOf(task) : undefined;
   return [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),
-      UpdateExpression: "SET #share = :share, #shared = :true, shareVersion = :next, updatedAt = :now",
-      ConditionExpression: version === 0
+      UpdateExpression: `SET #share = :share, #shared = :true, shareVersion = :next, updatedAt = :now${codeTask(task) ? ", codeShareRequestId = :shareRequest" : ""}`,
+      ConditionExpression: (version === 0
         ? "attribute_exists(pk) AND attribute_not_exists(shareVersion) AND attribute_not_exists(closedAt)"
-        : "shareVersion = :current AND attribute_not_exists(closedAt)",
-      ExpressionAttributeNames: { "#share": "share", "#shared": "shared" },
-      ExpressionAttributeValues: { ":share": share, ":true": true, ":next": version + 1, ":now": audit.receivedAt, ...(version === 0 ? {} : { ":current": version }) },
+        : "shareVersion = :current AND attribute_not_exists(closedAt)") + (ownerFence === undefined ? "" : ` AND orgId = :shareOrg AND ${ownerFence.expression}`),
+      ExpressionAttributeNames: { "#share": "share", "#shared": "shared", ...ownerFence?.names },
+      ExpressionAttributeValues: { ":share": share, ":true": true, ":next": version + 1, ":now": audit.receivedAt, ...(ownerFence === undefined ? {} : { ":shareOrg": task.orgId, ...ownerFence.values }), ...(codeTask(task) ? { ":shareRequest": audit.idempotencyKey.sk.slice(8) } : {}), ...(version === 0 ? {} : { ":current": version }) },
     } },
     // Unconditional, as the close's: the start wrote this row with the task.
     { Update: {
@@ -7772,6 +7777,7 @@ function shareItems(
       ExpressionAttributeNames: { "#mode": "mode" }, ExpressionAttributeValues: { ":mode": share.mode },
     } }]),
     putNew(deps.tableName, { ...audit.idempotencyKey, entityType: "IDEMPOTENCY", action: "share", payloadHash: audit.payloadHash }),
+    ...codeShareItems(deps.tableName, task, share, audit.idempotencyKey.sk.slice(8), audit.actor?.developerId ?? hashJson({ issuer: audit.admin?.issuer, subject: audit.admin?.subject }), audit.receivedAt, audit.actor?.name ?? audit.admin?.displayName ?? "An administrator"),
     // Q9: a share or mode change is audited like the task's other actions.
     putNew(turns, aiToolTurn({
       party: audit.actor === undefined ? partyOfTask(task) : partyOfTaskActor(task, audit.actor), turnId: randomUUID(), action: "share", phase: "accepted", outcome: "accepted", receivedAt: audit.receivedAt, finishedAt: iso(deps),
@@ -7779,6 +7785,20 @@ function shareItems(
       ...(audit.admin === undefined ? {} : { admin: audit.admin }),
     })),
   ];
+}
+
+async function authorizeShare(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<AuthorizedTask> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  if (!codeTask(task)) return authorizeLegacyTaskAction(deps, caller, taskId, "work");
+  if (deps.agentSessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Session access cannot be checked right now.");
+  const access = await requireSessionLevel(deps.agentSessions, caller, task.sessionId, "edit", "share it");
+  if (task.closedAt !== undefined) throw agentXError("CONFIG_INVALID", CLOSED_TASK);
+  await requireProjectWorkRole(deps, task, caller);
+  const people = await loadTaskPeople(deps, taskId);
+  const actorId = taskOwnerKey(caller.developerId, taskId);
+  const ownerIds = [taskOwnerKey(access.effectiveOwner.developerId, taskId)];
+  return { task, role: "owner", actorId, ownerActorIds: ownerIds, authority: { actorId, ownerIds }, ...(people === undefined ? {} : { peopleRevision: people.revision }) };
 }
 
 const shareIdempotencyKey = (task: DeveloperTaskRecord, requestId: string) => ({ pk: `IDEMPOTENCY#${task.ownerKey}#${task.workspaceId}`, sk: `REQUEST#${requestId}` });
@@ -7792,7 +7812,7 @@ const REUSED_REQUEST = "this request_id was already used for another action on t
  */
 async function shareTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ShareDeveloperTaskRequestSchema, value, deps, "share");
-  let access = await authorizeLegacyTaskAction(deps, caller, taskId, "work");
+  let access = await authorizeShare(deps, caller, taskId);
   let task = access.task;
   const turns = turnTable(deps);
   const idempotencyKey = shareIdempotencyKey(task, request.requestId);
@@ -7819,7 +7839,7 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
     }), accessFence(deps, access)];
     try {
       await deps.actions.transact(items);
-      access = await authorizeTaskAction(deps, caller, taskId, "work");
+      access = await authorizeShare(deps, caller, taskId);
       task = access.task;
       return answer();
     } catch (error) {
@@ -7828,7 +7848,7 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
       const concurrent = await get<{ payloadHash: string }>(deps, idempotencyKey);
       if (concurrent !== undefined) return shareTask(deps, caller, taskId, value);
       // The notifier (or a close) changed the task meanwhile: decide again from a fresh read.
-      access = await authorizeTaskAction(deps, caller, taskId, "work");
+      access = await authorizeShare(deps, caller, taskId);
       task = access.task;
     }
   }
@@ -7843,6 +7863,7 @@ async function shareTask(deps: DeveloperTaskRouteDependencies, caller: Developer
  * Ruling F5 (D22): the answer is the task's ID and share only, never its title or results.
  */
 export async function adminShareMode(deps: ShareModeDependencies, admin: ShareAdmin, task: DeveloperTaskRecord, value: unknown): Promise<{ task: { taskId: string; share?: DeveloperTaskShare } }> {
+  if (task.orgId !== deps.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   const request = parse(AdminShareModeRequestSchema, value, deps, "admin-share-mode");
   const turns = turnTable(deps);
   const idempotencyKey = shareIdempotencyKey(task, request.requestId);
@@ -7851,7 +7872,7 @@ export async function adminShareMode(deps: ShareModeDependencies, admin: ShareAd
   const answer = () => ({ task: { taskId: current.taskId, ...(current.share === undefined ? {} : { share: shareView(current.share) }) } });
   const reload = async () => {
     const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
-    if (fresh === undefined) throw agentXError("TASK_NOT_FOUND", `no task ${task.taskId}`);
+    if (fresh === undefined || fresh.orgId !== deps.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
     current = fresh;
   };
   const previous = await get<{ payloadHash: string }>(deps, idempotencyKey);
@@ -7927,6 +7948,14 @@ export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependen
   }
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "people/take-ownership") {
     const input = parse(TaskPeopleTakeOwnershipRequestSchema, body(request), deps, "people/take-ownership");
+    const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+    if (task === undefined || task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+    if (task.sessionId !== undefined && task.workflow?.definitionId === "agentx-task-to-pr") {
+      const sessions = deps.agentRuns?.agentSessions;
+      if (sessions === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Taking a session over isn't available right now.");
+      const reply = await askTakeOver(sessions, caller, task.sessionId, { requestId: input.requestId }, deps.agentRuns);
+      return new StatusReply(reply.status, reply.body);
+    }
     return { change: await proposeTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input) };
   }
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "continue") return continueTask(deps, caller, taskId, body(request));
