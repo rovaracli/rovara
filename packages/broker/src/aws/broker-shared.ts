@@ -336,11 +336,11 @@ export interface WorkflowDispatchRecord {
   taskId: string;
   workflowRevision: number;
   /**
-   * UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
+   * CRITIQUE (Plan 6, Task 8): a Rovara Code version 2 plan is ready for its plan check; REPLAN: the plan check found a blocking problem and the planner revises the plan once. UPDATE: an approved fix's checks and reviews passed, and it is pushed to the pull requests already open. `agent_run` (Plan 3, Task 22): the agent-step engine
    * has something to do for the task. `operation_end`: a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel
    * sweep), so the broker's recovery sweep blocks its keys and tells the task's end handlers.
    */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "agent_run" | "operation_end";
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "CRITIQUE" | "REPLAN" | "agent_run" | "operation_end";
   /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. */
   candidateDigest: string;
   /** A single internal resume operation warms EC2 before a required E2E round is immutably admitted. */

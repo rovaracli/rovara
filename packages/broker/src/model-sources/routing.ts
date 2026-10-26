@@ -177,12 +177,14 @@ export async function routeModel(deps: RoutingDependencies, input: RouteInput): 
 
 /**
  * The models the org's sources can serve, for validating a recipe at publish: Rovara's catalog when Rovara is in the order, and the models of each
- * company source that is usable. A person's ChatGPT plan is not listed: whether it serves a model depends on who is paying.
+ * company source that is usable, in the order the sources are tried (the project's, when `project` is given, else the org's). A person's ChatGPT plan is not listed: whether it serves
+ * a model depends on who is paying.
  */
-export async function servableModels(deps: RoutingDependencies, orgId: OrgId): Promise<ModelIdentifier[]> {
+export async function servableModels(deps: RoutingDependencies, orgId: OrgId, project?: string): Promise<ModelIdentifier[]> {
   const rovara = (): ModelIdentifier[] => bedrockClaudeModelIds(deps.rovaraGeography ?? "us").map((modelId) => ({ provider: "amazon-bedrock", modelId }));
   if (deps.sources === undefined) return rovara();
-  const walk = await walkOf({ ...deps, sources: deps.sources }, orgId, undefined);
+  // With a project: the sources in the order that project walks them (its own order, within the org's), which is the order a model is routed in.
+  const walk = await walkOf({ ...deps, sources: deps.sources }, orgId, project);
   const listed = new Map<string, ModelIdentifier>();
   const add = (model: ModelIdentifier) => { listed.set(`${model.provider}\0${model.modelId}`, { provider: model.provider, modelId: model.modelId }); };
   for (const id of walk.ids) {

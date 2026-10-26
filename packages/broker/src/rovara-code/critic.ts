@@ -56,7 +56,7 @@ export function recommendCriticModel(limits: CriticModelLimits, planModel: Model
 
 export interface CriticModelInput {
   /** The recipe's plan check step: its name and the model the company chose for it (and its fallback), if any. */
-  step: { name: string; settings?: { model?: ModelSelection | ModelIdentifier | null | undefined; fallbackModel?: ModelSelection | ModelIdentifier | null | undefined } | undefined } | undefined;
+  step: { name: string; settings?: object | undefined } | undefined;
   agentName: string;
   /** The model that wrote the plan; undefined when it isn't known. */
   planModel: ModelIdentifier | undefined;
@@ -85,10 +85,11 @@ const selectionOf = (model: ModelSelection | ModelIdentifier): ModelSelection =>
 export function criticModelFor(input: CriticModelInput): CriticModel {
   const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.guardrails.forbiddenModels };
   const subject = { agent: input.agentName, step: input.step?.name ?? "Plan check" };
-  const own = input.step?.settings?.model ?? undefined;
+  const settings = (input.step?.settings ?? {}) as { model?: ModelSelection | ModelIdentifier | null; fallbackModel?: ModelSelection | ModelIdentifier | null };
+  const own = settings.model ?? undefined;
   if (own !== undefined) {
     if (allowed(limits, own)) return { model: selectionOf(own), sameModelAsPlanner: false, chosenBy: "company" };
-    const fallback = input.step?.settings?.fallbackModel ?? undefined;
+    const fallback = settings.fallbackModel ?? undefined;
     if (fallback !== undefined && allowed(limits, fallback)) return { model: selectionOf(fallback), sameModelAsPlanner: false, chosenBy: "company" };
     return { refuse: agentXError("MODEL_NOT_ALLOWED", modelNotAllowedText(subject, own, input.project.name)) };
   }

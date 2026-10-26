@@ -159,6 +159,11 @@ export const WORKFLOW_BLOCK_REASONS = {
   planNotSaved: "The planning run finished without saving a document. Retry planning.",
   /** The saved plan is a structured document that could not be read back. */
   planUnreadable: "the plan couldn't be read",
+  /** Plan 6 Task 8: the plan check's answer had no block Rovara could read. */
+  planCheckUnreadable: "Rovara couldn't read the plan check's answer.",
+  /** Plan 6 Task 8: the plan check or the revision after it could not be started, however often it was tried. */
+  planCheckNotStarted: "Rovara couldn't start the plan check.",
+  planRevisionNotStarted: "Rovara couldn't start revising the plan after its check.",
   pullRequestChanged: "The pull request on GitHub no longer holds the checked code, so I won't finish this task from it. Close the task.",
   /** A required pull request was closed on GitHub without merging; reopened, it is followed again. */
   pullRequestClosed: "The pull request was closed on GitHub without merging. Reopen it there, or close this task.",

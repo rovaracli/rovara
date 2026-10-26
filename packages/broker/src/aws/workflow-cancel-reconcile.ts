@@ -12,12 +12,12 @@ import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, type Wor
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { workflowRunEndedReason } from "./outbox-failure.js";
 
-type WorkflowMode = "PLAN" | "IMPLEMENT" | "CHECKS" | "REVIEW" | "FEEDBACK_REVIEW";
+type WorkflowMode = "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "CHECKS" | "REVIEW" | "FEEDBACK_REVIEW";
 type Client = Pick<DynamoDBDocumentClient, "send">;
 
 /** The workflow stage a run of each mode occupies while it runs. */
 export const WORKFLOW_STEP_STAGE: Readonly<Record<WorkflowMode, WorkflowSnapshot["stage"]>> = {
-  PLAN: "PLAN", IMPLEMENT: "IMPLEMENT", CHECKS: "VERIFY", REVIEW: "REVIEW", FEEDBACK_REVIEW: "WAIT_FOR_MERGE",
+  PLAN: "PLAN", PLAN_CRITIQUE: "PLAN_CRITIQUE", IMPLEMENT: "IMPLEMENT", CHECKS: "VERIFY", REVIEW: "REVIEW", FEEDBACK_REVIEW: "WAIT_FOR_MERGE",
 };
 
 /** The operation fields these rules read; an `OperationRecord` and the public `Operation` both fit. */
