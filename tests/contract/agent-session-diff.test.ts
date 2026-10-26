@@ -141,3 +141,10 @@ it("refuses malformed or excessive chain sections before reading step tasks",asy
  await expect(sessionDiff(f.deps,f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:42,page:1})).rejects.toMatchObject({code:"NOT_FOUND"});expect(f.stepTask).not.toHaveBeenCalled();expect(f.files).not.toHaveBeenCalled();
  }
 });
+for(const code of ["NOT_FOUND","FORBIDDEN","RUNTIME_UNAVAILABLE"] as const)it("handles an earlier chain step read refusal: "+code,async()=>{
+ const f=chainDiffSetup(),run=await f.runView(),section=run.sections[0]!;
+ f.runView.mockResolvedValue({...run,sections:[section,{...section,seq:2}]});
+ const {agentXError}=await import("@agentx/contracts");f.stepTask.mockRejectedValueOnce(agentXError(code,"Step unavailable."));
+ if(code==="RUNTIME_UNAVAILABLE"){await expect(sessionDiff(f.deps,f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:42,page:1})).rejects.toMatchObject({code});expect(f.files).not.toHaveBeenCalled();}
+ else{expect(await sessionDiff(f.deps,f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:42,page:1})).toMatchObject({pullRequest:{number:42}});expect(f.stepTask).toHaveBeenLastCalledWith({kind:"session",developerId:PRIYA},f.chain.sessionId,2);}
+});
