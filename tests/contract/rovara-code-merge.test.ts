@@ -8,9 +8,10 @@ import {
 import type { PullRequestReview } from "../../packages/broker/src/github-pull-status.js";
 import { getApprovalSubjectHandler, getAnyApproval, mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { humanApprovalOf, mergeReadiness, mergeViewOf, pressMerge, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
+import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { ARJUN, MAX, OLA, ORG_A, ORG_B, PRIYA, ZED } from "../support/agent-session-world.js";
+import { ARJUN, CELL, MAX, OLA, ORG_A, ORG_B, PRIYA, ZED } from "../support/agent-session-world.js";
 import { GH, HEAD_A, HEAD_B, HEAD_C, LOGIN, OLD_HEAD, mergeWorld, pullStatus, type MergeWorld } from "../support/rovara-code-merge-world.js";
 
 // ---- whose approval counts
@@ -803,6 +804,29 @@ describe("what the confirmation refuses", () => {
       w.github.results.set(7, { outcome: "refused", reason });
       expect((await confirm(w)).record).toMatchObject({ status: "APPROVED_FAILED", failure: M.notMerged("payments", words) });
     }
+  });
+});
+
+// ---- the route
+
+describe("POST /v1/app/sessions/{id}/merge", () => {
+  const route = (w: MergeWorld, who: string, method: string, path: string, body?: unknown) => routeAgentSessionRequest(
+    { ...w.shareDeps, origin: CELL, approvals: w.deps } as never, w.caller(who),
+    { method, path, headers: {}, requestId: "r", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(`${CELL}${path}`),
+  );
+
+  it("answers 202 with the link where the presser confirms it, and refuses a GET and an extra segment", async () => {
+    const w = await ready();
+    const reply = await route(w, PRIYA, "POST", `/v1/app/sessions/${w.sessionId}/merge`, { requestId: w.requestId() });
+    expect(reply).toMatchObject({ statusCode: 202, body: { status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED" } });
+    expect(w.github.mergeCalls).toEqual([]);
+    expect(await codeOf(route(w, PRIYA, "GET", `/v1/app/sessions/${w.sessionId}/merge`))).toMatchObject({ code: "NOT_FOUND" });
+    expect(await codeOf(route(w, PRIYA, "POST", `/v1/app/sessions/${w.sessionId}/merge/now`, { requestId: w.requestId() }))).toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("answers 409 MERGE_NOT_READY in the exact words when it is not ready", async () => {
+    const w = await ready({}, { ci: "failing", failingChecks: ["test"] });
+    expect(await codeOf(route(w, PRIYA, "POST", `/v1/app/sessions/${w.sessionId}/merge`, { requestId: w.requestId() }))).toEqual({ code: "MERGE_NOT_READY", message: M.checks });
   });
 });
 
