@@ -22,6 +22,7 @@ import { nativeConnection } from "../connectors/native/runtime.js";
 import { safeVendorFetch, vendorFetcher } from "../connectors/native/vendor-fetch.js";
 
 const NOT_CONFIGURED = "GitHub is not configured in this deployment";
+const log = (entry: Record<string, unknown>): void => console.log(JSON.stringify({ component: "broker", ...entry }));
 const NO_ORG = "GitHub Actions connectors need an organization";
 
 /** Plan 4 Task 17: GitHub Actions workflow runs, job logs and deployments, read natively in the broker with the project's GitHub App; one scope per repository. */
@@ -57,7 +58,7 @@ export const githubActionsConnectorType: ConnectorType = {
           properties: GITHUB_ACTIONS_ROUTING_PROPERTIES,
           scopeOf: (values) => ({
             alias: values["scopeAlias"]!, owner: values["owner"]!, repo: values["repo"]!, repositoryId: Number(values["repositoryId"]),
-            installationId: values["installationId"] === "" ? undefined : Number(values["installationId"]), download,
+            installationId: values["installationId"] === "" ? undefined : Number(values["installationId"]), download, log,
           }),
         },
         credentialFor: async (tool, scope) => ({ token: await mintActionsToken({ tokens: loaded.tokens, orgId: loaded.orgId, tool, scope }), bindings: {} }),

@@ -14,13 +14,18 @@
 // `actions` and `deployments` at read or write); GET /repos/{owner}/{repo}/actions/runs (status, branch, per_page; each run has `repository.id`), /actions/runs/{run_id},
 // /actions/runs/{run_id}/jobs (filter, per_page; a job has `run_id`, `run_url`, `steps`), /actions/jobs/{job_id}/logs (302, `Location` valid for 1 minute; the page names
 // no host, so the two host families of the brief are used), /deployments (environment, per_page; `repository_url`) and /deployments/{id}/statuses (`deployment_url`, `repository_url`).
-import type { OrgId, RepositoryDefinition } from "@agentx/contracts";
+import { redactText, type OrgId, type RepositoryDefinition } from "@agentx/contracts";
 import { CredentialUnavailable } from "@agentx/gateway";
 import { GITHUB_ACTIONS_AGENT_TOOL_PERMISSIONS, githubActionsToolPermissions, type GitHubActionsToolPermissionSet, type GitHubAgentTokenPermissions } from "../../agents/github-agent-tools.js";
 import { NativeToolRefusal, type NativeRouting, type NativeTool, type NativeToolContext } from "./runtime.js";
-import { vendorFetch } from "./vendor-fetch.js";
+import { vendorFetch, type VendorResponse } from "./vendor-fetch.js";
 
 export const GITHUB_API_ORIGIN = "https://api.github.com/";
+/**
+ * Sent on every request to GitHub's API. GitHub refuses a request with no `User-Agent` header with HTTP 403 (not a permissions answer), and the fixed-origin fetch under
+ * a native connector is node's own https request, which sends none (v0.4.6 staging: every Actions tool call came back "refused" although the token was right).
+ */
+export const GITHUB_USER_AGENT = "agentx-control-plane";
 
 /** What the engine binds a call to: the repository, with its pinned GitHub id. */
 export interface GitHubActionsEngineScope { alias: string; repository: RepositoryDefinition }
@@ -35,6 +40,8 @@ export interface GitHubActionsRunScope {
   installationId: number | undefined;
   /** Reads a log from the address GitHub redirected to (`logDownloader`). */
   download(location: string): Promise<string>;
+  /** Where a refused request is logged (names, ids, numbers and GitHub's own message; never a token). */
+  log: (entry: Record<string, unknown>) => void;
 }
 
 // ---- the token
@@ -64,7 +71,7 @@ export async function mintActionsToken(input: {
   tokens: GitHubActionsTokens;
   orgId: OrgId;
   tool: string;
-  scope: Pick<GitHubActionsRunScope, "owner" | "repo" | "installationId">;
+  scope: Pick<GitHubActionsRunScope, "owner" | "repo" | "installationId"> & Partial<Pick<GitHubActionsRunScope, "log">>;
   catalog?: Readonly<Record<string, Readonly<GitHubActionsToolPermissionSet>>>;
 }): Promise<string> {
   let permissions: GitHubAgentTokenPermissions;
@@ -81,6 +88,11 @@ export async function mintActionsToken(input: {
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
     if (code === "GITHUB_NOT_CONNECTED" || code === "CONFIG_INVALID") throw new CredentialUnavailable(wordsOf(error as Error));
+    // Which permissions were asked for and what failed, so a refused mint can be told from a refused call (our own words and codes only; no token exists yet).
+    input.scope.log?.({
+      event: "github_actions.token_not_issued", tool: input.tool, repository: `${input.scope.owner}/${input.scope.repo}`, requestedPermissions: permissions,
+      ...(typeof code === "string" ? { code } : {}), message: clip(error instanceof Error ? redactText(error.message) : "unknown", 300),
+    });
     throw new NativeToolRefusal(NO_TOKEN, "vendor_error");
   }
 }
@@ -146,8 +158,25 @@ const loginOf = (value: unknown): string => clip(recordOf(value)["login"], 60);
 
 const repoPath = (scope: GitHubActionsRunScope): string => `repos/${encodeURIComponent(scope.owner)}/${encodeURIComponent(scope.repo)}`;
 const headersOf = (ctx: NativeToolContext<GitHubActionsRunScope>) => ({
-  authorization: `Bearer ${ctx.credential.token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28",
+  authorization: `Bearer ${ctx.credential.token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": GITHUB_USER_AGENT,
 });
+
+/**
+ * Logs a request GitHub refused (not a plain "not found"): the tool, the repository, the status, the permissions the token was minted with, and GitHub's own `message`
+ * (cut, redacted, the token removed). GitHub's words are for the log only; the model still gets the fixed words of `failureOf`.
+ */
+function logRefused(ctx: NativeToolContext<GitHubActionsRunScope>, tool: string, status: number, response: Pick<VendorResponse, "json" | "text">): void {
+  if (status === 404) return;
+  const said = isRecord(response.json) && typeof response.json["message"] === "string" ? response.json["message"] : response.text ?? "";
+  const token = ctx.credential.token;
+  const message = clip(redactText(token === "" ? said : said.split(token).join("[REDACTED]")), 300);
+  let requestedPermissions: unknown;
+  try { requestedPermissions = githubActionsToolPermissions(tool); } catch { requestedPermissions = undefined; }
+  ctx.scope.log({
+    event: "github_actions.request_refused", tool, repository: `${ctx.scope.owner}/${ctx.scope.repo}`, status, requestedPermissions,
+    ...(ctx.scope.installationId === undefined ? {} : { installationId: ctx.scope.installationId }), message,
+  });
+}
 
 /** Whether `url` is a GitHub API address for exactly `path`, however it is cased: what a list answer says an item belongs to. */
 function isApiPath(url: unknown, path: string): boolean {
@@ -171,10 +200,13 @@ function failureOf(status: number, notFound: string): NativeToolRefusal {
 
 const UNREADABLE = "GitHub answered something this connector cannot read";
 
-async function githubGet(ctx: NativeToolContext<GitHubActionsRunScope>, path: string, query: Array<[string, string]>, notFound: string): Promise<unknown> {
+async function githubGet(ctx: NativeToolContext<GitHubActionsRunScope>, tool: string, path: string, query: Array<[string, string]>, notFound: string): Promise<unknown> {
   const search = new URLSearchParams(query).toString();
   const response = await ctx.fetch(`${repoPath(ctx.scope)}/${path}${search === "" ? "" : `?${search}`}`, { headers: headersOf(ctx) });
-  if (response.status !== 200) throw failureOf(response.status, notFound);
+  if (response.status !== 200) {
+    logRefused(ctx, tool, response.status, response);
+    throw failureOf(response.status, notFound);
+  }
   if (response.json === undefined) throw new NativeToolRefusal(UNREADABLE, "vendor_error");
   return response.json;
 }
@@ -209,7 +241,7 @@ const listWorkflowRuns: NativeTool<GitHubActionsRunScope> = {
     const query: Array<[string, string]> = [["per_page", String(limitOf(args))]];
     if (typeof args["status"] === "string") query.push(["status", args["status"]]);
     if (typeof args["branch"] === "string") query.push(["branch", args["branch"]]);
-    const runs = listOf(recordOf(await githubGet(ctx, "actions/runs", query, `GitHub has no such repository ${ctx.scope.alias}`))["workflow_runs"]).filter(isRecord)
+    const runs = listOf(recordOf(await githubGet(ctx, "list_workflow_runs", "actions/runs", query, `GitHub has no such repository ${ctx.scope.alias}`))["workflow_runs"]).filter(isRecord)
       .filter((run) => runInScope(run, ctx.scope))
       // The filters are the server's, but the answer is not trusted to have kept to them.
       .filter((run) => typeof args["status"] !== "string" || run["status"] === args["status"] || run["conclusion"] === args["status"])
@@ -231,7 +263,7 @@ const getWorkflowExecution: NativeTool<GitHubActionsRunScope> = {
   },
   async run(args, ctx) {
     const id = args["workflowRunId"] as number;
-    const run = recordOf(await githubGet(ctx, `actions/runs/${String(id)}`, [], `GitHub has no such workflow run in ${ctx.scope.alias}`));
+    const run = recordOf(await githubGet(ctx, "get_workflow_execution", `actions/runs/${String(id)}`, [], `GitHub has no such workflow run in ${ctx.scope.alias}`));
     if (run["id"] !== id || !runInScope(run, ctx.scope)) throw new NativeToolRefusal(`that workflow run is not in ${ctx.scope.alias}`);
     return { text: `${runLine(run)}\nupdated ${clip(run["updated_at"], 30)}${typeof run["html_url"] === "string" ? `, ${clip(run["html_url"], 200)}` : ""}` };
   },
@@ -265,7 +297,7 @@ const listExecutionJobs: NativeTool<GitHubActionsRunScope> = {
   },
   async run(args, ctx) {
     const id = args["workflowRunId"] as number;
-    const jobs = listOf(recordOf(await githubGet(ctx, `actions/runs/${String(id)}/jobs`, [["filter", "latest"], ["per_page", "100"]], `GitHub has no such workflow run in ${ctx.scope.alias}`))["jobs"])
+    const jobs = listOf(recordOf(await githubGet(ctx, "list_execution_jobs", `actions/runs/${String(id)}/jobs`, [["filter", "latest"], ["per_page", "100"]], `GitHub has no such workflow run in ${ctx.scope.alias}`))["jobs"])
       .filter(isRecord).filter((job) => jobInRun(job, id, ctx.scope)).slice(0, MAX_JOBS);
     if (jobs.length === 0) return { text: `No jobs for workflow run ${String(id)} in ${ctx.scope.alias}.` };
     return { text: `${plural(jobs.length, "job")} of workflow run ${String(id)} in ${ctx.scope.alias}:\n${jobs.map(jobLines).join("\n")}` };
@@ -353,6 +385,7 @@ const getJobLog: NativeTool<GitHubActionsRunScope> = {
     const tail = typeof args["tailLines"] === "number" ? args["tailLines"] : DEFAULT_TAIL;
     // GitHub answers with a redirect to a signed address; read it here and follow it (once) only to its own log storage.
     const first = await ctx.fetch(`${repoPath(ctx.scope)}/actions/jobs/${String(id)}/logs`, { headers: headersOf(ctx), redirect: "capture" });
+    if (!REDIRECTS.has(first.status) && first.status !== 200) logRefused(ctx, "get_job_log", first.status, first);
     if (!REDIRECTS.has(first.status)) throw first.status === 200 ? new NativeToolRefusal(UNREADABLE, "vendor_error") : failureOf(first.status, `GitHub has no such job in ${ctx.scope.alias}`);
     if (first.location === undefined) throw new NativeToolRefusal(UNREADABLE, "vendor_error");
     const log = await ctx.scope.download(first.location);
@@ -381,7 +414,7 @@ const listDeployments: NativeTool<GitHubActionsRunScope> = {
   async run(args, ctx) {
     const query: Array<[string, string]> = [["per_page", String(limitOf(args))]];
     if (typeof args["environment"] === "string") query.push(["environment", args["environment"]]);
-    const deployments = listOf(await githubGet(ctx, "deployments", query, `GitHub has no such repository ${ctx.scope.alias}`)).filter(isRecord)
+    const deployments = listOf(await githubGet(ctx, "list_deployments", "deployments", query, `GitHub has no such repository ${ctx.scope.alias}`)).filter(isRecord)
       .filter((deployment) => deploymentInScope(deployment, ctx.scope))
       .filter((deployment) => typeof args["environment"] !== "string" || deployment["environment"] === args["environment"]).slice(0, limitOf(args));
     if (deployments.length === 0) return { text: `No deployments in ${ctx.scope.alias}.` };
@@ -402,7 +435,7 @@ const listDeploymentStatuses: NativeTool<GitHubActionsRunScope> = {
   },
   async run(args, ctx) {
     const id = args["deploymentId"] as number;
-    const statuses = listOf(await githubGet(ctx, `deployments/${String(id)}/statuses`, [["per_page", "20"]], `GitHub has no such deployment in ${ctx.scope.alias}`)).filter(isRecord)
+    const statuses = listOf(await githubGet(ctx, "list_deployment_statuses", `deployments/${String(id)}/statuses`, [["per_page", "20"]], `GitHub has no such deployment in ${ctx.scope.alias}`)).filter(isRecord)
       .filter((status) => isApiPath(status["repository_url"], repoPath(ctx.scope)) && isApiPath(status["deployment_url"], `${repoPath(ctx.scope)}/deployments/${String(id)}`)).slice(0, 20);
     if (statuses.length === 0) return { text: `No statuses for deployment ${String(id)} in ${ctx.scope.alias}.` };
     const lines = statuses.map((status) =>

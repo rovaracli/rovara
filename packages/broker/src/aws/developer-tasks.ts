@@ -6223,6 +6223,7 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
     request: "cancel", response, ...(operationId === undefined ? {} : { operationId }),
   }));
   let handled = false;
+  let planReviewEnded = false;
   const pointer = await get<DeveloperTaskPointerRecord>(deps, taskPointerKey(task.workspaceId));
   if (pointer?.pendingPrompt !== undefined) {
     // R16, P45: before the instructions run, removing them is the whole cancel. Only the pointer
@@ -6267,12 +6268,20 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
       }
       throw error;
     }
+    // Fix for v0.4.6 staging: a session stopped while its plan waits for approval has nothing running to cancel, so the stop would answer 200 and leave the plan on offer. The
+    // session actor's stop ends that step as a rejected plan does (the workflow closes complete and the task gives back its slot and workspace), in the same transaction as the
+    // idempotency item so a repeat cannot find the cancel recorded and the plan still open. The task's own cancel route is unchanged.
+    const planReview = deps.sessionActor !== undefined && task.closedAt === undefined && task.workflow?.stage === "PLAN_REVIEW" && task.workflow.state === "WAITING" ? task.workflow : undefined;
     if (outcome === "NOTHING_RUNNING") {
       // R12's one exception (ruling F15): nothing ran, so there is no action transaction for the
       // record to join. It is written with the cancel's idempotency item in its own transaction.
       // A failed write is counted and logged, and never hides the answer.
       try {
-        await deps.actions.transact([marker, record("Nothing was running."), accessFence(deps, access)]);
+        await deps.actions.transact([
+          marker, record(planReview === undefined ? "Nothing was running." : "Stopped while the plan waited for approval."), accessFence(deps, access),
+          ...(planReview === undefined ? [] : [stopPlanReviewItem(deps.tableName, task.taskId, planReview, receivedAt)]),
+        ]);
+        planReviewEnded = planReview !== undefined;
       } catch (error) {
         if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "control");
         if (!isConditional(error)) turnRecordFailed(deps, error);
@@ -6288,9 +6297,23 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
       }
     }
   }
+  // A plan stopped at review is a finished task like a rejected one: its slot and workspace go back now.
+  if (planReviewEnded) await releaseFinishedTaskQuietly(deps, task.taskId);
   const view = await taskView(deps, task, { events: 0, details: false });
   await syncIndex(deps, task, view.status, view.updatedAt);
   return { task: view };
+}
+
+/** The task update that ends a plan waiting for approval because its session was stopped: the workflow closes complete (the stage a rejected plan reaches) and no decision is offered. */
+function stopPlanReviewItem(tableName: string, taskId: string, workflow: WorkflowSnapshot, now: string): TransactItems[number] {
+  const closed = WorkflowSnapshotSchema.parse({ ...workflow, revision: workflow.revision + 1, stage: "CLOSED", state: "COMPLETE", outcome: "CLOSED", updatedAt: now });
+  return { Update: {
+    TableName: tableName, Key: taskKey(taskId),
+    UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+    ConditionExpression: "attribute_not_exists(closedAt) AND workflow.revision = :revision AND workflow.#stage = :review AND workflow.#state = :waiting",
+    ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+    ExpressionAttributeValues: { ":workflow": closed, ":now": now, ":revision": workflow.revision, ":review": "PLAN_REVIEW", ":waiting": "WAITING" },
+  } };
 }
 
 /**
@@ -6684,7 +6707,7 @@ export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTask
     }
   }
   const now = new Date().toISOString();
-  const reason = task.agentRunEnd !== undefined ? "its run ended" : task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : "its plan was rejected";
+  const reason = task.agentRunEnd !== undefined ? "its run ended" : task.workflow?.stage !== "CLOSED" ? "its pull request merged" : task.workflow.outcome === "PASSED" ? "it finished every step" : task.workflow.outcome === "CLOSED" ? "it was stopped while its plan waited for approval" : "its plan was rejected";
   const rest = (): TransactItems => [
     ...(releaseWorkspace ? [{ Update: {
       TableName: deps.tableName,

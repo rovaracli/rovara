@@ -360,6 +360,9 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     // reviews also sit in WAITING between runs, but nobody is needed for them.
     if ((workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") || workflow.state === "BLOCKED") status = "needs_person";
     else if (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING") status = "waiting";
+    // A stop that landed before the instructions ran cancels nothing and leaves the step marked running with nothing behind it; the task reads cancelled then, and so does the session
+    // (v0.4.6 staging: it read `running` until the task was closed).
+    else if (derived.status === "CANCELLED" && workflow.state === "RUNNING") status = "stopped";
     else status = starting ? "starting" : "running";
   } else if (run !== undefined) {
     step = run.currentStep?.name;
