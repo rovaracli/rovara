@@ -14665,8 +14665,11 @@ async function completedBranchSyncItems(
   } catch (error) {
     if (options.lost === true || (reported !== undefined && reported.commit !== binding.expectedHeadCommit)) throw error;
   }
+  // Autonomy is read again where the paid round would start: set to suggest by now, and not started by a person's go-ahead, a conflict is asked about instead.
+  const askFirst = reported?.conflicts !== undefined && marker.approved !== true && task.orgId !== undefined
+    && await taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))) === "suggest";
   const outcome = planBranchSyncOutcome({
-    workflow, binding: { repositoryId: marker.repositoryId, number: marker.number, baseCommit: binding.baseCommit, expectedHeadCommit: binding.expectedHeadCommit },
+    askFirst, workflow, binding: { repositoryId: marker.repositoryId, number: marker.number, baseCommit: binding.baseCommit, expectedHeadCommit: binding.expectedHeadCommit },
     terminalStatus, terminalError, result: reported, github, baseBranch: maintenance.baseBranch, recordedBranch: maintenance.headBranch, now,
   });
   const link = { repository: marker.repositoryId, number: marker.number, url: pullRequest.url };
@@ -14674,7 +14677,7 @@ async function completedBranchSyncItems(
     kind, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: now, text: text.slice(0, 500), pullRequests: [link],
   }, n);
   if (outcome.kind === "unchanged") return [taskUpdate(outcome.workflow)];
-  if (outcome.kind === "stopped") return [taskUpdate(outcome.workflow), ...milestone("stuck", outcome.message, outcome.workflow.revision)];
+  if (outcome.kind === "stopped" || outcome.kind === "asked") return [taskUpdate(outcome.workflow), ...milestone("stuck", outcome.message, outcome.workflow.revision)];
   if (outcome.kind === "conflict") {
     const round = outcome.workflow.fixRounds?.conflict ?? 1;
     return [

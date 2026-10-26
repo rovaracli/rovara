@@ -190,6 +190,9 @@ import {
   RUN_LIMIT_BLOCK_PREFIX,
   isRunLimitBlockReason,
   isCiFixBlockReason,
+  isBranchConflictAskReason,
+  isBranchSyncBlockReason,
+  retryWorkflowBranchSync,
   retryWorkflowCiFix,
   abandonWorkflowFix,
   heldPlanStartKey,
@@ -3372,7 +3375,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
     }
   }
   // Plan 6 Task 15: a CI fix that waited for a person (suggest), ran out of rounds or changed nothing goes on at the owner's Retry.
-  if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && isCiFixBlockReason(task.workflow.blockReason)) return retryCiFix(deps, caller, access, request);
+  if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && (isCiFixBlockReason(task.workflow.blockReason) || isBranchConflictAskReason(task.workflow.blockReason))) return retryCiFix(deps, caller, access, request);
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
   if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);
@@ -3802,7 +3805,8 @@ async function retryCiFix(
   const receivedAt = iso(deps);
   let next: WorkflowSnapshot;
   try {
-    next = retryWorkflowCiFix(workflow, receivedAt);
+    // Plan 6 Task 17: the same Retry answers the ask about a conflict (Rovara is set to suggest).
+    next = isBranchConflictAskReason(workflow.blockReason) ? retryWorkflowBranchSync(workflow, receivedAt) : retryWorkflowCiFix(workflow, receivedAt);
   } catch (error) {
     if (error instanceof WorkflowTransitionError) throw agentXError("CONFIG_INVALID", error.message);
     throw error;
@@ -4834,6 +4838,8 @@ export function taskPageStage(workflow: WorkflowSnapshot | undefined, closed: bo
       }
       if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestUpdateFailed) return { status: "Couldn't push the fix", nextStep: `Merge or update it on GitHub, or close the task ${inSlack}.` };
       if (isCiFixBlockReason(workflow.blockReason)) return { status: "CI is failing and needs you", nextStep: "Retry the fix, take over on GitHub, or close the task." };
+      if (isBranchConflictAskReason(workflow.blockReason)) return { status: "The branch conflicts and needs you", nextStep: "Retry to let Rovara resolve it, update the branch on GitHub, or close the task." };
+      if (isBranchSyncBlockReason(workflow.blockReason)) return { status: "The branch needs updating on GitHub", nextStep: "Update the branch on GitHub, or close the task." };
       return { status: isFeedbackReviewFailure(workflow.blockReason) ? "Couldn't review the pull request feedback" : "Something went wrong; still watching the pull request",
         nextStep: "Merge it on GitHub and the task finishes, or close the task in Slack." };
     case "MERGED/COMPLETE": return { status: "Merged", nextStep: "Nothing; this task is complete." };

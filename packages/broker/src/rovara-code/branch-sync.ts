@@ -9,6 +9,8 @@
 import {
   BRANCH_SYNCS_PER_DAY_MAX,
   BRANCH_WORKFLOW_FILES_MESSAGE,
+  branchConflictAskMessage,
+  type Autonomy,
   CONFLICT_PATHS_BLOCK_HEADER,
   WorkflowTransitionError,
   blockWorkflowBranchSync,
@@ -62,12 +64,14 @@ export function decideBranchSync(input: { item: Pick<MergeTrackingItem, "branch"
 }
 
 /**
- * What to do about a branch that conflicts with its base: try the merge (the worker finds the conflicting files and a build round resolves them) while conflict rounds are left; stop when they
- * are used up (the stop needs no machine, so it does not wait for the day's count); wait when today's merges are used up.
+ * What to do about a branch that conflicts with its base: try the merge (the worker finds the conflicting files and a build round resolves them) while conflict rounds are left; ask first when the
+ * agent is set to suggest; stop when the rounds are used up (the stop and the ask need no machine, so they do not wait for the day's count); wait when today's merges are used up.
  */
-export function decideConflict(input: { item: Pick<MergeTrackingItem, "branch" | "syncs">; workflow: Pick<WorkflowSnapshot, "fixRounds">; now: number }): "sync" | "stop" | "none" {
+export function decideConflict(input: { item: Pick<MergeTrackingItem, "branch" | "syncs" | "headSha">; workflow: Pick<WorkflowSnapshot, "fixRounds" | "conflictApproved">; autonomy: Autonomy; now: number }): "sync" | "ask" | "stop" | "none" {
   if (input.item.branch !== "conflicted") return "none";
   if (workflowFixRoundsLeft(input.workflow, "conflict") === 0) return "stop";
+  // With the agent set to suggest a conflict is asked about before any machine or paid round, never left silent; a person's go-ahead for this head lets it go on. (Asking uses no machine, so it does not wait for the day.)
+  if (input.autonomy === "suggest" && input.workflow.conflictApproved?.includes(input.item.headSha) !== true) return "ask";
   return syncsToday(input.item.syncs, input.now) < BRANCH_SYNCS_PER_DAY_MAX ? "sync" : "none";
 }
 
@@ -105,6 +109,8 @@ export type BranchSyncOutcome =
   | { kind: "conflict"; workflow: WorkflowSnapshot; paths: string[] }
   /** Keeping the branch up to date stops for a person (the workflow is blocked with `message`). */
   | { kind: "stopped"; workflow: WorkflowSnapshot; message: string }
+  /** The merge conflicted and the agent is set to suggest by now (and no person's go-ahead started it): a person is asked before any paid round (the workflow is blocked with the ask). */
+  | { kind: "asked"; workflow: WorkflowSnapshot; message: string }
   /** Nothing was pushed, or nothing GitHub shows is the merge: the task waits for the merge as it did. */
   | { kind: "unchanged"; workflow: WorkflowSnapshot };
 
@@ -130,6 +136,8 @@ export function planBranchSyncOutcome(input: {
   baseBranch: string;
   /** The branch Rovara pushes this pull request's head to. */
   recordedBranch: string;
+  /** The agent is set to suggest now, and no person's go-ahead started this merge: a conflict is asked about, not resolved. */
+  askFirst?: boolean | undefined;
   now: string;
 }): BranchSyncOutcome {
   const { workflow, binding, github, result } = input;
@@ -161,6 +169,10 @@ export function planBranchSyncOutcome(input: {
     if (workflowFixRoundsLeft(workflow, "conflict") === 0) {
       const message = branchConflictStopMessage(input.baseBranch);
       return { kind: "stopped", workflow: blockWorkflowBranchSync(workflow, { reason: message, now: input.now }), message };
+    }
+    if (input.askFirst === true) {
+      const message = branchConflictAskMessage(input.baseBranch);
+      return { kind: "asked", workflow: blockWorkflowBranchSync(workflow, { reason: message, now: input.now }), message };
     }
     return { kind: "conflict", workflow: recordWorkflowSyncConflict(workflow, { paths: result.conflicts, baseCommit: binding.baseCommit, now: input.now }), paths: result.conflicts };
   }
@@ -226,14 +238,13 @@ function begin(input: MergeActionInput, reason: BranchSyncReason): MergeActionRe
 
 /** The conflict slot: a merge is tried on a conflicted branch; with the conflict rounds used up the task stops and a person is told. */
 export function conflictDecider(input: MergeActionInput): MergeActionRequest | undefined {
-  const decision = decideConflict({ item: input.item, workflow: input.workflow, now: input.now });
+  const decision = decideConflict({ item: input.item, workflow: input.workflow, autonomy: input.autonomy, now: input.now });
   if (decision === "none") return undefined;
-  // A merge changes the branch, and a conflict round is paid work: with the agent set to suggest, Rovara does neither on its own (the person updates the branch).
-  if (decision === "sync") return input.autonomy === "suggest" ? undefined : begin(input, "conflict");
+  if (decision === "sync") return begin(input, "conflict");
   const { context } = input;
   if (context === undefined) return undefined;
   const at = iso(input.now);
-  const next = blockWorkflowBranchSync(input.workflow, { reason: branchConflictStopMessage(input.item.baseBranch), now: at });
+  const next = blockWorkflowBranchSync(input.workflow, { reason: decision === "ask" ? branchConflictAskMessage(input.item.baseBranch) : branchConflictStopMessage(input.item.baseBranch), now: at });
   return { slot: "conflict", workflow: next, items: codeMilestoneItems({ tableName: context.tableName }, milestone(context, at, next.blockReason ?? ""), next.revision) };
 }
 

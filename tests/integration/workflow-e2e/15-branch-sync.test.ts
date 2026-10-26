@@ -295,6 +295,23 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(e2e.github.parents.get(pullRequest.commit)).toEqual([before, base]);
   }, 240_000);
 
+  it("15.10 autonomy is read again where the paid round would start: switched to suggest while the merge was queued, the conflict is asked about and no coding run starts", async () => {
+    const { e2e, github, prompts } = await waitingForMerge();
+    await e2e.advanceBase("greeting.ts", BASE_GREETING);
+    github.state.conflicted = true;
+    e2e.clock.advance(16 * 60_000);
+    await e2e.runMergeRecovery();
+    expect(e2e.workflow()).toMatchObject({ state: "READY", branchSync: { reason: "conflict" } });
+    freezeAutonomy(e2e, "suggest");
+    const promptsBefore = prompts.length;
+    await e2e.runRecovery();
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: branchConflictAskMessage("main") });
+    expect(prompts).toHaveLength(promptsBefore);
+    expect(milestones(e2e, "fixing")).toEqual([]);
+    expect(milestones(e2e, "stuck")).toHaveLength(1);
+  }, 240_000);
+
   it("15.8 a merge whose machine is lost after its push is judged from what GitHub shows: the merge is recorded as Rovara's own (with no approval to carry), and nothing false is said", async () => {
     const { e2e, github, pullRequest } = await waitingForMerge();
     const before = pullRequest.commit;

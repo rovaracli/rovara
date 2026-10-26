@@ -3,7 +3,7 @@ import { CODING_STEP_KINDS, MAX_RECIPE_STEPS, OnFindingsSchema, ReviewerSchema, 
 import { readerOf, type ForwardReader } from "./forward-reader.js";
 import {
   ANSWER_EVERY_QUESTION_MESSAGE, FixSourceSchema, INTENT_ANSWER_MAX_CHARS, INTENT_ANSWER_SOURCES, INTENT_QUESTIONS_MAX, INTENT_RESTATEMENT_MAX, IntentAnswerSchema, IntentAssessmentSchema, RiskAssessmentSchema, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_ROUNDS_MAX,
-  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, WorkflowBranchSyncSchema, CONFLICT_PATHS_MAX, type BranchSyncReason, type WorkflowBranchSync,
+  UNDERSTAND_TIMED_OUT_MESSAGE, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, CI_FIX_PROBLEMS_MAX, CI_FIX_ROUNDS_MAX, CONFLICT_ROUNDS_MAX, FEEDBACK_AUTO_ROUNDS_MAX, ciFixUnrelatedMessage, isCiFixBlockReason, isBranchSyncBlockReason, isBranchConflictAskReason, WorkflowBranchSyncSchema, CONFLICT_PATHS_MAX, type BranchSyncReason, type WorkflowBranchSync,
   intentAssessmentDuplicateIds, intentAssumptionLine, plainAnswerText, UNDERSTAND_UNREADABLE_MESSAGE, PLAN_CRITIC_REVISIONS_MAX, PlanCritiqueSchema, type PlanCritique, type WorkflowCritique, type IntentAnswer, type IntentAssessment, type NoChangeNeeded, type WorkflowIntent, type FixSource, type WorkflowFixRounds,
 } from "./rovara-code.js";
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
@@ -1341,6 +1341,8 @@ const WorkflowSnapshotShapeSchema = z.object({
    * parent. Present only with `fixSource: "conflict"`.
    */
   conflictBase: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  /** Both versions: a person told Rovara to go on with a conflict it asked about (Retry): the heads of the open pull requests then. The merge it starts uses it up. */
+  conflictApproved: z.array(z.string().regex(/^[a-f0-9]{40}$/)).min(1).max(32).optional(),
 }).superRefine((workflow, context) => {
   if (workflow.definitionVersion === "1.0.0") {
     if (workflow.stage === "UNDERSTAND" || workflow.stage === "PLAN_CRITIQUE") {
@@ -2077,10 +2079,30 @@ export function startWorkflowBranchSync(currentInput: unknown, input: { reposito
   if (ownerCardOpen(current)) throw new WorkflowTransitionError("the owner's feedback card is waiting, so nothing is merged on its own");
   const pullRequest = openPullRequestOf(current, input.repositoryId, input.number);
   if (pullRequest?.headSha === undefined) throw new WorkflowTransitionError("the pull request is not open, or has no recorded head");
+  // A person's go-ahead for this head (Retry after the ask) is used by the merge it starts.
+  const approved = current.conflictApproved?.includes(pullRequest.headSha) === true;
+  const { conflictApproved: _approved, ...rest } = current;
+  void _approved;
   return WorkflowSnapshotSchema.parse({
-    ...current, revision: current.revision + 1, state: "READY", updatedAt: input.now,
-    branchSync: { repositoryId: input.repositoryId, number: input.number, expectedHeadCommit: pullRequest.headSha, reason: input.reason },
+    ...rest, revision: current.revision + 1, state: "READY", updatedAt: input.now,
+    branchSync: { repositoryId: input.repositoryId, number: input.number, expectedHeadCommit: pullRequest.headSha, reason: input.reason, ...(approved ? { approved: true as const } : {}) },
   });
+}
+
+/**
+ * The owner's Retry of the ask (the branch conflicts and Rovara is set to suggest): WAIT_FOR_MERGE/BLOCKED becomes WAITING with a go-ahead for the heads the open pull requests hold now. The rounds
+ * already used stay counted; the next conflict decision for one of those heads starts the merge whatever the autonomy.
+ */
+export function retryWorkflowBranchSync(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "BLOCKED" || !isBranchConflictAskReason(current.blockReason)) {
+    throw new WorkflowTransitionError("the workflow is not waiting for a conflict to be retried");
+  }
+  const { blockReason: _blockReason, ...rest } = current;
+  void _blockReason;
+  const heads = [...new Set((current.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN").flatMap((pullRequest) => pullRequest.headSha === undefined ? [] : [pullRequest.headSha]))];
+  if (heads.length === 0) throw new WorkflowTransitionError("no open pull request has a recorded head to give a go-ahead for");
+  return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", conflictApproved: heads, updatedAt: now });
 }
 
 /** The merge of the base branch is accepted by a worker: READY becomes RUNNING. */

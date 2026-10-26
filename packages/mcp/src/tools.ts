@@ -4,7 +4,7 @@
 import {
   DEFAULT_DEVELOPER_TASK_POLICY, DEVELOPER_EVENTS_DEFAULT, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_LIST_DEFAULT, DEVELOPER_TASK_LIST_MAX,
   DEVELOPER_WAIT_MAX_SECONDS, DeveloperInstructionsSchema, DeveloperTaskStatusSchema, SHARED_BY_POLICY, VIEW_ONLY_BY_POLICY, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, WORKFLOW_REVIEW_FAILURE_REASONS,
-  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, isBranchSyncBlockReason, isCiFixBlockReason, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
+  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, isBranchConflictAskReason, isBranchSyncBlockReason, isCiFixBlockReason, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
   TaskPeopleRoleSchema, RUN_CONTEXT_KINDS, RUN_INPUT_TEXT_MAX_BYTES, ApprovalIdSchema, RunInputSchema, type RunInput, type StartAgentSelection,
   SessionIdSchema,
 } from "@agentx/contracts";
@@ -281,6 +281,9 @@ function nextFor(shown: DeveloperTaskClientView): string {
     return `CI is failing on the pull request and Rovara is waiting for you (the reason is in the task's block reason). To let it fix CI, use agentx_retry_workflow with expected_revision ${task.workflow.revision}. Or fix or merge the pull request on GitHub, or use agentx_close_task to stop.`;
   }
   // Plan 6 Task 17: Rovara could not keep the branch up to date (it still conflicts after its tries, or the base changed CI workflow files, which it can't push): a person updates the branch on GitHub.
+  if (task.workflow?.state === "BLOCKED" && task.workflow.stage === "WAIT_FOR_MERGE" && isBranchConflictAskReason(task.workflow.blockReason)) {
+    return `${task.workflow.blockReason!} To let Rovara resolve the conflict, use agentx_retry_workflow with expected_revision ${task.workflow.revision}. Or update the branch on GitHub, or close the task.`;
+  }
   if (task.workflow?.state === "BLOCKED" && task.workflow.stage === "WAIT_FOR_MERGE" && isBranchSyncBlockReason(task.workflow.blockReason)) {
     return `${task.workflow.blockReason!} Rovara keeps watching the pull request for its merge; it does not change the branch again.`;
   }
